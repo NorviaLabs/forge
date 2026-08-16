@@ -23,6 +23,14 @@ fn fff_find_max() -> u32 {
     50
 }
 
+/// Hard cap so a model cannot request millions of hits and pin the agent loop.
+const MAX_FFF_RESULTS: u32 = 200;
+const MAX_FFF_QUERY_CHARS: usize = 512;
+
+fn clamp_fff_results(requested: u32) -> usize {
+    requested.min(MAX_FFF_RESULTS) as usize
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct FffGrepArgs {
     /// Search pattern (plain text, regex, or fuzzy)
@@ -101,8 +109,9 @@ impl FastFileState {
             .indices
             .lock()
             .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?;
-        guard.insert(canonical, index.clone());
-        Ok(index)
+        // Another caller may have finished opening the same root while we
+        // scanned. Prefer the winner so we do not leak a second watcher.
+        Ok(guard.entry(canonical).or_insert(index).clone())
     }
 }
 
@@ -141,10 +150,13 @@ impl Tool for FffFindTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: FffFindArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
+        if let Some(output) = reject_blank_or_oversized("fffind", "query", &args.query) {
+            return Ok(output);
+        }
         let state = self.state.clone();
         let root = ctx.workspace_root.clone();
         let query = args.query.clone();
-        let max_results = args.max_results as usize;
+        let max_results = clamp_fff_results(args.max_results);
         let response = tokio::task::spawn_blocking(move || {
             state
                 .index_for(&root)?
@@ -206,6 +218,9 @@ impl Tool for FffGrepTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: FffGrepArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
+        if let Some(output) = reject_blank_or_oversized("ffgrep", "pattern", &args.pattern) {
+            return Ok(output);
+        }
         let mode = args
             .mode
             .as_ref()
@@ -215,7 +230,7 @@ impl Tool for FffGrepTool {
         let root = ctx.workspace_root.clone();
         let pattern = args.pattern.clone();
         let path = args.path.clone();
-        let max_results = args.max_results as usize;
+        let max_results = clamp_fff_results(args.max_results);
         let response = tokio::task::spawn_blocking(move || {
             state
                 .index_for(&root)?
@@ -243,6 +258,28 @@ impl Tool for FffGrepTool {
             attachments: Vec::new(),
         })
     }
+}
+
+fn reject_blank_or_oversized(tool: &str, field: &str, value: &str) -> Option<ToolOutput> {
+    if value.trim().is_empty() {
+        return Some(ToolOutput {
+            outcome: Default::default(),
+            content: format!("{tool}: {field} must be non-empty"),
+            is_error: true,
+            exit_code: None,
+            attachments: Vec::new(),
+        });
+    }
+    if value.chars().count() > MAX_FFF_QUERY_CHARS {
+        return Some(ToolOutput {
+            outcome: Default::default(),
+            content: format!("{tool}: {field} exceeds max length ({MAX_FFF_QUERY_CHARS} chars)"),
+            is_error: true,
+            exit_code: None,
+            attachments: Vec::new(),
+        });
+    }
+    None
 }
 
 pub fn fff_tools() -> Vec<Arc<dyn Tool>> {
@@ -343,5 +380,141 @@ mod tests {
         let index = state.index_for(dir.path()).unwrap();
         let response = index.grep("   ", None, GrepQueryMode::Plain, 10).unwrap();
         assert!(response.hits.is_empty());
+    }
+
+    #[test]
+    fn clamp_fff_results_caps_unbounded_requests() {
+        assert_eq!(clamp_fff_results(0), 0);
+        assert_eq!(clamp_fff_results(50), 50);
+        assert_eq!(clamp_fff_results(MAX_FFF_RESULTS), MAX_FFF_RESULTS as usize);
+        assert_eq!(
+            clamp_fff_results(u32::MAX),
+            MAX_FFF_RESULTS as usize,
+            "a model-supplied u32::MAX must not become a multi-gigabyte scan"
+        );
+    }
+
+    #[test]
+    fn index_for_reuses_the_same_handle() {
+        let dir = tempdir().unwrap();
+        let state = FastFileState::new();
+        let first = state.index_for(dir.path()).unwrap();
+        let second = state.index_for(dir.path()).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[tokio::test]
+    async fn fffind_call_returns_json_hits() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        let out = tool
+            .call(&ctx, serde_json::json!({"query": "main.rs"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("src/main.rs"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn fffind_rejects_blank_query() {
+        let dir = tempdir().unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        let out = tool
+            .call(&ctx, serde_json::json!({"query": "   "}))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("non-empty"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn fffind_rejects_oversized_query() {
+        let dir = tempdir().unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        let query = "a".repeat(MAX_FFF_QUERY_CHARS + 1);
+        let out = tool
+            .call(&ctx, serde_json::json!({"query": query}))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("max length"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn ffgrep_call_returns_json_hits() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "hello world\n").unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let out = tool
+            .call(
+                &ctx,
+                serde_json::json!({"pattern": "hello", "path": "main"}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("src/main.rs"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn ffgrep_rejects_blank_pattern() {
+        let dir = tempdir().unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let out = tool
+            .call(&ctx, serde_json::json!({"pattern": "  "}))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("non-empty"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn ffgrep_clamps_max_results() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hit\n").unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let out = tool
+            .call(
+                &ctx,
+                serde_json::json!({"pattern": "hit", "max_results": u32::MAX}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let parsed: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        let hits = parsed["hits"].as_array().expect("hits array");
+        assert!(hits.len() <= MAX_FFF_RESULTS as usize);
+    }
+
+    #[tokio::test]
+    async fn ffgrep_invalid_regex_does_not_panic() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let result = tool
+            .call(&ctx, serde_json::json!({"pattern": "[", "mode": "regex"}))
+            .await;
+        match result {
+            Ok(out) => {
+                // Either no matches or a structured error — never a panic.
+                let _ = out.content;
+            }
+            Err(error) => {
+                assert!(
+                    error.to_string().contains("fff") || error.to_string().contains("regex"),
+                    "{error}"
+                );
+            }
+        }
     }
 }

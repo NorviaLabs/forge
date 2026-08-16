@@ -4,11 +4,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::builtins::unified_diff;
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
+
+/// Models sometimes dump an entire file into a patch. Cap the argument so a
+/// single call cannot pin hundreds of megabytes in the agent loop.
+const MAX_PATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ApplyPatchArgs {
@@ -20,15 +24,36 @@ pub struct ApplyPatchTool;
 
 #[derive(Debug)]
 enum PatchAction {
-    Add { path: String, content: String },
-    Update { path: String, hunks: Vec<Hunk> },
-    Delete { path: String },
+    Add {
+        path: String,
+        content: String,
+    },
+    Update {
+        path: String,
+        move_to: Option<String>,
+        hunks: Vec<Hunk>,
+    },
+    Delete {
+        path: String,
+    },
 }
 
 #[derive(Debug)]
 struct Hunk {
+    /// Optional text after `@@`, used as a location hint when the same old
+    /// lines appear more than once.
+    header: Option<String>,
     old_lines: Vec<String>,
     new_lines: Vec<String>,
+    /// When set, the old lines must be a suffix of the file (or empty, which
+    /// means append).
+    end_of_file: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Newline {
+    Lf,
+    Crlf,
 }
 
 #[derive(Debug)]
@@ -53,7 +78,8 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a validated patch to workspace files using the `*** Begin Patch` format"
+        "Apply a validated patch to workspace files using the `*** Begin Patch` format. \
+Supports Add/Update/Delete File, optional `*** Move to:`, `@@` hunks, and `*** End of File`."
     }
 
     fn input_schema(&self) -> Value {
@@ -68,6 +94,12 @@ impl Tool for ApplyPatchTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: ApplyPatchArgs = serde_json::from_value(args)
             .map_err(|error| ToolError::Execution(error.to_string()))?;
+        if args.patch.len() > MAX_PATCH_BYTES {
+            return execution_error(format!(
+                "patch is {} bytes; maximum is {MAX_PATCH_BYTES} bytes",
+                args.patch.len()
+            ));
+        }
         let actions = parse_patch(&args.patch)?;
         let changes = prepare_changes(ctx, actions).await?;
         let mut diffs = Vec::with_capacity(changes.len());
@@ -114,19 +146,13 @@ impl Tool for ApplyPatchTool {
 }
 
 fn parse_patch(patch: &str) -> Result<Vec<PatchAction>, ToolError> {
-    let normalized = patch.replace("\r\n", "\n");
-    let lines: Vec<&str> = normalized.lines().collect();
-    if lines.first() != Some(&"*** Begin Patch") || lines.last() != Some(&"*** End Patch") {
-        return execution_error(
-            "patch must start with `*** Begin Patch` and end with `*** End Patch`",
-        );
-    }
+    let lines = extract_marked_patch(patch)?;
 
     let mut actions = Vec::new();
     let mut index = 1;
     while index + 1 < lines.len() {
         let line = lines[index];
-        if let Some(path) = line.strip_prefix("*** Add File: ") {
+        if let Some(path) = strip_file_directive(line, "Add File") {
             index += 1;
             let mut content = Vec::new();
             while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
@@ -140,13 +166,22 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchAction>, ToolError> {
                 path: path.to_string(),
                 content: join_patch_lines(&content),
             });
-        } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
+        } else if let Some(path) = strip_file_directive(line, "Delete File") {
             actions.push(PatchAction::Delete {
                 path: path.to_string(),
             });
             index += 1;
-        } else if let Some(path) = line.strip_prefix("*** Update File: ") {
+        } else if let Some(path) = strip_file_directive(line, "Update File")
+            .or_else(|| strip_file_directive(line, "Change File"))
+        {
             index += 1;
+            let mut move_to = None;
+            if index + 1 < lines.len() {
+                if let Some(dest) = strip_file_directive(lines[index], "Move to") {
+                    move_to = Some(dest.to_string());
+                    index += 1;
+                }
+            }
             let mut hunks = Vec::new();
             while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
                 if !lines[index].starts_with("@@") {
@@ -154,6 +189,7 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchAction>, ToolError> {
                         "update-file content must begin with a `@@` hunk header",
                     );
                 }
+                let header = hunk_header(lines[index]);
                 index += 1;
                 let mut old_lines = Vec::new();
                 let mut new_lines = Vec::new();
@@ -161,35 +197,30 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchAction>, ToolError> {
                     && !lines[index].starts_with("@@")
                     && !lines[index].starts_with("*** ")
                 {
-                    let hunk_line = lines[index];
-                    if hunk_line.is_empty() {
-                        return execution_error("hunk lines must start with ` `, `+`, or `-`");
-                    }
-                    let (marker, text) = hunk_line.split_at(1);
-                    match marker {
-                        " " => {
-                            old_lines.push(text.to_string());
-                            new_lines.push(text.to_string());
-                        }
-                        "-" => old_lines.push(text.to_string()),
-                        "+" => new_lines.push(text.to_string()),
-                        _ => return execution_error("hunk lines must start with ` `, `+`, or `-`"),
-                    }
+                    parse_hunk_line(lines[index], &mut old_lines, &mut new_lines)?;
                     index += 1;
                 }
-                if old_lines == new_lines {
+                let mut end_of_file = false;
+                if index + 1 < lines.len() && lines[index].trim() == "*** End of File" {
+                    end_of_file = true;
+                    index += 1;
+                }
+                if old_lines == new_lines && !end_of_file {
                     continue;
                 }
                 hunks.push(Hunk {
+                    header,
                     old_lines,
                     new_lines,
+                    end_of_file,
                 });
             }
-            if hunks.is_empty() {
+            if hunks.is_empty() && move_to.is_none() {
                 return execution_error("update action does not change any content");
             }
             actions.push(PatchAction::Update {
                 path: path.to_string(),
+                move_to,
                 hunks,
             });
         } else {
@@ -201,6 +232,68 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchAction>, ToolError> {
         return execution_error("patch contains no file changes");
     }
     Ok(actions)
+}
+
+/// Locate the `*** Begin Patch` … `*** End Patch` envelope even when the
+/// model wrapped it in a markdown fence or added trailing blank lines.
+fn extract_marked_patch(patch: &str) -> Result<Vec<&str>, ToolError> {
+    let lines: Vec<&str> = patch.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.trim() == "*** Begin Patch");
+    let end = lines
+        .iter()
+        .rposition(|line| line.trim() == "*** End Patch");
+    match (start, end) {
+        (Some(start), Some(end)) if start < end => Ok(lines[start..=end].to_vec()),
+        _ => execution_error("patch must contain `*** Begin Patch` and `*** End Patch`"),
+    }
+}
+
+fn strip_file_directive<'a>(line: &'a str, kind: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix("*** ")?;
+    let rest = rest.strip_prefix(kind)?;
+    let rest = rest.strip_prefix(':')?;
+    let path = rest.trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+fn hunk_header(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("@@")?.trim();
+    // Unified-diff coordinates (`-12,3 +12,4`) are not a location hint.
+    if rest.is_empty() || rest.starts_with('-') || rest.starts_with('+') {
+        None
+    } else {
+        Some(rest.to_string())
+    }
+}
+
+fn parse_hunk_line(
+    hunk_line: &str,
+    old_lines: &mut Vec<String>,
+    new_lines: &mut Vec<String>,
+) -> Result<(), ToolError> {
+    // Models often omit the required leading space on a blank context line.
+    if hunk_line.is_empty() {
+        old_lines.push(String::new());
+        new_lines.push(String::new());
+        return Ok(());
+    }
+    let (marker, text) = hunk_line.split_at(1);
+    match marker {
+        " " => {
+            old_lines.push(text.to_string());
+            new_lines.push(text.to_string());
+        }
+        "-" => old_lines.push(text.to_string()),
+        "+" => new_lines.push(text.to_string()),
+        _ => return execution_error("hunk lines must start with ` `, `+`, or `-`"),
+    }
+    Ok(())
 }
 
 async fn prepare_changes(
@@ -233,22 +326,47 @@ async fn prepare_changes(
                     content,
                 });
             }
-            PatchAction::Update { hunks, .. } => {
-                let original = tokio::fs::read_to_string(&path).await.map_err(|error| {
-                    ToolError::Execution(format!("cannot update `{path_text}`: {error}"))
-                })?;
-                let content = apply_hunks(&original, &hunks, &path_text)?;
-                changes.push(PreparedChange::Write {
-                    path,
-                    display_path: path_text,
-                    original: Some(original),
-                    content,
-                });
+            PatchAction::Update { hunks, move_to, .. } => {
+                let original = read_text_file(&path, "update", &path_text).await?;
+                let content = if hunks.is_empty() {
+                    original.clone()
+                } else {
+                    apply_hunks(&original, &hunks, &path_text)?
+                };
+                if let Some(dest_text) = move_to {
+                    if !seen.insert(dest_text.clone()) {
+                        return execution_error(format!(
+                            "patch changes `{dest_text}` more than once"
+                        ));
+                    }
+                    let dest = safe_patch_path(ctx, &dest_text)?;
+                    if tokio::fs::try_exists(&dest).await? {
+                        return execution_error(format!(
+                            "cannot move `{path_text}` to existing file `{dest_text}`"
+                        ));
+                    }
+                    changes.push(PreparedChange::Write {
+                        path: dest,
+                        display_path: dest_text,
+                        original: None,
+                        content,
+                    });
+                    changes.push(PreparedChange::Delete {
+                        path,
+                        display_path: path_text,
+                        original,
+                    });
+                } else {
+                    changes.push(PreparedChange::Write {
+                        path,
+                        display_path: path_text,
+                        original: Some(original),
+                        content,
+                    });
+                }
             }
             PatchAction::Delete { .. } => {
-                let original = tokio::fs::read_to_string(&path).await.map_err(|error| {
-                    ToolError::Execution(format!("cannot delete `{path_text}`: {error}"))
-                })?;
+                let original = read_text_file(&path, "delete", &path_text).await?;
                 changes.push(PreparedChange::Delete {
                     path,
                     display_path: path_text,
@@ -262,59 +380,25 @@ async fn prepare_changes(
 }
 
 fn safe_patch_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, ToolError> {
-    let relative = Path::new(path);
-    if path.is_empty()
-        || relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return execution_error(format!("patch path `{path}` must be workspace-relative"));
-    }
+    // Same confinement as `write_file`: workspace-only, no `.git`, no dangling
+    // or escaping symlinks. Absolute paths are accepted when they resolve
+    // inside the workspace — models sometimes pass those.
+    ctx.resolve_write_path(path)
+}
 
-    // A patch writes, and Git takes executable behaviour from its own config
-    // and hook files, so `.git` is off limits to this tool entirely.
-    if relative
-        .components()
-        .any(|component| matches!(component, Component::Normal(name) if name == ".git"))
-    {
-        return execution_error(format!(
-            "refusing to patch `{path}`: paths under `.git` are not writable by tools"
-        ));
-    }
-
-    let target = ctx.workspace_root.join(relative);
-    let root = ctx
-        .workspace_root
-        .canonicalize()
-        .map_err(|error| ToolError::Execution(format!("cannot resolve workspace: {error}")))?;
-
-    // Walk with `symlink_metadata`, not `exists()`. `exists()` follows symlinks
-    // and so reports false for a *dangling* one, which stepped the walk past the
-    // link and left its target unchecked — a link committed in a repository
-    // could then redirect the write outside the workspace.
-    let mut ancestor = target.as_path();
-    while ancestor.symlink_metadata().is_err() {
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| ToolError::Execution(format!("cannot resolve patch path `{path}`")))?;
-    }
-
-    // `canonicalize` resolves links, so an ancestor pointing outside the
-    // workspace is caught below and one pointing inside still works. A dangling
-    // link cannot be resolved, so it cannot be shown to be contained.
-    let canonical = ancestor.canonicalize().map_err(|_| {
-        ToolError::Execution(format!(
-            "patch path `{path}` resolves through a broken symlink"
-        ))
-    })?;
-    if !canonical.starts_with(&root) {
-        return execution_error(format!("patch path `{path}` escapes workspace"));
-    }
-    Ok(target)
+async fn read_text_file(path: &Path, verb: &str, display: &str) -> Result<String, ToolError> {
+    tokio::fs::read_to_string(path).await.map_err(|error| {
+        let detail = if error.kind() == std::io::ErrorKind::InvalidData {
+            "file is not valid UTF-8".to_string()
+        } else {
+            error.to_string()
+        };
+        ToolError::Execution(format!("cannot {verb} `{display}`: {detail}"))
+    })
 }
 
 fn apply_hunks(original: &str, hunks: &[Hunk], path: &str) -> Result<String, ToolError> {
+    let newline = detect_newline(original);
     let had_trailing_newline = original.ends_with('\n');
     let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
     // Precompute once; the rolling window makes each hunk O(N) instead of
@@ -323,8 +407,7 @@ fn apply_hunks(original: &str, hunks: &[Hunk], path: &str) -> Result<String, Too
     let mut cursor = 0;
 
     for hunk in hunks {
-        let position = find_sequence(&lines, &line_hashes, &hunk.old_lines, cursor)
-            .ok_or_else(|| ToolError::Execution(format!("hunk did not match file `{path}`")))?;
+        let position = locate_hunk(&lines, &line_hashes, hunk, cursor, path)?;
         let old_len = hunk.old_lines.len();
         lines.splice(position..position + old_len, hunk.new_lines.clone());
         line_hashes.splice(
@@ -334,11 +417,71 @@ fn apply_hunks(original: &str, hunks: &[Hunk], path: &str) -> Result<String, Too
         cursor = position + hunk.new_lines.len();
     }
 
-    let mut content = lines.join("\n");
-    if had_trailing_newline {
-        content.push('\n');
+    Ok(join_file_lines(&lines, newline, had_trailing_newline))
+}
+
+fn locate_hunk(
+    lines: &[String],
+    line_hashes: &[u64],
+    hunk: &Hunk,
+    cursor: usize,
+    path: &str,
+) -> Result<usize, ToolError> {
+    if hunk.end_of_file {
+        if hunk.old_lines.is_empty() {
+            return Ok(lines.len());
+        }
+        let start = lines.len().saturating_sub(hunk.old_lines.len());
+        if lines.get(start..) == Some(hunk.old_lines.as_slice()) {
+            return Ok(start);
+        }
+        return execution_error(format!(
+            "hunk marked End of File did not match the end of `{path}`"
+        ));
     }
-    Ok(content)
+
+    // Addition-only hunks have no old lines to search for. Inserting at the
+    // cursor would prepend on the first hunk; models almost always mean append.
+    if hunk.old_lines.is_empty() {
+        return Ok(lines.len());
+    }
+
+    let mut search_from = cursor;
+    if let Some(hint) = hunk.header.as_deref() {
+        if let Some(offset) = lines[cursor..].iter().position(|line| line.contains(hint)) {
+            search_from = cursor + offset;
+        }
+    }
+
+    find_sequence(lines, line_hashes, &hunk.old_lines, search_from)
+        .or_else(|| {
+            if search_from != cursor {
+                find_sequence(lines, line_hashes, &hunk.old_lines, cursor)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| ToolError::Execution(format!("hunk did not match file `{path}`")))
+}
+
+fn detect_newline(text: &str) -> Newline {
+    if text.contains("\r\n") {
+        Newline::Crlf
+    } else {
+        Newline::Lf
+    }
+}
+
+fn join_file_lines(lines: &[String], newline: Newline, trailing: bool) -> String {
+    let sep = match newline {
+        Newline::Lf => "\n",
+        Newline::Crlf => "\r\n",
+    };
+    let mut content = lines.join(sep);
+    if trailing {
+        content.push_str(sep);
+    }
+    content
 }
 
 /// FNV-1a over the line bytes. Collisions are harmless: a match is always
@@ -469,7 +612,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("workspace-relative"));
+        assert!(error.to_string().contains("escapes workspace"), "{error}");
     }
 
     #[tokio::test]
@@ -568,23 +711,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_empty_hunk_line() {
+    async fn treats_blank_hunk_line_as_empty_context() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("file.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.path().join("file.txt"), "one\n\ntwo\n").unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        // A hunk line that is exactly empty is neither ` `, `+`, nor `-` prefixed.
-        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n one\n\n-two\n*** End Patch";
+        // Models often omit the required leading space on a blank context line.
+        let patch =
+            "*** Begin Patch\n*** Update File: file.txt\n@@\n one\n\n-two\n+done\n*** End Patch";
 
-        let error = ApplyPatchTool
+        ApplyPatchTool
             .call(&ctx, json!({"patch": patch}))
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("hunk lines must start with ` `, `+`, or `-`"),
-            "{error}"
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "one\n\ndone\n"
         );
     }
 
@@ -850,9 +992,17 @@ mod path_confinement_tests {
         );
         assert_eq!(
             safe_patch_path(&ctx, "existing.txt").unwrap(),
-            dir.path().join("existing.txt")
+            dir.path().join("existing.txt").canonicalize().unwrap()
         );
         assert!(safe_patch_path(&ctx, ".gitignore").is_ok());
+    }
+
+    #[test]
+    fn allows_absolute_path_inside_workspace() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let abs = dir.path().join("inside.txt");
+        assert_eq!(safe_patch_path(&ctx, abs.to_str().unwrap()).unwrap(), abs);
     }
 }
 
@@ -896,5 +1046,220 @@ mod noop_hunk_regression_tests {
         assert!(error
             .to_string()
             .contains("update action does not change any content"));
+    }
+}
+
+#[cfg(test)]
+mod robustness_tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn accepts_patch_wrapped_in_markdown_and_trailing_blank_lines() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "```\n*** Begin Patch\n*** Add File: wrapped.txt\n+hi\n*** End Patch\n```\n\n";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("wrapped.txt")).unwrap(),
+            "hi\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn preserves_crlf_line_endings() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("win.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: win.txt\n@@\n one\n-two\n+second\n three\n*** End Patch";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("win.txt")).unwrap(),
+            "one\r\nsecond\r\nthree\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn addition_only_hunk_appends_instead_of_prepending() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "keep\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n+tail\n*** End Patch";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "keep\ntail\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_of_file_marker_requires_a_suffix_match() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "alpha\nomega\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n-omega\n+done\n*** End of File\n*** End Patch";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "alpha\ndone\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_of_file_marker_rejects_non_suffix() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "alpha\nomega\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n-alpha\n+nope\n*** End of File\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("End of File"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "alpha\nomega\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn hunk_header_disambiguates_repeated_old_lines() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("file.py"),
+            "def first():\n    pass\ndef second():\n    pass\n",
+        )
+        .unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.py\n@@ def second():\n-    pass\n+    return 2\n*** End Patch";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.py")).unwrap(),
+            "def first():\n    pass\ndef second():\n    return 2\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn moves_a_file_and_applies_hunks() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("old.txt"), "one\ntwo\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: old.txt\n*** Move to: nested/new.txt\n@@\n one\n-two\n+moved\n*** End Patch";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert!(!dir.path().join("old.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("nested/new.txt")).unwrap(),
+            "one\nmoved\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_only_move_is_allowed() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("old.txt"), "keep\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch =
+            "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert!(!dir.path().join("old.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_change_file_as_update_alias() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "old\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Change File: file.txt\n@@\n-old\n+new\n*** End Patch";
+
+        ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "new\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_patch_without_touching_disk() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let huge = format!(
+            "*** Begin Patch\n*** Add File: huge.txt\n+{}\n*** End Patch",
+            "x".repeat(MAX_PATCH_BYTES)
+        );
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": huge}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("maximum is"), "{error}");
+        assert!(!dir.path().join("huge.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_binary_update_with_utf8_message() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("bin.dat"), [0xff, 0xfe, 0x00]).unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: bin.dat\n@@\n-x\n+y\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("UTF-8"), "{error}");
+    }
+
+    #[test]
+    fn extract_marked_patch_requires_both_markers() {
+        assert!(extract_marked_patch("no markers").is_err());
+        assert!(extract_marked_patch("*** Begin Patch\n*** Add File: a\n").is_err());
     }
 }

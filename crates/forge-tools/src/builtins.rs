@@ -53,6 +53,21 @@ impl Tool for ReadFileTool {
             ToolError::Execution(format!("internal deserialize after validation: {e}"))
         })?;
         let path = ctx.resolve_path(&a.path)?;
+        const MAX_UNBOUNDED_READ_BYTES: u64 = 2 * 1024 * 1024;
+        if a.offset.is_none() && a.limit.is_none() {
+            if let Ok(meta) = tokio::fs::metadata(&path).await {
+                if meta.len() > MAX_UNBOUNDED_READ_BYTES {
+                    return Ok(ToolOutput::failed_exit(
+                        format!(
+                            "`{}` is {} bytes; pass `offset` and `limit` to read a slice (max {MAX_UNBOUNDED_READ_BYTES} bytes without a range)",
+                            a.path,
+                            meta.len()
+                        ),
+                        None,
+                    ));
+                }
+            }
+        }
         let mut header = [0_u8; 32];
         {
             let mut probe = tokio::fs::File::open(&path).await?;
@@ -1427,6 +1442,23 @@ mod tests {
             error.to_string().contains("internal deserialize"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn read_file_refuses_unbounded_read_of_huge_file() {
+        let dir = tempdir().unwrap();
+        let huge = dir.path().join("huge.txt");
+        {
+            let file = std::fs::File::create(&huge).unwrap();
+            file.set_len(2 * 1024 * 1024 + 1).unwrap();
+        }
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = ReadFileTool
+            .call(&ctx, json!({"path": "huge.txt"}))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("offset"), "{}", out.content);
     }
 
     #[tokio::test]
