@@ -2,7 +2,7 @@
 //!
 //! Claude Code, Codex, and opencode keep `ls` / glob / grep / git as first-class
 //! tools and only send real work to the shell. Forge already has confined
-//! `git`, `fffind`, `ffgrep`, and `read_file`; this module stops the model from
+//! `git`, `glob`, `grep`, and `read_file`; this module stops the model from
 //! paying a HITL tax for the bash spelling of the same reads.
 
 use forge_types::ToolCall;

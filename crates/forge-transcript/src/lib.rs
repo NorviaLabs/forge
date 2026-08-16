@@ -166,7 +166,7 @@ pub enum ChatItem {
         /// `git status --short`, `src/main.rs`). `None` for render-only tools.
         subcommand: Option<String>,
         /// Real execution result. `ExecutionOutcome::Success` for tools with
-        /// no real process/failure concept (e.g. `read_file`, `fffind`).
+        /// no real process/failure concept (e.g. `read_file`, `glob`).
         outcome: forge_types::ExecutionOutcome,
     },
     ActivityGroup {
@@ -1517,9 +1517,7 @@ fn routine_tool_category(
     call: Option<&ToolCall>,
 ) -> Option<ActivityCategory> {
     match name {
-        "read_file" | "ls" | "fffind" | "ffgrep" | "fffind_files" | "ffgrep_files" => {
-            Some(ActivityCategory::Exploring)
-        }
+        "read_file" | "ls" | "glob" | "grep" => Some(ActivityCategory::Exploring),
         "git"
             if tool_argument(call, "subcommand").is_some_and(is_read_only_git)
                 || summary
@@ -1583,7 +1581,7 @@ fn activity_group_summary(category: ActivityCategory, items: &[ChatItem]) -> Str
                 .count();
             let searches = items
                 .iter()
-                .filter(|item| matches!(item, ChatItem::ToolCard { name, .. } if name == "fffind" || name == "ffgrep"))
+                .filter(|item| matches!(item, ChatItem::ToolCard { name, .. } if name == "glob" || name == "grep"))
                 .count();
             join_counts(&[
                 (reads, "file inspected", "files inspected"),
@@ -1813,17 +1811,17 @@ fn classify_tool_content(
                 )
             }
         }
-        "fffind" => {
-            let label = if lower.contains("no matches found") {
+        "glob" => {
+            let label = if lower.contains("no files found") {
                 "no matches".to_string()
             } else {
                 result_count_label(count, "file", "files")
             };
-            tool_argument(call, "query")
+            tool_argument(call, "pattern")
                 .map(|query| format!("{query} · {label}"))
                 .unwrap_or(label)
         }
-        "ffgrep" => {
+        "grep" => {
             let label = if lower.contains("no matches found") {
                 "no matches".to_string()
             } else {
@@ -1923,7 +1921,7 @@ mod tests {
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
-                    name: "fffind".into(),
+                    name: "glob".into(),
                     summary: "needle · 1 file".into(),
                     detail: "src/main.rs".into(),
                     state: ToolCardState::Done,
@@ -2024,7 +2022,7 @@ mod tests {
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
-                    name: "fffind".into(),
+                    name: "glob".into(),
                     summary: "crate · 3 files".into(),
                     detail: "crates/".into(),
                     state: ToolCardState::Done,
@@ -2687,7 +2685,7 @@ mod tests {
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
-                    name: "ffgrep".into(),
+                    name: "grep".into(),
                     summary: "needle · 1 match".into(),
                     detail: "a.rs:1:needle".into(),
                     state: ToolCardState::Done,

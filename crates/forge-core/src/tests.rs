@@ -2742,7 +2742,7 @@ async fn search_zero_matches_completes() {
     let model = script(vec![
         tool_call_response(vec![ToolCall {
             id: "1".into(),
-            name: "ffgrep".into(),
+            name: "grep".into(),
             arguments: json!({"pattern": "definitely_not_present_anywhere"}),
         }]),
         text_only("No matches found."),

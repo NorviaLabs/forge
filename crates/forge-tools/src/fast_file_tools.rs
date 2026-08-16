@@ -272,7 +272,7 @@ impl Tool for FffGrepTool {
                 .map_err(search_err)
         })
         .await
-        .map_err(|e| ToolError::Execution(format!("ffgrep worker: {e}")))??;
+        .map_err(|e| ToolError::Execution(format!("grep worker: {e}")))??;
 
         let hits = if let Some(include) = include {
             response
@@ -362,9 +362,7 @@ pub fn fff_tools() -> Vec<Arc<dyn Tool>> {
     let state = Arc::new(FastFileState::new());
     vec![
         Arc::new(FffFindTool::new(state.clone(), "glob")),
-        Arc::new(FffGrepTool::new(state.clone(), "grep")),
-        Arc::new(FffFindTool::new(state.clone(), "fffind")),
-        Arc::new(FffGrepTool::new(state, "ffgrep")),
+        Arc::new(FffGrepTool::new(state, "grep")),
     ]
 }
 
@@ -482,12 +480,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fffind_call_returns_json_hits() {
+    async fn glob_call_returns_json_hits() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "fffind");
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let out = tool
             .call(&ctx, serde_json::json!({"query": "main.rs"}))
             .await
@@ -497,10 +495,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fffind_rejects_blank_query() {
+    async fn glob_rejects_blank_query() {
         let dir = tempdir().unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "fffind");
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let out = tool
             .call(&ctx, serde_json::json!({"query": "   "}))
             .await
@@ -510,10 +508,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fffind_rejects_oversized_query() {
+    async fn glob_rejects_oversized_query() {
         let dir = tempdir().unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "fffind");
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let query = "a".repeat(MAX_FFF_QUERY_CHARS + 1);
         let out = tool
             .call(&ctx, serde_json::json!({"query": query}))
@@ -524,12 +522,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ffgrep_call_returns_json_hits() {
+    async fn grep_call_returns_json_hits() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "hello world\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "ffgrep");
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let out = tool
             .call(
                 &ctx,
@@ -542,10 +540,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ffgrep_rejects_blank_pattern() {
+    async fn grep_rejects_blank_pattern() {
         let dir = tempdir().unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "ffgrep");
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let out = tool
             .call(&ctx, serde_json::json!({"pattern": "  "}))
             .await
@@ -555,11 +553,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ffgrep_clamps_max_results() {
+    async fn grep_clamps_max_results() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hit\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "ffgrep");
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let out = tool
             .call(
                 &ctx,
@@ -574,11 +572,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ffgrep_invalid_regex_does_not_panic() {
+    async fn grep_invalid_regex_does_not_panic() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "ffgrep");
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let result = tool
             .call(&ctx, serde_json::json!({"pattern": "[", "mode": "regex"}))
             .await;

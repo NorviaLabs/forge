@@ -77,8 +77,8 @@ fn tool_progress_description(name: &str) -> String {
         "ls" => "Listing files".into(),
         "view_image" => "Viewing image".into(),
         "write_file" | "apply_patch" => "Editing files".into(),
-        "fffind" | "fffind_files" => "Searching files".into(),
-        "ffgrep" | "ffgrep_files" => "Searching code".into(),
+        "glob" => "Searching files".into(),
+        "grep" => "Searching code".into(),
         "bash" => "Running command".into(),
         "git" => "Checking git".into(),
         "web_search" => "Searching the web".into(),
@@ -938,7 +938,7 @@ mod tests {
             TaskLifecycle::Working,
             true,
             BusyPhase::Tool {
-                name: "fffind".into(),
+                name: "glob".into(),
             },
         );
         m.progress_description = Some("Searching files".into());
