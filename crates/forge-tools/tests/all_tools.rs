@@ -22,6 +22,7 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
     "apply_patch",
     "background_run",
     "bash",
+    "edit",
     "exec_command",
     "git",
     "glob",
@@ -160,6 +161,7 @@ async fn every_tool_rejects_missing_required_args() {
     let required: &[(&str, Value)] = &[
         ("read_file", json!({})),
         ("write_file", json!({})),
+        ("edit", json!({})),
         ("view_image", json!({})),
         ("apply_patch", json!({})),
         ("bash", json!({})),
@@ -256,6 +258,36 @@ async fn write_file_and_apply_patch() {
         std::fs::read_to_string(workspace.ctx.workspace_root.join("nested/out.txt")).unwrap(),
         "created\n"
     );
+
+    let edited = workspace
+        .call(
+            "edit",
+            json!({
+                "path": "hello.txt",
+                "old_string": "hello forge",
+                "new_string": "hello edited"
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!edited.is_error, "{}", edited.content);
+    assert_eq!(
+        std::fs::read_to_string(workspace.ctx.workspace_root.join("hello.txt")).unwrap(),
+        "hello edited\n"
+    );
+
+    let via_alias = workspace
+        .call(
+            "search_replace",
+            json!({
+                "path": "hello.txt",
+                "old_string": "hello edited",
+                "new_string": "hello forge"
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!via_alias.is_error, "{}", via_alias.content);
 
     let patched = workspace
         .call(
@@ -418,6 +450,19 @@ async fn workspace_confinement_holds_for_file_tools() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("escapes workspace"), "{error}");
+
+    let error = workspace
+        .call(
+            "edit",
+            json!({
+                "path": "../escape.rs",
+                "old_string": "a",
+                "new_string": "b"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("escapes workspace"), "{error}");
 }
 
 #[test]
@@ -442,5 +487,10 @@ fn every_default_tool_is_reachable_from_the_registry() {
         registry.get("rg").expect("rg alias").name(),
         "grep",
         "rg must resolve to the grep implementation"
+    );
+    assert_eq!(
+        registry.get("search_replace").expect("edit alias").name(),
+        "edit",
+        "search_replace must resolve to the edit implementation"
     );
 }
