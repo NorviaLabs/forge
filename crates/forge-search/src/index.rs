@@ -291,6 +291,20 @@ impl WorkspaceIndex {
         })
     }
 
+    /// Re-read a file the agent just wrote so later grep/glob see the new bytes
+    /// without waiting on the filesystem watcher.
+    pub fn note_file_changed(&self, path: impl AsRef<Path>) -> Result<(), SearchError> {
+        let path = path.as_ref();
+        let mut picker = self
+            .shared_picker
+            .write()
+            .map_err(|e| SearchError::Lock(e.to_string()))?;
+        if let Some(picker) = picker.as_mut() {
+            let _ = picker.handle_create_or_modify(path);
+        }
+        Ok(())
+    }
+
     /// Record that a file was opened so future ranking can boost recency.
     pub fn note_file_opened(&self, path: impl AsRef<Path>) -> Result<(), SearchError> {
         let path = path.as_ref();

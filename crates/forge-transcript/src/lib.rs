@@ -1527,7 +1527,9 @@ fn routine_tool_category(
         {
             Some(ActivityCategory::Exploring)
         }
-        "write_file" | "apply_patch" => Some(ActivityCategory::Implementing),
+        "write_file" | "apply_patch" | "edit" | "search_replace" | "edit_file" => {
+            Some(ActivityCategory::Implementing)
+        }
         "bash" if is_validation_command(summary.trim_start_matches("$ ")) => {
             Some(ActivityCategory::Validating)
         }

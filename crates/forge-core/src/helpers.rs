@@ -246,8 +246,13 @@ pub(crate) fn classify_turn(calls: &[ToolCall]) -> TaskExpectation {
                     git_items.push((call.id.clone(), sub.clone(), git_effect_kind(&sub)));
                 }
             }
-            "write_file" => {
-                if let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) {
+            "write_file" | "edit" => {
+                if let Some(path) = call
+                    .arguments
+                    .get("path")
+                    .or_else(|| call.arguments.get("file_path"))
+                    .and_then(|v| v.as_str())
+                {
                     file_items.push((call.id.clone(), path.to_string(), FileEffectKind::Modified));
                 }
             }

@@ -220,6 +220,14 @@ Prefer these over shell commands (`rg`, `find`, `grep`, `fd`) for workspace insp
 - Use `read_file` instead of `cat`, `head`, or `tail`.
 - Compound inspection (`ls && find`, `git status && git diff`) must be separate dedicated-tool calls, never one bash pipeline.
 
+## File edits
+
+- **`edit`** — Replace an exact string in an existing file. The string must be unique unless you pass `replace_all`. Prefer this for a focused change.
+- **`write_file`** — Create a file or replace its entire contents.
+- **`apply_patch`** — Multi-hunk or multi-file diffs.
+
+Do not use `bash` with `sed`/`awk`/`perl -pi` to edit files. A tool call named `search_replace` or `edit_file` is accepted as `edit`.
+
 ## `update_plan`
 
 A tool named `update_plan` is available to you. You can use it to keep an up‑to‑date, step‑by‑step plan for the task.

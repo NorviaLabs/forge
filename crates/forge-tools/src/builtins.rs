@@ -1742,6 +1742,11 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
         let tools = default_builtins();
         assert!(tools.iter().any(|t| t.name() == "git"));
         assert!(tools.iter().any(|t| t.name() == "apply_patch"));
+        assert!(tools.iter().any(|t| t.name() == "edit"));
+        assert!(
+            !tools.iter().any(|t| t.name() == "search_replace"),
+            "search_replace is a silent synonym for edit"
+        );
         assert!(tools.iter().any(|t| t.name() == "glob"));
         assert!(tools.iter().any(|t| t.name() == "grep"));
         assert!(

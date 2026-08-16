@@ -120,8 +120,13 @@ async fn pre_edit_snapshot(
     call: &ToolCall,
 ) -> Option<Vec<(String, Option<u64>)>> {
     match call.name.as_str() {
-        "write_file" => {
-            let path = call.arguments.get("path")?.as_str()?.to_string();
+        "write_file" | "edit" => {
+            let path = call
+                .arguments
+                .get("path")
+                .or_else(|| call.arguments.get("file_path"))?
+                .as_str()?
+                .to_string();
             let hash = hash_workspace_path(tool_ctx, &path).await;
             Some(vec![(path, hash)])
         }
@@ -412,7 +417,7 @@ impl AgentSession {
         output: &ToolOutput,
     ) {
         match call.name.as_str() {
-            "write_file" | "apply_patch" => {
+            "write_file" | "apply_patch" | "edit" => {
                 if let Some(pre) = pre_edit {
                     self.push_file_edit_evidence(call, pre, output).await;
                 }
@@ -430,7 +435,7 @@ impl AgentSession {
     pub(crate) fn push_denied_evidence(&mut self, call: &ToolCall, message: &str) {
         let event = match call.name.as_str() {
             "git" => ExecutionEvent::GitCommandFailed,
-            "write_file" | "apply_patch" => ExecutionEvent::PatchRejected,
+            "write_file" | "apply_patch" | "edit" => ExecutionEvent::PatchRejected,
             "glob" | "grep" | "rg" => ExecutionEvent::SearchFailed,
             _ => ExecutionEvent::ToolFailed,
         };
