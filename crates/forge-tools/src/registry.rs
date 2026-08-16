@@ -537,8 +537,8 @@ mod tests {
         let mut second = ToolRegistry::new();
         second.register(Arc::new(WriteFileTool));
         second.register(Arc::new(ReadFileTool));
-        let a = serde_json::to_string(&first.list_descriptors()).unwrap();
-        let b = serde_json::to_string(&second.list_descriptors()).unwrap();
+        let a = serde_json::to_string(first.list_descriptors().as_ref()).unwrap();
+        let b = serde_json::to_string(second.list_descriptors().as_ref()).unwrap();
         assert_eq!(a, b);
     }
 

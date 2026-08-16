@@ -98,8 +98,20 @@ pub(crate) fn search_result_count(content: &str) -> usize {
             return 0;
         }
     }
-    if content.trim() == "no matches found" || content.contains("no matches found") {
+    let normalized = content.to_ascii_lowercase();
+    if normalized.trim() == "no matches found"
+        || normalized.contains("no matches found")
+        || normalized.trim() == "no files found"
+    {
         0
+    } else if content
+        .lines()
+        .any(|line| line.trim_start().starts_with("Line "))
+    {
+        content
+            .lines()
+            .filter(|line| line.trim_start().starts_with("Line "))
+            .count()
     } else {
         content.lines().count()
     }
@@ -247,7 +259,7 @@ pub(crate) fn classify_turn(calls: &[ToolCall]) -> TaskExpectation {
                 }
             }
             "bash" => tool_items.push((call.id.clone(), bash_label(&call.arguments))),
-            "fffind" | "ffgrep" => search_count += 1,
+            "glob" | "grep" => search_count += 1,
             _ => {}
         }
     }
