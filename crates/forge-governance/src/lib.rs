@@ -3,11 +3,16 @@
 mod acl;
 mod audit;
 mod pattern;
+mod readonly;
 
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
 pub use pattern::{
     default_shell_hitl_tools, is_shell_tool, parse_pattern_rules, suggest_pattern, PatternRule,
+};
+pub use readonly::{
+    classify_readonly_shell, readonly_shell_redirect_message, rewrite_readonly_shell_call,
+    ReadonlyShellRewrite,
 };
 
 use std::sync::{Arc, Mutex};
@@ -30,8 +35,9 @@ pub enum PermissionMode {
     /// Every shell-equivalent call asks unless a user/session pattern allows it.
     Manual,
     /// Daily driver: file writes free (as always) plus a tight curated shell
-    /// allow seed (cargo test/build/check/clippy/fmt, rg, ls, cat, head,
-    /// git status/diff/log). Everything else shell still asks.
+    /// allow seed (cargo test/build/check/clippy/fmt). Workspace inspection
+    /// (`ls`, `git status/diff/log`, `rg`, `find`) is rewritten onto dedicated
+    /// tools before approval. Everything else shell still asks.
     #[default]
     AcceptEdits,
 }
@@ -111,22 +117,6 @@ pub fn accept_edits_seed_patterns() -> Vec<PatternRule> {
         "bash(cargo clippy)",
         "bash(cargo fmt *)",
         "bash(cargo fmt)",
-        "bash(rg *)",
-        "bash(rg)",
-        "bash(fd *)",
-        "bash(fd)",
-        "bash(ls *)",
-        "bash(ls)",
-        "bash(cat *)",
-        "bash(cat)",
-        "bash(head *)",
-        "bash(head)",
-        "bash(git status *)",
-        "bash(git status)",
-        "bash(git diff *)",
-        "bash(git diff)",
-        "bash(git log *)",
-        "bash(git log)",
     ])
 }
 
@@ -175,7 +165,7 @@ impl Governance {
 
     /// Short description of what Accept Edits frees (for toasts / docs).
     pub fn accept_edits_toast_summary() -> &'static str {
-        "Accept Edits: cargo test/build/check/clippy/fmt, rg, ls, cat, head, git status/diff/log free"
+        "Accept Edits: cargo test/build/check/clippy/fmt free; ls/find/rg/git reads use dedicated tools"
     }
 
     /// Filter tool list for the model (SEC-02).
@@ -838,8 +828,8 @@ mod tests {
         ] {
             assert_eq!(
                 accept.authorize(&call("bash", command.clone()), SideEffectClass::Exec),
-                PolicyDecision::Allow,
-                "seeded Auto command should not prompt: {command}"
+                PolicyDecision::Hitl,
+                "inspection bash is rewritten before authorize, so leftover bash still asks: {command}"
             );
         }
     }

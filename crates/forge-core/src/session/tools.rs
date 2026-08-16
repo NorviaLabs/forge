@@ -435,6 +435,10 @@ impl AgentSession {
         if self.try_serve_journaled_tool(call).await? {
             return Ok(ToolExecutionStart::Finished(None));
         }
+        if let Some(message) = forge_governance::readonly_shell_redirect_message(call) {
+            return self.finish_readonly_redirect(call, message).await;
+        }
+        let call = forge_governance::rewrite_readonly_shell_call(call);
         self.turn.record_call(call.clone());
         let class = self
             .tools
@@ -443,7 +447,7 @@ impl AgentSession {
             .unwrap_or(SideEffectClass::Meta);
 
         if self.enable_gov {
-            let decision = self.governance.authorize(call, class);
+            let decision = self.governance.authorize(&call, class);
             let redacted = self.governance.redact_args(&call.arguments);
             self.governance.record_audit(AuditEvent {
                 session_id: self.session_id.to_string(),
@@ -499,22 +503,23 @@ impl AgentSession {
                 // refused here, so neither can fall through to the execution below.
                 _ => {
                     let output = ToolOutput::denied(format!("denied by ACL: {}", call.name));
-                    self.push_denied_evidence(call, &output.content);
+                    self.push_denied_evidence(&call, &output.content);
                     self.journal
-                        .append_tool_intent(self.session_id, call)
+                        .append_tool_intent(self.session_id, &call)
                         .await?;
                     self.journal
-                        .append_tool_result(self.session_id, call, &output)
+                        .append_tool_result(self.session_id, &call, &output)
                         .await?;
-                    self.remember_tool_result(call, &output);
-                    self.messages.push(Message::from_tool_output(call, &output));
+                    self.remember_tool_result(&call, &output);
+                    self.messages
+                        .push(Message::from_tool_output(&call, &output));
                     return Ok(ToolExecutionStart::Finished(None));
                 }
             }
         }
 
         self.journal
-            .append_tool_intent(self.session_id, call)
+            .append_tool_intent(self.session_id, &call)
             .await?;
 
         // `background_run` never reaches `ToolRegistry::call` — it's
@@ -522,7 +527,7 @@ impl AgentSession {
         // so starting it doesn't block this turn. See `background.rs`.
         if call.name == "background_run" {
             return Ok(ToolExecutionStart::Finished(
-                self.dispatch_background_run(call).await?,
+                self.dispatch_background_run(&call).await?,
             ));
         }
 
@@ -532,6 +537,28 @@ impl AgentSession {
             tool_ctx: self.tool_ctx.clone(),
             budget: std::mem::take(budget),
         }))
+    }
+
+    async fn finish_readonly_redirect(
+        &mut self,
+        call: &ToolCall,
+        message: String,
+    ) -> Result<ToolExecutionStart, LoopError> {
+        self.turn.record_call(call.clone());
+        let output = ToolOutput::failed_exit(message, None);
+        self.journal
+            .append_tool_intent(self.session_id, call)
+            .await?;
+        self.journal
+            .append_tool_result(self.session_id, call, &output)
+            .await?;
+        self.remember_tool_result(call, &output);
+        self.messages.push(Message::from_tool_output(call, &output));
+        self.events.push(TurnEvent {
+            kind: "tool".into(),
+            detail: format!("{} -> redirected", call.name),
+        });
+        Ok(ToolExecutionStart::Finished(None))
     }
 
     pub(crate) async fn finish_tool_call(

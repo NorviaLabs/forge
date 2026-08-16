@@ -100,6 +100,76 @@ impl Tool for ReadFileTool {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct LsArgs {
+    /// Directory or file to list, relative to workspace root. Defaults to `.`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Include hidden entries (names starting with `.`).
+    #[serde(default)]
+    pub all: bool,
+}
+
+pub struct LsTool;
+
+#[async_trait]
+impl Tool for LsTool {
+    fn name(&self) -> &str {
+        "ls"
+    }
+    fn description(&self) -> &str {
+        "List files and directories in the workspace. Prefer this over `bash(ls …)`."
+    }
+    fn input_schema(&self) -> Value {
+        schema_for::<LsArgs>()
+    }
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Read
+    }
+    fn idempotent(&self) -> bool {
+        true
+    }
+
+    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+        let a: LsArgs = serde_json::from_value(args).map_err(|e| {
+            ToolError::Execution(format!("internal deserialize after validation: {e}"))
+        })?;
+        let requested = a.path.as_deref().unwrap_or(".");
+        let path = ctx.resolve_path(requested)?;
+        let metadata = tokio::fs::metadata(&path).await?;
+        let content = if metadata.is_dir() {
+            let mut names = Vec::new();
+            let mut entries = tokio::fs::read_dir(&path).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !a.all && name.starts_with('.') {
+                    continue;
+                }
+                let suffix = if entry.file_type().await?.is_dir() {
+                    "/"
+                } else {
+                    ""
+                };
+                names.push(format!("{name}{suffix}"));
+            }
+            names.sort();
+            names.join("\n")
+        } else {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| requested.to_string())
+        };
+        Ok(ToolOutput {
+            outcome: Default::default(),
+            content,
+            is_error: false,
+            exit_code: None,
+            attachments: Vec::new(),
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WriteFileArgs {
     pub path: String,
     pub content: String,
@@ -293,7 +363,9 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &str {
-        "Run a shell command in the workspace directory"
+        "Run a shell command in the workspace directory. \
+Do not use this for listing, file search, content search, file reads, or git. \
+Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BashArgs>()
@@ -1203,13 +1275,13 @@ impl Tool for GitTool {
         "git"
     }
     fn description(&self) -> &str {
-        "Run an allowlisted git subcommand in the workspace (status, diff, log, add, commit, branch, push, …). Not a free-form shell."
+        "Run an allowlisted git subcommand in the workspace (status, diff, log, add, commit, branch, push, …). \
+Not a free-form shell. Prefer this over `bash(git …)`."
     }
     fn input_schema(&self) -> Value {
         schema_for::<GitArgs>()
     }
     fn side_effect_class(&self) -> SideEffectClass {
-        // Reads are common; writes/push also go through this tool — classify as Write for ACL.
         SideEffectClass::Write
     }
 
@@ -1269,6 +1341,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
     let (exec_command, write_stdin) = crate::unified_exec_tools();
     let mut tools: Vec<std::sync::Arc<dyn Tool>> = vec![
         std::sync::Arc::new(ReadFileTool),
+        std::sync::Arc::new(LsTool),
         std::sync::Arc::new(crate::ViewImageTool),
         std::sync::Arc::new(WriteFileTool),
         std::sync::Arc::new(crate::ApplyPatchTool),
@@ -1314,6 +1387,30 @@ mod tests {
         let t = ReadFileTool;
         assert_eq!(t.name(), "read_file");
         assert_eq!(t.description(), "Read a text file from the workspace");
+        assert_eq!(t.side_effect_class(), SideEffectClass::Read);
+        assert!(t.idempotent());
+    }
+
+    #[tokio::test]
+    async fn ls_lists_workspace_entries_and_hides_dotfiles_by_default() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("README.md"), "hi").unwrap();
+        std::fs::write(dir.path().join(".hidden"), "secret").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = LsTool.call(&ctx, json!({})).await.unwrap();
+        assert!(!out.is_error);
+        assert!(out.content.contains("README.md"), "{}", out.content);
+        assert!(out.content.contains("src/"), "{}", out.content);
+        assert!(!out.content.contains(".hidden"), "{}", out.content);
+        let all = LsTool.call(&ctx, json!({"all": true})).await.unwrap();
+        assert!(all.content.contains(".hidden"), "{}", all.content);
+    }
+
+    #[test]
+    fn ls_describes_itself() {
+        let t = LsTool;
+        assert_eq!(t.name(), "ls");
         assert_eq!(t.side_effect_class(), SideEffectClass::Read);
         assert!(t.idempotent());
     }
@@ -1412,7 +1509,9 @@ mod tests {
         assert_eq!(t.name(), "bash");
         assert_eq!(
             t.description(),
-            "Run a shell command in the workspace directory"
+            "Run a shell command in the workspace directory. \
+Do not use this for listing, file search, content search, file reads, or git. \
+Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
         );
         assert_eq!(t.side_effect_class(), SideEffectClass::Exec);
     }
@@ -1614,6 +1713,7 @@ mod tests {
         assert!(tools.iter().any(|t| t.name() == "fffind"));
         assert!(tools.iter().any(|t| t.name() == "ffgrep"));
         assert!(tools.iter().any(|t| t.name() == "update_plan"));
+        assert!(tools.iter().any(|t| t.name() == "ls"));
     }
 
     #[tokio::test]

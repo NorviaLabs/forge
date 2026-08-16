@@ -126,7 +126,7 @@ impl Tool for FffFindTool {
         "fffind"
     }
     fn description(&self) -> &str {
-        "Find files in the workspace by path/name pattern."
+        "Find files in the workspace by path/name pattern. Prefer this over `find`, `fd`, or `ls` via bash."
     }
     fn input_schema(&self) -> Value {
         crate::builtins::schema_for::<FffFindArgs>()
@@ -191,7 +191,7 @@ impl Tool for FffGrepTool {
         "ffgrep"
     }
     fn description(&self) -> &str {
-        "Search file contents in the workspace. Supports plain text, regex, and fuzzy matching."
+        "Search file contents in the workspace. Supports plain text, regex, and fuzzy matching. Prefer this over `rg` or `grep` via bash."
     }
     fn input_schema(&self) -> Value {
         crate::builtins::schema_for::<FffGrepArgs>()

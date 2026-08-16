@@ -10,6 +10,7 @@ use serde_json::Value;
 pub fn tool_invocation(name: &str, args: &Value) -> Option<String> {
     match name {
         "read_file" | "write_file" | "view_image" => str_arg(args, "path"),
+        "ls" => Some(str_arg(args, "path").unwrap_or_else(|| ".".into())),
         "bash" | "background_run" => str_arg(args, "command").map(|c| format!("$ {c}")),
         "exec_command" => str_arg(args, "cmd").map(|c| format!("$ {c}")),
         "git" => {
@@ -69,6 +70,11 @@ mod tests {
             tool_invocation("read_file", &json!({"path": "src/main.rs"})),
             Some("src/main.rs".into())
         );
+        assert_eq!(
+            tool_invocation("ls", &json!({"path": "crates"})),
+            Some("crates".into())
+        );
+        assert_eq!(tool_invocation("ls", &json!({})), Some(".".into()));
         assert_eq!(
             tool_invocation("view_image", &json!({"path": "docs/shot.png"})),
             Some("docs/shot.png".into())
