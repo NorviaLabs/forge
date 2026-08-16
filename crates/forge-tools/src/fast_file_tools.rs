@@ -487,7 +487,7 @@ mod tests {
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
         let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let out = tool
-            .call(&ctx, serde_json::json!({"query": "main.rs"}))
+            .call(&ctx, serde_json::json!({"pattern": "main.rs"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
@@ -500,7 +500,7 @@ mod tests {
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
         let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let out = tool
-            .call(&ctx, serde_json::json!({"query": "   "}))
+            .call(&ctx, serde_json::json!({"pattern": "   "}))
             .await
             .unwrap();
         assert!(out.is_error);
@@ -514,7 +514,7 @@ mod tests {
         let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let query = "a".repeat(MAX_FFF_QUERY_CHARS + 1);
         let out = tool
-            .call(&ctx, serde_json::json!({"query": query}))
+            .call(&ctx, serde_json::json!({"pattern": query}))
             .await
             .unwrap();
         assert!(out.is_error);
@@ -566,9 +566,12 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
-        let parsed: serde_json::Value = serde_json::from_str(&out.content).unwrap();
-        let hits = parsed["hits"].as_array().expect("hits array");
-        assert!(hits.len() <= MAX_FFF_RESULTS as usize);
+        let match_count = out
+            .content
+            .lines()
+            .filter(|line| line.trim_start().starts_with("Line "))
+            .count();
+        assert!(match_count <= MAX_FFF_RESULTS as usize);
     }
 
     #[tokio::test]

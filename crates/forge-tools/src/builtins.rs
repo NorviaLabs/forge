@@ -2195,7 +2195,7 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
             std::sync::Arc::new(crate::fast_file_tools::FastFileState::new()),
             "glob",
         );
-        crate::validation::validate_args("glob", &t.input_schema(), &json!({"query": "main.rs"}))
+        crate::validation::validate_args("glob", &t.input_schema(), &json!({"pattern": "main.rs"}))
             .unwrap();
     }
 
