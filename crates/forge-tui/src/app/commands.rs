@@ -855,7 +855,7 @@ impl TuiApp {
                     if let Some(m) = p.default_model() {
                         self.runtime.model_label = m.to_string();
                         self.session.set_active_model(m);
-                        self.sync_image_input_capability();
+                        self.sync_model_capabilities();
                     }
                     self.refresh_connection_ui();
                 }

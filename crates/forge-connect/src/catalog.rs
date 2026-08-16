@@ -132,6 +132,17 @@ pub struct CatalogCost {
     pub output: f64,
 }
 
+/// A model's advertised token limits, from models.dev `limit`.
+///
+/// Context compaction reads these rather than assuming a window size: the
+/// pressure threshold and the retained-tail target are both fractions of
+/// `context`, and `output` is the reserve held back for the model's reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogLimits {
+    pub context: usize,
+    pub output: usize,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CatalogFile {
     /// profile_id → fetched provider/model ids
@@ -146,6 +157,9 @@ struct CatalogFile {
     /// provider/model id → dollars per million tokens.
     #[serde(default)]
     registry_costs: BTreeMap<String, CatalogCost>,
+    /// provider/model id → advertised context/output token limits.
+    #[serde(default)]
+    registry_limits: BTreeMap<String, CatalogLimits>,
     /// provider/model ids whose models.dev `modalities.input` includes `image`.
     /// Missing from this set is fail-closed: the model cannot take image input.
     #[serde(default)]
@@ -280,6 +294,21 @@ impl ModelCatalogCache {
         self.load().registry_costs.get(model_id).copied()
     }
 
+    /// Advertised context/output limits for `model_id`.
+    ///
+    /// `None` means this cache has no row — offline, a pre-feature catalog
+    /// file, or an id models.dev does not publish — and the caller should
+    /// keep its own default rather than assume a window.
+    pub fn model_limits(&self, model_id: &str) -> Option<CatalogLimits> {
+        if model_id.is_empty() {
+            return None;
+        }
+        let file = self.load();
+        metadata_id_candidates(model_id)
+            .into_iter()
+            .find_map(|id| file.registry_limits.get(&id).copied())
+    }
+
     /// Fail-closed: unknown or missing `modalities.input` ⇒ no image input.
     pub fn model_accepts_image_input(&self, model_id: &str) -> bool {
         if model_id.is_empty() {
@@ -323,12 +352,14 @@ impl ModelCatalogCache {
         &self,
         models: BTreeMap<String, Vec<String>>,
         costs: BTreeMap<String, CatalogCost>,
+        limits: BTreeMap<String, CatalogLimits>,
         image_input: BTreeSet<String>,
         effort: BTreeMap<String, Vec<String>>,
     ) -> Result<(), CatalogError> {
         let mut file = self.load();
         file.registry_models = models;
         file.registry_costs = costs;
+        file.registry_limits = limits;
         file.registry_image_input = image_input;
         file.registry_image_input_ready = true;
         file.registry_effort = effort;
@@ -364,6 +395,7 @@ pub fn refresh_models_dev_registry(
 
     let mut by_profile = BTreeMap::new();
     let mut costs = BTreeMap::new();
+    let mut limits: BTreeMap<String, CatalogLimits> = BTreeMap::new();
     let mut image_input = BTreeSet::new();
     let mut effort_by_model = BTreeMap::new();
     let mut total = 0usize;
@@ -383,6 +415,14 @@ pub fn refresh_models_dev_registry(
                     if let Some(cost) = models_dev_cost(model) {
                         costs.insert(id.clone(), cost);
                     }
+                    if let Some(model_limits) = models_dev_limits(model) {
+                        limits.insert(id.clone(), model_limits);
+                        // ChatGPT Codex and the OpenAI API share models.dev's
+                        // `openai` row; stamp both route prefixes.
+                        for alias in image_input_route_aliases(&id) {
+                            limits.insert(alias, model_limits);
+                        }
+                    }
                     if models_dev_image_input(model) {
                         image_input.insert(id.clone());
                         // ChatGPT Codex and the OpenAI API share models.dev's
@@ -400,7 +440,7 @@ pub fn refresh_models_dev_registry(
         total += ids.len();
         by_profile.insert(profile.id.clone(), ids.into_iter().collect());
     }
-    cache.put_registry(by_profile, costs, image_input, effort_by_model)?;
+    cache.put_registry(by_profile, costs, limits, image_input, effort_by_model)?;
     Ok(total)
 }
 
@@ -409,6 +449,21 @@ fn models_dev_cost(model: &serde_json::Value) -> Option<CatalogCost> {
     Some(CatalogCost {
         input: cost.get("input").and_then(serde_json::Value::as_f64)?,
         output: cost.get("output").and_then(serde_json::Value::as_f64)?,
+    })
+}
+
+fn models_dev_limits(model: &serde_json::Value) -> Option<CatalogLimits> {
+    let limit = model.get("limit")?;
+    let context = limit.get("context").and_then(serde_json::Value::as_u64)? as usize;
+    if context == 0 {
+        return None;
+    }
+    Some(CatalogLimits {
+        context,
+        output: limit
+            .get("output")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize,
     })
 }
 
@@ -1248,6 +1303,13 @@ mod tests {
                         output: 8.0,
                     },
                 )]),
+                BTreeMap::from([(
+                    "openai/gpt-test".into(),
+                    CatalogLimits {
+                        context: 200_000,
+                        output: 32_000,
+                    },
+                )]),
                 BTreeSet::new(),
                 BTreeMap::new(),
             )
@@ -1263,6 +1325,14 @@ mod tests {
         assert_eq!(
             cache.get_registry_cached("openai"),
             vec!["openai/gpt-test".to_string()]
+        );
+        assert_eq!(
+            cache.model_limits("openai/gpt-test"),
+            Some(CatalogLimits {
+                context: 200_000,
+                output: 32_000,
+            }),
+            "limits must survive the TOML round-trip alongside costs"
         );
         assert!(cache.registry_is_fresh());
     }
@@ -1339,7 +1409,13 @@ mod tests {
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai/gpt-5.6-terra".into()]);
         cache
-            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
+            .put_registry(
+                registry,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                BTreeMap::new(),
+            )
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1362,7 +1438,13 @@ mod tests {
             vec!["openai/gpt-5.6-sol".into(), "openai/gpt-5.6-terra".into()],
         );
         cache
-            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
+            .put_registry(
+                registry,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                BTreeMap::new(),
+            )
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1523,7 +1605,13 @@ mod tests {
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai-codex/not-entitled".into()]);
         cache
-            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
+            .put_registry(
+                registry,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                BTreeMap::new(),
+            )
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1888,7 +1976,7 @@ mod tests {
         let guard = EnvGuard::new(ENV);
         let base = mock_http(vec![(
             200,
-            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]}},"gpt-4o":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"input":["text","image"],"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]},"gpt-5.2":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["none","low","medium","high","xhigh"]}]}}},"xai":{"models":{"grok-4.6":{"cost":{"input":2.0,"output":6.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}]}}}}"#,
+            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"limit":{"context":128000,"output":16384},"tool_call":true,"modalities":{"output":["text"]}},"gpt-4o":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"input":["text","image"],"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]},"gpt-5.2":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["none","low","medium","high","xhigh"]}]}}},"xai":{"models":{"grok-4.6":{"cost":{"input":2.0,"output":6.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}]}}}}"#,
             vec![],
         )]);
         guard.set("FORGE_MODELS_DEV_URL", &base);
@@ -1949,6 +2037,27 @@ mod tests {
             ])
         );
         assert_eq!(cache.model_effort_options("unknown/model"), None);
+
+        // Context compaction sizes itself from these, so an id the registry
+        // does not publish must report `None` rather than a guessed window.
+        assert_eq!(
+            cache.model_limits("openai/gpt-4.1-mini"),
+            Some(CatalogLimits {
+                context: 128_000,
+                output: 16_384
+            })
+        );
+        assert_eq!(
+            cache.model_limits("openai-codex/gpt-4.1-mini"),
+            Some(CatalogLimits {
+                context: 128_000,
+                output: 16_384
+            }),
+            "the Codex route shares the openai models.dev row"
+        );
+        assert_eq!(cache.model_limits("openai/gpt-4o"), None);
+        assert_eq!(cache.model_limits("unknown/model"), None);
+        assert_eq!(cache.model_limits(""), None);
     }
 
     #[test]
@@ -1964,6 +2073,7 @@ mod tests {
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         cache
             .put_registry(
+                BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeSet::from(["openai/gpt-5.6-sol".into()]),

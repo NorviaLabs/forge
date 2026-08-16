@@ -27,6 +27,7 @@ impl AgentSession {
         self.journal
             .append_user_message_with_attachments(self.session_id, &content, &attachments)
             .await?;
+        self.record_protected_fact(&content);
         self.messages
             .push(Message::new(MessageRole::User, content).with_attachments(attachments));
         if self.context.goal.is_empty() {
@@ -461,32 +462,19 @@ impl AgentSession {
 
     /// Context-reset (if needed) + journal a model request; returns the request to send.
     pub async fn prepare_model_step(&mut self, turn: u32) -> Result<ModelRequest, LoopError> {
-        let mut epoch_reason = None;
-        if self.enable_context && self.context.should_reset(&self.messages) {
-            let ws_ref = String::new();
-            let system = assemble_system_prompt(
-                &self.context.load_agents_md(),
-                self.context.load_skills().as_slice(),
-            );
-            let (doc, msgs) = self
-                .context
-                .handoff_reset(&self.messages, &ws_ref, &system)?;
-            self.journal
-                .append_context_reset(
-                    self.session_id,
-                    json!({ "progress": doc, "messages": msgs }),
-                )
-                .await?;
-            self.messages = msgs.into();
-            self.events.push(TurnEvent {
-                kind: "context_reset".into(),
-                detail: "threshold".into(),
-            });
-            epoch_reason = Some("context_reset");
-        }
+        // The single projection point: context pressure is resolved here,
+        // before the request is built, so there is only ever one path from
+        // canonical history to a model request. A failed compaction is not
+        // fatal — the pre-compaction context is still valid, so the step
+        // proceeds on it (see `maybe_auto_compact`).
+        //
+        // Compaction opens its own cache epoch, so `epoch_reason` stays
+        // `None` here: bumping it again in `record_prompt_snapshot` would
+        // double-count the epoch for a single boundary.
+        let _ = self.maybe_auto_compact().await;
 
         let request = self.build_model_request();
-        self.record_prompt_snapshot(&request, epoch_reason);
+        self.record_prompt_snapshot(&request, None);
         tracing::debug!(turn, "model step");
         self.journal
             .append_model_request(
@@ -562,7 +550,7 @@ impl AgentSession {
         self.last_cache_transport = Some(transport);
     }
 
-    fn begin_cache_epoch(&mut self, reason: &str) {
+    pub(crate) fn begin_cache_epoch(&mut self, reason: &str) {
         self.cache_epoch = self.cache_epoch.saturating_add(1);
         self.last_prompt_wire = None;
         tracing::debug!(cache_epoch = self.cache_epoch, reason, "cache epoch reset");
@@ -586,27 +574,12 @@ impl AgentSession {
         TurnCoordinator::run(self, stream_tx).await
     }
 
-    pub async fn force_context_reset_async(&mut self) -> Result<(), LoopError> {
-        let ws_ref = String::new();
-        let system = assemble_system_prompt(
-            &self.context.load_agents_md(),
-            self.context.load_skills().as_slice(),
-        );
-        let (doc, msgs) = self
-            .context
-            .handoff_reset(&self.messages, &ws_ref, &system)?;
-        self.journal
-            .append_context_reset(
-                self.session_id,
-                json!({ "progress": doc, "workspace_ref": ws_ref, "messages": msgs }),
-            )
-            .await?;
-        self.messages = msgs.into();
-        self.events.push(TurnEvent {
-            kind: "context_reset".into(),
-            detail: "handoff written".into(),
-        });
-        self.begin_cache_epoch("context_reset");
-        Ok(())
+    /// `/compact`: run the compaction pipeline on demand.
+    ///
+    /// Identical to the automatic path in every respect but the trigger
+    /// label, and permitted below the automatic threshold — the operator may
+    /// know the next stretch of work needs headroom before the policy does.
+    pub async fn force_context_reset_async(&mut self) -> Result<CompactionRecord, LoopError> {
+        self.compact_context(CompactionTrigger::Manual).await
     }
 }

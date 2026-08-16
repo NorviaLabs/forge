@@ -287,36 +287,94 @@ async fn bare_resume_list_shows_title_hint_from_first_user_message() {
 }
 
 #[tokio::test]
-async fn compact_reports_context_handoff_in_chat_and_activity() {
-    let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: PathBuf::from("."),
-            version: "0.12.0".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+async fn compact_reports_the_before_and_after_size_and_the_surviving_objective() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let checkpoint = "<forge_checkpoint version=\"1\">\n\
+        <objective>\nFinish the parser refactor.\n</objective>\n\
+        <next_action>\nRun the tests.\n</next_action>\n\
+        </forge_checkpoint>";
+    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: checkpoint.into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let session = AgentSession::create(
+        LoopConfig {
+            max_turns: 4,
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("j"),
+            ..Default::default()
         },
-    );
+        model,
+        ToolRegistry::new(),
+    )
+    .await
+    .unwrap();
+    let mut app = TuiApp::new(session, test_runtime_config());
+    // A conversation large enough that a checkpoint plus a tail is smaller.
+    for i in 0..40 {
+        app.session.messages.push(Message::new(
+            MessageRole::User,
+            format!("q{i} {}", "x".repeat(10_000)),
+        ));
+        app.session.messages.push(Message::new(
+            MessageRole::Assistant,
+            format!("a{i} {}", "y".repeat(10_000)),
+        ));
+    }
 
     app.dispatch_line("/compact").await.unwrap();
 
-    assert!(app.notice_state.items.is_empty());
+    let record = app.session.compaction_telemetry().last.clone().unwrap();
+    assert!(record.succeeded());
+    assert_eq!(
+        app.status_state.message,
+        format!(
+            "Context compacted · {} → {}",
+            forge_core::compact_tokens(record.tokens_before),
+            forge_core::compact_tokens(record.tokens_after)
+        )
+    );
+    assert!(app
+        .activity
+        .all()
+        .iter()
+        .any(|item| item.kind == ActivityKind::Context));
+    // One line of state, never the whole checkpoint.
+    let handoff = app
+        .banner_state
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ChatItem::ContextHandoff { goal, .. } => Some(goal.clone()),
+            _ => None,
+        })
+        .expect("compaction reports the surviving objective");
+    assert_eq!(handoff, "Finish the parser refactor.");
+    assert!(!handoff.contains("<forge_checkpoint"));
+}
+
+#[tokio::test]
+async fn a_failed_compact_says_the_context_is_unchanged_rather_than_claiming_success() {
+    // The fixture model answers with prose, not a checkpoint.
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(session, test_runtime_config());
+    let before = app.session.messages.len();
+
+    app.dispatch_line("/compact").await.unwrap();
+
+    assert_eq!(app.session.messages.len(), before);
+    assert_eq!(app.session.compaction_telemetry().compaction_count, 0);
+    assert_eq!(app.session.compaction_telemetry().failure_count, 1);
+    assert_eq!(app.status_state.message, "context unchanged");
     assert!(app.banner_state.items.is_empty());
     assert!(app
         .activity
         .all()
         .iter()
         .any(|item| item.kind == ActivityKind::Context));
-    assert_eq!(app.status_state.message, "Continuing in a fresh context");
-    assert!(app
-        .banner_state
-        .items
-        .iter()
-        .all(|item| !matches!(item, ChatItem::Banner { .. })));
 }
 
 #[tokio::test]

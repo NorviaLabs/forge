@@ -16,6 +16,10 @@ pub enum LoopError {
     Tool(#[from] ToolError),
     #[error(transparent)]
     Context(#[from] forge_context::ContextError),
+    /// Compaction could not produce an installable context. The active
+    /// context is unchanged; see `forge_context::compaction::CompactionError`.
+    #[error(transparent)]
+    Compaction(#[from] forge_context::compaction::CompactionError),
     #[error("session awaiting HITL; call resolve_hitl first")]
     AwaitingHitl,
     #[error("no pending HITL")]

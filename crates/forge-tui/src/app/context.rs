@@ -1,7 +1,8 @@
-//! Context reset and external-editor drains for [`TuiApp`].
+//! Context compaction and external-editor drains for [`TuiApp`].
 //!
-//! Split out of `app.rs` per #19. `/compact` context handoff and suspending the TUI
-//! to open the active file in the user's configured editor. Methods are moved verbatim.
+//! Split out of `app.rs` per #19. `/compact` runs the same compaction
+//! pipeline the automatic context-pressure trigger uses; the UI here is
+//! deliberately a one-line result, not a view of the checkpoint.
 
 use super::*;
 
@@ -17,9 +18,9 @@ impl TuiApp {
         }
         self.pending_interaction.request_context_reset();
         self.busy_state
-            .set_phase(BusyPhase::Other("context reset".into()));
-        self.status_state.message = "resetting context…".into();
-        self.set_feedback(FeedbackSeverity::Info, "resetting context…");
+            .set_phase(BusyPhase::Other("compacting context".into()));
+        self.status_state.message = "compacting context…".into();
+        self.set_feedback(FeedbackSeverity::Info, "compacting context…");
     }
 
     pub async fn drain_pending_context_reset(
@@ -32,36 +33,60 @@ impl TuiApp {
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
-        let before_report = self.session.token_usage_report();
-        let before = before_report.context_tokens_est;
-        self.session.force_context_reset_async().await?;
-        let after_report = self.session.token_usage_report();
-        let after = after_report.context_tokens_est;
-        self.conversation_view.context_reset_snapshot = Some((
-            before as f64 / before_report.context_capacity.max(1) as f64 * 100.0,
-            after as f64 / after_report.context_capacity.max(1) as f64 * 100.0,
-        ));
+        // A failed compaction is not a failed session: the previous context is
+        // still valid and still installed, so report and carry on.
+        let record = match self.session.force_context_reset_async().await {
+            Ok(record) => record,
+            Err(error) => {
+                self.busy_state.set_phase(BusyPhase::Idle);
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    format!("compaction failed · context unchanged · {error}"),
+                );
+                // After `set_feedback`, which writes the status line itself:
+                // the banner carries the detail, the status line stays short.
+                self.status_state.message = "context unchanged".into();
+                self.push_activity(
+                    ActivityKind::Context,
+                    FeedbackSeverity::Warn,
+                    format!("compaction failed · {error}"),
+                );
+                if let Some(term) = terminal {
+                    let _ = term.draw(|f| self.draw(f));
+                }
+                return Ok(());
+            }
+        };
+
+        let before_pct = record.utilization_before * 100.0;
+        let after_pct = record.utilization_after * 100.0;
+        self.conversation_view.context_reset_snapshot = Some((before_pct, after_pct));
         self.conversation_view.message_start = self.session.messages.len();
         self.conversation_view.event_start = self.session.events.len();
-        self.push_toast("Continuing in a fresh context");
-        let progress = fs::read_to_string(self.runtime.cwd.join(".forge/progress.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok());
-        if let Some(progress) = progress {
+
+        let summary = format!(
+            "Context compacted · {} → {}",
+            forge_core::compact_tokens(record.tokens_before),
+            forge_core::compact_tokens(record.tokens_after)
+        );
+        self.push_toast(summary.clone());
+        // One line of the checkpoint — the current objective — so the operator
+        // can see what state survived. The checkpoint itself stays out of the
+        // transcript.
+        if let Some(checkpoint) = self.session.context_state().checkpoint.as_ref() {
             self.banner_state.items.push(ChatItem::ContextHandoff {
-                before_pct: self.conversation_view.context_reset_snapshot.unwrap().0,
-                after_pct: self.conversation_view.context_reset_snapshot.unwrap().1,
-                goal: progress.goal,
-                completed: progress.completed,
-                next_actions: progress.next_actions,
+                before_pct,
+                after_pct,
+                goal: checkpoint.section("objective").unwrap_or_default().into(),
+                completed: Vec::new(),
+                next_actions: checkpoint
+                    .section("next_action")
+                    .map(|next| vec![next.to_string()])
+                    .unwrap_or_default(),
             });
         }
-        self.push_activity(
-            ActivityKind::Context,
-            FeedbackSeverity::Ok,
-            format!("fresh context prepared · {before} → {after} tokens"),
-        );
-        self.status_state.message = "Continuing in a fresh context".into();
+        self.push_activity(ActivityKind::Context, FeedbackSeverity::Ok, summary.clone());
+        self.status_state.message = summary;
         self.notice_state.items.clear();
         self.busy_state.set_phase(BusyPhase::Idle);
         if let Some(term) = terminal {

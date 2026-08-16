@@ -202,6 +202,13 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
             );
         }
         session.set_image_input_supported(cache.model_accepts_image_input(&cfg.model.model));
+        // Compaction reads the model's real context window from the registry
+        // cache. An unknown id keeps `CompactionPolicy`'s conservative
+        // default rather than claiming a window Forge cannot verify.
+        if let Some(limits) = cache.model_limits(&cfg.model.model) {
+            session
+                .set_context_window(limits.context, (limits.output > 0).then_some(limits.output));
+        }
     }
 
     let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());

@@ -53,6 +53,8 @@ impl AgentSession {
         }
 
         let incomplete = state.incomplete_intents.clone();
+        let user_messages = state.user_messages.clone();
+        let context_state = state.context_state.clone();
         let journaled_tool_results = state.tool_results.clone();
         let active_root = context.workspace.clone();
         let wait_reason = restored_wait_reason(&state.pending_hitl);
@@ -86,6 +88,10 @@ impl AgentSession {
         self.last_prompt_hash = state.last_prompt_hash.clone();
         self.cache_epoch = state.cache_epoch;
         self.last_cache_transport = state.last_cache_transport.clone();
+        self.context_state = SessionContextState::default();
+        self.compaction = CompactionTelemetry::default();
+        self.restore_protected_facts(&user_messages);
+        self.restore_context_state(context_state.as_ref());
         self.reconcile_incomplete_intents(&incomplete).await?;
         // Stale Working without a live executor is Interrupted, not eternal Working.
         self.mark_interrupted_if_stale().await?;
@@ -151,6 +157,10 @@ impl AgentSession {
             last_prompt_hash: None,
             cache_epoch: 0,
             last_cache_transport: None,
+            compaction_policy: CompactionPolicy::default(),
+            context_state: SessionContextState::default(),
+            compaction: CompactionTelemetry::default(),
+            canonical_user_turns: 0,
         })
     }
 
@@ -219,7 +229,13 @@ impl AgentSession {
             last_prompt_hash: state.last_prompt_hash.clone(),
             cache_epoch: state.cache_epoch,
             last_cache_transport: state.last_cache_transport.clone(),
+            compaction_policy: CompactionPolicy::default(),
+            context_state: SessionContextState::default(),
+            compaction: CompactionTelemetry::default(),
+            canonical_user_turns: 0,
         };
+        session.restore_protected_facts(&state.user_messages);
+        session.restore_context_state(state.context_state.as_ref());
         session.reconcile_incomplete_intents(&incomplete).await?;
         session
             .reconcile_orphaned_background_tasks(

@@ -39,6 +39,20 @@ pub(crate) fn init_repo(dir: &Path) {
 /// state save, run-history save, context offload/progress) should call
 /// `init_repo` themselves first, to avoid falling back to the real
 /// platform application-data directory.
+/// The runtime config every `TuiApp` fixture uses. Kept in one place so a
+/// new field is added once rather than in every test that builds an app.
+pub(crate) fn test_runtime_config() -> TuiRuntimeConfig {
+    TuiRuntimeConfig {
+        model_label: "mock".into(),
+        provider: "mock".into(),
+        cwd: PathBuf::from("."),
+        version: "0.12.0".into(),
+        startup_notices: Vec::new(),
+        file_icons: FileIconMode::Unicode,
+        theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+    }
+}
+
 pub(crate) async fn test_session() -> (TempDir, AgentSession) {
     let dir = TempDir::new().unwrap();
     let session = session_for_workspace(dir.path()).await;

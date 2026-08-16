@@ -30,8 +30,9 @@ pub use auth::{AuthMode, OauthPending, OauthTokens};
 pub use catalog::{
     credential_for_catalog, fetch_remote_models, group_routes, models_for_picker,
     normalize_model_id, refresh_models_dev_registry, refresh_profile_catalog, route_model_id,
-    runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError, CatalogSource,
-    ModelCatalogCache, ModelPickerEntry, ModelRoute, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
+    runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError, CatalogLimits,
+    CatalogSource, ModelCatalogCache, ModelPickerEntry, ModelRoute, DEFAULT_TTL_SECS,
+    MODELS_DEV_TTL_SECS,
 };
 pub use cost::provider_cost_report;
 pub use oauth_dispatch::OauthError;

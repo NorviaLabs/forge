@@ -1182,34 +1182,6 @@ async fn resume_replays_validation_failed_tool_message() {
 }
 
 #[tokio::test]
-async fn resume_keeps_context_reset_handoff_system() {
-    let dir = tempdir().unwrap();
-    init_repo(dir.path()).await;
-    let mut s = idle_session(dir.path()).await;
-    s.context.config.capacity_tokens = 32;
-    s.messages = vec![
-        Message::new(MessageRole::User, "x".repeat(400)),
-        Message::new(MessageRole::Assistant, "y".repeat(400)),
-    ]
-    .into();
-    s.force_context_reset_async().await.unwrap();
-    let handoff = s.messages[0].content.clone();
-    assert!(handoff.contains("# Context Handoff"));
-    let session_id = s.session_id;
-
-    let resumed = AgentSession::resume(
-        base_cfg(dir.path()),
-        Arc::new(MockModelClient::script(vec![])),
-        ToolRegistry::new(),
-        session_id,
-    )
-    .await
-    .unwrap();
-    assert_eq!(resumed.messages[0].role, MessageRole::System);
-    assert_eq!(resumed.messages[0].content, handoff);
-}
-
-#[tokio::test]
 async fn resume_serves_journaled_tool_without_reexecuting() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "first").unwrap();
@@ -2339,47 +2311,6 @@ async fn fail_max_turns_records_a_step_limit_failure() {
 }
 
 #[tokio::test]
-async fn prepare_model_step_resets_context_when_over_threshold() {
-    let dir = tempdir().unwrap();
-    // The context-reset handoff writes a progress checkpoint through the
-    // runtime-storage resolver, which falls back to the platform
-    // application-data directory outside a Git repository — git-init
-    // keeps this test's writes inside the tempdir.
-    init_repo(dir.path()).await;
-    let mut s = idle_session(dir.path()).await;
-
-    // Shrink the window so the messages below cross the reset ratio.
-    s.context.config.capacity_tokens = 32;
-    s.messages = vec![
-        Message::new(MessageRole::User, "x".repeat(400)),
-        Message::new(MessageRole::Assistant, "y".repeat(400)),
-    ]
-    .into();
-    assert!(s.context.should_reset(&s.messages));
-
-    let request = s.prepare_model_step(3).await.unwrap();
-
-    assert!(s
-        .events
-        .iter()
-        .any(|e| e.kind == "context_reset" && e.detail == "threshold"));
-    // The handoff replaces the whole conversation with a two-message
-    // restart: a system prompt carrying the progress document, then a
-    // user turn telling the model to continue.
-    assert_eq!(s.messages.len(), 2);
-    assert_eq!(s.messages[0].role, MessageRole::System);
-    assert!(s.messages[0].content.contains("# Context Handoff"));
-    assert_eq!(s.messages[1].role, MessageRole::User);
-    assert!(s.messages[1].content.starts_with("Continue the task."));
-    // The padded turns are gone as standalone messages.
-    assert!(!s
-        .messages
-        .iter()
-        .any(|m| m.content == "x".repeat(400) || m.content == "y".repeat(400)));
-    assert!(!request.messages.is_empty());
-}
-
-#[tokio::test]
 async fn prepare_model_step_leaves_a_small_context_alone() {
     let dir = tempdir().unwrap();
     let mut s = idle_session(dir.path()).await;
@@ -2387,17 +2318,15 @@ async fn prepare_model_step_leaves_a_small_context_alone() {
 
     s.prepare_model_step(1).await.unwrap();
 
-    assert!(!s.events.iter().any(|e| e.kind == "context_reset"));
+    assert!(!s.events.iter().any(|e| e.kind == "context_compacted"));
+    assert_eq!(s.compaction_telemetry().compaction_count, 0);
     assert_eq!(s.messages.len(), 1);
 }
 
 #[tokio::test]
-async fn context_reset_ratio_and_journal_cursor_are_exposed() {
+async fn journal_cursor_is_exposed() {
     let dir = tempdir().unwrap();
     let mut s = idle_session(dir.path()).await;
-
-    s.context.config.reset_usage_ratio = 0.75;
-    assert!((s.context_reset_ratio() - 0.75).abs() < f64::EPSILON);
 
     let before = s.journal_cursor().await.unwrap();
     s.append_user_message("advance the journal").await.unwrap();
