@@ -22,11 +22,13 @@ impl AgentSession {
         if self.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
+        let mut content = text.to_string();
+        let attachments = self.freeze_attachments(&mut content, attachments);
         self.journal
-            .append_user_message_with_attachments(self.session_id, text, &attachments)
+            .append_user_message_with_attachments(self.session_id, &content, &attachments)
             .await?;
         self.messages
-            .push(Message::new(MessageRole::User, text).with_attachments(attachments));
+            .push(Message::new(MessageRole::User, content).with_attachments(attachments));
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
@@ -60,13 +62,7 @@ impl AgentSession {
         // Requests share the transcript in the usual case. Image availability is
         // checked at request time, so only requests with missing attachments pay
         // the copy-on-write cost needed to add the model-visible fallback note.
-        let mut messages = self.messages.shared();
-        if messages
-            .iter()
-            .any(|message| !message.attachments.is_empty())
-        {
-            forge_model::apply_missing_image_notes(&mut messages, &self.tool_ctx.workspace_root);
-        }
+        let messages = self.messages.shared();
         ModelRequest {
             messages,
             tools,
@@ -79,20 +75,14 @@ impl AgentSession {
     }
 
     /// Tool list the model sees. Cached on the registry; filtered only when
-    /// governance or the image-input flag actually changes the set.
+    /// governance actually changes the set. `view_image` stays listed even
+    /// when the active model has no image input — execution denies the call.
     fn tools_for_model(&self) -> Vec<forge_types::ToolDescriptor> {
         let descriptors = self.tools.list_descriptors();
-        if !self.enable_gov && self.tool_ctx.image_input {
+        if !self.enable_gov {
             return (*descriptors).clone();
         }
-        let mut tools = (*descriptors).clone();
-        if self.enable_gov {
-            tools = self.governance.filter_tools(tools);
-        }
-        if !self.tool_ctx.image_input {
-            tools.retain(|tool| tool.name != "view_image");
-        }
-        tools
+        self.governance.filter_tools((*descriptors).clone())
     }
 
     /// Apply a model response: journal, assistant message, then run tools.
@@ -471,6 +461,7 @@ impl AgentSession {
 
     /// Context-reset (if needed) + journal a model request; returns the request to send.
     pub async fn prepare_model_step(&mut self, turn: u32) -> Result<ModelRequest, LoopError> {
+        let mut epoch_reason = None;
         if self.enable_context && self.context.should_reset(&self.messages) {
             let ws_ref = String::new();
             let system = assemble_system_prompt(
@@ -491,16 +482,90 @@ impl AgentSession {
                 kind: "context_reset".into(),
                 detail: "threshold".into(),
             });
+            epoch_reason = Some("context_reset");
         }
 
+        let request = self.build_model_request();
+        self.record_prompt_snapshot(&request, epoch_reason);
         tracing::debug!(turn, "model step");
         self.journal
             .append_model_request(
                 self.session_id,
-                json!({ "turn": turn, "messages": self.messages.len() }),
+                json!({
+                    "turn": turn,
+                    "messages": self.messages.len(),
+                    "prompt_wire_sha256": self.last_prompt_hash,
+                    "prompt_wire_bytes": self.last_prompt_wire.as_ref().map(|bytes| bytes.len()),
+                    "cache_epoch": self.cache_epoch,
+                    "cache_transport": self.last_cache_transport,
+                }),
             )
             .await?;
-        Ok(self.build_model_request())
+        Ok(request)
+    }
+
+    fn record_prompt_snapshot(&mut self, request: &ModelRequest, epoch_reason: Option<&str>) {
+        let transport = self.model.prompt_transport_key(request).to_string();
+        if let Some(reason) = epoch_reason {
+            self.begin_cache_epoch(reason);
+        } else if self
+            .last_cache_transport
+            .as_deref()
+            .is_some_and(|previous| previous != transport)
+        {
+            self.begin_cache_epoch("transport");
+        }
+
+        let snapshot = forge_model::snapshot_prompt(&self.model.prompt_wire(request));
+        if let Some(previous) = self.last_prompt_wire.as_deref() {
+            let common = forge_model::common_prefix_len(previous, &snapshot.bytes);
+            if common < previous.len() {
+                let previous_value = serde_json::from_slice(previous).unwrap_or(json!({}));
+                let first = forge_model::first_json_pointer(&previous_value, &snapshot.value)
+                    .unwrap_or_else(|| "/".into());
+                let pct = (common as f64 / previous.len() as f64) * 100.0;
+                tracing::debug!(
+                    previous_bytes = previous.len(),
+                    reusable_prefix = common,
+                    prefix_reuse = format!("{pct:.1}%"),
+                    first_difference = %first,
+                    previous_hash = self.last_prompt_hash.as_deref().unwrap_or(""),
+                    current_hash = %snapshot.sha256,
+                    "CACHE PREFIX INVALIDATED"
+                );
+            } else {
+                let ratio = self.token_usage.prompt_tokens.max(1);
+                let cache_read_ratio = self.token_usage.prompt_cache_hits as f64 / ratio as f64;
+                tracing::debug!(
+                    serialized_request_bytes = snapshot.bytes.len(),
+                    common_prefix_bytes = common,
+                    common_prefix_percentage = (common as f64 / snapshot.bytes.len().max(1) as f64)
+                        * 100.0,
+                    stable_prefix_hash = %snapshot.sha256,
+                    cache_read_ratio,
+                    "prompt prefix reused"
+                );
+            }
+        } else if let Some(expected) = self.last_prompt_hash.as_deref() {
+            if expected != snapshot.sha256 {
+                tracing::debug!(
+                    previous_hash = expected,
+                    current_hash = %snapshot.sha256,
+                    current_bytes = snapshot.bytes.len(),
+                    "CACHE PREFIX INVALIDATED"
+                );
+            }
+        }
+
+        self.last_prompt_wire = Some(snapshot.bytes);
+        self.last_prompt_hash = Some(snapshot.sha256);
+        self.last_cache_transport = Some(transport);
+    }
+
+    fn begin_cache_epoch(&mut self, reason: &str) {
+        self.cache_epoch = self.cache_epoch.saturating_add(1);
+        self.last_prompt_wire = None;
+        tracing::debug!(cache_epoch = self.cache_epoch, reason, "cache epoch reset");
     }
 
     /// Mark the session failed after exhausting turns.
@@ -541,6 +606,7 @@ impl AgentSession {
             kind: "context_reset".into(),
             detail: "handoff written".into(),
         });
+        self.begin_cache_epoch("context_reset");
         Ok(())
     }
 }

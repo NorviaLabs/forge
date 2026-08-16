@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Workspace-relative image the transports re-read when building a request.
+/// After insert, `path` points at a session-cache snapshot, not the original file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageRef {
     /// Path relative to the session workspace root.

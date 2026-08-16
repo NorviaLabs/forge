@@ -160,6 +160,13 @@ impl ContextEngine {
         }
     }
 
+    /// Session-scoped directory for frozen image snapshots.
+    pub fn image_cache_dir(&self) -> PathBuf {
+        self.offload_base_dir()
+            .join(self.session_id.to_string())
+            .join("images")
+    }
+
     /// Base directory for offloaded tool-output files. When the caller
     /// hasn't overridden `offload_dir` away from its built-in default, this
     /// routes through the centralized runtime-storage resolver

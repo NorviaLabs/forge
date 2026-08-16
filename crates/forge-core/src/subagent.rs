@@ -126,6 +126,10 @@ impl AgentSession {
             last_completion: None,
             journaled_tool_results: HashMap::new(),
             ctx_tokens_cache: std::sync::Mutex::new(None),
+            last_prompt_wire: None,
+            last_prompt_hash: None,
+            cache_epoch: 0,
+            last_cache_transport: None,
         })
     }
 
@@ -209,6 +213,10 @@ impl AgentSession {
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
             ctx_tokens_cache: std::sync::Mutex::new(None),
+            last_prompt_wire: None,
+            last_prompt_hash: state.last_prompt_hash.clone(),
+            cache_epoch: state.cache_epoch,
+            last_cache_transport: state.last_cache_transport.clone(),
         };
         child.reconcile_incomplete_intents(&incomplete).await?;
         // Deliberately no `mark_interrupted_if_stale()` here — that method

@@ -33,35 +33,9 @@ pub fn usage_from_provider(raw: &Value, prompt_tokens: u32, completion_tokens: u
     }
 }
 
-/// Index of the penultimate message — the stable prefix breakpoint for multi-turn agents.
-fn prefix_breakpoint_index(len: usize) -> Option<usize> {
-    if len >= 2 {
-        Some(len - 2)
-    } else if len == 1 {
-        Some(0)
-    } else {
-        None
-    }
-}
-
-fn attach_openai_cache_control(message: &mut Value) {
-    if let Some(obj) = message.as_object_mut() {
+fn attach_cache_control_to_object(value: &mut Value) {
+    if let Some(obj) = value.as_object_mut() {
         obj.insert("cache_control".into(), ephemeral_cache_control());
-    }
-}
-
-/// OpenAI-compatible chat bodies: cache the system prompt and the stable prefix.
-pub fn apply_openai_prompt_cache(body: &mut Value) {
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    if let Some(first) = messages.first_mut() {
-        if first.get("role").and_then(Value::as_str) == Some("system") {
-            attach_openai_cache_control(first);
-        }
-    }
-    if let Some(index) = prefix_breakpoint_index(messages.len()) {
-        attach_openai_cache_control(&mut messages[index]);
     }
 }
 
@@ -117,14 +91,21 @@ fn attach_anthropic_cache_to_system(body: &mut Value) {
     }
 }
 
-/// Anthropic messages bodies: cache the system prompt and the stable prefix.
+/// Anthropic: sticky marks on last tool + last system block; slide the
+/// conversation mark onto the last message only. Rebuilds from scratch each
+/// request, so the previous tail mark is absent automatically.
 pub fn apply_anthropic_prompt_cache(body: &mut Value) {
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        if let Some(last) = tools.last_mut() {
+            attach_cache_control_to_object(last);
+        }
+    }
     attach_anthropic_cache_to_system(body);
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    if let Some(index) = prefix_breakpoint_index(messages.len()) {
-        attach_anthropic_cache_to_message(&mut messages[index]);
+    if let Some(last) = messages.last_mut() {
+        attach_anthropic_cache_to_message(last);
     }
 }
 
@@ -155,26 +136,10 @@ mod tests {
     }
 
     #[test]
-    fn openai_prompt_cache_marks_system_and_prefix() {
-        let mut body = json!({
-            "messages": [
-                {"role": "system", "content": "sys"},
-                {"role": "user", "content": "one"},
-                {"role": "assistant", "content": "two"},
-                {"role": "user", "content": "three"}
-            ]
-        });
-        apply_openai_prompt_cache(&mut body);
-        let messages = body["messages"].as_array().unwrap();
-        assert!(messages[0].get("cache_control").is_some());
-        assert!(messages[2].get("cache_control").is_some());
-        assert!(messages[3].get("cache_control").is_none());
-    }
-
-    #[test]
-    fn anthropic_prompt_cache_marks_system_and_prefix() {
+    fn anthropic_prompt_cache_marks_last_tool_system_and_tail() {
         let mut body = json!({
             "system": "sys",
+            "tools": [{"name": "a"}, {"name": "b"}],
             "messages": [
                 {"role": "user", "content": "one"},
                 {"role": "assistant", "content": "two"},
@@ -182,9 +147,46 @@ mod tests {
             ]
         });
         apply_anthropic_prompt_cache(&mut body);
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert!(body["tools"][1].get("cache_control").is_some());
         assert!(body["system"][0].get("cache_control").is_some());
         let messages = body["messages"].as_array().unwrap();
-        assert!(messages[1]["content"][0].get("cache_control").is_some());
-        assert!(messages[2]["content"].is_string());
+        assert!(messages[0].get("cache_control").is_none());
+        assert!(messages[1]["content"].is_string());
+        assert!(messages[2]["content"][0].get("cache_control").is_some());
+    }
+
+    #[test]
+    fn anthropic_conversation_mark_slides_and_strip_keeps_prefix() {
+        use crate::prompt_wire::{common_prefix_len, snapshot_prompt};
+
+        let block = |text: &str| json!([{"type": "text", "text": text}]);
+        let mut first = json!({
+            "system": "sys",
+            "tools": [{"name": "a"}],
+            "messages": [{"role": "user", "content": block("one")}]
+        });
+        apply_anthropic_prompt_cache(&mut first);
+        let mut second = json!({
+            "system": "sys",
+            "tools": [{"name": "a"}],
+            "messages": [
+                {"role": "user", "content": block("one")},
+                {"role": "assistant", "content": block("two")}
+            ]
+        });
+        apply_anthropic_prompt_cache(&mut second);
+        assert!(first["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_some());
+        assert!(second["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_none());
+        assert!(second["messages"][1]["content"][0]
+            .get("cache_control")
+            .is_some());
+        let a = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(&first));
+        let b = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(&second));
+        assert_eq!(common_prefix_len(&a.bytes, &b.bytes), a.bytes.len());
     }
 }

@@ -272,7 +272,7 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::ReadFileTool;
+    use crate::builtins::{ReadFileTool, WriteFileTool};
     use crate::ValidationBudget;
     use serde_json::json;
     use tempfile::tempdir;
@@ -527,6 +527,19 @@ mod tests {
                 "expected `{rel}` to remain writable"
             );
         }
+    }
+
+    #[test]
+    fn list_descriptors_serialize_identically_across_rebuilds() {
+        let mut first = ToolRegistry::new();
+        first.register(Arc::new(ReadFileTool));
+        first.register(Arc::new(WriteFileTool));
+        let mut second = ToolRegistry::new();
+        second.register(Arc::new(WriteFileTool));
+        second.register(Arc::new(ReadFileTool));
+        let a = serde_json::to_string(&first.list_descriptors()).unwrap();
+        let b = serde_json::to_string(&second.list_descriptors()).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

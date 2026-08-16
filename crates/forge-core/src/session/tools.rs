@@ -601,6 +601,7 @@ impl AgentSession {
                     if self.enable_context {
                         output.content = self.context.maybe_offload_tool_content(output.content)?;
                     }
+                    self.freeze_tool_output(&mut output);
                     self.journal
                         .append_tool_result(self.session_id, &call, &output)
                         .await?;
@@ -612,14 +613,15 @@ impl AgentSession {
                     });
                 }
                 Err(ToolError::Validation(ve)) => {
+                    let msg = tool_validation_failed_content(&ve);
                     self.journal
-                        .append_validation_failed(self.session_id, &call.name, &ve.to_string())
+                        .append_validation_failed(
+                            self.session_id,
+                            &call.id,
+                            &call.name,
+                            &msg,
+                        )
                         .await?;
-                    let msg = format!(
-                        "Tool validation error: {ve}. \
-                         Do not concatenate fields. Use separate JSON properties with native types \
-                         (for example offset: 1, limit: 100 as integers)."
-                    );
                     self.messages.push(Message {
                         outcome: ExecutionOutcome::Failed { exit_code: None },
                         role: MessageRole::Tool,
@@ -735,6 +737,10 @@ impl AgentSession {
                 Self::backfill_tool_outcome(&mut output);
                 self.push_success_evidence(&call, pre_edit, pre_git, &output)
                     .await;
+                if self.enable_context {
+                    output.content = self.context.maybe_offload_tool_content(output.content)?;
+                }
+                self.freeze_tool_output(&mut output);
                 self.journal
                     .append_tool_result(self.session_id, &call, &output)
                     .await?;

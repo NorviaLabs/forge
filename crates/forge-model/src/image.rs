@@ -31,7 +31,37 @@ pub fn load_image_ref(workspace: &Path, image: &ImageRef) -> Result<LoadedImage,
     })
 }
 
+/// Copy readable attachments into `cache_dir` and retarget `ImageRef.path`
+/// to that snapshot. Unreadable attachments become a note on `content` and
+/// are dropped. Call once at insert so later disk edits cannot change the wire.
+pub fn freeze_attachments(
+    workspace: &Path,
+    cache_dir: &Path,
+    content: &mut String,
+    attachments: Vec<ImageRef>,
+) -> Vec<ImageRef> {
+    if attachments.is_empty() {
+        return attachments;
+    }
+    let mut kept = Vec::with_capacity(attachments.len());
+    let mut notes = Vec::new();
+    for image in attachments {
+        match snapshot_image_ref(workspace, cache_dir, &image) {
+            Ok(frozen) => kept.push(frozen),
+            Err(_) => notes.push(format!("image at `{}` is no longer available", image.path)),
+        }
+    }
+    if !notes.is_empty() {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&notes.join("\n"));
+    }
+    kept
+}
+
 /// Drop attachments that cannot be re-read and append a model-visible note.
+/// Used by tests and as the missing-file path inside [`freeze_attachments`].
 pub fn apply_missing_image_notes(messages: &mut [Message], workspace: &Path) {
     for message in messages {
         if message.attachments.is_empty() {
@@ -53,6 +83,50 @@ pub fn apply_missing_image_notes(messages: &mut [Message], workspace: &Path) {
             message.content.push('\n');
         }
         message.content.push_str(&notes.join("\n"));
+    }
+}
+
+fn snapshot_image_ref(
+    workspace: &Path,
+    cache_dir: &Path,
+    image: &ImageRef,
+) -> Result<ImageRef, String> {
+    let loaded = load_image_ref(workspace, image)?;
+    std::fs::create_dir_all(cache_dir).map_err(|err| err.to_string())?;
+    let ext = extension_for(&image.path, &loaded.mime);
+    let dest = cache_dir.join(format!("{}{ext}", uuid::Uuid::new_v4()));
+    std::fs::write(&dest, &loaded.bytes).map_err(|err| err.to_string())?;
+    let path = dest
+        .strip_prefix(workspace)
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| dest.to_string_lossy().replace('\\', "/"));
+    Ok(ImageRef {
+        path,
+        mime: loaded.mime,
+        byte_len: loaded.bytes.len() as u64,
+        width: image.width,
+        height: image.height,
+        detail: image.detail.clone(),
+    })
+}
+
+fn extension_for(path: &str, mime: &str) -> &'static str {
+    match mime {
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        _ => Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| match ext {
+                "png" => ".png",
+                "jpg" | "jpeg" => ".jpg",
+                "gif" => ".gif",
+                "webp" => ".webp",
+                _ => "",
+            })
+            .unwrap_or(""),
     }
 }
 
@@ -125,6 +199,41 @@ mod tests {
         assert!(msg.content.contains("no longer available"));
         assert!(msg.content.contains("gone.png"));
         assert!(!msg.content.contains("data:"));
+    }
+
+    #[test]
+    fn freeze_copies_into_cache_and_retargets_path() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), sample_png_bytes()).unwrap();
+        let cache = dir.path().join("cache");
+        let mut content = "see".to_string();
+        let frozen = freeze_attachments(
+            dir.path(),
+            &cache,
+            &mut content,
+            vec![ImageRef::new("shot.png", "image/png", 1)],
+        );
+        assert_eq!(frozen.len(), 1);
+        assert_ne!(frozen[0].path, "shot.png");
+        assert_eq!(content, "see");
+        std::fs::remove_file(dir.path().join("shot.png")).unwrap();
+        load_image_ref(dir.path(), &frozen[0]).expect("snapshot still readable");
+    }
+
+    #[test]
+    fn freeze_missing_file_bakes_a_note() {
+        let dir = tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let mut content = "compare this".to_string();
+        let frozen = freeze_attachments(
+            dir.path(),
+            &cache,
+            &mut content,
+            vec![ImageRef::new("gone.png", "image/png", 12)],
+        );
+        assert!(frozen.is_empty());
+        assert!(content.contains("no longer available"));
+        assert!(content.contains("gone.png"));
     }
 
     #[test]
