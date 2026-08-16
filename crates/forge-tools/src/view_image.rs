@@ -73,6 +73,13 @@ impl Tool for ViewImageTool {
         }
 
         let abs = ctx.resolve_path(&a.path)?;
+        let file_len = tokio::fs::metadata(&abs).await?.len();
+        if file_len > forge_types::MAX_IMAGE_BYTES {
+            return Err(ToolError::Execution(format!(
+                "image is {file_len} bytes; maximum allowed is {} bytes",
+                forge_types::MAX_IMAGE_BYTES
+            )));
+        }
         let mut file = tokio::fs::File::open(&abs).await?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).await?;
@@ -178,6 +185,22 @@ mod tests {
         assert!(out.content.contains("does not support image inputs"));
         assert!(out.content.contains("anthropic/claude-sonnet"));
         assert!(out.attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_file_before_reading() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("huge.png");
+        {
+            let file = std::fs::File::create(&path).unwrap();
+            file.set_len(forge_types::MAX_IMAGE_BYTES + 1).unwrap();
+        }
+        let ctx = ctx_with_image(dir.path(), true);
+        let err = ViewImageTool
+            .call(&ctx, json!({"path": "huge.png"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("maximum allowed"), "{err}");
     }
 
     #[tokio::test]
