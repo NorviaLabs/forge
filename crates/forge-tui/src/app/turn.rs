@@ -36,6 +36,38 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 impl TuiApp {
+    pub(super) async fn execute_hitl_application(
+        &mut self,
+        pending: PendingHitlExecution,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), LoopError> {
+        let tool_name = pending.tool_name().to_string();
+        self.busy_state.start(BusyPhase::Tool { name: tool_name });
+        let execution = AbortOnDrop::new(tokio::spawn(pending.execute()));
+        loop {
+            if execution.is_finished() {
+                let completed = execution
+                    .join()
+                    .await
+                    .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?;
+                return self.session.finish_hitl_execution(completed).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if terminal.is_some() {
+                // Keep the TUI painting while an approved command runs. Input stays
+                // queued for the outer loop; do not re-enter the dispatcher here.
+                self.poll_interactive_terminal();
+                if self.cancellation.take_requested() || self.exit.is_requested() {
+                    return Err(LoopError::Cancelled);
+                }
+                if let Some(term) = terminal.as_deref_mut() {
+                    term.draw(|frame| self.draw(frame))
+                        .map_err(|error| LoopError::Other(error.to_string()))?;
+                }
+            }
+        }
+    }
+
     async fn execute_tool_application(
         &mut self,
         pending: PendingToolApplication,

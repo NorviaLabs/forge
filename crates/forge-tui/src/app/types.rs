@@ -752,6 +752,7 @@ impl PendingTurnState {
 #[derive(Default)]
 pub(crate) struct PendingInteractionState {
     hitl_decision: Option<HitlDecision>,
+    hitl_remember: bool,
     context_reset: bool,
 }
 
@@ -760,8 +761,16 @@ impl PendingInteractionState {
         self.hitl_decision.is_some()
     }
 
-    pub(crate) fn take_hitl_decision(&mut self) -> Option<HitlDecision> {
-        self.hitl_decision.take()
+    pub(crate) fn request_hitl_decision(&mut self, decision: HitlDecision, remember: bool) {
+        self.hitl_decision = Some(decision);
+        self.hitl_remember = remember;
+    }
+
+    pub(crate) fn take_hitl_decision(&mut self) -> Option<(HitlDecision, bool)> {
+        self.hitl_decision.take().map(|decision| {
+            let remember = std::mem::take(&mut self.hitl_remember);
+            (decision, remember)
+        })
     }
 
     pub(crate) fn context_reset_pending(&self) -> bool {
@@ -779,6 +788,7 @@ impl PendingInteractionState {
 
     pub(crate) fn clear(&mut self) {
         self.hitl_decision = None;
+        self.hitl_remember = false;
         self.context_reset = false;
     }
 }
