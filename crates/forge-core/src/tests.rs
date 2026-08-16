@@ -389,6 +389,50 @@ async fn build_model_request_carries_reasoning_effort_when_set() {
 }
 
 #[tokio::test]
+async fn consecutive_requests_preserve_stripped_prompt_prefix() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+    s.append_user_message("first").await.unwrap();
+    s.prepare_model_step(1).await.unwrap();
+    let first = s.last_prompt_snapshot_for_tests();
+    s.messages.push(Message::new(MessageRole::User, "second"));
+    s.prepare_model_step(2).await.unwrap();
+    let second = s.last_prompt_snapshot_for_tests();
+    let common = forge_model::common_prefix_len(&first.1, &second.1);
+    assert_eq!(
+        common,
+        first.1.len(),
+        "request 1 must be a prefix of request 2"
+    );
+}
+
+#[tokio::test]
+async fn effort_toggle_does_not_change_compared_prompt_snapshot() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+    s.append_user_message("hi").await.unwrap();
+    s.prepare_model_step(1).await.unwrap();
+    let first = s.last_prompt_snapshot_for_tests();
+    s.set_reasoning_effort(Some("high".into()));
+    s.prepare_model_step(2).await.unwrap();
+    let second = s.last_prompt_snapshot_for_tests();
+    assert_eq!(
+        forge_model::common_prefix_len(&first.1, &second.1),
+        first.1.len()
+    );
+}
+
+#[tokio::test]
+async fn prefix_diagnostics_name_the_first_mutated_path() {
+    let previous = serde_json::json!({"messages":[{"role":"system","content":"a"}]});
+    let current = serde_json::json!({"messages":[{"role":"system","content":"b"}]});
+    assert_eq!(
+        forge_model::first_json_pointer(&previous, &current).as_deref(),
+        Some("/messages/0/content")
+    );
+}
+
+#[tokio::test]
 async fn build_model_request_omits_reasoning_effort_when_none() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {

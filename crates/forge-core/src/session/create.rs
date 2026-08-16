@@ -82,6 +82,10 @@ impl AgentSession {
         self.context = context;
         self.token_usage = token_usage;
         self.journaled_tool_results = journaled_tool_results;
+        self.last_prompt_wire = None;
+        self.last_prompt_hash = state.last_prompt_hash.clone();
+        self.cache_epoch = state.cache_epoch;
+        self.last_cache_transport = state.last_cache_transport.clone();
         self.reconcile_incomplete_intents(&incomplete).await?;
         // Stale Working without a live executor is Interrupted, not eternal Working.
         self.mark_interrupted_if_stale().await?;
@@ -143,6 +147,10 @@ impl AgentSession {
             last_completion: None,
             journaled_tool_results: HashMap::new(),
             ctx_tokens_cache: Mutex::new(None),
+            last_prompt_wire: None,
+            last_prompt_hash: None,
+            cache_epoch: 0,
+            last_cache_transport: None,
         })
     }
 
@@ -207,6 +215,10 @@ impl AgentSession {
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
             ctx_tokens_cache: Mutex::new(None),
+            last_prompt_wire: None,
+            last_prompt_hash: state.last_prompt_hash.clone(),
+            cache_epoch: state.cache_epoch,
+            last_cache_transport: state.last_cache_transport.clone(),
         };
         session.reconcile_incomplete_intents(&incomplete).await?;
         session

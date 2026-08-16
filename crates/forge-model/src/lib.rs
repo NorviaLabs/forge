@@ -5,12 +5,17 @@ mod mock;
 mod native;
 mod normalize;
 mod prompt_cache;
+mod prompt_wire;
 
 pub use image::{apply_missing_image_notes, freeze_attachments};
 pub use mock::MockModelClient;
 pub use native::NativeModelClient;
 pub use normalize::{
     complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions,
+};
+pub use prompt_wire::{
+    common_prefix_len, first_json_pointer, prompt_wire, snapshot_prompt, PromptSnapshot,
+    PromptTransport,
 };
 
 use std::ops::{Deref, DerefMut};
@@ -245,6 +250,17 @@ pub trait ModelClient: Send + Sync {
     /// Clear provider credentials from the transport.
     /// Default: no-op (mock).
     fn clear_provider_env(&self) {}
+
+    /// Compared prompt-wire (tools + system + messages), including any
+    /// adapter cache hints. Diagnostics strip `cache_control` before hashing.
+    fn prompt_wire(&self, req: &ModelRequest) -> serde_json::Value {
+        prompt_wire::openai_compat_prompt(req)
+    }
+
+    fn prompt_transport_key(&self, req: &ModelRequest) -> &'static str {
+        let _ = req;
+        PromptTransport::Mock.as_str()
+    }
 }
 
 /// Build the native production client or the offline mock.

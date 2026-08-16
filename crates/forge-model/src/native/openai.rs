@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use super::{process_sse_lines, NativeModelClient};
 use crate::normalize::tools_to_openai_functions;
-use crate::prompt_cache::{apply_openai_prompt_cache, usage_from_provider};
+use crate::prompt_cache::usage_from_provider;
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 struct Route {
@@ -39,9 +39,6 @@ pub(super) async fn complete(
     let tools = tools_to_openai_functions(&req.tools);
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
-    }
-    if req.prompt_cache {
-        apply_openai_prompt_cache(&mut body);
     }
     apply_reasoning_effort(&mut body, model, req.reasoning_effort.as_deref());
 
@@ -610,6 +607,10 @@ mod tests {
             .contains("authorization: bearer secret"));
         assert!(raw_request.contains("\"reasoning_effort\":\"high\""));
         assert!(raw_request.contains("\"tools\""));
+        assert!(
+            !raw_request.contains("cache_control"),
+            "OpenAI-compat must not send cache_control: {raw_request}"
+        );
     }
 
     #[tokio::test]

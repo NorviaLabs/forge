@@ -250,6 +250,14 @@ impl AgentSession {
         self.tool_ctx.image_input
     }
 
+    #[cfg(test)]
+    pub(crate) fn last_prompt_snapshot_for_tests(&self) -> (String, Vec<u8>) {
+        (
+            self.last_prompt_hash.clone().unwrap_or_default(),
+            self.last_prompt_wire.clone().unwrap_or_default(),
+        )
+    }
+
     pub fn set_active_route_id(&mut self, route_id: impl Into<String>) {
         self.active_route_id = route_id.into();
     }
