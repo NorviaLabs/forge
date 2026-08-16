@@ -9,7 +9,9 @@ use serde_json::Value;
 /// (`apply_patch`, `write_stdin`, `update_plan`) and for unknown/MCP tools.
 pub fn tool_invocation(name: &str, args: &Value) -> Option<String> {
     match name {
-        "read_file" | "write_file" | "view_image" => str_arg(args, "path"),
+        "read_file" | "write_file" | "view_image" | "edit" | "search_replace" | "edit_file" => {
+            str_arg(args, "path").or_else(|| str_arg(args, "file_path"))
+        }
         "ls" => Some(str_arg(args, "path").unwrap_or_else(|| ".".into())),
         "bash" | "background_run" => str_arg(args, "command").map(|c| format!("$ {c}")),
         "exec_command" => str_arg(args, "cmd").map(|c| format!("$ {c}")),
@@ -78,6 +80,20 @@ mod tests {
         assert_eq!(
             tool_invocation("view_image", &json!({"path": "docs/shot.png"})),
             Some("docs/shot.png".into())
+        );
+        assert_eq!(
+            tool_invocation(
+                "edit",
+                &json!({"path": "src/lib.rs", "old_string": "a", "new_string": "b"})
+            ),
+            Some("src/lib.rs".into())
+        );
+        assert_eq!(
+            tool_invocation(
+                "search_replace",
+                &json!({"file_path": "src/lib.rs", "old_string": "a", "new_string": "b"})
+            ),
+            Some("src/lib.rs".into())
         );
         assert_eq!(
             tool_invocation("glob", &json!({"pattern": "tokio"})),

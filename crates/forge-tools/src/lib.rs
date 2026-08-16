@@ -3,6 +3,7 @@
 
 mod apply_patch;
 mod builtins;
+mod edit;
 mod fast_file_tools;
 mod invocation;
 mod registry;
@@ -17,6 +18,7 @@ pub use builtins::{
     default_builtins, default_builtins_with_web_search, run_shell_command, BashTool, GitTool,
     LsTool, ReadFileTool, UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
+pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
 pub use registry::{canonical_tool_name, canonicalize_tool_call, ToolContext, ToolRegistry};
 pub use skills::{LoadSkillArgs, LoadSkillTool};

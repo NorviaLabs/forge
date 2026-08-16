@@ -73,7 +73,17 @@ impl TuiApp {
     }
 
     fn tool_may_mutate_workspace(name: &str) -> bool {
-        matches!(name, "write_file" | "apply_patch" | "bash" | "git" | "run")
+        matches!(
+            name,
+            "write_file"
+                | "apply_patch"
+                | "edit"
+                | "search_replace"
+                | "edit_file"
+                | "bash"
+                | "git"
+                | "run"
+        )
     }
 
     pub(super) fn maybe_note_workspace_changed_from_recent_tools(&mut self) {
