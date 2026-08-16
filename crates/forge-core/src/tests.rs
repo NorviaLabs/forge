@@ -1339,6 +1339,58 @@ async fn hitl_pauses_on_git_push() {
     assert!(s.pending_hitl().is_none());
 }
 
+#[tokio::test]
+async fn readonly_inspection_bash_does_not_ask_for_approval() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "hello").unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command": "ls -la"}),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command": "ls && find . -maxdepth 1"}),
+                },
+            ],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut tools = ToolRegistry::new();
+    for tool in forge_tools::default_builtins() {
+        tools.register(tool);
+    }
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    s.run_user_message("look around").await.unwrap();
+    assert!(
+        s.pending_hitl().is_none(),
+        "inspection bash must not prompt"
+    );
+    assert_ne!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+    assert!(
+        s.messages.iter().any(|m| m.content.contains("README.md")),
+        "rewritten ls should execute"
+    );
+    assert!(
+        s.messages.iter().any(|m| m.content.contains("dedicated")),
+        "compound inspection should redirect instead of prompting"
+    );
+}
+
 /// A deny with feedback folds the operator's note into the same tool
 /// result message the agent sees, so it can act on it this turn instead
 /// of needing to be re-prompted next turn.
