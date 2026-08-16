@@ -1744,6 +1744,10 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
         assert!(tools.iter().any(|t| t.name() == "apply_patch"));
         assert!(tools.iter().any(|t| t.name() == "glob"));
         assert!(tools.iter().any(|t| t.name() == "grep"));
+        assert!(
+            !tools.iter().any(|t| t.name() == "rg"),
+            "rg is a silent synonym for grep, not a second advertised tool"
+        );
         assert!(tools.iter().any(|t| t.name() == "update_plan"));
         assert!(tools.iter().any(|t| t.name() == "ls"));
     }

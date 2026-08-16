@@ -6,6 +6,7 @@ license.workspace = true
 description = "Workspace file index and fast search (fff) for Forge agents and UI"
 
 [dependencies]
+fff-query-parser = { workspace = true }
 fff-search = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

@@ -1,8 +1,9 @@
 use crate::quick_open::rerank_quick_open_hits;
 use crate::types::{FileSearchHit, FindResponse, GrepQueryMode, GrepResponse, GrepSearchHit};
+use fff_query_parser::{Constraint, GrepConfig, QueryParser as GrepQueryParser};
 use fff_search::{
     file_picker::{FFFMode, FilePicker, FilePickerOptions, FuzzySearchOptions},
-    grep::{parse_grep_query, GrepMode, GrepSearchOptions},
+    grep::{GrepMode, GrepSearchOptions},
     PaginationArgs, QueryParser, SharedFilePicker, SharedFrecency,
 };
 use std::path::{Path, PathBuf};
@@ -207,10 +208,26 @@ impl WorkspaceIndex {
     }
 
     /// Full-text search across indexed files, respecting git-aware ignore rules.
+    ///
+    /// `path` and `include` are applied as FFF constraints *before* pagination.
+    /// Post-filtering the first page used to drop every hit when the first
+    /// `max_results` matches lived outside the requested directory (e.g.
+    /// searching `forge` under `crates/` in this repo).
     pub fn grep(
         &self,
         pattern: &str,
         path_filter: Option<&str>,
+        mode: GrepQueryMode,
+        max_results: usize,
+    ) -> Result<GrepResponse, SearchError> {
+        self.grep_scoped(pattern, path_filter, None, mode, max_results)
+    }
+
+    pub fn grep_scoped(
+        &self,
+        pattern: &str,
+        path_filter: Option<&str>,
+        include: Option<&str>,
         mode: GrepQueryMode,
         max_results: usize,
     ) -> Result<GrepResponse, SearchError> {
@@ -230,7 +247,7 @@ impl WorkspaceIndex {
             .as_ref()
             .ok_or_else(|| SearchError::Init("workspace picker missing".into()))?;
 
-        let parsed = parse_grep_query(pattern);
+        let parsed = scoped_grep_query(pattern, path_filter, include);
         let result = picker.grep(
             &parsed,
             &GrepSearchOptions {
@@ -249,16 +266,10 @@ impl WorkspaceIndex {
             .max()
             .unwrap_or(1)
             .max(1);
-        let filter = path_filter.map(|value| value.to_ascii_lowercase());
         let total_matched = result.matches.len();
         let mut hits = Vec::with_capacity(result.matches.len().min(max_results));
         for entry in result.matches.into_iter().take(max_results) {
             let rel = result.files[entry.file_index].relative_path(picker);
-            if let Some(filter) = &filter {
-                if !rel.to_ascii_lowercase().contains(filter) {
-                    continue;
-                }
-            }
             let relevance = entry
                 .fuzzy_score
                 .map(|score| (score as f32 / max_fuzzy as f32).clamp(0.0, 1.0));
@@ -305,6 +316,41 @@ impl WorkspaceIndex {
         }
         Ok(())
     }
+}
+
+fn scoped_grep_query<'a>(
+    pattern: &'a str,
+    path_filter: Option<&'a str>,
+    include: Option<&'a str>,
+) -> fff_query_parser::FFFQuery<'a> {
+    let mut query = GrepQueryParser::new(GrepConfig).parse(pattern);
+    if let Some(path) = path_filter
+        .map(str::trim)
+        .map(|path| path.trim_start_matches("./").trim_end_matches('/'))
+        .filter(|path| !path.is_empty())
+    {
+        if Constraint::is_filename_constraint_token(path) {
+            query.constraints.push(Constraint::FilePath(path));
+        } else {
+            query.constraints.push(Constraint::PathSegment(path));
+        }
+    }
+    if let Some(include) = include.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(ext) = include.strip_prefix("*.") {
+            if !ext.is_empty()
+                && !ext
+                    .bytes()
+                    .any(|b| matches!(b, b'*' | b'?' | b'{' | b'[' | b'/'))
+            {
+                query.constraints.push(Constraint::Extension(ext));
+            } else {
+                query.constraints.push(Constraint::Glob(include));
+            }
+        } else {
+            query.constraints.push(Constraint::Glob(include));
+        }
+    }
+    query
 }
 
 fn grep_mode(pattern: &str, mode: GrepQueryMode) -> GrepMode {
@@ -393,12 +439,88 @@ mod tests {
         )
         .unwrap();
         let response = index
-            .grep("hello", Some("main"), GrepQueryMode::Plain, 10)
+            .grep("hello", Some("src/main.rs"), GrepQueryMode::Plain, 10)
             .unwrap();
         assert_eq!(response.hits.len(), 1);
         assert_eq!(response.hits[0].line, 2);
         assert_eq!(response.hits[0].text, "hello world");
         assert!(response.hits[0].context.is_some());
+    }
+
+    #[test]
+    fn grep_path_scope_applies_before_pagination() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("crates/core")).unwrap();
+        for i in 0..60 {
+            std::fs::write(
+                dir.path().join(format!("root-{i}.md")),
+                "this repository is called forge\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            dir.path().join("crates/core/lib.rs"),
+            "pub const NAME: &str = \"forge\";\n",
+        )
+        .unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let response = index
+            .grep("forge", Some("crates"), GrepQueryMode::Plain, 50)
+            .unwrap();
+        assert!(
+            response
+                .hits
+                .iter()
+                .any(|hit| hit.path == "crates/core/lib.rs"),
+            "path-scoped grep must not be emptied by earlier out-of-scope hits, got {:?}",
+            response
+                .hits
+                .iter()
+                .map(|hit| hit.path.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            response
+                .hits
+                .iter()
+                .all(|hit| hit.path.starts_with("crates/")),
+            "hits must stay under the requested path"
+        );
+    }
+
+    #[test]
+    fn grep_include_glob_is_applied_before_pagination() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..60 {
+            std::fs::write(
+                dir.path().join(format!("note-{i}.md")),
+                "forge lives here\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.path().join("lib.rs"), "fn forge() {}\n").unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let response = index
+            .grep_scoped("forge", None, Some("*.rs"), GrepQueryMode::Plain, 50)
+            .unwrap();
+        assert_eq!(response.hits.len(), 1, "{:?}", response.hits);
+        assert_eq!(response.hits[0].path, "lib.rs");
     }
 
     #[test]

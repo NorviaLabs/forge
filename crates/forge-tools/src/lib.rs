@@ -18,7 +18,7 @@ pub use builtins::{
     LsTool, ReadFileTool, UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
 pub use invocation::tool_invocation;
-pub use registry::{ToolContext, ToolRegistry};
+pub use registry::{canonical_tool_name, canonicalize_tool_call, ToolContext, ToolRegistry};
 pub use skills::{LoadSkillArgs, LoadSkillTool};
 pub use unified_exec::{unified_exec_tools, ExecCommandTool, WriteStdinTool};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};
