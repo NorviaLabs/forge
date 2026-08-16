@@ -7,6 +7,29 @@ pub use image::{
     MAX_IMAGE_BYTES,
 };
 
+/// Remove structural protocol control markers from final-answer text before
+/// persistence. Not phrase filtering — only known control envelopes.
+pub fn strip_protocol_markers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("\\confidence{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + "\\confidence{".len()..];
+        if let Some(end) = after.find('}') {
+            rest = &after[end + 1..];
+        } else {
+            // Unterminated marker, e.g. model output truncated mid-annotation.
+            // Rewind to the marker so the tail is emitted exactly once: the
+            // prefix was already pushed above, so leaving `rest` untouched
+            // would duplicate it.
+            rest = &rest[start..];
+            break;
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

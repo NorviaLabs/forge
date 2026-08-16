@@ -5,6 +5,8 @@
 
 use crate::*;
 
+pub(crate) use forge_types::strip_protocol_markers;
+
 pub(crate) const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
 /// Discovery stage of progressive disclosure (issue #226): a skill with
@@ -48,6 +50,14 @@ instructions before proceeding.",
 /// Durable marker for a terminal turn failure summary in session messages.
 /// Presentation maps this to TurnFailure; it is never a user-facing answer.
 pub const TURN_FAILED_MARKER: &str = "[forge.turn_failed]";
+
+pub(crate) fn tool_validation_failed_content(error: &impl std::fmt::Display) -> String {
+    format!(
+        "Tool validation error: {error}. \
+         Do not concatenate fields. Use separate JSON properties with native types \
+         (for example offset: 1, limit: 100 as integers)."
+    )
+}
 
 // --- Completion-evidence helpers -------------------------------------------
 //
@@ -299,27 +309,29 @@ pub(crate) enum GitPre {
     NotVerified,
 }
 
-/// Remove structural protocol control markers from final-answer text before
-/// persistence. Not phrase filtering — only known control envelopes.
-pub(crate) fn strip_protocol_markers(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("\\confidence{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + "\\confidence{".len()..];
-        if let Some(end) = after.find('}') {
-            rest = &after[end + 1..];
-        } else {
-            // Unterminated marker, e.g. model output truncated mid-annotation.
-            // Rewind to the marker so the tail is emitted exactly once: the
-            // prefix was already pushed above, so leaving `rest` untouched
-            // would duplicate it.
-            rest = &rest[start..];
-            break;
-        }
+/// Keep a journaled system message (it was already sent). Insert a freshly
+/// assembled one only when replay has no system at the front.
+pub(crate) fn restore_system_message(messages: &mut Vec<Message>, assembled: String) {
+    if messages
+        .first()
+        .is_some_and(|message| message.role == MessageRole::System)
+    {
+        return;
     }
-    out.push_str(rest);
-    out.trim().to_string()
+    messages.insert(
+        0,
+        Message {
+            outcome: Default::default(),
+            role: MessageRole::System,
+            content: assembled,
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        },
+    );
 }
 
 /// Reconstruct the `WaitReason` a restored session was blocked on, from the

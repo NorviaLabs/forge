@@ -201,6 +201,50 @@ impl ModelClient for NativeModelClient {
             credentials.clear();
         }
     }
+
+    fn prompt_wire(&self, req: &ModelRequest) -> serde_json::Value {
+        match transport_for_route(req.route_id.as_deref()) {
+            forge_connect::ProviderTransport::Anthropic => {
+                let (system, messages) = anthropic::messages_body(req);
+                let mut body = serde_json::json!({ "messages": messages });
+                if !system.is_empty() {
+                    body["system"] = serde_json::Value::String(system);
+                }
+                if !req.tools.is_empty() {
+                    body["tools"] = serde_json::Value::Array(
+                        req.tools
+                            .iter()
+                            .map(|tool| {
+                                serde_json::json!({
+                                    "name": tool.name,
+                                    "description": tool.description,
+                                    "input_schema": tool.input_schema
+                                })
+                            })
+                            .collect(),
+                    );
+                }
+                if req.prompt_cache {
+                    crate::prompt_cache::apply_anthropic_prompt_cache(&mut body);
+                }
+                crate::prompt_wire::prompt_object_from_body(&body)
+            }
+            forge_connect::ProviderTransport::Codex => crate::prompt_wire::prompt_object_from_body(
+                &codex::request_body(self, req, &req.model, &codex::tool_aliases(req)),
+            ),
+            forge_connect::ProviderTransport::OpenaiCompat => {
+                crate::prompt_wire::openai_compat_prompt(req)
+            }
+        }
+    }
+
+    fn prompt_transport_key(&self, req: &ModelRequest) -> &'static str {
+        match transport_for_route(req.route_id.as_deref()) {
+            forge_connect::ProviderTransport::Anthropic => "anthropic",
+            forge_connect::ProviderTransport::Codex => "codex",
+            forge_connect::ProviderTransport::OpenaiCompat => "openai_compat",
+        }
+    }
 }
 
 /// Convert the stable offering identity into the namespaced model id the
