@@ -33,6 +33,7 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
     "read_file",
     "update_plan",
     "view_image",
+    "web_fetch",
     "write_file",
     "write_stdin",
 ];
@@ -176,6 +177,7 @@ async fn every_tool_rejects_missing_required_args() {
         ("glob", json!({})),
         ("grep", json!({})),
         ("web_search", json!({})),
+        ("web_fetch", json!({})),
     ];
     for (name, args) in required {
         let error = workspace.call(name, args.clone()).await.expect_err(name);
@@ -424,6 +426,33 @@ async fn update_plan_load_skill_and_web_search() {
         .unwrap();
     assert!(!search.is_error, "{}", search.content);
     assert!(search.content.contains("serde"), "{}", search.content);
+}
+
+#[tokio::test]
+async fn web_fetch_runs_through_the_registry_and_blocks_private_targets() {
+    let workspace = Workspace::new();
+
+    let blocked = workspace
+        .call("web_fetch", json!({"url": "http://127.0.0.1:1/"}))
+        .await
+        .unwrap();
+    assert!(blocked.is_error);
+    assert!(
+        blocked.content.contains("non-public"),
+        "{}",
+        blocked.content
+    );
+
+    let bad_scheme = workspace
+        .call("web_fetch", json!({"url": "file:///etc/passwd"}))
+        .await
+        .unwrap();
+    assert!(bad_scheme.is_error);
+    assert!(
+        bad_scheme.content.contains("scheme"),
+        "{}",
+        bad_scheme.content
+    );
 }
 
 #[tokio::test]

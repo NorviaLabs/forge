@@ -84,6 +84,7 @@ fn tool_progress_description(name: &str) -> String {
         "bash" => "Running command".into(),
         "git" => "Checking git".into(),
         "web_search" => "Searching the web".into(),
+        "web_fetch" => "Fetching URL".into(),
         other => {
             let cleaned = other.replace('_', " ");
             if cleaned.is_empty() {

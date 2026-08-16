@@ -1367,6 +1367,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(write_stdin),
         std::sync::Arc::new(UpdatePlanTool),
         std::sync::Arc::new(crate::skills::LoadSkillTool),
+        crate::web_fetch::web_fetch_tool(),
     ];
     tools.extend(crate::fast_file_tools::fff_tools());
     tools
