@@ -829,6 +829,19 @@ mod tests {
             ),
             PolicyDecision::Allow
         );
+        for command in [
+            json!({"command": r#"rg -n "Auto|Manual" crates"#}),
+            json!({"command": "ls -la"}),
+            json!({"command": ["ls", "-la"]}),
+            json!({"command": "git --no-pager status --short"}),
+            json!({"command": "git --no-pager diff --stat"}),
+        ] {
+            assert_eq!(
+                accept.authorize(&call("bash", command.clone()), SideEffectClass::Exec),
+                PolicyDecision::Allow,
+                "seeded Auto command should not prompt: {command}"
+            );
+        }
     }
 
     #[test]

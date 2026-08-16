@@ -63,9 +63,10 @@ impl PatternRule {
                 // Rules may only allow a single, syntax-free shell command.
                 // A prefix match against an arbitrary shell program would let
                 // `cargo test; ...` inherit the `cargo test *` permission.
-                Some(subject) if is_safe_shell_command(&subject) => {
-                    glob_match_anywhere(pattern, &subject)
-                }
+                Some(subject) => match permission_subject(&subject) {
+                    Some(normalized) => glob_match_anywhere(pattern, &normalized),
+                    None => false,
+                },
                 _ => false,
             };
         }
@@ -135,11 +136,7 @@ pub fn suggest_pattern(call: &ToolCall) -> String {
 
 fn subject_for(tool: &str, args: &serde_json::Value) -> Option<String> {
     if is_shell_tool(tool) {
-        return args
-            .get("command")
-            .or_else(|| args.get("cmd"))
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
+        return command_argument(args);
     }
     if is_file_tool(tool) {
         return args
@@ -164,14 +161,127 @@ pub fn is_shell_tool(tool: &str) -> bool {
     )
 }
 
-/// Returns whether `command` is a single shell command without control or
-/// expansion syntax. Pattern rules are intentionally not a shell parser: an
-/// invocation containing any of these constructs must go through approval.
+fn command_argument(args: &serde_json::Value) -> Option<String> {
+    let value = args.get("command").or_else(|| args.get("cmd"))?;
+    if let Some(command) = value.as_str() {
+        let trimmed = command.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
+    }
+    let parts = value.as_array()?;
+    let words: Option<Vec<&str>> = parts.iter().map(|part| part.as_str()).collect();
+    let words = words?
+        .into_iter()
+        .map(str::trim)
+        .filter(|word| !word.is_empty());
+    let joined = words.collect::<Vec<_>>().join(" ");
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// Normalize a shell command for pattern matching, or `None` if it is not a
+/// single syntax-free invocation. Quoted metacharacters (an `rg` alternation
+/// like `"Auto|Manual"`) stay data; unquoted control/expansion syntax still
+/// forces approval.
+fn permission_subject(command: &str) -> Option<String> {
+    if !is_safe_shell_command(command) {
+        return None;
+    }
+    Some(normalize_command_subject(command))
+}
+
+/// Returns whether `command` is a single shell command without unquoted
+/// control or expansion syntax. Pattern rules are intentionally not a full
+/// shell parser: an unquoted operator must go through approval.
 fn is_safe_shell_command(command: &str) -> bool {
-    !command.is_empty()
-        && !command
-            .chars()
-            .any(|ch| matches!(ch, ';' | '|' | '&' | '\n' | '\r' | '`' | '$' | '<' | '>'))
+    if command.is_empty() {
+        return false;
+    }
+    let chars: Vec<char> = command.chars().collect();
+    let mut i = 0;
+    let mut quote = None;
+    while i < chars.len() {
+        let ch = chars[i];
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                }
+            }
+            Some('"') => {
+                if ch == '\\' {
+                    i += 1;
+                } else if ch == '"' {
+                    quote = None;
+                } else if matches!(ch, '$' | '`') {
+                    return false;
+                }
+            }
+            _ => {
+                if ch == '\\' {
+                    i += 1;
+                } else if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                } else if matches!(ch, ';' | '|' | '&' | '\n' | '\r' | '`' | '$' | '<' | '>') {
+                    return false;
+                }
+            }
+        }
+        i += 1;
+    }
+    quote.is_none()
+}
+
+fn normalize_command_subject(command: &str) -> String {
+    let words = strip_leading_env_assignments(command);
+    strip_git_global_options(&words).join(" ")
+}
+
+fn strip_leading_env_assignments(command: &str) -> Vec<String> {
+    let mut words: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
+    while words
+        .first()
+        .is_some_and(|word| is_env_assignment(word) && !word.starts_with('-'))
+    {
+        words.remove(0);
+    }
+    words
+}
+
+fn is_env_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn strip_git_global_options(words: &[String]) -> Vec<String> {
+    if words.first().map(String::as_str) != Some("git") {
+        return words.to_vec();
+    }
+    let mut i = 1;
+    while i < words.len() {
+        match words[i].as_str() {
+            "--no-pager" | "--no-replace-objects" | "--bare" | "--no-optional-locks" => {
+                i += 1;
+            }
+            "-C" | "-c" | "--git-dir" | "--work-tree" => {
+                i = i.saturating_add(2);
+            }
+            flag if flag.starts_with("--git-dir=") || flag.starts_with("--work-tree=") => {
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+    let mut normalized = vec!["git".to_string()];
+    if i < words.len() {
+        normalized.extend(words[i..].iter().cloned());
+    }
+    normalized
 }
 
 /// Lexically normalize a relative path without consulting the filesystem.
@@ -320,6 +430,37 @@ mod tests {
             json!({"cmd": "cargo test -p forge-tui"})
         )));
         assert!(!rule.matches(&call("background_run", json!({"command": "rm -rf /tmp/x"}))));
+    }
+
+    #[test]
+    fn quoted_rg_alternation_is_safe_and_unquoted_pipe_is_not() {
+        let rule = PatternRule::parse("bash(rg *)").unwrap();
+        assert!(rule.matches(&call(
+            "bash",
+            json!({"command": r#"rg -n "Auto|Manual" crates"#})
+        )));
+        assert!(rule.matches(&call("bash", json!({"command": "rg -n 'foo|bar' src"}))));
+        assert!(!rule.matches(&call("bash", json!({"command": "rg -n Auto | head"}))));
+    }
+
+    #[test]
+    fn git_global_options_and_argv_commands_still_match_seed_patterns() {
+        let status = PatternRule::parse("bash(git status *)").unwrap();
+        let ls = PatternRule::parse("bash(ls *)").unwrap();
+        assert!(status.matches(&call(
+            "bash",
+            json!({"command": "git --no-pager status --short"})
+        )));
+        assert!(status.matches(&call(
+            "bash",
+            json!({"command": "GIT_PAGER=cat git status --short"})
+        )));
+        assert!(ls.matches(&call("bash", json!({"command": ["ls", "-la"]}))));
+        assert!(ls.matches(&call("bash", json!({"command": "  ls -la  "}))));
+        assert!(!status.matches(&call(
+            "bash",
+            json!({"command": "git status; rm -rf /tmp/x"})
+        )));
     }
 
     #[test]
