@@ -95,7 +95,7 @@ impl FastFileState {
         }
     }
 
-    fn index_for(&self, root: &Path) -> Result<Arc<WorkspaceIndex>, ToolError> {
+    pub(crate) fn index_for(&self, root: &Path) -> Result<Arc<WorkspaceIndex>, ToolError> {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         if let Some(index) = self
             .indices
@@ -339,7 +339,8 @@ pub fn fff_tools() -> Vec<Arc<dyn Tool>> {
     let state = Arc::new(FastFileState::new());
     vec![
         Arc::new(FffFindTool::new(state.clone(), "glob")),
-        Arc::new(FffGrepTool::new(state, "grep")),
+        Arc::new(FffGrepTool::new(state.clone(), "grep")),
+        Arc::new(crate::EditTool::new(state)),
     ]
 }
 

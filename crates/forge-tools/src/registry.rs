@@ -17,6 +17,7 @@ use crate::{Tool, ToolError};
 pub fn canonical_tool_name(name: &str) -> &str {
     match name {
         "rg" => "grep",
+        "search_replace" | "edit_file" => "edit",
         other => other,
     }
 }
@@ -616,6 +617,18 @@ mod tests {
             arguments: json!({"pattern": "hello"}),
         });
         assert_eq!(call.name, "grep");
+    }
+
+    #[test]
+    fn search_replace_resolves_to_edit() {
+        assert_eq!(canonical_tool_name("search_replace"), "edit");
+        assert_eq!(canonical_tool_name("edit_file"), "edit");
+        let call = canonicalize_tool_call(ToolCall {
+            id: "1".into(),
+            name: "search_replace".into(),
+            arguments: json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+        });
+        assert_eq!(call.name, "edit");
     }
 
     #[tokio::test]
