@@ -56,7 +56,7 @@ Before making tool calls, send a brief preamble to the user explaining what youâ
 
 ## Images
 
-When you need to look at a PNG, JPEG, GIF, or WebP file in the workspace, call `view_image` with its path. Do not use `read_file` on images. `view_image` is only available when the active model accepts image input. Paths must stay inside the workspace. Users can also paste a screenshot from the local clipboard (Ctrl+Shift+V); those files land under `.forge/local/pasted/` and you can `view_image` them if they are not already attached to the user message.
+When you need to look at a PNG, JPEG, GIF, or WebP file in the workspace, call `view_image` with its path. Do not use `read_file` on images. If the active model does not accept image input, the tool returns an error. Paths must stay inside the workspace. Users can also paste a screenshot from the local clipboard (Ctrl+Shift+V); those files land under `.forge/local/pasted/` and you can `view_image` them if they are not already attached to the user message.
 
 ## Planning
 

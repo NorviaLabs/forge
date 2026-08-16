@@ -124,6 +124,10 @@ pub struct AgentSession {
     /// allocation only grows at the tail, the cache adds the new messages
     /// instead of recounting the complete history.
     ctx_tokens_cache: Mutex<Option<CtxTokensCache>>,
+    last_prompt_wire: Option<Vec<u8>>,
+    last_prompt_hash: Option<String>,
+    cache_epoch: u64,
+    last_cache_transport: Option<String>,
 }
 
 #[derive(Debug)]
