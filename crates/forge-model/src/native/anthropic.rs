@@ -45,9 +45,6 @@ pub(super) async fn complete(
     if !system.is_empty() {
         body["system"] = Value::String(system);
     }
-    if req.prompt_cache {
-        apply_anthropic_prompt_cache(&mut body);
-    }
     if !req.tools.is_empty() {
         body["tools"] = Value::Array(
             req.tools
@@ -61,6 +58,9 @@ pub(super) async fn complete(
                 })
                 .collect(),
         );
+    }
+    if req.prompt_cache {
+        apply_anthropic_prompt_cache(&mut body);
     }
     let reasoning_effort = req.reasoning_effort.as_deref();
     apply_reasoning_effort(&mut body, model, reasoning_effort);
@@ -142,9 +142,6 @@ pub(super) async fn complete(
 }
 
 fn anthropic_payload_content(message: &forge_types::Message, workspace: &std::path::Path) -> Value {
-    if message.attachments.is_empty() {
-        return json!(message.content);
-    }
     let mut parts = Vec::new();
     if !message.content.is_empty() {
         parts.push(json!({"type": "text", "text": message.content}));
@@ -162,13 +159,12 @@ fn anthropic_payload_content(message: &forge_types::Message, workspace: &std::pa
         }
     }
     if parts.is_empty() {
-        json!(message.content)
-    } else {
-        Value::Array(parts)
+        parts.push(json!({"type": "text", "text": message.content}));
     }
+    Value::Array(parts)
 }
 
-fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
+pub(super) fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
     let mut system = Vec::new();
     let mut messages = Vec::new();
     for message in req.messages.iter() {

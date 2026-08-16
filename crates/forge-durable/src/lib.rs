@@ -120,6 +120,10 @@ pub struct ReplayState {
     /// worktree location is only known once the worktree is actually
     /// created, after the generic `BackgroundTaskStarted` is journaled.
     pub subagent_workspaces: HashMap<u64, PathBuf>,
+    pub last_prompt_hash: Option<String>,
+    pub last_prompt_bytes: Option<u64>,
+    pub cache_epoch: u64,
+    pub last_cache_transport: Option<String>,
 }
 
 /// One queue item as reconstructed from the journal — a lightweight mirror
@@ -565,6 +569,10 @@ impl Journal {
             queue_items: Vec::new(),
             background_tasks: Vec::new(),
             subagent_workspaces: HashMap::new(),
+            last_prompt_hash: None,
+            last_prompt_bytes: None,
+            cache_epoch: 0,
+            last_cache_transport: None,
         };
 
         let mut open_intents: HashMap<String, String> = HashMap::new();
@@ -660,6 +668,30 @@ impl Journal {
                 JournalEventType::ToolIntent => {
                     if let Some(id) = payload.get("call_id").and_then(|v| v.as_str()) {
                         open_intents.insert(id.to_string(), id.to_string());
+                    }
+                }
+                JournalEventType::ModelRequest => {
+                    if let Some(hash) = payload
+                        .get("prompt_wire_sha256")
+                        .and_then(|value| value.as_str())
+                    {
+                        state.last_prompt_hash = Some(hash.to_string());
+                    }
+                    if let Some(bytes) = payload
+                        .get("prompt_wire_bytes")
+                        .and_then(|value| value.as_u64())
+                    {
+                        state.last_prompt_bytes = Some(bytes);
+                    }
+                    if let Some(epoch) = payload.get("cache_epoch").and_then(|value| value.as_u64())
+                    {
+                        state.cache_epoch = epoch;
+                    }
+                    if let Some(transport) = payload
+                        .get("cache_transport")
+                        .and_then(|value| value.as_str())
+                    {
+                        state.last_cache_transport = Some(transport.to_string());
                     }
                 }
                 JournalEventType::ToolValidationFailed => {

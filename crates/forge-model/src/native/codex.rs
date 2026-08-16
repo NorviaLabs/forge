@@ -171,7 +171,7 @@ fn codex_tool_output(message: &forge_types::Message, workspace: &std::path::Path
     Value::Array(parts)
 }
 
-fn request_body(
+pub(super) fn request_body(
     _client: &NativeModelClient,
     req: &ModelRequest,
     model: &str,
@@ -363,7 +363,7 @@ fn consume_event(
     Ok(())
 }
 
-fn tool_aliases(req: &ModelRequest) -> BTreeMap<String, String> {
+pub(super) fn tool_aliases(req: &ModelRequest) -> BTreeMap<String, String> {
     let mut aliases = BTreeMap::new();
     let mut used = BTreeMap::<String, String>::new();
     for tool in &req.tools {
