@@ -2171,9 +2171,10 @@ Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
 
     #[test]
     fn fff_find_schema_rejects_empty_args() {
-        let t = crate::fast_file_tools::FffFindTool::new(std::sync::Arc::new(
-            crate::fast_file_tools::FastFileState::new(),
-        ));
+        let t = crate::fast_file_tools::FffFindTool::new(
+            std::sync::Arc::new(crate::fast_file_tools::FastFileState::new()),
+            "fffind",
+        );
         let err =
             crate::validation::validate_args("fffind", &t.input_schema(), &json!({})).unwrap_err();
         assert_eq!(err.tool, "fffind");
@@ -2182,7 +2183,7 @@ Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
     #[test]
     fn fff_grep_schema_rejects_empty_args() {
         let state = std::sync::Arc::new(crate::fast_file_tools::FastFileState::new());
-        let t = crate::fast_file_tools::FffGrepTool::new(state);
+        let t = crate::fast_file_tools::FffGrepTool::new(state, "ffgrep");
         let err =
             crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({})).unwrap_err();
         assert_eq!(err.tool, "ffgrep");
@@ -2190,9 +2191,10 @@ Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
 
     #[test]
     fn fff_find_schema_accepts_query() {
-        let t = crate::fast_file_tools::FffFindTool::new(std::sync::Arc::new(
-            crate::fast_file_tools::FastFileState::new(),
-        ));
+        let t = crate::fast_file_tools::FffFindTool::new(
+            std::sync::Arc::new(crate::fast_file_tools::FastFileState::new()),
+            "fffind",
+        );
         crate::validation::validate_args("fffind", &t.input_schema(), &json!({"query": "main.rs"}))
             .unwrap();
     }
@@ -2200,7 +2202,7 @@ Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
     #[test]
     fn fff_grep_schema_accepts_pattern() {
         let state = std::sync::Arc::new(crate::fast_file_tools::FastFileState::new());
-        let t = crate::fast_file_tools::FffGrepTool::new(state);
+        let t = crate::fast_file_tools::FffGrepTool::new(state, "ffgrep");
         crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({"pattern": "TODO"}))
             .unwrap();
     }
