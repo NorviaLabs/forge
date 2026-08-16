@@ -198,7 +198,6 @@ impl TuiApp {
             dirty: repo.dirty,
             cwd_display: crate::widgets::status::shorten_home_path(&self.runtime.cwd),
             resource: self.workspace_resource_label(),
-            // Workspace change count lives on the footer, not header chrome.
             activity: None,
             progress_description: self.header_progress_description(),
             failure_category: self.header_failure_category(transcript),
@@ -326,19 +325,8 @@ impl TuiApp {
             })
     }
 
-    pub(super) fn workspace_activity_label(&self) -> Option<String> {
-        let changes = self.workspace_files.explorer.git_status.status.len();
-        if changes > 0 {
-            Some(format!("{changes} changes"))
-        } else {
-            // Do not mirror task lifecycle/progress into secondary activity.
-            None
-        }
-    }
-
     pub(super) fn activity_summary(&self) -> Option<ActivitySummaryModel> {
-        // Review CTA and conversation banner were removed. Changed-file count
-        // is footer-only until a later redesign.
+        // Review CTA and conversation banner were removed.
         None
     }
 
