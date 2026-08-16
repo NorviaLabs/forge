@@ -418,7 +418,7 @@ impl AgentSession {
                 }
             }
             "git" => self.push_git_evidence(call, pre_git, output).await,
-            "fffind" | "ffgrep" => self.push_search_evidence(call, output),
+            "glob" | "grep" | "fffind" | "ffgrep" => self.push_search_evidence(call, output),
             "bash" => self.push_bash_evidence(call, output),
             _ => {}
         }
@@ -431,7 +431,7 @@ impl AgentSession {
         let event = match call.name.as_str() {
             "git" => ExecutionEvent::GitCommandFailed,
             "write_file" | "apply_patch" => ExecutionEvent::PatchRejected,
-            "fffind" | "ffgrep" => ExecutionEvent::SearchFailed,
+            "glob" | "grep" | "fffind" | "ffgrep" => ExecutionEvent::SearchFailed,
             _ => ExecutionEvent::ToolFailed,
         };
         let mut entry = EvidenceEntry::new(event)
