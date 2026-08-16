@@ -213,6 +213,13 @@ Two dedicated tools use the FFF engine (frecency-ranked, typo-resistant, git-awa
 
 Prefer these over shell commands (`rg`, `find`, `grep`) for file discovery — they run in-process, keep a warm index, and return structured results with git status and frecency ranking.
 
+## Workspace inspection
+
+- Use `ls` to list a directory. Do not use `bash` for `ls`.
+- Use `git` for repository inspection (`status`, `diff`, `log`, `show`, `branch`, `blame`). Do not use `bash` for `git`.
+- Use `read_file` instead of `cat`, `head`, or `tail`.
+- Compound inspection (`ls && find`, `git status && git diff`) must be separate dedicated-tool calls, never one bash pipeline.
+
 ## `update_plan`
 
 A tool named `update_plan` is available to you. You can use it to keep an up‑to‑date, step‑by‑step plan for the task.

@@ -293,9 +293,11 @@ Menu rows (when a prompt appears):
 Default is **Accept Edits**.
 
 - **Accept Edits** (default) — file writes free; a tight shell allow list
-  runs without prompts: `cargo test|build|check|clippy|fmt`, `rg`, `fd`,
-  `ls`, `cat`, `head`, `git status|diff|log` (including via `background_run`).
-  Other shell still asks. Add a `deny` pattern to re-prompt on a seed.
+  runs without prompts: `cargo test|build|check|clippy|fmt` (including via
+  `background_run`). Listing, search, file reads, and git inspection go
+  through dedicated tools (`ls`, `fffind`, `ffgrep`, `read_file`, `git`)
+  and do not prompt. Other shell still asks. Add a `deny` pattern to
+  re-prompt on a seed.
 - **Manual** — every shell-equivalent command asks unless your personal
   `permissions.toml` (or session `always`) allows it.
 
