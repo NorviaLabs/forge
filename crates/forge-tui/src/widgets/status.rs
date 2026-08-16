@@ -78,7 +78,7 @@ fn tool_progress_description(name: &str) -> String {
         "view_image" => "Viewing image".into(),
         "write_file" | "apply_patch" => "Editing files".into(),
         "glob" => "Searching files".into(),
-        "grep" => "Searching code".into(),
+        "grep" | "rg" => "Searching code".into(),
         "bash" => "Running command".into(),
         "git" => "Checking git".into(),
         "web_search" => "Searching the web".into(),

@@ -55,7 +55,14 @@ pub fn readonly_shell_redirect_message(call: &ToolCall) -> Option<String> {
 }
 
 fn classify_readonly_command(command: &str) -> Option<ReadonlyShellRewrite> {
-    let segments = split_command_segments(command)?;
+    let command = strip_ignored_redirects(command);
+    if command.is_empty() {
+        return None;
+    }
+    if let Some(rewrite) = classify_search_pipeline(&command) {
+        return Some(rewrite);
+    }
+    let segments = split_command_segments(&command)?;
     if segments.is_empty() {
         return None;
     }
@@ -93,7 +100,7 @@ fn rewrite_argv(words: &[String]) -> Option<ReadonlyShellRewrite> {
     match command {
         "ls" => rewrite_ls(rest),
         "find" => rewrite_find(rest),
-        "rg" | "grep" | "egrep" | "fgrep" => rewrite_grep(rest),
+        "rg" | "grep" | "egrep" | "fgrep" => rewrite_grep(command, rest),
         "fd" => rewrite_fd(rest),
         "cat" => rewrite_cat(rest),
         "head" | "tail" => rewrite_head(command, rest),
@@ -108,14 +115,134 @@ fn is_readonly_argv(words: &[String]) -> bool {
 
 fn is_search_argv(words: &[String]) -> bool {
     matches!(
-        words.first().map(String::as_str),
+        words.first().map(|word| command_basename(word)),
         Some("rg" | "grep" | "egrep" | "fgrep" | "find" | "fd")
     )
 }
 
 fn split_command(words: &[String]) -> Option<(&str, &[String])> {
-    let command = words.first()?.as_str();
+    let command = command_basename(words.first()?);
     Some((command, &words[1..]))
+}
+
+fn command_basename(word: &str) -> &str {
+    let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    name.strip_suffix(".exe").unwrap_or(name)
+}
+
+/// `rg … | head` is how models paginate search. Rewrite the search side and
+/// drop the limiter — dedicated `grep` already caps results.
+fn classify_search_pipeline(command: &str) -> Option<ReadonlyShellRewrite> {
+    let segments = split_pipeline_segments(command)?;
+    if segments.len() < 2 {
+        return None;
+    }
+    let words = segments
+        .iter()
+        .map(|segment| tokenize_words(segment))
+        .collect::<Option<Vec<_>>>()?;
+    if !words.iter().any(|argv| is_search_argv(argv)) {
+        return None;
+    }
+    if !words.iter().skip(1).all(|argv| is_result_limiter(argv)) {
+        return None;
+    }
+    let search = words.iter().find(|argv| is_search_argv(argv))?;
+    rewrite_argv(search).or_else(|| {
+        Some(ReadonlyShellRewrite::Redirect {
+            message: REDIRECT_MESSAGE.into(),
+        })
+    })
+}
+
+fn is_result_limiter(words: &[String]) -> bool {
+    matches!(
+        words.first().map(|word| command_basename(word)),
+        Some("head" | "tail" | "wc")
+    )
+}
+
+/// Drop stderr-to-null and stdout-to-null noise models add to search commands.
+fn strip_ignored_redirects(command: &str) -> String {
+    let mut out = command.trim().to_string();
+    const IGNORED: &[&str] = &[
+        "2>/dev/null",
+        "2> /dev/null",
+        "2>&1",
+        ">/dev/null",
+        "> /dev/null",
+    ];
+    loop {
+        let trimmed = out.trim_end();
+        if let Some(prefix) = IGNORED
+            .iter()
+            .find_map(|suffix| trimmed.strip_suffix(suffix))
+        {
+            out = prefix.trim_end().to_string();
+            continue;
+        }
+        break;
+    }
+    out
+}
+
+/// Split on unquoted `|` that is not `||`. Any other control character aborts.
+fn split_pipeline_segments(command: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        match quote {
+            Some('\'') => {
+                current.push(ch);
+                if ch == '\'' {
+                    quote = None;
+                }
+            }
+            Some('"') => {
+                current.push(ch);
+                if ch == '\\' {
+                    i += 1;
+                    if i < chars.len() {
+                        current.push(chars[i]);
+                    }
+                } else if ch == '"' {
+                    quote = None;
+                } else if matches!(ch, '$' | '`') {
+                    return None;
+                }
+            }
+            _ => {
+                if ch == '\\' {
+                    current.push(ch);
+                    i += 1;
+                    if i < chars.len() {
+                        current.push(chars[i]);
+                    }
+                } else if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                    current.push(ch);
+                } else if ch == '|' && chars.get(i + 1) != Some(&'|') {
+                    push_segment(&mut segments, &mut current)?;
+                } else if matches!(ch, ';' | '&' | '\n' | '\r' | '`' | '$' | '<' | '>')
+                    || (ch == '|' && chars.get(i + 1) == Some(&'|'))
+                {
+                    return None;
+                } else {
+                    current.push(ch);
+                }
+            }
+        }
+        i += 1;
+    }
+    if quote.is_some() {
+        return None;
+    }
+    push_segment(&mut segments, &mut current)?;
+    Some(segments)
 }
 
 fn rewrite_ls(args: &[String]) -> Option<ReadonlyShellRewrite> {
@@ -135,14 +262,24 @@ fn rewrite_find(args: &[String]) -> Option<ReadonlyShellRewrite> {
     Some(dedicated("glob", json!({ "pattern": parsed.query })))
 }
 
-fn rewrite_grep(args: &[String]) -> Option<ReadonlyShellRewrite> {
+fn rewrite_grep(command: &str, args: &[String]) -> Option<ReadonlyShellRewrite> {
     let parsed = parse_grep(args)?;
     let mut arguments = serde_json::Map::new();
     arguments.insert("pattern".into(), json!(parsed.pattern));
     if let Some(path) = parsed.path {
         arguments.insert("path".into(), json!(path));
     }
+    if let Some(include) = parsed.include {
+        arguments.insert("include".into(), json!(include));
+    }
+    if grep_should_use_regex(command, parsed.fixed_strings) {
+        arguments.insert("mode".into(), json!("regex"));
+    }
     Some(dedicated("grep", Value::Object(arguments)))
+}
+
+fn grep_should_use_regex(command: &str, fixed_strings: bool) -> bool {
+    !fixed_strings && matches!(command, "rg" | "egrep")
 }
 
 fn rewrite_fd(args: &[String]) -> Option<ReadonlyShellRewrite> {
@@ -263,11 +400,15 @@ fn parse_find(args: &[String]) -> Option<FindParsed> {
 struct GrepParsed {
     pattern: String,
     path: Option<String>,
+    include: Option<String>,
+    fixed_strings: bool,
 }
 
 fn parse_grep(args: &[String]) -> Option<GrepParsed> {
     let mut pattern = None;
     let mut path = None;
+    let mut include = None;
+    let mut fixed_strings = false;
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -283,14 +424,27 @@ fn parse_grep(args: &[String]) -> Option<GrepParsed> {
                 }
                 pattern = Some(args.get(i)?.clone());
             }
-            "-g" | "--glob" | "-t" | "--type" | "-A" | "-B" | "-C" | "--type-add" => {
+            "-g" | "--glob" => {
+                i += 1;
+                include = Some(args.get(i)?.clone());
+            }
+            "-t" | "--type" | "-A" | "-B" | "-C" | "-m" | "--max-count" | "--type-add" => {
                 i += 1;
                 args.get(i)?;
             }
-            "-n" | "-i" | "-F" | "-w" | "-l" | "-c" | "-H" | "-I" | "--heading"
-            | "--no-heading" | "--hidden" | "--color" | "--color=never" | "--color=auto"
-            | "--line-number" | "--ignore-case" | "--fixed-strings" => {}
+            "-F" | "--fixed-strings" => fixed_strings = true,
+            "-n" | "-i" | "-w" | "-l" | "-c" | "-H" | "-I" | "--heading" | "--no-heading"
+            | "--hidden" | "--color" | "--color=never" | "--color=auto" | "--line-number"
+            | "--ignore-case" => {}
             "--pre" | "--pre-glob" | "-f" | "--file" | "--exec" => return None,
+            flag if flag.starts_with("--glob=") => {
+                include = Some(flag["--glob=".len()..].to_string());
+            }
+            flag if is_combined_grep_shorts(flag) => {
+                if flag.contains('F') {
+                    fixed_strings = true;
+                }
+            }
             flag if flag.starts_with('-') => return None,
             _ => {
                 if pattern.is_none() {
@@ -317,7 +471,20 @@ fn parse_grep(args: &[String]) -> Option<GrepParsed> {
     Some(GrepParsed {
         pattern: pattern?,
         path,
+        include,
+        fixed_strings,
     })
+}
+
+fn is_combined_grep_shorts(flag: &str) -> bool {
+    let Some(rest) = flag.strip_prefix('-') else {
+        return false;
+    };
+    if rest.is_empty() || rest.starts_with('-') {
+        return false;
+    }
+    rest.chars()
+        .all(|ch| matches!(ch, 'n' | 'i' | 'F' | 'w' | 'l' | 'c' | 'H' | 'I'))
 }
 
 struct FdParsed {
@@ -648,7 +815,42 @@ mod tests {
             classify_readonly_shell(&call(r#"rg -n "Auto|Manual" crates"#)),
             Some(ReadonlyShellRewrite::Dedicated {
                 name: "grep".into(),
-                arguments: json!({"pattern": "Auto|Manual", "path": "crates"}),
+                arguments: json!({"pattern": "Auto|Manual", "path": "crates", "mode": "regex"}),
+            })
+        );
+        assert_eq!(
+            classify_readonly_shell(&call(r#"rg -ni Auto crates"#)),
+            Some(ReadonlyShellRewrite::Dedicated {
+                name: "grep".into(),
+                arguments: json!({"pattern": "Auto", "path": "crates", "mode": "regex"}),
+            })
+        );
+        assert_eq!(
+            classify_readonly_shell(&call(r#"rg -n --glob '*.rs' Auto"#)),
+            Some(ReadonlyShellRewrite::Dedicated {
+                name: "grep".into(),
+                arguments: json!({"pattern": "Auto", "include": "*.rs", "mode": "regex"}),
+            })
+        );
+        assert_eq!(
+            classify_readonly_shell(&call(r#"rg -n Auto | head -n 40"#)),
+            Some(ReadonlyShellRewrite::Dedicated {
+                name: "grep".into(),
+                arguments: json!({"pattern": "Auto", "mode": "regex"}),
+            })
+        );
+        assert_eq!(
+            classify_readonly_shell(&call(r#"/usr/bin/rg -n Auto 2>/dev/null"#)),
+            Some(ReadonlyShellRewrite::Dedicated {
+                name: "grep".into(),
+                arguments: json!({"pattern": "Auto", "mode": "regex"}),
+            })
+        );
+        assert_eq!(
+            classify_readonly_shell(&call(r#"rg -F 'foo|bar' src"#)),
+            Some(ReadonlyShellRewrite::Dedicated {
+                name: "grep".into(),
+                arguments: json!({"pattern": "foo|bar", "path": "src"}),
             })
         );
         assert_eq!(
@@ -683,6 +885,8 @@ mod tests {
         assert_eq!(classify_readonly_shell(&call("git push origin main")), None);
         assert_eq!(classify_readonly_shell(&call("ls && rm -rf /tmp/x")), None);
         assert_eq!(classify_readonly_shell(&call("cat secret | sh")), None);
+        assert_eq!(classify_readonly_shell(&call("rg foo | sh")), None);
+        assert_eq!(classify_readonly_shell(&call("rg foo | xargs rm")), None);
         assert!(matches!(
             classify_readonly_shell(&call("find . -exec rm {} +")),
             Some(ReadonlyShellRewrite::Redirect { .. })
