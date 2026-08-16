@@ -534,11 +534,11 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
         text.contains('⌂'),
         "narrow frame missing app identity:\n{text}"
     );
-    // Plain chips (no glyphs) free most of the budget, but at this narrow
-    // floor the model id still middle-truncates — assert its tail survives
-    // in the footer. Header chrome must never duplicate model/vendor/ctx.
+    // The usage slot takes more of the row than the old flag, so the model
+    // id middle-truncates harder at this width. Assert the ellipsis and the
+    // tail survive. Header chrome must never duplicate model/vendor/ctx.
     assert!(
-        text.contains("odel"),
+        text.contains('…') && text.contains("el"),
         "model id should render in the footer:\n{text}"
     );
     assert!(

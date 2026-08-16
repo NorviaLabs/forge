@@ -52,7 +52,7 @@ async fn agent_thinking_keeps_composer_usable() {
 }
 
 #[tokio::test]
-async fn changed_files_are_footer_only_without_review_cta() {
+async fn changed_files_do_not_appear_in_footer_or_as_review_cta() {
     let (dir, mut app) = focus_test_app().await;
     init_repo(dir.path());
     let status = std::process::Command::new("git")
@@ -86,11 +86,14 @@ async fn changed_files_are_footer_only_without_review_cta() {
     );
 
     assert!(app.activity_summary().is_none());
-    assert_eq!(app.workspace_activity_label().as_deref(), Some("1 changes"));
     let rendered = render_app_text(&mut app, 140, 30);
     assert!(
-        rendered.contains("1 changes"),
-        "footer should show an inert change count:\n{rendered}"
+        rendered.contains("0 · —"),
+        "footer last segment is session usage, not a change count:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("1 changes"),
+        "workspace change count must not appear in the footer:\n{rendered}"
     );
     assert!(
         !rendered.contains("Review"),

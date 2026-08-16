@@ -666,7 +666,9 @@ impl TuiApp {
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
             ctx_pct: status.ctx_pct,
-            workspace_activity: self.workspace_activity_label(),
+            prompt_tokens: self.session_view.prompt_tokens,
+            completion_tokens: self.session_view.completion_tokens,
+            prompt_cache_reads: self.session_view.prompt_cache_hits,
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 

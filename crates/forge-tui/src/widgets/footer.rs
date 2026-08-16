@@ -42,9 +42,12 @@ pub struct FooterModel {
     pub lifecycle: TurnLifecycle,
     /// 0.0..=1.0
     pub ctx_pct: f64,
-    /// Inert workspace change count, e.g. `"3 changes"`. Replaces the
-    /// reserved job-count slot when present.
-    pub workspace_activity: Option<String>,
+    /// Session API-reported prompt/input tokens.
+    pub prompt_tokens: u64,
+    /// Session API-reported completion/output tokens.
+    pub completion_tokens: u64,
+    /// Session API-reported cached prompt-read tokens.
+    pub prompt_cache_reads: u64,
 }
 
 pub struct FooterBar<'a> {
@@ -324,18 +327,57 @@ impl FooterBar<'_> {
             Span::styled("·", theme::dim()),
             Span::raw("  "),
         ]);
-        if let Some(activity) = &m.workspace_activity {
-            right.push(Span::styled(activity.clone(), theme::text_secondary()));
-        } else {
-            // Reserved for background job/agent counts — dim/empty today.
-            right.push(Span::styled("⚑", theme::dim()));
-        }
+        right.push(Span::styled(
+            format_footer_usage_slot(m.prompt_tokens, m.completion_tokens, m.prompt_cache_reads),
+            theme::text_secondary(),
+        ));
         if dim {
             for span in right.iter_mut() {
                 span.style = theme::dim();
             }
         }
         ratatui::text::Line::from(right)
+    }
+}
+
+/// Last footer segment: session total + cache hit rate.
+///
+/// `0 · —` until any prompt tokens are reported (including "the model ran
+/// but the provider sent no usage"). After that: `12.4k · 81% cache`.
+pub(crate) fn format_footer_usage_slot(
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cache_reads: u64,
+) -> String {
+    if prompt_tokens == 0 {
+        return "0 · —".into();
+    }
+    let total = prompt_tokens.saturating_add(completion_tokens);
+    let rate = ((cache_reads as f64 / prompt_tokens as f64) * 100.0)
+        .clamp(0.0, 100.0)
+        .round() as u32;
+    format!("{} · {rate}% cache", compact_token_count(total))
+}
+
+/// Compact count for the footer: `999`, `1.2k`, `12k`, `1.2M`.
+pub(crate) fn compact_token_count(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        compact_scaled(n, 1_000, "k")
+    } else if n < 1_000_000_000 {
+        compact_scaled(n, 1_000_000, "M")
+    } else {
+        compact_scaled(n, 1_000_000_000, "B")
+    }
+}
+
+fn compact_scaled(n: u64, scale: u64, suffix: &str) -> String {
+    let tenths = n.saturating_add(scale / 20) / (scale / 10);
+    if tenths.is_multiple_of(10) {
+        format!("{}{suffix}", tenths / 10)
+    } else {
+        format!("{}.{}{suffix}", tenths / 10, tenths % 10)
     }
 }
 
@@ -465,7 +507,8 @@ mod tests {
         let out = rendered(&m, 90);
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
-        assert!(out.trim_end().ends_with('⚑'), "{out:?}");
+        assert!(out.contains("0 · —"), "{out:?}");
+        assert!(!out.contains('⚑'), "{out:?}");
     }
 
     #[test]
@@ -567,24 +610,27 @@ mod tests {
     #[test]
     fn fits_at_min_width_floor_without_dropping_anything() {
         // 76 usable cols is layout.rs::MIN_WIDTH's realistic floor (80-col
-        // terminal, 95% content width). Plain chips (no glyphs) free enough
-        // budget for the full model label here; every control and both
-        // activity halves must render in full.
+        // terminal, 95% content width). The model label is the only side
+        // that may shrink; effort, mode, and the right-side activity
+        // (lifecycle, context bar, usage) must render in full.
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 76);
-        assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
         assert!(out.contains("Medium"), "{out:?}");
         assert!(out.contains("Auto"), "{out:?}");
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
+        assert!(out.contains("0 · —"), "{out:?}");
     }
 
     #[test]
-    fn workspace_activity_replaces_the_reserved_job_slot() {
+    fn usage_slot_replaces_the_reserved_job_flag() {
         let mut m = model(TurnLifecycle::Ready, 0.34);
-        m.workspace_activity = Some("2 changes".into());
+        m.prompt_tokens = 6_094;
+        m.completion_tokens = 36;
+        m.prompt_cache_reads = 5_504;
         let out = rendered(&m, 90);
-        assert!(out.contains("2 changes"), "{out:?}");
+        assert!(out.contains("6.1k · 90% cache"), "{out:?}");
+        assert!(!out.contains("2 changes"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
     }
 
@@ -600,6 +646,27 @@ mod tests {
         let out = rendered(&m, 76);
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("100%"), "{out:?}");
-        assert!(out.trim_end().ends_with('⚑'), "{out:?}");
+        assert!(out.contains("0 · —"), "{out:?}");
+    }
+
+    #[test]
+    fn format_footer_usage_slot_stays_blank_until_prompt_tokens() {
+        assert_eq!(format_footer_usage_slot(0, 0, 0), "0 · —");
+        assert_eq!(format_footer_usage_slot(0, 500, 0), "0 · —");
+        assert_eq!(format_footer_usage_slot(100, 0, 0), "100 · 0% cache");
+        assert_eq!(
+            format_footer_usage_slot(6_094, 36, 5_504),
+            "6.1k · 90% cache"
+        );
+        assert_eq!(format_footer_usage_slot(100, 0, 200), "100 · 100% cache");
+    }
+
+    #[test]
+    fn compact_token_count_uses_k_and_m() {
+        assert_eq!(compact_token_count(0), "0");
+        assert_eq!(compact_token_count(999), "999");
+        assert_eq!(compact_token_count(1_000), "1k");
+        assert_eq!(compact_token_count(12_400), "12.4k");
+        assert_eq!(compact_token_count(1_200_000), "1.2M");
     }
 }

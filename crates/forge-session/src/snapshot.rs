@@ -44,6 +44,10 @@ pub struct SessionSnapshot {
     pub loaded_skills_count: usize,
     /// Estimated share of the context window in use, 0.0..=1.0.
     pub context_usage_ratio: f64,
+    /// API-reported session totals. Field reads — not `token_usage_report()`,
+    /// which walks the transcript and is reserved for slash-command detail.
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
     pub prompt_cache_hits: u64,
     pub prompt_cache_writes: u64,
 }
@@ -61,6 +65,8 @@ impl SessionSnapshot {
             tool_count: session.tool_count(),
             loaded_skills_count: session.loaded_skills_count(),
             context_usage_ratio: session.context_usage_ratio(),
+            prompt_tokens: session.token_usage.prompt_tokens,
+            completion_tokens: session.token_usage.completion_tokens,
             prompt_cache_hits: session.token_usage.prompt_cache_hits,
             prompt_cache_writes: session.token_usage.prompt_cache_writes,
         }
@@ -90,6 +96,8 @@ impl Default for SessionSnapshot {
             tool_count: 0,
             loaded_skills_count: 0,
             context_usage_ratio: 0.0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
         }
@@ -226,6 +234,8 @@ mod tests {
         assert!(!snapshot.is_awaiting_approval());
         assert_eq!(snapshot.queue_len, 0);
         assert_eq!(snapshot.background_len, 0);
+        assert_eq!(snapshot.prompt_tokens, 0);
+        assert_eq!(snapshot.completion_tokens, 0);
         assert_eq!(snapshot.workspace_root(), dir.path());
     }
 
