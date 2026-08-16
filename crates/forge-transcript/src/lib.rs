@@ -1517,7 +1517,7 @@ fn routine_tool_category(
     call: Option<&ToolCall>,
 ) -> Option<ActivityCategory> {
     match name {
-        "read_file" | "ls" | "glob" | "grep" => Some(ActivityCategory::Exploring),
+        "read_file" | "ls" | "glob" | "grep" | "rg" => Some(ActivityCategory::Exploring),
         "git"
             if tool_argument(call, "subcommand").is_some_and(is_read_only_git)
                 || summary
@@ -1581,7 +1581,7 @@ fn activity_group_summary(category: ActivityCategory, items: &[ChatItem]) -> Str
                 .count();
             let searches = items
                 .iter()
-                .filter(|item| matches!(item, ChatItem::ToolCard { name, .. } if name == "glob" || name == "grep"))
+                .filter(|item| matches!(item, ChatItem::ToolCard { name, .. } if name == "glob" || name == "grep" || name == "rg"))
                 .count();
             join_counts(&[
                 (reads, "file inspected", "files inspected"),
@@ -1821,7 +1821,7 @@ fn classify_tool_content(
                 .map(|query| format!("{query} · {label}"))
                 .unwrap_or(label)
         }
-        "grep" => {
+        "grep" | "rg" => {
             let label = if lower.contains("no matches found") {
                 "no matches".to_string()
             } else {

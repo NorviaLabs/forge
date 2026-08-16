@@ -1519,6 +1519,11 @@ async fn readonly_inspection_bash_does_not_ask_for_approval() {
                     name: "bash".into(),
                     arguments: json!({"command": "ls && find . -maxdepth 1"}),
                 },
+                ToolCall {
+                    id: "3".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command": "rg -n hello | head"}),
+                },
             ],
             usage: None,
             thinking: None,
@@ -1550,6 +1555,65 @@ async fn readonly_inspection_bash_does_not_ask_for_approval() {
     assert!(
         s.messages.iter().any(|m| m.content.contains("dedicated")),
         "compound inspection should redirect instead of prompting"
+    );
+    assert!(
+        s.messages.iter().any(|m| {
+            m.role == MessageRole::Tool
+                && m.name.as_deref() == Some("grep")
+                && m.content.contains("hello")
+        }),
+        "bash(rg | head) must run as the grep tool, got {:?}",
+        s.messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .map(|m| (m.name.as_deref(), m.content.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn rg_tool_name_is_a_synonym_for_grep() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "hello").unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "rg".into(),
+                arguments: json!({"pattern": "hello"}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut tools = ToolRegistry::new();
+    for tool in forge_tools::default_builtins() {
+        tools.register(tool);
+    }
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    s.run_user_message("search").await.unwrap();
+    assert!(s.pending_hitl().is_none(), "rg synonym must not prompt");
+    assert!(
+        s.messages.iter().any(|m| {
+            m.role == MessageRole::Tool
+                && m.name.as_deref() == Some("grep")
+                && m.content.contains("hello")
+        }),
+        "rg must run as the grep tool, got {:?}",
+        s.messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .map(|m| (m.name.as_deref(), m.content.as_str()))
+            .collect::<Vec<_>>()
     );
 }
 

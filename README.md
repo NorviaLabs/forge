@@ -295,7 +295,7 @@ Default is **Accept Edits**.
 - **Accept Edits** (default) — file writes free; a tight shell allow list
   runs without prompts: `cargo test|build|check|clippy|fmt` (including via
   `background_run`). Listing, search, file reads, and git inspection go
-  through dedicated tools (`ls`, `fffind`, `ffgrep`, `read_file`, `git`)
+  through dedicated tools (`ls`, `glob`, `grep`, `read_file`, `git`)
   and do not prompt. Other shell still asks. Add a `deny` pattern to
   re-prompt on a seed.
 - **Manual** — every shell-equivalent command asks unless your personal

@@ -44,15 +44,15 @@ fn clamp_fff_results(requested: u32) -> usize {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct FffGrepArgs {
-    /// Search pattern (plain text, regex, or fuzzy)
+    /// The regex pattern to search for in file contents.
     pub pattern: String,
-    /// Optional file path filter
+    /// The directory or file to search. Defaults to the workspace root.
     #[serde(default)]
     pub path: Option<String>,
-    /// Optional file glob to include.
+    /// File pattern to include (e.g. `*.js`, `*.{ts,tsx}`).
     #[serde(default)]
     pub include: Option<String>,
-    /// Search mode: plain (default), regex, fuzzy
+    /// Search mode: regex (default, like ripgrep), plain, or fuzzy.
     #[serde(default)]
     pub mode: Option<FffModeArg>,
     #[serde(default = "fff_grep_max")]
@@ -236,7 +236,10 @@ impl Tool for FffGrepTool {
         self.name
     }
     fn description(&self) -> &str {
-        "Search file contents by text or regular expression using the indexed search engine. Use this instead of bash with `rg` or `grep`."
+        "Fast content search. Searches file contents using regular expressions \
+         (ripgrep syntax). Filter files with the include parameter \
+         (e.g. `*.js`, `*.{ts,tsx}`). Prefer this over bash with `rg` or `grep`. \
+         Do not use the unix `grep` command."
     }
     fn input_schema(&self) -> Value {
         crate::builtins::schema_for::<FffGrepArgs>()
@@ -258,7 +261,7 @@ impl Tool for FffGrepTool {
             .mode
             .as_ref()
             .map(GrepQueryMode::from)
-            .unwrap_or(GrepQueryMode::Plain);
+            .unwrap_or(GrepQueryMode::Regex);
         let state = self.state.clone();
         let root = ctx.workspace_root.clone();
         let pattern = args.pattern.clone();
@@ -268,22 +271,19 @@ impl Tool for FffGrepTool {
         let response = tokio::task::spawn_blocking(move || {
             state
                 .index_for(&root)?
-                .grep(&pattern, path.as_deref(), mode, max_results)
+                .grep_scoped(
+                    &pattern,
+                    path.as_deref(),
+                    include.as_deref(),
+                    mode,
+                    max_results,
+                )
                 .map_err(search_err)
         })
         .await
         .map_err(|e| ToolError::Execution(format!("grep worker: {e}")))??;
 
-        let hits = if let Some(include) = include {
-            response
-                .hits
-                .into_iter()
-                .filter(|hit| wildcard_match(&include, &hit.path))
-                .collect::<Vec<_>>()
-        } else {
-            response.hits
-        };
-        let total_matched = hits.len();
+        let hits = response.hits;
         Ok(ToolOutput {
             outcome: Default::default(),
             content: if hits.is_empty() {
@@ -301,7 +301,7 @@ impl Tool for FffGrepTool {
                     }
                     output.push_str(&format!("  Line {}: {}\n", hit.line, hit.text));
                 }
-                if response.total_matched > total_matched {
+                if response.total_matched >= max_results {
                     output.push_str("\n(Results truncated; use a narrower pattern.)");
                 }
                 output.trim_end().to_string()
@@ -311,29 +311,6 @@ impl Tool for FffGrepTool {
             attachments: Vec::new(),
         })
     }
-}
-
-fn wildcard_match(pattern: &str, value: &str) -> bool {
-    let parts = pattern.split('*').collect::<Vec<_>>();
-    if parts.len() == 1 {
-        return value.ends_with(pattern);
-    }
-    let mut cursor = 0;
-    for (index, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        let Some(found) = value[cursor..].find(part) else {
-            return false;
-        };
-        if index == 0 && found != 0 {
-            return false;
-        }
-        cursor += found + part.len();
-    }
-    parts
-        .last()
-        .is_none_or(|part| part.is_empty() || value.ends_with(part))
 }
 
 fn reject_blank_or_oversized(tool: &str, field: &str, value: &str) -> Option<ToolOutput> {
@@ -398,7 +375,7 @@ mod tests {
         let state = FastFileState::new();
         let index = state.index_for(dir.path()).unwrap();
         let response = index
-            .grep("hello", Some("main"), GrepQueryMode::Plain, 10)
+            .grep("hello", Some("src/main.rs"), GrepQueryMode::Plain, 10)
             .unwrap();
         assert_eq!(response.hits.len(), 1);
         assert_eq!(response.hits[0].path, "src/main.rs");
@@ -416,7 +393,7 @@ mod tests {
         let state = FastFileState::new();
         let index = state.index_for(dir.path()).unwrap();
         let response = index
-            .grep("shared", Some("main"), GrepQueryMode::Plain, 10)
+            .grep("shared", Some("src/main.rs"), GrepQueryMode::Plain, 10)
             .unwrap();
         assert_eq!(response.hits.len(), 1);
         assert_eq!(response.hits[0].path, "src/main.rs");
@@ -531,12 +508,46 @@ mod tests {
         let out = tool
             .call(
                 &ctx,
-                serde_json::json!({"pattern": "hello", "path": "main"}),
+                serde_json::json!({"pattern": "hello", "path": "src/main.rs"}),
             )
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("src/main.rs"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn grep_path_scope_survives_earlier_out_of_scope_hits() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("crates/core")).unwrap();
+        for i in 0..60 {
+            std::fs::write(
+                dir.path().join(format!("README-{i}.md")),
+                "forge is the project name\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.path().join("crates/core/lib.rs"), "//! forge-core\n").unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
+        let out = tool
+            .call(
+                &ctx,
+                serde_json::json!({"pattern": "forge", "path": "crates"}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("crates/core/lib.rs"),
+            "expected crate hit, got {}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("README-"),
+            "root hits must not leak into a crates-scoped search: {}",
+            out.content
+        );
     }
 
     #[tokio::test]

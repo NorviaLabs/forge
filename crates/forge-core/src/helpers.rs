@@ -259,7 +259,7 @@ pub(crate) fn classify_turn(calls: &[ToolCall]) -> TaskExpectation {
                 }
             }
             "bash" => tool_items.push((call.id.clone(), bash_label(&call.arguments))),
-            "glob" | "grep" => search_count += 1,
+            "glob" | "grep" | "rg" => search_count += 1,
             _ => {}
         }
     }

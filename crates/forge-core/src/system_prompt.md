@@ -209,9 +209,9 @@ When using the shell, you must adhere to the following guidelines:
 Two dedicated tools use the FFF engine (frecency-ranked, typo-resistant, git-aware):
 
 - **`glob`** — Find files by path/name pattern. Supports globs (`*.rs`, `src/**/*.ts`) and bounded results.
-- **`grep`** — Search file contents. Supports plain text, regex, and fuzzy matching with optional path filters.
+- **`grep`** — Search file contents with regular expressions (ripgrep syntax). Filter by path or `include` glob.
 
-Prefer these over shell commands (`rg`, `find`, `grep`, `fd`) for workspace inspection — they run in-process, keep a warm FFF index, and return concise structured results. Do not use `bash`, `background_run`, or `exec_command` for file search or listing.
+Prefer these over shell commands (`rg`, `find`, `grep`, `fd`) for workspace inspection — they run in-process, keep a warm FFF index, and return concise structured results. Do not use `bash`, `background_run`, or `exec_command` for file search or listing. A tool call named `rg` is accepted as `grep`.
 
 ## Workspace inspection
 

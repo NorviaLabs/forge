@@ -2,12 +2,33 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use forge_types::{SideEffectClass, ToolDescriptor, ToolOutput, ToolValidationError};
+use forge_types::{SideEffectClass, ToolCall, ToolDescriptor, ToolOutput, ToolValidationError};
 use jsonschema::Validator;
 use serde_json::Value;
 
 use crate::validation::{validate_args_with, ValidationBudget};
 use crate::{Tool, ToolError};
+
+/// Resolve a model-supplied tool name to the registered built-in.
+///
+/// OpenCode advertises only `grep` and implements it with ripgrep. Models
+/// still emit a tool named `rg`; that inbound name is accepted as `grep`
+/// and is not a second advertised tool.
+pub fn canonical_tool_name(name: &str) -> &str {
+    match name {
+        "rg" => "grep",
+        other => other,
+    }
+}
+
+/// Rewrite a call so synonym names execute as their canonical tool.
+pub fn canonicalize_tool_call(mut call: ToolCall) -> ToolCall {
+    let canonical = canonical_tool_name(&call.name);
+    if canonical != call.name {
+        call.name = canonical.to_string();
+    }
+    call
+}
 
 #[derive(Debug, Clone)]
 pub struct ToolContext {
@@ -157,7 +178,15 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(name).cloned()
+        self.tools
+            .get(name)
+            .or_else(|| {
+                let canonical = canonical_tool_name(name);
+                (canonical != name)
+                    .then(|| self.tools.get(canonical))
+                    .flatten()
+            })
+            .cloned()
     }
 
     pub fn list_descriptors(&self) -> Arc<Vec<ToolDescriptor>> {
@@ -220,6 +249,7 @@ impl ToolRegistry {
         args: Value,
         budget: &mut ValidationBudget,
     ) -> Result<ToolOutput, ToolError> {
+        let name = canonical_tool_name(name);
         let tool = self
             .get(name)
             .ok_or_else(|| ToolError::Unknown(name.to_string()))?;
@@ -273,6 +303,7 @@ impl Default for ToolRegistry {
 mod tests {
     use super::*;
     use crate::builtins::{ReadFileTool, WriteFileTool};
+    use crate::fast_file_tools::{FastFileState, FffGrepTool};
     use crate::ValidationBudget;
     use serde_json::json;
     use tempfile::tempdir;
@@ -567,6 +598,46 @@ mod tests {
         assert_eq!(reg.names(), vec!["read_file"]);
         let descriptors = reg.list_descriptors();
         assert_eq!(descriptors[0].name, "read_file");
+    }
+
+    #[test]
+    fn rg_resolves_to_grep_even_when_only_grep_is_registered() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(FffGrepTool::new(
+            Arc::new(FastFileState::new()),
+            "grep",
+        )));
+        let tool = reg.get("rg").expect("rg should resolve to grep");
+        assert_eq!(tool.name(), "grep");
+        assert_eq!(canonical_tool_name("rg"), "grep");
+        let call = canonicalize_tool_call(ToolCall {
+            id: "1".into(),
+            name: "rg".into(),
+            arguments: json!({"pattern": "hello"}),
+        });
+        assert_eq!(call.name, "grep");
+    }
+
+    #[tokio::test]
+    async fn calling_rg_executes_grep() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("hit.rs"), "hello from rg\n").unwrap();
+        let mut reg = ToolRegistry::new();
+        for tool in crate::default_builtins() {
+            reg.register(tool);
+        }
+        assert!(
+            !reg.list_descriptors().iter().any(|d| d.name == "rg"),
+            "OpenCode-style: rg is inbound-only, not advertised"
+        );
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let mut budget = ValidationBudget::with_default_max();
+        let out = reg
+            .call(&ctx, "rg", json!({"pattern": "hello"}), &mut budget)
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("hello"), "{}", out.content);
     }
 
     #[test]

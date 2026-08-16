@@ -36,8 +36,8 @@ pub enum PermissionMode {
     Manual,
     /// Daily driver: file writes free (as always) plus a tight curated shell
     /// allow seed (cargo test/build/check/clippy/fmt). Workspace inspection
-    /// (`ls`, `git status/diff/log`, `rg`, `find`) is rewritten onto dedicated
-    /// tools before approval. Everything else shell still asks.
+    /// (`ls`, `git status/diff/log`, `rg`/`grep`, `find`) is rewritten onto
+    /// dedicated tools before approval. Everything else shell still asks.
     #[default]
     AcceptEdits,
 }
@@ -165,7 +165,7 @@ impl Governance {
 
     /// Short description of what Accept Edits frees (for toasts / docs).
     pub fn accept_edits_toast_summary() -> &'static str {
-        "Accept Edits: cargo test/build/check/clippy/fmt free; ls/find/rg/git reads use dedicated tools"
+        "Accept Edits: cargo test/build/check/clippy/fmt free; ls/glob/grep/git reads use dedicated tools"
     }
 
     /// Filter tool list for the model (SEC-02).
