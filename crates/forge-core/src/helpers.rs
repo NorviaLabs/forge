@@ -116,6 +116,8 @@ pub(crate) fn parse_patch_paths(patch: &str) -> Vec<(String, FileEffectKind)> {
             for (prefix, kind) in [
                 ("*** Add File: ", FileEffectKind::Modified),
                 ("*** Update File: ", FileEffectKind::Modified),
+                ("*** Change File: ", FileEffectKind::Modified),
+                ("*** Move to: ", FileEffectKind::Modified),
                 ("*** Delete File: ", FileEffectKind::Deleted),
             ] {
                 if let Some(p) = line.strip_prefix(prefix) {
