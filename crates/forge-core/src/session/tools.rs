@@ -45,6 +45,26 @@ pub struct CompletedToolApplication {
     remaining: PendingToolApplications,
 }
 
+pub struct PendingHitlExecution {
+    execution: PendingToolExecution,
+}
+
+pub struct CompletedHitlExecution {
+    execution: CompletedToolExecution,
+}
+
+impl PendingHitlExecution {
+    pub fn tool_name(&self) -> &str {
+        &self.execution.call.name
+    }
+
+    pub async fn execute(self) -> CompletedHitlExecution {
+        CompletedHitlExecution {
+            execution: self.execution.execute().await,
+        }
+    }
+}
+
 impl PendingToolExecution {
     pub async fn execute(self) -> CompletedToolExecution {
         let Self {
@@ -663,28 +683,62 @@ impl AgentSession {
         call: &ToolCall,
         budget: &mut ValidationBudget,
     ) -> Result<(), LoopError> {
+        if let Some(pending) = self.begin_hitl_execution(call, budget).await? {
+            self.finish_hitl_execution(pending.execute().await).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn begin_hitl_execution(
+        &mut self,
+        call: &ToolCall,
+        budget: &mut ValidationBudget,
+    ) -> Result<Option<PendingHitlExecution>, LoopError> {
         if self.try_serve_journaled_tool(call).await? {
-            return Ok(());
+            return Ok(None);
+        }
+        if call.name == "background_run" {
+            self.turn.record_call(call.clone());
+            self.journal
+                .append_tool_intent(self.session_id, call)
+                .await?;
+            self.dispatch_background_run(call).await?;
+            return Ok(None);
         }
         self.turn.record_call(call.clone());
         self.journal
             .append_tool_intent(self.session_id, call)
             .await?;
-        let pre_edit = pre_edit_snapshot(&self.tool_ctx, call).await;
-        let pre_git = git_pre_state(&self.tool_ctx, call).await;
-        match self
-            .tools
-            .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
-            .await
-        {
+        Ok(Some(PendingHitlExecution {
+            execution: PendingToolExecution {
+                call: call.clone(),
+                tools: self.tools.clone(),
+                tool_ctx: self.tool_ctx.clone(),
+                budget: std::mem::take(budget),
+            },
+        }))
+    }
+
+    pub async fn finish_hitl_execution(
+        &mut self,
+        completed: CompletedHitlExecution,
+    ) -> Result<(), LoopError> {
+        let CompletedToolExecution {
+            call,
+            budget: _,
+            pre_edit,
+            pre_git,
+            result,
+        } = completed.execution;
+        match result {
             Ok(mut output) => {
                 Self::backfill_tool_outcome(&mut output);
-                self.push_success_evidence(call, pre_edit, pre_git, &output)
+                self.push_success_evidence(&call, pre_edit, pre_git, &output)
                     .await;
                 self.journal
-                    .append_tool_result(self.session_id, call, &output)
+                    .append_tool_result(self.session_id, &call, &output)
                     .await?;
-                self.remember_tool_result(call, &output);
+                self.remember_tool_result(&call, &output);
                 if call.name == "update_plan" && !output.is_error {
                     // Stateless checklist broadcast — clients replace whatever they
                     // were showing with this payload. Mirrors codex PlanUpdate.
@@ -693,7 +747,8 @@ impl AgentSession {
                         detail: call.arguments.to_string(),
                     });
                 }
-                self.messages.push(Message::from_tool_output(call, &output));
+                self.messages
+                    .push(Message::from_tool_output(&call, &output));
             }
             Err(e) => {
                 let outcome = e.as_outcome();
@@ -705,9 +760,9 @@ impl AgentSession {
                     attachments: Vec::new(),
                 };
                 self.journal
-                    .append_tool_result(self.session_id, call, &output)
+                    .append_tool_result(self.session_id, &call, &output)
                     .await?;
-                self.remember_tool_result(call, &output);
+                self.remember_tool_result(&call, &output);
             }
         }
         Ok(())

@@ -233,7 +233,7 @@ impl TuiApp {
                 Ok(true)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
-                self.resolve_approval_line(ApprovalMenuKind::Deny).await?;
+                self.queue_approval_line(ApprovalMenuKind::Deny);
                 Ok(true)
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
@@ -241,19 +241,7 @@ impl TuiApp {
                 let Some(kind) = kinds.get(self.approval_session.menu.selected).copied() else {
                     return Ok(true);
                 };
-                match kind {
-                    ApprovalMenuKind::AllowOnce => {
-                        self.resolve_approval_line(ApprovalMenuKind::AllowOnce)
-                            .await?;
-                    }
-                    ApprovalMenuKind::AllowPattern => {
-                        self.resolve_approval_line(ApprovalMenuKind::AllowPattern)
-                            .await?;
-                    }
-                    ApprovalMenuKind::Deny => {
-                        self.resolve_approval_line(ApprovalMenuKind::Deny).await?;
-                    }
-                }
+                self.queue_approval_line(kind);
                 Ok(true)
             }
             _ => Ok(false),
@@ -293,6 +281,7 @@ impl TuiApp {
     /// Apply a menu choice to the pending HITL request. Eligibility for
     /// `remember`/`always` is checked here, not in the menu builder, so an
     /// ineligible choice is warned about without acting.
+    #[cfg(test)]
     pub(super) async fn resolve_approval_line(
         &mut self,
         action: ApprovalMenuKind,
@@ -309,17 +298,50 @@ impl TuiApp {
         }
     }
 
+    fn queue_approval_line(&mut self, action: ApprovalMenuKind) {
+        match action {
+            ApprovalMenuKind::AllowOnce => {
+                self.pending_interaction
+                    .request_hitl_decision(HitlDecision::Approve, false);
+            }
+            ApprovalMenuKind::AllowPattern => {
+                let Some(payload) = self.session.pending_hitl().cloned() else {
+                    return;
+                };
+                if self.session_pattern_call_for_payload(&payload).is_none() {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "this call has no session pattern to remember; use Run once or Don't run",
+                    );
+                    return;
+                }
+                self.pending_interaction
+                    .request_hitl_decision(HitlDecision::Approve, true);
+            }
+            ApprovalMenuKind::Deny => {
+                self.pending_interaction
+                    .request_hitl_decision(HitlDecision::Deny, false);
+            }
+        }
+        if let Some(payload) = self.session.pending_hitl() {
+            self.busy_state.start(BusyPhase::Tool {
+                name: payload.tool.clone(),
+            });
+        }
+    }
+
     pub async fn drain_pending_hitl(
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let Some(decision) = self.pending_interaction.take_hitl_decision() else {
+        let Some((decision, remember)) = self.pending_interaction.take_hitl_decision() else {
             return Ok(());
         };
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
-        self.session.resolve_hitl(decision.clone(), "tui").await?;
+        self.apply_hitl_decision(decision.clone(), remember, terminal.as_deref_mut())
+            .await?;
         self.status_state.message = match decision {
             HitlDecision::Approve => "Action approved".into(),
             HitlDecision::Deny => "Action denied".into(),
@@ -328,18 +350,27 @@ impl TuiApp {
             _ => "Action denied".into(),
         };
         self.push_notice(vec![self.status_state.message.clone()]);
-        self.busy_state.set_phase(BusyPhase::Idle);
-        self.enter_chat_composer();
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) async fn resolve_hitl_overlay(
         &mut self,
         decision: HitlDecision,
         remember_exact_direct: bool,
+    ) -> Result<(), TuiError> {
+        self.apply_hitl_decision(decision, remember_exact_direct, None)
+            .await
+    }
+
+    async fn apply_hitl_decision(
+        &mut self,
+        decision: HitlDecision,
+        remember_exact_direct: bool,
+        terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
         let Some(payload) = self.session.pending_hitl().cloned() else {
             return Ok(());
@@ -354,18 +385,39 @@ impl TuiApp {
                 return Ok(());
             };
             let pattern = self.session.allow_suggested_pattern_for_session(&call);
-            self.session.resolve_hitl(decision.clone(), "tui").await?;
+            self.apply_approved_hitl(terminal).await?;
             self.push_toast(format!("allowed {pattern} for the session"));
-            self.resume_turn_after_hitl();
-            self.enter_chat_composer();
             return Ok(());
         }
-        self.session.resolve_hitl(decision.clone(), "tui").await?;
         match decision {
-            HitlDecision::Approve => self.push_toast("approved once"),
-            HitlDecision::Deny => self.push_toast("denied"),
+            HitlDecision::Approve => {
+                self.apply_approved_hitl(terminal).await?;
+                self.push_toast("approved once");
+            }
+            HitlDecision::Deny => {
+                self.session.resolve_hitl(decision, "tui").await?;
+                self.push_toast("denied");
+                self.resume_turn_after_hitl();
+                self.enter_chat_composer();
+            }
             // `HitlDecision` is `#[non_exhaustive]`; an unrecognised decision is denied.
-            _ => self.push_toast("denied"),
+            _ => {
+                self.session.resolve_hitl(decision, "tui").await?;
+                self.push_toast("denied");
+                self.resume_turn_after_hitl();
+                self.enter_chat_composer();
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_approved_hitl(
+        &mut self,
+        terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        let pending = self.session.prepare_approved_hitl("tui").await?;
+        if let Some(pending) = pending {
+            self.execute_hitl_application(pending, terminal).await?;
         }
         self.resume_turn_after_hitl();
         self.enter_chat_composer();
@@ -395,6 +447,9 @@ impl TuiApp {
     /// The session authorizer already skips a matching call; this covers
     /// a prompt that was already on screen when the grant was recorded.
     pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
+        if self.pending_interaction.has_hitl_decision() {
+            return Ok(());
+        }
         let Some(payload) = self.session.pending_hitl().cloned() else {
             return Ok(());
         };
@@ -405,14 +460,12 @@ impl TuiApp {
         if !identity_allowed {
             return Ok(());
         }
-        self.session
-            .resolve_hitl(HitlDecision::Approve, "tui-session")
-            .await?;
+        self.pending_interaction
+            .request_hitl_decision(HitlDecision::Approve, false);
         let label = identity
             .map(|identity| identity.label())
             .unwrap_or(payload.tool);
         self.push_toast(format!("auto-approved {label}"));
-        self.resume_turn_after_hitl();
         // The card just disappeared under the user; drop back to the composer
         // rather than letting normalize_focus strand focus on a ghost block.
         if self.focus.block() == FocusBlock::Approval {

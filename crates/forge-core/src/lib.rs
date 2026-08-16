@@ -28,7 +28,8 @@ pub use completion::{
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use queue::{QueuedTask, TaskQueue};
 pub use session::tools::{
-    CompletedToolApplication, ModelResponseApplication, PendingToolApplication,
+    CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
+    PendingHitlExecution, PendingToolApplication,
 };
 pub use subagent::{SubagentOutcome, SubagentSpec};
 

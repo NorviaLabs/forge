@@ -137,17 +137,70 @@ impl AgentSession {
         }
 
         // Restore args from pending — we only have redacted; for tests use redacted as args
+        self.clear_hitl_wait_and_resume().await?;
         let mut budget = ValidationBudget::with_default_max();
-        self.turn
-            .evidence_mut()
-            .0
-            .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
-        self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
-            .await?;
         // Execute with stored args (may be redacted in production; Phase 2 keeps full call in journal intent before wait ideally)
         // Re-fetch from last HitlWait — for approve path re-execute with redacted args is weak;
         // store original args in pending for this implementation:
         self.run_one_tool_exec_only(&call, &mut budget).await?;
         Ok(())
+    }
+
+    /// Resolve an approval without executing the tool yet. The TUI uses this so a
+    /// heavy command can run off the event loop while frames still paint.
+    pub async fn prepare_approved_hitl(
+        &mut self,
+        actor: &str,
+    ) -> Result<Option<PendingHitlExecution>, LoopError> {
+        let payload = self
+            .pending_hitl()
+            .cloned()
+            .ok_or(LoopError::NoPendingHitl)?;
+        self.journal
+            .append_hitl_resume(self.session_id, "approve", actor)
+            .await?;
+        self.turn.reset_hitl_denials();
+        let call = ToolCall {
+            id: payload.call_id.clone(),
+            name: payload.tool.clone(),
+            arguments: payload.args_redacted.clone(),
+        };
+        let class = self
+            .tools
+            .get(&call.name)
+            .map(|t| t.side_effect_class())
+            .unwrap_or(SideEffectClass::Meta);
+        if self.enable_gov {
+            let d = self.governance.authorize(&call, class);
+            // `PolicyDecision` is `#[non_exhaustive]`. Testing `== Deny` let every other
+            // verdict through, so an unrecognised one would execute. Decide explicitly:
+            // `Hitl` still proceeds because the operator already approved this call and
+            // re-requiring approval here would stall the turn; anything unrecognised is
+            // refused. Behaviour is unchanged for Allow, Hitl and Deny.
+            let refuse = !matches!(d, PolicyDecision::Allow | PolicyDecision::Hitl);
+            if refuse {
+                self.turn
+                    .evidence_mut()
+                    .0
+                    .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+                self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
+                    .await?;
+                return Err(LoopError::Other(
+                    "policy denies tool after HITL approve".into(),
+                ));
+            }
+        }
+        self.clear_hitl_wait_and_resume().await?;
+        let mut budget = ValidationBudget::with_default_max();
+        self.begin_hitl_execution(&call, &mut budget).await
+    }
+
+    async fn clear_hitl_wait_and_resume(&mut self) -> Result<(), LoopError> {
+        self.turn
+            .evidence_mut()
+            .0
+            .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+        self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
+            .await
     }
 }
