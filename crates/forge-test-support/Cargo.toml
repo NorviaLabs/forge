@@ -3,9 +3,10 @@ name = "forge-test-support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Test-only fixtures shared across crates (e.g. a scripted-response HTTP mock server)."
+description = "Test-only fixtures shared across crates (e.g. a scripted-response HTTP mock server, git working copies)."
 
 [dependencies]
 
 [dev-dependencies]
+tempfile = { workspace = true }
 ureq = { workspace = true }
