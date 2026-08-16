@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use forge_config::WebSearchConfig;
 use forge_tools::{
-    default_builtins, web_search_tool, ToolContext, ToolError, ToolRegistry, ValidationBudget,
+    default_builtins, web_search_tool, web_search_tool_for_tests, ToolContext, ToolError,
+    ToolRegistry, ValidationBudget,
 };
 use forge_types::SideEffectClass;
 use serde_json::{json, Value};
@@ -41,9 +42,7 @@ fn register_all() -> ToolRegistry {
     for tool in default_builtins() {
         registry.register(tool);
     }
-    if let Some(search) = web_search_tool(&WebSearchConfig::default()) {
-        registry.register(search);
-    }
+    registry.register(web_search_tool_for_tests());
     registry
 }
 
@@ -149,8 +148,11 @@ fn web_search_is_optional_and_network_class() {
         !names.iter().any(|name| name == "web_search"),
         "default_builtins must not include web_search"
     );
-    let search =
-        web_search_tool(&WebSearchConfig::default()).expect("default config registers mock");
+    assert!(
+        web_search_tool(&WebSearchConfig::default()).is_none(),
+        "default mock config must not register web_search for users"
+    );
+    let search = web_search_tool_for_tests();
     assert_eq!(search.name(), "web_search");
     assert_eq!(search.side_effect_class(), SideEffectClass::Network);
 }

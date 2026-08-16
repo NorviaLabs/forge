@@ -332,6 +332,11 @@ impl WebSearchProvider {
     pub fn needs_api_key(self) -> bool {
         !matches!(self, Self::Mock)
     }
+
+    /// Mock is a deterministic test backend, never a user-facing provider.
+    pub fn is_mock(self) -> bool {
+        matches!(self, Self::Mock)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,8 +401,11 @@ impl WebSearchConfig {
     }
 
     /// Whether `web_search` should be registered in the tool catalog.
+    ///
+    /// Mock is never advertised: it exists so tests can inject a backend, not
+    /// so a session can return `example.com` hits to the model.
     pub fn should_register(&self) -> bool {
-        if !self.enabled {
+        if !self.enabled || self.provider.is_mock() {
             return false;
         }
         if !self.provider.needs_api_key() {
@@ -1236,7 +1244,10 @@ model = "from-file"
         assert_eq!(cfg.tools.web_search.max_results, 8);
         assert_eq!(cfg.tools.web_search.timeout_ms, 15_000);
         assert!(cfg.tools.web_search.require_key);
-        assert!(cfg.tools.web_search.should_register());
+        assert!(
+            !cfg.tools.web_search.should_register(),
+            "mock is test-only and must not register for users"
+        );
     }
 
     #[test]
@@ -1328,7 +1339,7 @@ max_query_chars = 0
     }
 
     #[test]
-    fn web_search_mock_does_not_require_key() {
+    fn web_search_mock_never_registers() {
         let g = EnvGuard::clear_forge_env();
         let mut ws = WebSearchConfig {
             enabled: true,
@@ -1336,12 +1347,13 @@ max_query_chars = 0
             require_key: true,
             ..Default::default()
         };
-        assert!(ws.should_register());
+        assert!(!ws.should_register());
         g.set("TAVILY_API_KEY", "secret-test-key");
-        assert!(ws.should_register());
+        assert!(!ws.should_register());
         ws.require_key = false;
         env::remove_var("TAVILY_API_KEY");
-        assert!(ws.should_register());
+        assert!(!ws.should_register());
+        assert!(WebSearchProvider::Mock.is_mock());
     }
 
     #[test]
@@ -1362,10 +1374,9 @@ max_query_chars = 0
         );
     }
 
-    /// Direct calls to `api_key_present` / `should_register`'s later checks,
-    /// bypassing the `needs_api_key() == false` short-circuit that
-    /// `should_register` takes for every currently-supported provider. These
-    /// are real reachable public methods, just not reached transitively today.
+    /// Direct calls to `api_key_present`. Mock never reaches the key check in
+    /// `should_register`; these cover the public method used once a real
+    /// provider exists.
     #[test]
     fn api_key_present_reflects_env_var_state() {
         let g = EnvGuard::clear_forge_env();

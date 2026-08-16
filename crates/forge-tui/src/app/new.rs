@@ -68,9 +68,7 @@ impl TuiApp {
             feedback_until: (!startup_notices.is_empty())
                 .then(|| Instant::now() + Duration::from_secs(7)),
             banner_state: BannerState { items: Vec::new() },
-            search_status: SearchStatusState {
-                label: Some("mock".into()),
-            },
+            search_status: SearchStatusState { label: None },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState::default(),
             pending_interaction: PendingInteractionState::default(),
