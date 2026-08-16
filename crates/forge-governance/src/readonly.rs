@@ -2,7 +2,7 @@
 //!
 //! Claude Code, Codex, and opencode keep `ls` / glob / grep / git as first-class
 //! tools and only send real work to the shell. Forge already has confined
-//! `git`, `fffind`, `ffgrep`, and `read_file`; this module stops the model from
+//! `git`, `glob`, `grep`, and `read_file`; this module stops the model from
 //! paying a HITL tax for the bash spelling of the same reads.
 
 use forge_types::ToolCall;
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::pattern::is_shell_tool;
 
 const REDIRECT_MESSAGE: &str = "Use dedicated workspace tools instead of bash for listing, \
-search, and git reads. Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git`.";
+search, and git reads. Use `ls`, `glob`, `grep`, `read_file`, or `git`.";
 
 /// How a shell-equivalent call should be handled before authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,9 +62,19 @@ fn classify_readonly_command(command: &str) -> Option<ReadonlyShellRewrite> {
     if segments.len() == 1 {
         let words = tokenize_words(&segments[0])?;
         return rewrite_argv(&words).or_else(|| {
-            is_readonly_argv(&words).then(|| ReadonlyShellRewrite::Redirect {
-                message: REDIRECT_MESSAGE.into(),
+            (is_readonly_argv(&words) || is_search_argv(&words)).then(|| {
+                ReadonlyShellRewrite::Redirect {
+                    message: REDIRECT_MESSAGE.into(),
+                }
             })
+        });
+    }
+    if segments
+        .iter()
+        .any(|segment| tokenize_words(segment).is_some_and(|words| is_search_argv(&words)))
+    {
+        return Some(ReadonlyShellRewrite::Redirect {
+            message: REDIRECT_MESSAGE.into(),
         });
     }
     if segments
@@ -96,6 +106,13 @@ fn is_readonly_argv(words: &[String]) -> bool {
     rewrite_argv(words).is_some()
 }
 
+fn is_search_argv(words: &[String]) -> bool {
+    matches!(
+        words.first().map(String::as_str),
+        Some("rg" | "grep" | "egrep" | "fgrep" | "find" | "fd")
+    )
+}
+
 fn split_command(words: &[String]) -> Option<(&str, &[String])> {
     let command = words.first()?.as_str();
     Some((command, &words[1..]))
@@ -115,7 +132,7 @@ fn rewrite_ls(args: &[String]) -> Option<ReadonlyShellRewrite> {
 
 fn rewrite_find(args: &[String]) -> Option<ReadonlyShellRewrite> {
     let parsed = parse_find(args)?;
-    Some(dedicated("fffind", json!({ "query": parsed.query })))
+    Some(dedicated("glob", json!({ "pattern": parsed.query })))
 }
 
 fn rewrite_grep(args: &[String]) -> Option<ReadonlyShellRewrite> {
@@ -125,12 +142,12 @@ fn rewrite_grep(args: &[String]) -> Option<ReadonlyShellRewrite> {
     if let Some(path) = parsed.path {
         arguments.insert("path".into(), json!(path));
     }
-    Some(dedicated("ffgrep", Value::Object(arguments)))
+    Some(dedicated("grep", Value::Object(arguments)))
 }
 
 fn rewrite_fd(args: &[String]) -> Option<ReadonlyShellRewrite> {
     let parsed = parse_fd(args)?;
-    Some(dedicated("fffind", json!({ "query": parsed.query })))
+    Some(dedicated("glob", json!({ "pattern": parsed.query })))
 }
 
 fn rewrite_cat(args: &[String]) -> Option<ReadonlyShellRewrite> {
@@ -623,14 +640,14 @@ mod tests {
         assert_eq!(
             classify_readonly_shell(&call(r#"find . -name "*.rs""#)),
             Some(ReadonlyShellRewrite::Dedicated {
-                name: "fffind".into(),
-                arguments: json!({"query": "*.rs"}),
+                name: "glob".into(),
+                arguments: json!({"pattern": "*.rs"}),
             })
         );
         assert_eq!(
             classify_readonly_shell(&call(r#"rg -n "Auto|Manual" crates"#)),
             Some(ReadonlyShellRewrite::Dedicated {
-                name: "ffgrep".into(),
+                name: "grep".into(),
                 arguments: json!({"pattern": "Auto|Manual", "path": "crates"}),
             })
         );
@@ -666,7 +683,10 @@ mod tests {
         assert_eq!(classify_readonly_shell(&call("git push origin main")), None);
         assert_eq!(classify_readonly_shell(&call("ls && rm -rf /tmp/x")), None);
         assert_eq!(classify_readonly_shell(&call("cat secret | sh")), None);
-        assert_eq!(classify_readonly_shell(&call("find . -exec rm {} +")), None);
+        assert!(matches!(
+            classify_readonly_shell(&call("find . -exec rm {} +")),
+            Some(ReadonlyShellRewrite::Redirect { .. })
+        ));
         assert_eq!(classify_readonly_shell(&call("git branch feature")), None);
     }
 

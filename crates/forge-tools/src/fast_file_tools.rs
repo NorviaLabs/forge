@@ -19,6 +19,17 @@ pub struct FffFindArgs {
     pub max_results: u32,
 }
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct GlobArgs {
+    /// File pattern, for example `src/**/*.rs`.
+    pub pattern: String,
+    /// Optional workspace-relative directory to search.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default = "fff_find_max")]
+    pub max_results: u32,
+}
+
 fn fff_find_max() -> u32 {
     50
 }
@@ -38,6 +49,9 @@ pub struct FffGrepArgs {
     /// Optional file path filter
     #[serde(default)]
     pub path: Option<String>,
+    /// Optional file glob to include.
+    #[serde(default)]
+    pub include: Option<String>,
     /// Search mode: plain (default), regex, fuzzy
     #[serde(default)]
     pub mode: Option<FffModeArg>,
@@ -121,24 +135,29 @@ fn search_err(error: SearchError) -> ToolError {
 
 pub struct FffFindTool {
     state: Arc<FastFileState>,
+    name: &'static str,
 }
 
 impl FffFindTool {
-    pub(crate) fn new(state: Arc<FastFileState>) -> Self {
-        Self { state }
+    pub(crate) fn new(state: Arc<FastFileState>, name: &'static str) -> Self {
+        Self { state, name }
     }
 }
 
 #[async_trait]
 impl Tool for FffFindTool {
     fn name(&self) -> &str {
-        "fffind"
+        self.name
     }
     fn description(&self) -> &str {
-        "Find files in the workspace by path/name pattern. Prefer this over `find`, `fd`, or `ls` via bash."
+        "Find files by glob/path pattern in the workspace using the indexed search engine. Use this instead of bash with `find`, `fd`, or `ls`."
     }
     fn input_schema(&self) -> Value {
-        crate::builtins::schema_for::<FffFindArgs>()
+        if self.name == "glob" {
+            crate::builtins::schema_for::<GlobArgs>()
+        } else {
+            crate::builtins::schema_for::<FffFindArgs>()
+        }
     }
     fn side_effect_class(&self) -> SideEffectClass {
         SideEffectClass::Read
@@ -148,15 +167,26 @@ impl Tool for FffFindTool {
     }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
-        let args: FffFindArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
-        if let Some(output) = reject_blank_or_oversized("fffind", "query", &args.query) {
+        let (query, path, max_results) = if self.name == "glob" {
+            let args: GlobArgs = serde_json::from_value(args)
+                .map_err(|e| ToolError::Execution(format!("glob args: {e}")))?;
+            (args.pattern, args.path, args.max_results)
+        } else {
+            let args: FffFindArgs = serde_json::from_value(args)
+                .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
+            (args.query, None, args.max_results)
+        };
+        if let Some(output) = reject_blank_or_oversized(self.name, "pattern", &query) {
             return Ok(output);
         }
         let state = self.state.clone();
         let root = ctx.workspace_root.clone();
-        let query = args.query.clone();
-        let max_results = clamp_fff_results(args.max_results);
+        let max_results = clamp_fff_results(max_results);
+        let query = if let Some(path) = path {
+            format!("{path}/{query}")
+        } else {
+            query
+        };
         let response = tokio::task::spawn_blocking(move || {
             state
                 .index_for(&root)?
@@ -169,16 +199,18 @@ impl Tool for FffFindTool {
         Ok(ToolOutput {
             outcome: Default::default(),
             content: if response.hits.is_empty() {
-                serde_json::json!({
-                    "hits": [],
-                    "total_matched": response.total_matched,
-                    "total_files": response.total_files,
-                    "message": "no matches found",
-                })
-                .to_string()
+                "No files found".into()
             } else {
-                serde_json::to_string(&response)
-                    .map_err(|e| ToolError::Execution(format!("fff encode: {e}")))?
+                let mut output = response
+                    .hits
+                    .iter()
+                    .map(|hit| hit.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if response.total_matched > response.hits.len() {
+                    output.push_str("\n\n(Results truncated; use a narrower pattern.)");
+                }
+                output
             },
             is_error: false,
             exit_code: None,
@@ -189,21 +221,22 @@ impl Tool for FffFindTool {
 
 pub struct FffGrepTool {
     state: Arc<FastFileState>,
+    name: &'static str,
 }
 
 impl FffGrepTool {
-    pub(crate) fn new(state: Arc<FastFileState>) -> Self {
-        Self { state }
+    pub(crate) fn new(state: Arc<FastFileState>, name: &'static str) -> Self {
+        Self { state, name }
     }
 }
 
 #[async_trait]
 impl Tool for FffGrepTool {
     fn name(&self) -> &str {
-        "ffgrep"
+        self.name
     }
     fn description(&self) -> &str {
-        "Search file contents in the workspace. Supports plain text, regex, and fuzzy matching. Prefer this over `rg` or `grep` via bash."
+        "Search file contents by text or regular expression using the indexed search engine. Use this instead of bash with `rg` or `grep`."
     }
     fn input_schema(&self) -> Value {
         crate::builtins::schema_for::<FffGrepArgs>()
@@ -218,7 +251,7 @@ impl Tool for FffGrepTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: FffGrepArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
-        if let Some(output) = reject_blank_or_oversized("ffgrep", "pattern", &args.pattern) {
+        if let Some(output) = reject_blank_or_oversized(self.name, "pattern", &args.pattern) {
             return Ok(output);
         }
         let mode = args
@@ -230,6 +263,7 @@ impl Tool for FffGrepTool {
         let root = ctx.workspace_root.clone();
         let pattern = args.pattern.clone();
         let path = args.path.clone();
+        let include = args.include.clone();
         let max_results = clamp_fff_results(args.max_results);
         let response = tokio::task::spawn_blocking(move || {
             state
@@ -238,26 +272,68 @@ impl Tool for FffGrepTool {
                 .map_err(search_err)
         })
         .await
-        .map_err(|e| ToolError::Execution(format!("ffgrep worker: {e}")))??;
+        .map_err(|e| ToolError::Execution(format!("grep worker: {e}")))??;
 
+        let hits = if let Some(include) = include {
+            response
+                .hits
+                .into_iter()
+                .filter(|hit| wildcard_match(&include, &hit.path))
+                .collect::<Vec<_>>()
+        } else {
+            response.hits
+        };
+        let total_matched = hits.len();
         Ok(ToolOutput {
             outcome: Default::default(),
-            content: if response.hits.is_empty() {
-                serde_json::json!({
-                    "hits": [],
-                    "total_matched": response.total_matched,
-                    "message": "no matches found",
-                })
-                .to_string()
+            content: if hits.is_empty() {
+                "No matches found".into()
             } else {
-                serde_json::to_string(&response)
-                    .map_err(|e| ToolError::Execution(format!("fff encode: {e}")))?
+                let mut output = String::new();
+                let mut current_path = "";
+                for hit in &hits {
+                    if current_path != hit.path {
+                        if !output.is_empty() {
+                            output.push('\n');
+                        }
+                        output.push_str(&format!("{}:\n", hit.path));
+                        current_path = &hit.path;
+                    }
+                    output.push_str(&format!("  Line {}: {}\n", hit.line, hit.text));
+                }
+                if response.total_matched > total_matched {
+                    output.push_str("\n(Results truncated; use a narrower pattern.)");
+                }
+                output.trim_end().to_string()
             },
             is_error: false,
             exit_code: None,
             attachments: Vec::new(),
         })
     }
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    if parts.len() == 1 {
+        return value.ends_with(pattern);
+    }
+    let mut cursor = 0;
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(found) = value[cursor..].find(part) else {
+            return false;
+        };
+        if index == 0 && found != 0 {
+            return false;
+        }
+        cursor += found + part.len();
+    }
+    parts
+        .last()
+        .is_none_or(|part| part.is_empty() || value.ends_with(part))
 }
 
 fn reject_blank_or_oversized(tool: &str, field: &str, value: &str) -> Option<ToolOutput> {
@@ -285,8 +361,8 @@ fn reject_blank_or_oversized(tool: &str, field: &str, value: &str) -> Option<Too
 pub fn fff_tools() -> Vec<Arc<dyn Tool>> {
     let state = Arc::new(FastFileState::new());
     vec![
-        Arc::new(FffFindTool::new(state.clone())),
-        Arc::new(FffGrepTool::new(state)),
+        Arc::new(FffFindTool::new(state.clone(), "glob")),
+        Arc::new(FffGrepTool::new(state, "grep")),
     ]
 }
 
@@ -404,14 +480,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fffind_call_returns_json_hits() {
+    async fn glob_call_returns_json_hits() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let out = tool
-            .call(&ctx, serde_json::json!({"query": "main.rs"}))
+            .call(&ctx, serde_json::json!({"pattern": "main.rs"}))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
@@ -419,12 +495,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fffind_rejects_blank_query() {
+    async fn glob_rejects_blank_query() {
         let dir = tempdir().unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let out = tool
-            .call(&ctx, serde_json::json!({"query": "   "}))
+            .call(&ctx, serde_json::json!({"pattern": "   "}))
             .await
             .unwrap();
         assert!(out.is_error);
@@ -432,13 +508,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fffind_rejects_oversized_query() {
+    async fn glob_rejects_oversized_query() {
         let dir = tempdir().unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()), "glob");
         let query = "a".repeat(MAX_FFF_QUERY_CHARS + 1);
         let out = tool
-            .call(&ctx, serde_json::json!({"query": query}))
+            .call(&ctx, serde_json::json!({"pattern": query}))
             .await
             .unwrap();
         assert!(out.is_error);
@@ -446,12 +522,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ffgrep_call_returns_json_hits() {
+    async fn grep_call_returns_json_hits() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "hello world\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let out = tool
             .call(
                 &ctx,
@@ -464,10 +540,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ffgrep_rejects_blank_pattern() {
+    async fn grep_rejects_blank_pattern() {
         let dir = tempdir().unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let out = tool
             .call(&ctx, serde_json::json!({"pattern": "  "}))
             .await
@@ -477,11 +553,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ffgrep_clamps_max_results() {
+    async fn grep_clamps_max_results() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hit\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let out = tool
             .call(
                 &ctx,
@@ -490,17 +566,20 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
-        let parsed: serde_json::Value = serde_json::from_str(&out.content).unwrap();
-        let hits = parsed["hits"].as_array().expect("hits array");
-        assert!(hits.len() <= MAX_FFF_RESULTS as usize);
+        let match_count = out
+            .content
+            .lines()
+            .filter(|line| line.trim_start().starts_with("Line "))
+            .count();
+        assert!(match_count <= MAX_FFF_RESULTS as usize);
     }
 
     #[tokio::test]
-    async fn ffgrep_invalid_regex_does_not_panic() {
+    async fn grep_invalid_regex_does_not_panic() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
         let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()), "grep");
         let result = tool
             .call(&ctx, serde_json::json!({"pattern": "[", "mode": "regex"}))
             .await;

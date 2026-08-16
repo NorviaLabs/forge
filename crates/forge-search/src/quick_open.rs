@@ -1,6 +1,6 @@
 //! VS Code–inspired Quick Open path scoring for the TUI.
 //!
-//! Agent `fffind` keeps permissive fuzzy matching; Quick Open uses word-boundary
+//! Agent `glob` keeps permissive fuzzy matching; Quick Open uses word-boundary
 //! subsequence scoring with basename and path-segment bonuses.
 
 use crate::types::FileSearchHit;

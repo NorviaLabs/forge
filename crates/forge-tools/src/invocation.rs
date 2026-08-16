@@ -23,8 +23,8 @@ pub fn tool_invocation(name: &str, args: &Value) -> Option<String> {
             }
             Some(line)
         }
-        "fffind" | "web_search" => str_arg(args, "query"),
-        "ffgrep" => str_arg(args, "pattern"),
+        "glob" | "web_search" => str_arg(args, "query"),
+        "grep" => str_arg(args, "pattern"),
         "load_skill" => str_arg(args, "name"),
         _ => None,
     }
@@ -80,11 +80,11 @@ mod tests {
             Some("docs/shot.png".into())
         );
         assert_eq!(
-            tool_invocation("fffind", &json!({"query": "tokio"})),
+            tool_invocation("glob", &json!({"query": "tokio"})),
             Some("tokio".into())
         );
         assert_eq!(
-            tool_invocation("ffgrep", &json!({"pattern": "async"})),
+            tool_invocation("grep", &json!({"pattern": "async"})),
             Some("async".into())
         );
         assert_eq!(

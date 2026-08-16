@@ -380,7 +380,7 @@ impl Tool for BashTool {
     fn description(&self) -> &str {
         "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
-Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
+Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BashArgs>()
@@ -1543,7 +1543,7 @@ mod tests {
             t.description(),
             "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
-Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
+Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
         );
         assert_eq!(t.side_effect_class(), SideEffectClass::Exec);
     }
@@ -1742,8 +1742,8 @@ Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
         let tools = default_builtins();
         assert!(tools.iter().any(|t| t.name() == "git"));
         assert!(tools.iter().any(|t| t.name() == "apply_patch"));
-        assert!(tools.iter().any(|t| t.name() == "fffind"));
-        assert!(tools.iter().any(|t| t.name() == "ffgrep"));
+        assert!(tools.iter().any(|t| t.name() == "glob"));
+        assert!(tools.iter().any(|t| t.name() == "grep"));
         assert!(tools.iter().any(|t| t.name() == "update_plan"));
         assert!(tools.iter().any(|t| t.name() == "ls"));
     }
@@ -2171,37 +2171,39 @@ Use `ls`, `fffind`, `ffgrep`, `read_file`, or `git` instead."
 
     #[test]
     fn fff_find_schema_rejects_empty_args() {
-        let t = crate::fast_file_tools::FffFindTool::new(std::sync::Arc::new(
-            crate::fast_file_tools::FastFileState::new(),
-        ));
+        let t = crate::fast_file_tools::FffFindTool::new(
+            std::sync::Arc::new(crate::fast_file_tools::FastFileState::new()),
+            "glob",
+        );
         let err =
-            crate::validation::validate_args("fffind", &t.input_schema(), &json!({})).unwrap_err();
-        assert_eq!(err.tool, "fffind");
+            crate::validation::validate_args("glob", &t.input_schema(), &json!({})).unwrap_err();
+        assert_eq!(err.tool, "glob");
     }
 
     #[test]
     fn fff_grep_schema_rejects_empty_args() {
         let state = std::sync::Arc::new(crate::fast_file_tools::FastFileState::new());
-        let t = crate::fast_file_tools::FffGrepTool::new(state);
+        let t = crate::fast_file_tools::FffGrepTool::new(state, "grep");
         let err =
-            crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({})).unwrap_err();
-        assert_eq!(err.tool, "ffgrep");
+            crate::validation::validate_args("grep", &t.input_schema(), &json!({})).unwrap_err();
+        assert_eq!(err.tool, "grep");
     }
 
     #[test]
     fn fff_find_schema_accepts_query() {
-        let t = crate::fast_file_tools::FffFindTool::new(std::sync::Arc::new(
-            crate::fast_file_tools::FastFileState::new(),
-        ));
-        crate::validation::validate_args("fffind", &t.input_schema(), &json!({"query": "main.rs"}))
+        let t = crate::fast_file_tools::FffFindTool::new(
+            std::sync::Arc::new(crate::fast_file_tools::FastFileState::new()),
+            "glob",
+        );
+        crate::validation::validate_args("glob", &t.input_schema(), &json!({"pattern": "main.rs"}))
             .unwrap();
     }
 
     #[test]
     fn fff_grep_schema_accepts_pattern() {
         let state = std::sync::Arc::new(crate::fast_file_tools::FastFileState::new());
-        let t = crate::fast_file_tools::FffGrepTool::new(state);
-        crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({"pattern": "TODO"}))
+        let t = crate::fast_file_tools::FffGrepTool::new(state, "grep");
+        crate::validation::validate_args("grep", &t.input_schema(), &json!({"pattern": "TODO"}))
             .unwrap();
     }
 }
