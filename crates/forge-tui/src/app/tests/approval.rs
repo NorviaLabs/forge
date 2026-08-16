@@ -40,6 +40,10 @@ async fn press_down_to(app: &mut TuiApp, label: &str) {
     assert_eq!(app.approval_menu_selected(), target);
 }
 
+async fn flush_queued_hitl(app: &mut TuiApp) {
+    app.drain_pending_hitl(None).await.unwrap();
+}
+
 #[tokio::test]
 async fn inline_approval_renders_full_payload_in_sidebar() {
     let (_dir, mut app) = focus_test_app().await;
@@ -112,6 +116,7 @@ async fn menu_allow_once_approves_without_remembering() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
 
     assert!(app.session.pending_hitl().is_none());
     assert!(app.remembered_approval_count() == 0);
@@ -134,6 +139,7 @@ async fn menu_remember_approves_and_matches_the_suggested_family() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
 
     assert!(app.is_approval_pattern_remembered(&payload));
     assert!(app.is_approval_pattern_remembered(&direct_hitl_payload("sib", "src/bar.txt")));
@@ -156,6 +162,7 @@ async fn remembered_approval_expires_with_session() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
 
     let next_session = session_for_workspace(dir.path()).await;
     let next_app = TuiApp::new(
@@ -252,6 +259,7 @@ async fn menu_esc_denies_and_records_tool_denial() {
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
 
     assert!(app.session.pending_hitl().is_none());
     assert!(app
@@ -278,6 +286,7 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
 
     assert!(app.session.pending_hitl().is_none());
     assert_eq!(app.remembered_approval_count(), 1);
@@ -288,6 +297,7 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
         bash_hitl_payload("call-2", "git push -u origin main"),
     );
     app.drain_auto_hitl().await.unwrap();
+    flush_queued_hitl(&mut app).await;
     assert!(app.session.pending_hitl().is_none());
 
     // A sibling in the same family also auto-approves.
@@ -296,6 +306,7 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
         bash_hitl_payload("call-3", "git push origin feature"),
     );
     app.drain_auto_hitl().await.unwrap();
+    flush_queued_hitl(&mut app).await;
     assert!(app.session.pending_hitl().is_none());
 
     // A different family still gates.
@@ -312,6 +323,7 @@ async fn menu_enter_on_allow_once_approves() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
     assert!(app.session.pending_hitl().is_none());
     // Run once must not remember the invocation.
     assert!(app.remembered_approval_count() == 0);
@@ -330,6 +342,7 @@ async fn menu_down_to_allow_pattern_and_enter() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
     assert!(app.session.pending_hitl().is_none());
     assert_eq!(app.remembered_approval_count(), 1);
 }
@@ -468,4 +481,27 @@ async fn approval_card_renders_in_every_shipped_theme() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn approving_a_slow_command_returns_before_the_command_finishes() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(&mut app, bash_hitl_payload("slow", "sleep 5"));
+
+    let started = std::time::Instant::now();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "granting approval must not wait for the approved command"
+    );
+    assert!(
+        app.session.pending_hitl().is_some(),
+        "the command should still be pending until the event loop drains it"
+    );
+    assert!(
+        app.pending_interaction.has_hitl_decision(),
+        "the event loop should have a queued HITL decision to drain"
+    );
 }

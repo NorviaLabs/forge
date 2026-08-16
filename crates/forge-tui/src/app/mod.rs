@@ -24,7 +24,7 @@ use forge_connect::{
 };
 use forge_core::{
     merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, LoopError,
-    ModelResponseApplication, ModelStepAccumulator, PendingToolApplication,
+    ModelResponseApplication, ModelStepAccumulator, PendingHitlExecution, PendingToolApplication,
 };
 use forge_session::{SessionSnapshot, TranscriptSnapshot};
 use forge_types::{
