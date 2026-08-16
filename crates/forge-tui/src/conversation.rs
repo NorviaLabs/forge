@@ -1605,8 +1605,8 @@ mod tests {
                 "bash",
                 serde_json::json!({"command": "cargo test --quiet"}),
             ),
-            ("find", "fffind", serde_json::json!({"query": "*.rs"})),
-            ("grep", "ffgrep", serde_json::json!({"pattern": "ToolCard"})),
+            ("find", "glob", serde_json::json!({"query": "*.rs"})),
+            ("grep", "grep", serde_json::json!({"pattern": "ToolCard"})),
             (
                 "git",
                 "git",
@@ -1637,10 +1637,10 @@ mod tests {
         let outputs = [
             ("read", "read_file", "pub fn noisy() {\n- old\n+ new\n}"),
             ("bash", "bash", "running tests\nfeature-a\n+ experimental"),
-            ("find", "fffind", "src/lib.rs\nsrc/main.rs"),
+            ("find", "glob", "src/lib.rs\nsrc/main.rs"),
             (
                 "grep",
-                "ffgrep",
+                "grep",
                 "src/lib.rs:10:ToolCard\nsrc/app.rs:20:ToolCard",
             ),
             ("git", "git", " M src/lib.rs\n M src/app.rs"),

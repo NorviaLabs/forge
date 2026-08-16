@@ -208,10 +208,10 @@ When using the shell, you must adhere to the following guidelines:
 
 Two dedicated tools use the FFF engine (frecency-ranked, typo-resistant, git-aware):
 
-- **`fffind`** — Find files by path/name pattern. Supports globs (`*.rs`, `src/**/*.ts`), git status filters (`git:modified`), and exclusions (`!test/`). Faster than shell-based discovery for repeated searches.
-- **`ffgrep`** — Search file contents. Modes: `plain` (default), `regex`, `fuzzy`. Auto-detects regex, falls back to fuzzy on zero matches.
+- **`glob`** — Find files by path/name pattern. Supports globs (`*.rs`, `src/**/*.ts`) and bounded results.
+- **`grep`** — Search file contents. Supports plain text, regex, and fuzzy matching with optional path filters.
 
-Prefer these over shell commands (`rg`, `find`, `grep`) for file discovery — they run in-process, keep a warm index, and return structured results with git status and frecency ranking.
+Prefer these over shell commands (`rg`, `find`, `grep`, `fd`) for workspace inspection — they run in-process, keep a warm FFF index, and return concise structured results. Do not use `bash`, `background_run`, or `exec_command` for file search or listing.
 
 ## Workspace inspection
 
