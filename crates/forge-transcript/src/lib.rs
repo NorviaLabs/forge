@@ -1517,7 +1517,7 @@ fn routine_tool_category(
     call: Option<&ToolCall>,
 ) -> Option<ActivityCategory> {
     match name {
-        "read_file" | "fffind" | "ffgrep" | "fffind_files" | "ffgrep_files" => {
+        "read_file" | "ls" | "fffind" | "ffgrep" | "fffind_files" | "ffgrep_files" => {
             Some(ActivityCategory::Exploring)
         }
         "git"
