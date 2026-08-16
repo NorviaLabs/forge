@@ -252,7 +252,7 @@ impl TuiApp {
         self.runtime.provider.clear();
         self.runtime.model_label.clear();
         self.session.set_active_model(String::new());
-        self.sync_image_input_capability();
+        self.sync_model_capabilities();
         self.feedback = FeedbackModel::default();
         self.status_state.message = "disconnected".into();
         self.notice_state.items.clear();
@@ -379,7 +379,7 @@ impl TuiApp {
             } else if self.session.active_model.is_empty() {
                 self.session
                     .set_active_model(self.runtime.model_label.clone());
-                self.sync_image_input_capability();
+                self.sync_model_capabilities();
             }
             self.status_state.message =
                 format!("restored {} · {}", profile.id, self.runtime.model_label);
@@ -438,13 +438,17 @@ impl TuiApp {
         self.session.set_reasoning_effort(value);
     }
 
+    /// Re-read the active model's metadata from the models.dev registry
+    /// cache: whether it accepts image input, and the context/output token
+    /// limits compaction sizes itself from. Called after every model change.
+    ///
     /// The single place `runtime.provider`, `runtime.model_label`,
     /// `session.active_model`, and `connect.profile` are set together (effort
     /// only when the selection carries a parseable one) — every model/route
     /// change must go through this rather than assigning the fields by hand,
     /// so the copies can't drift the way the picker's Enter-key bug once let
     /// a discarded selection produce a mismatched model id.
-    pub(super) fn sync_image_input_capability(&mut self) {
+    pub(super) fn sync_model_capabilities(&mut self) {
         let cache = forge_connect::ModelCatalogCache::user_default();
         // Pre-feature catalog files can be "fresh" on TTL but have never
         // ingested `modalities.input`. Refresh once so Codex/API twins
@@ -457,6 +461,13 @@ impl TuiApp {
         }
         let supported = cache.model_accepts_image_input(&self.session.active_model);
         self.session.set_image_input_supported(supported);
+        // Context compaction sizes itself from the model's real window, not a
+        // fixed guess. An id the registry does not publish keeps the previous
+        // policy rather than inventing a window for it.
+        if let Some(limits) = cache.model_limits(&self.session.active_model) {
+            self.session
+                .set_context_window(limits.context, (limits.output > 0).then_some(limits.output));
+        }
     }
 
     pub(super) fn apply_selection(&mut self, selection: &ModelSelection) {
@@ -468,7 +479,7 @@ impl TuiApp {
         self.runtime.model_label = selection.model.clone();
         self.session.set_active_model(&selection.model);
         self.session.set_active_route_id(&selection.route_id);
-        self.sync_image_input_capability();
+        self.sync_model_capabilities();
         self.connect.profile = selection.profile_id.clone();
         if let Ok(effort) = selection.effort.parse::<ReasoningEffort>() {
             self.reasoning_effort.value = effort;
@@ -843,7 +854,7 @@ impl TuiApp {
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
                     self.session.set_active_model(m);
-                    self.sync_image_input_capability();
+                    self.sync_model_capabilities();
                 }
                 if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);
@@ -911,7 +922,7 @@ impl TuiApp {
         self.runtime.provider = "native".into();
         self.connect.auth_suspended = false;
         self.session.set_active_model(out.model.clone());
-        self.sync_image_input_capability();
+        self.sync_model_capabilities();
         self.apply_connect_credentials(&out.profile_id);
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
@@ -1039,7 +1050,7 @@ impl TuiApp {
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
                     self.session.set_active_model(m);
-                    self.sync_image_input_capability();
+                    self.sync_model_capabilities();
                 }
                 if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);

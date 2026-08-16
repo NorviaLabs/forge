@@ -9,6 +9,7 @@
 //! `pub(crate)`.
 
 mod approval;
+pub(crate) mod compaction;
 mod create;
 mod inspect;
 mod tasks;
