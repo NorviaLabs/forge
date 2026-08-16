@@ -404,7 +404,7 @@ async fn build_model_request_omits_reasoning_effort_when_none() {
 }
 
 #[tokio::test]
-async fn view_image_is_hidden_until_image_input_is_enabled() {
+async fn view_image_stays_listed_when_image_input_is_disabled() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {
         text: "ok".into(),
@@ -416,17 +416,19 @@ async fn view_image_is_hidden_until_image_input_is_enabled() {
         .await
         .unwrap();
     assert!(s.list_tools().iter().any(|n| n == "view_image"));
-    assert!(!s
-        .build_model_request()
-        .tools
-        .iter()
-        .any(|t| t.name == "view_image"));
+    let without = s.build_model_request().tools;
+    assert!(without.iter().any(|t| t.name == "view_image"));
     s.set_image_input_supported(true);
-    assert!(s
-        .build_model_request()
-        .tools
-        .iter()
-        .any(|t| t.name == "view_image"));
+    let with = s.build_model_request().tools;
+    assert_eq!(
+        without
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        with.iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -449,7 +451,7 @@ async fn model_request_shares_the_session_transcript_without_attachments() {
 }
 
 #[tokio::test]
-async fn missing_pasted_image_is_noted_without_mutating_the_session_transcript() {
+async fn missing_pasted_image_is_noted_at_insert_and_stays_frozen() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {
         text: "ok".into(),
@@ -479,11 +481,65 @@ async fn missing_pasted_image_is_noted_without_mutating_the_session_transcript()
         .find(|m| m.role == MessageRole::User)
         .unwrap();
 
-    assert!(!req.messages.shares_storage_with(&s.messages));
+    assert!(req.messages.shares_storage_with(&s.messages));
     assert!(request_user.attachments.is_empty());
     assert!(request_user.content.contains("no longer available"));
+    assert_eq!(session_user.content, request_user.content);
+    let first = session_user.content.clone();
+    let req2 = s.build_model_request();
+    let request_user2 = req2
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::User)
+        .unwrap();
+    assert_eq!(request_user2.content, first);
+}
+
+#[tokio::test]
+async fn pasted_image_snapshot_survives_deleting_the_original() {
+    let dir = tempdir().unwrap();
+    let png = forge_types::sample_png_bytes();
+    std::fs::write(dir.path().join("shot.png"), &png).unwrap();
+    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.append_user_message_with_attachments(
+        "look",
+        vec![forge_types::ImageRef::new(
+            "shot.png",
+            "image/png",
+            png.len() as u64,
+        )],
+    )
+    .await
+    .unwrap();
+    let session_user = s
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::User)
+        .unwrap();
     assert_eq!(session_user.attachments.len(), 1);
-    assert!(!session_user.content.contains("no longer available"));
+    assert_ne!(session_user.attachments[0].path, "shot.png");
+    std::fs::remove_file(dir.path().join("shot.png")).unwrap();
+
+    let req = s.build_model_request();
+    let request_user = req
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::User)
+        .unwrap();
+    assert_eq!(request_user.attachments.len(), 1);
+    assert_eq!(
+        request_user.attachments[0].path,
+        session_user.attachments[0].path
+    );
+    assert!(!request_user.content.contains("no longer available"));
 }
 
 /// A streaming step must forward every event to `forward`, including when
@@ -1041,6 +1097,68 @@ async fn resume_restores_conversation_context_and_usage() {
 }
 
 #[tokio::test]
+async fn resume_replays_validation_failed_tool_message() {
+    use forge_durable::{new_session_id, Journal};
+
+    let dir = tempdir().unwrap();
+    let journal_dir = dir.path().join("j");
+    let sid = new_session_id();
+    let journal = Journal::open(&journal_dir, sid).await.unwrap();
+    journal.append_session_created(sid).await.unwrap();
+    journal.append_user_message(sid, "run").await.unwrap();
+    let content = tool_validation_failed_content(&"offset must be an integer");
+    journal
+        .append_validation_failed(sid, "c1", "read_file", &content)
+        .await
+        .unwrap();
+
+    let resumed = AgentSession::resume(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+        sid,
+    )
+    .await
+    .unwrap();
+    let tool = resumed
+        .messages
+        .iter()
+        .find(|message| message.role == MessageRole::Tool)
+        .expect("validation-failed tool message");
+    assert_eq!(tool.tool_call_id.as_deref(), Some("c1"));
+    assert_eq!(tool.name.as_deref(), Some("read_file"));
+    assert_eq!(tool.content, content);
+}
+
+#[tokio::test]
+async fn resume_keeps_context_reset_handoff_system() {
+    let dir = tempdir().unwrap();
+    init_repo(dir.path()).await;
+    let mut s = idle_session(dir.path()).await;
+    s.context.config.capacity_tokens = 32;
+    s.messages = vec![
+        Message::new(MessageRole::User, "x".repeat(400)),
+        Message::new(MessageRole::Assistant, "y".repeat(400)),
+    ]
+    .into();
+    s.force_context_reset_async().await.unwrap();
+    let handoff = s.messages[0].content.clone();
+    assert!(handoff.contains("# Context Handoff"));
+    let session_id = s.session_id;
+
+    let resumed = AgentSession::resume(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+        session_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.messages[0].role, MessageRole::System);
+    assert_eq!(resumed.messages[0].content, handoff);
+}
+
+#[tokio::test]
 async fn resume_serves_journaled_tool_without_reexecuting() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "first").unwrap();
@@ -1515,6 +1633,55 @@ async fn resuming_from_hitl_does_not_leak_stale_waiting_evidence_into_completion
     let outcome = s.run_agent_turns(None).await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     assert_eq!(outcome.text, "done");
+}
+
+#[tokio::test]
+async fn hitl_large_tool_output_is_offloaded_before_insert() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "python3 -c \"print('x'*20000)\""}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("run it").await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+    s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+    s.run_agent_turns(None).await.unwrap();
+
+    let tool = s
+        .messages
+        .iter()
+        .find(|message| message.role == MessageRole::Tool)
+        .expect("HITL tool result");
+    assert!(
+        tool.content.contains("[offloaded tool output"),
+        "expected CTX-01 stub, got {}",
+        tool.content
+    );
+    let first = tool.content.clone();
+    let req = s.build_model_request();
+    let req_tool = req
+        .messages
+        .iter()
+        .find(|message| message.role == MessageRole::Tool)
+        .unwrap();
+    assert_eq!(req_tool.content, first);
 }
 
 #[tokio::test]

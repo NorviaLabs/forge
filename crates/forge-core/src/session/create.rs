@@ -43,29 +43,11 @@ impl AgentSession {
         let state = journal.replay(session_id).await?;
         let mut context = ContextEngine::new(self.context.workspace.clone(), session_id);
         context.config = self.context.config.clone();
-        let system_message = Message {
-            outcome: Default::default(),
-            role: MessageRole::System,
-            content: assemble_system_prompt(
-                &context.load_agents_md(),
-                context.load_skills().as_slice(),
-            ),
-            tool_call_id: None,
-            name: None,
-            thinking: None,
-            thinking_duration_secs: None,
-            tool_calls: vec![],
-            attachments: Vec::new(),
-        };
         let mut messages = state.messages;
-        if let Some(first) = messages
-            .first_mut()
-            .filter(|message| message.role == MessageRole::System)
-        {
-            *first = system_message;
-        } else {
-            messages.insert(0, system_message);
-        }
+        restore_system_message(
+            &mut messages,
+            assemble_system_prompt(&context.load_agents_md(), context.load_skills().as_slice()),
+        );
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume");
         }
@@ -178,28 +160,11 @@ impl AgentSession {
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         let state = journal.replay(session_id).await?;
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
-        let system =
-            assemble_system_prompt(&context.load_agents_md(), context.load_skills().as_slice());
-        let system_message = Message {
-            outcome: Default::default(),
-            role: MessageRole::System,
-            content: system,
-            tool_call_id: None,
-            name: None,
-            thinking: None,
-            thinking_duration_secs: None,
-            tool_calls: vec![],
-            attachments: Vec::new(),
-        };
         let mut messages = state.messages.clone();
-        if let Some(first) = messages
-            .first_mut()
-            .filter(|message| message.role == MessageRole::System)
-        {
-            *first = system_message;
-        } else {
-            messages.insert(0, system_message);
-        }
+        restore_system_message(
+            &mut messages,
+            assemble_system_prompt(&context.load_agents_md(), context.load_skills().as_slice()),
+        );
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume");
         }

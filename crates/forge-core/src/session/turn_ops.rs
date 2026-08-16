@@ -22,11 +22,13 @@ impl AgentSession {
         if self.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
+        let mut content = text.to_string();
+        let attachments = self.freeze_attachments(&mut content, attachments);
         self.journal
-            .append_user_message_with_attachments(self.session_id, text, &attachments)
+            .append_user_message_with_attachments(self.session_id, &content, &attachments)
             .await?;
         self.messages
-            .push(Message::new(MessageRole::User, text).with_attachments(attachments));
+            .push(Message::new(MessageRole::User, content).with_attachments(attachments));
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
@@ -60,13 +62,7 @@ impl AgentSession {
         // Requests share the transcript in the usual case. Image availability is
         // checked at request time, so only requests with missing attachments pay
         // the copy-on-write cost needed to add the model-visible fallback note.
-        let mut messages = self.messages.shared();
-        if messages
-            .iter()
-            .any(|message| !message.attachments.is_empty())
-        {
-            forge_model::apply_missing_image_notes(&mut messages, &self.tool_ctx.workspace_root);
-        }
+        let messages = self.messages.shared();
         ModelRequest {
             messages,
             tools,
@@ -79,20 +75,14 @@ impl AgentSession {
     }
 
     /// Tool list the model sees. Cached on the registry; filtered only when
-    /// governance or the image-input flag actually changes the set.
+    /// governance actually changes the set. `view_image` stays listed even
+    /// when the active model has no image input — execution denies the call.
     fn tools_for_model(&self) -> Vec<forge_types::ToolDescriptor> {
         let descriptors = self.tools.list_descriptors();
-        if !self.enable_gov && self.tool_ctx.image_input {
+        if !self.enable_gov {
             return (*descriptors).clone();
         }
-        let mut tools = (*descriptors).clone();
-        if self.enable_gov {
-            tools = self.governance.filter_tools(tools);
-        }
-        if !self.tool_ctx.image_input {
-            tools.retain(|tool| tool.name != "view_image");
-        }
-        tools
+        self.governance.filter_tools((*descriptors).clone())
     }
 
     /// Apply a model response: journal, assistant message, then run tools.

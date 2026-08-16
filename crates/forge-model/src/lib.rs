@@ -6,7 +6,7 @@ mod native;
 mod normalize;
 mod prompt_cache;
 
-pub use image::apply_missing_image_notes;
+pub use image::{apply_missing_image_notes, freeze_attachments};
 pub use mock::MockModelClient;
 pub use native::NativeModelClient;
 pub use normalize::{

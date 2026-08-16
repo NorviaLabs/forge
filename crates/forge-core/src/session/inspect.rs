@@ -221,9 +221,29 @@ impl AgentSession {
         self.tool_ctx.active_model = self.active_model.clone();
     }
 
-    /// Fail-closed capability flag used to hide/reject `view_image`.
+    /// Fail-closed capability flag used to reject `view_image` at call time.
     pub fn set_image_input_supported(&mut self, supported: bool) {
         self.tool_ctx.image_input = supported;
+    }
+
+    /// Snapshot attachments into the session image cache and bake missing-file
+    /// notes into `content`. The returned refs are what later requests resend.
+    pub(crate) fn freeze_attachments(
+        &self,
+        content: &mut String,
+        attachments: Vec<forge_types::ImageRef>,
+    ) -> Vec<forge_types::ImageRef> {
+        forge_model::freeze_attachments(
+            &self.tool_ctx.workspace_root,
+            &self.context.image_cache_dir(),
+            content,
+            attachments,
+        )
+    }
+
+    pub(crate) fn freeze_tool_output(&self, output: &mut forge_types::ToolOutput) {
+        output.attachments =
+            self.freeze_attachments(&mut output.content, std::mem::take(&mut output.attachments));
     }
 
     pub fn image_input_supported(&self) -> bool {

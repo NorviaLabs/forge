@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use forge_types::{
-    BackgroundTaskId, JournalEvent, JournalEventType, Message, MessageRole, ModelResponse,
-    QueueItemId, QueueItemStatus, SessionId, TaskLifecycle, ToolCall, ToolOutput,
+    strip_protocol_markers, BackgroundTaskId, ExecutionOutcome, JournalEvent, JournalEventType,
+    Message, MessageRole, ModelResponse, QueueItemId, QueueItemStatus, SessionId, TaskLifecycle,
+    ToolCall, ToolOutput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -312,13 +313,19 @@ impl Journal {
     pub async fn append_validation_failed(
         &self,
         session_id: SessionId,
+        call_id: &str,
         tool: &str,
-        message: &str,
+        content: &str,
     ) -> Result<u64, JournalError> {
         self.append(
             session_id,
             JournalEventType::ToolValidationFailed,
-            json!({ "tool": tool, "message": message }),
+            json!({
+                "call_id": call_id,
+                "tool": tool,
+                "message": content,
+                "content": content,
+            }),
         )
         .await
     }
@@ -635,7 +642,7 @@ impl Journal {
                             state.messages.push(Message {
                                 outcome: Default::default(),
                                 role: MessageRole::Assistant,
-                                content: response.text.clone(),
+                                content: strip_protocol_markers(&response.text),
                                 tool_call_id: None,
                                 name: None,
                                 thinking: response
@@ -654,6 +661,41 @@ impl Journal {
                     if let Some(id) = payload.get("call_id").and_then(|v| v.as_str()) {
                         open_intents.insert(id.to_string(), id.to_string());
                     }
+                }
+                JournalEventType::ToolValidationFailed => {
+                    let tool = payload
+                        .get("tool")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    let content = payload
+                        .get("content")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| payload.get("message").and_then(|value| value.as_str()))
+                        .unwrap_or("");
+                    let content = if content.starts_with("Tool validation error:") {
+                        content.to_string()
+                    } else {
+                        format!(
+                            "Tool validation error: {content}. \
+                             Do not concatenate fields. Use separate JSON properties with native types \
+                             (for example offset: 1, limit: 100 as integers)."
+                        )
+                    };
+                    let call_id = payload
+                        .get("call_id")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string);
+                    state.messages.push(Message {
+                        outcome: ExecutionOutcome::Failed { exit_code: None },
+                        role: MessageRole::Tool,
+                        content,
+                        tool_call_id: call_id,
+                        name: Some(tool.to_string()),
+                        thinking: None,
+                        thinking_duration_secs: None,
+                        tool_calls: vec![],
+                        attachments: Vec::new(),
+                    });
                 }
                 JournalEventType::ToolResult => {
                     if let Ok(p) = serde_json::from_value::<ToolResultPayload>(payload.clone()) {
@@ -998,16 +1040,36 @@ mod tests {
         let dir = tempdir().unwrap();
         let sid = new_session_id();
         let j = Journal::open(dir.path(), sid).await.unwrap();
-        j.append_validation_failed(sid, "bash", "missing required argument: command")
-            .await
-            .unwrap();
+        j.append_validation_failed(
+            sid,
+            "c1",
+            "bash",
+            "Tool validation error: missing required argument: command. extra",
+        )
+        .await
+        .unwrap();
 
         let state = j.replay(sid).await.unwrap();
         assert_eq!(state.events.len(), 1);
         let ev = &state.events[0];
         assert_eq!(ev.event_type, JournalEventType::ToolValidationFailed);
         assert_eq!(ev.payload["tool"], "bash");
-        assert_eq!(ev.payload["message"], "missing required argument: command");
+        assert_eq!(ev.payload["call_id"], "c1");
+        assert_eq!(
+            ev.payload["content"],
+            "Tool validation error: missing required argument: command. extra"
+        );
+        let tool = state
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("validation failure becomes a tool message");
+        assert_eq!(tool.tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(tool.name.as_deref(), Some("bash"));
+        assert_eq!(
+            tool.content,
+            "Tool validation error: missing required argument: command. extra"
+        );
     }
 
     #[tokio::test]
