@@ -96,6 +96,13 @@ fn system_prompt_uses_forge_policy() {
     assert!(prompt.starts_with("You are a coding agent running in the Forge"));
     assert!(prompt.contains("Forge is an open source project led by NorviaLabs."));
     assert!(!prompt.contains("# Project Instructions"));
+    // Codex leftover: a leading "always use apply_patch" would override the
+    // File edits section that prefers `edit` for a focused change.
+    assert!(!prompt.contains("Use the `apply_patch` tool to edit files"));
+    assert!(prompt.contains("## File edits"));
+    assert!(prompt.contains("**`edit`**"));
+    assert!(prompt.contains("**`write_file`**"));
+    assert!(prompt.contains("**`apply_patch`** — Multi-hunk or multi-file diffs."));
 }
 
 #[test]
