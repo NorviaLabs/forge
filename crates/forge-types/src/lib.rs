@@ -1,7 +1,9 @@
 //! Shared types for Forge (Phase 1 + 2).
 
+mod git;
 mod image;
 
+pub use git::is_readonly_git_subcommand;
 pub use image::{
     inspect_image, sample_png_bytes, sniff_allowed_image, ImageInspectError, ImageMeta, ImageRef,
     MAX_IMAGE_BYTES,
