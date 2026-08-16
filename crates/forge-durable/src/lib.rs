@@ -124,6 +124,13 @@ pub struct ReplayState {
     pub last_prompt_bytes: Option<u64>,
     pub cache_epoch: u64,
     pub last_cache_transport: Option<String>,
+    /// Serialized `forge_context::compaction::SessionContextState` from the
+    /// most recent `ContextCompacted` event, or `None` if this session has
+    /// never compacted. Kept opaque here so `forge-durable` stays a storage
+    /// crate: `forge-core` owns the schema.
+    pub context_state: Option<Value>,
+    /// How many `ContextCompacted` events this journal holds.
+    pub compaction_count: u64,
 }
 
 /// One queue item as reconstructed from the journal — a lightweight mirror
@@ -398,6 +405,21 @@ impl Journal {
             .await
     }
 
+    /// Record a completed compaction: the installed projection plus the
+    /// state needed to rebuild it on resume.
+    ///
+    /// This is additive — no earlier event is rewritten or removed, so
+    /// canonical history survives compaction intact and stays replayable for
+    /// debugging and future retrieval.
+    pub async fn append_context_compacted(
+        &self,
+        session_id: SessionId,
+        meta: Value,
+    ) -> Result<u64, JournalError> {
+        self.append(session_id, JournalEventType::ContextCompacted, meta)
+            .await
+    }
+
     /// Unified task/queue lifecycle: durable future-task queue events.
     /// **Record-before-side-effect** applies here too — callers must await
     /// each of these before claiming the corresponding queue mutation
@@ -573,6 +595,8 @@ impl Journal {
             last_prompt_bytes: None,
             cache_epoch: 0,
             last_cache_transport: None,
+            context_state: None,
+            compaction_count: 0,
         };
 
         let mut open_intents: HashMap<String, String> = HashMap::new();
@@ -762,6 +786,22 @@ impl Journal {
                     if state.status == TaskLifecycle::Waiting {
                         state.status = TaskLifecycle::Working;
                     }
+                }
+                JournalEventType::ContextCompacted => {
+                    // Replaces the *projection* only. Every event replayed so
+                    // far stays in `state.events`, and nothing already written
+                    // to the journal is altered.
+                    if let Some(messages) = payload.get("messages") {
+                        if let Ok(messages) =
+                            serde_json::from_value::<Vec<Message>>(messages.clone())
+                        {
+                            state.messages = messages;
+                        }
+                    }
+                    if let Some(context_state) = payload.get("context_state") {
+                        state.context_state = Some(context_state.clone());
+                    }
+                    state.compaction_count = state.compaction_count.saturating_add(1);
                 }
                 JournalEventType::ContextReset => {
                     if let Some(messages) = payload.get("messages") {

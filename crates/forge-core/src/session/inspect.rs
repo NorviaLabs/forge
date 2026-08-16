@@ -105,10 +105,6 @@ impl AgentSession {
         total
     }
 
-    pub fn context_reset_ratio(&self) -> f64 {
-        self.context.config.reset_usage_ratio
-    }
-
     pub async fn journal_cursor(&self) -> Result<u64, LoopError> {
         Ok(self.journal.last_seq().await?)
     }
