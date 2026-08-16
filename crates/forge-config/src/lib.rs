@@ -896,9 +896,24 @@ mod tests {
         "SERPER_API_KEY",
     ];
 
-    /// Clears FORGE_* env vars for the duration of a test; restores on drop.
+    /// Isolates everything `Config::load` reads from outside the repository:
+    /// the FORGE_* env vars, and the platform config dir (via `HOME`/
+    /// `XDG_CONFIG_HOME`) that supplies the trusted user layer. Restores all
+    /// of it on drop, including on assertion failure.
+    ///
+    /// Redirecting the config dir is not optional hygiene. `Config::load`
+    /// merges `~/.../forge/config.toml` before anything else, so a developer
+    /// with a personal config had it silently layered under every assertion
+    /// here — a single `[tui] theme = "system"` was enough to fail
+    /// `defaults_workspace_to_cwd` locally while CI, which has no user
+    /// config, stayed green. Shares the crate-wide `ENV_LOCK` with
+    /// `permissions.rs`'s `IsolatedUserConfig`, since rustc runs tests in
+    /// parallel threads and both mutate the same process environment.
     struct EnvGuard {
         saved: Vec<(String, Option<String>)>,
+        /// Kept alive for the guard's lifetime: the redirected config dir
+        /// resolves inside it.
+        _home: tempfile::TempDir,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
@@ -910,11 +925,34 @@ mod tests {
                 saved.push(((*key).to_string(), env::var(key).ok()));
                 env::remove_var(key);
             }
-            Self { saved, _lock: lock }
+            for key in ["HOME", "XDG_CONFIG_HOME"] {
+                saved.push((key.to_string(), env::var(key).ok()));
+            }
+            let home = tempfile::TempDir::new().unwrap();
+            // `dirs::config_dir()` reads `XDG_CONFIG_HOME` on Linux and `HOME`
+            // elsewhere; clearing the former and pointing the latter at the
+            // temp dir lands the config dir inside it on both.
+            env::remove_var("XDG_CONFIG_HOME");
+            env::set_var("HOME", home.path());
+            Self {
+                saved,
+                _home: home,
+                _lock: lock,
+            }
         }
 
         fn set(&self, key: &str, value: &str) {
             env::set_var(key, value);
+        }
+
+        /// The `forge` directory under the redirected config dir, so a test
+        /// can seed a real user config and assert it is merged.
+        fn user_config_dir(&self) -> PathBuf {
+            user_config_path()
+                .expect("config dir resolves under redirected HOME")
+                .parent()
+                .expect("user config path always has a parent")
+                .to_path_buf()
         }
     }
 
@@ -1619,42 +1657,6 @@ model = "claude-sonnet"
         assert_eq!(user_config_path(), expected);
     }
 
-    /// Clears FORGE_* env vars, `XDG_CONFIG_HOME`, and `HOME` for the duration
-    /// of a test; restores all three on drop (including on panic/assertion
-    /// failure), mirroring `EnvGuard` but widened to the extra vars this test
-    /// needs.
-    struct XdgEnvGuard {
-        saved: Vec<(String, Option<String>)>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl XdgEnvGuard {
-        fn clear() -> Self {
-            let lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let mut saved = Vec::new();
-            for key in FORGE_ENV_KEYS
-                .iter()
-                .copied()
-                .chain(["XDG_CONFIG_HOME", "HOME"])
-            {
-                saved.push((key.to_string(), env::var(key).ok()));
-                env::remove_var(key);
-            }
-            Self { saved, _lock: lock }
-        }
-    }
-
-    impl Drop for XdgEnvGuard {
-        fn drop(&mut self) {
-            for (key, val) in self.saved.drain(..) {
-                match val {
-                    Some(v) => env::set_var(&key, v),
-                    None => env::remove_var(&key),
-                }
-            }
-        }
-    }
-
     /// The trusted-user-config layer (found via `dirs::config_dir()`, which
     /// honours `XDG_CONFIG_HOME` on Linux and `HOME` elsewhere) is merged
     /// first, before the project layer and env/CLI. This is the only way to
@@ -1663,13 +1665,9 @@ model = "claude-sonnet"
     /// path.
     #[test]
     fn user_config_toml_is_merged_before_project_layer() {
-        let _g = XdgEnvGuard::clear();
+        let guard = EnvGuard::clear_forge_env();
 
-        let home = tempdir().unwrap();
-        env::set_var("HOME", home.path());
-        let forge_dir = dirs::config_dir()
-            .expect("isolated HOME should yield a config dir")
-            .join("forge");
+        let forge_dir = guard.user_config_dir();
         fs::create_dir_all(&forge_dir).unwrap();
         fs::write(
             forge_dir.join("config.toml"),
@@ -1690,6 +1688,35 @@ model = "from-user-config"
         .unwrap();
 
         assert!(cfg.model.model.is_empty());
+    }
+
+    /// The guard has to actually neutralize the user layer, or every
+    /// assertion about defaults in this module is at the mercy of whatever
+    /// the developer running the suite happens to have in their personal
+    /// config. Seeds a user config that would change a default, and checks
+    /// that a *separately* guarded load does not see it.
+    #[test]
+    fn env_guard_isolates_the_developers_real_user_config() {
+        {
+            let guard = EnvGuard::clear_forge_env();
+            let forge_dir = guard.user_config_dir();
+            fs::create_dir_all(&forge_dir).unwrap();
+            fs::write(
+                forge_dir.join("config.toml"),
+                format!("[tui]\ntheme = \"{THEME_SOLARIZED_DARK}\"\n"),
+            )
+            .unwrap();
+            let cfg = Config::load(ConfigOverrides::default()).unwrap();
+            assert_eq!(
+                cfg.tui.theme, THEME_SOLARIZED_DARK,
+                "a seeded user config must be merged, or this test proves nothing"
+            );
+        }
+
+        // A fresh guard gets a fresh temp dir, so the file above is gone.
+        let _g = EnvGuard::clear_forge_env();
+        let cfg = Config::load(ConfigOverrides::default()).unwrap();
+        assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
     }
 
     #[test]
