@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use forge_context::compaction::{CompactionPolicy, CompactionTelemetry, SessionContextState};
 use forge_durable::Journal;
 use forge_governance::AclPolicy;
 use forge_storage::RuntimeStorage;
@@ -130,6 +131,10 @@ impl AgentSession {
             last_prompt_hash: None,
             cache_epoch: 0,
             last_cache_transport: None,
+            compaction_policy: CompactionPolicy::default(),
+            context_state: SessionContextState::default(),
+            compaction: CompactionTelemetry::default(),
+            canonical_user_turns: 0,
         })
     }
 
@@ -217,6 +222,10 @@ impl AgentSession {
             last_prompt_hash: state.last_prompt_hash.clone(),
             cache_epoch: state.cache_epoch,
             last_cache_transport: state.last_cache_transport.clone(),
+            compaction_policy: CompactionPolicy::default(),
+            context_state: SessionContextState::default(),
+            compaction: CompactionTelemetry::default(),
+            canonical_user_turns: 0,
         };
         child.reconcile_incomplete_intents(&incomplete).await?;
         // Deliberately no `mark_interrupted_if_stale()` here — that method

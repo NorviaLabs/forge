@@ -1,12 +1,13 @@
 //! Context lifecycle (context-lifecycle.md) — CTX-01, CTX-02. Phase 2 only.
 
+pub mod compaction;
+
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use chrono::Utc;
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
-use forge_types::{Message, MessageRole, ProgressDocument, SessionId};
+use forge_types::{Message, ProgressDocument, SessionId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -28,9 +29,6 @@ pub struct ContextConfig {
     /// Offload when estimated tokens exceed this (default 2000).
     #[serde(default = "default_offload")]
     pub offload_token_threshold: usize,
-    /// Reset when usage_ratio >= this (default 0.80).
-    #[serde(default = "default_reset_ratio")]
-    pub reset_usage_ratio: f64,
     /// Context capacity in tokens (heuristic).
     #[serde(default = "default_capacity")]
     pub capacity_tokens: usize,
@@ -42,9 +40,6 @@ pub struct ContextConfig {
 
 fn default_offload() -> usize {
     2000
-}
-fn default_reset_ratio() -> f64 {
-    0.80
 }
 fn default_capacity() -> usize {
     200_000
@@ -60,7 +55,6 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             offload_token_threshold: default_offload(),
-            reset_usage_ratio: default_reset_ratio(),
             capacity_tokens: default_capacity(),
             offload_dir: default_offload_dir(),
             progress_path: default_progress_path(),
@@ -107,13 +101,14 @@ impl ContextEngine {
         }
     }
 
+    /// Fraction of the heuristic capacity the transcript currently occupies.
+    ///
+    /// A display figure for the status bar only. What to *do* about context
+    /// pressure is [`compaction::CompactionPolicy`]'s decision, and it works
+    /// from the active model's real window rather than this heuristic.
     pub fn usage_ratio(&self, messages: &[Message]) -> f64 {
         let used = estimate_messages_tokens(messages) as f64;
         used / self.config.capacity_tokens as f64
-    }
-
-    pub fn should_reset(&self, messages: &[Message]) -> bool {
-        self.usage_ratio(messages) >= self.config.reset_usage_ratio
     }
 
     /// CTX-01: offload large tool body to disk; return compact in-context form.
@@ -261,63 +256,6 @@ impl ContextEngine {
         }
         skills
     }
-
-    /// CTX-02 hard reset: write progress, clear window, rehydrate slim messages.
-    pub fn handoff_reset(
-        &self,
-        messages: &[Message],
-        workspace_ref: &str,
-        system_prompt: &str,
-    ) -> Result<(ProgressDocument, Vec<Message>), ContextError> {
-        let mut doc = ProgressDocument::new(self.session_id, self.goal.clone());
-        if doc.goal.is_empty() {
-            doc.goal = messages
-                .iter()
-                .find(|m| m.role == MessageRole::User)
-                .map(|m| m.content.chars().take(200).collect())
-                .unwrap_or_else(|| "continue task".into());
-        }
-        doc.completed = messages
-            .iter()
-            .filter(|m| m.role == MessageRole::Assistant)
-            .map(|m| m.content.chars().take(120).collect())
-            .collect();
-        doc.in_progress = "resumed after context reset".into();
-        doc.next_actions = vec!["continue from progress.json".into()];
-        doc.workspace_ref = workspace_ref.into();
-        doc.updated_at = Utc::now().to_rfc3339();
-        self.write_progress(&doc)?;
-
-        let mut new_msgs = vec![Message {
-            outcome: Default::default(),
-            role: MessageRole::System,
-            content: format!(
-                "{system_prompt}\n\n# Context Handoff\n\nContext was reset (CTX-02). Continue from this progress document:\n{}",
-                serde_json::to_string_pretty(&doc).unwrap_or_default()
-            ),
-            tool_call_id: None,
-            name: None,
-            thinking: None,
-            thinking_duration_secs: None,
-            tool_calls: vec![],
-            attachments: Vec::new(),
-}];
-        new_msgs.push(Message {
-            outcome: Default::default(),
-            role: MessageRole::User,
-            content: format!(
-                "Continue the task. Goal: {}. Next: {:?}",
-                doc.goal, doc.next_actions
-            ),
-            tool_call_id: None,
-            name: None,
-            thinking: None,
-            thinking_duration_secs: None,
-            tool_calls: vec![],
-            attachments: Vec::new(),
-        });
-        Ok((doc, new_msgs))
-    }
 }
 
 /// Reduction ratio for offload (for tests / metrics).
@@ -452,6 +390,7 @@ pub fn discover_skills(workspace: &std::path::Path) -> Vec<SkillManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_types::MessageRole;
     use tempfile::tempdir;
 
     /// Git-initializes `dir` so offload/progress-path resolution exercises
@@ -515,68 +454,6 @@ mod tests {
         let full = dir.path().join(rel);
         assert!(full.is_file(), "missing {}", full.display());
         let _ = path;
-    }
-
-    #[test]
-    fn handoff_writes_progress_and_clears() {
-        let dir = tempdir().unwrap();
-        init_repo(dir.path());
-        std::fs::write(dir.path().join("AGENTS.md"), "Be careful").unwrap();
-        let sid = Uuid::new_v4();
-        let mut eng = ContextEngine::new(dir.path().to_path_buf(), sid);
-        eng.goal = "ship feature".into();
-        let messages = vec![
-            Message {
-                outcome: Default::default(),
-                role: MessageRole::User,
-                content: "do work".into(),
-                tool_call_id: None,
-                name: None,
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-                attachments: Vec::new(),
-            },
-            Message {
-                outcome: Default::default(),
-                role: MessageRole::Assistant,
-                content: "x".repeat(1000),
-                tool_call_id: None,
-                name: None,
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-                attachments: Vec::new(),
-            },
-        ];
-        let system_prompt = "Forge system prompt\n\nAGENTS.md:\nBe careful";
-        let (doc, new_msgs) = eng
-            .handoff_reset(&messages, "abc123", system_prompt)
-            .unwrap();
-        assert_eq!(doc.version, 1);
-        assert_eq!(doc.goal, "ship feature");
-        assert!(eng.progress_path().is_file());
-        assert!(new_msgs[0].content.contains("Be careful"));
-        assert!(new_msgs[0].content.contains("# Context Handoff"));
-        assert!(new_msgs[0].content.starts_with(system_prompt));
-        // capacity default 200_000 tokens; fill past 80%
-        assert!(eng.should_reset(
-            &std::iter::repeat_n(
-                Message {
-                    outcome: Default::default(),
-                    role: MessageRole::Assistant,
-                    content: "y".repeat(4000),
-                    tool_call_id: None,
-                    name: None,
-                    thinking: None,
-                    thinking_duration_secs: None,
-                    tool_calls: vec![],
-                    attachments: Vec::new(),
-                },
-                200,
-            )
-            .collect::<Vec<_>>()
-        ));
     }
 
     #[test]
@@ -798,64 +675,6 @@ mod tests {
         std::fs::write(dir.path().join("AGENTS.md"), "follow the rules").unwrap();
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         assert_eq!(eng.load_agents_md(), "follow the rules");
-    }
-
-    /// When `goal` is left empty, `handoff_reset` falls back to the first
-    /// user message (truncated to 200 chars) instead of a blank goal.
-    #[test]
-    fn handoff_reset_falls_back_to_first_user_message_when_goal_is_empty() {
-        let dir = tempdir().unwrap();
-        init_repo(dir.path());
-        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
-        assert!(eng.goal.is_empty());
-        let messages = vec![
-            Message {
-                outcome: Default::default(),
-                role: MessageRole::System,
-                content: "system setup, not a user goal".into(),
-                tool_call_id: None,
-                name: None,
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-                attachments: Vec::new(),
-            },
-            Message {
-                outcome: Default::default(),
-                role: MessageRole::User,
-                content: "please refactor the parser".into(),
-                tool_call_id: None,
-                name: None,
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-                attachments: Vec::new(),
-            },
-        ];
-        let (doc, _new_msgs) = eng.handoff_reset(&messages, "ws", "prompt").unwrap();
-        assert_eq!(doc.goal, "please refactor the parser");
-    }
-
-    /// With no user message at all, the fallback is the literal string
-    /// `"continue task"` rather than an empty goal.
-    #[test]
-    fn handoff_reset_falls_back_to_continue_task_when_no_user_message_exists() {
-        let dir = tempdir().unwrap();
-        init_repo(dir.path());
-        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
-        let messages = vec![Message {
-            outcome: Default::default(),
-            role: MessageRole::Assistant,
-            content: "no user turn here".into(),
-            tool_call_id: None,
-            name: None,
-            thinking: None,
-            thinking_duration_secs: None,
-            tool_calls: vec![],
-            attachments: Vec::new(),
-        }];
-        let (doc, _new_msgs) = eng.handoff_reset(&messages, "ws", "prompt").unwrap();
-        assert_eq!(doc.goal, "continue task");
     }
 
     #[test]

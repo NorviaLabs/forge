@@ -375,6 +375,11 @@ pub enum JournalEventType {
     HitlResume,
     /// Phase 2 — context handoff
     ContextReset,
+    /// Context compaction installed a new model-visible projection: a
+    /// structured checkpoint plus a recent raw tail. Canonical history is
+    /// untouched — every earlier event remains in the journal, and this event
+    /// only records how the projection was rebuilt.
+    ContextCompacted,
     /// Unified task/queue lifecycle — future-task queue durability.
     QueueEnqueued,
     QueuePromoting,

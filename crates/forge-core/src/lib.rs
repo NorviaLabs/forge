@@ -25,8 +25,15 @@ pub use completion::{
     EvidenceEntry, EvidenceSummary, ExecutionEvent, ExecutionEvidence, FileEffectExpectation,
     FileEffectKind, GitEffectExpectation, GitEffectKind, TaskExpectation, ToolExpectation,
 };
+/// Compaction vocabulary, re-exported so frontends and tests need only
+/// depend on `forge-core` to drive and inspect it.
+pub use forge_context::compaction::{
+    Checkpoint, CompactionError, CompactionPolicy, CompactionRecord, CompactionTelemetry,
+    CompactionTrigger, ProtectedFact, ProtectedFactKind, SessionContextState,
+};
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use queue::{QueuedTask, TaskQueue};
+pub use session::compaction::compact_tokens;
 pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
     PendingHitlExecution, PendingToolApplication,
@@ -128,6 +135,18 @@ pub struct AgentSession {
     last_prompt_hash: Option<String>,
     cache_epoch: u64,
     last_cache_transport: Option<String>,
+    /// Context-window arithmetic for the active model: when to compact, how
+    /// much runway to buy, how much raw tail to keep.
+    compaction_policy: CompactionPolicy,
+    /// Projection state produced by compaction — the installed checkpoint,
+    /// the tail boundary, and the protected facts collected from canonical
+    /// history. Never holds a copy of that history itself.
+    context_state: SessionContextState,
+    compaction: CompactionTelemetry,
+    /// How many user turns canonical history holds. Protected facts are keyed
+    /// by this ordinal, which compaction cannot disturb because it only
+    /// rewrites the projection.
+    canonical_user_turns: usize,
 }
 
 #[derive(Debug)]
@@ -157,5 +176,7 @@ impl CtxTokensFingerprint {
     }
 }
 
+#[cfg(test)]
+mod compaction_tests;
 #[cfg(test)]
 mod tests;
