@@ -185,8 +185,8 @@ mod tests {
         assert!(second["messages"][1]["content"][0]
             .get("cache_control")
             .is_some());
-        let a = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(&first));
-        let b = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(&second));
+        let a = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(first));
+        let b = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(second));
         assert_eq!(common_prefix_len(&a.bytes, &b.bytes), a.bytes.len());
     }
 }
