@@ -35,9 +35,28 @@ Credit is offered to reporters who want it, and withheld if you prefer.
 
 Forge executes model-proposed shell commands and filesystem changes on your
 machine, using your provider credentials. **Treat it the way you would treat a
-shell.** The security boundary is the approval prompt, not the agent's judgement.
+shell.**
 
-Two consequences worth being explicit about:
+**The security boundary is the OS sandbox, not the agent's judgement and not
+the approval prompt.** Every shell command is confined at spawn — Seatbelt on
+macOS, bubblewrap on Linux and WSL2 — to writes inside your workspace and a
+per-session temp directory, with network access only through a host-filtering
+egress proxy. Forge does not attempt to classify a command as safe or
+dangerous before running it; that judgement is the thing we are trying not to
+depend on.
+
+The approval prompt is a second, weaker layer that sits on top. In the default
+mode it does not appear for shell commands at all, because the confinement is
+what makes running them acceptable. On a host where the OS cannot confine,
+Forge caps the session at Manual mode and says why, rather than running
+unconfined and unannounced.
+
+What the sandbox does **not** protect: anything a command can legitimately do
+inside your workspace, and anything it can send to an allow-listed host. A
+confined command can still corrupt your working tree or exfiltrate what it can
+read through a permitted destination.
+
+Three consequences worth being explicit about:
 
 **Run Forge only in repositories you trust.** Forge reads instructions and
 configuration out of the working directory, and that content influences its
@@ -56,13 +75,22 @@ you name with `--config`. Everything else in that file is applied as written.
 
 **Content the model reads is not trusted input.** File contents, tool output, web
 results, and output from MCP servers all enter the model's context. Text in any of
-them can attempt to steer the agent. Approval prompts exist so that a consequential
-action still needs you; read them rather than clicking through.
+them can attempt to steer the agent. The sandbox is what limits where a steered
+agent can get to; where a prompt does appear, read it rather than clicking
+through.
+
+**MCP servers run outside the sandbox.** They are separate processes that Forge
+starts but does not confine, so an MCP tool is as privileged as the server
+implementing it. They keep their approval prompt in every mode for that reason.
 
 ## Scope
 
 In scope:
 
+- Escaping the sandbox: writing outside the workspace, or reaching a network
+  destination that is not on the egress allow-list
+- Entering Auto mode on a host with no working sandbox, or a sandbox that
+  reports itself available while failing to confine
 - Bypassing the approval prompt, or executing an action the user did not approve
 - Escaping workspace path confinement
 - Disclosing credentials — API keys or OAuth tokens — through logs, errors, the
@@ -83,7 +111,10 @@ Out of scope:
 
 ## Hardening your own use
 
-- Prefer a disposable clone for unfamiliar repositories.
+- Prefer a disposable clone for unfamiliar repositories. The sandbox confines a
+  command's reach; it does not make an untrusted build safe to run.
+- On Linux, keep `bubblewrap` and `socat` installed — without them Forge cannot
+  confine anything and drops to asking about every command.
 - Read the command in the approval prompt before accepting it.
 - Keep provider credentials in your user config or environment, not in a project
   `forge.toml`.
