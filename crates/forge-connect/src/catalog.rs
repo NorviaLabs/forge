@@ -1456,6 +1456,26 @@ mod tests {
 
     #[test]
     fn picker_refresh_replaces_a_fresh_account_catalog() {
+        // `refresh_stale: true` below reaches `refresh_models_dev_registry`,
+        // which reads `FORGE_MODELS_DEV_URL`. Two consequences this test used
+        // to have, both invisible from reading it:
+        //
+        //   * unguarded, it raced `refresh_models_dev_registry_uses_override_url`
+        //     — that test sets the variable to its own single-response mock,
+        //     and whichever request arrived first consumed it, so the other
+        //     one starved and its assertion failed. That was the flake.
+        //   * with the variable unset it fetched the *real* models.dev over
+        //     the network, making an offline or slow run fail for a third
+        //     reason entirely.
+        //
+        // Taking the guard serialises it against the other test, and pointing
+        // the variable at a dead port keeps the registry refresh local and
+        // deterministic: it is allowed to fail, the assertions below are about
+        // the account catalog, not the registry.
+        use crate::test_env::EnvGuard;
+        let guard = EnvGuard::new(&["FORGE_MODELS_DEV_URL"]);
+        guard.set("FORGE_MODELS_DEV_URL", "http://127.0.0.1:1/registry.json");
+
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml")).with_ttl(3600);
         let store = CredentialStore::new(dir.path().join("k.toml"));
