@@ -10,23 +10,37 @@
 //! by parsing. Here they are guarded by the OS, which is the point of the
 //! change: the guarantee no longer depends on recognising a command.
 
-#![cfg(target_os = "macos")]
-
 use std::path::Path;
 use std::process::Command;
 
 use forge_tools::sandbox::{availability, wrap_shell_command, SandboxPolicy};
 
+/// Skip, with the reason on stderr, when this host cannot confine. A silent
+/// skip would let the whole suite quietly stop testing anything — the failure
+/// mode where coverage evaporates and the badge stays green.
+macro_rules! require_sandbox {
+    () => {
+        if let Err(unavailable) = availability() {
+            eprintln!(
+                "SKIP {}: {}",
+                std::panic::Location::caller().file(),
+                unavailable.reason()
+            );
+            return;
+        }
+    };
+}
+
 /// Run `command` confined to `root`, returning (exit_ok, stdout+stderr).
 fn run_confined(root: &Path, command: &str) -> (bool, String) {
     let policy = SandboxPolicy::for_workspace(root);
     let (program, args) =
-        wrap_shell_command("/bin/bash", command, &policy).expect("sandbox should be available");
+        wrap_shell_command("sh", command, &policy).expect("sandbox should be available");
     let out = Command::new(program)
         .args(args)
         .current_dir(root)
         .output()
-        .expect("spawn sandbox-exec");
+        .expect("spawn the sandbox wrapper");
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.success(), text)
@@ -41,13 +55,31 @@ fn workspace() -> tempfile::TempDir {
     dir
 }
 
+/// Reports what this host can do, and never fails. Reading it in a CI log is
+/// how we learn whether the runner actually has bubblewrap — a question argv
+/// assertions cannot answer.
 #[test]
-fn sandbox_is_available_on_macos() {
+fn report_sandbox_availability_on_this_host() {
+    match availability() {
+        Ok(()) => eprintln!("SANDBOX: available on {}", std::env::consts::OS),
+        Err(unavailable) => eprintln!(
+            "SANDBOX: unavailable on {} — {}",
+            std::env::consts::OS,
+            unavailable.reason()
+        ),
+    }
+}
+
+/// macOS ships `sandbox-exec`, so there is no excuse for it being missing.
+#[cfg(target_os = "macos")]
+#[test]
+fn sandbox_is_always_available_on_macos() {
     assert!(availability().is_ok(), "macOS hosts must have sandbox-exec");
 }
 
 #[test]
 fn writes_inside_the_workspace_succeed() {
+    require_sandbox!();
     let ws = workspace();
     let (ok, out) = run_confined(ws.path(), "echo hello > allowed.txt");
     assert!(ok, "in-workspace write must succeed: {out}");
@@ -61,6 +93,7 @@ fn writes_inside_the_workspace_succeed() {
 /// it is recoverable and visible. Asserted so the trade stays deliberate.
 #[test]
 fn in_workspace_destruction_is_permitted_by_design() {
+    require_sandbox!();
     let ws = workspace();
     std::fs::create_dir_all(ws.path().join("src")).unwrap();
     std::fs::write(ws.path().join("src/main.rs"), "fn main() {}").unwrap();
@@ -71,6 +104,7 @@ fn in_workspace_destruction_is_permitted_by_design() {
 
 #[test]
 fn git_directory_is_read_only() {
+    require_sandbox!();
     let ws = workspace();
     let (ok, _) = run_confined(ws.path(), "echo clobbered > .git/HEAD");
     assert!(!ok, "the recovery mechanism must not be writable");
@@ -85,6 +119,7 @@ fn git_directory_is_read_only() {
 /// using nothing but an ordinary in-workspace write.
 #[test]
 fn forge_directory_is_read_only_so_permissions_cannot_be_widened() {
+    require_sandbox!();
     let ws = workspace();
     let (ok, _) = run_confined(
         ws.path(),
@@ -99,6 +134,7 @@ fn forge_directory_is_read_only_so_permissions_cannot_be_widened() {
 
 #[test]
 fn writes_outside_the_workspace_are_denied() {
+    require_sandbox!();
     let ws = workspace();
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("escaped.txt");
@@ -114,6 +150,7 @@ fn writes_outside_the_workspace_are_denied() {
 /// directory. This is the distinction `current_dir()` alone never provided.
 #[test]
 fn leaving_the_workspace_with_cd_does_not_escape() {
+    require_sandbox!();
     let ws = workspace();
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("via-cd.txt");
@@ -130,6 +167,7 @@ fn leaving_the_workspace_with_cd_does_not_escape() {
 
 #[test]
 fn network_egress_is_denied() {
+    require_sandbox!();
     let ws = workspace();
     let (ok, _) = run_confined(ws.path(), "curl -s -m 5 https://example.com");
     assert!(!ok, "network egress must be denied");
@@ -140,6 +178,7 @@ fn network_egress_is_denied() {
 /// secret can be read, but the network denial is what stops it leaving.
 #[test]
 fn reads_outside_the_workspace_are_permitted_by_design() {
+    require_sandbox!();
     let ws = workspace();
     let (ok, out) = run_confined(ws.path(), "head -c 5 /etc/hosts > read.txt && echo READ");
     assert!(ok, "broad reads are intentional: {out}");
@@ -150,6 +189,7 @@ fn reads_outside_the_workspace_are_permitted_by_design() {
 /// recognised here — they simply cannot reach anything.
 #[test]
 fn commands_that_used_to_need_parsing_are_contained_instead() {
+    require_sandbox!();
     let ws = workspace();
     let outside = tempfile::tempdir().unwrap();
     let escape = outside.path().join("out.txt");
@@ -183,6 +223,7 @@ fn escape_target(outside: &tempfile::TempDir) -> String {
 
 #[tokio::test]
 async fn bash_tool_is_confined() {
+    require_sandbox!();
     let ws = workspace();
     let outside = tempfile::tempdir().unwrap();
     let target = escape_target(&outside);
@@ -203,6 +244,7 @@ async fn bash_tool_is_confined() {
 
 #[tokio::test]
 async fn bash_tool_still_works_inside_the_workspace() {
+    require_sandbox!();
     let ws = workspace();
     let out = run_shell_command("echo hello > inside.txt && cat inside.txt", ws.path())
         .await
@@ -213,6 +255,7 @@ async fn bash_tool_still_works_inside_the_workspace() {
 
 #[tokio::test]
 async fn bash_tool_cannot_write_git() {
+    require_sandbox!();
     let ws = workspace();
     let out = run_shell_command("echo clobbered > .git/HEAD", ws.path())
         .await
