@@ -618,22 +618,35 @@ impl Journal {
             let et_s: String = row.get("event_type");
             let payload_s: String = row.get("payload");
             let payload: Value = serde_json::from_str(&payload_s)?;
-            let event_type: JournalEventType = serde_json::from_str(&format!("\"{et_s}\""))
-                .unwrap_or(JournalEventType::StatePatch);
+            // Deserialise the tag straight from the column string. Wrapping it
+            // in quotes and running it back through the JSON parser cost an
+            // allocation and a parse per event to decide a unit variant.
+            let event_type = JournalEventType::deserialize(serde::de::IntoDeserializer::<
+                serde::de::value::Error,
+            >::into_deserializer(
+                et_s.as_str()
+            ))
+            .unwrap_or(JournalEventType::StatePatch);
             let ts_s: String = row.get("ts");
             let ts = chrono::DateTime::parse_from_rfc3339(&ts_s)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
+            // The event is pushed onto `state.events` unconditionally, so the
+            // payload is moved into it here and the arms below project *out of
+            // it* by reference. Building `ev` from a clone instead meant every
+            // journal event was deep-copied once on principle, and the typed
+            // arms then copied it a second time before deserialising.
             let ev = JournalEvent {
                 seq,
                 session_id,
                 ts,
                 event_type,
                 schema_version: row.get::<i64, _>("schema_version") as u32,
-                payload: payload.clone(),
+                payload,
                 trace_id: row.try_get("trace_id").ok(),
             };
+            let payload = &ev.payload;
 
             match event_type {
                 JournalEventType::UserMessage => {
@@ -662,7 +675,7 @@ impl Journal {
                 JournalEventType::ModelResponse => {
                     // Older journals only contain response metadata and remain resumable with
                     // partial history; current journals persist the complete response.
-                    if let Ok(response) = serde_json::from_value::<ModelResponse>(payload.clone()) {
+                    if let Ok(response) = ModelResponse::deserialize(payload) {
                         let has_thinking = response
                             .thinking
                             .as_ref()
@@ -754,7 +767,7 @@ impl Journal {
                     });
                 }
                 JournalEventType::ToolResult => {
-                    if let Ok(p) = serde_json::from_value::<ToolResultPayload>(payload.clone()) {
+                    if let Ok(p) = ToolResultPayload::deserialize(payload) {
                         open_intents.remove(&p.call_id);
                         state.messages.push(Message {
                             outcome: p.output.effective_outcome(),
@@ -771,9 +784,9 @@ impl Journal {
                     }
                 }
                 JournalEventType::SessionStatus => {
-                    if let Ok(s) = serde_json::from_value::<TaskLifecycle>(
-                        payload.get("status").cloned().unwrap_or(Value::Null),
-                    ) {
+                    if let Ok(s) =
+                        TaskLifecycle::deserialize(payload.get("status").unwrap_or(&Value::Null))
+                    {
                         state.status = s;
                     }
                 }
@@ -792,9 +805,7 @@ impl Journal {
                     // far stays in `state.events`, and nothing already written
                     // to the journal is altered.
                     if let Some(messages) = payload.get("messages") {
-                        if let Ok(messages) =
-                            serde_json::from_value::<Vec<Message>>(messages.clone())
-                        {
+                        if let Ok(messages) = Vec::<Message>::deserialize(messages) {
                             state.messages = messages;
                         }
                     }
@@ -805,9 +816,7 @@ impl Journal {
                 }
                 JournalEventType::ContextReset => {
                     if let Some(messages) = payload.get("messages") {
-                        if let Ok(messages) =
-                            serde_json::from_value::<Vec<Message>>(messages.clone())
-                        {
+                        if let Ok(messages) = Vec::<Message>::deserialize(messages) {
                             state.messages = messages;
                         }
                     }
@@ -865,7 +874,7 @@ impl Journal {
                     ) {
                         let child_session_id = payload
                             .get("child_session_id")
-                            .and_then(|v| serde_json::from_value::<SessionId>(v.clone()).ok());
+                            .and_then(|v| SessionId::deserialize(v).ok());
                         state.background_tasks.push(RestoredBackgroundTask {
                             id: BackgroundTaskId(id),
                             kind: kind.to_string(),

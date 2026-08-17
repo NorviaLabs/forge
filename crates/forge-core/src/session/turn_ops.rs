@@ -504,12 +504,23 @@ impl AgentSession {
             self.begin_cache_epoch("transport");
         }
 
-        let snapshot = forge_model::snapshot_prompt(&self.model.prompt_wire(request));
+        let wire = self.model.prompt_wire(request);
+        let snapshot = forge_model::snapshot_prompt(&wire);
         if let Some(previous) = self.last_prompt_wire.as_deref() {
             let common = forge_model::common_prefix_len(previous, &snapshot.bytes);
             if common < previous.len() {
-                let previous_value = serde_json::from_slice(previous).unwrap_or(json!({}));
-                let first = forge_model::first_json_pointer(&previous_value, &snapshot.value)
+                // Both the re-parse and the tree diff walk the whole prompt, and
+                // both feed nothing but the `debug!` below — so neither runs
+                // when DEBUG is filtered out.
+                let (previous_value, current_value) = if tracing::enabled!(tracing::Level::DEBUG) {
+                    (
+                        serde_json::from_slice(previous).unwrap_or(json!({})),
+                        forge_model::strip_cache_control(&wire),
+                    )
+                } else {
+                    (json!({}), json!({}))
+                };
+                let first = forge_model::first_json_pointer(&previous_value, &current_value)
                     .unwrap_or_else(|| "/".into());
                 let pct = (common as f64 / previous.len() as f64) * 100.0;
                 tracing::debug!(
