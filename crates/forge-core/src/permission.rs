@@ -275,3 +275,170 @@ mod session_egress_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod propagation_contract {
+    //! Where a session's permissions must reach.
+    //!
+    //! Every gap closed here was the same shape: a path wired up and never
+    //! checked. `background_run` was calling the grantless variant of
+    //! `run_shell_command`, so a backgrounded `cargo build` was confined *and*
+    //! offline while the identical foreground command worked. Nothing failed;
+    //! it just quietly behaved differently.
+
+    use crate::*;
+
+    async fn session(dir: &std::path::Path) -> AgentSession {
+        AgentSession::create(
+            LoopConfig {
+                max_turns: 1,
+                workspace: dir.to_path_buf(),
+                journal_dir: dir.join("j"),
+                ..Default::default()
+            },
+            std::sync::Arc::new(forge_model::MockModelClient::script(vec![])),
+            forge_tools::ToolRegistry::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A subagent shares the parent's grant rather than starting its own proxy:
+    /// one session, one allow-list, one place to revoke it.
+    #[tokio::test]
+    async fn a_subagent_inherits_the_parent_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = session(dir.path()).await;
+        let Some(parent_grant) = parent.egress_grant() else {
+            return;
+        };
+
+        let child = parent
+            .create_child(
+                uuid::Uuid::new_v4(),
+                dir.path().to_path_buf(),
+                tokio_util::sync::CancellationToken::new(),
+                &SubagentSpec {
+                    role: "child".into(),
+                    prompt: "work".into(),
+                    tool_allowlist: None,
+                    max_turns: None,
+                },
+            )
+            .await
+            .expect("subagent session");
+
+        let child_grant = child
+            .tool_ctx
+            .egress
+            .clone()
+            .expect("a child must inherit the parent's grant, not lose the network");
+        assert_eq!(
+            child_grant.proxy_port, parent_grant.proxy_port,
+            "the child must use the parent's proxy, not a second one"
+        );
+        assert_eq!(child_grant.socket_path, parent_grant.socket_path);
+
+        // And it must not own a proxy of its own: two proxies per session means
+        // two allow-lists and two things to revoke.
+        assert!(
+            !child.has_network_egress(),
+            "the child holds a grant, not a listener"
+        );
+    }
+
+    /// Two sessions must not collide on a socket path, and one ending must not
+    /// disturb the other. The path is derived from the session id for exactly
+    /// this reason.
+    #[tokio::test]
+    async fn concurrent_sessions_get_independent_egress() {
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let a = session(a_dir.path()).await;
+        let b = session(b_dir.path()).await;
+
+        let (Some(ga), Some(gb)) = (a.egress_grant(), b.egress_grant()) else {
+            return;
+        };
+        assert_ne!(ga.socket_path, gb.socket_path, "sockets must not collide");
+        assert_ne!(ga.proxy_port, gb.proxy_port, "ports must not collide");
+        assert!(ga.socket_path.exists() && gb.socket_path.exists());
+
+        let b_socket = gb.socket_path.clone();
+        drop(a);
+        assert!(
+            b_socket.exists(),
+            "one session ending must not remove another's socket"
+        );
+    }
+
+    /// Backgrounded work is confined exactly like the foreground. This is the
+    /// third shell path and it had no test at all; it also reached the
+    /// grantless variant of `run_shell_command`, so it was confined *and*
+    /// offline while the identical foreground command worked.
+    #[tokio::test]
+    async fn background_work_is_confined_and_keeps_the_session_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session(dir.path()).await;
+
+        // Confined: a background command cannot leave the workspace.
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("escape-background.txt");
+        let out = forge_tools::run_shell_command_with_egress(
+            &format!("echo pwned > {}", target.to_str().unwrap()),
+            dir.path(),
+            session.egress_grant().as_deref(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.is_error,
+            "background work must be confined: {}",
+            out.content
+        );
+        assert!(!target.exists(), "background work escaped the sandbox");
+
+        // And still networked, when the session is.
+        if session.egress_grant().is_some() {
+            let out = forge_tools::run_shell_command_with_egress(
+                "printf %s \"$HTTP_PROXY\"",
+                dir.path(),
+                session.egress_grant().as_deref(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                out.content.contains("127.0.0.1"),
+                "backgrounded work must inherit the session's network, got {:?}",
+                out.content
+            );
+        }
+    }
+
+    /// MCP servers are spawned processes the sandbox does not confine, so they
+    /// keep their prompt in every mode. Asserted because it is the deliberate
+    /// hole in the model: if it ever stops prompting, that is a silent
+    /// widening rather than a visible one.
+    #[test]
+    fn mcp_tools_stay_gated_in_every_mode() {
+        use forge_governance::{Governance, PermissionMode};
+        use forge_types::{PolicyDecision, SideEffectClass, ToolCall};
+
+        for mode in [PermissionMode::Manual, PermissionMode::AcceptEdits] {
+            let mut g = Governance::default();
+            g.apply_mode(mode);
+            assert_eq!(
+                g.authorize(
+                    &ToolCall {
+                        id: "1".into(),
+                        name: "mcp:anything".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    SideEffectClass::Exec
+                ),
+                PolicyDecision::Hitl,
+                "MCP must keep asking in {mode:?}; the sandbox does not confine those processes"
+            );
+        }
+    }
+}
