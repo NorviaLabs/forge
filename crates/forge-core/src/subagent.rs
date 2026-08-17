@@ -63,7 +63,7 @@ impl AgentSession {
     /// shared by cheap clone. `cancel_token` is threaded in (not generated
     /// here) so the caller's `BackgroundTaskHandle` and the child's own
     /// cancellation check share the exact same token.
-    async fn create_child(
+    pub(crate) async fn create_child(
         &self,
         session_id: SessionId,
         workspace: PathBuf,
