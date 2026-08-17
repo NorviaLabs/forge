@@ -102,7 +102,11 @@ impl EgressPolicy {
     /// nothing.
     pub fn permits(&self, host: &str) -> bool {
         let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-        if host.is_empty() {
+        // An empty label makes suffix matching lie: `.github.com` ends with
+        // `.github.com`, so a wildcard for that domain accepts it. Rejecting
+        // empty labels here fixes every pattern form at once, rather than
+        // teaching each one the same trick.
+        if host.is_empty() || host.starts_with('.') || host.contains("..") {
             return false;
         }
         if self.deny.iter().any(|p| matches_pattern(p, &host)) {
@@ -184,11 +188,14 @@ impl EgressProxy {
     /// `socat` a dependency users must install.
     ///
     /// **The socket alone is not the boundary.** A process that can create its
-    /// own `AF_UNIX` sockets can also reach anything else bind-mounted in, and
-    /// nothing yet stops it opening one. Codex closes this by having seccomp
-    /// block new `AF_UNIX`/`socketpair` creation once the bridge is live; until
-    /// forge does the same, the sandbox's own filesystem rules are what limit
-    /// which sockets are reachable.
+    /// own `AF_UNIX` sockets can reach anything else bind-mounted in, and forge
+    /// does not stop it opening one. Codex blocks that with seccomp once its
+    /// bridge is live; forge cannot copy that directly, because the relay runs
+    /// *inside* the sandbox and needs the same syscall a filter would remove.
+    /// The sandbox's filesystem rules are therefore what limit which sockets
+    /// are reachable — asserted by
+    /// `a_confined_command_reaches_workspace_sockets_but_not_host_sockets`.
+    /// See `SandboxPolicy::with_egress_socket` for the full reasoning.
     pub async fn serve_on_unix_socket(
         &mut self,
         path: impl AsRef<Path>,
@@ -264,14 +271,20 @@ where
         }
     }
 
-    let host = target.rsplit_once(':').map(|(h, _)| h).unwrap_or(&target);
-    let host = host.trim_start_matches('[').trim_end_matches(']');
+    // Parse once, then dial the parsed parts. Deriving a host for the policy
+    // check while dialling the original string lets the two disagree, and a
+    // target the policy never saw is a bypass however it is spelled — the
+    // earlier version approved `[crates.io]:443` as `crates.io` and then dialled
+    // the bracketed form.
+    let Some((host, port)) = split_host_port(&target) else {
+        return respond(&mut write_half, 400, "Bad Request").await;
+    };
 
-    if !policy.permits(host) {
+    if !policy.permits(&host) {
         return respond(&mut write_half, 403, "Forbidden").await;
     }
 
-    let upstream = match TcpStream::connect(&target).await {
+    let upstream = match TcpStream::connect((host.as_str(), port)).await {
         Ok(stream) => stream,
         Err(_) => return respond(&mut write_half, 502, "Bad Gateway").await,
     };
@@ -292,6 +305,28 @@ where
 
 async fn serve_unix(client: UnixStream, policy: Arc<EgressPolicy>) -> io::Result<()> {
     serve(client, policy).await
+}
+
+/// Split a CONNECT target into the host to authorize and the port to dial.
+///
+/// Strict on purpose. Brackets are the IPv6 literal form, so bracketed content
+/// that is not an IPv6 address is malformed rather than a hostname with
+/// decoration — accepting it is what let `[crates.io]:443` be checked as one
+/// thing and dialled as another.
+fn split_host_port(target: &str) -> Option<(String, u16)> {
+    if let Some(rest) = target.strip_prefix('[') {
+        let (host, tail) = rest.split_once(']')?;
+        host.parse::<std::net::Ipv6Addr>().ok()?;
+        let port = tail.strip_prefix(':')?.parse().ok()?;
+        return Some((host.to_string(), port));
+    }
+    let (host, port) = target.rsplit_once(':')?;
+    // A bare IPv6 address without brackets is ambiguous with host:port, and
+    // an empty host is never valid.
+    if host.is_empty() || host.contains(':') {
+        return None;
+    }
+    Some((host.to_string(), port.parse().ok()?))
 }
 
 fn parse_connect(line: &str) -> Option<String> {
@@ -398,5 +433,194 @@ mod tests {
         );
         assert!(parse_connect("GET /secrets HTTP/1.1\r\n").is_none());
         assert!(parse_connect("").is_none());
+    }
+
+    /// Confusable and malformed hosts must fail closed.
+    ///
+    /// The allow-list is the only thing deciding where a confined command may
+    /// send bytes, so the interesting direction is a host that is *not* the
+    /// allowed one but matches anyway. `permits` only ASCII-lowercases, which
+    /// is correct — Unicode case folding would map distinct hosts onto each
+    /// other — but it means every non-ASCII variant has to miss, and that is
+    /// worth pinning rather than assuming.
+    #[test]
+    fn confusable_and_malformed_hosts_are_denied() {
+        let p = policy(["crates.io", "**.github.com"].as_slice());
+
+        // Sanity: the things that must keep working, so a policy that denies
+        // everything cannot pass this test.
+        for permitted in [
+            "crates.io",
+            "CRATES.IO",
+            "crates.io.",
+            " crates.io ",
+            "github.com",
+            "api.github.com",
+            "deep.nested.github.com",
+        ] {
+            assert!(p.permits(permitted), "{permitted:?} must stay reachable");
+        }
+
+        let denied = [
+            // Cyrillic 'с' (U+0441) for ASCII 'c' — the classic homograph.
+            ("\u{441}rates.io", "cyrillic homograph"),
+            // Fullwidth 'c' (U+FF43).
+            ("\u{ff43}rates.io", "fullwidth homograph"),
+            // Turkish dotless i — ASCII lowercasing leaves it alone.
+            ("crates.\u{131}o", "dotless i"),
+            // Punycode of the Cyrillic spelling: a different host entirely.
+            ("xn--rates-4td.io", "punycode of a homograph"),
+            // Suffix matching must respect label boundaries.
+            ("evilcrates.io", "no label boundary"),
+            ("crates.io.evil.com", "allowed name as a prefix"),
+            ("notgithub.com", "no label boundary under a wildcard"),
+            ("github.com.evil.com", "wildcard apex as a prefix"),
+            // Embedded separators must not smuggle a second host past the
+            // comparison.
+            ("crates.io@evil.com", "userinfo style"),
+            ("evil.com@crates.io", "reversed userinfo"),
+            ("crates.io\u{0}evil.com", "null byte"),
+            ("crates.io/evil.com", "path style"),
+            ("crates.io:evil.com", "colon style"),
+            ("crates.io#evil.com", "fragment style"),
+            ("evil.com?crates.io", "query style"),
+            // Nothing at all.
+            ("", "empty"),
+            (".", "bare dot"),
+            ("..", "bare dots"),
+        ];
+
+        for (host, why) in denied {
+            assert!(
+                !p.permits(host),
+                "{host:?} ({why}) was permitted; the allow-list is what decides \
+                 where a confined command may send bytes"
+            );
+        }
+    }
+
+    /// A leading dot is not a label boundary trick.
+    ///
+    /// `.github.com` ends with `.github.com`, so a naive suffix check accepts
+    /// it. It is not a resolvable host, so this is a hygiene case rather than a
+    /// live bypass — but suffix matching is exactly where allow-lists fail, and
+    /// the check should not depend on a resolver refusing to cooperate.
+    #[test]
+    fn a_leading_dot_does_not_satisfy_a_wildcard() {
+        let p = policy(["**.github.com", "*.gitlab.com"].as_slice());
+        assert!(!p.permits(".github.com"));
+        assert!(!p.permits(".gitlab.com"));
+    }
+
+    /// Deny wins over allow no matter which pattern form each side uses.
+    #[test]
+    fn deny_beats_allow_across_pattern_forms() {
+        let mut p = EgressPolicy::new();
+        p.allow("**.internal.example");
+        p.deny("secrets.internal.example");
+        assert!(p.permits("ok.internal.example"));
+        assert!(!p.permits("secrets.internal.example"));
+        assert!(
+            !p.permits("SECRETS.INTERNAL.EXAMPLE"),
+            "deny must be case-insensitive too"
+        );
+        assert!(
+            !p.permits("secrets.internal.example."),
+            "a trailing dot must not evade a deny"
+        );
+    }
+
+    /// The proxy must refuse the target it will actually dial.
+    ///
+    /// `serve` validates a `host` it derives from the CONNECT target, then
+    /// dials the *target*. Any input where those two disagree is a bypass, so
+    /// this drives real CONNECT lines through a real proxy rather than calling
+    /// `permits` directly.
+    ///
+    /// 403 and 502 are the whole point of the assertion. 403 means the policy
+    /// refused. 502 means the policy **allowed** it and the dial merely failed
+    /// — a bypass that happens to be unroutable today, which is not a boundary.
+    #[tokio::test]
+    async fn adversarial_connect_targets_are_refused_by_policy_not_by_dns() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let mut policy = EgressPolicy::new();
+        policy.allow("crates.io");
+        let proxy = EgressProxy::start(policy).await.unwrap();
+
+        let status = |line: String| {
+            let addr = proxy.addr();
+            async move {
+                let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                stream
+                    .write_all(format!("{line}\r\n\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut response = String::new();
+                reader.read_line(&mut response).await.unwrap();
+                response
+            }
+        };
+
+        for (target, why) in [
+            (
+                "[crates.io]:443",
+                "brackets are stripped from the checked host but kept in the dialled target",
+            ),
+            ("crates.io.evil.com:443", "allowed name as a prefix"),
+            ("evil.com:443", "plainly not allowed"),
+            ("crates.io@evil.com:443", "userinfo style"),
+            ("\u{441}rates.io:443", "cyrillic homograph"),
+            (".crates.io:443", "empty leading label"),
+        ] {
+            let response = status(format!("CONNECT {target} HTTP/1.1")).await;
+            // 403 (policy refused) and 400 (malformed, never reached policy)
+            // are both refusals. 200 and 502 are not: both mean the request
+            // got as far as dialling, so the policy had already said yes.
+            assert!(
+                response.contains("403") || response.contains("400"),
+                "CONNECT {target:?} ({why}) got {response:?}.\n\
+                 A 502 here means the policy said yes and only the dial failed, \
+                 which is not the same as being refused."
+            );
+        }
+
+        // Control: the allowed host must reach the policy's yes-path, or the
+        // loop above would pass against a proxy that refuses everything.
+        let response = status("CONNECT crates.io:443 HTTP/1.1".to_string()).await;
+        assert!(
+            !response.contains("403"),
+            "the allowed host was refused, so the 403s above prove nothing: {response:?}"
+        );
+    }
+
+    #[test]
+    fn host_and_port_are_split_strictly() {
+        assert_eq!(
+            split_host_port("crates.io:443"),
+            Some(("crates.io".to_string(), 443))
+        );
+        assert_eq!(
+            split_host_port("[::1]:443"),
+            Some(("::1".to_string(), 443)),
+            "a real IPv6 literal must still work"
+        );
+
+        for malformed in [
+            "[crates.io]:443", // brackets are the IPv6 form, not decoration
+            "crates.io",       // no port
+            ":443",            // no host
+            "::1:443",         // bare IPv6, ambiguous with host:port
+            "crates.io:https", // non-numeric port
+            "crates.io:99999", // out of range
+            "[::1]443",        // missing the port separator
+        ] {
+            assert_eq!(
+                split_host_port(malformed),
+                None,
+                "{malformed:?} must not parse; anything that does is dialled"
+            );
+        }
     }
 }
