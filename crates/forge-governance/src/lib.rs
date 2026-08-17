@@ -205,8 +205,12 @@ impl Governance {
     }
 
     /// Short description of what Accept Edits frees (for toasts / docs).
+    ///
+    /// Must describe the sandbox, not a command allow-list: Auto stopped being
+    /// a seed list when confinement became the thing that makes not-asking
+    /// safe. `accept_edits_summary_describes_the_sandbox` holds it to that.
     pub fn accept_edits_toast_summary() -> &'static str {
-        "Accept Edits: cargo test/build/check/clippy/fmt free; ls/glob/grep/git reads use dedicated tools"
+        "Auto: shell runs sandboxed to this workspace; MCP tools still ask"
     }
 
     /// Filter tool list for the model (SEC-02).
@@ -1028,6 +1032,32 @@ mod tests {
             ),
             PolicyDecision::Allow,
             "and must not gate anything it does not match"
+        );
+    }
+
+    /// The summary is user-facing: it is the toast shown on every F2 press, so
+    /// a stale one actively misinforms about what oversight is in effect. It
+    /// described a `cargo test|build|...` allow-list for a while after Auto had
+    /// already become sandbox-backed, telling users other shell would prompt
+    /// when it no longer did.
+    #[test]
+    fn accept_edits_summary_describes_the_sandbox() {
+        let summary = Governance::accept_edits_toast_summary();
+        let lower = summary.to_ascii_lowercase();
+
+        assert!(
+            lower.contains("sandbox"),
+            "the summary must name what actually makes not-asking safe: {summary}"
+        );
+        for stale in ["cargo test", "cargo build", "clippy", "glob", "grep"] {
+            assert!(
+                !lower.contains(stale),
+                "summary still describes the retired seed allow-list ({stale}): {summary}"
+            );
+        }
+        assert!(
+            lower.contains("mcp"),
+            "the one thing that still prompts in Auto must be stated: {summary}"
         );
     }
 

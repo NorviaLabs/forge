@@ -33,7 +33,8 @@ single focused loop.
 - Chats with a configured model while staying inside your terminal.
 - Reads and edits workspace files, applies focused patches, searches code, and
   works with Git.
-- Runs shell commands only through an approval-aware tool flow.
+- Runs every shell command inside an OS sandbox confined to your workspace,
+  with network egress restricted to an allow-list.
 - Preserves session history and unfinished work in a local SQLite journal.
 - Supports provider sign-in and model selection from the TUI.
 - Connects configured MCP servers and exposes their tools to the agent.
@@ -60,6 +61,18 @@ irm https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-instal
 The installers select the current release for your platform and verify its
 SHA-256 checksum before installing. To install a specific release, set
 `FORGE_VERSION`, for example `v0.1.0-beta.5`.
+
+On Linux the installer also installs the sandbox's dependencies —
+`bubblewrap` and `socat` — if they are not already present, prompting once
+for `sudo`. It supports apt, dnf, yum, pacman, zypper, and apk. If that fails
+it says so and continues: forge still runs, but without a sandbox it must ask
+before every command. Set `FORGE_SKIP_DEPS=1` to manage them yourself.
+
+macOS needs nothing extra; its sandbox is built into the OS.
+
+Windows runs forge under WSL2, where it uses the Linux sandbox. There is no
+native Windows build — the PowerShell installer detects WSL2 and points you
+at the Linux installer inside it. The sandbox suite runs against WSL2 in CI.
 
 ### Build from source
 
@@ -256,10 +269,53 @@ Project-discovered configuration is intentionally restricted: settings that
 could execute code or redirect credentialed requests are not accepted from an
 untrusted checked-out repository.
 
+### The sandbox
+
+Every shell command the agent runs is confined by the operating system, in
+every permission mode. Confinement is applied at spawn, so it does not depend
+on the agent classifying a command correctly beforehand — forge does not try
+to decide whether `rm -rf` is dangerous, it removes the reach that would make
+it matter.
+
+| Platform | Mechanism |
+| --- | --- |
+| macOS | Seatbelt (`sandbox-exec`), built into the OS |
+| Linux | bubblewrap (`bwrap`) |
+| Windows | WSL2, using the Linux sandbox |
+
+Inside the sandbox a command can:
+
+- **read** broadly, so toolchains and system libraries work;
+- **write** only inside your workspace and a per-session temp directory;
+- **reach the network** only through the egress proxy described below.
+
+`.git` and `.forge` are read-only: the agent can inspect history but cannot
+rewrite it, and cannot edit the permission rules that govern it.
+
+If the OS cannot confine — bubblewrap missing, an unsupported platform — forge
+does not pretend otherwise. It caps the session at Manual mode and tells you
+why. Auto is unreachable without a sandbox under it; there is no combination
+of settings that turns oversight off without an enforcement floor in place.
+
+### Network egress
+
+The sandbox denies network access outright, then reinstates it through a
+filtering proxy reached over a Unix socket. The proxy reads the `CONNECT` host
+each request names and refuses anything not on the allow-list. It does not
+terminate TLS, install a certificate, or see your traffic — it only decides
+where a connection may go.
+
+The allow-list currently seeds the package registries a first build needs
+(crates.io, github.com, npm, PyPI) and denies everything else. Seeding is a
+policy decision made on your behalf, and it is the weakest part of this
+design: forge has no per-domain prompt yet, so a seeded list is the
+alternative to `cargo build` failing on a fresh clone. When per-domain
+prompting exists, this becomes the fallback rather than the default.
+
 ### Permission rules
 
-By default every shell command asks for approval. `permissions.toml` narrows
-that with pattern rules matched against the actual call — a command prefix
+`permissions.toml` narrows or widens what runs without a prompt, with pattern
+rules matched against the actual call — a command prefix
 for shell tools, a path glob for file tools, a host for fetch-style tools:
 
 ```toml
@@ -290,18 +346,25 @@ Menu rows (when a prompt appears):
 ### Permission modes
 
 `F2` cycles the session's oversight level (persisted per workspace).
-Default is **Accept Edits**.
+Default is **Accept Edits**, shown in the composer as **Auto**.
 
-- **Accept Edits** (default) — file writes free; a tight shell allow list
-  runs without prompts: `cargo test|build|check|clippy|fmt` (including via
-  `background_run`). Listing, search, file reads, and git inspection go
-  through dedicated tools (`ls`, `glob`, `grep`, `read_file`, `git`)
-  and do not prompt. Other shell still asks. Add a `deny` pattern to
-  re-prompt on a seed.
-- **Manual** — every shell-equivalent command asks unless your personal
-  `permissions.toml` (or session `always`) allows it.
+The mode decides only whether you are *asked*. It never decides what a command
+can *reach* — the sandbox does that, identically in both modes.
 
-Modes never override an ACL deny or ignore your `permissions.toml` rules.
+- **Accept Edits / Auto** (default) — shell commands run without prompting,
+  because they are already confined to your workspace with no unrestricted
+  network. Asking on top of that is friction without added safety. File writes
+  are free for the same reason. MCP tools still prompt: those are separate
+  server processes and the sandbox does not confine them.
+- **Manual** — the same confinement, plus a prompt before every
+  shell-equivalent command, unless your personal `permissions.toml` (or a
+  session `always`) allows it.
+
+Auto requires a working sandbox. On a host that cannot confine, the mode is
+capped at Manual and the composer chip explains why.
+
+Modes never override an ACL deny or ignore your `permissions.toml` rules: a
+`deny` pattern is checked first and re-prompts in Auto exactly as in Manual.
 A stricter `Locked` mode is deferred until headless/CI entry exists.
 
 ### Approving shell commands
@@ -321,15 +384,15 @@ Depending on configuration, the agent can use tools for:
 
 - reading and writing files;
 - applying validated workspace-confined patches;
-- running approved shell commands;
+- running shell commands inside the sandbox;
 - inspecting Git status and diffs;
 - fast file and content search;
 - web search;
 - configured MCP tools.
 
-Tool arguments are validated before execution. Sensitive or consequential
-actions require an approval prompt. Forge does not treat model output as
-trusted input.
+Tool arguments are validated before execution, and shell commands are confined
+by the OS sandbox rather than judged for danger beforehand. Forge does not
+treat model output as trusted input.
 
 ## Sessions and resume
 
@@ -355,9 +418,15 @@ your source files and should never contain API keys or OAuth tokens.
 Forge can execute commands and modify files on your machine. Treat it like a
 shell with an AI interface:
 
-1. Run it only in repositories you trust.
+1. Run it only in repositories you trust. The sandbox confines what a command
+   can reach; it does not make an untrusted repository safe to build.
 2. Read each approval prompt, including the exact command and consequence.
-3. Keep credentials in your environment or trusted user configuration.
+   In Auto mode most shell commands do not prompt — the sandbox is what
+   stands in for that review, so check that it is active (the composer chip
+   says when the mode is capped).
+3. Keep credentials in your environment or trusted user configuration. The
+   sandbox restricts where a command may connect, but a command that legitimately
+   reaches an allow-listed host can carry whatever it can read.
 4. Do not commit `.forge/`, runtime journals, API keys, OAuth tokens, or
    credential files.
 5. Use a disposable clone when evaluating an unfamiliar repository.
