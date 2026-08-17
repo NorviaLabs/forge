@@ -497,9 +497,22 @@ impl TuiApp {
             }
             SemanticCommand::ToggleToolDetails => self.tool_detail.toggle(),
             SemanticCommand::CyclePermissionMode => {
-                let mode = self.session.permission_mode().next();
-                self.session.apply_permission_mode(mode);
+                let requested = self.session.permission_mode().next();
+                let capped = self.set_permission_mode_clamped(requested);
                 self.save_ui_state();
+                // A refused request has to say why, or the mode chip simply
+                // does not change when you press the key and the user is left
+                // guessing whether the binding is broken.
+                if let Some(reason) = capped {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!(
+                            "staying in {} — {reason}",
+                            self.session.permission_mode().label()
+                        ),
+                    );
+                    return Ok(false);
+                }
                 let detail = match self.session.permission_mode() {
                     forge_governance::PermissionMode::AcceptEdits => {
                         forge_governance::Governance::accept_edits_toast_summary()
@@ -1069,6 +1082,28 @@ mod tests {
     #[tokio::test]
     async fn cycle_permission_mode_moves_through_manual_and_accept_edits_and_back() {
         let (_dir, mut app) = app().await;
+
+        // Auto is only reachable when a sandbox can hold the line under it, so
+        // what "cycling" does depends on the host. Without a floor the cycle is
+        // a no-op by design — assert that, rather than asserting a transition
+        // that must not happen. See `forge_core::permission_ceiling`.
+        if forge_core::permission_ceiling().0 == forge_governance::PermissionMode::Manual {
+            assert_eq!(
+                app.session.permission_mode(),
+                forge_governance::PermissionMode::Manual,
+                "a host with no sandbox starts in Manual"
+            );
+            app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+                .await
+                .unwrap();
+            assert_eq!(
+                app.session.permission_mode(),
+                forge_governance::PermissionMode::Manual,
+                "cycling must not reach Auto without a floor"
+            );
+            return;
+        }
+
         assert_eq!(
             app.session.permission_mode(),
             forge_governance::PermissionMode::AcceptEdits

@@ -3,6 +3,7 @@
 mod background;
 mod completion;
 mod lifecycle;
+mod permission;
 mod persistence;
 mod queue;
 mod resume;
@@ -32,6 +33,7 @@ pub use forge_context::compaction::{
     CompactionTrigger, ProtectedFact, ProtectedFactKind, SessionContextState,
 };
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
+pub use permission::permission_ceiling;
 pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::compact_tokens;
 pub use session::tools::{

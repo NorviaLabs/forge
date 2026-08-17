@@ -42,6 +42,17 @@ impl TuiApp {
     }
 
     pub(super) fn load_ui_state(&mut self) {
+        self.restore_persisted_ui_state();
+        // Clamp unconditionally, outside the restore. That function has three
+        // exits that skip the mode entirely — no state file, malformed file,
+        // id mismatch — and `PermissionMode` derives `Default` as
+        // `AcceptEdits`. Clamping only on the success path would leave a fresh
+        // session in Auto with no floor under it, which is the exact case a
+        // brand-new workspace hits.
+        self.set_permission_mode_clamped(self.session.permission_mode());
+    }
+
+    fn restore_persisted_ui_state(&mut self) {
         let Ok(text) = fs::read_to_string(self.ui_state_path()) else {
             return;
         };
@@ -64,9 +75,25 @@ impl TuiApp {
                 }
             }
             if let Some(mode) = state.permission_mode {
-                self.session.apply_permission_mode(mode);
+                self.set_permission_mode_clamped(mode);
             }
         }
+    }
+
+    /// Apply `requested`, narrowed to what this host can actually enforce.
+    ///
+    /// The single place a permission mode is set, so the invariant "Auto is
+    /// only ever entered when there is an enforcement floor underneath it"
+    /// cannot be bypassed by adding another call site. Returns the reason the
+    /// request was capped, when it was.
+    pub(super) fn set_permission_mode_clamped(
+        &mut self,
+        requested: forge_governance::PermissionMode,
+    ) -> Option<String> {
+        let (ceiling, reason) = forge_core::permission_ceiling();
+        let effective = requested.clamped_to(ceiling);
+        self.session.apply_permission_mode(effective);
+        (effective != requested).then_some(reason).flatten()
     }
 
     pub(super) fn save_ui_state(&mut self) {
