@@ -74,6 +74,11 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
+    // This test is about approving from the sidebar, so it needs a prompt to
+    // approve. Accept Edits does not gate shell any more — it is only
+    // reachable when a sandbox is confining it — so ask for Manual, which
+    // every host can reach because narrowing is always permitted.
+    app.set_permission_mode_clamped(forge_governance::PermissionMode::Manual);
 
     let id = app
         .session

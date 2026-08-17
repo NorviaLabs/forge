@@ -1481,29 +1481,17 @@ async fn hitl_pauses_on_git_push() {
 }
 
 #[tokio::test]
-async fn readonly_inspection_bash_does_not_ask_for_approval() {
+async fn inspection_bash_runs_without_a_prompt_in_accept_edits() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "hello").unwrap();
     let model = Arc::new(MockModelClient::script(vec![
         ModelResponse {
             text: "".into(),
-            tool_calls: vec![
-                ToolCall {
-                    id: "1".into(),
-                    name: "bash".into(),
-                    arguments: json!({"command": "ls -la"}),
-                },
-                ToolCall {
-                    id: "2".into(),
-                    name: "bash".into(),
-                    arguments: json!({"command": "ls && find . -maxdepth 1"}),
-                },
-                ToolCall {
-                    id: "3".into(),
-                    name: "bash".into(),
-                    arguments: json!({"command": "rg -n hello | head"}),
-                },
-            ],
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "ls -la"}),
+            }],
             usage: None,
             thinking: None,
         },
@@ -1521,32 +1509,26 @@ async fn readonly_inspection_bash_does_not_ask_for_approval() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
         .await
         .unwrap();
+    // `Governance::default()` reports Accept Edits but still gates shell until
+    // a mode is applied — conservative on purpose, since nothing has yet
+    // established that a sandbox is confining anything. Declare it here.
+    s.apply_permission_mode(forge_governance::PermissionMode::AcceptEdits);
+
     s.run_user_message("look around").await.unwrap();
+
+    // This used to pass because `readonly.rs` recognised `ls` and rewrote it
+    // onto the dedicated tool, dodging the prompt. There is no classifier now:
+    // Accept Edits does not gate shell at all, because it is only reachable
+    // when a sandbox is confining it.
     assert!(
         s.pending_hitl().is_none(),
-        "inspection bash must not prompt"
+        "inspection bash must not prompt in Accept Edits"
     );
     assert_ne!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     assert!(
         s.messages.iter().any(|m| m.content.contains("README.md")),
-        "rewritten ls should execute"
-    );
-    assert!(
-        s.messages.iter().any(|m| m.content.contains("dedicated")),
-        "compound inspection should redirect instead of prompting"
-    );
-    assert!(
-        s.messages.iter().any(|m| {
-            m.role == MessageRole::Tool
-                && m.name.as_deref() == Some("grep")
-                && m.content.contains("hello")
-        }),
-        "bash(rg | head) must run as the grep tool, got {:?}",
+        "the command must actually run, got {:?}",
         s.messages
-            .iter()
-            .filter(|m| m.role == MessageRole::Tool)
-            .map(|m| (m.name.as_deref(), m.content.as_str()))
-            .collect::<Vec<_>>()
     );
 }
 
