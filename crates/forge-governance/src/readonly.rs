@@ -4,6 +4,12 @@
 //! tools and only send real work to the shell. Forge already has confined
 //! `git`, `glob`, `grep`, and `read_file`; this module stops the model from
 //! paying a HITL tax for the bash spelling of the same reads.
+//!
+//! Because that is what it does, this module is a security boundary. The
+//! dedicated tools are outside `hitl_tools`, so a rewrite turns a call that
+//! would have prompted into one that is authorized outright. Every classifier
+//! here must therefore fail closed: anything not positively recognised as a
+//! read stays on the shell path and keeps its prompt.
 
 use forge_types::{is_readonly_git_subcommand, ToolCall};
 use serde_json::{json, Value};
@@ -598,10 +604,18 @@ fn parse_git(args: &[String]) -> Option<GitParsed> {
 /// option this module has never heard of must not be assumed to be a read:
 /// `--set-upstream-to=`, `--unset-upstream` and `--edit-description` all mutate
 /// repository state and all begin with `-`, so a denylist classified them as
-/// reads and rewrote them onto the dedicated `git` tool. That was never
-/// exploitable — `GitTool` is `SideEffectClass::Write`, so `authorize` still
-/// gates it — but labelling a mutation as a read one layer above a security
-/// boundary is a bug in its own right.
+/// reads and rewrote them onto the dedicated `git` tool.
+///
+/// Nothing downstream catches that. Approval is gated on tool *identity*, not
+/// on side-effect class: `hitl_tools` holds the shell-equivalent tools, and
+/// `apply_mode` clears `hitl_classes` in every shipped mode, so `authorize`
+/// returns `Allow` for any tool outside that set before pattern rules are
+/// consulted. `git` is outside it, and `GitTool`'s own argument policy permits
+/// `-u`/`--set-upstream-to`. Being `SideEffectClass::Write` does not gate it.
+///
+/// So a misclassification here does not merely cost an unnecessary prompt — it
+/// converts a HITL-gated `bash` call into an unprompted mutation. This function
+/// is the boundary, not a layer above one, which is why it must fail closed.
 ///
 /// Only the `=` spelling of a valued option needs matching here; the space
 /// spelling puts the value in a bare operand, which the caller already rejects.
@@ -1306,10 +1320,10 @@ mod tests {
     /// Options that mutate the repository are not reads, even though they
     /// begin with `-` and are not part of the delete/rename/force family.
     ///
-    /// Note the `git` tool's own argument policy *permits* `-u` and
-    /// `--set-upstream-to`, so it is not what stops these — the backstop is
-    /// that `GitTool` is `SideEffectClass::Write` and stays HITL-gated. This
-    /// module still must not label them reads.
+    /// There is no backstop below this. `GitTool`'s own argument policy
+    /// *permits* `-u` and `--set-upstream-to`, and `git` is outside
+    /// `hitl_tools`, so a rewrite onto it is authorized without a prompt —
+    /// see `rewritten_git_calls_are_not_prompted` in the crate root.
     #[test]
     fn git_branch_upstream_and_description_flags_are_not_reads() {
         assert_unclassified("git branch --set-upstream-to=origin/main");

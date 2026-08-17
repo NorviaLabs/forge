@@ -482,6 +482,58 @@ mod tests {
         );
     }
 
+    /// The security model that `readonly.rs` sits on top of.
+    ///
+    /// Approval is gated on tool *identity*, not side-effect class: `bash` is
+    /// in `hitl_tools` and prompts, while `git` is not and is authorized
+    /// outright — even though `GitTool` is `SideEffectClass::Write`. Rewriting
+    /// a shell call onto the `git` tool therefore *removes* the prompt, which
+    /// is the point of the rewrite.
+    ///
+    /// The consequence: classifying a mutating git command as a read is an
+    /// approval bypass, not a cosmetic mislabel. There is no second gate below
+    /// `readonly.rs` to catch it.
+    #[test]
+    fn rewritten_git_calls_are_not_prompted() {
+        let g = Governance::default();
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "git branch -a"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Hitl
+        );
+        assert_eq!(
+            g.authorize(
+                &call("git", json!({"subcommand": "branch", "args": ["-a"]})),
+                SideEffectClass::Write
+            ),
+            PolicyDecision::Allow
+        );
+    }
+
+    /// Every shipped mode clears `hitl_classes`, so side-effect class gates
+    /// nothing unless a caller opts in by hand.
+    #[test]
+    fn shipped_modes_leave_hitl_classes_empty() {
+        for mode in [PermissionMode::Manual, PermissionMode::AcceptEdits] {
+            let mut g = Governance {
+                hitl_classes: vec![SideEffectClass::Write],
+                ..Default::default()
+            };
+            g.apply_mode(mode);
+            assert!(g.hitl_classes.is_empty(), "{mode:?} left a class gate");
+            assert_eq!(
+                g.authorize(
+                    &call("git", json!({"subcommand": "status"})),
+                    SideEffectClass::Write
+                ),
+                PolicyDecision::Allow,
+                "{mode:?}"
+            );
+        }
+    }
+
     /// Opting a class in makes every tool of that class prompt, which is the
     /// supported way to widen coverage now that no tool is exempt.
     #[test]
