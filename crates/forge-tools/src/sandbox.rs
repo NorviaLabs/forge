@@ -428,11 +428,14 @@ fn bubblewrap_invocation(
     // class rather than a denylist of the ones we thought of. Emitted after the
     // read-only root so it wins, and before the egress bind so the socket we do
     // want survives.
+    //
+    // `/var/run` is deliberately absent: on modern Linux it is a symlink to
+    // `/run`, and bwrap cannot mount a tmpfs onto a symlink — it fails with
+    // "Can't mount tmpfs on /newroot/var/run" and takes the whole invocation
+    // with it. Masking `/run` covers both, because the symlink resolves there.
     args.extend([
         "--tmpfs".into(),
         "/run".into(),
-        "--tmpfs".into(),
-        "/var/run".into(),
         "--tmpfs".into(),
         "/tmp".into(),
     ]);
@@ -873,12 +876,20 @@ mod relay_tests {
         else {
             return;
         };
-        for dir in ["/run", "/var/run", "/tmp"] {
+        for dir in ["/run", "/tmp"] {
             assert!(
                 args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == dir),
                 "{dir} must be masked or host sockets stay reachable"
             );
         }
+        // Masking this would abort the whole invocation: it is a symlink to
+        // /run on modern Linux and bwrap cannot mount a tmpfs onto a symlink.
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "--tmpfs" && w[1] == "/var/run"),
+            "/var/run is a symlink to /run; masking it makes bwrap fail"
+        );
     }
 
     /// The mask must follow the read-only root, or the root wins and the
