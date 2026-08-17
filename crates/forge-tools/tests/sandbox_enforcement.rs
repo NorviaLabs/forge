@@ -757,3 +757,147 @@ fn unix_sockets_are_denied_wholesale() {
          the probe never found the socket and tested nothing.\n{out}"
     );
 }
+
+/// A workspace that disappears mid-session must not silently drop confinement.
+///
+/// `wrap_shell_command` returns `None` both when the host cannot confine at all
+/// and when this particular policy could not be built — `canonicalize` fails if
+/// the root is gone. The caller treats both the same and runs the command
+/// unconfined, but only the first is a decision anyone made: the sandbox-less
+/// fallback is paired with a permission mode capped upstream at session start,
+/// and nothing re-evaluates that when a directory vanishes at 11pm.
+#[tokio::test]
+async fn a_vanished_workspace_does_not_silently_run_unconfined() {
+    require_sandbox!();
+
+    let ws = workspace();
+    let root = ws.path().to_path_buf();
+    let marker = root.join("canary");
+    std::fs::write(&marker, "x").unwrap();
+
+    // Gone, but the path is still what the session is holding.
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let result = forge_tools::run_shell_command("echo escaped", &root).await;
+
+    match result {
+        Err(e) => assert!(
+            e.to_string().contains("refusing to run unconfined"),
+            "must refuse because it could not confine, not incidentally \
+             because bash could not chdir — the second stops being true the \
+             moment the path is reusable: {e}"
+        ),
+        Ok(out) => panic!(
+            "the command ran with no sandbox and no error after the workspace \
+             disappeared. Confinement is applied at spawn, so a command that \
+             starts unconfined stays unconfined: {:?}",
+            out.content
+        ),
+    }
+}
+
+/// A workspace path that is not valid UTF-8 must refuse, not run unconfined.
+///
+/// Linux paths are bytes, so this directory is legal and a user can create one
+/// by accident. `bubblewrap_invocation` needs `&str` for the argv and gives up
+/// when the conversion fails — but the path still works for `current_dir`, so
+/// before the guard the command spawned perfectly happily with no sandbox
+/// around it, in Auto mode, with nothing to prompt because the session decided
+/// long ago that this host could confine.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_non_utf8_workspace_refuses_rather_than_dropping_the_sandbox() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    require_sandbox!();
+
+    let parent = tempfile::tempdir().unwrap();
+    // 0xFF is not valid UTF-8 in any position.
+    let mut name = OsString::from_vec(b"ws-\xff".to_vec());
+    name.push("");
+    let root = parent.path().join(name);
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(root.to_str().is_none(), "the path must not be valid UTF-8");
+
+    let result = forge_tools::run_shell_command("echo escaped", &root).await;
+
+    match result {
+        Err(e) => assert!(
+            e.to_string().contains("refusing to run unconfined"),
+            "must refuse for the sandbox reason, not incidentally: {e}"
+        ),
+        Ok(out) => panic!(
+            "ran unconfined on a host that can confine: {:?}",
+            out.content
+        ),
+    }
+}
+
+/// A grant whose proxy is gone must fail closed.
+///
+/// The grant is handed to the sandbox at spawn and outlives nothing — if the
+/// proxy dies, or its socket is removed, the command still starts with proxy
+/// environment pointing at a relay with nothing behind it. The failure has to
+/// be "cannot reach anything", never "reaches the network directly", because
+/// the second would turn a crashed helper into an open egress path.
+#[tokio::test]
+async fn egress_fails_closed_when_the_proxy_is_gone() {
+    use forge_tools::egress::{EgressPolicy, EgressProxy};
+    use forge_tools::run_shell_command_with_egress;
+    use forge_tools::sandbox::EgressGrant;
+
+    require_sandbox!();
+
+    let ws = workspace();
+    let sockdir = tempfile::tempdir().unwrap();
+    let socket_path = sockdir.path().join("egress.sock");
+
+    let mut policy = EgressPolicy::new();
+    policy.allow("example.com");
+    let proxy_port = {
+        let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+        proxy
+            .serve_on_unix_socket(&socket_path, policy)
+            .await
+            .unwrap();
+        let port = proxy.addr().port();
+        // Drop stops the listeners and removes the socket file: the session's
+        // proxy has died while the grant lives on.
+        port
+    };
+    assert!(
+        !socket_path.exists(),
+        "dropping the proxy must remove its socket"
+    );
+
+    let grant = EgressGrant {
+        proxy_port,
+        socket_path: socket_path.clone(),
+    };
+
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        run_shell_command_with_egress(
+            "curl -s -m 5 -o /dev/null -w '%{http_code}' https://example.com; echo \" rc=$?\"",
+            ws.path(),
+            Some(&grant),
+        ),
+    )
+    .await
+    .expect("a command with a dead proxy must still terminate")
+    .unwrap();
+
+    // The command must genuinely have run: a missing curl, or a shell that
+    // never started, would also "not contain 200" and would prove nothing.
+    assert!(
+        out.content.contains("rc="),
+        "the probe never executed, so its failure says nothing about egress: {:?}",
+        out.content
+    );
+    assert!(
+        !out.content.contains("200"),
+        "a dead proxy must not leave a route to the network: {:?}",
+        out.content
+    );
+}
