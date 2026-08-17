@@ -787,7 +787,7 @@ mod bubblewrap_tests {
 ///
 /// Returns `None` when nothing in the output looks like a denial — an ordinary
 /// compile error or test failure must not be dressed up as a sandbox problem.
-pub fn explain_denial(output: &str) -> Option<&'static str> {
+pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static str> {
     const NETWORK: &[&str] = &[
         "Could not resolve host",
         "Temporary failure in name resolution",
@@ -804,25 +804,63 @@ pub fn explain_denial(output: &str) -> Option<&'static str> {
         );
     }
     if FILESYSTEM.iter().any(|sig| output.contains(sig)) {
-        return Some(
-            "blocked by the sandbox: writes are confined to the workspace, and \
-             .git/.forge are read-only inside it. This is not a file-permission \
-             problem on disk.",
-        );
+        return Some(FILESYSTEM_EXPLANATION);
+    }
+
+    // Linux reports a blocked write as "No such file or directory", not as a
+    // permission error: masked and unbound paths genuinely do not exist inside
+    // the sandbox. That string is also the single most common legitimate
+    // error, so matching on it alone would blame the sandbox for every typo —
+    // which is worse than saying nothing.
+    //
+    // The distinguishing fact is *which* path is missing. Inside the sandbox
+    // an absolute path outside the workspace really is absent, and that is the
+    // boundary. A missing file inside the workspace is an ordinary mistake and
+    // is left alone.
+    if output.contains("No such file or directory") && mentions_path_outside(output, workspace_root)
+    {
+        return Some(FILESYSTEM_EXPLANATION);
     }
     None
+}
+
+const FILESYSTEM_EXPLANATION: &str =
+    "blocked by the sandbox: writes are confined to the workspace, and \
+     .git/.forge are read-only inside it. Paths outside the workspace do not \
+     exist inside the sandbox, so they report as missing rather than \
+     forbidden. This is not a file-permission problem on disk.";
+
+/// Whether `output` names an absolute path that is not under `workspace_root`.
+///
+/// Deliberately conservative: only absolute paths count, and a path under the
+/// workspace never does. A false positive here tells the agent to stop trying
+/// something that would have worked.
+fn mentions_path_outside(output: &str, workspace_root: &Path) -> bool {
+    let root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let root = root.to_string_lossy().to_string();
+    output
+        .split(|c: char| c.is_whitespace() || c == ':')
+        .filter(|token| token.starts_with('/') && token.len() > 1)
+        .any(|token| !token.starts_with(&root))
 }
 
 #[cfg(test)]
 mod denial_tests {
     use super::*;
 
+    /// A workspace root the "outside path" checks are measured against.
+    fn ws() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
     /// The signature captured from a real confined `curl`: blocking egress
     /// also blocks DNS, so the denial arrives wearing a DNS outage's clothes.
     #[test]
     fn a_blocked_network_call_is_not_reported_as_a_dns_outage() {
         let out = "curl: (6) Could not resolve host: example.com";
-        let explained = explain_denial(out).expect("must be recognised as a denial");
+        let explained = explain_denial(out, ws().path()).expect("must be recognised as a denial");
         assert!(explained.contains("network access is denied"));
         assert!(
             explained.contains("not a DNS"),
@@ -834,14 +872,42 @@ mod denial_tests {
     fn git_over_https_gets_the_same_explanation() {
         let out =
             "fatal: unable to access 'https://github.com/x/y': Could not resolve host: github.com";
-        assert!(explain_denial(out).is_some_and(|e| e.contains("network")));
+        assert!(explain_denial(out, ws().path()).is_some_and(|e| e.contains("network")));
     }
 
     #[test]
     fn a_blocked_write_is_named_as_a_boundary_not_a_file_permission() {
         let out = "/bin/sh: /tmp/escape.txt: Operation not permitted";
-        let explained = explain_denial(out).expect("must be recognised");
+        let explained = explain_denial(out, ws().path()).expect("must be recognised");
         assert!(explained.contains("confined to the workspace"));
+    }
+
+    /// Linux reports a blocked write as a *missing* file, because the path
+    /// genuinely does not exist inside the sandbox. Recognised only when the
+    /// missing path lies outside the workspace.
+    #[test]
+    fn a_missing_path_outside_the_workspace_is_named_as_the_boundary() {
+        let ws = ws();
+        let out = "bash: line 1: /tmp/.tmpABCDEF/nope.txt: No such file or directory";
+        let explained = explain_denial(out, ws.path()).expect("must be recognised");
+        assert!(explained.contains("do not exist inside the sandbox"));
+    }
+
+    /// ...but a missing file *inside* the workspace is an ordinary mistake and
+    /// must not be blamed on the sandbox. This is the case that stops every
+    /// typo being reported as a policy decision.
+    #[test]
+    fn a_missing_path_inside_the_workspace_is_left_alone() {
+        let ws = ws();
+        let inside = ws.path().canonicalize().unwrap().join("typo.txt");
+        let out = format!(
+            "bash: line 1: {}: No such file or directory",
+            inside.display()
+        );
+        assert!(
+            explain_denial(&out, ws.path()).is_none(),
+            "an ordinary missing file must not be called a denial"
+        );
     }
 
     /// The failure mode worth guarding: dressing an ordinary error up as a
@@ -854,7 +920,10 @@ mod denial_tests {
             "bash: frobnicate: command not found",
             "assertion `left == right` failed",
         ] {
-            assert!(explain_denial(out).is_none(), "must not claim: {out}");
+            assert!(
+                explain_denial(out, ws().path()).is_none(),
+                "must not claim: {out}"
+            );
         }
     }
 }
