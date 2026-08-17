@@ -284,4 +284,198 @@ mod tests {
         assert_eq!(file.deny, vec!["bash(rm -rf*)".to_string()]);
         assert_eq!(file.allow, vec!["bash(cargo test *)".to_string()]);
     }
+
+    /// Seeds both scopes and returns the workspace dir. Keeps the guard alive
+    /// in the caller so `HOME` stays redirected for the whole test.
+    fn seed_both_scopes(user: &IsolatedUserConfig, user_toml: &str, repo_toml: &str) -> TempDir {
+        let path = user.user_permissions_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, user_toml).unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(forge_dir.join("permissions.toml"), repo_toml).unwrap();
+        dir
+    }
+
+    /// The merge is personal-first: personal `allow` survives, personal `deny`
+    /// and repo `deny` are concatenated in scope order.
+    #[test]
+    fn both_scopes_merge_with_personal_allow_and_all_denies() {
+        let user = IsolatedUserConfig::new();
+        let dir = seed_both_scopes(
+            &user,
+            "allow = [\"bash(cargo test *)\"]\ndeny = [\"bash(curl*)\"]\n",
+            "deny = [\"bash(rm -rf*)\"]\n",
+        );
+
+        let (merged, diagnostics) = load_permissions(dir.path());
+        assert_eq!(merged.allow, vec!["bash(cargo test *)".to_string()]);
+        assert_eq!(
+            merged.deny,
+            vec!["bash(curl*)".to_string(), "bash(rm -rf*)".to_string()]
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// A repo file with only `deny` rules is fully trusted and produces no
+    /// "ignored" diagnostic — the warning is specifically about `allow`.
+    #[test]
+    fn deny_only_repo_file_produces_no_diagnostic() {
+        let _user = IsolatedUserConfig::new();
+        let dir = TempDir::new().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("permissions.toml"),
+            "deny = [\"bash(rm -rf*)\", \"write_file(/etc/*)\"]\n",
+        )
+        .unwrap();
+
+        let (merged, diagnostics) = load_permissions(dir.path());
+        assert!(merged.allow.is_empty());
+        assert_eq!(merged.deny.len(), 2);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// The "ignored" diagnostic names the file and the number of dropped rules
+    /// so the user can find and move them.
+    #[test]
+    fn ignored_allow_diagnostic_names_the_file_and_the_count() {
+        let _user = IsolatedUserConfig::new();
+        let dir = TempDir::new().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("permissions.toml"),
+            "allow = [\"bash(*)\", \"write_file(*)\", \"git(push*)\"]\n",
+        )
+        .unwrap();
+
+        let (merged, diagnostics) = load_permissions(dir.path());
+        assert!(merged.allow.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains('3'), "{}", diagnostics[0]);
+        assert!(
+            diagnostics[0].contains(&workspace_permissions_path(dir.path()).display().to_string()),
+            "{}",
+            diagnostics[0]
+        );
+    }
+
+    /// A malformed *personal* file is skipped with its own diagnostic, and does
+    /// not stop the repo file from being read.
+    #[test]
+    fn malformed_user_file_is_skipped_without_blocking_the_repo_file() {
+        let user = IsolatedUserConfig::new();
+        let dir = seed_both_scopes(&user, "allow = not-valid-toml", "deny = [\"bash(rm*)\"]\n");
+
+        let (merged, diagnostics) = load_permissions(dir.path());
+        assert!(merged.allow.is_empty());
+        assert_eq!(merged.deny, vec!["bash(rm*)".to_string()]);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].starts_with("permissions: skipped"));
+        assert!(
+            diagnostics[0].contains(&user.user_permissions_path().display().to_string()),
+            "{}",
+            diagnostics[0]
+        );
+    }
+
+    /// A repo `.forge` directory that exists but has no permissions file is the
+    /// common case and must be silent.
+    #[test]
+    fn workspace_without_a_permissions_file_is_silent() {
+        let _user = IsolatedUserConfig::new();
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".forge")).unwrap();
+        let (merged, diagnostics) = load_permissions(dir.path());
+        assert_eq!(merged, PermissionsFile::default());
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn permissions_paths_have_the_documented_shape() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            workspace_permissions_path(dir.path()),
+            dir.path().join(".forge").join("permissions.toml")
+        );
+        let _user = IsolatedUserConfig::new();
+        let user_path = user_permissions_path().unwrap();
+        assert!(
+            user_path.ends_with("forge/permissions.toml"),
+            "{user_path:?}"
+        );
+    }
+
+    /// Unknown keys are tolerated (forward compatibility) but a wrongly typed
+    /// `allow`/`deny` is a parse error, not a silent empty list.
+    #[test]
+    fn parse_tolerates_unknown_keys_but_rejects_wrong_types() {
+        let file = parse_permissions_toml("allow = [\"bash(ls)\"]\nfuture_key = 1\n").unwrap();
+        assert_eq!(file.allow, vec!["bash(ls)".to_string()]);
+
+        assert!(parse_permissions_toml("allow = \"bash(ls)\"\n").is_err());
+        assert!(parse_permissions_toml("deny = [1, 2]\n").is_err());
+        assert!(parse_permissions_toml("not valid [[[").is_err());
+    }
+
+    /// Empty arrays are dropped on write, so appending one allow rule to a
+    /// fresh file does not leave a stray `deny = []` behind.
+    #[test]
+    fn empty_arrays_are_not_serialized() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("permissions.toml");
+        append_allow_rule(&path, "bash(cargo test *)").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("deny"), "{text}");
+    }
+
+    /// The personal file is created along with its parent directory on first
+    /// use — an "always allow" decision must not fail on a fresh machine.
+    #[test]
+    fn append_allow_rule_creates_missing_parent_directories() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("forge").join("permissions.toml");
+        append_allow_rule(&path, "bash(cargo test *)").unwrap();
+        assert!(path.is_file());
+        let file = parse_permissions_toml(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(file.allow, vec!["bash(cargo test *)".to_string()]);
+    }
+
+    /// Documented sharp edge: an existing personal file that does not parse is
+    /// treated as absent, so appending a rule REPLACES it. Nothing that was in
+    /// the broken file (including its `deny` entries) survives. It fails toward
+    /// an empty ruleset rather than toward a wider one, so this is safe, but it
+    /// is lossy and worth pinning.
+    #[test]
+    fn append_allow_rule_discards_an_unparseable_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("permissions.toml");
+        std::fs::write(&path, "deny = [\"bash(rm -rf*)\"]\nbroken [[[\n").unwrap();
+
+        append_allow_rule(&path, "bash(cargo test *)").unwrap();
+
+        let file = parse_permissions_toml(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(file.allow, vec!["bash(cargo test *)".to_string()]);
+        assert!(
+            file.deny.is_empty(),
+            "the unparseable file's deny rules do not survive: {:?}",
+            file.deny
+        );
+    }
+
+    /// Round trip: a file written by `append_allow_rule` is loadable by
+    /// `load_permissions` through the real personal-scope path.
+    #[test]
+    fn appended_rule_is_visible_to_the_next_load() {
+        let user = IsolatedUserConfig::new();
+        append_allow_rule(&user.user_permissions_path(), "bash(cargo test *)").unwrap();
+        let dir = TempDir::new().unwrap();
+        let (merged, diagnostics) = load_permissions(dir.path());
+        assert_eq!(merged.allow, vec!["bash(cargo test *)".to_string()]);
+        assert!(diagnostics.is_empty());
+    }
 }
