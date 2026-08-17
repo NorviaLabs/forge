@@ -301,3 +301,92 @@ async fn an_ordinary_failure_is_not_blamed_on_the_sandbox() {
         out.content
     );
 }
+
+// ---------------------------------------------------------------------------
+// Egress routing. Granting network access means opening exactly one hole — to
+// the proxy — and no other. Setting HTTPS_PROXY is not a boundary; a process
+// free to open sockets ignores it. These assert the hole is the only route.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+mod egress_routing {
+    use super::*;
+    use forge_tools::sandbox::seatbelt_profile;
+
+    #[test]
+    fn without_a_proxy_the_network_is_denied_outright() {
+        let ws = workspace();
+        let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
+        assert!(profile.contains("(deny network*)"));
+        assert!(
+            !profile.contains("network-outbound"),
+            "no proxy means no hole at all"
+        );
+    }
+
+    /// The deny must come first or the allow never takes effect — the same
+    /// last-match-wins hazard as the .git carve-out.
+    #[test]
+    fn the_proxy_hole_is_opened_after_the_blanket_denial() {
+        let ws = workspace();
+        let profile =
+            seatbelt_profile(&SandboxPolicy::for_workspace(ws.path()).with_egress_proxy(9418))
+                .unwrap();
+        let deny = profile
+            .find("(deny network*)")
+            .expect("still denies by default");
+        let allow = profile
+            .find("(allow network-outbound (remote ip \"localhost:9418\"))")
+            .expect("the proxy port must be reachable");
+        assert!(deny < allow, "an allow before the deny would be overridden");
+    }
+
+    /// A real confined process: the proxy port is reachable, and a different
+    /// port on the same host is not. This is the assertion that separates
+    /// "routed through the proxy" from "network is on".
+    #[tokio::test]
+    async fn only_the_proxy_port_is_reachable() {
+        require_sandbox!();
+        let ws = workspace();
+
+        // Two listeners on loopback. Only one is named in the policy.
+        let permitted = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let forbidden = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let permitted_port = permitted.local_addr().unwrap().port();
+        let forbidden_port = forbidden.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let _ = permitted.accept().await;
+            }
+        });
+        tokio::spawn(async move {
+            loop {
+                let _ = forbidden.accept().await;
+            }
+        });
+
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_egress_proxy(permitted_port);
+        let probe = |port: u16| {
+            let (program, args) =
+                wrap_shell_command("sh", &format!("exec 3<>/dev/tcp/127.0.0.1/{port}"), &policy)
+                    .unwrap();
+            Command::new(program)
+                .args(args)
+                .current_dir(ws.path())
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+
+        assert!(probe(permitted_port), "the proxy port must be reachable");
+        assert!(
+            !probe(forbidden_port),
+            "every other destination must stay denied, or the allowlist is advisory"
+        );
+    }
+}
