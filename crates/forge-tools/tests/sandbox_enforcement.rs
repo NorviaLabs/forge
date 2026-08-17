@@ -390,3 +390,73 @@ mod egress_routing {
         );
     }
 }
+
+/// The outcome the whole egress design exists for, asserted end to end on a
+/// real confined command:
+///
+///   * an allowlisted host is reachable, with no prompt
+///   * every other host is not
+///   * without a grant, the network is off entirely
+///
+/// Uses a local listener as the "allowed host", so it does not depend on the
+/// internet being up.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_granted_command_reaches_only_allowlisted_hosts() {
+    require_sandbox!();
+    use forge_tools::egress::{EgressPolicy, EgressProxy};
+    use forge_tools::run_shell_command_with_egress;
+    use forge_tools::sandbox::EgressGrant;
+
+    let ws = workspace();
+
+    // Stand-in for "the allowed host".
+    let allowed = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let allowed_port = allowed.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let _ = allowed.accept().await;
+        }
+    });
+
+    let mut policy = EgressPolicy::new();
+    policy.allow("127.0.0.1");
+    let proxy = EgressProxy::start(policy).await.unwrap();
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path: ws.path().join("egress.sock"),
+    };
+
+    // Reaching the allowed host *through the proxy* succeeds.
+    let reach_allowed = format!(
+        "printf 'CONNECT 127.0.0.1:{allowed_port} HTTP/1.1\\r\\n\\r\\n' > /dev/tcp/127.0.0.1/{}",
+        grant.proxy_port
+    );
+    let out = run_shell_command_with_egress(&reach_allowed, ws.path(), Some(&grant))
+        .await
+        .unwrap();
+    assert!(
+        !out.is_error,
+        "the proxy must be reachable: {}",
+        out.content
+    );
+
+    // Any other destination stays denied, even with a grant.
+    let reach_direct = format!("exec 3<>/dev/tcp/127.0.0.1/{allowed_port}");
+    let out = run_shell_command_with_egress(&reach_direct, ws.path(), Some(&grant))
+        .await
+        .unwrap();
+    assert!(
+        out.is_error,
+        "a direct connection must be denied, or the allowlist is advisory: {}",
+        out.content
+    );
+
+    // And with no grant at all, there is no network.
+    let out = run_shell_command_with_egress(&reach_direct, ws.path(), None)
+        .await
+        .unwrap();
+    assert!(out.is_error, "no grant means no network: {}", out.content);
+}
