@@ -33,7 +33,7 @@ pub use forge_context::compaction::{
     CompactionTrigger, ProtectedFact, ProtectedFactKind, SessionContextState,
 };
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
-pub use permission::permission_ceiling;
+pub use permission::{permission_ceiling, EgressRuntime};
 pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::compact_tokens;
 pub use session::tools::{
@@ -106,6 +106,14 @@ pub struct AgentSession {
     tools: Arc<ToolRegistry>,
     model: Arc<dyn ModelClient>,
     tool_ctx: ToolContext,
+    /// The session's network egress, when it has any.
+    ///
+    /// Held here because the proxy must outlive every command it serves:
+    /// dropping it stops the listener and removes the socket, so a session
+    /// that let this fall out of scope would have a grant pointing at nothing.
+    /// `None` means the network is off, which is the state when a proxy could
+    /// not be started.
+    egress: Option<permission::EgressRuntime>,
     max_turns: u32,
     governance: Governance,
     context: ContextEngine,

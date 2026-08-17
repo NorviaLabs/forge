@@ -118,6 +118,13 @@ impl AgentSession {
         let skills = context.load_skills();
         let system = assemble_system_prompt(&agents, skills.as_slice());
 
+        // Start the session's egress proxy. `None` leaves the network off,
+        // which is the safe direction: a command that needs it then fails with
+        // the sandbox's own explanation rather than reaching the network.
+        let egress = crate::permission::start_egress(session_id).await;
+        let mut tool_ctx = ToolContext::new(active_root);
+        tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
+
         Ok(Self {
             session_id,
             messages: vec![Message {
@@ -141,7 +148,8 @@ impl AgentSession {
             journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
-            tool_ctx: ToolContext::new(active_root),
+            tool_ctx,
+            egress,
             max_turns: loop_cfg.max_turns,
             governance: Governance::default(),
             context,
@@ -198,6 +206,10 @@ impl AgentSession {
             token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
         }
 
+        let egress = crate::permission::start_egress(session_id).await;
+        let mut tool_ctx = ToolContext::new(active_root);
+        tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
+
         let mut session = Self {
             session_id,
             messages: messages.into(),
@@ -213,7 +225,8 @@ impl AgentSession {
             journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
-            tool_ctx: ToolContext::new(active_root),
+            tool_ctx,
+            egress,
             max_turns: loop_cfg.max_turns,
             governance: Governance::default(),
             context,
@@ -246,6 +259,21 @@ impl AgentSession {
         // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
         session.mark_interrupted_if_stale().await?;
         Ok(session)
+    }
+
+    /// Whether this session can reach the network at all.
+    ///
+    /// False when no egress proxy could be started, in which case confined
+    /// commands have no route out. Worth surfacing: a failed `cargo build`
+    /// looks like a broken build rather than a missing proxy, and this is how
+    /// a caller can tell the difference.
+    pub fn has_network_egress(&self) -> bool {
+        self.egress.is_some()
+    }
+
+    /// The hosts this session may reach, for display.
+    pub fn egress_grant(&self) -> Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>> {
+        self.egress.as_ref().map(|runtime| runtime.grant())
     }
 
     pub fn set_governance(&mut self, g: Governance) {
