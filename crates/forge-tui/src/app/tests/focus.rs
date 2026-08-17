@@ -142,17 +142,34 @@ async fn mode_chip_cycles_permission_mode_with_enter() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_ne!(
-        app.session.permission_mode(),
-        before,
-        "Enter should cycle the mode"
-    );
+
+    // Without a sandbox the mode cannot leave Manual, so Enter is a no-op on
+    // the chip and there is no toggle to observe. The chip focus assertions
+    // below still apply.
+    let cycles = forge_core::permission_ceiling().0 != forge_governance::PermissionMode::Manual;
+    if cycles {
+        assert_ne!(
+            app.session.permission_mode(),
+            before,
+            "Enter should cycle the mode"
+        );
+    } else {
+        assert_eq!(
+            app.session.permission_mode(),
+            before,
+            "no floor means no reachable second mode"
+        );
+    }
     assert_eq!(app.composer_chip_focus, Some(2), "stays on the mode chip");
 
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.session.permission_mode(), before, "Enter cycles back");
+    assert_eq!(
+        app.session.permission_mode(),
+        before,
+        "Enter cycles back to where it started"
+    );
 }
 
 #[tokio::test]
