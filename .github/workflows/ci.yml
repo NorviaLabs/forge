@@ -29,6 +29,10 @@ jobs:
       # they are present, so removing this step breaks the build loudly.
       - name: Install sandbox dependencies
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+      # The installer is what puts bubblewrap and socat on a user's machine, so
+      # a regression there costs every new Linux user the sandbox silently.
+      - name: Test the installer
+        run: sh install/test-installer.sh
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint
