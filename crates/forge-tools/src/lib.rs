@@ -4,6 +4,7 @@
 mod apply_patch;
 mod builtins;
 mod edit;
+pub mod egress;
 mod fast_file_tools;
 mod invocation;
 mod registry;
