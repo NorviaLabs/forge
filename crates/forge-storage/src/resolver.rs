@@ -349,24 +349,9 @@ fn set_restrictive_permissions(_path: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_test_support::{git as run, init_repo};
     use std::process::Command;
     use tempfile::TempDir;
-
-    fn run(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
-
-    fn init_repo(dir: &Path) {
-        run(dir, &["init", "--initial-branch=main", "-q"]);
-        run(dir, &["config", "user.email", "test@example.com"]);
-        run(dir, &["config", "user.name", "Test"]);
-    }
 
     #[test]
     fn resolves_forge_local_for_a_normal_repository() {

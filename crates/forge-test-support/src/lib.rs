@@ -1,18 +1,60 @@
 //! Test-only fixtures shared across crates.
 //!
-//! Currently just [`mock_http`]: a scripted-response HTTP server over a real
-//! TCP socket. It has no dependencies beyond `std`, and being a real socket
-//! rather than an interceptor means it works for both sync (`ureq`) and
-//! async (`reqwest`) clients — which matters since `forge-connect` uses both.
+//! Two families live here, both dependency-free beyond `std`:
 //!
-//! Moved out of `forge-connect`'s own test module (crates/forge-connect#74)
-//! so `forge-model` and `forge-mcp` can reach it without depending on
-//! `forge-connect`.
+//! - [`mock_http`]: a scripted-response HTTP server over a real TCP socket.
+//!   Being a real socket rather than an interceptor means it works for both
+//!   sync (`ureq`) and async (`reqwest`) clients — which matters since
+//!   `forge-connect` uses both. Moved out of `forge-connect`'s own test module
+//!   (crates/forge-connect#74) so `forge-model` and `forge-mcp` can reach it
+//!   without depending on `forge-connect`.
+//! - [`git`], [`init_repo`] and [`init_repo_with_commit`]: the git working
+//!   copy that most crates' tests need before they can exercise
+//!   repository-scoped behavior. Every crate that needed one had grown its own
+//!   private copy of the same three `git` invocations.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
+
+/// Run `git <args>` in `dir`, asserting that it succeeded.
+///
+/// Panics with the failing argument list rather than a bare status assert, so
+/// a broken fixture names itself instead of surfacing as a confusing failure
+/// in whatever test happened to call it.
+pub fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .status()
+        .expect("git must be on PATH for these tests");
+    assert!(status.success(), "git {args:?} failed in {dir:?}");
+}
+
+/// Initialize an empty git repository in `dir` with a deterministic branch
+/// name and committer identity.
+///
+/// The identity matters because a test host may have no global git config, and
+/// `--initial-branch=main` because the default branch name is a host setting.
+/// There is no commit, so `HEAD` is unborn — use [`init_repo_with_commit`]
+/// when the test needs a real `HEAD`.
+pub fn init_repo(dir: &Path) {
+    git(dir, &["init", "--initial-branch=main", "-q"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    git(dir, &["config", "user.name", "Test"]);
+}
+
+/// [`init_repo`] plus a single committed file, so the repository has a real
+/// `HEAD` commit for tests that branch, stash, or add a worktree.
+pub fn init_repo_with_commit(dir: &Path) {
+    init_repo(dir);
+    std::fs::write(dir.join("f.txt"), "x").expect("write fixture file");
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-q", "-m", "init"]);
+}
 
 /// `(status, body, extra headers)`
 pub type MockResponse = (u16, &'static str, Vec<(&'static str, &'static str)>);
@@ -134,5 +176,70 @@ mod tests {
         let big_body = "x".repeat(8_000);
         let response = ureq::post(&base).send_string(&big_body).unwrap();
         assert_eq!(response.status(), 200);
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for these tests");
+        assert!(out.status.success(), "git {args:?} failed in {dir:?}");
+        String::from_utf8(out.stdout).expect("git output is utf-8")
+    }
+
+    #[test]
+    fn init_repo_creates_a_repository_on_main_with_an_identity() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_repo(dir.path());
+
+        assert!(dir.path().join(".git").is_dir());
+        assert_eq!(
+            git_stdout(dir.path(), &["symbolic-ref", "--short", "HEAD"]).trim(),
+            "main"
+        );
+        assert_eq!(
+            git_stdout(dir.path(), &["config", "user.email"]).trim(),
+            "test@example.com"
+        );
+        assert_eq!(
+            git_stdout(dir.path(), &["config", "user.name"]).trim(),
+            "Test"
+        );
+    }
+
+    /// The distinction between the two fixtures: only the committing one
+    /// leaves a resolvable `HEAD` behind.
+    #[test]
+    fn only_the_committing_fixture_leaves_a_head_commit() {
+        let bare = tempfile::TempDir::new().unwrap();
+        init_repo(bare.path());
+        let unborn = std::process::Command::new("git")
+            .arg("-C")
+            .arg(bare.path())
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(!unborn.status.success(), "expected an unborn HEAD");
+
+        let committed = tempfile::TempDir::new().unwrap();
+        init_repo_with_commit(committed.path());
+        assert!(!git_stdout(committed.path(), &["rev-parse", "HEAD"])
+            .trim()
+            .is_empty());
+        assert_eq!(
+            git_stdout(committed.path(), &["ls-files"]).trim(),
+            "f.txt",
+            "the fixture commit should track exactly one file"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "failed in")]
+    fn git_panics_with_the_failing_arguments() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_repo(dir.path());
+        git(dir.path(), &["rev-parse", "--verify", "HEAD"]);
     }
 }
