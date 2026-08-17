@@ -351,7 +351,7 @@ pub async fn run_shell_command_with_egress(
     // on disk. Neither is true, and a model that believes them retries or
     // chases the wrong fix. Say which boundary stopped it.
     if confined_run && !status.success() {
-        if let Some(explanation) = crate::sandbox::explain_denial(&content) {
+        if let Some(explanation) = crate::sandbox::explain_denial(&content, workspace_root) {
             if !content.is_empty() {
                 content.push('\n');
             }
