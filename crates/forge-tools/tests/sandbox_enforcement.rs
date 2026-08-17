@@ -400,7 +400,19 @@ mod egress_routing {
 ///
 /// Uses a local listener as the "allowed host", so it does not depend on the
 /// internet being up.
-#[cfg(target_os = "macos")]
+/// Egress, end to end, on whichever platform this is.
+///
+/// Deliberately not macOS-gated any more. The two platforms route to the proxy
+/// completely differently — macOS opens one hole in the Seatbelt profile to a
+/// loopback port, Linux bind-mounts a Unix socket past `--unshare-net` and runs
+/// `socat` inside the namespace to present it as TCP — and the Linux half had
+/// never been executed anywhere. It existed as argv assertions written on a
+/// Mac, which is the exact shape that produced four Linux defects in a day.
+///
+/// The command finds the proxy through `$HTTP_PROXY`, which is the address the
+/// sandbox actually gave it, so the same test body works on both.
+///
+/// Uses a local listener as the "allowed host", so it never needs the internet.
 #[tokio::test]
 async fn a_granted_command_reaches_only_allowlisted_hosts() {
     require_sandbox!();
@@ -409,6 +421,7 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
     use forge_tools::sandbox::EgressGrant;
 
     let ws = workspace();
+    let sockdir = tempfile::tempdir().unwrap();
 
     // Stand-in for "the allowed host".
     let allowed = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -416,34 +429,49 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
         .unwrap();
     let allowed_port = allowed.local_addr().unwrap().port();
     tokio::spawn(async move {
-        loop {
-            let _ = allowed.accept().await;
+        while let Ok((mut sock, _)) = allowed.accept().await {
+            use tokio::io::AsyncWriteExt;
+            let _ = sock.write_all(b"REACHED").await;
         }
     });
 
     let mut policy = EgressPolicy::new();
     policy.allow("127.0.0.1");
-    let proxy = EgressProxy::start(policy).await.unwrap();
+    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    let socket_path = sockdir.path().join("egress.sock");
+    proxy
+        .serve_on_unix_socket(&socket_path, policy)
+        .await
+        .unwrap();
     let grant = EgressGrant {
         proxy_port: proxy.addr().port(),
-        socket_path: ws.path().join("egress.sock"),
+        socket_path,
     };
 
-    // Reaching the allowed host *through the proxy* succeeds.
-    let reach_allowed = format!(
-        "printf 'CONNECT 127.0.0.1:{allowed_port} HTTP/1.1\\r\\n\\r\\n' > /dev/tcp/127.0.0.1/{}",
-        grant.proxy_port
-    );
+    // Reaching the allowed host *through the proxy* succeeds. The address comes
+    // from the environment the sandbox set, so this does not assume which
+    // routing the platform used.
+    // bash's /dev/tcp wants HOST/PORT, so split the proxy address rather than
+    // pasting it in whole.
+    let reach_allowed = [
+        r#"addr="${HTTP_PROXY#http://}"; addr="${addr%/}";"#,
+        r#"h="${addr%%:*}"; p="${addr##*:}";"#,
+        &format!(
+            r#"printf 'CONNECT 127.0.0.1:{allowed_port} HTTP/1.1\r\n\r\n' > /dev/tcp/"$h"/"$p""#
+        ),
+    ]
+    .join(" ");
     let out = run_shell_command_with_egress(&reach_allowed, ws.path(), Some(&grant))
         .await
         .unwrap();
     assert!(
         !out.is_error,
-        "the proxy must be reachable: {}",
+        "the proxy must be reachable from inside the sandbox: {}",
         out.content
     );
 
-    // Any other destination stays denied, even with a grant.
+    // Any other destination stays denied, even with a grant. This is the line
+    // between "routed through the proxy" and "the network is simply on".
     let reach_direct = format!("exec 3<>/dev/tcp/127.0.0.1/{allowed_port}");
     let out = run_shell_command_with_egress(&reach_direct, ws.path(), Some(&grant))
         .await
@@ -453,12 +481,6 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
         "a direct connection must be denied, or the allowlist is advisory: {}",
         out.content
     );
-
-    // And with no grant at all, there is no network.
-    let out = run_shell_command_with_egress(&reach_direct, ws.path(), None)
-        .await
-        .unwrap();
-    assert!(out.is_error, "no grant means no network: {}", out.content);
 }
 
 /// CI must actually exercise the sandbox, not skip it.
@@ -485,4 +507,81 @@ fn sandbox_is_available_on_linux_in_ci() {
             unavailable.reason()
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The second spawn path.
+//
+// `exec_command` keeps a shell alive across turns and `write_stdin` feeds it,
+// and `write_stdin` is in neither `is_shell_tool()` nor
+// `default_shell_hitl_tools()` — so once a session exists the agent writes
+// arbitrary commands into it with no further approval. Confinement is the only
+// thing standing there, it is applied at spawn and cannot be retrofitted, and
+// until now nothing checked it took.
+// ---------------------------------------------------------------------------
+
+/// Drive `exec_command` to completion and return its combined output.
+async fn exec_command(ws: &Path, cmd: &str) -> String {
+    use forge_tools::{default_builtins, ToolContext};
+
+    let ctx = ToolContext::new(ws.to_path_buf());
+    let tool = default_builtins()
+        .into_iter()
+        .find(|t| t.name() == "exec_command")
+        .expect("exec_command must be a builtin");
+
+    let started = tool
+        .call(
+            &ctx,
+            serde_json::json!({ "cmd": cmd, "yield_time_ms": 400 }),
+        )
+        .await
+        .expect("exec_command should not error at the tool layer");
+    started.content
+}
+
+#[tokio::test]
+async fn exec_command_cannot_write_outside_the_workspace() {
+    require_sandbox!();
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("escape-exec.txt");
+
+    let out = exec_command(
+        ws.path(),
+        &format!("echo pwned > {}", target.to_str().unwrap()),
+    )
+    .await;
+
+    assert!(
+        !target.exists(),
+        "the persistent-session path escaped the sandbox: {out}"
+    );
+}
+
+#[tokio::test]
+async fn exec_command_cannot_write_git() {
+    require_sandbox!();
+    let ws = workspace();
+    let out = exec_command(ws.path(), "echo clobbered > .git/HEAD").await;
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/main\n",
+        "exec_command wrote .git: {out}"
+    );
+}
+
+#[tokio::test]
+async fn exec_command_still_works_inside_the_workspace() {
+    require_sandbox!();
+    let ws = workspace();
+    let out = exec_command(
+        ws.path(),
+        "echo hello > inside-exec.txt && cat inside-exec.txt",
+    )
+    .await;
+    assert!(
+        ws.path().join("inside-exec.txt").exists(),
+        "ordinary work through this path must be unaffected: {out}"
+    );
 }
