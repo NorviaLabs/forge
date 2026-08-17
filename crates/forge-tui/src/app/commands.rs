@@ -1082,6 +1082,28 @@ mod tests {
     #[tokio::test]
     async fn cycle_permission_mode_moves_through_manual_and_accept_edits_and_back() {
         let (_dir, mut app) = app().await;
+
+        // Auto is only reachable when a sandbox can hold the line under it, so
+        // what "cycling" does depends on the host. Without a floor the cycle is
+        // a no-op by design — assert that, rather than asserting a transition
+        // that must not happen. See `forge_core::permission_ceiling`.
+        if forge_core::permission_ceiling().0 == forge_governance::PermissionMode::Manual {
+            assert_eq!(
+                app.session.permission_mode(),
+                forge_governance::PermissionMode::Manual,
+                "a host with no sandbox starts in Manual"
+            );
+            app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+                .await
+                .unwrap();
+            assert_eq!(
+                app.session.permission_mode(),
+                forge_governance::PermissionMode::Manual,
+                "cycling must not reach Auto without a floor"
+            );
+            return;
+        }
+
         assert_eq!(
             app.session.permission_mode(),
             forge_governance::PermissionMode::AcceptEdits

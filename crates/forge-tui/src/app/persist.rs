@@ -42,6 +42,17 @@ impl TuiApp {
     }
 
     pub(super) fn load_ui_state(&mut self) {
+        self.restore_persisted_ui_state();
+        // Clamp unconditionally, outside the restore. That function has three
+        // exits that skip the mode entirely — no state file, malformed file,
+        // id mismatch — and `PermissionMode` derives `Default` as
+        // `AcceptEdits`. Clamping only on the success path would leave a fresh
+        // session in Auto with no floor under it, which is the exact case a
+        // brand-new workspace hits.
+        self.set_permission_mode_clamped(self.session.permission_mode());
+    }
+
+    fn restore_persisted_ui_state(&mut self) {
         let Ok(text) = fs::read_to_string(self.ui_state_path()) else {
             return;
         };
@@ -67,10 +78,6 @@ impl TuiApp {
                 self.set_permission_mode_clamped(mode);
             }
         }
-        // Also clamp when there was nothing to restore: `PermissionMode`
-        // defaults to `AcceptEdits`, so a fresh session on a host that cannot
-        // confine would otherwise start in Auto with no floor under it.
-        self.set_permission_mode_clamped(self.session.permission_mode());
     }
 
     /// Apply `requested`, narrowed to what this host can actually enforce.
