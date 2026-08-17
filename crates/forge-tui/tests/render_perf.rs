@@ -440,3 +440,85 @@ fn perf_report_frame_cost_by_transcript_length() {
          CI runners are too noisy. Allocation budgets above are the gates."
     );
 }
+
+/// One assistant answer's worth of streamed markdown, in chunks.
+///
+/// Mixed prose and a fenced code block, because the fence is what makes the
+/// rebuild expensive: it is re-highlighted from scratch every time the preview
+/// is rebuilt.
+fn stream_chunks(count: usize) -> Vec<String> {
+    let mut chunks = Vec::with_capacity(count);
+    for i in 0..count {
+        if i % 7 == 3 {
+            chunks.push(format!(
+                "\n```rust\nfn step_{i}(items: &[Item]) -> usize {{\n    items.iter().filter(|i| i.ready).count()\n}}\n```\n"
+            ));
+        } else {
+            chunks.push(format!(
+                "This is sentence {i} of the streamed answer, long enough to wrap in a sidebar pane. "
+            ));
+        }
+    }
+    chunks
+}
+
+/// Total draw cost of streaming one answer, as a function of its length.
+///
+/// The preview rebuild re-parses everything received so far, so the cost of a
+/// whole turn is the sum of a growing series rather than a constant per chunk.
+/// Doubling the answer length should roughly double the work; if it quadruples,
+/// the growth is quadratic.
+///
+/// Reported, never asserted: the point is the shape, and the shape is what the
+/// stable/unstable split would change.
+#[test]
+#[ignore = "measurement tool, not a gate"]
+fn perf_report_stream_preview_cost_by_answer_length() {
+    let _guard = lock_measurement();
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    println!(
+        "\n{:>7}  {:>14}  {:>14}  {:>12}  {:>10}",
+        "chunks", "total allocs", "total KiB", "p50 us/draw", "alloc/chunk"
+    );
+    let mut previous: Option<(usize, usize)> = None;
+    for chunks in [16usize, 32, 64, 128, 256] {
+        let (_dir, mut app) = rt.block_on(app_with_turns(4));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test backend");
+        terminal.draw(|frame| app.draw(frame)).expect("warm draw");
+
+        let pieces = stream_chunks(chunks);
+        let mut timings = Vec::with_capacity(chunks);
+        ALLOCS.store(0, Relaxed);
+        BYTES.store(0, Relaxed);
+        COUNTING.store(1, Relaxed);
+        for piece in &pieces {
+            app.stream_preview_for_tests(piece);
+            let started = Instant::now();
+            terminal.draw(|frame| app.draw(frame)).expect("draw");
+            timings.push(started.elapsed().as_nanos());
+        }
+        COUNTING.store(0, Relaxed);
+        timings.sort_unstable();
+
+        let allocs = ALLOCS.load(Relaxed);
+        let bytes = BYTES.load(Relaxed);
+        let growth = previous
+            .map(|(pc, pa)| {
+                format!(
+                    "  x{:.2} for x{:.0}",
+                    allocs as f64 / pa as f64,
+                    chunks as f64 / pc as f64
+                )
+            })
+            .unwrap_or_default();
+        println!(
+            "{chunks:>7}  {allocs:>14}  {:>14}  {:>12.1}  {:>10}{growth}",
+            bytes / 1024,
+            timings[timings.len() / 2] as f64 / 1_000.0,
+            allocs / chunks,
+        );
+        previous = Some((chunks, allocs));
+    }
+    println!();
+}
