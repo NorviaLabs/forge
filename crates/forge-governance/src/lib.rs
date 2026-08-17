@@ -1077,3 +1077,176 @@ mod tests {
         assert_eq!(governance.permission_mode(), PermissionMode::AcceptEdits);
     }
 }
+
+#[cfg(test)]
+mod decision_contract {
+    //! The decision layer's contract, as a table.
+    //!
+    //! Paired with `forge-tools/tests/permission_contract.rs`, which covers
+    //! enforcement. Both exist because the defects in this area were at layer
+    //! boundaries: deleting the read-only classifier removed prompts the gate
+    //! was relying on it to avoid, and `authorize` consulted `pattern_deny`
+    //! only *after* an early return that a mode change later started taking.
+    //! Neither was visible from inside one function.
+
+    use super::*;
+    use serde_json::json;
+
+    fn shell(command: &str) -> ToolCall {
+        ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({ "command": command }),
+        }
+    }
+
+    fn tool(name: &str) -> ToolCall {
+        ToolCall {
+            id: "1".into(),
+            name: name.into(),
+            arguments: json!({}),
+        }
+    }
+
+    struct Row {
+        name: &'static str,
+        mode: PermissionMode,
+        call: fn() -> ToolCall,
+        class: SideEffectClass,
+        expect: PolicyDecision,
+        why: &'static str,
+    }
+
+    const ROWS: &[Row] = &[
+        Row {
+            name: "Manual asks about shell",
+            mode: PermissionMode::Manual,
+            call: || shell("ls"),
+            class: SideEffectClass::Exec,
+            expect: PolicyDecision::Hitl,
+            why: "Manual exists to ask; if this stops, the mode has no meaning",
+        },
+        Row {
+            name: "Manual asks about a mutating command",
+            mode: PermissionMode::Manual,
+            call: || shell("rm -rf src"),
+            class: SideEffectClass::Exec,
+            expect: PolicyDecision::Hitl,
+            why: "same gate regardless of what the command does — the decision layer does not \
+                  read commands, which is the point",
+        },
+        Row {
+            name: "Auto does not ask about shell",
+            mode: PermissionMode::AcceptEdits,
+            call: || shell("ls"),
+            class: SideEffectClass::Exec,
+            expect: PolicyDecision::Allow,
+            why: "Auto is only reachable when a sandbox confines shell; a prompt on top adds \
+                  friction without safety",
+        },
+        Row {
+            name: "Auto does not ask about a destructive command either",
+            mode: PermissionMode::AcceptEdits,
+            call: || shell("rm -rf src"),
+            class: SideEffectClass::Exec,
+            expect: PolicyDecision::Allow,
+            why: "the fence is the boundary, not the prompt. Recorded explicitly so the trade \
+                  stays deliberate rather than drifting",
+        },
+        Row {
+            name: "MCP still asks in Auto",
+            mode: PermissionMode::AcceptEdits,
+            call: || tool("mcp:deploy"),
+            class: SideEffectClass::Exec,
+            expect: PolicyDecision::Hitl,
+            why: "MCP servers are separate processes the sandbox does not confine, so the \
+                  reason for freeing shell does not apply to them",
+        },
+        Row {
+            name: "dedicated read tools never ask",
+            mode: PermissionMode::Manual,
+            call: || tool("read_file"),
+            class: SideEffectClass::Read,
+            expect: PolicyDecision::Allow,
+            why: "confined tools are outside the gate in every mode",
+        },
+        Row {
+            name: "file writes never ask",
+            mode: PermissionMode::Manual,
+            call: || tool("write_file"),
+            class: SideEffectClass::Write,
+            expect: PolicyDecision::Allow,
+            why: "writes are free by design in every shipped mode; `hitl_classes` is empty",
+        },
+    ];
+
+    #[test]
+    fn the_decision_contract_holds() {
+        let mut failures = Vec::new();
+        for row in ROWS {
+            let mut g = Governance::default();
+            g.apply_mode(row.mode);
+            let actual = g.authorize(&(row.call)(), row.class);
+            if actual != row.expect {
+                failures.push(format!(
+                    "  {}\n    expected {:?}, got {:?}\n    because: {}",
+                    row.name, row.expect, actual, row.why
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "the decision contract was violated:\n\n{}\n",
+            failures.join("\n\n")
+        );
+    }
+
+    /// An explicit deny outranks everything, in every mode.
+    ///
+    /// This is the invariant that `authorize`'s ordering broke once already:
+    /// the deny check sat after an early return that only started firing when
+    /// Auto stopped gating shell, so every deny rule about a shell command
+    /// silently stopped applying.
+    #[test]
+    fn an_explicit_deny_holds_in_every_mode() {
+        for mode in [PermissionMode::Manual, PermissionMode::AcceptEdits] {
+            let mut g = Governance::default()
+                .with_pattern_rules(vec![], parse_pattern_rules(&["bash(cargo publish *)"]));
+            g.apply_mode(mode);
+            assert_eq!(
+                g.authorize(&shell("cargo publish --dry-run"), SideEffectClass::Exec),
+                PolicyDecision::Hitl,
+                "a deny rule must survive {mode:?}"
+            );
+        }
+    }
+
+    /// Narrowing is always available. A user who wants to be asked more often
+    /// is never overridden by a mode that asks less.
+    #[test]
+    fn manual_is_reachable_from_every_mode() {
+        for mode in [PermissionMode::Manual, PermissionMode::AcceptEdits] {
+            assert_eq!(
+                PermissionMode::Manual.clamped_to(mode),
+                PermissionMode::Manual,
+                "Manual must be reachable under a {mode:?} ceiling"
+            );
+        }
+    }
+
+    /// Adding a mode must force a decision here rather than silently inheriting
+    /// whatever the match arms happen to do.
+    #[test]
+    fn every_mode_is_described_by_the_contract() {
+        for mode in [PermissionMode::Manual, PermissionMode::AcceptEdits] {
+            // Exhaustive by construction: adding a variant fails to compile
+            // until it is added to this match and to the rows above.
+            let described = match mode {
+                PermissionMode::Manual | PermissionMode::AcceptEdits => {
+                    ROWS.iter().any(|row| row.mode == mode)
+                }
+            };
+            assert!(described, "{mode:?} has no row in the decision contract");
+        }
+    }
+}
