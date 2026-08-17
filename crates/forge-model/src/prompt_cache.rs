@@ -2,6 +2,7 @@
 
 use forge_types::Usage;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 fn ephemeral_cache_control() -> Value {
     json!({"type": "ephemeral"})
@@ -18,6 +19,13 @@ pub fn cache_tokens_from_usage(raw: &Value) -> (u32, u32) {
     let write = raw
         .get("cache_creation_input_tokens")
         .or_else(|| raw.pointer("/input_tokens_details/cache_creation_input_tokens"))
+        // GPT-5.6+ reports writes as `cache_write_tokens`, in
+        // `input_tokens_details` on the Responses API and
+        // `prompt_tokens_details` on Chat Completions. Without these two the
+        // write count silently reads zero on the newest models, which is the
+        // half of the picture that explains an expensive low hit rate.
+        .or_else(|| raw.pointer("/input_tokens_details/cache_write_tokens"))
+        .or_else(|| raw.pointer("/prompt_tokens_details/cache_write_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0) as u32;
     (read, write)
@@ -65,6 +73,24 @@ pub fn usage_from_provider(
         prompt_cache_read_tokens,
         prompt_cache_write_tokens,
     }
+}
+
+/// Routing hint that keeps a workspace's requests on one cache.
+///
+/// OpenAI documents `prompt_cache_key` as steering requests to the same cache
+/// to improve hit rates. Without it, two requests with a byte-identical prefix
+/// can land on different backends and the second simply misses — which looks
+/// exactly like a caching bug while the prompt is provably stable.
+///
+/// Keyed on the workspace rather than the session, deliberately: forge's
+/// prefix (system prompt, sorted tools, sorted skills) is identical for every
+/// session in the same workspace, so a session-scoped key would throw away a
+/// warm cache each time you restart. The path is hashed rather than sent, so
+/// no directory name leaves the machine.
+pub fn prompt_cache_key(workspace_root: &std::path::Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(workspace_root.as_os_str().as_encoded_bytes());
+    format!("forge-{:x}", hasher.finalize())[..24].to_string()
 }
 
 fn attach_cache_control_to_object(value: &mut Value) {
@@ -271,5 +297,48 @@ mod tests {
         let a = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(first));
         let b = snapshot_prompt(&crate::prompt_wire::prompt_object_from_body(second));
         assert_eq!(common_prefix_len(&a.bytes, &b.bytes), a.bytes.len());
+    }
+
+    /// The key must be identical for the same workspace and different across
+    /// workspaces — that is the entire mechanism.
+    #[test]
+    fn the_cache_key_is_stable_per_workspace() {
+        use std::path::Path;
+        let a = prompt_cache_key(Path::new("/home/dev/forge"));
+        let b = prompt_cache_key(Path::new("/home/dev/forge"));
+        let c = prompt_cache_key(Path::new("/home/dev/other"));
+
+        assert_eq!(a, b, "a restart in the same workspace must reuse the cache");
+        assert_ne!(a, c, "separate workspaces must not share a cache shard");
+        assert!(a.starts_with("forge-"), "{a}");
+        assert_eq!(a.len(), 24, "{a}");
+        assert!(
+            !a.contains("forge/") && !a.contains("home"),
+            "the path is hashed, never sent: {a}"
+        );
+    }
+
+    /// GPT-5.6 renamed the write counter. Reading only the Anthropic spelling
+    /// reported zero writes on the newest models, hiding the expensive half of
+    /// a low hit rate.
+    #[test]
+    fn cache_writes_are_read_from_every_provider_spelling() {
+        let cases = [
+            (json!({"cache_creation_input_tokens": 40}), 40, "anthropic"),
+            (
+                json!({"input_tokens_details": {"cache_write_tokens": 41}}),
+                41,
+                "responses api",
+            ),
+            (
+                json!({"prompt_tokens_details": {"cache_write_tokens": 42}}),
+                42,
+                "chat completions",
+            ),
+        ];
+        for (raw, expected, who) in cases {
+            let (_, write) = cache_tokens_from_usage(&raw);
+            assert_eq!(write, expected, "{who} write count went unread");
+        }
     }
 }
