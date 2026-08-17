@@ -193,4 +193,186 @@ mod tests {
         assert!(text.contains("keep-me"));
         assert!(text.contains("theme_committed"));
     }
+
+    /// A directory that cannot be canonicalized (it does not exist) is never
+    /// trusted, and cannot be granted trust either — trust is only ever
+    /// recorded against a resolved path.
+    #[test]
+    fn nonexistent_cwd_is_untrusted_and_cannot_be_granted() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("trust.toml");
+        let missing = dir.path().join("does-not-exist");
+        grant_trust_at(&store, dir.path()).unwrap();
+        // Even though the parent is trusted, an unresolvable path is not.
+        assert!(!is_trusted_at(&store, &missing));
+        assert!(matches!(
+            grant_trust_at(&store, &missing),
+            Err(TrustError::Canonicalize)
+        ));
+    }
+
+    /// A corrupt trust file fails closed (untrusted) instead of erroring or
+    /// being treated as trusting everything.
+    #[test]
+    fn corrupt_store_fails_closed() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("trust.toml");
+        fs::write(&store, "this is not [[[ toml").unwrap();
+        assert!(!is_trusted_at(&store, dir.path()));
+
+        // And a well-formed file with the wrong shape is equally inert.
+        fs::write(&store, "paths = \"not-a-list\"\n").unwrap();
+        assert!(!is_trusted_at(&store, dir.path()));
+    }
+
+    /// An empty `paths` list trusts nothing; the walk to the filesystem root
+    /// terminates rather than looping.
+    #[test]
+    fn empty_paths_list_trusts_nothing() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("trust.toml");
+        fs::write(&store, "paths = []\n").unwrap();
+        assert!(!is_trusted_at(&store, dir.path()));
+        let deep = dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep).unwrap();
+        assert!(!is_trusted_at(&store, &deep));
+    }
+
+    /// Granting twice must not duplicate the entry, and the returned path is
+    /// the canonical one (which on macOS differs from the raw temp path).
+    #[test]
+    fn grant_is_idempotent_and_stores_the_canonical_path() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("trust.toml");
+        let first = grant_trust_at(&store, dir.path()).unwrap();
+        let second = grant_trust_at(&store, dir.path()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first, dir.path().canonicalize().unwrap());
+
+        let file: TrustFile = toml::from_str(&fs::read_to_string(&store).unwrap()).unwrap();
+        assert_eq!(file.paths, vec![first.display().to_string()]);
+    }
+
+    /// Two different directories both persist, and neither grants the other.
+    #[test]
+    fn multiple_grants_accumulate_independently() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("trust.toml");
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        grant_trust_at(&store, &a).unwrap();
+        grant_trust_at(&store, &b).unwrap();
+
+        let file: TrustFile = toml::from_str(&fs::read_to_string(&store).unwrap()).unwrap();
+        assert_eq!(file.paths.len(), 2);
+        assert!(is_trusted_at(&store, &a));
+        assert!(is_trusted_at(&store, &b));
+        // A prefix-sharing sibling name is not trusted by string prefix.
+        let a_sibling = dir.path().join("ab");
+        fs::create_dir_all(&a_sibling).unwrap();
+        assert!(!is_trusted_at(&store, &a_sibling));
+    }
+
+    /// Trust is recorded against the resolved target, so reaching the same
+    /// directory through a symlink is still trusted — and, conversely, granting
+    /// through a symlink trusts the real directory.
+    #[cfg(unix)]
+    #[test]
+    fn trust_follows_symlinks_to_the_real_directory() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("trust.toml");
+        let real = dir.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        grant_trust_at(&store, &link).unwrap();
+        assert!(is_trusted_at(&store, &real));
+        assert!(is_trusted_at(&store, &link));
+    }
+
+    /// The trust screen shows the resolved path when it can, and falls back to
+    /// the raw path rather than failing when it cannot.
+    #[test]
+    fn display_path_falls_back_to_the_raw_path() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            trust_display_path(dir.path()),
+            dir.path().canonicalize().unwrap().display().to_string()
+        );
+        let missing = dir.path().join("nope");
+        assert_eq!(trust_display_path(&missing), missing.display().to_string());
+    }
+
+    /// The persisted theme id goes through `normalize_theme_id`, so legacy
+    /// aliases are stored as their canonical id rather than round-tripping as
+    /// `dark`/`light`.
+    #[test]
+    fn persist_theme_normalizes_legacy_aliases() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_committed_theme_at(&path, "  DARK  ").unwrap();
+        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["tui"]["theme"].as_str(), Some("forge-dark"));
+        assert_eq!(value["tui"]["theme_committed"].as_bool(), Some(true));
+
+        // An empty id resolves to the default rather than being written blank.
+        persist_committed_theme_at(&path, "").unwrap();
+        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["tui"]["theme"].as_str(),
+            Some(crate::DEFAULT_THEME_ID)
+        );
+    }
+
+    /// Committing a second theme overwrites the first and leaves unrelated
+    /// `[tui]` keys alone.
+    #[test]
+    fn persist_theme_overwrites_and_keeps_sibling_tui_keys() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[tui]\ntheme = \"solarized-light\"\nmouse = true\n").unwrap();
+        persist_committed_theme_at(&path, "forge-dark").unwrap();
+        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["tui"]["theme"].as_str(), Some("forge-dark"));
+        assert_eq!(value["tui"]["mouse"].as_bool(), Some(true));
+        assert_eq!(value["tui"]["theme_committed"].as_bool(), Some(true));
+    }
+
+    /// An unparseable user config is replaced rather than aborting the commit —
+    /// the theme choice the user just made still lands.
+    #[test]
+    fn persist_theme_replaces_an_unparseable_config() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "not [[[ toml").unwrap();
+        persist_committed_theme_at(&path, "forge-dark").unwrap();
+        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["tui"]["theme"].as_str(), Some("forge-dark"));
+    }
+
+    /// `[tui]` present as a non-table is a config error, not a panic.
+    #[test]
+    fn persist_theme_rejects_a_non_table_tui_key() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "tui = \"oops\"\n").unwrap();
+        assert!(persist_committed_theme_at(&path, "forge-dark").is_err());
+    }
+
+    /// Both writers create their parent directory rather than failing when the
+    /// config dir does not exist yet (first run).
+    #[test]
+    fn writers_create_missing_parent_directories() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("nested").join("deeper").join("trust.toml");
+        grant_trust_at(&store, dir.path()).unwrap();
+        assert!(store.is_file());
+
+        let config = dir.path().join("other").join("config.toml");
+        persist_committed_theme_at(&config, "forge-dark").unwrap();
+        assert!(config.is_file());
+    }
 }
