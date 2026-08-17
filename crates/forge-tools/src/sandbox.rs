@@ -57,14 +57,32 @@ impl Unavailable {
 /// "run it anyway". Forge does not run agent commands unconfined silently.
 pub fn availability() -> Result<(), Unavailable> {
     if cfg!(target_os = "macos") {
-        if Path::new("/usr/bin/sandbox-exec").exists() {
+        return if Path::new("/usr/bin/sandbox-exec").exists() {
             Ok(())
         } else {
             Err(Unavailable::MissingDependency("sandbox-exec"))
-        }
-    } else {
-        Err(Unavailable::UnsupportedPlatform)
+        };
     }
+    if cfg!(target_os = "linux") {
+        return if bwrap_path().is_some() {
+            Ok(())
+        } else {
+            Err(Unavailable::MissingDependency("bubblewrap"))
+        };
+    }
+    Err(Unavailable::UnsupportedPlatform)
+}
+
+/// Where `bwrap` lives, if it is installed.
+///
+/// Looked up by absolute path rather than through `PATH`: this decides whether
+/// a process gets confined, so resolving it through an environment variable the
+/// agent could influence would put the boundary in reach of the thing it is
+/// meant to contain.
+fn bwrap_path() -> Option<&'static str> {
+    ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).exists())
 }
 
 /// What a confined process may touch.
@@ -206,6 +224,9 @@ pub fn wrap_shell_command(
     policy: &SandboxPolicy,
 ) -> Option<(String, Vec<String>)> {
     availability().ok()?;
+    if cfg!(target_os = "linux") {
+        return bubblewrap_invocation(shell, command, policy);
+    }
     let profile = seatbelt_profile(policy)?;
     Some((
         "/usr/bin/sandbox-exec".to_string(),
@@ -217,6 +238,70 @@ pub fn wrap_shell_command(
             command.to_string(),
         ],
     ))
+}
+
+/// Build the `bwrap` invocation for `policy`.
+///
+/// Bubblewrap applies binds in order and a later bind wins, which is the same
+/// last-match-wins property the Seatbelt profile relies on — and the same
+/// ordering hazard. The sequence is deliberate:
+///
+/// 1. `--ro-bind / /` — everything visible and readable, nothing writable.
+///    Matches the macOS policy: toolchains need `~/.gitconfig` and `~/.cargo`,
+///    so reads stay broad and the network denial is what stops a secret
+///    leaving.
+/// 2. `--bind <workspace>` — carve the workspace back out as writable.
+/// 3. `--ro-bind-try <workspace>/.git`, `.forge` — carve those back to
+///    read-only. Emitted last or they would be writable. `-try` because a
+///    workspace need not have either directory yet, and bwrap fails on a
+///    missing bind source.
+///
+/// `--unshare-net` denies egress. `--dev` and `--proc` are the minimum a shell
+/// needs; without them ordinary redirects fail the way `/dev/null` did on
+/// macOS.
+fn bubblewrap_invocation(
+    shell: &str,
+    command: &str,
+    policy: &SandboxPolicy,
+) -> Option<(String, Vec<String>)> {
+    let bwrap = bwrap_path()?;
+    let root = policy.workspace_root.canonicalize().ok()?;
+    let root = root.to_str()?.to_string();
+
+    let mut args = vec![
+        "--ro-bind".into(),
+        "/".into(),
+        "/".into(),
+        "--dev".into(),
+        "/dev".into(),
+        "--proc".into(),
+        "/proc".into(),
+        "--unshare-net".into(),
+        "--bind".into(),
+        root.clone(),
+        root.clone(),
+    ];
+
+    if let Some(tmp) = &policy.session_tmp {
+        let tmp = tmp.canonicalize().ok()?.to_str()?.to_string();
+        args.extend(["--bind".into(), tmp.clone(), tmp]);
+    }
+
+    for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root)) {
+        let path = path.to_str()?.to_string();
+        args.extend(["--ro-bind-try".into(), path.clone(), path]);
+    }
+
+    args.extend([
+        "--chdir".into(),
+        root,
+        "--".into(),
+        shell.to_string(),
+        "-c".into(),
+        command.to_string(),
+    ]);
+
+    Some((bwrap.to_string(), args))
 }
 
 #[cfg(test)]
@@ -387,6 +472,82 @@ mod tests {
             "/bin/sh",
             "echo hi",
             &SandboxPolicy::for_workspace(ws.path())
+        )
+        .is_none());
+    }
+}
+
+#[cfg(test)]
+mod bubblewrap_tests {
+    use super::*;
+
+    fn workspace() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    /// Argument order is the security property, so it is asserted directly
+    /// rather than by set membership. Bubblewrap takes the last matching bind,
+    /// so a `.git` carve-out emitted before the writable workspace bind would
+    /// be silently overridden — the same hazard as the Seatbelt rule ordering.
+    #[test]
+    fn readonly_carveouts_come_after_the_writable_bind() {
+        let ws = workspace();
+        let Some((_, args)) =
+            bubblewrap_invocation("sh", "echo hi", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return; // bwrap not installed on this host; nothing to assert
+        };
+        let root = ws.path().canonicalize().unwrap();
+        let root = root.to_str().unwrap();
+
+        let writable = args.iter().position(|a| a == "--bind").unwrap();
+        let git = args
+            .iter()
+            .position(|a| a == &format!("{root}/.git"))
+            .expect("the .git carve-out must be present");
+        assert!(
+            writable < git,
+            "a .git bind before the workspace bind would be overridden"
+        );
+    }
+
+    #[test]
+    fn network_is_unshared_and_reads_stay_broad() {
+        let ws = workspace();
+        let Some((_, args)) =
+            bubblewrap_invocation("sh", "echo hi", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return;
+        };
+        assert!(
+            args.iter().any(|a| a == "--unshare-net"),
+            "egress must be denied"
+        );
+        let ro_root = args
+            .windows(3)
+            .any(|w| w[0] == "--ro-bind" && w[1] == "/" && w[2] == "/");
+        assert!(
+            ro_root,
+            "the whole filesystem stays readable but not writable"
+        );
+    }
+
+    /// `bwrap` is resolved by absolute path, never through `PATH`: this call
+    /// decides whether a process is confined, so letting an environment
+    /// variable pick the binary would put the boundary inside the blast radius.
+    #[test]
+    fn bwrap_is_never_resolved_through_path() {
+        if let Some(path) = bwrap_path() {
+            assert!(path.starts_with('/'), "must be absolute, got {path}");
+        }
+    }
+
+    #[test]
+    fn an_unresolvable_workspace_yields_no_invocation() {
+        assert!(bubblewrap_invocation(
+            "sh",
+            "echo hi",
+            &SandboxPolicy::for_workspace("/nope/missing")
         )
         .is_none());
     }
