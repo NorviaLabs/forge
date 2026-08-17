@@ -3,16 +3,11 @@
 mod acl;
 mod audit;
 mod pattern;
-mod readonly;
 
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
 pub use pattern::{
     default_shell_hitl_tools, is_shell_tool, parse_pattern_rules, suggest_pattern, PatternRule,
-};
-pub use readonly::{
-    classify_readonly_shell, readonly_shell_redirect_message, rewrite_readonly_shell_call,
-    ReadonlyShellRewrite,
 };
 
 use std::sync::{Arc, Mutex};
@@ -174,7 +169,7 @@ impl Governance {
         self.mode
     }
 
-    /// Apply a named mode in place. Preserves `hitl_tools`, `acl`, and user
+    /// Apply a named mode in place. Preserves `acl` and user
     /// `pattern_allow`/`pattern_deny`. Sets `mode_pattern_allow` for Accept
     /// Edits; clears it for Manual. Also clears `hitl_classes` (writes stay free).
     pub fn apply_mode(&mut self, mode: PermissionMode) {
@@ -183,9 +178,28 @@ impl Governance {
         match mode {
             PermissionMode::Manual => {
                 self.mode_pattern_allow.clear();
+                // Re-add rather than replace, so a caller's own
+                // `require_hitl_for_tool` additions survive a mode switch.
+                for tool in default_shell_hitl_tools() {
+                    if !self.hitl_tools.contains(&tool) {
+                        self.hitl_tools.push(tool);
+                    }
+                }
             }
             PermissionMode::AcceptEdits => {
                 self.mode_pattern_allow = accept_edits_seed_patterns();
+                // Auto is only reachable when a sandbox exists (see
+                // `forge_core::permission_ceiling`), and the sandbox confines
+                // shell commands to the workspace with no network. Asking
+                // about them on top of that is friction without safety — the
+                // fence is what makes it safe for the gate to stop asking.
+                //
+                // MCP keeps its prompt: those are separate server processes
+                // and the sandbox does not confine them.
+                // Subtract only the shell tools. Anything else a caller gated
+                // — `mcp:*`, or a custom tool via `require_hitl_for_tool` —
+                // stays gated, because the sandbox does not confine those.
+                self.hitl_tools.retain(|tool| !is_shell_tool(tool));
             }
         }
     }
@@ -226,6 +240,18 @@ impl Governance {
         if !self.acl.is_allowed(&self.principal, &call.name, class) {
             return PolicyDecision::Deny;
         }
+        // A user's explicit deny is honoured before anything else, including
+        // for tools that are not otherwise gated.
+        //
+        // This used to sit *after* the `hitl_gated` early return, which was
+        // harmless only because every shell tool was always gated. Once `Auto`
+        // stopped gating shell — the sandbox confines it — that ordering would
+        // have silently dropped every `deny` rule a user wrote about a shell
+        // command. A rule someone took the trouble to write must not stop
+        // working because the mode changed.
+        if self.pattern_deny.iter().any(|rule| rule.matches(call)) {
+            return PolicyDecision::Hitl;
+        }
         let hitl_gated = self
             .hitl_tools
             .iter()
@@ -233,9 +259,6 @@ impl Governance {
             || self.hitl_classes.contains(&class);
         if !hitl_gated {
             return PolicyDecision::Allow;
-        }
-        if self.pattern_deny.iter().any(|rule| rule.matches(call)) {
-            return PolicyDecision::Hitl;
         }
         if self.allows_pattern(call) {
             return PolicyDecision::Allow;
@@ -509,17 +532,14 @@ mod tests {
         );
     }
 
-    /// The security model that `readonly.rs` sits on top of.
-    ///
     /// Approval is gated on tool *identity*, not side-effect class: `bash` is
-    /// in `hitl_tools` and prompts, while `git` is not and is authorized
-    /// outright — even though `GitTool` is `SideEffectClass::Write`. Rewriting
-    /// a shell call onto the `git` tool therefore *removes* the prompt, which
-    /// is the point of the rewrite.
+    /// in `hitl_tools` under Manual and prompts, while `git` is not and is
+    /// authorized outright — even though `GitTool` is `SideEffectClass::Write`.
     ///
-    /// The consequence: classifying a mutating git command as a read is an
-    /// approval bypass, not a cosmetic mislabel. There is no second gate below
-    /// `readonly.rs` to catch it.
+    /// This used to make shell-command classification an approval boundary: a
+    /// mutating git command mislabelled as a read became an unprompted
+    /// mutation, with nothing below to catch it. The sandbox is now that
+    /// second gate, which is what allowed the classifier to be deleted.
     #[test]
     fn rewritten_git_calls_are_not_prompted() {
         let g = Governance::default();
@@ -868,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn accept_edits_allows_seeded_dev_loop_bash_manual_still_asks() {
+    fn accept_edits_frees_shell_while_manual_still_asks() {
         let cargo_test = call("bash", json!({"command": "cargo test --all"}));
         let rm = call("bash", json!({"command": "rm -rf /tmp/x"}));
 
@@ -885,10 +905,14 @@ mod tests {
             accept.authorize(&cargo_test, SideEffectClass::Exec),
             PolicyDecision::Allow
         );
+        // Accept Edits no longer asks about *any* shell command: it is only
+        // reachable when a sandbox is confining them to the workspace with no
+        // network, so a prompt on top adds friction without safety. Manual
+        // above still asks, which is what that mode is for.
         assert_eq!(
             accept.authorize(&rm, SideEffectClass::Exec),
-            PolicyDecision::Hitl,
-            "unlisted bash must still ask in Accept Edits"
+            PolicyDecision::Allow,
+            "the sandbox is the boundary in Accept Edits, not the prompt"
         );
         // background_run with same seeded command also free
         assert_eq!(
@@ -898,6 +922,11 @@ mod tests {
             ),
             PolicyDecision::Allow
         );
+        // These used to be rewritten onto dedicated tools before `authorize`
+        // saw them, so that any bash reaching this point still asked. The
+        // rewriter is gone: the sandbox confines the command instead of a
+        // classifier deciding whether it looks safe, so inspection commands
+        // run in Accept Edits without a prompt and without being recognised.
         for command in [
             json!({"command": r#"rg -n "Auto|Manual" crates"#}),
             json!({"command": "ls -la"}),
@@ -907,8 +936,20 @@ mod tests {
         ] {
             assert_eq!(
                 accept.authorize(&call("bash", command.clone()), SideEffectClass::Exec),
+                PolicyDecision::Allow,
+                "no classifier is needed once the sandbox is the boundary: {command}"
+            );
+        }
+
+        // Manual is unchanged: it asks about all of them.
+        for command in [
+            json!({"command": "ls -la"}),
+            json!({"command": "git --no-pager status --short"}),
+        ] {
+            assert_eq!(
+                manual.authorize(&call("bash", command.clone()), SideEffectClass::Exec),
                 PolicyDecision::Hitl,
-                "inspection bash is rewritten before authorize, so leftover bash still asks: {command}"
+                "Manual still asks: {command}"
             );
         }
     }
@@ -960,6 +1001,36 @@ mod tests {
 
     /// A mode never overrides an ACL deny, and it never touches loaded
     /// pattern rules or `hitl_tools` — only `hitl_classes`.
+    /// A user's `deny` rule must keep working when the mode stops gating the tool.
+    ///
+    /// `authorize` used to return `Allow` for an ungated tool before consulting
+    /// `pattern_deny`, which was invisible while every shell tool was always
+    /// gated. Once Accept Edits stopped gating shell, that ordering would have
+    /// silently dropped every deny rule written about a shell command.
+    #[test]
+    fn deny_rules_survive_a_mode_that_does_not_gate_the_tool() {
+        let mut g = Governance::default()
+            .with_pattern_rules(vec![], parse_pattern_rules(&["bash(cargo publish *)"]));
+        g.apply_mode(PermissionMode::AcceptEdits);
+
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo publish --dry-run"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Hitl,
+            "an explicit deny must outlive the mode that stopped gating shell"
+        );
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo test"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Allow,
+            "and must not gate anything it does not match"
+        );
+    }
+
     #[test]
     fn apply_mode_preserves_acl_and_pattern_rules() {
         let mut g = Governance::default()
