@@ -96,6 +96,9 @@ pub struct SandboxPolicy {
     /// it wholesale would make "writes outside the workspace are denied" false
     /// for a large part of the filesystem.
     session_tmp: Option<PathBuf>,
+    /// Loopback port of the egress proxy, when domain-filtered network access
+    /// is granted. `None` denies the network outright.
+    egress_proxy_port: Option<u16>,
 }
 
 impl SandboxPolicy {
@@ -104,6 +107,7 @@ impl SandboxPolicy {
         Self {
             workspace_root: workspace_root.as_ref().to_path_buf(),
             session_tmp: None,
+            egress_proxy_port: None,
         }
     }
 
@@ -113,6 +117,23 @@ impl SandboxPolicy {
     pub fn with_session_tmp(mut self, dir: impl AsRef<Path>) -> Self {
         self.session_tmp = Some(dir.as_ref().to_path_buf());
         self
+    }
+
+    /// Permit outbound traffic to the egress proxy on loopback, and nothing
+    /// else.
+    ///
+    /// This is what turns the allowlist from advice into enforcement. Setting
+    /// `HTTPS_PROXY` alone is not a boundary — a process free to open sockets
+    /// ignores it and connects directly. Denying every outbound destination
+    /// *except* the proxy's port is what leaves it no other route, so the
+    /// proxy's domain decision becomes the only decision available.
+    pub fn with_egress_proxy(mut self, port: u16) -> Self {
+        self.egress_proxy_port = Some(port);
+        self
+    }
+
+    pub fn egress_proxy_port(&self) -> Option<u16> {
+        self.egress_proxy_port
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -186,9 +207,18 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
            (literal \"/dev/stderr\") \
            (literal \"/dev/tty\") \
            (literal \"/dev/dtracehelper\"))\n\
-         (allow file-ioctl (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))\n\
-         (deny network*)\n",
+         (allow file-ioctl (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))\n",
     );
+
+    // Network. `deny network*` first so anything not named below is denied,
+    // then — only when an egress proxy exists — one hole to its loopback port.
+    // Order matters as ever: the allow must follow the deny to take effect.
+    profile.push_str("(deny network*)\n");
+    if let Some(port) = policy.egress_proxy_port {
+        profile.push_str(&format!(
+            "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
+        ));
+    }
 
     // Writable: the workspace, and a session scratch directory if one was
     // granted. Nothing else — in particular not all of `$TMPDIR`.

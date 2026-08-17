@@ -1,56 +1,50 @@
-param(
-    [string]$Version = $env:FORGE_VERSION,
-    [string]$InstallDir = $(if ($env:FORGE_INSTALL_DIR) { $env:FORGE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Forge\bin" })
-)
+# Forge is not supported natively on Windows.
+#
+# The sandbox that confines agent-spawned commands is built on Seatbelt
+# (macOS) and bubblewrap (Linux). Native Windows would need a third backend —
+# restricted tokens, filesystem ACLs and synthetic SIDs, the approach Codex
+# uses — and forge does not have one. Rather than ship a binary whose
+# permission model silently has no enforcement floor underneath it, forge runs
+# under WSL2 and uses the Linux sandbox. Claude Code takes the same position.
+#
+# This script used to install a native x86_64-pc-windows-msvc build. That
+# target is no longer produced, so it now points you at the supported path
+# instead of installing something unsupported.
 
 $ErrorActionPreference = "Stop"
 
-$Repository = if ($env:FORGE_REPOSITORY) { $env:FORGE_REPOSITORY } else { "NorviaLabs/forge" }
-
-function Fail([string]$Message) {
-    throw "forge installer: $Message"
-}
-
-if (-not $Version) {
-    $Releases = Invoke-RestMethod -Headers @{ Accept = "application/vnd.github+json" } `
-        -Uri "https://api.github.com/repos/$Repository/releases?per_page=20"
-    $Version = $Releases[0].tag_name
-}
-if (-not $Version) { Fail "could not determine the latest release; set FORGE_VERSION" }
-
-$Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-if ($Architecture -ne "X64") { Fail "unsupported architecture: $Architecture" }
-$Target = "x86_64-pc-windows-msvc"
-$Asset = "forge-$Version-$Target.tar.gz"
-$BaseUrl = "https://github.com/$Repository/releases/download/$Version"
-$TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-installer-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $TempDir | Out-Null
-
-try {
-    $Archive = Join-Path $TempDir $Asset
-    $Checksums = Join-Path $TempDir "SHA256SUMS"
-    Invoke-WebRequest -Uri "$BaseUrl/$Asset" -OutFile $Archive
-    Invoke-WebRequest -Uri "$BaseUrl/SHA256SUMS" -OutFile $Checksums
-
-    $Expected = ((Get-Content $Checksums | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" } | Select-Object -First 1) -split "\s+")[0]
-    if (-not $Expected) { Fail "no checksum found for $Asset" }
-    $Actual = (Get-FileHash -Algorithm SHA256 -Path $Archive).Hash.ToLowerInvariant()
-    if ($Expected.ToLowerInvariant() -ne $Actual) { Fail "checksum verification failed" }
-
-    & tar.exe -xzf $Archive -C $TempDir
-    if ($LASTEXITCODE -ne 0) { Fail "could not extract $Asset" }
-
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item (Join-Path $TempDir "forge-$Version-$Target\forge.exe") (Join-Path $InstallDir "forge.exe") -Force
-
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $PathParts = if ($UserPath) { $UserPath -split ";" } else { @() }
-    if ($PathParts -notcontains $InstallDir) {
-        [Environment]::SetEnvironmentVariable("Path", (($PathParts + $InstallDir) -join ";"), "User")
-        Write-Output "Added $InstallDir to your user PATH. Open a new terminal before running forge."
+function Test-Wsl2 {
+    try {
+        $null = & wsl.exe --status 2>$null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
     }
-    Write-Output "Installed Forge $Version to $(Join-Path $InstallDir 'forge.exe')"
 }
-finally {
-    if (Test-Path $TempDir) { Remove-Item $TempDir -Recurse -Force }
+
+Write-Host ""
+Write-Host "forge does not ship a native Windows build." -ForegroundColor Yellow
+Write-Host "It runs under WSL2, where it uses the same sandbox as Linux."
+Write-Host ""
+
+if (-not (Test-Wsl2)) {
+    Write-Host "WSL2 was not detected. Install it first:" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "    wsl --install"
+    Write-Host ""
+    Write-Host "Then re-run this script, or install forge from inside your WSL2 shell."
+    exit 1
 }
+
+Write-Host "WSL2 detected. Install forge from inside your WSL2 distribution:" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "    wsl -- bash -c 'curl -fsSL https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-installer.sh | bash'"
+Write-Host ""
+Write-Host "The sandbox additionally needs bubblewrap inside that distribution:"
+Write-Host ""
+Write-Host "    wsl -- sudo apt-get install -y bubblewrap"
+Write-Host ""
+Write-Host "Without it forge still runs, but every shell command asks for approval,"
+Write-Host "because there is no enforcement floor for Auto mode to sit on."
+Write-Host ""
+exit 1
