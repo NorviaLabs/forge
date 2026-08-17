@@ -497,9 +497,22 @@ impl TuiApp {
             }
             SemanticCommand::ToggleToolDetails => self.tool_detail.toggle(),
             SemanticCommand::CyclePermissionMode => {
-                let mode = self.session.permission_mode().next();
-                self.session.apply_permission_mode(mode);
+                let requested = self.session.permission_mode().next();
+                let capped = self.set_permission_mode_clamped(requested);
                 self.save_ui_state();
+                // A refused request has to say why, or the mode chip simply
+                // does not change when you press the key and the user is left
+                // guessing whether the binding is broken.
+                if let Some(reason) = capped {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!(
+                            "staying in {} — {reason}",
+                            self.session.permission_mode().label()
+                        ),
+                    );
+                    return Ok(false);
+                }
                 let detail = match self.session.permission_mode() {
                     forge_governance::PermissionMode::AcceptEdits => {
                         forge_governance::Governance::accept_edits_toast_summary()

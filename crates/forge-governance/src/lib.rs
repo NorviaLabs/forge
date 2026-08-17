@@ -57,6 +57,33 @@ impl PermissionMode {
             Self::AcceptEdits => Self::Manual,
         }
     }
+
+    /// How permissive this mode is. `Manual` asks about more, so it is lower.
+    fn permissiveness(self) -> u8 {
+        match self {
+            Self::Manual => 0,
+            Self::AcceptEdits => 1,
+        }
+    }
+
+    /// Narrow `self` to at most `ceiling`.
+    ///
+    /// Asking *more* often is always safe, so narrowing is unrestricted and a
+    /// user who prefers `Manual` keeps it. Asking *less* often is only safe
+    /// when something else is holding the line, which is why the ceiling
+    /// exists: `AcceptEdits` frees writes, and that is only defensible when a
+    /// sandbox confines what a freed write can reach.
+    ///
+    /// This crate cannot compute the ceiling itself — it depends on
+    /// `forge-types` alone and so cannot see whether a sandbox is available.
+    /// The caller supplies it; see `forge_core::permission_ceiling`.
+    pub fn clamped_to(self, ceiling: Self) -> Self {
+        if self.permissiveness() > ceiling.permissiveness() {
+            ceiling
+        } else {
+            self
+        }
+    }
 }
 
 /// High-level governance facade for the tool path.
