@@ -294,26 +294,12 @@ mod tests {
         }
     }
 
-    /// Git-initializes `dir` so the journal-dir resolver exercises
-    /// repository-local storage hermetically, inside the tempdir — without
-    /// this, an unconfigured journal path falls back to the platform
+    /// `init_repo` git-initializes a tempdir so the journal-dir resolver
+    /// exercises repository-local storage hermetically, inside that tempdir —
+    /// without it, an unconfigured journal path falls back to the platform
     /// application-data directory (correct real-world behavior outside a
     /// repository, but not what a test should touch on the host machine).
-    fn init_repo(dir: &std::path::Path) {
-        for args in [
-            vec!["init", "--initial-branch=main", "-q"],
-            vec!["config", "user.email", "test@example.com"],
-            vec!["config", "user.name", "Test"],
-        ] {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(&args)
-                .status()
-                .unwrap();
-            assert!(status.success());
-        }
-    }
+    use forge_test_support::init_repo;
 
     #[tokio::test]
     async fn open_session_with_mock_model_builds_a_session_without_notices() {

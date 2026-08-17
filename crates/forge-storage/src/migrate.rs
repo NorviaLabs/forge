@@ -224,23 +224,8 @@ fn is_tracked(workspace: &Path, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_test_support::init_repo;
     use tempfile::TempDir;
-
-    fn init_repo(dir: &Path) {
-        for args in [
-            vec!["init", "--initial-branch=main", "-q"],
-            vec!["config", "user.email", "test@example.com"],
-            vec!["config", "user.name", "Test"],
-        ] {
-            let status = Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(&args)
-                .status()
-                .unwrap();
-            assert!(status.success());
-        }
-    }
 
     #[test]
     fn migrates_untracked_known_runtime_files() {
