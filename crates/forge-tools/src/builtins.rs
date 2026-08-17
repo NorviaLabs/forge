@@ -293,7 +293,9 @@ pub async fn run_shell_command(
     // rule that a sandbox-less host must fall back to asking the user is
     // enforced upstream, where the permission mode is decided, not here.
     let policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root);
-    let mut shell = match crate::sandbox::wrap_shell_command("bash", command, &policy) {
+    let wrapped = crate::sandbox::wrap_shell_command("bash", command, &policy);
+    let confined_run = wrapped.is_some();
+    let mut shell = match wrapped {
         Some((program, args)) => {
             let mut confined = Command::new(program);
             confined.args(args);
@@ -325,6 +327,20 @@ pub async fn run_shell_command(
             content.push('\n');
         }
         content.push_str(&err);
+    }
+
+    // A denial does not announce itself: blocked egress arrives as "Could not
+    // resolve host", which reads as a DNS outage, and a blocked write arrives
+    // as "Operation not permitted", which reads as a file-permission problem
+    // on disk. Neither is true, and a model that believes them retries or
+    // chases the wrong fix. Say which boundary stopped it.
+    if confined_run && !status.success() {
+        if let Some(explanation) = crate::sandbox::explain_denial(&content) {
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(explanation);
+        }
     }
 
     let is_error = !status.success();

@@ -266,3 +266,38 @@ async fn bash_tool_cannot_write_git() {
         "ref: refs/heads/main\n"
     );
 }
+
+/// A denied command must say *which boundary* stopped it. Without this the
+/// model sees a DNS error or a file-permission error and chases the wrong fix.
+#[tokio::test]
+async fn a_denied_command_explains_which_boundary_stopped_it() {
+    require_sandbox!();
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("nope.txt");
+
+    let out = run_shell_command(&format!("echo x > {}", target.to_str().unwrap()), ws.path())
+        .await
+        .unwrap();
+
+    assert!(out.is_error);
+    assert!(
+        out.content.contains("blocked by the sandbox"),
+        "a denial must name the boundary, got: {}",
+        out.content
+    );
+}
+
+/// And an ordinary failure must not be dressed up as a sandbox problem.
+#[tokio::test]
+async fn an_ordinary_failure_is_not_blamed_on_the_sandbox() {
+    require_sandbox!();
+    let ws = workspace();
+    let out = run_shell_command("exit 3", ws.path()).await.unwrap();
+    assert!(out.is_error);
+    assert!(
+        !out.content.contains("blocked by the sandbox"),
+        "must not claim a denial, got: {}",
+        out.content
+    );
+}

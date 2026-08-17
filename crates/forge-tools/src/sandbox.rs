@@ -552,3 +552,90 @@ mod bubblewrap_tests {
         .is_none());
     }
 }
+
+/// Why a confined command failed, when the sandbox is the reason.
+///
+/// A denial does not announce itself. The filesystem boundary surfaces as
+/// `Operation not permitted`, which at least looks like a permission problem —
+/// but the network boundary surfaces as `Could not resolve host`, because
+/// blocking egress also blocks DNS. That is indistinguishable from a real
+/// outage, and a model reading it concludes the network is flaky and retries,
+/// or that the host does not exist.
+///
+/// So the sandbox has to say so itself. This is the "blocked by sandbox" ≠
+/// "denied by the user" distinction: the two need different responses, and
+/// fusing them is what makes Codex's escalation flow confusing.
+///
+/// Returns `None` when nothing in the output looks like a denial — an ordinary
+/// compile error or test failure must not be dressed up as a sandbox problem.
+pub fn explain_denial(output: &str) -> Option<&'static str> {
+    const NETWORK: &[&str] = &[
+        "Could not resolve host",
+        "Temporary failure in name resolution",
+        "Network is unreachable",
+        "nodename nor servname provided",
+    ];
+    const FILESYSTEM: &[&str] = &["Operation not permitted", "Read-only file system"];
+
+    if NETWORK.iter().any(|sig| output.contains(sig)) {
+        return Some(
+            "blocked by the sandbox: network access is denied. This is not a DNS or \
+             connectivity problem — the command ran confined. Fetching dependencies \
+             needs a network-enabled run.",
+        );
+    }
+    if FILESYSTEM.iter().any(|sig| output.contains(sig)) {
+        return Some(
+            "blocked by the sandbox: writes are confined to the workspace, and \
+             .git/.forge are read-only inside it. This is not a file-permission \
+             problem on disk.",
+        );
+    }
+    None
+}
+
+#[cfg(test)]
+mod denial_tests {
+    use super::*;
+
+    /// The signature captured from a real confined `curl`: blocking egress
+    /// also blocks DNS, so the denial arrives wearing a DNS outage's clothes.
+    #[test]
+    fn a_blocked_network_call_is_not_reported_as_a_dns_outage() {
+        let out = "curl: (6) Could not resolve host: example.com";
+        let explained = explain_denial(out).expect("must be recognised as a denial");
+        assert!(explained.contains("network access is denied"));
+        assert!(
+            explained.contains("not a DNS"),
+            "the whole point is to contradict the obvious reading"
+        );
+    }
+
+    #[test]
+    fn git_over_https_gets_the_same_explanation() {
+        let out =
+            "fatal: unable to access 'https://github.com/x/y': Could not resolve host: github.com";
+        assert!(explain_denial(out).is_some_and(|e| e.contains("network")));
+    }
+
+    #[test]
+    fn a_blocked_write_is_named_as_a_boundary_not_a_file_permission() {
+        let out = "/bin/sh: /tmp/escape.txt: Operation not permitted";
+        let explained = explain_denial(out).expect("must be recognised");
+        assert!(explained.contains("confined to the workspace"));
+    }
+
+    /// The failure mode worth guarding: dressing an ordinary error up as a
+    /// sandbox problem sends the model chasing the wrong fix.
+    #[test]
+    fn ordinary_failures_are_left_alone() {
+        for out in [
+            "error[E0308]: mismatched types",
+            "test result: FAILED. 1 failed",
+            "bash: frobnicate: command not found",
+            "assertion `left == right` failed",
+        ] {
+            assert!(explain_denial(out).is_none(), "must not claim: {out}");
+        }
+    }
+}
