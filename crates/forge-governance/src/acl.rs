@@ -83,4 +83,110 @@ mod tests {
         assert!(!p.is_allowed(&pr, "read_file", SideEffectClass::Read));
         assert!(!p.is_allowed(&pr, "anything", SideEffectClass::Exec));
     }
+
+    /// Rule order is the whole policy semantics: the *last* matching rule wins,
+    /// so re-ordering two rules flips the outcome. A regression that made the
+    /// first match win would silently widen `allow_all() + deny(...)` policies.
+    #[test]
+    fn last_matching_rule_wins_in_both_orders() {
+        let pr = Principal::local_dev();
+
+        let mut deny_last = AclPolicy::new();
+        deny_last.allow("bash".into());
+        deny_last.deny("bash".into());
+        assert!(!deny_last.is_allowed(&pr, "bash", SideEffectClass::Exec));
+
+        let mut allow_last = AclPolicy::new();
+        allow_last.deny("bash".into());
+        allow_last.allow("bash".into());
+        assert!(allow_last.is_allowed(&pr, "bash", SideEffectClass::Exec));
+
+        // A narrow rule only wins because it comes later, not because it is
+        // narrower: a trailing broad allow re-opens an earlier specific deny.
+        let mut broad_last = AclPolicy::new();
+        broad_last.deny("bash".into());
+        broad_last.allow("*".into());
+        assert!(broad_last.is_allowed(&pr, "bash", SideEffectClass::Exec));
+    }
+
+    /// Non-matching rules must not disturb the decision carried by an earlier
+    /// matching rule.
+    #[test]
+    fn non_matching_rules_do_not_reset_the_decision() {
+        let pr = Principal::local_dev();
+        let mut p = AclPolicy::new();
+        p.allow("read_file".into());
+        p.deny("bash".into());
+        p.deny("write_file".into());
+        assert!(p.is_allowed(&pr, "read_file", SideEffectClass::Read));
+        // A tool that matches nothing at all falls back to deny.
+        assert!(!p.is_allowed(&pr, "glob", SideEffectClass::Read));
+    }
+
+    /// The `mcp:*` shape is the reason `match_pattern` has a prefix wildcard at
+    /// all: one rule must cover every tool from a server without covering
+    /// look-alike names.
+    #[test]
+    fn trailing_star_matches_by_prefix_only() {
+        let pr = Principal::local_dev();
+        let mut p = AclPolicy::allow_all();
+        p.deny("mcp:*".into());
+        assert!(!p.is_allowed(&pr, "mcp:github:create_issue", SideEffectClass::Write));
+        assert!(!p.is_allowed(&pr, "mcp:", SideEffectClass::Write));
+        // Prefix, not substring or suffix.
+        assert!(p.is_allowed(&pr, "mcp", SideEffectClass::Write));
+        assert!(p.is_allowed(&pr, "not_mcp:x", SideEffectClass::Write));
+        assert!(p.is_allowed(&pr, "MCP:github", SideEffectClass::Write));
+    }
+
+    /// A bare `*` is the match-everything rule; only a *trailing* star is a
+    /// wildcard, so a star anywhere else is matched literally.
+    #[test]
+    fn star_is_only_special_as_a_whole_pattern_or_a_suffix() {
+        let pr = Principal::local_dev();
+
+        let mut interior = AclPolicy::allow_all();
+        interior.deny("mcp:*:read".into());
+        assert!(interior.is_allowed(&pr, "mcp:github:read", SideEffectClass::Read));
+        assert!(!interior.is_allowed(&pr, "mcp:*:read", SideEffectClass::Read));
+
+        let mut everything = AclPolicy::new();
+        everything.allow("*".into());
+        assert!(everything.is_allowed(&pr, "", SideEffectClass::Meta));
+
+        // `**` strips one trailing star and prefix-matches on the remaining one.
+        let mut double = AclPolicy::new();
+        double.allow("**".into());
+        assert!(double.is_allowed(&pr, "*anything", SideEffectClass::Meta));
+        assert!(!double.is_allowed(&pr, "anything", SideEffectClass::Meta));
+    }
+
+    /// Exact patterns must not match by prefix.
+    #[test]
+    fn exact_patterns_require_the_whole_name() {
+        let pr = Principal::local_dev();
+        let mut p = AclPolicy::new();
+        p.allow("git".into());
+        assert!(p.is_allowed(&pr, "git", SideEffectClass::Write));
+        assert!(!p.is_allowed(&pr, "github", SideEffectClass::Write));
+        assert!(!p.is_allowed(&pr, "gi", SideEffectClass::Write));
+    }
+
+    /// The side-effect class and principal are accepted for signature stability
+    /// but do not participate in the decision; only the tool name does.
+    #[test]
+    fn decision_ignores_principal_and_side_effect_class() {
+        let mut p = AclPolicy::allow_all();
+        p.deny("bash".into());
+        let pr = Principal::local_dev();
+        for class in [
+            SideEffectClass::Read,
+            SideEffectClass::Write,
+            SideEffectClass::Exec,
+            SideEffectClass::Meta,
+        ] {
+            assert!(!p.is_allowed(&pr, "bash", class));
+            assert!(p.is_allowed(&pr, "read_file", class));
+        }
+    }
 }

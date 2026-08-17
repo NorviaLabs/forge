@@ -1425,4 +1425,268 @@ mod tests {
         assert_eq!(tool_calls_message.tool_calls.len(), 1);
         assert_eq!(tool_calls_message.tool_calls[0].id, "c-tc");
     }
+
+    /// A missing session directory is the first-run case, not an error.
+    #[test]
+    fn latest_session_id_is_none_for_missing_or_empty_dir() {
+        let dir = tempdir().unwrap();
+        assert!(latest_session_id(&dir.path().join("never-created"))
+            .unwrap()
+            .is_none());
+        assert!(latest_session_id(dir.path()).unwrap().is_none());
+    }
+
+    /// Only `<uuid>.db` names are sessions. Everything else in the directory —
+    /// sidecar files, other extensions, extensionless files, and `.db` files
+    /// whose stem is not a UUID — is skipped rather than failing the scan.
+    #[test]
+    fn latest_session_id_skips_non_session_files() {
+        let dir = tempdir().unwrap();
+        for name in [
+            "notes.txt",
+            "sessions.json",
+            "README",
+            "abcdef.db",
+            "not-a-uuid.db",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        // A `.db` sidecar that SQLite itself may leave behind.
+        let real = new_session_id();
+        std::fs::write(dir.path().join(format!("{real}.db-wal")), b"x").unwrap();
+        std::fs::write(dir.path().join(format!("{real}.db-shm")), b"x").unwrap();
+        assert!(latest_session_id(dir.path()).unwrap().is_none());
+
+        // Add one genuine session file and it becomes the answer.
+        std::fs::write(dir.path().join(format!("{real}.db")), b"x").unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(real));
+    }
+
+    /// "Latest" is by mtime, not by directory order or name.
+    #[test]
+    fn latest_session_id_picks_the_most_recently_modified() {
+        let dir = tempdir().unwrap();
+        let older = new_session_id();
+        let newer = new_session_id();
+        std::fs::write(dir.path().join(format!("{older}.db")), b"x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(dir.path().join(format!("{newer}.db")), b"x").unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(newer));
+
+        // Touching the older file makes it the latest.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(dir.path().join(format!("{older}.db")), b"xx").unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(older));
+    }
+
+    #[tokio::test]
+    async fn latest_session_id_finds_a_journal_opened_through_the_normal_path() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(sid));
+    }
+
+    /// `ModelRequest` carries the cache-epoch bookkeeping that compaction
+    /// depends on. Replay must surface the *last* request's values, and each
+    /// field independently — a request that omits one must not clear it.
+    #[tokio::test]
+    async fn replay_tracks_the_latest_model_request_cache_metadata() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+
+        // A fresh session starts at epoch 0 with nothing recorded.
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.cache_epoch, 0);
+        assert_eq!(state.last_prompt_hash, None);
+        assert_eq!(state.last_prompt_bytes, None);
+        assert_eq!(state.last_cache_transport, None);
+
+        journal
+            .append_model_request(
+                sid,
+                json!({
+                    "prompt_wire_sha256": "aaaa",
+                    "prompt_wire_bytes": 128,
+                    "cache_epoch": 1,
+                    "cache_transport": "anthropic-cache-control",
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.last_prompt_hash.as_deref(), Some("aaaa"));
+        assert_eq!(state.last_prompt_bytes, Some(128));
+        assert_eq!(state.cache_epoch, 1);
+        assert_eq!(
+            state.last_cache_transport.as_deref(),
+            Some("anthropic-cache-control")
+        );
+
+        // A later request supersedes the earlier one field by field.
+        journal
+            .append_model_request(
+                sid,
+                json!({
+                    "prompt_wire_sha256": "bbbb",
+                    "prompt_wire_bytes": 256,
+                    "cache_epoch": 2,
+                    "cache_transport": "openai-prefix",
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.last_prompt_hash.as_deref(), Some("bbbb"));
+        assert_eq!(state.last_prompt_bytes, Some(256));
+        assert_eq!(state.cache_epoch, 2);
+        assert_eq!(state.last_cache_transport.as_deref(), Some("openai-prefix"));
+
+        // A request with none of the optional metadata leaves the last known
+        // values in place rather than resetting them to defaults.
+        journal
+            .append_model_request(sid, json!({ "model": "some-model" }))
+            .await
+            .unwrap();
+        // Wrongly-typed values are ignored for the same reason.
+        journal
+            .append_model_request(
+                sid,
+                json!({
+                    "prompt_wire_sha256": 42,
+                    "prompt_wire_bytes": "lots",
+                    "cache_epoch": "three",
+                    "cache_transport": ["nope"],
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.last_prompt_hash.as_deref(), Some("bbbb"));
+        assert_eq!(state.last_prompt_bytes, Some(256));
+        assert_eq!(state.cache_epoch, 2);
+        assert_eq!(state.last_cache_transport.as_deref(), Some("openai-prefix"));
+    }
+
+    fn user_message(content: &str) -> Message {
+        Message {
+            outcome: Default::default(),
+            role: MessageRole::User,
+            content: content.into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        }
+    }
+
+    /// Compaction replaces the *projection* and nothing else: the replayed
+    /// message list becomes the compacted one, the opaque `context_state` is
+    /// carried forward for `forge-core`, and every original event stays in the
+    /// journal so canonical history survives.
+    #[tokio::test]
+    async fn replay_applies_context_compacted_without_losing_history() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        journal.append_user_message(sid, "first").await.unwrap();
+        journal.append_user_message(sid, "second").await.unwrap();
+
+        let before = journal.replay(sid).await.unwrap();
+        assert_eq!(before.messages.len(), 2);
+        assert_eq!(before.compaction_count, 0);
+        assert!(before.context_state.is_none());
+        let events_before = before.events.len();
+
+        journal
+            .append_context_compacted(
+                sid,
+                json!({
+                    "messages": [user_message("summary of first and second")],
+                    "context_state": {"anchor_seq": 2, "summary_tokens": 40},
+                }),
+            )
+            .await
+            .unwrap();
+
+        let after = journal.replay(sid).await.unwrap();
+        assert_eq!(after.messages.len(), 1);
+        assert_eq!(after.messages[0].content, "summary of first and second");
+        assert_eq!(
+            after.context_state,
+            Some(json!({"anchor_seq": 2, "summary_tokens": 40}))
+        );
+        assert_eq!(after.compaction_count, 1);
+        // Additive: the compaction event is appended, nothing is rewritten.
+        assert_eq!(after.events.len(), events_before + 1);
+        assert_eq!(
+            after.events.last().unwrap().event_type,
+            JournalEventType::ContextCompacted
+        );
+        // The original user messages are still recoverable from the journal.
+        assert_eq!(
+            after.user_messages,
+            vec!["first".to_string(), "second".to_string()]
+        );
+
+        // Post-compaction turns append onto the compacted projection.
+        journal.append_user_message(sid, "third").await.unwrap();
+        let resumed = journal.replay(sid).await.unwrap();
+        assert_eq!(resumed.messages.len(), 2);
+        assert_eq!(resumed.messages[1].content, "third");
+        assert_eq!(resumed.compaction_count, 1);
+    }
+
+    /// Compactions accumulate, and a payload missing either half updates only
+    /// the half it carries — a malformed message list must not blank the
+    /// projection.
+    #[tokio::test]
+    async fn repeated_compactions_count_up_and_tolerate_partial_payloads() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_user_message(sid, "first").await.unwrap();
+
+        journal
+            .append_context_compacted(sid, json!({"context_state": {"gen": 1}}))
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.compaction_count, 1);
+        assert_eq!(state.context_state, Some(json!({"gen": 1})));
+        // No `messages` key, so the projection is untouched.
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].content, "first");
+
+        // A `messages` value that is not a message list is ignored too.
+        journal
+            .append_context_compacted(sid, json!({"messages": "not a list"}))
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.compaction_count, 2);
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.context_state, Some(json!({"gen": 1})));
+
+        journal
+            .append_context_compacted(
+                sid,
+                json!({
+                    "messages": [user_message("compacted")],
+                    "context_state": {"gen": 2},
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.compaction_count, 3);
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].content, "compacted");
+        assert_eq!(state.context_state, Some(json!({"gen": 2})));
+    }
 }
