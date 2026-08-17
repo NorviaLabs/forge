@@ -631,3 +631,129 @@ async fn a_granted_command_returns_rather_than_hanging() {
         .unwrap();
     assert!(out.content.contains("done"), "got {:?}", out.content);
 }
+
+/// A command that attempts an `AF_UNIX` connect and reports *why* it failed.
+///
+/// The reason is the whole point. `nc -U` exits 1 with no output whether the
+/// socket is denied or simply absent, so a test built on it scores a typo in
+/// the path as enforcement. Python distinguishes `PermissionError` from
+/// `FileNotFoundError`, which is the difference between a boundary holding and
+/// a probe that never reached anything.
+#[cfg(unix)]
+fn unix_connect_probe(path: &Path) -> String {
+    format!(
+        "python3 -c 'import socket,sys\n\
+         s=socket.socket(socket.AF_UNIX)\n\
+         try:\n\
+        \x20   s.connect(sys.argv[1])\n\
+        \x20   print(\"CONNECTED\")\n\
+         except Exception as e:\n\
+        \x20   print(\"FAILED\", type(e).__name__)' \"{}\"",
+        path.display()
+    )
+}
+
+/// Binds a listener and leaks the accepting thread.
+///
+/// Never joined on purpose: when the sandbox holds, nothing connects and
+/// `accept` blocks forever — joining deadlocks the test rather than failing
+/// it, which is how this test hung the first three times it was run.
+#[cfg(unix)]
+fn listen_and_leak(path: &Path) {
+    use std::os::unix::net::UnixListener;
+    let listener = UnixListener::bind(path).expect("bind the probe socket");
+    std::thread::spawn(move || {
+        let _ = listener.accept();
+    });
+}
+
+/// A socket outside the workspace, somewhere the sandbox does not mask.
+///
+/// `/run` and `/tmp` are covered by a tmpfs, which already accounts for
+/// docker.sock, systemd, D-Bus, X11 and `$XDG_RUNTIME_DIR`; probing there
+/// would pass for the wrong reason. `$HOME` is unmasked, and is where a real
+/// dangerous socket lives — Docker Desktop keeps one under `~/.docker`.
+#[cfg(target_os = "linux")]
+fn host_probe_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let dir = Path::new(&home).join(format!(".forge-uds-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Linux: reachability *is* the boundary, so prove it discriminates.
+///
+/// This is the question the deferred seccomp work was really about. A confined
+/// process can always *create* an `AF_UNIX` socket — forge cannot block that,
+/// because the egress relay running inside the sandbox needs one. So the
+/// boundary comes from what the mount namespace exposes, and that is only a
+/// boundary if it holds.
+///
+/// Both halves matter. The in-workspace connect must succeed, or the probe
+/// cannot tell reachable from unreachable and "everything failed" gets scored
+/// as security — which is exactly what the first version of this test did.
+///
+/// The abstract `AF_UNIX` namespace needs no test: it is scoped to the network
+/// namespace, and `--unshare-net` gives the sandbox its own.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_confined_command_reaches_workspace_sockets_but_not_host_sockets() {
+    require_sandbox!();
+
+    let ws = workspace();
+
+    let inside = ws.path().join("inside.sock");
+    listen_and_leak(&inside);
+    let (_, inside_out) = run_confined(ws.path(), &unix_connect_probe(&inside));
+    assert!(
+        inside_out.contains("CONNECTED"),
+        "the probe could not reach a socket inside the workspace, so it cannot \
+         tell reachable from unreachable and the assertion below proves \
+         nothing.\n{inside_out}"
+    );
+
+    let probe_dir = host_probe_dir();
+    let outside = probe_dir.join("probe.sock");
+    listen_and_leak(&outside);
+    let (_, outside_out) = run_confined(ws.path(), &unix_connect_probe(&outside));
+    let _ = std::fs::remove_dir_all(&probe_dir);
+
+    assert!(
+        !outside_out.contains("CONNECTED"),
+        "a confined command reached a host Unix socket at {}.\n\
+         The filesystem boundary is the only thing between the sandbox and \
+         every socket on this machine, and it did not hold.\n{outside_out}",
+        outside.display()
+    );
+}
+
+/// macOS: `AF_UNIX` is denied outright, which is stronger than Linux manages.
+///
+/// A confined command cannot connect to a Unix socket anywhere — not even one
+/// inside its own workspace, which fails with `PermissionError`. macOS
+/// therefore has no reachable-vs-creatable gap: it does not lean on masking
+/// and needs no seccomp equivalent. Nothing legitimate wants this, because the
+/// macOS egress path is TCP to a localhost port rather than a socket.
+///
+/// Asserting the *reason* is what keeps this honest: a probe pointed at a path
+/// that does not exist reports `FileNotFoundError` and fails this test rather
+/// than passing as enforcement.
+#[cfg(target_os = "macos")]
+#[test]
+fn unix_sockets_are_denied_wholesale() {
+    require_sandbox!();
+
+    let ws = workspace();
+    let inside = ws.path().join("inside.sock");
+    listen_and_leak(&inside);
+
+    let (_, out) = run_confined(ws.path(), &unix_connect_probe(&inside));
+
+    assert!(
+        out.contains("PermissionError"),
+        "expected Seatbelt to refuse the connect with PermissionError.\n\
+         CONNECTED means Unix sockets are now allowed and the Linux-only \
+         reachability gap has been reintroduced here; FileNotFoundError means \
+         the probe never found the socket and tested nothing.\n{out}"
+    );
+}
