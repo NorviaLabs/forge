@@ -188,14 +188,24 @@ async fn start(
             "exec_command login shells are not supported".into(),
         ));
     }
-    let mut command = if let Some(shell) = args.shell.as_deref() {
-        let mut command = Command::new(shell);
-        command.args(["-c", &args.cmd]);
-        command
-    } else {
-        let mut command = Command::new("sh");
-        command.args(["-c", &args.cmd]);
-        command
+    // These sessions outlive the turn that started them and `write_stdin`
+    // feeds them afterwards, so confinement has to be applied here at spawn.
+    // There is no way to sandbox the session later, and `write_stdin` is not
+    // itself gated — a session that starts unconfined accepts arbitrary
+    // commands unconfined for as long as it lives.
+    let shell = args.shell.as_deref().unwrap_or("sh");
+    let policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root);
+    let mut command = match crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy) {
+        Some((program, wrapped)) => {
+            let mut confined = Command::new(program);
+            confined.args(wrapped);
+            confined
+        }
+        None => {
+            let mut plain = Command::new(shell);
+            plain.args(["-c", &args.cmd]);
+            plain
+        }
     };
     for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
         command.env_remove(name);
