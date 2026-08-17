@@ -20,6 +20,144 @@ use ratatui::text::{Line, Span};
 /// Space on each side of a cell, inside the `│` walls.
 const CELL_PAD: usize = 1;
 
+/// How much of a streaming buffer is settled — safe to render once and cache.
+///
+/// Returns the byte offset up to which no byte that arrives later can change how
+/// the text renders. Everything from there on must be re-rendered on each tick.
+///
+/// # Why this is conservative
+///
+/// Caching a half-parsed construct never corrects itself: the wrong lines are
+/// frozen for the rest of the turn. Slow streaming is visible, wrong streaming
+/// is not, so every uncertain case returns *less*. The cost of being too
+/// cautious is a smaller speed-up; the cost of being too eager is corrupted
+/// output.
+///
+/// # What keeps a block unsettled
+///
+/// "Ends in a newline" is not enough — a following line can reach backwards:
+///
+/// * an open fence: the closing ``` decides where code stops
+/// * a table: the delimiter row turns the line above it into a header
+/// * a list: a later item can make the whole list loose, re-spacing every item
+/// * a block quote: a following `>` line continues it
+/// * a setext heading: `Title` becomes a heading when `===` follows
+/// * a trailing partial line: no newline yet, so nothing about it is fixed
+///
+/// So the unsettled region is the whole trailing block, extended back over a
+/// run of list or quote blocks, or to an open fence's opening line.
+#[allow(dead_code)] // consumed by the render-path change; see docs/streaming-preview-commit-boundary.md
+pub fn settled_prefix_len(buffer: &str) -> usize {
+    // A line without its newline is still being written.
+    let Some(last_newline) = buffer.rfind('\n') else {
+        return 0;
+    };
+    let complete = &buffer[..last_newline + 1];
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind {
+        Other,
+        ListOrQuote,
+    }
+
+    // (start offset, kind) for each block, plus the offset of an open fence.
+    let mut blocks: Vec<(usize, Kind)> = Vec::new();
+    let mut open_fence: Option<usize> = None;
+    let mut offset = 0usize;
+    let mut at_block_start = true;
+
+    for line in complete.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+
+        if let Some(start) = open_fence {
+            // Inside a fence, blank lines are content and cannot end a block.
+            if fence {
+                open_fence = None;
+            }
+            let _ = start;
+            offset += line.len();
+            continue;
+        }
+
+        if line.trim().is_empty() {
+            at_block_start = true;
+            offset += line.len();
+            continue;
+        }
+
+        if at_block_start {
+            let kind = if is_list_or_quote(trimmed) {
+                Kind::ListOrQuote
+            } else {
+                Kind::Other
+            };
+            blocks.push((offset, kind));
+            at_block_start = false;
+        }
+        if fence {
+            open_fence = Some(offset);
+        }
+        offset += line.len();
+    }
+
+    // An open fence swallows everything from where it opened.
+    if let Some(fence_start) = open_fence {
+        let starts: Vec<usize> = blocks.iter().map(|(start, _)| *start).collect();
+        return block_start_at_or_before(&starts, fence_start);
+    }
+
+    // A trailing blank line closes the last block: nothing can reach back over
+    // it — except a list, where a blank line only makes the list loose.
+    let Some(&(last_start, last_kind)) = blocks.last() else {
+        return complete.len();
+    };
+    // `at_block_start` is true exactly when the last line consumed was blank,
+    // which is the only thing that closes a block.
+    if at_block_start && last_kind == Kind::Other {
+        return complete.len();
+    }
+
+    // Walk back over a contiguous run of list/quote blocks: a later item can
+    // re-space every earlier one.
+    let mut start = last_start;
+    if last_kind == Kind::ListOrQuote {
+        for &(block_start, kind) in blocks.iter().rev() {
+            if kind != Kind::ListOrQuote {
+                break;
+            }
+            start = block_start;
+        }
+    }
+    start
+}
+
+fn is_list_or_quote(trimmed: &str) -> bool {
+    if trimmed.starts_with('>') {
+        return true;
+    }
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some('-') | Some('*') | Some('+') => {
+            matches!(chars.next(), Some(' ') | Some('\t') | None)
+        }
+        Some(c) if c.is_ascii_digit() => {
+            let rest = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+            rest.starts_with(". ") || rest.starts_with(") ")
+        }
+        _ => false,
+    }
+}
+
+fn block_start_at_or_before(starts: &[usize], offset: usize) -> usize {
+    starts
+        .iter()
+        .rev()
+        .copied()
+        .find(|start| *start <= offset)
+        .unwrap_or(offset)
+}
+
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -1074,5 +1212,135 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             !rendered.contains("  ```\n") && !rendered.ends_with("  ```"),
             "no closing fence should be invented:\n{rendered}"
         );
+    }
+
+    fn lines_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Helper: the settled prefix, as text, so cases read as intent.
+    fn settled(buffer: &str) -> &str {
+        &buffer[..settled_prefix_len(buffer)]
+    }
+
+    #[test]
+    fn a_partial_final_line_is_never_settled() {
+        assert_eq!(settled("no newline at all"), "");
+        // Lines without a blank between them are one paragraph, so none of it
+        // is settled while it is still the trailing block.
+        assert_eq!(settled("one\ntwo\nthree without a newline"), "");
+        // With a completed block in front, only that block settles.
+        assert_eq!(settled("Done.\n\nstill writing this line"), "Done.\n\n");
+    }
+
+    /// The construct that matters most: an open fence must keep its whole block
+    /// unsettled, because the closing marker decides where code stops.
+    #[test]
+    fn an_open_fence_holds_back_from_where_it_opened() {
+        let buffer = "Here is the fix.\n\n```rust\nfn a() {}\nfn b() {}\n";
+        assert_eq!(settled(buffer), "Here is the fix.\n\n");
+    }
+
+    #[test]
+    fn a_closed_fence_settles_once_a_later_block_starts() {
+        // No trailing blank line: "After the block." is still the live block.
+        let buffer = "Intro.\n\n```rust\nfn a() {}\n```\n\nAfter the block.\n";
+        let settled = settled(buffer);
+        assert!(
+            settled.contains("```rust") && settled.contains("fn a() {}"),
+            "a closed fence cannot change any more: {settled:?}"
+        );
+        assert!(
+            !settled.contains("After the block"),
+            "the trailing block stays live: {settled:?}"
+        );
+    }
+
+    /// A delimiter row turns the line above it into a header, so a table in
+    /// flight must not be cached a row at a time.
+    #[test]
+    fn a_table_in_flight_is_not_settled() {
+        let buffer = "Results:\n\n| col | col |\n| --- | --- |\n| a | b |\n";
+        assert_eq!(settled(buffer), "Results:\n\n");
+    }
+
+    /// A later item can make the whole list loose, which re-spaces every item
+    /// already on screen — so the run extends back over blank lines.
+    #[test]
+    fn a_list_run_is_held_back_across_blank_lines() {
+        let buffer = "Steps:\n\n- first\n\n- second\n";
+        assert_eq!(
+            settled(buffer),
+            "Steps:\n\n",
+            "a blank line inside a list does not end it"
+        );
+    }
+
+    #[test]
+    fn a_block_quote_run_is_held_back() {
+        let buffer = "Quoting:\n\n> one\n\n> two\n";
+        assert_eq!(settled(buffer), "Quoting:\n\n");
+    }
+
+    /// `Title` becomes a heading only when `===` arrives on the next line, so
+    /// the trailing paragraph is never settled while it is still the last block.
+    #[test]
+    fn a_trailing_paragraph_could_still_become_a_setext_heading() {
+        let buffer = "Intro paragraph.\n\nTitle\n";
+        assert_eq!(settled(buffer), "Intro paragraph.\n\n");
+    }
+
+    #[test]
+    fn a_completed_block_followed_by_a_blank_line_is_settled() {
+        let buffer = "First paragraph.\n\n";
+        assert_eq!(settled(buffer), buffer, "nothing can reach back over it");
+    }
+
+    /// The property the cache depends on: the boundary only ever moves forward
+    /// as more text arrives, so cached lines are never invalidated.
+    #[test]
+    fn the_boundary_never_moves_backwards_as_text_arrives() {
+        let full = "Intro.\n\n- a\n- b\n\nProse here.\n\n```rust\nfn x() {}\n```\n\nDone.\n\n";
+        let mut previous = 0usize;
+        for end in 1..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            let settled = settled_prefix_len(&full[..end]);
+            assert!(
+                settled >= previous,
+                "boundary went backwards at {end}: {previous} -> {settled}"
+            );
+            assert!(settled <= end, "boundary ran past the buffer at {end}");
+            previous = settled;
+        }
+    }
+
+    /// Whatever is declared settled must render identically on its own as it
+    /// does inside the full buffer — otherwise caching it changes the output.
+    #[test]
+    fn the_settled_prefix_renders_the_same_alone_as_in_context() {
+        for buffer in [
+            "Intro.\n\n- a\n- b\n\nProse.\n\n```rust\nfn x() {}\n```\n\nTail.\n",
+            "One.\n\nTwo.\n\n| a | b |\n| - | - |\n",
+            "Text.\n\n> quoted\n",
+        ] {
+            let cut = settled_prefix_len(buffer);
+            let alone = lines_text(&render_markdown(&buffer[..cut], 80));
+            let in_context = lines_text(&render_markdown(buffer, 80));
+            assert!(
+                in_context.starts_with(alone.trim_end()) || alone.trim().is_empty(),
+                "settled prefix renders differently in context\n--- alone ---\n{alone}\n--- in context ---\n{in_context}"
+            );
+        }
     }
 }
