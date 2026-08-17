@@ -23,8 +23,42 @@ pub fn cache_tokens_from_usage(raw: &Value) -> (u32, u32) {
     (read, write)
 }
 
-pub fn usage_from_provider(raw: &Value, prompt_tokens: u32, completion_tokens: u32) -> Usage {
+/// Whether a provider's input-token count already accounts for cached tokens.
+///
+/// Providers disagree, and the disagreement is invisible at the call site.
+/// Anthropic reports `input_tokens` as the *uncached remainder*, with
+/// `cache_read_input_tokens` and `cache_creation_input_tokens` alongside it.
+/// OpenAI reports a total that already contains `cached_tokens`.
+///
+/// Storing either verbatim makes `prompt_tokens` mean two different things, so
+/// `cache_read / prompt_tokens` is a fraction of the whole prompt on one
+/// provider and a multiple of the uncached part on the other — the same
+/// caching reads as 90% or 900% depending on who answered. Normalising here
+/// makes [`Usage::prompt_tokens`] one quantity everywhere: total input tokens
+/// for the request, cached or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputTokens {
+    /// The count is the whole input, cached portion included (OpenAI).
+    Total,
+    /// The count excludes cached tokens, reported separately (Anthropic).
+    UncachedOnly,
+}
+
+pub fn usage_from_provider(
+    raw: &Value,
+    input_tokens: u32,
+    completion_tokens: u32,
+    semantics: InputTokens,
+) -> Usage {
     let (prompt_cache_read_tokens, prompt_cache_write_tokens) = cache_tokens_from_usage(raw);
+    let prompt_tokens = match semantics {
+        InputTokens::Total => input_tokens,
+        // Cache *writes* are input tokens too: they are the tokens being
+        // stored, and they are billed as input.
+        InputTokens::UncachedOnly => input_tokens
+            .saturating_add(prompt_cache_read_tokens)
+            .saturating_add(prompt_cache_write_tokens),
+    };
     Usage {
         prompt_tokens,
         completion_tokens,
@@ -121,9 +155,14 @@ mod tests {
             "cache_creation_input_tokens": 40,
             "cache_read_input_tokens": 60
         });
-        let usage = usage_from_provider(&anthropic, 100, 5);
+        let usage = usage_from_provider(&anthropic, 100, 5, InputTokens::UncachedOnly);
         assert_eq!(usage.prompt_cache_read_tokens, 60);
         assert_eq!(usage.prompt_cache_write_tokens, 40);
+        assert_eq!(
+            usage.prompt_tokens, 200,
+            "Anthropic reports the uncached remainder, so the cached and \
+             written tokens must be added back to get the whole input"
+        );
 
         let openai = json!({
             "prompt_tokens": 80,
@@ -133,6 +172,50 @@ mod tests {
         let (read, write) = cache_tokens_from_usage(&openai);
         assert_eq!(read, 55);
         assert_eq!(write, 0);
+    }
+
+    /// The whole point of `InputTokens`: identical caching must produce an
+    /// identical ratio whoever reported it.
+    ///
+    /// Before normalising, `cache_read / prompt_tokens` was 9000/1000 = 900%
+    /// on Anthropic and 9000/10000 = 90% on OpenAI for the same 10k prompt
+    /// with 9k cached — so switching provider looked like a tenfold cache
+    /// regression with nothing having changed.
+    #[test]
+    fn the_cache_ratio_means_the_same_thing_on_every_provider() {
+        let anthropic = usage_from_provider(
+            &json!({
+                "input_tokens": 1000,
+                "cache_read_input_tokens": 9000,
+                "cache_creation_input_tokens": 0
+            }),
+            1000,
+            7,
+            InputTokens::UncachedOnly,
+        );
+        let openai = usage_from_provider(
+            &json!({
+                "prompt_tokens": 10000,
+                "prompt_tokens_details": {"cached_tokens": 9000}
+            }),
+            10000,
+            7,
+            InputTokens::Total,
+        );
+
+        assert_eq!(anthropic.prompt_tokens, openai.prompt_tokens);
+        assert_eq!(
+            anthropic.prompt_cache_read_tokens,
+            openai.prompt_cache_read_tokens
+        );
+
+        let ratio = |u: &Usage| u.prompt_cache_read_tokens as f64 / u.prompt_tokens as f64;
+        assert!(
+            (ratio(&anthropic) - 0.9).abs() < 1e-9,
+            "{}",
+            ratio(&anthropic)
+        );
+        assert!((ratio(&openai) - 0.9).abs() < 1e-9, "{}", ratio(&openai));
     }
 
     #[test]

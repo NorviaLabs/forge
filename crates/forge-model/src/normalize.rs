@@ -166,7 +166,10 @@ fn parse_usage(v: Option<&Value>) -> Option<Usage> {
     let prompt = u.get("prompt_tokens").and_then(|x| x.as_u64())? as u32;
     let completion = u.get("completion_tokens").and_then(|x| x.as_u64())? as u32;
     Some(crate::prompt_cache::usage_from_provider(
-        u, prompt, completion,
+        u,
+        prompt,
+        completion,
+        crate::prompt_cache::InputTokens::Total,
     ))
 }
 

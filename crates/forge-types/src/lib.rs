@@ -302,6 +302,13 @@ impl std::error::Error for ToolValidationError {}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Usage {
+    /// Total input tokens for the request, cached portion included.
+    ///
+    /// Normalised across providers: Anthropic reports `input_tokens` as the
+    /// uncached remainder, so its cache read/write counts are added back
+    /// before this is stored. Without that, `prompt_cache_read_tokens /
+    /// prompt_tokens` is a fraction of the prompt on one provider and a
+    /// multiple of the uncached part on another.
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     /// Provider-reported prompt tokens served from cache (read/hit).
