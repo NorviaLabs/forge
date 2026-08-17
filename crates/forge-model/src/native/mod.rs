@@ -227,10 +227,10 @@ impl ModelClient for NativeModelClient {
                 if req.prompt_cache {
                     crate::prompt_cache::apply_anthropic_prompt_cache(&mut body);
                 }
-                crate::prompt_wire::prompt_object_from_body(&body)
+                crate::prompt_wire::prompt_object_from_body(body)
             }
             forge_connect::ProviderTransport::Codex => crate::prompt_wire::prompt_object_from_body(
-                &codex::request_body(self, req, &req.model, &codex::tool_aliases(req)),
+                codex::request_body(self, req, &req.model, &codex::tool_aliases(req)),
             ),
             forge_connect::ProviderTransport::OpenaiCompat => {
                 crate::prompt_wire::openai_compat_prompt(req)
