@@ -213,10 +213,25 @@ impl SandboxPolicy {
     /// bind-mounted in, so this socket is the only one a confined process can
     /// reach — which is what makes the proxy the only route out.
     ///
-    /// Not yet a complete boundary: a process can still create its own
-    /// `AF_UNIX` sockets. Codex blocks that with seccomp once the bridge is
-    /// live. Until forge does the same, this is enforcement by what is
-    /// reachable rather than by what is creatable.
+    /// Enforcement here is by what is *reachable*, not by what is *creatable*:
+    /// a confined process can still make its own `AF_UNIX` sockets. Blocking
+    /// that needs seccomp, and forge deliberately does not do it — the relay
+    /// runs *inside* the sandbox and needs exactly the syscall a filter would
+    /// remove, so a filter covering the whole sandbox would sever forge's own
+    /// egress. Codex can filter because it installs the filter after its
+    /// bridge is established; matching that means passing a connected file
+    /// descriptor in instead of running socat inside, which is a redesign of
+    /// the relay rather than a dependency away.
+    ///
+    /// What that leaves is a filesystem question, and it is answered where it
+    /// can be checked: `/run` and `/tmp` are masked with a tmpfs (docker.sock,
+    /// systemd, D-Bus, X11, `$XDG_RUNTIME_DIR`), and the abstract `AF_UNIX`
+    /// namespace is scoped to the network namespace that `--unshare-net`
+    /// replaces. `a_confined_command_reaches_workspace_sockets_but_not_host_sockets`
+    /// holds the remainder, with an in-workspace connect as the control that
+    /// keeps it from passing vacuously.
+    ///
+    /// macOS has no such gap: Seatbelt refuses `AF_UNIX` connects outright.
     pub fn with_egress_socket(mut self, path: impl AsRef<Path>) -> Self {
         self.egress_socket = Some(path.as_ref().to_path_buf());
         self
