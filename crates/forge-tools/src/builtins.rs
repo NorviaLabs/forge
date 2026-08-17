@@ -307,6 +307,23 @@ pub async fn run_shell_command_with_egress(
     // enforced upstream, where the permission mode is decided, not here.
     let policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root).with_egress(egress);
     let wrapped = crate::sandbox::wrap_shell_command("bash", command, &policy);
+
+    // `wrap_shell_command` returns `None` for two very different reasons, and
+    // running unconfined is only right for one of them. "This host has no
+    // sandbox" is a decision made upstream at session start, which caps the
+    // permission mode so the user is asked instead. "This host has a sandbox
+    // but this policy could not be built" is an anomaly — a workspace path
+    // that is not valid UTF-8, a root that cannot be canonicalised — and
+    // nothing upstream knows it happened, so falling back would drop
+    // confinement with no prompt and no message. Refuse instead.
+    if wrapped.is_none() && crate::sandbox::availability().is_ok() {
+        return Err(ToolError::Execution(format!(
+            "refusing to run unconfined: this host can sandbox, but no sandbox \
+             could be built for workspace {}",
+            workspace_root.display()
+        )));
+    }
+
     let confined_run = wrapped.is_some();
     let mut shell = match wrapped {
         Some((program, args)) => {
