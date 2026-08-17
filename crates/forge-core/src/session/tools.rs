@@ -460,11 +460,7 @@ impl AgentSession {
         if self.try_serve_journaled_tool(call).await? {
             return Ok(ToolExecutionStart::Finished(None));
         }
-        if let Some(message) = forge_governance::readonly_shell_redirect_message(call) {
-            return self.finish_readonly_redirect(call, message).await;
-        }
-        let call = forge_governance::rewrite_readonly_shell_call(call);
-        let call = forge_tools::canonicalize_tool_call(call);
+        let call = forge_tools::canonicalize_tool_call(call.clone());
         self.turn.record_call(call.clone());
         let class = self
             .tools
@@ -563,28 +559,6 @@ impl AgentSession {
             tool_ctx: self.tool_ctx.clone(),
             budget: std::mem::take(budget),
         }))
-    }
-
-    async fn finish_readonly_redirect(
-        &mut self,
-        call: &ToolCall,
-        message: String,
-    ) -> Result<ToolExecutionStart, LoopError> {
-        self.turn.record_call(call.clone());
-        let output = ToolOutput::failed_exit(message, None);
-        self.journal
-            .append_tool_intent(self.session_id, call)
-            .await?;
-        self.journal
-            .append_tool_result(self.session_id, call, &output)
-            .await?;
-        self.remember_tool_result(call, &output);
-        self.messages.push(Message::from_tool_output(call, &output));
-        self.events.push(TurnEvent {
-            kind: "tool".into(),
-            detail: format!("{} -> redirected", call.name),
-        });
-        Ok(ToolExecutionStart::Finished(None))
     }
 
     pub(crate) async fn finish_tool_call(
