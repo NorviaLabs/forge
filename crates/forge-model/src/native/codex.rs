@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{process_sse_lines, NativeModelClient};
-use crate::prompt_cache::usage_from_provider;
+use crate::prompt_cache::{usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
@@ -353,6 +353,7 @@ fn consume_event(
                     .get("output_tokens")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as u32,
+                InputTokens::Total,
             ));
         }
         "error" | "response.failed" => {
