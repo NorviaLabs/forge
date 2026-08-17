@@ -23,6 +23,24 @@ fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16
 }
 
 impl TuiApp {
+    /// Drive the live streaming preview from a test.
+    ///
+    /// The preview is the one part of the draw path whose cost grows with the
+    /// turn rather than the viewport, and it is only reachable while a turn is
+    /// in flight. Exposing it keeps the measurement in `render_perf` — where
+    /// the counting allocator lives — instead of forcing a mock provider and a
+    /// real turn loop just to grow a string.
+    #[doc(hidden)]
+    pub fn stream_preview_for_tests(&mut self, text: &str) {
+        self.busy_state
+            .start(crate::widgets::status::BusyPhase::Model);
+        self.stream.preview.push_str(text);
+        // The renderer rate-limits itself; tests measure the rebuild, so clear
+        // the throttle rather than sleep 150ms per sample.
+        self.stream.last_preview_render = None;
+        self.stream.live_lines = None;
+    }
+
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         // One read of the session per frame. Everything below renders from
         // this, so a frame is internally consistent and the ~40 scattered
