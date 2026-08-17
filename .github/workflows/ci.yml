@@ -82,30 +82,26 @@ jobs:
           wsl --set-default-version 2
           wsl -d Ubuntu-24.04 --exec /bin/bash -c "echo booted"
 
+      # Single-line commands on purpose: pwsh hands multi-line strings to bash
+      # with CRLF endings, and bash reads the \r as part of the command
+      # (`$'\r': command not found`). Joining with && keeps it to one line.
       - name: Install toolchain and sandbox dependencies inside WSL2
         shell: pwsh
         run: |
-          wsl -d Ubuntu-24.04 --exec /bin/bash -lc "
-            set -euo pipefail
-            sudo apt-get update
-            sudo apt-get install -y build-essential curl bubblewrap socat
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1
-          "
+          wsl -d Ubuntu-24.04 --exec /bin/bash -lc "sudo apt-get update && sudo apt-get install -y build-essential curl bubblewrap socat && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      # Only the permission model. The rest of the workspace is covered on the
+      # Linux runner; what is unverified here is whether bubblewrap confines
+      # anything under the WSL2 kernel, where unprivileged user namespaces have
+      # historically been restricted.
       - name: Run the sandbox suite inside WSL2
         shell: pwsh
         run: |
           $repo = (Get-Location).Path -replace '\\','/' -replace '^([A-Za-z]):','/mnt/$1'
-          $repo = $repo.ToLower()
-          wsl -d Ubuntu-24.04 --exec /bin/bash -lc "
-            set -euo pipefail
-            source ~/.cargo/env
-            cd '$repo'
-            # Only the permission model. The rest of the workspace is covered on
-            # the Linux runner; what is unverified here is whether bubblewrap
-            # confines anything under the WSL2 kernel.
-            CI=1 cargo test -p forge-tools --test permission_contract --test sandbox_enforcement
-          "
+          $repo = $repo.Substring(0,5).ToLower() + $repo.Substring(5)
+          wsl -d Ubuntu-24.04 --exec /bin/bash -lc "source ~/.cargo/env && cd '$repo' && CI=1 cargo test -p forge-tools --test permission_contract --test sandbox_enforcement"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
   # Dependency advisories, duplicate/wildcard bans, and source allow-listing.
   # Separate job so it reports independently of the test result and runs in
