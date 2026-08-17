@@ -35,8 +35,10 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use std::path::{Path, PathBuf};
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 /// Hosts a confined process may reach.
 ///
@@ -60,12 +62,14 @@ impl EgressPolicy {
         Self::default()
     }
 
-    /// The ecosystems a first run actually needs.
+    /// An **opt-in** convenience covering the ecosystems a first run needs.
     ///
-    /// Without these, `cargo build` on uncached dependencies fails inside the
-    /// sandbox — the single most common first-run action in a Rust project,
-    /// failing in a way that looks like a broken build rather than a policy
-    /// decision.
+    /// Deliberately not the default. Claude Code pre-allows nothing and
+    /// prompts on first use of each domain; Codex's production stance is
+    /// `"*" = "deny"` plus what you add. A seeded allowlist is a policy
+    /// decision made silently on the user's behalf — the same class of mistake
+    /// as a sandbox that quietly grants the whole temp tree. Callers that want
+    /// `cargo build` to run without a prompt should opt in explicitly.
     pub fn with_default_ecosystems() -> Self {
         let mut policy = Self::new();
         for host in [
@@ -125,12 +129,20 @@ fn matches_pattern(pattern: &str, host: &str) -> bool {
 /// Dropping it stops accepting new connections.
 pub struct EgressProxy {
     addr: SocketAddr,
-    task: tokio::task::JoinHandle<()>,
+    socket_path: Option<PathBuf>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for EgressProxy {
     fn drop(&mut self) {
-        self.task.abort();
+        for task in &self.tasks {
+            task.abort();
+        }
+        // The socket file outlives the listener otherwise, and a stale path
+        // would let a later bind fail with EADDRINUSE.
+        if let Some(path) = &self.socket_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -150,7 +162,58 @@ impl EgressProxy {
             }
         });
 
-        Ok(Self { addr, task })
+        Ok(Self {
+            addr,
+            socket_path: None,
+            tasks: vec![task],
+        })
+    }
+
+    /// Additionally serve on a Unix socket at `path`.
+    ///
+    /// This is what makes the proxy reachable from inside a sandbox that has
+    /// no network at all. `--unshare-net` removes the network namespace, so
+    /// loopback TCP is gone — but **a Unix socket is a filesystem object, not
+    /// a network one**, so a bind-mounted socket still crosses the boundary.
+    /// That is how a confined process can reach exactly one destination
+    /// without a userspace network stack, root, or slirp4netns.
+    ///
+    /// Both Claude Code and Codex do this: Claude Code shells out to `socat`
+    /// as the relay, Codex bridges TCP→UDS→TCP in-process. Bridging in-process
+    /// is better here — forge is already a Rust binary, and it avoids making
+    /// `socat` a dependency users must install.
+    ///
+    /// **The socket alone is not the boundary.** A process that can create its
+    /// own `AF_UNIX` sockets can also reach anything else bind-mounted in, and
+    /// nothing yet stops it opening one. Codex closes this by having seccomp
+    /// block new `AF_UNIX`/`socketpair` creation once the bridge is live; until
+    /// forge does the same, the sandbox's own filesystem rules are what limit
+    /// which sockets are reachable.
+    pub async fn serve_on_unix_socket(
+        &mut self,
+        path: impl AsRef<Path>,
+        policy: EgressPolicy,
+    ) -> io::Result<()> {
+        let path = path.as_ref().to_path_buf();
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path)?;
+        let policy = Arc::new(policy);
+
+        self.tasks.push(tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let policy = Arc::clone(&policy);
+                tokio::spawn(async move {
+                    let _ = serve_unix(client, policy).await;
+                });
+            }
+        }));
+        self.socket_path = Some(path);
+        Ok(())
+    }
+
+    /// The Unix socket being served, if one was requested.
+    pub fn socket_path(&self) -> Option<&Path> {
+        self.socket_path.as_deref()
     }
 
     /// Where the proxy is listening.
@@ -172,13 +235,23 @@ impl EgressProxy {
     }
 }
 
-async fn serve(client: TcpStream, policy: Arc<EgressPolicy>) -> io::Result<()> {
-    let mut reader = BufReader::new(client);
+/// Handle one client, whatever transport it arrived on.
+///
+/// The stream is split *before* buffering so the read half can be buffered
+/// while the write half stays usable. Wrapping the whole stream and later
+/// unwrapping would discard anything the client pipelined behind its headers.
+async fn serve<S>(client: S, policy: Arc<EgressPolicy>) -> io::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    let (read_half, mut write_half) = tokio::io::split(client);
+    let mut reader = BufReader::new(read_half);
+
     let mut request = String::new();
     reader.read_line(&mut request).await?;
 
     let Some(target) = parse_connect(&request) else {
-        return respond(reader.into_inner(), 400, "Bad Request").await;
+        return respond(&mut write_half, 400, "Bad Request").await;
     };
 
     // Drain the remaining request headers before replying.
@@ -195,26 +268,30 @@ async fn serve(client: TcpStream, policy: Arc<EgressPolicy>) -> io::Result<()> {
     let host = host.trim_start_matches('[').trim_end_matches(']');
 
     if !policy.permits(host) {
-        return respond(reader.into_inner(), 403, "Forbidden").await;
+        return respond(&mut write_half, 403, "Forbidden").await;
     }
 
     let upstream = match TcpStream::connect(&target).await {
         Ok(stream) => stream,
-        Err(_) => return respond(reader.into_inner(), 502, "Bad Gateway").await,
+        Err(_) => return respond(&mut write_half, 502, "Bad Gateway").await,
     };
 
-    let mut client = reader.into_inner();
-    client
+    write_half
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
 
     // From here the proxy copies bytes and never sees the plaintext.
-    let (mut cr, mut cw) = client.into_split();
-    let (mut ur, mut uw) = upstream.into_split();
-    let c2u = tokio::spawn(async move { tokio::io::copy(&mut cr, &mut uw).await });
-    let u2c = tokio::spawn(async move { tokio::io::copy(&mut ur, &mut cw).await });
-    let _ = tokio::join!(c2u, u2c);
+    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
+    let client_to_upstream =
+        tokio::spawn(async move { tokio::io::copy(&mut reader, &mut upstream_write).await });
+    let upstream_to_client =
+        tokio::spawn(async move { tokio::io::copy(&mut upstream_read, &mut write_half).await });
+    let _ = tokio::join!(client_to_upstream, upstream_to_client);
     Ok(())
+}
+
+async fn serve_unix(client: UnixStream, policy: Arc<EgressPolicy>) -> io::Result<()> {
+    serve(client, policy).await
 }
 
 fn parse_connect(line: &str) -> Option<String> {
@@ -226,7 +303,10 @@ fn parse_connect(line: &str) -> Option<String> {
     (!target.is_empty()).then(|| target.to_string())
 }
 
-async fn respond(mut client: TcpStream, code: u16, reason: &str) -> io::Result<()> {
+async fn respond<W>(client: &mut W, code: u16, reason: &str) -> io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     let body =
         format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     client.write_all(body.as_bytes()).await?;

@@ -117,3 +117,93 @@ async fn refusal_does_not_require_the_destination_to_exist() {
     let status = connect_through(&proxy, "definitely-not-allowed.invalid:443").await;
     assert!(status.contains("403"), "got: {status}");
 }
+
+// ---------------------------------------------------------------------------
+// The Unix-socket bridge.
+//
+// A sandbox with --unshare-net has no loopback, so a TCP proxy is unreachable
+// from inside it. A Unix socket is a filesystem object rather than a network
+// one, so a bind-mounted socket still crosses that boundary — which is how a
+// confined process reaches exactly one destination without a userspace network
+// stack. The filtering must be identical on both transports, or the bridge
+// becomes the way around the allowlist.
+// ---------------------------------------------------------------------------
+
+use tokio::net::UnixStream;
+
+async fn connect_over_uds(path: &std::path::Path, target: &str) -> String {
+    let mut stream = UnixStream::connect(path).await.unwrap();
+    stream
+        .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    status
+}
+
+#[tokio::test]
+async fn the_unix_bridge_tunnels_an_allowed_host() {
+    let (addr, _up) = upstream().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("egress.sock");
+
+    let mut policy = EgressPolicy::new();
+    policy.allow("127.0.0.1");
+    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    proxy.serve_on_unix_socket(&sock, policy).await.unwrap();
+    assert_eq!(proxy.socket_path(), Some(sock.as_path()));
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    stream
+        .write_all(format!("CONNECT {addr} HTTP/1.1\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    assert!(status.contains("200"), "expected a tunnel, got: {status}");
+
+    let mut blank = String::new();
+    reader.read_line(&mut blank).await.unwrap();
+    let mut body = vec![0u8; 11];
+    tokio::time::timeout(Duration::from_secs(5), reader.read_exact(&mut body))
+        .await
+        .expect("the bridge must carry bytes")
+        .unwrap();
+    assert_eq!(&body, b"UPSTREAM-OK");
+}
+
+/// The bridge must not be a way around the allowlist.
+#[tokio::test]
+async fn the_unix_bridge_enforces_the_same_allowlist() {
+    let (addr, _up) = upstream().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("egress.sock");
+
+    let mut policy = EgressPolicy::new();
+    policy.allow("crates.io");
+    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    proxy.serve_on_unix_socket(&sock, policy).await.unwrap();
+
+    assert!(
+        connect_over_uds(&sock, &addr).await.contains("403"),
+        "a denied host must be denied on both transports"
+    );
+}
+
+/// A stale socket file would make the next bind fail, so binding must replace
+/// one left behind by an earlier run.
+#[tokio::test]
+async fn a_stale_socket_file_does_not_block_binding() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("egress.sock");
+    std::fs::write(&sock, b"stale").unwrap();
+
+    let mut proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+    proxy
+        .serve_on_unix_socket(&sock, EgressPolicy::new())
+        .await
+        .expect("a stale path must be replaced, not fatal");
+}
