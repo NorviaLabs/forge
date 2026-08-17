@@ -7,6 +7,7 @@ mod edit;
 mod fast_file_tools;
 mod invocation;
 mod registry;
+pub mod sandbox;
 mod skills;
 mod unified_exec;
 mod validation;
