@@ -16,7 +16,24 @@ use tempfile::TempDir;
 /// tempdir — without this, those writers fall back to the platform
 /// application-data directory (correct real-world behavior outside a
 /// repository, but not something a test should touch on the host machine).
+/// Point skill discovery at an empty directory for the whole test process.
+///
+/// Sessions splice globally installed skills (`~/.agents/skills`) into their
+/// system prompt. On a developer machine that is whatever they happen to have
+/// installed; in CI it is nothing. That difference is enough to change
+/// behaviour — a bigger prompt pushed the context lifecycle into an extra
+/// model call, which consumed a scripted mock's first response and made an
+/// approval test fail locally while passing in CI.
+///
+/// Every caller sets the same value, so the repeated writes are benign.
+pub(crate) fn isolate_global_skills() {
+    static EMPTY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let dir = EMPTY.get_or_init(|| tempfile::tempdir().expect("temp dir for skill isolation"));
+    std::env::set_var("FORGE_GLOBAL_SKILLS_DIR", dir.path());
+}
+
 pub(crate) fn init_repo(dir: &Path) {
+    isolate_global_skills();
     for args in [
         vec!["init", "--initial-branch=main", "-q"],
         vec!["config", "user.email", "test@example.com"],
@@ -54,6 +71,7 @@ pub(crate) fn test_runtime_config() -> TuiRuntimeConfig {
 }
 
 pub(crate) async fn test_session() -> (TempDir, AgentSession) {
+    isolate_global_skills();
     let dir = TempDir::new().unwrap();
     let session = session_for_workspace(dir.path()).await;
     (dir, session)
