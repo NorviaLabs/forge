@@ -429,6 +429,62 @@ async fn effort_toggle_does_not_change_compared_prompt_snapshot() {
     );
 }
 
+/// The prefix must stay append-only across a *tool* turn, not just across
+/// appended user text.
+///
+/// `consecutive_requests_preserve_stripped_prompt_prefix` only ever appends
+/// user messages, which is the one shape that could hardly break. A real turn
+/// interleaves an assistant tool call, a tool result and an answer, and any of
+/// those rewriting an earlier message would cost the whole cached prefix —
+/// tools and system sit in front of the messages, so a break anywhere lands
+/// before everything.
+#[tokio::test]
+async fn the_prompt_prefix_is_append_only_across_a_tool_turn() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+
+    let mut prev: Option<Vec<u8>> = None;
+    let mut step = 0usize;
+    let report = |s: &AgentSession, prev: &mut Option<Vec<u8>>, step: &mut usize, what: &str| {
+        let (_, bytes) = s.last_prompt_snapshot_for_tests();
+        if let Some(p) = prev.as_deref() {
+            let common = forge_model::common_prefix_len(p, &bytes);
+            assert_eq!(
+                common,
+                p.len(),
+                "step {step} ({what}) rewrote the prompt {} bytes in, discarding \
+                 the cached prefix from there on",
+                common
+            );
+        }
+        *prev = Some(bytes);
+        *step += 1;
+    };
+
+    s.append_user_message("first").await.unwrap();
+    s.prepare_model_step(1).await.unwrap();
+    report(&s, &mut prev, &mut step, "user 1");
+
+    s.messages.push(assistant_with_tool_call("read_file"));
+    s.prepare_model_step(2).await.unwrap();
+    report(&s, &mut prev, &mut step, "assistant tool call");
+
+    let mut result = Message::new(MessageRole::Tool, "file contents here");
+    result.tool_call_id = Some("c1".into());
+    s.messages.push(result);
+    s.prepare_model_step(3).await.unwrap();
+    report(&s, &mut prev, &mut step, "tool result");
+
+    s.messages
+        .push(Message::new(MessageRole::Assistant, "done"));
+    s.prepare_model_step(4).await.unwrap();
+    report(&s, &mut prev, &mut step, "assistant answer");
+
+    s.messages.push(Message::new(MessageRole::User, "second"));
+    s.prepare_model_step(5).await.unwrap();
+    report(&s, &mut prev, &mut step, "user 2");
+}
+
 #[tokio::test]
 async fn prefix_diagnostics_name_the_first_mutated_path() {
     let previous = serde_json::json!({"messages":[{"role":"system","content":"a"}]});
