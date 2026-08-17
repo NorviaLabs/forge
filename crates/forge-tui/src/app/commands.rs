@@ -1508,6 +1508,11 @@ mod tests {
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );
+        // This test is about resuming a turn after an approval, so it needs an
+        // approval to resume from. Accept Edits stopped gating shell — it is
+        // only reachable when a sandbox is confining it — so ask for Manual,
+        // which every host can reach because narrowing is always permitted.
+        app.set_permission_mode_clamped(forge_governance::PermissionMode::Manual);
 
         app.pending_turn.queue("push it".into(), Vec::new());
         app.drain_pending_prompt(None).await.unwrap();
