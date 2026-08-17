@@ -585,3 +585,49 @@ async fn exec_command_still_works_inside_the_workspace() {
         "ordinary work through this path must be unaffected: {out}"
     );
 }
+
+/// A granted command must *return*, not merely succeed.
+///
+/// On Linux the relay is a backgrounded `socat` that lives as long as the
+/// sandbox. It inherits the command's stdout and stderr, so a caller reading
+/// to EOF — which `Command::output()` does, and which every tool path uses —
+/// waits on the relay as well as the command. The relay never exits, so the
+/// read never completes: every sandboxed command with egress hung forever
+/// rather than returning.
+///
+/// It presented as CI jobs running for 45 minutes instead of two, with no
+/// failing assertion anywhere, because a hang is not a failure. Hence the
+/// explicit deadline: this asserts termination, which no other test here does.
+#[tokio::test]
+async fn a_granted_command_returns_rather_than_hanging() {
+    require_sandbox!();
+    use forge_tools::egress::{EgressPolicy, EgressProxy};
+    use forge_tools::run_shell_command_with_egress;
+    use forge_tools::sandbox::EgressGrant;
+
+    let ws = workspace();
+    let sockdir = tempfile::tempdir().unwrap();
+    let mut policy = EgressPolicy::new();
+    policy.allow("127.0.0.1");
+    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    let socket_path = sockdir.path().join("egress.sock");
+    proxy
+        .serve_on_unix_socket(&socket_path, policy)
+        .await
+        .unwrap();
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path,
+    };
+
+    let finished = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        run_shell_command_with_egress("echo done", ws.path(), Some(&grant)),
+    )
+    .await;
+
+    let out = finished
+        .expect("a granted command must terminate; if this times out the relay is holding the caller's pipes open")
+        .unwrap();
+    assert!(out.content.contains("done"), "got {:?}", out.content);
+}

@@ -465,8 +465,21 @@ fn bubblewrap_invocation(
             // Start the relay, wait for it to listen, then hand over to the
             // command. `exec` so the command keeps the shell's pid and signals
             // reach it; the relay dies with the namespace.
+            //
+            // The relay's stdout and stderr go to /dev/null, and this is not
+            // tidiness. A backgrounded process inherits the pipes, so a caller
+            // reading the command's output to EOF — which is what
+            // `Command::output()` does — waits on the relay too. The relay runs
+            // for the lifetime of the sandbox, so that wait never ends: every
+            // sandboxed command with egress would hang forever rather than
+            // return. Closing its ends is what lets the caller see EOF when the
+            // command itself finishes.
             let script = format!(
-                "{socat} TCP-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork                  UNIX-CONNECT:{socket} &                  for _ in 1 2 3 4 5 6 7 8 9 10; do                  {socat} -u OPEN:/dev/null TCP:127.0.0.1:{port} 2>/dev/null && break;                  sleep 0.1; done; exec {shell} -c {command}",
+                "{socat} TCP-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork \
+                 UNIX-CONNECT:{socket} >/dev/null 2>&1 & \
+                 for _ in 1 2 3 4 5 6 7 8 9 10; do \
+                 {socat} -u OPEN:/dev/null TCP:127.0.0.1:{port} >/dev/null 2>&1 && break; \
+                 sleep 0.1; done; exec {shell} -c {command}",
                 port = SANDBOX_PROXY_PORT,
                 command = shell_quote(command),
             );
