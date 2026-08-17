@@ -38,6 +38,20 @@ enum Expect {
     /// The kernel refuses. Not "forge declines to run it" — the process starts
     /// and is stopped by the OS.
     Denied,
+    /// The command may succeed, but nothing it wrote is visible on the host.
+    ///
+    /// This distinction is not pedantry, and the platforms genuinely differ.
+    /// Linux masks `/tmp` with a private tmpfs so the sandbox has somewhere to
+    /// write; a workspace under `/tmp` therefore has a *writable* parent, and
+    /// `..` lands in that private filesystem rather than being refused. macOS
+    /// has no such mask and refuses outright.
+    ///
+    /// Both satisfy the property that actually matters — the host is
+    /// untouched — and asserting `Denied` on both would have forced either a
+    /// platform-conditional table or a read-only `/tmp` that breaks every
+    /// toolchain needing scratch space. The contract states the guarantee, not
+    /// the mechanism that delivers it.
+    ContainedFromHost { host_path: &'static str },
 }
 
 /// One row of the contract.
@@ -100,8 +114,12 @@ const CONTRACT: &[Case] = &[
     Case {
         name: "write outside via parent traversal",
         command: "echo pwned > ../escape-traversal.txt",
-        expect: Expect::Denied,
-        why: "`..` must not walk out; a rule matched against unresolved paths would miss this",
+        expect: Expect::ContainedFromHost {
+            host_path: "../escape-traversal.txt",
+        },
+        why: "`..` must not reach the host. On Linux it lands in the sandbox's private tmpfs \
+              over /tmp and the write succeeds harmlessly; on macOS it is refused. Either way \
+              the file must not exist on the host afterwards",
     },
     Case {
         name: "append outside the workspace",
@@ -267,6 +285,23 @@ fn check(cases: &[Case], table: &str) {
             .replace("{outside}", outside.path().to_str().unwrap());
 
         let (succeeded, output) = run(ws.path(), &command);
+
+        // A containment case is judged on the host, not on the exit status:
+        // the whole point is that succeeding is acceptable so long as nothing
+        // escaped.
+        if let Expect::ContainedFromHost { host_path } = case.expect {
+            let escaped = ws.path().join(host_path);
+            if escaped.exists() {
+                failures.push(format!(
+                    "  {table}: {}\n    reached the host at {}\n    because:  {}",
+                    case.name,
+                    escaped.display(),
+                    case.why
+                ));
+            }
+            continue;
+        }
+
         let actual = if succeeded {
             Expect::Allowed
         } else {
