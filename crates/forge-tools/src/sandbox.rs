@@ -388,6 +388,19 @@ fn bubblewrap_invocation(
     let root = policy.workspace_root.canonicalize().ok()?;
     let root = root.to_str()?.to_string();
 
+    // Order is the security property here, and bwrap applies operations in
+    // sequence with the last one winning. The sequence below is not arbitrary:
+    //
+    //   1. read-only root      everything visible, nothing writable
+    //   2. mask socket dirs    hide /run and /tmp, where host sockets live
+    //   3. bind the workspace  the one writable place, re-exposed over the mask
+    //   4. bind the egress socket, if granted
+    //   5. carve .git/.forge back to read-only
+    //
+    // Steps 2 and 3 are in this order because a workspace can itself live
+    // under /tmp — a temp dir, or a checkout someone made there. Masking after
+    // binding hides the workspace, and bwrap then fails with "Can't chdir to
+    // /tmp/...". Masking first and re-binding over it keeps both properties.
     let mut args = vec![
         "--ro-bind".into(),
         "/".into(),
@@ -397,37 +410,12 @@ fn bubblewrap_invocation(
         "--proc".into(),
         "/proc".into(),
         "--unshare-net".into(),
-        "--bind".into(),
-        root.clone(),
-        root.clone(),
     ];
 
-    if let Some(tmp) = &policy.session_tmp {
-        let tmp = tmp.canonicalize().ok()?.to_str()?.to_string();
-        args.extend(["--bind".into(), tmp.clone(), tmp]);
-    }
-
-    // The one route out, when egress is granted at all. `--unshare-net` above
-    // already removed every network route; this bind-mount is a filesystem
-    // object, so it survives that and is the only destination reachable.
-    if let Some(socket) = &policy.egress_socket {
-        let socket = socket.to_str()?.to_string();
-        args.extend(["--bind".into(), socket.clone(), socket]);
-    }
-
-    for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root)) {
-        let path = path.to_str()?.to_string();
-        args.extend(["--ro-bind-try".into(), path.clone(), path]);
-    }
-
-    // Mask the directories where Unix sockets live. `--ro-bind / /` above puts
-    // every host socket into the sandbox's filesystem view — /var/run/docker.sock
-    // among them, which is root on the host — and a read-only *mount* does not
-    // reliably stop `connect()`, because that checks the inode rather than
-    // MNT_READONLY. Masking the three conventional locations removes the whole
-    // class rather than a denylist of the ones we thought of. Emitted after the
-    // read-only root so it wins, and before the egress bind so the socket we do
-    // want survives.
+    // Mask the directories where Unix sockets live. `--ro-bind / /` puts every
+    // host socket into view — /var/run/docker.sock among them, which is root on
+    // the host — and a read-only *mount* does not reliably stop `connect()`,
+    // because that checks the inode rather than MNT_READONLY.
     //
     // `/var/run` is deliberately absent: on modern Linux it is a symlink to
     // `/run`, and bwrap cannot mount a tmpfs onto a symlink — it fails with
@@ -440,7 +428,16 @@ fn bubblewrap_invocation(
         "/tmp".into(),
     ]);
 
-    // The one route out, when egress is granted at all.
+    // The one writable place, re-exposed over the mask above.
+    args.extend(["--bind".into(), root.clone(), root.clone()]);
+
+    if let Some(tmp) = &policy.session_tmp {
+        let tmp = tmp.canonicalize().ok()?.to_str()?.to_string();
+        args.extend(["--bind".into(), tmp.clone(), tmp]);
+    }
+
+    // The one route out, when egress is granted at all. Bound after the mask
+    // for the same reason as the workspace: the socket may live under /tmp.
     let relay = match (&policy.egress_socket, socat_path()) {
         (Some(socket), Some(socat)) => {
             let socket = socket.to_str()?.to_string();
@@ -452,6 +449,14 @@ fn bubblewrap_invocation(
         (Some(_), None) => return None,
         (None, _) => None,
     };
+
+    // Carved back out last, because the last matching bind wins: emitted
+    // before the workspace bind, these would be overridden and `.git` would be
+    // writable.
+    for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root)) {
+        let path = path.to_str()?.to_string();
+        args.extend(["--ro-bind-try".into(), path.clone(), path]);
+    }
 
     args.extend(["--chdir".into(), root, "--".into()]);
 
@@ -889,6 +894,57 @@ mod relay_tests {
                 .windows(2)
                 .any(|w| w[0] == "--tmpfs" && w[1] == "/var/run"),
             "/var/run is a symlink to /run; masking it makes bwrap fail"
+        );
+    }
+
+    /// A workspace can live under /tmp — a temp dir, or a checkout someone
+    /// made there. Masking /tmp after binding it hides the workspace and bwrap
+    /// fails with "Can't chdir". The mask must come first and the bind must
+    /// re-expose it.
+    #[test]
+    fn a_workspace_under_tmp_survives_the_mask() {
+        let ws = workspace();
+        let Some((_, args)) =
+            bubblewrap_invocation("sh", "true", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return;
+        };
+        let root = ws.path().canonicalize().unwrap();
+        let root = root.to_str().unwrap();
+
+        let mask = args
+            .windows(2)
+            .position(|w| w[0] == "--tmpfs" && w[1] == "/tmp")
+            .expect("/tmp must be masked");
+        let bind = args
+            .windows(3)
+            .position(|w| w[0] == "--bind" && w[1] == root && w[2] == root)
+            .expect("the workspace must be bound");
+        assert!(
+            mask < bind,
+            "the mask must precede the workspace bind, or a workspace under /tmp is hidden"
+        );
+    }
+
+    /// The workspace was bound twice at one point, across two commits that each
+    /// added it. Harmless but a sign the ordering was not being read as a
+    /// whole; pinned so it stays single.
+    #[test]
+    fn each_path_is_bound_exactly_once() {
+        let ws = workspace();
+        let Some((_, args)) =
+            bubblewrap_invocation("sh", "true", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return;
+        };
+        let root = ws.path().canonicalize().unwrap();
+        let binds = args
+            .windows(3)
+            .filter(|w| w[0] == "--bind" && w[1] == root.to_str().unwrap())
+            .count();
+        assert_eq!(
+            binds, 1,
+            "the workspace must be bound once, not {binds} times"
         );
     }
 
