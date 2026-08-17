@@ -191,6 +191,53 @@ pub fn common_prefix_len(previous: &[u8], current: &[u8]) -> usize {
         .count()
 }
 
+/// Names the append-only part that a byte offset falls inside.
+///
+/// `common_prefix_len` reports *where* two encodings diverge, in bytes. The
+/// encoding is `tools\nsystem\nmsg0\nmsg1\n…` — one JSON document per part, not
+/// a single document — so those bytes cannot be parsed back into one `Value`
+/// and diffed against the current prompt. Counting the completed parts before
+/// the offset gives the diverging part directly, without allocating or
+/// retaining the previous prompt.
+///
+/// An offset sitting exactly on a part boundary names the part it opens, which
+/// is what a divergence point means: everything before it matched. An offset
+/// past the end therefore names one part past the last.
+///
+/// Part names come from `wire`, so a part present only in the older encoding is
+/// named by position rather than by key.
+pub fn part_pointer_at(wire: &Value, encoded: &[u8], offset: usize) -> String {
+    let mut index = encoded[..offset.min(encoded.len())]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count();
+
+    if wire.get("tools").is_some() {
+        if index == 0 {
+            return "/tools".into();
+        }
+        index -= 1;
+    }
+
+    let system = ["system", "instructions"]
+        .into_iter()
+        .find(|key| wire.get(key).is_some());
+    if let Some(key) = system {
+        if index == 0 {
+            return format!("/{key}");
+        }
+        index -= 1;
+    }
+
+    match ["messages", "input"]
+        .into_iter()
+        .find(|key| wire.get(key).is_some())
+    {
+        Some(key) => format!("/{key}/{index}"),
+        None => "/".into(),
+    }
+}
+
 pub fn first_json_pointer(previous: &Value, current: &Value) -> Option<String> {
     let mut path = String::new();
     first_diff(previous, current, &mut path)
@@ -365,6 +412,116 @@ mod tests {
         assert!(prompt_object_from_body(json!("not an object"))
             .as_object()
             .is_some_and(serde_json::Map::is_empty));
+    }
+
+    /// The reason `part_pointer_at` exists: the snapshot encoding is several
+    /// concatenated JSON documents, so parsing it back into one value — which
+    /// the cache-invalidation diagnostic used to do — always fails once there
+    /// is more than one part.
+    #[test]
+    fn the_snapshot_encoding_is_not_a_single_json_document() {
+        let wire = json!({
+            "system": "sys",
+            "messages": [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+        });
+        let bytes = snapshot_prompt(&wire).bytes;
+        assert!(serde_json::from_slice::<Value>(&bytes).is_err());
+    }
+
+    #[test]
+    fn part_pointer_names_the_diverging_part() {
+        let wire = json!({
+            "tools": [{"name": "t"}],
+            "system": "sys",
+            "messages": [
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c"},
+            ],
+        });
+        let bytes = snapshot_prompt(&wire).bytes;
+
+        // Every part starts at 0 or just past a newline; the trailing newline
+        // ends the last part rather than starting another.
+        let mut starts = vec![0usize];
+        starts.extend(
+            bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .map(|(index, _)| index + 1),
+        );
+        starts.pop();
+        let seen: Vec<String> = starts
+            .iter()
+            .map(|offset| part_pointer_at(&wire, &bytes, *offset))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                "/tools",
+                "/system",
+                "/messages/0",
+                "/messages/1",
+                "/messages/2"
+            ]
+        );
+    }
+
+    /// An offset sitting exactly on a boundary belongs to the part it opens,
+    /// which is what a divergence point means: the bytes before it matched.
+    #[test]
+    fn part_pointer_treats_a_boundary_as_the_next_part() {
+        let wire = json!({
+            "system": "sys",
+            "messages": [{"role": "user", "content": "a"}],
+        });
+        let bytes = snapshot_prompt(&wire).bytes;
+        let boundary = bytes.iter().position(|byte| *byte == b'\n').unwrap();
+        assert_eq!(part_pointer_at(&wire, &bytes, boundary), "/system");
+        assert_eq!(part_pointer_at(&wire, &bytes, boundary + 1), "/messages/0");
+    }
+
+    /// The real caller passes the byte offset from `common_prefix_len`, so the
+    /// pointer must name the message that actually changed.
+    #[test]
+    fn part_pointer_locates_a_real_mutation() {
+        let previous = json!({
+            "system": "sys",
+            "messages": [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+        });
+        let current = json!({
+            "system": "sys",
+            "messages": [{"role": "user", "content": "a"}, {"role": "user", "content": "CHANGED"}],
+        });
+        let old = snapshot_prompt(&previous).bytes;
+        let new = snapshot_prompt(&current).bytes;
+        let common = common_prefix_len(&old, &new);
+        assert_eq!(part_pointer_at(&current, &old, common), "/messages/1");
+    }
+
+    /// Codex-shaped wires name their own keys.
+    #[test]
+    fn part_pointer_handles_instructions_and_input() {
+        let wire = json!({
+            "instructions": "sys",
+            "input": [{"role": "user", "content": "a"}],
+        });
+        let bytes = snapshot_prompt(&wire).bytes;
+        let boundary = bytes.iter().position(|byte| *byte == b'\n').unwrap();
+        assert_eq!(part_pointer_at(&wire, &bytes, 0), "/instructions");
+        assert_eq!(part_pointer_at(&wire, &bytes, boundary + 1), "/input/0");
+    }
+
+    /// An offset past the end, and a wire with no parts at all, stay in range
+    /// rather than panicking — this runs inside a diagnostic.
+    #[test]
+    fn part_pointer_is_total() {
+        let wire = json!({"messages": [{"role": "user", "content": "a"}]});
+        let bytes = snapshot_prompt(&wire).bytes;
+        assert_eq!(part_pointer_at(&wire, &bytes, usize::MAX), "/messages/1");
+        assert_eq!(part_pointer_at(&json!({}), &[], 0), "/");
+        assert_eq!(part_pointer_at(&json!({}), &[], usize::MAX), "/");
     }
 
     #[test]
