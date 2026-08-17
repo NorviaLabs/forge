@@ -644,8 +644,10 @@ async fn focus_availability_and_restore_skip_hidden_blocks() {
     app.focus
         .set_previous_block_for_test(Some(FocusBlock::BottomPanel));
     app.restore_focus_after_closing(FocusBlock::Files);
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
-    assert_eq!(app.focus.return_block(), Some(FocusBlock::Workspace));
+    // Falls back to the composer, not the workspace. `Workspace` is the modal
+    // editor, so defaulting there means the next keystroke edits a file.
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    assert_eq!(app.focus.return_block(), Some(FocusBlock::Composer));
 }
 
 #[tokio::test]
