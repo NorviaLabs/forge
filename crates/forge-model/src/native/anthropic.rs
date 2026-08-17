@@ -5,7 +5,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::{process_sse_lines, NativeModelClient};
-use crate::prompt_cache::{apply_anthropic_prompt_cache, usage_from_provider};
+use crate::prompt_cache::{apply_anthropic_prompt_cache, usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 #[derive(Default)]
@@ -231,6 +231,7 @@ fn consume_event(
                         .and_then(Value::as_u64)
                         .unwrap_or(0) as u32,
                     *completion_tokens,
+                    InputTokens::UncachedOnly,
                 );
                 *prompt_tokens = parsed.prompt_tokens;
                 *prompt_cache_read_tokens = parsed.prompt_cache_read_tokens;
@@ -524,7 +525,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(input, 120);
+        assert_eq!(
+            input, 240,
+            "Anthropic's input_tokens is the uncached remainder (120); the \
+             recorded prompt total must add the 80 read and 40 written back, \
+             so the cache ratio means the same here as on a provider that \
+             reports a total already"
+        );
         assert_eq!(cache_read, 80);
         assert_eq!(cache_write, 40);
     }

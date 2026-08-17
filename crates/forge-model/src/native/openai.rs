@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use super::{process_sse_lines, NativeModelClient};
 use crate::normalize::tools_to_openai_functions;
-use crate::prompt_cache::usage_from_provider;
+use crate::prompt_cache::{usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 struct Route {
@@ -187,6 +187,7 @@ fn consume_event(
                 .get("completion_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32,
+            InputTokens::Total,
         ));
     }
     let Some(delta) = event.pointer("/choices/0/delta") else {
