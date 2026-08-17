@@ -40,6 +40,17 @@ pub(super) async fn complete(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
+    // Routing hint only; caching itself stays implicit. `prompt_cache_options`
+    // with an explicit mode is deliberately not sent: OpenAI documents 30m as
+    // both the only and the default TTL on the models that support it, so
+    // setting it buys nothing, and explicit mode needs breakpoints placed at a
+    // measured stable boundary rather than applied blanket. This field is not
+    // part of the compared prefix — `prompt_object_from_body` only projects
+    // tools/system/instructions/messages/input.
+    if req.prompt_cache {
+        body["prompt_cache_key"] =
+            Value::String(crate::prompt_cache::prompt_cache_key(&req.workspace_root));
+    }
     apply_reasoning_effort(&mut body, model, req.reasoning_effort.as_deref());
 
     let url = format!("{}/chat/completions", route.base_url.trim_end_matches('/'));
@@ -650,5 +661,26 @@ mod tests {
             },
         )]);
         assert!(finalize_tool_calls(calls).is_err());
+    }
+
+    /// The routing key must not enter the compared prefix.
+    ///
+    /// `prompt_object_from_body` is what the cache-invalidation diagnostic
+    /// compares. A per-request field leaking into it would report a break on
+    /// every single request and bury any real one.
+    #[test]
+    fn the_cache_key_stays_out_of_the_compared_prefix() {
+        let body = json!({
+            "model": "gpt-5.6",
+            "messages": [{"role": "user", "content": "hi"}],
+            "prompt_cache_key": "forge-deadbeef",
+            "tools": []
+        });
+        let projected = crate::prompt_wire::prompt_object_from_body(body);
+        assert!(
+            projected.get("prompt_cache_key").is_none(),
+            "routing hints must not be compared as prompt content: {projected}"
+        );
+        assert!(projected.get("messages").is_some());
     }
 }
