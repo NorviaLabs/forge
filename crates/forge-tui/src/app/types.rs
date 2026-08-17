@@ -1073,9 +1073,14 @@ pub(crate) struct StreamState {
     pub(crate) preview: String,
     pub(crate) thinking: String,
     pub(crate) live_lines: Option<(u16, usize, usize, Arc<Vec<Line<'static>>>)>,
-    /// When the live preview was last re-rendered; throttles the per-token
-    /// markdown rebuild so a long stream is O(n) renders, not O(tokens).
+    /// When the preview last rebuilt at a *new width*. Tail-only rebuilds are
+    /// cheap enough to run every frame; a width change re-renders the settled
+    /// prefix too, and terminals emit one resize event per column during a
+    /// drag, so those are debounced.
     pub(crate) last_preview_render: Option<Instant>,
+    /// Settled prefix of the streaming answer, so a rebuild re-parses only the
+    /// tail. See `StreamMarkdownCache`.
+    pub(crate) markdown: crate::conversation::StreamMarkdownCache,
 }
 pub struct TuiApp {
     pub(crate) session: AgentSession,

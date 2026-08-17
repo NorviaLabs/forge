@@ -453,6 +453,10 @@ fn stream_chunks(count: usize) -> Vec<String> {
             chunks.push(format!(
                 "\n```rust\nfn step_{i}(items: &[Item]) -> usize {{\n    items.iter().filter(|i| i.ready).count()\n}}\n```\n"
             ));
+        } else if i % 4 == 3 {
+            // End the paragraph. Real answers have block structure; without it
+            // nothing ever settles and the cache has nothing to hold.
+            chunks.push(format!("Sentence {i} closes the paragraph.\n\n"));
         } else {
             chunks.push(format!(
                 "This is sentence {i} of the streamed answer, long enough to wrap in a sidebar pane. "

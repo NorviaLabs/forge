@@ -46,7 +46,6 @@ const CELL_PAD: usize = 1;
 ///
 /// So the unsettled region is the whole trailing block, extended back over a
 /// run of list or quote blocks, or to an open fence's opening line.
-#[allow(dead_code)] // consumed by the render-path change; see docs/streaming-preview-commit-boundary.md
 pub fn settled_prefix_len(buffer: &str) -> usize {
     // A line without its newline is still being written.
     let Some(last_newline) = buffer.rfind('\n') else {
@@ -158,13 +157,55 @@ fn block_start_at_or_before(starts: &[usize], offset: usize) -> usize {
         .unwrap_or(offset)
 }
 
-pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
-    let options = Options::ENABLE_TABLES
+/// Trailing blanks are separators with nothing after them; a finished render
+/// drops them, and never returns an empty vector.
+fn trim_trailing_blanks(mut out: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    while out.last().is_some_and(|line| line.width() == 0) {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push(Line::from(String::new()));
+    }
+    out
+}
+
+fn markdown_options() -> Options {
+    Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_FOOTNOTES;
+        | Options::ENABLE_FOOTNOTES
+}
+
+/// Render `text` keeping its trailing separator, so the result can be
+/// continued. Only [`render_markdown_split`] and its cache should hold one.
+pub(crate) fn render_markdown_open(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut renderer = MdRenderer::new(width.max(1));
-    renderer.feed(Parser::new_ext(text, options));
+    renderer.feed(Parser::new_ext(text, markdown_options()));
+    renderer.finish_open()
+}
+
+/// Render a buffer whose settled prefix is already rendered.
+///
+/// `settled_open` must come from [`render_markdown_open`] on exactly
+/// `buffer[..cut]`, where `cut` is [`settled_prefix_len`]. Because that cut
+/// lands on a top-level block boundary, the renderer's state there is its
+/// initial state, so feeding only the tail produces the same events the whole
+/// buffer would — and the separator is already in `settled_open`.
+///
+/// `settled_and_tail_render_as_the_whole` pins the equality.
+pub(crate) fn render_markdown_split(
+    settled_open: &[Line<'static>],
+    tail: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut out = settled_open.to_vec();
+    out.extend(render_markdown_open(tail, width));
+    trim_trailing_blanks(out)
+}
+
+pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
+    let mut renderer = MdRenderer::new(width.max(1));
+    renderer.feed(Parser::new_ext(text, markdown_options()));
     renderer.finish()
 }
 
@@ -459,16 +500,21 @@ impl MdRenderer {
         }
     }
 
-    fn finish(mut self) -> Vec<Line<'static>> {
+    fn finish(self) -> Vec<Line<'static>> {
+        trim_trailing_blanks(self.finish_open())
+    }
+
+    /// Everything `finish` does except the trailing-blank trim.
+    ///
+    /// A top-level paragraph pushes a blank line *after* itself, and `finish`
+    /// strips those from the very end. That blank is what separates it from
+    /// whatever comes next, so a prefix rendered with `finish` has already lost
+    /// its separator and cannot be concatenated with a continuation. Keeping
+    /// the open form is what makes [`render_markdown_split`] exact.
+    fn finish_open(mut self) -> Vec<Line<'static>> {
         self.flush_para();
         if let Some(code) = self.code.take() {
             self.render_code(code);
-        }
-        while self.out.last().is_some_and(|line| line.width() == 0) {
-            self.out.pop();
-        }
-        if self.out.is_empty() {
-            self.out.push(Line::from(String::new()));
         }
         self.out
     }
@@ -1341,6 +1387,57 @@ Some **bold** and *italic* and ~struck~ and `code` text.
                 in_context.starts_with(alone.trim_end()) || alone.trim().is_empty(),
                 "settled prefix renders differently in context\n--- alone ---\n{alone}\n--- in context ---\n{in_context}"
             );
+        }
+    }
+
+    /// The property the cache rests on: a settled prefix rendered *open*, plus
+    /// the tail, must equal rendering the whole buffer.
+    ///
+    /// The earlier attempt concatenated two *finished* renders and lost the
+    /// separator, because a paragraph's trailing blank is stripped by `finish`.
+    /// Keeping the prefix open is what makes this exact — including after a code
+    /// block, which emits no trailing blank at all.
+    #[test]
+    fn settled_and_tail_render_as_the_whole() {
+        let samples = [
+            "Intro.\n\n- a\n- b\n\nProse.\n\n```rust\nfn x() {}\n```\n\nTail.\n",
+            "One.\n\nTwo.\n\n| a | b |\n| - | - |\n| 1 | 2 |\n",
+            "Text.\n\n> quoted\n\n> more\n",
+            "Para.\n\n```rust\nfn open() {\n",
+            "# Heading\n\nBody text here.\n\nAnother paragraph.\n\n",
+            "```rust\nfn x() {}\n```\n\nAfter code.\n",
+            "Just one unfinished line",
+            "",
+        ];
+        for buffer in samples {
+            for width in [40usize, 80] {
+                let cut = settled_prefix_len(buffer);
+                let settled_open = render_markdown_open(&buffer[..cut], width);
+                let split =
+                    lines_text(&render_markdown_split(&settled_open, &buffer[cut..], width));
+                let whole = lines_text(&render_markdown(buffer, width));
+                assert_eq!(
+                    split, whole,
+                    "split differs at width {width}, cut {cut}, for {buffer:?}"
+                );
+            }
+        }
+    }
+
+    /// Every prefix of a realistic answer, not just the hand-picked ones.
+    #[test]
+    fn every_streaming_prefix_renders_identically_when_split() {
+        let full = "Here is the plan.\n\n- step one\n- step two\n\nNow the code:\n\n```rust\nfn apply(x: usize) -> usize {\n    x + 1\n}\n```\n\nAnd a table:\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nDone.\n";
+        for end in 0..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            let buffer = &full[..end];
+            let cut = settled_prefix_len(buffer);
+            let settled_open = render_markdown_open(&buffer[..cut], 60);
+            let split = lines_text(&render_markdown_split(&settled_open, &buffer[cut..], 60));
+            let whole = lines_text(&render_markdown(buffer, 60));
+            assert_eq!(split, whole, "split differs at prefix length {end}");
         }
     }
 }

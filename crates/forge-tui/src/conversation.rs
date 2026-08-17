@@ -342,6 +342,39 @@ fn start_block_for_tail(
     start
 }
 
+/// Memoises the settled prefix of a streaming answer across frames.
+///
+/// The live preview used to re-parse and re-highlight the whole accumulated
+/// answer on every rebuild, which is quadratic over a turn. This keeps the
+/// settled prefix — everything `settled_prefix_len` says later bytes cannot
+/// change — and re-parses only the tail.
+///
+/// The prefix is held in *open* form (see `render_markdown_open`) because a
+/// paragraph's trailing blank is the separator from whatever follows, and a
+/// finished render drops it.
+#[derive(Default)]
+pub struct StreamMarkdownCache {
+    width: usize,
+    /// The exact text the cached lines came from. Compared by content rather
+    /// than length so a boundary that moves backwards rebuilds instead of
+    /// silently reusing the wrong lines.
+    prefix: String,
+    open_lines: Vec<Line<'static>>,
+}
+
+impl StreamMarkdownCache {
+    fn render(&mut self, text: &str, width: usize) -> Vec<Line<'static>> {
+        let cut = crate::markdown::settled_prefix_len(text);
+        let settled = &text[..cut];
+        if self.width != width || self.prefix != settled {
+            self.width = width;
+            self.prefix = settled.to_string();
+            self.open_lines = crate::markdown::render_markdown_open(settled, width);
+        }
+        crate::markdown::render_markdown_split(&self.open_lines, &text[cut..], width)
+    }
+}
+
 /// Drawing a [`ConversationModel`].
 ///
 /// An extension trait rather than an inherent impl, because Rust requires
@@ -360,6 +393,21 @@ pub trait ConversationRender {
         available_width: usize,
         keep_from_end: usize,
     ) -> Vec<Line<'static>>;
+    /// As [`Self::lines_for_width_from_end`], reusing `cache` for the settled
+    /// prefix of a streaming answer. Only the live preview passes one.
+    fn lines_for_width_from_end_cached(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+        cache: &mut StreamMarkdownCache,
+    ) -> Vec<Line<'static>>;
+    /// Shared body of the two above. Not called directly.
+    fn render_lines(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+        stream_cache: Option<&mut StreamMarkdownCache>,
+    ) -> Vec<Line<'static>>;
 }
 
 impl ConversationRender for ConversationModel {
@@ -377,6 +425,24 @@ impl ConversationRender for ConversationModel {
         &self,
         available_width: usize,
         keep_from_end: usize,
+    ) -> Vec<Line<'static>> {
+        self.render_lines(available_width, keep_from_end, None)
+    }
+
+    fn lines_for_width_from_end_cached(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+        cache: &mut StreamMarkdownCache,
+    ) -> Vec<Line<'static>> {
+        self.render_lines(available_width, keep_from_end, Some(cache))
+    }
+
+    fn render_lines(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+        mut stream_cache: Option<&mut StreamMarkdownCache>,
     ) -> Vec<Line<'static>> {
         let width = available_width.max(4);
         let prose_width = width
@@ -451,7 +517,10 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
-                    let parts = render_markdown(&p.text, prose_width);
+                    let parts = match stream_cache.as_deref_mut() {
+                        Some(cache) if p.streaming => cache.render(&p.text, prose_width),
+                        _ => render_markdown(&p.text, prose_width),
+                    };
                     for line in parts {
                         let mut spans = vec![Span::raw(" ".repeat(MESSAGE_PADDING))];
                         spans.extend(line.spans);
