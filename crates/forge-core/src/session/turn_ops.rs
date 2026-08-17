@@ -509,19 +509,19 @@ impl AgentSession {
         if let Some(previous) = self.last_prompt_wire.as_deref() {
             let common = forge_model::common_prefix_len(previous, &snapshot.bytes);
             if common < previous.len() {
-                // Both the re-parse and the tree diff walk the whole prompt, and
-                // both feed nothing but the `debug!` below — so neither runs
-                // when DEBUG is filtered out.
-                let (previous_value, current_value) = if tracing::enabled!(tracing::Level::DEBUG) {
-                    (
-                        serde_json::from_slice(previous).unwrap_or(json!({})),
-                        forge_model::strip_cache_control(&wire),
-                    )
+                // `previous` is the append-only `tools\nsystem\nmsg0\n…`
+                // encoding — one JSON document per part, not a single document
+                // — so parsing it back into one value always failed and left
+                // the diff comparing `{}` against the current prompt, which
+                // never named a real mutation site. `common` already locates
+                // the divergence, so name the part it lands in instead. Only
+                // the `debug!` below wants it, so it does not run when DEBUG is
+                // filtered out.
+                let first = if tracing::enabled!(tracing::Level::DEBUG) {
+                    forge_model::part_pointer_at(&wire, previous, common)
                 } else {
-                    (json!({}), json!({}))
+                    String::new()
                 };
-                let first = forge_model::first_json_pointer(&previous_value, &current_value)
-                    .unwrap_or_else(|| "/".into());
                 let pct = (common as f64 / previous.len() as f64) * 100.0;
                 tracing::debug!(
                     previous_bytes = previous.len(),
