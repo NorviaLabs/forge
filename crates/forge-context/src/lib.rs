@@ -373,6 +373,20 @@ fn read_skills_dir(dir: Option<PathBuf>) -> Vec<SkillManifest> {
 }
 
 fn global_agents_skills_dir() -> Option<PathBuf> {
+    // `FORGE_GLOBAL_SKILLS_DIR` exists so a test can stop reading the
+    // developer's real `~/.agents/skills`.
+    //
+    // Without it, whatever a developer happens to have installed globally is
+    // spliced into every session's system prompt during tests. That is not
+    // hypothetical: it made a TUI approval test fail on machines with skills
+    // installed and pass in CI, which has none. The larger prompt pushed the
+    // context lifecycle into making its own model call, that call consumed the
+    // scripted mock's first response, and the turn under test silently
+    // received the second one — so the tool call it was asserting on never
+    // happened. The failure looked nothing like its cause.
+    if let Some(dir) = std::env::var_os("FORGE_GLOBAL_SKILLS_DIR") {
+        return Some(PathBuf::from(dir));
+    }
     dirs::home_dir().map(|d| d.join(".agents").join("skills"))
 }
 

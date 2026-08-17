@@ -1492,7 +1492,18 @@ mod tests {
                 ..Default::default()
             },
             model,
-            ToolRegistry::new(),
+            {
+                // The registry was empty, so `bash` was not a registered tool
+                // and the call was dropped before it could ever be authorized:
+                // the turn ran straight on to the next model response and
+                // completed, with no approval to resume from. A test about
+                // approving a tool has to have the tool.
+                let mut tools = ToolRegistry::new();
+                for tool in forge_tools::default_builtins() {
+                    tools.register(tool);
+                }
+                tools
+            },
         )
         .await
         .unwrap();
