@@ -599,23 +599,54 @@ fn is_readonly_git_subcommand(subcommand: &str) -> bool {
     )
 }
 
+/// Whether every `git branch` option is a known read.
+///
+/// This is an allowlist, not a denylist of the delete/rename/force family. An
+/// option this module has never heard of must not be assumed to be a read:
+/// `--set-upstream-to=`, `--unset-upstream` and `--edit-description` all mutate
+/// repository state and all begin with `-`, so a denylist classified them as
+/// reads and rewrote them onto the dedicated `git` tool. That was never
+/// exploitable — `GitTool` is `SideEffectClass::Write`, so `authorize` still
+/// gates it — but labelling a mutation as a read one layer above a security
+/// boundary is a bug in its own right.
+///
+/// Only the `=` spelling of a valued option needs matching here; the space
+/// spelling puts the value in a bare operand, which the caller already rejects.
 fn branch_is_readonly(args: &[String]) -> bool {
     if args.iter().any(|arg| !arg.starts_with('-')) {
         return false;
     }
-    !args.iter().any(|arg| {
+    args.iter().all(|arg| {
+        let name = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
         matches!(
-            arg.as_str(),
-            "-d" | "-D"
-                | "-m"
-                | "-M"
-                | "-c"
-                | "-C"
-                | "-f"
-                | "--delete"
-                | "--move"
-                | "--copy"
-                | "--force"
+            name,
+            "-a" | "--all"
+                | "-r"
+                | "--remotes"
+                | "-v"
+                | "-vv"
+                | "--verbose"
+                | "-l"
+                | "--list"
+                | "--show-current"
+                | "-q"
+                | "--quiet"
+                | "-i"
+                | "--ignore-case"
+                | "--omit-empty"
+                | "--color"
+                | "--no-color"
+                | "--column"
+                | "--no-column"
+                | "--abbrev"
+                | "--no-abbrev"
+                | "--merged"
+                | "--no-merged"
+                | "--contains"
+                | "--no-contains"
+                | "--points-at"
+                | "--sort"
+                | "--format"
         )
     })
 }
@@ -1279,20 +1310,84 @@ mod tests {
         }
     }
 
-    /// `branch_is_readonly` only screens the rename/delete/force family, so
-    /// upstream-editing flags still classify as read-only here. That is safe
-    /// only because the dedicated `git` tool is `SideEffectClass::Write` and
-    /// re-validates every option against its own allowlist — this module is
-    /// not the last line of defence for git.
+    /// Options that mutate the repository are not reads, even though they
+    /// begin with `-` and are not part of the delete/rename/force family.
+    ///
+    /// Note the `git` tool's own argument policy *permits* `-u` and
+    /// `--set-upstream-to`, so it is not what stops these — the backstop is
+    /// that `GitTool` is `SideEffectClass::Write` and stays HITL-gated. This
+    /// module still must not label them reads.
     #[test]
-    fn git_branch_upstream_flags_are_deferred_to_the_git_tool() {
-        assert_dedicated(
-            "git branch --set-upstream-to=origin/main",
-            "git",
-            json!({"subcommand": "branch", "args": ["--set-upstream-to=origin/main"]}),
-        );
-        // The operand form is rejected here, because it is a bare word.
+    fn git_branch_upstream_and_description_flags_are_not_reads() {
+        assert_unclassified("git branch --set-upstream-to=origin/main");
+        assert_unclassified("git branch --unset-upstream");
+        assert_unclassified("git branch --edit-description");
+        assert_unclassified("git branch --set-upstream");
+        // Attached short form: one word, so the bare-operand check cannot see it.
+        assert_unclassified("git branch -uorigin/main");
+        // The space form is rejected earlier, as a bare word.
         assert_unclassified("git branch -u origin/main");
+    }
+
+    /// An option this module has never heard of is not assumed to be a read.
+    #[test]
+    fn git_branch_unknown_flags_are_not_reads() {
+        assert_unclassified("git branch --some-future-flag");
+        assert_unclassified("git branch --track");
+        assert_unclassified("git branch --create-reflog");
+    }
+
+    /// The genuine reads still rewrite, including the `=` spelling of valued
+    /// filters — the space spelling stays rejected as a bare operand.
+    #[test]
+    fn git_branch_read_flags_still_rewrite() {
+        for (command, args) in [
+            ("git branch", vec![]),
+            ("git branch -a", vec!["-a"]),
+            ("git branch --all", vec!["--all"]),
+            ("git branch -r", vec!["-r"]),
+            ("git branch --show-current", vec!["--show-current"]),
+            ("git branch -v", vec!["-v"]),
+            ("git branch --merged", vec!["--merged"]),
+            (
+                "git branch --sort=-committerdate",
+                vec!["--sort=-committerdate"],
+            ),
+            (
+                "git branch --format=%(refname)",
+                vec!["--format=%(refname)"],
+            ),
+            ("git branch --contains=HEAD", vec!["--contains=HEAD"]),
+            ("git branch -a --list", vec!["-a", "--list"]),
+        ] {
+            assert_dedicated(
+                command,
+                "git",
+                json!({"subcommand": "branch", "args": args}),
+            );
+        }
+        assert_unclassified("git branch --sort -committerdate");
+    }
+
+    /// The delete/rename/force family stays rejected — the allowlist rewrite
+    /// must not regress what the old denylist already caught.
+    #[test]
+    fn git_branch_mutating_family_is_still_rejected() {
+        for command in [
+            "git branch -d",
+            "git branch -D",
+            "git branch -m",
+            "git branch -M",
+            "git branch -c",
+            "git branch -C",
+            "git branch -f",
+            "git branch --delete",
+            "git branch --move",
+            "git branch --copy",
+            "git branch --force",
+        ] {
+            assert_unclassified(command);
+        }
     }
 
     /// Global options are stripped, not forwarded — so `-C dir` and `-c key=val`
