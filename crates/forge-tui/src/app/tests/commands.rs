@@ -553,7 +553,7 @@ async fn editor_uppercase_g_does_not_reach_chat_input() {
 }
 
 #[tokio::test]
-async fn question_mark_opens_help_overlay() {
+async fn f1_opens_help_overlay() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -574,6 +574,33 @@ async fn question_mark_opens_help_overlay() {
     assert!(matches!(app.overlay, Some(Overlay::Help)));
     assert!(app.input.text.is_empty());
     assert!(app.feedback.text.contains("Help"));
+}
+
+/// `?` is no longer a help shortcut — F1 is the only key that opens help. An
+/// empty composer is the case that used to be intercepted, so it is the case
+/// that must now produce a literal question mark.
+#[tokio::test]
+async fn question_mark_types_into_an_empty_composer() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    assert!(app.input.text.is_empty());
+    app.handle_key(press(KeyCode::Char('?'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none(), "? must not open the help overlay");
+    assert_eq!(app.input.text, "?");
 }
 
 #[tokio::test]

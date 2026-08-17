@@ -568,6 +568,27 @@ async fn helper_labels_reflect_focus_mode() {
     assert!(!app.help_text().contains("Alt+→"));
 }
 
+/// The terminal panel is reachable from anywhere via `Ctrl+\``, so help must
+/// advertise it from every block. Listing it only under `FocusBlock::BottomPanel`
+/// tells you how to close a panel you had no way to discover.
+#[tokio::test]
+async fn help_advertises_the_terminal_shortcut_from_every_block() {
+    let (_dir, mut app) = focus_test_app().await;
+    for block in [
+        FocusBlock::Workspace,
+        FocusBlock::Files,
+        FocusBlock::Composer,
+        FocusBlock::Footer,
+    ] {
+        app.focus_block(block);
+        let help = app.help_text();
+        assert!(
+            help.contains("• Ctrl+`  Toggle terminal panel"),
+            "help for {block:?} must advertise the terminal shortcut, got:\n{help}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn tab_nav_command_recognizes_plain_arrows_only() {
     let (_dir, app) = focus_test_app().await;

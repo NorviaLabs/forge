@@ -329,12 +329,6 @@ impl TuiApp {
             {
                 Some(SemanticCommand::PasteClipboardImage)
             }
-            // Help's own advertised shortcut ("? Help") only applies to a
-            // truly empty composer, so a real message that happens to end in
-            // "?" is never intercepted — F1 remains the fallback either way.
-            KeyCode::Char('?') if key.modifiers.is_empty() && self.input.text.is_empty() => {
-                Some(SemanticCommand::OpenHelp)
-            }
             _ => None,
         }
     }
