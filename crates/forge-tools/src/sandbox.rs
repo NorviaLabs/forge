@@ -978,3 +978,31 @@ mod relay_tests {
         assert!(egress_env(&SandboxPolicy::for_workspace(ws.path())).is_empty());
     }
 }
+
+/// Where a confined command may reach the network.
+///
+/// Produced by whoever starts the egress proxy and carried on `ToolContext`,
+/// so every shell spawn is confined the same way. Both fields are needed
+/// because the two platforms route differently: macOS reaches the proxy over a
+/// loopback port, Linux over a Unix socket bind-mounted past its network
+/// namespace.
+#[derive(Debug, Clone)]
+pub struct EgressGrant {
+    pub proxy_port: u16,
+    pub socket_path: PathBuf,
+}
+
+impl SandboxPolicy {
+    /// Apply an egress grant, if one exists.
+    ///
+    /// Without a grant the policy denies the network outright, which is the
+    /// default everywhere.
+    pub fn with_egress(self, grant: Option<&EgressGrant>) -> Self {
+        match grant {
+            Some(grant) => self
+                .with_egress_proxy(grant.proxy_port)
+                .with_egress_socket(&grant.socket_path),
+            None => self,
+        }
+    }
+}
