@@ -40,6 +40,18 @@ pub struct ToolContext {
     pub image_input: bool,
     /// Display id used in the capability-gate error (`provider/model`).
     pub active_model: String,
+    /// Where confined commands may reach the network, if anywhere.
+    ///
+    /// `None` means the network is off, which is the default. A session that
+    /// starts an egress proxy sets this, and every shell spawn picks it up —
+    /// so there is one place that decides, rather than each tool deciding for
+    /// itself.
+    ///
+    /// Behind an `Arc` because `ToolContext` is carried inside enum variants
+    /// upstream, and growing it by an inline `PathBuf` pushes those over
+    /// clippy's `large_enum_variant` threshold. One session shares one grant,
+    /// so sharing is also the honest shape.
+    pub egress: Option<std::sync::Arc<crate::sandbox::EgressGrant>>,
 }
 
 impl ToolContext {
@@ -49,6 +61,8 @@ impl ToolContext {
             principal: "local-dev".into(),
             image_input: false,
             active_model: String::new(),
+            // Default: no network. A session that starts a proxy overrides it.
+            egress: None,
         }
     }
 

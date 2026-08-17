@@ -284,6 +284,19 @@ pub async fn run_shell_command(
     command: &str,
     workspace_root: &Path,
 ) -> Result<ToolOutput, ToolError> {
+    run_shell_command_with_egress(command, workspace_root, None).await
+}
+
+/// As [`run_shell_command`], with an explicit network grant.
+///
+/// `None` denies the network, which is the default. Callers that hold a
+/// session's [`crate::sandbox::EgressGrant`] pass it here so the confined
+/// command can reach the allowlisted hosts and nothing else.
+pub async fn run_shell_command_with_egress(
+    command: &str,
+    workspace_root: &Path,
+    egress: Option<&crate::sandbox::EgressGrant>,
+) -> Result<ToolOutput, ToolError> {
     // Do not use a login shell: `bash -l` sources profile files, which can
     // re-export credentials after the explicit removals below.
     //
@@ -292,7 +305,7 @@ pub async fn run_shell_command(
     // whole life. When the host cannot confine, the command still runs — the
     // rule that a sandbox-less host must fall back to asking the user is
     // enforced upstream, where the permission mode is decided, not here.
-    let policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root);
+    let policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root).with_egress(egress);
     let wrapped = crate::sandbox::wrap_shell_command("bash", command, &policy);
     let confined_run = wrapped.is_some();
     let mut shell = match wrapped {
@@ -314,6 +327,9 @@ pub async fn run_shell_command(
         .kill_on_drop(true);
     for name in PROVIDER_CREDENTIAL_ENV {
         shell.env_remove(name);
+    }
+    for (name, value) in crate::sandbox::egress_env(&policy) {
+        shell.env(name, value);
     }
 
     let mut child = shell
@@ -424,7 +440,7 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: BashArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        run_shell_command(&a.command, &ctx.workspace_root).await
+        run_shell_command_with_egress(&a.command, &ctx.workspace_root, ctx.egress.as_deref()).await
     }
 }
 
