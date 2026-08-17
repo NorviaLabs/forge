@@ -307,9 +307,11 @@ impl TuiApp {
             });
         }
         let width = sidebar_width.saturating_sub(2) as usize;
-        // Rebuilding the live preview re-parses the whole accumulated markdown
-        // (and re-highlights its code blocks), so it is rate-limited rather than
-        // run once per streaming frame: at token rate it is O(n^2) over a turn.
+        // A rebuild re-parses only the unsettled tail (see
+        // `StreamMarkdownCache`), but it still materialises and clones every
+        // line of the answer, which is O(n) per rebuild on its own. Until that
+        // is bounded too, rebuilds stay rate-limited: running them per frame
+        // would raise the frequency of a cost that has not stopped growing.
         const STREAM_PREVIEW_RENDER_INTERVAL: Duration = Duration::from_millis(150);
         let live_lines = if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
             let key = (
@@ -346,7 +348,11 @@ impl TuiApp {
                         self.stream.thinking.clone(),
                         self.stream.preview.clone(),
                     )
-                    .lines_for_width(width),
+                    .lines_for_width_from_end_cached(
+                        width,
+                        usize::MAX,
+                        &mut self.stream.markdown,
+                    ),
                 );
                 self.stream.live_lines = Some((key.0, key.1, key.2, Arc::clone(&lines)));
                 self.stream.last_preview_render = Some(Instant::now());

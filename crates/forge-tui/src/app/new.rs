@@ -81,6 +81,7 @@ impl TuiApp {
                 thinking: String::new(),
                 live_lines: None,
                 last_preview_render: None,
+                markdown: Default::default(),
             },
             timing: TurnTimingState {
                 started: None,
