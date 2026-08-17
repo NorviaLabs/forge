@@ -33,8 +33,15 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # `--no-fail-fast` because cargo otherwise stops after the first test
+      # binary that fails, and the remaining crates never run. A flaky test in
+      # an early crate was silently preventing forge-tools' sandbox
+      # enforcement suite from executing at all — CI reported a failure, but
+      # not the one that mattered, and the coverage we most wanted was simply
+      # skipped. Running everything also surfaces all failures in one pass
+      # rather than one per push.
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --all-targets --locked --no-fail-fast
 
   # Dependency advisories, duplicate/wildcard bans, and source allow-listing.
   # Separate job so it reports independently of the test result and runs in
