@@ -19,6 +19,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # The sandbox that confines agent-spawned commands needs these on Linux:
+      # bubblewrap enforces the filesystem and network boundary, socat relays
+      # the egress proxy into the sandbox's network namespace.
+      #
+      # Without them the enforcement tests skip rather than fail, so CI would
+      # stay green while testing nothing — which is the failure mode worth
+      # spending an apt-get on. `sandbox_is_available_on_linux_in_ci` asserts
+      # they are present, so removing this step breaks the build loudly.
+      - name: Install sandbox dependencies
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint

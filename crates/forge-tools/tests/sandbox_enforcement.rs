@@ -460,3 +460,29 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
         .unwrap();
     assert!(out.is_error, "no grant means no network: {}", out.content);
 }
+
+/// CI must actually exercise the sandbox, not skip it.
+///
+/// Every enforcement test above returns early when the host cannot confine, so
+/// a runner without bubblewrap would leave them all "passing" while asserting
+/// nothing. This turns that silence into a failure: if the dependency step is
+/// removed from the workflow, the build breaks here instead of quietly
+/// dropping the Linux coverage.
+///
+/// Scoped to CI so a developer without bubblewrap installed still gets a
+/// working local test run.
+#[cfg(target_os = "linux")]
+#[test]
+fn sandbox_is_available_on_linux_in_ci() {
+    if std::env::var_os("CI").is_none() {
+        return;
+    }
+    match availability() {
+        Ok(()) => {}
+        Err(unavailable) => panic!(
+            "CI must install the sandbox dependencies, or the enforcement \
+             suite silently tests nothing — {}",
+            unavailable.reason()
+        ),
+    }
+}
