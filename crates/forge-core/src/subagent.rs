@@ -115,7 +115,16 @@ impl AgentSession {
             journal: SessionPersistence::new(journal),
             tools: self.tools.clone(),
             model: self.model.clone(),
-            tool_ctx: ToolContext::new(workspace),
+            // Shares the parent's egress rather than starting a second proxy:
+            // one session, one allow-list, one place to revoke it. The parent
+            // owns the proxy, so `egress` here is None — the child holds a
+            // grant, not the listener.
+            tool_ctx: {
+                let mut ctx = ToolContext::new(workspace);
+                ctx.egress = self.tool_ctx.egress.clone();
+                ctx
+            },
+            egress: None,
             max_turns: spec.max_turns.unwrap_or(self.max_turns),
             governance,
             context,
@@ -206,7 +215,16 @@ impl AgentSession {
             journal: SessionPersistence::new(journal),
             tools: self.tools.clone(),
             model: self.model.clone(),
-            tool_ctx: ToolContext::new(workspace),
+            // Shares the parent's egress rather than starting a second proxy:
+            // one session, one allow-list, one place to revoke it. The parent
+            // owns the proxy, so `egress` here is None — the child holds a
+            // grant, not the listener.
+            tool_ctx: {
+                let mut ctx = ToolContext::new(workspace);
+                ctx.egress = self.tool_ctx.egress.clone();
+                ctx
+            },
+            egress: None,
             max_turns: self.max_turns,
             governance: self.governance.clone(),
             context,
