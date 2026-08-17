@@ -79,7 +79,11 @@ impl TuiApp {
             .focus
             .previous_block()
             .filter(|block| *block != closed && self.focus_availability().contains(*block))
-            .unwrap_or(FocusBlock::Workspace);
+            // Falls back to the composer, not the workspace. `Workspace` is
+            // the editor, which is modal — landing there by default means the
+            // next keystroke edits a file. Typing into the composer is
+            // harmless and visible.
+            .unwrap_or(FocusBlock::Composer);
         self.focus.restore(previous);
     }
 

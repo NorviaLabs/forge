@@ -14,7 +14,29 @@ impl TuiApp {
         )
     }
 
+    /// `Ctrl+E` means "take me to Files", and only closes the pane when you
+    /// are already there.
+    ///
+    /// It used to toggle blindly on visibility. That made the common case
+    /// dangerous: with the pane already open but focus elsewhere, pressing
+    /// `Ctrl+E` to reach the file list *closed* it and handed focus back to
+    /// the editor — which is modal, so the filter you started typing was
+    /// executed as vim commands and silently edited the open file. `i` opens
+    /// INSERT; the rest of the word lands in the buffer. Nothing on screen
+    /// says focus moved, and the Unsaved Changes dialog defaults to Save.
+    ///
+    /// Matching the editor convention (VS Code's `Ctrl+Shift+E`) removes the
+    /// hazard rather than papering over it: the direction that loses focus to
+    /// a text-mutating surface is now only reachable deliberately, from the
+    /// explorer itself.
     pub(super) fn toggle_files_panel(&mut self) {
+        let already_in_files = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
+        if self.workspace_files.visible && !already_in_files {
+            self.focus_block(FocusBlock::Search);
+            self.normalize_focus();
+            return;
+        }
+
         self.workspace_files.visible = !self.workspace_files.visible;
         self.save_ui_state();
         if self.workspace_files.visible {
