@@ -640,16 +640,23 @@ mod tests {
         assert_eq!(&args[2..], &["/bin/bash", "-c", "echo hi"]);
     }
 
+    /// Written when Linux had no backend, so it asserted `None` on every
+    /// non-macOS host. Linux confines now, so the contract is not "not macOS
+    /// means no sandbox" — it is "no sandbox means no invocation".
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn wrap_shell_command_is_none_without_a_sandbox() {
+    fn wrap_shell_command_follows_availability() {
         let ws = workspace();
-        assert!(wrap_shell_command(
+        let wrapped = wrap_shell_command(
             "/bin/sh",
             "echo hi",
-            &SandboxPolicy::for_workspace(ws.path())
-        )
-        .is_none());
+            &SandboxPolicy::for_workspace(ws.path()),
+        );
+        assert_eq!(
+            wrapped.is_some(),
+            availability().is_ok(),
+            "a host that can confine must produce an invocation, and one that cannot must not"
+        );
     }
 }
 
