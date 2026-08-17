@@ -85,6 +85,70 @@ fn bwrap_path() -> Option<&'static str> {
         .find(|candidate| Path::new(candidate).exists())
 }
 
+/// Single-quote a string for POSIX `sh`.
+///
+/// The command is embedded in a script that also starts the relay, so it stops
+/// being its own argv element. Without quoting, a command containing a quote or
+/// a `;` would change the script's meaning — the same injection hazard as the
+/// SBPL literal escaping, in a different syntax.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Where `socat` lives, if it is installed.
+///
+/// Used as the relay that makes the egress proxy reachable from inside the
+/// sandbox — the same dependency and the same role Claude Code gives it. No
+/// client speaks "proxy over a Unix socket": `curl --unix-socket` addresses the
+/// target rather than the proxy, and cargo, git and npm have no equivalent at
+/// all. So something has to present the proxy as an ordinary TCP endpoint on
+/// the namespace's own loopback, and a battle-tested relay is a better answer
+/// than a hand-written one in the security path.
+///
+/// Absolute paths only, for the reason `bwrap_path` gives.
+fn socat_path() -> Option<&'static str> {
+    ["/usr/bin/socat", "/bin/socat", "/usr/local/bin/socat"]
+        .into_iter()
+        .find(|candidate| Path::new(candidate).exists())
+}
+
+/// The loopback port the in-sandbox relay listens on.
+///
+/// Fixed rather than negotiated: it lives inside the sandbox's own network
+/// namespace, which contains nothing else, so there is nobody to collide with.
+pub const SANDBOX_PROXY_PORT: u16 = 8118;
+
+/// Proxy environment for a confined command, when egress is granted.
+///
+/// Points at the in-namespace relay, never at the host. These variables are a
+/// convenience for well-behaved clients, not the boundary — the boundary is
+/// that the namespace has no other route out.
+pub fn egress_env(policy: &SandboxPolicy) -> Vec<(String, String)> {
+    if policy.egress_socket.is_none() && policy.egress_proxy_port.is_none() {
+        return Vec::new();
+    }
+    let port = if cfg!(target_os = "linux") {
+        SANDBOX_PROXY_PORT
+    } else {
+        match policy.egress_proxy_port {
+            Some(port) => port,
+            None => return Vec::new(),
+        }
+    };
+    let url = format!("http://127.0.0.1:{port}");
+    [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]
+    .into_iter()
+    .map(|name| (name.to_string(), url.clone()))
+    .collect()
+}
+
 /// What a confined process may touch.
 #[derive(Debug, Clone)]
 pub struct SandboxPolicy {
@@ -356,14 +420,54 @@ fn bubblewrap_invocation(
         args.extend(["--ro-bind-try".into(), path.clone(), path]);
     }
 
+    // Mask the directories where Unix sockets live. `--ro-bind / /` above puts
+    // every host socket into the sandbox's filesystem view — /var/run/docker.sock
+    // among them, which is root on the host — and a read-only *mount* does not
+    // reliably stop `connect()`, because that checks the inode rather than
+    // MNT_READONLY. Masking the three conventional locations removes the whole
+    // class rather than a denylist of the ones we thought of. Emitted after the
+    // read-only root so it wins, and before the egress bind so the socket we do
+    // want survives.
     args.extend([
-        "--chdir".into(),
-        root,
-        "--".into(),
-        shell.to_string(),
-        "-c".into(),
-        command.to_string(),
+        "--tmpfs".into(),
+        "/run".into(),
+        "--tmpfs".into(),
+        "/var/run".into(),
+        "--tmpfs".into(),
+        "/tmp".into(),
     ]);
+
+    // The one route out, when egress is granted at all.
+    let relay = match (&policy.egress_socket, socat_path()) {
+        (Some(socket), Some(socat)) => {
+            let socket = socket.to_str()?.to_string();
+            args.extend(["--bind".into(), socket.clone(), socket.clone()]);
+            Some((socat, socket))
+        }
+        // Granting egress without a relay would bind a socket no client can
+        // use. Fail closed: no relay means no route out, not a broken one.
+        (Some(_), None) => return None,
+        (None, _) => None,
+    };
+
+    args.extend(["--chdir".into(), root, "--".into()]);
+
+    match relay {
+        Some((socat, socket)) => {
+            // Start the relay, wait for it to listen, then hand over to the
+            // command. `exec` so the command keeps the shell's pid and signals
+            // reach it; the relay dies with the namespace.
+            let script = format!(
+                "{socat} TCP-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork                  UNIX-CONNECT:{socket} &                  for _ in 1 2 3 4 5 6 7 8 9 10; do                  {socat} -u OPEN:/dev/null TCP:127.0.0.1:{port} 2>/dev/null && break;                  sleep 0.1; done; exec {shell} -c {command}",
+                port = SANDBOX_PROXY_PORT,
+                command = shell_quote(command),
+            );
+            args.extend([shell.to_string(), "-c".into(), script]);
+        }
+        None => {
+            args.extend([shell.to_string(), "-c".into(), command.to_string()]);
+        }
+    }
 
     Some((bwrap.to_string(), args))
 }
@@ -744,5 +848,133 @@ mod denial_tests {
         ] {
             assert!(explain_denial(out).is_none(), "must not claim: {out}");
         }
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+
+    fn workspace() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    /// Host Unix sockets live in /run, /var/run and /tmp. `--ro-bind / /` puts
+    /// them all in view — /var/run/docker.sock among them, which is root on the
+    /// host — and a read-only *mount* does not reliably stop `connect()`,
+    /// because that checks the inode rather than MNT_READONLY. Masking the
+    /// three conventional locations removes the class instead of denylisting
+    /// the ones we happened to think of.
+    #[test]
+    fn socket_directories_are_masked() {
+        let ws = workspace();
+        let Some((_, args)) =
+            bubblewrap_invocation("sh", "true", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return;
+        };
+        for dir in ["/run", "/var/run", "/tmp"] {
+            assert!(
+                args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == dir),
+                "{dir} must be masked or host sockets stay reachable"
+            );
+        }
+    }
+
+    /// The mask must follow the read-only root, or the root wins and the
+    /// sockets are back.
+    #[test]
+    fn masking_follows_the_readonly_root() {
+        let ws = workspace();
+        let Some((_, args)) =
+            bubblewrap_invocation("sh", "true", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return;
+        };
+        let ro_root = args
+            .windows(3)
+            .position(|w| w[0] == "--ro-bind" && w[1] == "/" && w[2] == "/")
+            .unwrap();
+        let mask = args.iter().position(|a| a == "--tmpfs").unwrap();
+        assert!(ro_root < mask, "a mask before the root would be overridden");
+    }
+
+    /// Granting egress without a relay would bind a socket no client can speak
+    /// to. Fail closed rather than ship a route that silently does not work.
+    #[test]
+    fn egress_without_a_relay_yields_no_invocation() {
+        if socat_path().is_some() {
+            return; // this host has socat, so the negative case is unobservable
+        }
+        let ws = workspace();
+        let dir = workspace();
+        let sock = dir.path().join("egress.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_egress_socket(&sock);
+        assert!(bubblewrap_invocation("sh", "true", &policy).is_none());
+    }
+
+    /// The command is embedded in a script alongside the relay, so it stops
+    /// being its own argv element. A quote or a `;` in it must not be able to
+    /// change what the script does — the same injection hazard as the SBPL
+    /// literal escaping, in a different syntax.
+    ///
+    /// Asserted by round-tripping through a real shell rather than by
+    /// inspecting the escaped text: `'\''` is correct POSIX quoting but
+    /// contains substrings that look alarming, so eyeballing it proves
+    /// nothing. What matters is that the shell hands the value back unchanged
+    /// as exactly one word.
+    #[test]
+    fn the_user_command_cannot_break_out_of_the_relay_script() {
+        for hostile in [
+            "echo hi",
+            "x'; reboot; echo '",
+            "a\"b",
+            "$(reboot)",
+            "`reboot`",
+            "x; rm -rf /",
+            "trailing'",
+        ] {
+            let script = format!("printf %s {}", shell_quote(hostile));
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .expect("run sh");
+            assert!(out.status.success(), "script did not parse: {script}");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                hostile,
+                "the shell must return the command unchanged, not execute part of it"
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_env_points_at_the_relay_never_the_host() {
+        let ws = workspace();
+        let dir = workspace();
+        let sock = dir.path().join("egress.sock");
+        // Grant both forms: Linux routes over the socket, macOS over the port.
+        let policy = SandboxPolicy::for_workspace(ws.path())
+            .with_egress_socket(&sock)
+            .with_egress_proxy(9418);
+        let env = egress_env(&policy);
+        assert!(!env.is_empty());
+        for (name, value) in &env {
+            assert!(
+                value.contains("127.0.0.1"),
+                "{name} must point inside the namespace, got {value}"
+            );
+        }
+        // Both spellings, because tools disagree about which they read.
+        assert!(env.iter().any(|(n, _)| n == "HTTP_PROXY"));
+        assert!(env.iter().any(|(n, _)| n == "http_proxy"));
+    }
+
+    #[test]
+    fn no_egress_grant_means_no_proxy_env() {
+        let ws = workspace();
+        assert!(egress_env(&SandboxPolicy::for_workspace(ws.path())).is_empty());
     }
 }
