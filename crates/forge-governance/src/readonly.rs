@@ -5,7 +5,7 @@
 //! `git`, `glob`, `grep`, and `read_file`; this module stops the model from
 //! paying a HITL tax for the bash spelling of the same reads.
 
-use forge_types::ToolCall;
+use forge_types::{is_readonly_git_subcommand, ToolCall};
 use serde_json::{json, Value};
 
 use crate::pattern::is_shell_tool;
@@ -590,13 +590,6 @@ fn parse_git(args: &[String]) -> Option<GitParsed> {
         subcommand,
         args: rest[1..].to_vec(),
     })
-}
-
-fn is_readonly_git_subcommand(subcommand: &str) -> bool {
-    matches!(
-        subcommand,
-        "status" | "diff" | "log" | "show" | "branch" | "rev-parse" | "ls-files" | "blame"
-    )
 }
 
 /// Whether every `git branch` option is a known read.

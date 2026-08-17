@@ -125,24 +125,8 @@ fn check_bare(workspace: &Path) -> Option<RepoInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command as StdCommand;
+    use forge_test_support::{git as run, init_repo};
     use tempfile::TempDir;
-
-    fn run(dir: &Path, args: &[&str]) {
-        let status = StdCommand::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .expect("git must be on PATH for these tests");
-        assert!(status.success(), "git {args:?} failed in {dir:?}");
-    }
-
-    fn init_repo(dir: &Path) {
-        run(dir, &["init", "--initial-branch=main", "-q"]);
-        run(dir, &["config", "user.email", "test@example.com"]);
-        run(dir, &["config", "user.name", "Test"]);
-    }
 
     #[test]
     fn detects_a_normal_repository() {

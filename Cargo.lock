@@ -1353,6 +1353,7 @@ dependencies = [
  "forge-mcp",
  "forge-model",
  "forge-storage",
+ "forge-test-support",
  "forge-tools",
  "forge-types",
  "serde_json",
@@ -1365,6 +1366,7 @@ name = "forge-storage"
 version = "0.1.0-beta.5"
 dependencies = [
  "dirs 6.0.0",
+ "forge-test-support",
  "tempfile",
  "thiserror 2.0.20",
 ]
@@ -1391,6 +1393,7 @@ dependencies = [
 name = "forge-test-support"
 version = "0.1.0-beta.5"
 dependencies = [
+ "tempfile",
  "ureq",
 ]
 

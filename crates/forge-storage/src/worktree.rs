@@ -136,27 +136,9 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<PathBuf>, WorktreeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_test_support::init_repo_with_commit as init_repo;
     use std::process::Command as StdCommand;
     use tempfile::TempDir;
-
-    fn run(dir: &Path, args: &[&str]) {
-        let status = StdCommand::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .expect("git must be on PATH for these tests");
-        assert!(status.success(), "git {args:?} failed in {dir:?}");
-    }
-
-    fn init_repo(dir: &Path) {
-        run(dir, &["init", "--initial-branch=main", "-q"]);
-        run(dir, &["config", "user.email", "test@example.com"]);
-        run(dir, &["config", "user.name", "Test"]);
-        std::fs::write(dir.join("f.txt"), "x").unwrap();
-        run(dir, &["add", "."]);
-        run(dir, &["commit", "-q", "-m", "init"]);
-    }
 
     #[test]
     fn sanitize_label_keeps_only_safe_characters() {

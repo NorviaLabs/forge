@@ -20,4 +20,5 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+forge-test-support = { workspace = true }
 tempfile = { workspace = true }

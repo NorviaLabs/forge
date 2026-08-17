@@ -7,7 +7,9 @@
 //! project a transcript without linking a UI.
 
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
-use forge_types::{ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall};
+use forge_types::{
+    is_readonly_git_subcommand, ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -1519,11 +1521,11 @@ fn routine_tool_category(
     match name {
         "read_file" | "ls" | "glob" | "grep" | "rg" => Some(ActivityCategory::Exploring),
         "git"
-            if tool_argument(call, "subcommand").is_some_and(is_read_only_git)
+            if tool_argument(call, "subcommand").is_some_and(is_readonly_git_subcommand)
                 || summary
                     .split_whitespace()
                     .nth(1)
-                    .is_some_and(is_read_only_git) =>
+                    .is_some_and(is_readonly_git_subcommand) =>
         {
             Some(ActivityCategory::Exploring)
         }
@@ -1535,13 +1537,6 @@ fn routine_tool_category(
         }
         _ => None,
     }
-}
-
-fn is_read_only_git(subcommand: &str) -> bool {
-    matches!(
-        subcommand,
-        "status" | "diff" | "log" | "show" | "branch" | "rev-parse" | "ls-files" | "blame"
-    )
 }
 
 fn is_validation_command(command: &str) -> bool {
