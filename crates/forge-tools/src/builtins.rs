@@ -284,12 +284,28 @@ pub async fn run_shell_command(
     command: &str,
     workspace_root: &Path,
 ) -> Result<ToolOutput, ToolError> {
-    let mut shell = Command::new("bash");
     // Do not use a login shell: `bash -l` sources profile files, which can
     // re-export credentials after the explicit removals below.
+    //
+    // Confinement is applied here, at spawn, because that is the only moment
+    // it can be: a process that starts unconfined stays unconfined for its
+    // whole life. When the host cannot confine, the command still runs — the
+    // rule that a sandbox-less host must fall back to asking the user is
+    // enforced upstream, where the permission mode is decided, not here.
+    let policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root);
+    let mut shell = match crate::sandbox::wrap_shell_command("bash", command, &policy) {
+        Some((program, args)) => {
+            let mut confined = Command::new(program);
+            confined.args(args);
+            confined
+        }
+        None => {
+            let mut plain = Command::new("bash");
+            plain.arg("-c").arg(command);
+            plain
+        }
+    };
     shell
-        .arg("-c")
-        .arg(command)
         .current_dir(workspace_root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -169,3 +169,57 @@ fn commands_that_used_to_need_parsing_are_contained_instead() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The tools themselves, not just the wrapper. These are the assertions that
+// would regress if someone added a spawn path and forgot to confine it.
+// ---------------------------------------------------------------------------
+
+use forge_tools::run_shell_command;
+
+fn escape_target(outside: &tempfile::TempDir) -> String {
+    outside.path().join("escaped.txt").to_str().unwrap().into()
+}
+
+#[tokio::test]
+async fn bash_tool_is_confined() {
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let target = escape_target(&outside);
+
+    let out = run_shell_command(&format!("echo pwned > {target}"), ws.path())
+        .await
+        .expect("the tool itself must not error");
+    assert!(
+        out.is_error,
+        "escaping the workspace must fail: {:?}",
+        out.content
+    );
+    assert!(
+        !std::path::Path::new(&target).exists(),
+        "bash tool escaped the sandbox"
+    );
+}
+
+#[tokio::test]
+async fn bash_tool_still_works_inside_the_workspace() {
+    let ws = workspace();
+    let out = run_shell_command("echo hello > inside.txt && cat inside.txt", ws.path())
+        .await
+        .unwrap();
+    assert!(!out.is_error, "in-workspace work must be unaffected");
+    assert!(out.content.contains("hello"));
+}
+
+#[tokio::test]
+async fn bash_tool_cannot_write_git() {
+    let ws = workspace();
+    let out = run_shell_command("echo clobbered > .git/HEAD", ws.path())
+        .await
+        .unwrap();
+    assert!(out.is_error, "the recovery mechanism must stay read-only");
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/main\n"
+    );
+}
