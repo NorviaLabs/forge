@@ -504,13 +504,24 @@ impl AgentSession {
             self.begin_cache_epoch("transport");
         }
 
-        let snapshot = forge_model::snapshot_prompt(&self.model.prompt_wire(request));
+        let wire = self.model.prompt_wire(request);
+        let snapshot = forge_model::snapshot_prompt(&wire);
         if let Some(previous) = self.last_prompt_wire.as_deref() {
             let common = forge_model::common_prefix_len(previous, &snapshot.bytes);
             if common < previous.len() {
-                let previous_value = serde_json::from_slice(previous).unwrap_or(json!({}));
-                let first = forge_model::first_json_pointer(&previous_value, &snapshot.value)
-                    .unwrap_or_else(|| "/".into());
+                // `previous` is the append-only `tools\nsystem\nmsg0\n…`
+                // encoding — one JSON document per part, not a single document
+                // — so parsing it back into one value always failed and left
+                // the diff comparing `{}` against the current prompt, which
+                // never named a real mutation site. `common` already locates
+                // the divergence, so name the part it lands in instead. Only
+                // the `debug!` below wants it, so it does not run when DEBUG is
+                // filtered out.
+                let first = if tracing::enabled!(tracing::Level::DEBUG) {
+                    forge_model::part_pointer_at(&wire, previous, common)
+                } else {
+                    String::new()
+                };
                 let pct = (common as f64 / previous.len() as f64) * 100.0;
                 tracing::debug!(
                     previous_bytes = previous.len(),

@@ -14,8 +14,8 @@ pub use normalize::{
     complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions,
 };
 pub use prompt_wire::{
-    common_prefix_len, first_json_pointer, prompt_wire, snapshot_prompt, PromptSnapshot,
-    PromptTransport,
+    common_prefix_len, first_json_pointer, part_pointer_at, prompt_wire, snapshot_prompt,
+    strip_cache_control, PromptSnapshot, PromptTransport,
 };
 
 use std::ops::{Deref, DerefMut};

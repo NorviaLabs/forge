@@ -618,22 +618,35 @@ impl Journal {
             let et_s: String = row.get("event_type");
             let payload_s: String = row.get("payload");
             let payload: Value = serde_json::from_str(&payload_s)?;
-            let event_type: JournalEventType = serde_json::from_str(&format!("\"{et_s}\""))
-                .unwrap_or(JournalEventType::StatePatch);
+            // Deserialise the tag straight from the column string. Wrapping it
+            // in quotes and running it back through the JSON parser cost an
+            // allocation and a parse per event to decide a unit variant.
+            let event_type = JournalEventType::deserialize(serde::de::IntoDeserializer::<
+                serde::de::value::Error,
+            >::into_deserializer(
+                et_s.as_str()
+            ))
+            .unwrap_or(JournalEventType::StatePatch);
             let ts_s: String = row.get("ts");
             let ts = chrono::DateTime::parse_from_rfc3339(&ts_s)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
+            // The event is pushed onto `state.events` unconditionally, so the
+            // payload is moved into it here and the arms below project *out of
+            // it* by reference. Building `ev` from a clone instead meant every
+            // journal event was deep-copied once on principle, and the typed
+            // arms then copied it a second time before deserialising.
             let ev = JournalEvent {
                 seq,
                 session_id,
                 ts,
                 event_type,
                 schema_version: row.get::<i64, _>("schema_version") as u32,
-                payload: payload.clone(),
+                payload,
                 trace_id: row.try_get("trace_id").ok(),
             };
+            let payload = &ev.payload;
 
             match event_type {
                 JournalEventType::UserMessage => {
@@ -662,7 +675,7 @@ impl Journal {
                 JournalEventType::ModelResponse => {
                     // Older journals only contain response metadata and remain resumable with
                     // partial history; current journals persist the complete response.
-                    if let Ok(response) = serde_json::from_value::<ModelResponse>(payload.clone()) {
+                    if let Ok(response) = ModelResponse::deserialize(payload) {
                         let has_thinking = response
                             .thinking
                             .as_ref()
@@ -754,7 +767,7 @@ impl Journal {
                     });
                 }
                 JournalEventType::ToolResult => {
-                    if let Ok(p) = serde_json::from_value::<ToolResultPayload>(payload.clone()) {
+                    if let Ok(p) = ToolResultPayload::deserialize(payload) {
                         open_intents.remove(&p.call_id);
                         state.messages.push(Message {
                             outcome: p.output.effective_outcome(),
@@ -771,9 +784,9 @@ impl Journal {
                     }
                 }
                 JournalEventType::SessionStatus => {
-                    if let Ok(s) = serde_json::from_value::<TaskLifecycle>(
-                        payload.get("status").cloned().unwrap_or(Value::Null),
-                    ) {
+                    if let Ok(s) =
+                        TaskLifecycle::deserialize(payload.get("status").unwrap_or(&Value::Null))
+                    {
                         state.status = s;
                     }
                 }
@@ -792,9 +805,7 @@ impl Journal {
                     // far stays in `state.events`, and nothing already written
                     // to the journal is altered.
                     if let Some(messages) = payload.get("messages") {
-                        if let Ok(messages) =
-                            serde_json::from_value::<Vec<Message>>(messages.clone())
-                        {
+                        if let Ok(messages) = Vec::<Message>::deserialize(messages) {
                             state.messages = messages;
                         }
                     }
@@ -805,9 +816,7 @@ impl Journal {
                 }
                 JournalEventType::ContextReset => {
                     if let Some(messages) = payload.get("messages") {
-                        if let Ok(messages) =
-                            serde_json::from_value::<Vec<Message>>(messages.clone())
-                        {
+                        if let Ok(messages) = Vec::<Message>::deserialize(messages) {
                             state.messages = messages;
                         }
                     }
@@ -865,7 +874,7 @@ impl Journal {
                     ) {
                         let child_session_id = payload
                             .get("child_session_id")
-                            .and_then(|v| serde_json::from_value::<SessionId>(v.clone()).ok());
+                            .and_then(|v| SessionId::deserialize(v).ok());
                         state.background_tasks.push(RestoredBackgroundTask {
                             id: BackgroundTaskId(id),
                             kind: kind.to_string(),
@@ -1424,5 +1433,269 @@ mod tests {
         assert!(tool_calls_message.thinking.is_none());
         assert_eq!(tool_calls_message.tool_calls.len(), 1);
         assert_eq!(tool_calls_message.tool_calls[0].id, "c-tc");
+    }
+
+    /// A missing session directory is the first-run case, not an error.
+    #[test]
+    fn latest_session_id_is_none_for_missing_or_empty_dir() {
+        let dir = tempdir().unwrap();
+        assert!(latest_session_id(&dir.path().join("never-created"))
+            .unwrap()
+            .is_none());
+        assert!(latest_session_id(dir.path()).unwrap().is_none());
+    }
+
+    /// Only `<uuid>.db` names are sessions. Everything else in the directory —
+    /// sidecar files, other extensions, extensionless files, and `.db` files
+    /// whose stem is not a UUID — is skipped rather than failing the scan.
+    #[test]
+    fn latest_session_id_skips_non_session_files() {
+        let dir = tempdir().unwrap();
+        for name in [
+            "notes.txt",
+            "sessions.json",
+            "README",
+            "abcdef.db",
+            "not-a-uuid.db",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        // A `.db` sidecar that SQLite itself may leave behind.
+        let real = new_session_id();
+        std::fs::write(dir.path().join(format!("{real}.db-wal")), b"x").unwrap();
+        std::fs::write(dir.path().join(format!("{real}.db-shm")), b"x").unwrap();
+        assert!(latest_session_id(dir.path()).unwrap().is_none());
+
+        // Add one genuine session file and it becomes the answer.
+        std::fs::write(dir.path().join(format!("{real}.db")), b"x").unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(real));
+    }
+
+    /// "Latest" is by mtime, not by directory order or name.
+    #[test]
+    fn latest_session_id_picks_the_most_recently_modified() {
+        let dir = tempdir().unwrap();
+        let older = new_session_id();
+        let newer = new_session_id();
+        std::fs::write(dir.path().join(format!("{older}.db")), b"x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(dir.path().join(format!("{newer}.db")), b"x").unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(newer));
+
+        // Touching the older file makes it the latest.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(dir.path().join(format!("{older}.db")), b"xx").unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(older));
+    }
+
+    #[tokio::test]
+    async fn latest_session_id_finds_a_journal_opened_through_the_normal_path() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(sid));
+    }
+
+    /// `ModelRequest` carries the cache-epoch bookkeeping that compaction
+    /// depends on. Replay must surface the *last* request's values, and each
+    /// field independently — a request that omits one must not clear it.
+    #[tokio::test]
+    async fn replay_tracks_the_latest_model_request_cache_metadata() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+
+        // A fresh session starts at epoch 0 with nothing recorded.
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.cache_epoch, 0);
+        assert_eq!(state.last_prompt_hash, None);
+        assert_eq!(state.last_prompt_bytes, None);
+        assert_eq!(state.last_cache_transport, None);
+
+        journal
+            .append_model_request(
+                sid,
+                json!({
+                    "prompt_wire_sha256": "aaaa",
+                    "prompt_wire_bytes": 128,
+                    "cache_epoch": 1,
+                    "cache_transport": "anthropic-cache-control",
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.last_prompt_hash.as_deref(), Some("aaaa"));
+        assert_eq!(state.last_prompt_bytes, Some(128));
+        assert_eq!(state.cache_epoch, 1);
+        assert_eq!(
+            state.last_cache_transport.as_deref(),
+            Some("anthropic-cache-control")
+        );
+
+        // A later request supersedes the earlier one field by field.
+        journal
+            .append_model_request(
+                sid,
+                json!({
+                    "prompt_wire_sha256": "bbbb",
+                    "prompt_wire_bytes": 256,
+                    "cache_epoch": 2,
+                    "cache_transport": "openai-prefix",
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.last_prompt_hash.as_deref(), Some("bbbb"));
+        assert_eq!(state.last_prompt_bytes, Some(256));
+        assert_eq!(state.cache_epoch, 2);
+        assert_eq!(state.last_cache_transport.as_deref(), Some("openai-prefix"));
+
+        // A request with none of the optional metadata leaves the last known
+        // values in place rather than resetting them to defaults.
+        journal
+            .append_model_request(sid, json!({ "model": "some-model" }))
+            .await
+            .unwrap();
+        // Wrongly-typed values are ignored for the same reason.
+        journal
+            .append_model_request(
+                sid,
+                json!({
+                    "prompt_wire_sha256": 42,
+                    "prompt_wire_bytes": "lots",
+                    "cache_epoch": "three",
+                    "cache_transport": ["nope"],
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.last_prompt_hash.as_deref(), Some("bbbb"));
+        assert_eq!(state.last_prompt_bytes, Some(256));
+        assert_eq!(state.cache_epoch, 2);
+        assert_eq!(state.last_cache_transport.as_deref(), Some("openai-prefix"));
+    }
+
+    fn user_message(content: &str) -> Message {
+        Message {
+            outcome: Default::default(),
+            role: MessageRole::User,
+            content: content.into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        }
+    }
+
+    /// Compaction replaces the *projection* and nothing else: the replayed
+    /// message list becomes the compacted one, the opaque `context_state` is
+    /// carried forward for `forge-core`, and every original event stays in the
+    /// journal so canonical history survives.
+    #[tokio::test]
+    async fn replay_applies_context_compacted_without_losing_history() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        journal.append_user_message(sid, "first").await.unwrap();
+        journal.append_user_message(sid, "second").await.unwrap();
+
+        let before = journal.replay(sid).await.unwrap();
+        assert_eq!(before.messages.len(), 2);
+        assert_eq!(before.compaction_count, 0);
+        assert!(before.context_state.is_none());
+        let events_before = before.events.len();
+
+        journal
+            .append_context_compacted(
+                sid,
+                json!({
+                    "messages": [user_message("summary of first and second")],
+                    "context_state": {"anchor_seq": 2, "summary_tokens": 40},
+                }),
+            )
+            .await
+            .unwrap();
+
+        let after = journal.replay(sid).await.unwrap();
+        assert_eq!(after.messages.len(), 1);
+        assert_eq!(after.messages[0].content, "summary of first and second");
+        assert_eq!(
+            after.context_state,
+            Some(json!({"anchor_seq": 2, "summary_tokens": 40}))
+        );
+        assert_eq!(after.compaction_count, 1);
+        // Additive: the compaction event is appended, nothing is rewritten.
+        assert_eq!(after.events.len(), events_before + 1);
+        assert_eq!(
+            after.events.last().unwrap().event_type,
+            JournalEventType::ContextCompacted
+        );
+        // The original user messages are still recoverable from the journal.
+        assert_eq!(
+            after.user_messages,
+            vec!["first".to_string(), "second".to_string()]
+        );
+
+        // Post-compaction turns append onto the compacted projection.
+        journal.append_user_message(sid, "third").await.unwrap();
+        let resumed = journal.replay(sid).await.unwrap();
+        assert_eq!(resumed.messages.len(), 2);
+        assert_eq!(resumed.messages[1].content, "third");
+        assert_eq!(resumed.compaction_count, 1);
+    }
+
+    /// Compactions accumulate, and a payload missing either half updates only
+    /// the half it carries — a malformed message list must not blank the
+    /// projection.
+    #[tokio::test]
+    async fn repeated_compactions_count_up_and_tolerate_partial_payloads() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_user_message(sid, "first").await.unwrap();
+
+        journal
+            .append_context_compacted(sid, json!({"context_state": {"gen": 1}}))
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.compaction_count, 1);
+        assert_eq!(state.context_state, Some(json!({"gen": 1})));
+        // No `messages` key, so the projection is untouched.
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].content, "first");
+
+        // A `messages` value that is not a message list is ignored too.
+        journal
+            .append_context_compacted(sid, json!({"messages": "not a list"}))
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.compaction_count, 2);
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.context_state, Some(json!({"gen": 1})));
+
+        journal
+            .append_context_compacted(
+                sid,
+                json!({
+                    "messages": [user_message("compacted")],
+                    "context_state": {"gen": 2},
+                }),
+            )
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.compaction_count, 3);
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].content, "compacted");
+        assert_eq!(state.context_state, Some(json!({"gen": 2})));
     }
 }
