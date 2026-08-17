@@ -1065,19 +1065,18 @@ impl SourceViewerWidget<'_> {
         let number_width = total.to_string().len().max(3);
         let gutter = (number_width + 3) as u16; // number + " │ "
 
-        let mut header = format!(
-            "{} · {} · line {} of {}",
-            self.viewer.mode.label(),
-            self.viewer.rel_path,
-            self.viewer.current_line + 1,
-            total
+        let header = compose_source_header(
+            &SourceHeader {
+                mode: self.viewer.mode.label(),
+                rel_path: &self.viewer.rel_path,
+                line: self.viewer.current_line + 1,
+                total,
+                language: self.viewer.language_label.as_deref(),
+                note: self.viewer.highlight_disabled.then_some("plain text"),
+                modified: false,
+            },
+            rows[0].width as usize,
         );
-        if let Some(label) = &self.viewer.language_label {
-            header.push_str(&format!(" · {label}"));
-        }
-        if self.viewer.highlight_disabled {
-            header.push_str(" · plain text");
-        }
         Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
 
         let body = rows[1];
@@ -1218,19 +1217,18 @@ impl SourceViewerWidget<'_> {
                     false,
                 )
             });
-        let mut header = format!(
-            "{} · {} · line {} of {}",
-            mode,
-            self.viewer.rel_path,
-            current_line + 1,
-            total
+        let header = compose_source_header(
+            &SourceHeader {
+                mode: &mode,
+                rel_path: &self.viewer.rel_path,
+                line: current_line + 1,
+                total,
+                language: self.viewer.language_label.as_deref(),
+                note: None,
+                modified,
+            },
+            rows[0].width as usize,
         );
-        if let Some(label) = &self.viewer.language_label {
-            header.push_str(&format!(" · {label}"));
-        }
-        if modified {
-            header.push_str(" · modified");
-        }
         Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
 
         if let Some(editor) = self.editor.as_deref_mut() {
@@ -1306,6 +1304,96 @@ impl SourceViewerWidget<'_> {
             }
         }
     }
+}
+
+/// Compose the source header so it still says what matters in a narrow pane.
+///
+/// The header used to be built by appending, which put the unsaved-changes
+/// state last and therefore made it the first thing a `Paragraph` truncated.
+/// At 120 columns the editor pane is roughly a third of the width, so a real
+/// path plus a line counter already overflows — and the one piece of state a
+/// reader cannot recover by looking at the pane was the piece that vanished.
+///
+/// Parts are sacrificed in increasing order of importance: the plain-text
+/// note, the language, the mode tag, the directory portion of the path, then
+/// the line counter. The `●` marker is never dropped.
+struct SourceHeader<'a> {
+    mode: &'a str,
+    rel_path: &'a str,
+    line: usize,
+    total: usize,
+    language: Option<&'a str>,
+    /// Low-priority aside such as "plain text"; first to be dropped.
+    note: Option<&'a str>,
+    modified: bool,
+}
+
+fn compose_source_header(header: &SourceHeader<'_>, width: usize) -> String {
+    let SourceHeader {
+        mode,
+        rel_path,
+        line,
+        total,
+        language,
+        note,
+        modified,
+    } = *header;
+    let marker = if modified { "\u{25cf} " } else { "" };
+    let basename = std::path::Path::new(rel_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(rel_path);
+    let counter = format!("line {} of {}", line, total);
+    let word = if modified { "modified" } else { "" };
+    let full = format!("{marker}{rel_path}");
+    let short = format!("{marker}{basename}");
+
+    let join = |parts: &[&str]| {
+        parts
+            .iter()
+            .filter(|p| !p.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ")
+    };
+
+    let candidates = [
+        join(&[
+            mode,
+            &full,
+            &counter,
+            language.unwrap_or(""),
+            note.unwrap_or(""),
+            word,
+        ]),
+        join(&[mode, &full, &counter, language.unwrap_or(""), word]),
+        join(&[mode, &full, &counter, word]),
+        join(&[&full, &counter, word]),
+        join(&[&short, &counter, word]),
+        join(&[&short, word]),
+        short.clone(),
+    ];
+
+    for candidate in &candidates {
+        if candidate.chars().count() <= width {
+            return candidate.clone();
+        }
+    }
+
+    // Narrower than the filename itself: keep the marker, shorten the name.
+    let keep = width.saturating_sub(marker.chars().count());
+    let name: String = if keep == 0 {
+        String::new()
+    } else if basename.chars().count() <= keep {
+        basename.to_string()
+    } else {
+        basename
+            .chars()
+            .take(keep.saturating_sub(1))
+            .chain(std::iter::once('\u{2026}'))
+            .collect()
+    };
+    format!("{marker}{name}")
 }
 
 #[cfg(test)]
@@ -2015,6 +2103,161 @@ mod tests {
             }
         }
         assert!(rendered.contains("modified"));
+    }
+
+    /// The pure composer is only half of it: the widget has to pass the pane
+    /// width through. Rendered at 40 columns, which is about what a 120-column
+    /// terminal leaves the editor pane in the three-pane layout.
+    #[test]
+    fn a_narrow_editor_pane_still_shows_unsaved_state() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("some_longish_name.txt");
+        fs::write(&path, "old text\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        let mut editor = EditorSession::new("old text\n");
+        for key in [
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyCode::Char('x'),
+        ] {
+            editor.handle_key(crossterm::event::KeyEvent::new(
+                key,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+
+        let mut rendered = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+        assert!(
+            rendered.contains('\u{25cf}'),
+            "unsaved state must be visible in a narrow pane:\n{rendered}"
+        );
+    }
+
+    /// The width the usability run actually hit: a 120-column terminal gives
+    /// the editor pane roughly a third, and the old header lost the
+    /// unsaved-changes state there while looking perfectly fine at 100.
+    #[test]
+    fn unsaved_state_survives_a_narrow_pane() {
+        let path = "crates/forge-tui/src/source_viewer.rs";
+
+        for width in [80, 60, 40, 30, 20, 12, 6] {
+            let header = compose_source_header(
+                &SourceHeader {
+                    mode: "NORMAL",
+                    rel_path: path,
+                    line: 42,
+                    total: 2100,
+                    language: Some("Rust"),
+                    note: None,
+                    modified: true,
+                },
+                width,
+            );
+
+            assert!(
+                header.chars().count() <= width,
+                "header overflows at width {width}: {header:?}"
+            );
+            assert!(
+                header.contains('\u{25cf}'),
+                "the unsaved marker must survive width {width}: {header:?}"
+            );
+        }
+    }
+
+    /// Detail is given up in a deliberate order, not arbitrarily.
+    #[test]
+    fn header_sheds_the_least_important_detail_first() {
+        let path = "src/app/workspace.rs";
+        let at = |width| {
+            compose_source_header(
+                &SourceHeader {
+                    mode: "NORMAL",
+                    rel_path: path,
+                    line: 7,
+                    total: 900,
+                    language: Some("Rust"),
+                    note: Some("plain text"),
+                    modified: true,
+                },
+                width,
+            )
+        };
+
+        let full = at(100);
+        assert!(full.contains("plain text") && full.contains("Rust") && full.contains("NORMAL"));
+        assert!(full.contains(path), "a wide pane keeps the whole path");
+
+        // Enough for the path and counter, not for the decorations.
+        let medium = at(46);
+        assert!(
+            !medium.contains("plain text"),
+            "note goes first: {medium:?}"
+        );
+        assert!(
+            medium.contains("line 7 of 900"),
+            "the counter outranks it: {medium:?}"
+        );
+
+        // Too narrow for the directories, wide enough for the name.
+        let narrow = at(24);
+        assert!(
+            !narrow.contains("src/app"),
+            "path shortens to a basename: {narrow:?}"
+        );
+        assert!(
+            narrow.contains("workspace.rs"),
+            "the name is kept: {narrow:?}"
+        );
+
+        // Nothing but the name fits.
+        let tiny = at(10);
+        assert!(
+            !tiny.contains("line"),
+            "the counter goes before the name: {tiny:?}"
+        );
+        assert!(
+            tiny.starts_with('\u{25cf}'),
+            "the marker still leads: {tiny:?}"
+        );
+    }
+
+    /// An unmodified file must not grow a marker, or the indicator means
+    /// nothing.
+    #[test]
+    fn the_marker_appears_only_when_modified() {
+        let clean = compose_source_header(
+            &SourceHeader {
+                mode: "NORMAL",
+                rel_path: "a/b.rs",
+                line: 1,
+                total: 10,
+                language: None,
+                note: None,
+                modified: false,
+            },
+            60,
+        );
+        assert!(!clean.contains('\u{25cf}'), "{clean:?}");
+        assert!(!clean.contains("modified"), "{clean:?}");
     }
 
     #[test]
