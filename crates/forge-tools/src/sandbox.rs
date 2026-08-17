@@ -99,6 +99,12 @@ pub struct SandboxPolicy {
     /// Loopback port of the egress proxy, when domain-filtered network access
     /// is granted. `None` denies the network outright.
     egress_proxy_port: Option<u16>,
+    /// Unix socket the egress proxy also serves on.
+    ///
+    /// Linux needs this and macOS does not. Under `--unshare-net` there is no
+    /// route to the host's loopback, so a TCP port is unreachable from inside;
+    /// a Unix socket is a filesystem object and a bind-mount still reaches it.
+    egress_socket: Option<PathBuf>,
 }
 
 impl SandboxPolicy {
@@ -108,6 +114,7 @@ impl SandboxPolicy {
             workspace_root: workspace_root.as_ref().to_path_buf(),
             session_tmp: None,
             egress_proxy_port: None,
+            egress_socket: None,
         }
     }
 
@@ -134,6 +141,25 @@ impl SandboxPolicy {
 
     pub fn egress_proxy_port(&self) -> Option<u16> {
         self.egress_proxy_port
+    }
+
+    /// Bind-mount the egress proxy's Unix socket into the sandbox.
+    ///
+    /// The Linux counterpart of [`Self::with_egress_proxy`]. Nothing else is
+    /// bind-mounted in, so this socket is the only one a confined process can
+    /// reach — which is what makes the proxy the only route out.
+    ///
+    /// Not yet a complete boundary: a process can still create its own
+    /// `AF_UNIX` sockets. Codex blocks that with seccomp once the bridge is
+    /// live. Until forge does the same, this is enforcement by what is
+    /// reachable rather than by what is creatable.
+    pub fn with_egress_socket(mut self, path: impl AsRef<Path>) -> Self {
+        self.egress_socket = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn egress_socket(&self) -> Option<&Path> {
+        self.egress_socket.as_deref()
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -315,6 +341,14 @@ fn bubblewrap_invocation(
     if let Some(tmp) = &policy.session_tmp {
         let tmp = tmp.canonicalize().ok()?.to_str()?.to_string();
         args.extend(["--bind".into(), tmp.clone(), tmp]);
+    }
+
+    // The one route out, when egress is granted at all. `--unshare-net` above
+    // already removed every network route; this bind-mount is a filesystem
+    // object, so it survives that and is the only destination reachable.
+    if let Some(socket) = &policy.egress_socket {
+        let socket = socket.to_str()?.to_string();
+        args.extend(["--bind".into(), socket.clone(), socket]);
     }
 
     for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root)) {
@@ -570,6 +604,49 @@ mod bubblewrap_tests {
         if let Some(path) = bwrap_path() {
             assert!(path.starts_with('/'), "must be absolute, got {path}");
         }
+    }
+
+    /// Without a grant there is no route out at all: the network namespace is
+    /// unshared and nothing is bind-mounted to reach past it.
+    #[test]
+    fn no_egress_grant_means_no_route_out() {
+        let ws = workspace();
+        let Some((_, args)) =
+            bubblewrap_invocation("sh", "true", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return;
+        };
+        assert!(args.iter().any(|a| a == "--unshare-net"));
+        assert!(
+            !args.iter().any(|a| a.ends_with(".sock")),
+            "nothing should be bound in without a grant"
+        );
+    }
+
+    /// The socket is bind-mounted *after* --unshare-net, which is the whole
+    /// trick: the namespace removes every network route, and a filesystem
+    /// object survives that.
+    #[test]
+    fn a_granted_socket_is_bound_in_after_the_network_is_unshared() {
+        let ws = workspace();
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("egress.sock");
+        std::fs::write(&sock, b"").unwrap();
+
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_egress_socket(&sock);
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &policy) else {
+            return;
+        };
+
+        let unshare = args.iter().position(|a| a == "--unshare-net").unwrap();
+        let bound = args
+            .iter()
+            .position(|a| a == sock.to_str().unwrap())
+            .expect("the granted socket must be bound in");
+        assert!(
+            unshare < bound,
+            "the bind must follow the unshare, or it is binding into the host namespace"
+        );
     }
 
     #[test]
