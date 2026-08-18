@@ -85,8 +85,7 @@ impl AgentSession {
             }
             let is_same_transcript = cached.storage_id == self.messages.storage_id();
             if is_same_transcript && cached.fingerprint.messages < fingerprint.messages {
-                let appended =
-                    estimate_messages_tokens(&self.messages[cached.fingerprint.messages..]);
+                let appended = messages_tokens(&self.messages[cached.fingerprint.messages..]);
                 let total = cached.total.saturating_add(appended);
                 *cache = Some(CtxTokensCache {
                     storage_id: self.messages.storage_id(),
@@ -96,7 +95,7 @@ impl AgentSession {
                 return total;
             }
         }
-        let total = estimate_messages_tokens(&self.messages);
+        let total = messages_tokens(&self.messages);
         *cache = Some(CtxTokensCache {
             storage_id: self.messages.storage_id(),
             fingerprint,
@@ -139,9 +138,7 @@ impl AgentSession {
                 _ => user_tokens_est = user_tokens_est.saturating_add(n),
             }
         }
-        let context_tokens_est = self
-            .context_tokens_estimate()
-            .saturating_add(thinking_in_context_est);
+        let context_tokens_est = self.context_tokens_estimate();
         let context_capacity = self.context.config.capacity_tokens.max(1);
         let context_pct = (context_tokens_est as f64 / context_capacity as f64) * 100.0;
         TokenUsageReport {

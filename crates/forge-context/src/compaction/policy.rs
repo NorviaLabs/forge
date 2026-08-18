@@ -120,7 +120,7 @@ impl CompactionPolicy {
 
 impl Default for CompactionPolicy {
     fn default() -> Self {
-        Self::for_window(200_000, None)
+        Self::for_window(500_000, None)
     }
 }
 
