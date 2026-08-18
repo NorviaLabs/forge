@@ -348,9 +348,12 @@ impl TuiApp {
                         self.stream.thinking.clone(),
                         self.stream.preview.clone(),
                     )
+                    // The preview is a single block, so block-level tailing
+                    // cannot trim it; the cache windows lines instead. Pass the
+                    // transcript's window so both agree on what is on screen.
                     .lines_for_width_from_end_cached(
                         width,
-                        usize::MAX,
+                        keep_from_end,
                         &mut self.stream.markdown,
                     ),
                 );
