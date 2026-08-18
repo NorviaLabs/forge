@@ -331,8 +331,9 @@ each request names and refuses anything not on the allow-list. It does not
 terminate TLS, install a certificate, or see your traffic — it only decides
 where a connection may go.
 
-The allow-list currently seeds the package registries a first build needs
-(crates.io, github.com, npm, PyPI) and denies everything else. Seeding is a
+The allow-list currently seeds the hosts a first build and GitHub CLI session
+need (crates.io, github.com and its subdomains, npm, PyPI) and denies
+everything else. Seeding is a
 policy decision made on your behalf, and it is the weakest part of this
 design: forge has no per-domain prompt yet, so a seeded list is the
 alternative to `cargo build` failing on a fresh clone. When per-domain
