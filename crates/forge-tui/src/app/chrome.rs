@@ -202,7 +202,34 @@ impl TuiApp {
             progress_description: self.header_progress_description(),
             failure_category: self.header_failure_category(transcript),
             waiting_detail: self.header_waiting_detail(),
+            incomplete_checks: self.header_incomplete_checks(transcript),
         }
+    }
+
+    /// Steps that didn't finish on a turn that nonetheless completed.
+    ///
+    /// Deliberately narrow: only for `Completed`. A turn that actually failed
+    /// reports through [`Self::header_failure_category`] instead, so this can
+    /// never be used to soften a genuine failure into a footnote.
+    fn header_incomplete_checks(&self, transcript: &TranscriptSnapshot) -> Option<String> {
+        if self.session_view.lifecycle != forge_types::TaskLifecycle::Completed {
+            return None;
+        }
+        let event = transcript
+            .events()
+            .iter()
+            .rev()
+            .find(|event| event.kind == "turn_incomplete_checks")?;
+        let names = event.detail.trim();
+        if names.is_empty() {
+            return None;
+        }
+        let count = names.split(", ").count();
+        Some(if count == 1 {
+            format!("{names} didn't finish")
+        } else {
+            format!("{count} checks didn't finish")
+        })
     }
 
     /// Refresh state that requires I/O. This belongs to the event-loop tick,

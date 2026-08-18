@@ -258,6 +258,7 @@ fn status_model_from_app_fields() {
         progress_description: None,
         failure_category: None,
         waiting_detail: None,
+        incomplete_checks: None,
     };
     assert_eq!(m.status_label().0, "Ready");
 }
