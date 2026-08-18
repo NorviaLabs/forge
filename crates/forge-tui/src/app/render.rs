@@ -692,6 +692,7 @@ impl TuiApp {
             }),
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
+            lifecycle_detail: status.incomplete_checks.clone(),
             ctx_pct: status.ctx_pct,
             prompt_tokens: self.session_view.prompt_tokens,
             completion_tokens: self.session_view.completion_tokens,
