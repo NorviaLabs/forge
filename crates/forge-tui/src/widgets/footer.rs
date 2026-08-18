@@ -18,7 +18,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum FooterFocus {
     Llm,
     Effort,
-    Mode,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -34,8 +33,6 @@ pub struct FooterModel {
     pub llm_label: String,
     pub llm_connected: bool,
     pub effort_label: String,
-    /// Permission-mode label (Manual / Auto) for the footer's mode chip.
-    pub mode_label: String,
     pub focus: Option<FooterFocus>,
     /// HITL pending — dim the row, don't look interactive.
     pub dimmed: bool,
@@ -198,22 +195,19 @@ impl Widget for FooterBar<'_> {
             return;
         }
 
-        // ---- left: configuration chips (which-LLM, effort, mode) ----
+        // ---- left: configuration chips (which-LLM, effort) ----
         let dim = m.dimmed;
-        let mode_display = m.mode_label.clone();
         let config_chrome = 2 // dot + " " before the model label
-            + 1 + 1 + 1 // " │ " separator
-            + 1 + 1 + 1 // " │ " before the mode chip
-            + mode_display.chars().count();
+            + 1 + 1 + 1; // " │ " separator before effort
         let effort_chars = m.effort_label.chars().count() as u16;
 
         // ---- right: live activity, or the custom hint when one is set ----
         use ratatui::text::Span;
         let right = if hints.is_empty() {
             // Spelling out the token unit costs columns the narrowest frames
-            // don't have. Which chip loses is not a wash: the mode chip says
-            // whether Forge asks before it acts, so it must never be traded for
-            // a unit label. Take the labeled form only when the chips and a
+            // don't have. The model label shrinks first; the effort chip
+            // stays fully visible; the unit label drops before anything on
+            // the left. Take the labeled form only when the chips and a
             // still-recognisable model id survive it.
             let labeled = self.activity_line(true);
             let min_left = config_chrome as u16 + effort_chars + MIN_MODEL_CHARS;
@@ -285,23 +279,6 @@ impl Widget for FooterBar<'_> {
                 effort_style.add_modifier(Modifier::UNDERLINED)
             } else {
                 effort_style
-            },
-        ));
-        left.push(Span::raw(" "));
-        left.push(Span::styled("│", theme::border_muted()));
-        left.push(Span::raw(" "));
-        let mode_style = if dim {
-            theme::dim()
-        } else {
-            theme::accent_style().add_modifier(Modifier::BOLD)
-        };
-        let mode_focused = m.focus == Some(FooterFocus::Mode);
-        left.push(Span::styled(
-            mode_display,
-            if mode_focused && !dim {
-                mode_style.add_modifier(Modifier::UNDERLINED)
-            } else {
-                mode_style
             },
         ));
 
@@ -468,7 +445,6 @@ mod tests {
             llm_label: "openai/gpt-5.6-luna".into(),
             llm_connected: true,
             effort_label: "Medium".into(),
-            mode_label: "Auto".into(),
             lifecycle,
             ctx_pct,
             ..Default::default()
@@ -485,14 +461,14 @@ mod tests {
     }
 
     #[test]
-    fn renders_llm_effort_and_mode_as_plain_labels() {
+    fn renders_llm_and_effort_as_plain_labels() {
         // Chips are plain text — no glyphs (▴/⏎/>>) — the interactions are
         // taught by the hint row, not by decorating the labels.
         let m = model(TurnLifecycle::Ready, 0.34);
         let out = rendered(&m, 90);
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
         assert!(out.contains("Medium"), "{out:?}");
-        assert!(out.contains("Auto"), "{out:?}");
+        assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
         assert!(
             !out.contains('▴') && !out.contains('⏎') && !out.contains(">>"),
             "{out:?}"
@@ -527,9 +503,9 @@ mod tests {
         let m = model(TurnLifecycle::Ready, 0.34);
         let out = rendered(&m, 90);
         assert!(out.contains('│'), "{out:?}");
-        let mode_end = out.find("Auto").expect("mode chip renders") + "Auto".len();
+        let effort_end = out.find("Medium").expect("effort chip renders") + "Medium".len();
         assert!(
-            !out[..mode_end].contains('·'),
+            !out[..effort_end].contains('·'),
             "chip cluster should use │, not ·: {out:?}"
         );
     }
@@ -633,12 +609,12 @@ mod tests {
     #[test]
     fn long_model_truncates_but_keeps_the_effort_control() {
         // The read-only model label is the side that shrinks under pressure;
-        // the effort and mode chips must stay fully visible.
+        // the effort chip must stay fully visible.
         let mut m = model(TurnLifecycle::Working, 0.34);
         m.llm_label = "OpenCode/deepseek-v4-flash-free".into();
         let out = rendered(&m, 76);
         assert!(out.contains("Medium"), "{out:?}");
-        assert!(out.contains("Auto"), "{out:?}");
+        assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
         assert!(
             out.contains('…'),
             "long model should middle-truncate: {out:?}"
@@ -657,12 +633,12 @@ mod tests {
     fn fits_at_min_width_floor_without_dropping_anything() {
         // 76 usable cols is layout.rs::MIN_WIDTH's realistic floor (80-col
         // terminal, 95% content width). The model label is the only side
-        // that may shrink; effort, mode, and the right-side activity
+        // that may shrink; effort and the right-side activity
         // (lifecycle, context bar, usage) must render in full.
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 76);
         assert!(out.contains("Medium"), "{out:?}");
-        assert!(out.contains("Auto"), "{out:?}");
+        assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
         assert!(out.contains("0 tokens · —"), "{out:?}");
@@ -677,12 +653,11 @@ mod tests {
     }
 
     #[test]
-    fn a_cramped_row_drops_the_unit_label_before_the_mode_chip() {
-        // The mode chip says whether Forge asks before acting; it must never be
-        // traded away for a unit label.
+    fn a_cramped_row_drops_the_unit_label_before_the_effort_chip() {
+        // The effort chip stays fully visible; the `tokens` unit drops first.
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 60);
-        assert!(out.contains("Auto") || out.contains("Manual"), "{out:?}");
+        assert!(out.contains("Medium"), "{out:?}");
         assert!(out.contains("0 · —"), "{out:?}");
         assert!(!out.contains("0 tokens"), "{out:?}");
     }

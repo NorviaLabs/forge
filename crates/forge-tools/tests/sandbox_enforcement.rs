@@ -514,7 +514,7 @@ fn sandbox_is_available_on_linux_in_ci() {
 //
 // `exec_command` keeps a shell alive across turns and `write_stdin` feeds it,
 // and `write_stdin` is in neither `is_shell_tool()` nor
-// `default_shell_hitl_tools()` — so once a session exists the agent writes
+// `default_hitl_tools()` — so once a session exists the agent writes
 // arbitrary commands into it with no further approval. Confinement is the only
 // thing standing there, it is applied at spawn and cannot be retrofitted, and
 // until now nothing checked it took.
@@ -841,8 +841,8 @@ fn unix_sockets_are_denied_wholesale() {
 /// and when this particular policy could not be built — `canonicalize` fails if
 /// the root is gone. The caller treats both the same and runs the command
 /// unconfined, but only the first is a decision anyone made: the sandbox-less
-/// fallback is paired with a permission mode capped upstream at session start,
-/// and nothing re-evaluates that when a directory vanishes at 11pm.
+/// case is a launch-time refusal in the supported CLI, and nothing
+/// re-evaluates that when a directory vanishes at 11pm.
 #[tokio::test]
 async fn a_vanished_workspace_does_not_silently_run_unconfined() {
     require_sandbox!();

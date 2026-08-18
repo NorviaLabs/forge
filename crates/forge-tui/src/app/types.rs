@@ -123,8 +123,6 @@ pub(crate) struct RepositoryUiState {
     pub(crate) files_visibility: FilesVisibility,
     #[serde(default)]
     pub(crate) theme: Option<String>,
-    #[serde(default)]
-    pub(crate) permission_mode: Option<forge_governance::PermissionMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,9 +229,9 @@ pub(crate) enum FocusBlock {
     Workspace,
     Sidebar,
     Composer,
-    /// The footer's three controls (which-LLM, effort, mode) — a normal Tab
+    /// The footer's two controls (which-LLM, effort) — a normal Tab
     /// stop, not a separate `F3` side-channel. See `focus.rs::normalize_focus`
-    /// for how `composer_chip_focus` (which of the three is selected) tracks
+    /// for how `composer_chip_focus` (which of the two is selected) tracks
     /// entry/exit from this block.
     Footer,
     BottomPanel,
@@ -394,7 +392,6 @@ pub(crate) enum SemanticCommand {
     ToggleCurrentFileAttachment,
     PasteClipboardImage,
     ToggleToolDetails,
-    CyclePermissionMode,
     /// Step reasoning effort one level (`Alt+,` back, `Alt+.` forward)
     /// within the current model's valid options — see
     /// [`crate::effort::ReasoningEffort::step`].

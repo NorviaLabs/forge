@@ -183,10 +183,9 @@ controls are:
 | `Ctrl+D` | Quit |
 | `Ctrl+Shift+V` | Attach a screenshot from the local OS clipboard |
 
-The footer carries a chip row: model, effort, and permission mode. It is an
-ordinary `Tab` stop — `Tab` to it, `←`/`→` to pick a chip, `Enter` to activate
-(the mode chip toggles Manual ↔ Auto; the others open their picker). `Enter`
-still sends from the composer; `⏎` is a hint only. `Ctrl+Shift+V` attaches a
+The footer carries a chip row: model and effort. It is an ordinary `Tab`
+stop — `Tab` to it, `←`/`→` to pick a chip, `Enter` to open the picker.
+`Enter` still sends from the composer; `⏎` is a hint only. `Ctrl+Shift+V` attaches a
 PNG/JPEG/GIF/WebP from the local clipboard (workspace-only; SSH has no image
 clipboard). The model can also call `view_image` on a workspace file when the
 active model accepts image input.
@@ -285,8 +284,8 @@ untrusted checked-out repository.
 
 ### The sandbox
 
-Every shell command the agent runs is confined by the operating system, in
-every permission mode. Confinement is applied at spawn, so it does not depend
+Every shell command the agent runs is confined by the operating system.
+Confinement is applied at spawn, so it does not depend
 on the agent classifying a command correctly beforehand — forge does not try
 to decide whether `rm -rf` is dangerous, it removes the reach that would make
 it matter.
@@ -322,9 +321,8 @@ Landlock's `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, which is newer than the kernels
 forge runs on today; seccomp cannot express it. Tracked in issue #392.
 
 If the OS cannot confine — bubblewrap missing, an unsupported platform — forge
-does not pretend otherwise. It caps the session at Manual mode and tells you
-why. Auto is unreachable without a sandbox under it; there is no combination
-of settings that turns oversight off without an enforcement floor in place.
+does not start. It prints why on stderr and exits. There is no combination of
+settings that turns oversight off without an enforcement floor in place.
 
 ### Network egress
 
@@ -344,9 +342,11 @@ prompting exists, this becomes the fallback rather than the default.
 
 ### Permission rules
 
-`permissions.toml` narrows or widens what runs without a prompt, with pattern
-rules matched against the actual call — a command prefix
-for shell tools, a path glob for file tools, a host for fetch-style tools:
+`permissions.toml` can re-prompt a call (`deny`) or skip a prompt that would
+otherwise appear (`allow`). Pattern rules match the actual call — a command
+prefix for shell tools, a path glob for file tools, a host for fetch-style
+tools. Shell does not prompt by default, so `allow` rules for shell do nothing
+to prompting. MCP still prompts unless allowed:
 
 ```toml
 allow = ["bash(cargo test *)", "bash(cargo build*)"]
@@ -373,30 +373,15 @@ Menu rows (when a prompt appears):
   prompt; a different family still asks. Not written to `permissions.toml`.
 - **Don't run** — block the call.
 
-### Permission modes
+### Approvals
 
-The footer's mode chip cycles the session's oversight level (persisted per
-workspace): `Tab` to the footer, `←`/`→` to the mode chip, `Enter` to toggle.
-Default is **Accept Edits**, shown in the footer as **Auto**.
+There is no permission-mode setting. Shell commands and file writes run
+without a prompt: the sandbox is the boundary. MCP tools still prompt,
+because those are separate server processes the sandbox does not confine. A
+`deny` pattern re-prompts even for shell. An ACL deny is a hard block, not a
+prompt.
 
-The mode decides only whether you are *asked*. It never decides what a command
-can *reach* — the sandbox does that, identically in both modes.
-
-- **Accept Edits / Auto** (default) — shell commands run without prompting,
-  because they are already confined to your workspace with no unrestricted
-  network. Asking on top of that is friction without added safety. File writes
-  are free for the same reason. MCP tools still prompt: those are separate
-  server processes and the sandbox does not confine them.
-- **Manual** — the same confinement, plus a prompt before every
-  shell-equivalent command, unless your personal `permissions.toml` (or a
-  session `always`) allows it.
-
-Auto requires a working sandbox. On a host that cannot confine, the mode is
-capped at Manual and the footer's mode chip explains why.
-
-Modes never override an ACL deny or ignore your `permissions.toml` rules: a
-`deny` pattern is checked first and re-prompts in Auto exactly as in Manual.
-A stricter `Locked` mode is deferred until headless/CI entry exists.
+A host that cannot confine never reaches this policy — Forge refuses to start.
 
 ### Approving shell commands
 
