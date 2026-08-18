@@ -173,6 +173,29 @@ pub(crate) fn git_effect_kind(subcommand: &str) -> GitEffectKind {
     }
 }
 
+/// Whether a git subcommand only inspects the repository.
+///
+/// Used to decide whether a git call is *the work* of a turn or something the
+/// model ran to look around while doing the work. An inspection leaves the
+/// repository exactly as it found it, so it can never be the thing the user
+/// asked for when the same turn also edited a file.
+pub(crate) fn git_is_read_only(subcommand: &str) -> bool {
+    matches!(
+        subcommand,
+        "log"
+            | "diff"
+            | "status"
+            | "show"
+            | "blame"
+            | "describe"
+            | "rev-parse"
+            | "ls-files"
+            | "branch"
+            | "remote"
+            | "config"
+    )
+}
+
 /// Collapse repeated attempts at the same target down to the last one, order
 /// otherwise unspecified. A model that retries a failed write/command/git
 /// call until it succeeds should only be judged on the final attempt, not
@@ -269,7 +292,23 @@ pub(crate) fn classify_turn(calls: &[ToolCall]) -> TaskExpectation {
         }
     }
 
-    if !git_items.is_empty() {
+    // Git outranks a file edit only when it actually changes the repository.
+    //
+    // Ranking *any* git call above the edit means a turn that fixed a file and
+    // then ran `git diff` to look at its own work is judged solely on the git
+    // call: the verified edit is never consulted, and a failed inspection marks
+    // the whole turn Failed while the fix sits correct on disk. Reviewing your
+    // work is not the work, so an inspection-only git call leaves the file edit
+    // as the expectation and becomes ordinary evidence — which
+    // `apply_model_response` already reports as an unfinished check rather than
+    // a failure.
+    //
+    // A pure-git turn keeps its old meaning: with no edit to fall back to, the
+    // inspection *is* what was asked for, and its failure is the turn's.
+    let git_mutates = git_items
+        .iter()
+        .any(|(_, subcommand, _)| !git_is_read_only(subcommand));
+    if !git_items.is_empty() && (git_mutates || file_items.is_empty()) {
         let deduped = dedup_keep_last(git_items, |(_, sub, _)| sub.clone());
         return TaskExpectation::GitOperation {
             expected_effects: deduped
