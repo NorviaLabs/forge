@@ -163,9 +163,20 @@ async fn grow_without_pressure(session: &mut AgentSession, turns: usize) {
     session.set_context_window(policy.context_window, Some(policy.max_output_reserve));
 }
 
+/// Window these fixtures compact against.
+///
+/// Pinned rather than inherited from `CompactionPolicy::default()`: the
+/// product default moved 200K -> 500K, which pushed the trigger from 170K to
+/// 425K and silently left every fixture below the boundary — the suite then
+/// failed on its own "must actually be under context pressure" guard rather
+/// than on anything about compaction. These tests are about behaviour at the
+/// boundary, so they set the boundary themselves.
+const FIXTURE_CONTEXT_WINDOW: usize = 200_000;
+
 /// A session whose context sits above the automatic compaction boundary.
 async fn pressured_session(model: Arc<CheckpointModel>, dir: &std::path::Path) -> AgentSession {
     let mut session = session_with(model, dir).await;
+    session.set_context_window(FIXTURE_CONTEXT_WINDOW, None);
     // 200K window: the trigger sits at 170K, and each turn is ~2.5K tokens.
     grow_without_pressure(&mut session, 70).await;
     assert!(
