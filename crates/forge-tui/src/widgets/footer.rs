@@ -40,6 +40,10 @@ pub struct FooterModel {
     /// HITL pending — dim the row, don't look interactive.
     pub dimmed: bool,
     pub lifecycle: TurnLifecycle,
+    /// Short qualifier shown after the lifecycle label, e.g. naming a check
+    /// that didn't finish on an otherwise completed turn. Styled as secondary
+    /// text, never as failure — the lifecycle glyph alone carries severity.
+    pub lifecycle_detail: Option<String>,
     /// 0.0..=1.0
     pub ctx_pct: f64,
     /// Session API-reported prompt/input tokens.
@@ -312,6 +316,14 @@ impl FooterBar<'_> {
             right.extend(shimmer_label(m.lifecycle.label(), theme::text_secondary()));
         } else {
             right.push(Span::styled(m.lifecycle.label(), theme::text_secondary()));
+        }
+        if let Some(detail) = m
+            .lifecycle_detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+        {
+            right.push(Span::styled(format!(" · {detail}"), theme::dim()));
         }
         right.extend([
             Span::raw("  "),
