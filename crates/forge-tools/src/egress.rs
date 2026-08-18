@@ -62,30 +62,25 @@ impl EgressPolicy {
         Self::default()
     }
 
-    /// An **opt-in** convenience covering the ecosystems a first run needs.
+    /// Build a policy from the merged permission file.
     ///
-    /// Deliberately not the default. Claude Code pre-allows nothing and
-    /// prompts on first use of each domain; Codex's production stance is
-    /// `"*" = "deny"` plus what you add. A seeded allowlist is a policy
-    /// decision made silently on the user's behalf — the same class of mistake
-    /// as a sandbox that quietly grants the whole temp tree. Callers that want
-    /// `cargo build` to run without a prompt should opt in explicitly.
-    pub fn with_default_ecosystems() -> Self {
+    /// Only `host(...)` rules affect egress. Other patterns (`bash(...)`,
+    /// `fetch(...)`) stay on the HITL path. An empty file — the default —
+    /// permits nothing. `host(*)` is unrestricted network through the proxy;
+    /// a deny still wins over it.
+    pub fn from_permissions(file: &forge_config::PermissionsFile) -> Self {
         let mut policy = Self::new();
-        for host in [
-            "crates.io",
-            "static.crates.io",
-            "index.crates.io",
-            "**.crates.io",
-            "**.github.com",
-            "**.githubusercontent.com",
-            "registry.npmjs.org",
-            "pypi.org",
-            "files.pythonhosted.org",
-        ] {
-            policy.allow(host);
+        for pattern in file.allow.iter().filter_map(|raw| host_rule(raw)) {
+            policy.allow(pattern);
+        }
+        for pattern in file.deny.iter().filter_map(|raw| host_rule(raw)) {
+            policy.deny(pattern);
         }
         policy
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty() && self.deny.is_empty()
     }
 
     pub fn allow(&mut self, pattern: impl Into<String>) -> &mut Self {
@@ -116,7 +111,16 @@ impl EgressPolicy {
     }
 }
 
+fn host_rule(raw: &str) -> Option<&str> {
+    let raw = raw.trim();
+    let inner = raw.strip_prefix("host(")?.strip_suffix(')')?.trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
 fn matches_pattern(pattern: &str, host: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
     if let Some(suffix) = pattern.strip_prefix("**.") {
         return host == suffix || host.ends_with(&format!(".{suffix}"));
     }
@@ -413,27 +417,51 @@ mod tests {
     }
 
     #[test]
-    fn the_default_seed_covers_a_first_cargo_build() {
-        let p = EgressPolicy::with_default_ecosystems();
+    fn from_permissions_reads_only_host_rules() {
+        let file = forge_config::PermissionsFile {
+            allow: vec![
+                "host(**.example.com)".into(),
+                "bash(cargo test *)".into(),
+                "fetch(docs.example.com)".into(),
+                "host( )".into(),
+            ],
+            deny: vec!["host(evil.example.com)".into(), "bash(curl*)".into()],
+        };
+        let p = EgressPolicy::from_permissions(&file);
+        assert!(p.permits("api.example.com"));
+        assert!(p.permits("example.com"));
+        assert!(!p.permits("evil.example.com"));
+        assert!(!p.permits("crates.io"));
+        assert!(!p.permits("registry.npmjs.org"));
+    }
+
+    #[test]
+    fn a_star_allow_is_unrestricted_except_for_denies() {
+        let file = forge_config::PermissionsFile {
+            allow: vec!["host(*)".into()],
+            deny: vec!["host(evil.example.com)".into()],
+        };
+        let p = EgressPolicy::from_permissions(&file);
+        assert!(p.permits("crates.io"));
+        assert!(p.permits("registry.npmjs.org"));
+        assert!(p.permits("pypi.org"));
+        assert!(p.permits("github.com"));
+        assert!(!p.permits("evil.example.com"));
+    }
+
+    #[test]
+    fn an_empty_permissions_file_permits_nothing() {
+        let p = EgressPolicy::from_permissions(&forge_config::PermissionsFile::default());
         for host in [
             "crates.io",
             "static.crates.io",
-            "index.crates.io",
+            "registry.npmjs.org",
+            "pypi.org",
             "github.com",
             "api.github.com",
-            "gist.github.com",
-            "uploads.github.com",
-            "codeload.github.com",
-            "raw.githubusercontent.com",
         ] {
-            assert!(
-                p.permits(host),
-                "{host} is needed by a first cargo build or `gh`"
-            );
+            assert!(!p.permits(host), "{host} must not be pre-allowed");
         }
-        assert!(!p.permits("evil.example.com"));
-        assert!(!p.permits("notgithub.com"));
-        assert!(!p.permits("github.com.evil.com"));
     }
 
     #[test]

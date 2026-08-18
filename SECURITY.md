@@ -52,9 +52,10 @@ On a host where the OS cannot confine, Forge does not start. It prints why
 and exits, rather than running unconfined.
 
 What the sandbox does **not** protect: anything a command can legitimately do
-inside your workspace, and anything it can send to an allow-listed host. A
-confined command can still corrupt your working tree or exfiltrate what it can
-read through a permitted destination.
+inside your workspace, and anything it can send to a host you have allowed.
+A confined command can still corrupt your working tree or exfiltrate what it
+can read through a permitted destination. Hosts start denied; only a personal
+`host(...)` allow (or `host(*)`) opens one.
 
 Three consequences worth being explicit about:
 

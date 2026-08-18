@@ -332,26 +332,32 @@ each request names and refuses anything not on the allow-list. It does not
 terminate TLS, install a certificate, or see your traffic — it only decides
 where a connection may go.
 
-The allow-list currently seeds the hosts a first build and GitHub CLI session
-need (crates.io, github.com and its subdomains, npm, PyPI) and denies
-everything else. Seeding is a
-policy decision made on your behalf, and it is the weakest part of this
-design: forge has no per-domain prompt yet, so a seeded list is the
-alternative to `cargo build` failing on a fresh clone. When per-domain
-prompting exists, this becomes the fallback rather than the default.
+The allow-list is empty until you add hosts. Nothing — not crates.io, npm,
+PyPI, or GitHub — is reachable unless a personal `host(...)` allow says so,
+or you grant unrestricted network with `host(*)`. A repo-committed file
+cannot open this; only your personal permissions file can.
 
 ### Permission rules
 
 `permissions.toml` can re-prompt a call (`deny`) or skip a prompt that would
 otherwise appear (`allow`). Pattern rules match the actual call — a command
 prefix for shell tools, a path glob for file tools, a host for fetch-style
-tools. Shell does not prompt by default, so `allow` rules for shell do nothing
-to prompting. MCP still prompts unless allowed:
+tools. `host(...)` rules are different: they feed the egress proxy, not the
+approval prompt. Shell does not prompt by default, so `allow` rules for shell
+do nothing to prompting. MCP still prompts unless allowed:
 
 ```toml
-allow = ["bash(cargo test *)", "bash(cargo build*)"]
+allow = [
+  "bash(cargo test *)",
+  "bash(cargo build*)",
+  "host(**.crates.io)",
+  "host(**.github.com)",
+]
 deny = ["bash(cargo publish*)"]
 ```
+
+`host(*)` is unrestricted network through the proxy (the filesystem sandbox
+stays on). A `host(...)` deny still wins over a broader allow.
 
 A `deny` entry carves an exception out of a broader `allow` entry (`cargo *`
 allowed, but `cargo publish` still asks); it never blocks a call outright —
