@@ -224,11 +224,17 @@ impl TuiApp {
         if names.is_empty() {
             return None;
         }
+        // Naming the command is the most useful form, but it shares the footer
+        // row with the model/effort/mode identity. A long command pushed that
+        // identity out entirely ("OpenAI/gpt-5.6-luna │ Max │ Auto" collapsed
+        // to "Op"), which trades one piece of state the user needs for
+        // another. Name it only when it is short enough to be free.
+        const MAX_NAMED: usize = 24;
         let count = names.split(", ").count();
-        Some(if count == 1 {
-            format!("{names} didn't finish")
-        } else {
-            format!("{count} checks didn't finish")
+        Some(match count {
+            1 if names.chars().count() <= MAX_NAMED => format!("{names} didn't finish"),
+            1 => "1 check didn't finish".to_string(),
+            n => format!("{n} checks didn't finish"),
         })
     }
 

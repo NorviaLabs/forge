@@ -334,6 +334,122 @@ async fn header_status_follows_session_lifecycle() {
     assert!(waiting.status_label().0.contains("Approval required"));
 }
 
+/// End-to-end for the false-failure fix, through every layer that decides
+/// what the user is told: real tool execution -> completion evaluation ->
+/// `turn_incomplete_checks` event -> transcript snapshot -> status model ->
+/// rendered status bar.
+///
+/// The turn edits a file (verifies) and runs a command that exits non-zero
+/// (does not). Both calls are in a single model response on purpose: that is
+/// the shape that used to report "Failed / No file modifications were
+/// successfully applied" while the edit sat on disk.
+#[tokio::test]
+async fn completed_turn_renders_unfinished_checks_without_claiming_failure() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("notes.txt"), "before\n").unwrap();
+
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![
+                forge_types::ToolCall {
+                    id: "call-edit".into(),
+                    name: "edit".into(),
+                    arguments: json!({
+                        "path": "notes.txt",
+                        "old_string": "before",
+                        "new_string": "after"
+                    }),
+                },
+                forge_types::ToolCall {
+                    id: "call-check".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command": "exit 127"}),
+                },
+            ],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "Edited the file; the check did not run.".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+
+    // Governance off: this test is about how an outcome is *reported*, not
+    // about approval gating, and a HITL pause would park the turn in Waiting.
+    let mut session = AgentSession::create(
+        LoopConfig {
+            max_turns: 4,
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("j"),
+            enable_context_lifecycle: true,
+            enable_governance: false,
+            ..Default::default()
+        },
+        model,
+        ToolRegistry::new(),
+    )
+    .await
+    .unwrap();
+    session.run_user_message("edit and check").await.unwrap();
+
+    // Ground truth first: the edit really did land.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "after\n"
+    );
+    assert_eq!(
+        session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Completed
+    );
+
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            cwd: dir.path().to_path_buf(),
+            ..test_runtime_config()
+        },
+    );
+    let (label, style) = app.refresh_status_model().status_label();
+
+    // The state stays Completed, and the unfinished check is named next to it
+    // (short command names are named outright; see the degradation test below).
+    assert!(label.contains("Completed"), "{label}");
+    assert!(label.contains("exit 127 didn't finish"), "{label}");
+    assert!(!label.contains("Failed"), "{label}");
+    assert_eq!(style, TurnLifecycle::Completed.style());
+
+    // ...and it survives the real render, not just the model.
+    let rendered = render_app_text(&mut app, 160, 24);
+    assert!(rendered.contains("didn't finish"), "{rendered}");
+    assert!(
+        !rendered.contains("No file modifications"),
+        "a verified edit must never render as no modifications:\n{rendered}"
+    );
+}
+
+/// The detail shares the footer row with the model/effort/mode identity, so a
+/// long command name must degrade to a count rather than crowding out which
+/// model the user is talking to.
+#[tokio::test]
+async fn a_long_unfinished_check_name_degrades_to_a_count() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
+    app.session.events.push(forge_core::TurnEvent {
+        kind: "turn_incomplete_checks".into(),
+        detail: "python -m pytest tests/test_help.py --verbose --tb=short".into(),
+    });
+    app.session_view = SessionSnapshot::capture(&app.session);
+
+    let label = app.refresh_status_model().status_label().0;
+    assert!(label.contains("1 check didn't finish"), "{label}");
+    assert!(!label.contains("pytest"), "{label}");
+}
+
 #[tokio::test]
 async fn header_status_switches_with_selected_session() {
     let dir = TempDir::new().unwrap();
