@@ -71,6 +71,8 @@ impl TuiApp {
             pending_interaction: PendingInteractionState::default(),
             external_editor: ExternalEditorState { requested: false },
             pending_approved_tool: None,
+            #[cfg(test)]
+            test_events: std::collections::VecDeque::new(),
             attachment: AttachmentState::default(),
             task_selection: TaskSelectionState::default(),
             stream: StreamState {
