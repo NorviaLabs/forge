@@ -9,7 +9,7 @@
 
 use super::*;
 
-use super::shell::drain_events;
+use super::shell::tick_foreground_frame;
 
 struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
 
@@ -51,23 +51,14 @@ impl TuiApp {
                 return self.session.finish_tool_application(completed).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
-            if terminal.is_some() {
-                // Tool execution owns only its detached PendingToolApplication;
-                // AgentSession is deliberately available to the UI during this wait.
-                // Keep the same input contract as model streaming so navigation,
-                // composer typing, queueing and cancellation do not freeze until a
-                // long command finishes.
-                drain_events(self, terminal.as_deref_mut())
-                    .await
-                    .map_err(|error| LoopError::Other(error.to_string()))?;
-                self.poll_interactive_terminal();
-                if self.cancellation.take_requested() || self.exit.is_requested() {
-                    return Err(LoopError::Cancelled);
-                }
-                if let Some(term) = terminal.as_deref_mut() {
-                    term.draw(|frame| self.draw(frame))
-                        .map_err(|error| LoopError::Other(error.to_string()))?;
-                }
+            // Foreground execution owns only its detached tool data. The full TUI
+            // application keeps ticking around it: input, file watching, background
+            // tasks, approvals, connection polling and transient chrome all advance.
+            tick_foreground_frame(self, terminal.as_deref_mut())
+                .await
+                .map_err(|error| LoopError::Other(error.to_string()))?;
+            if self.cancellation.take_requested() || self.exit.is_requested() {
+                return Err(LoopError::Cancelled);
             }
         }
     }
@@ -527,34 +518,21 @@ impl TuiApp {
                         break 'turns;
                     }
                 }
-                // Keep the terminal responsive while the current turn is streaming so
-                // the operator can type the next message and enqueue it with Enter.
-                //
-                // This runs BEFORE the repaint below. Draining afterwards meant a
-                // keystroke arriving during the 100ms sleep was not handled until the
-                // next iteration, and so was not painted until the iteration after
-                // that -- roughly 200ms plus two draws from keypress to glyph.
-                if terminal.is_some() {
-                    drain_events(self, terminal.as_deref_mut()).await?;
-                    self.poll_interactive_terminal();
-                    if self.exit.is_requested() {
-                        handle.abort();
-                        self.busy_state.stop();
-                        self.stream.preview.clear();
-                        self.stream.thinking.clear();
-                        self.timing.started = None;
-                        self.timing.thinking_started = None;
-                        self.timing.thought_secs = None;
-                        self.exit.set_code(ExitCode::Canceled);
-                        let _ = self.session.mark_cancelled().await;
-                        return Ok(());
-                    }
-                }
-
-                // Redraw every tick so spinner and elapsed time stay current, and so
-                // input drained above lands in this frame rather than the next one.
-                if let Some(term) = terminal.as_deref_mut() {
-                    term.draw(|f| self.draw(f))?;
+                // Model streaming is foreground work, not a replacement event loop.
+                // Service the complete TUI before each repaint just as the idle loop
+                // does, including input and every application-owned background poll.
+                tick_foreground_frame(self, terminal.as_deref_mut()).await?;
+                if self.exit.is_requested() {
+                    handle.abort();
+                    self.busy_state.stop();
+                    self.stream.preview.clear();
+                    self.stream.thinking.clear();
+                    self.timing.started = None;
+                    self.timing.thinking_started = None;
+                    self.timing.thought_secs = None;
+                    self.exit.set_code(ExitCode::Canceled);
+                    let _ = self.session.mark_cancelled().await;
+                    return Ok(());
                 }
 
                 if handle.is_finished() {
@@ -792,7 +770,7 @@ mod responsiveness_tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn composer_keeps_receiving_input_while_a_tool_runs() {
+    async fn tui_runtime_keeps_processing_while_a_tool_runs() {
         crate::app::tests::helpers::isolate_global_skills();
         let workspace = tempfile::tempdir().unwrap();
         let mut tools = ToolRegistry::new();
@@ -838,6 +816,9 @@ mod responsiveness_tests {
         app.busy_state.start(BusyPhase::Tool {
             name: "bash".into(),
         });
+        let external_file = workspace.path().join("created-while-running.txt");
+        std::fs::write(&external_file, "visible before the tool completes\n").unwrap();
+        app.file_watch.inject_change(external_file.clone());
         app.test_events.push_back(Event::Key(KeyEvent {
             code: KeyCode::Char('x'),
             modifiers: KeyModifiers::NONE,
@@ -852,6 +833,20 @@ mod responsiveness_tests {
             .unwrap();
 
         assert_eq!(app.input.text, "x");
+        assert!(
+            app.workspace_files
+                .explorer
+                .visible_nodes()
+                .iter()
+                .any(|node| node.path.file_name() == external_file.file_name()),
+            "the foreground wait must keep the Files pane's watcher alive; visible: {:?}",
+            app.workspace_files
+                .explorer
+                .visible_nodes()
+                .iter()
+                .map(|node| node.path.clone())
+                .collect::<Vec<_>>()
+        );
         assert!(matches!(
             result,
             ModelResponseApplication::Finished(ApplyOutcome::Continue)
