@@ -121,7 +121,11 @@ impl AgentSession {
         // Start the session's egress proxy. `None` leaves the network off,
         // which is the safe direction: a command that needs it then fails with
         // the sandbox's own explanation rather than reaching the network.
-        let egress = crate::permission::start_egress(session_id).await;
+        // Hosts start denied; `open_session` overlays personal `host(...)`
+        // allows after the permission files are loaded.
+        let egress =
+            crate::permission::start_egress(session_id, forge_tools::egress::EgressPolicy::new())
+                .await;
         let mut tool_ctx = ToolContext::new(active_root);
         tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
 
@@ -206,7 +210,9 @@ impl AgentSession {
             token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
         }
 
-        let egress = crate::permission::start_egress(session_id).await;
+        let egress =
+            crate::permission::start_egress(session_id, forge_tools::egress::EgressPolicy::new())
+                .await;
         let mut tool_ctx = ToolContext::new(active_root);
         tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
 
@@ -278,6 +284,19 @@ impl AgentSession {
 
     pub fn set_governance(&mut self, g: Governance) {
         self.governance = g;
+    }
+
+    /// Replace the session proxy with one that enforces `policy`.
+    ///
+    /// The previous runtime is dropped first so the session-id socket is
+    /// free before the new listener binds. Called from session open after
+    /// personal `host(...)` rules are loaded.
+    pub async fn apply_egress_policy(&mut self, policy: forge_tools::egress::EgressPolicy) {
+        self.egress = None;
+        self.tool_ctx.egress = None;
+        let runtime = crate::permission::start_egress(self.session_id, policy).await;
+        self.tool_ctx.egress = runtime.as_ref().map(|r| r.grant());
+        self.egress = runtime;
     }
 
     /// Remember the suggested pattern for `call` for the rest of this session.
