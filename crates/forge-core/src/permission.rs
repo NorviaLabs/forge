@@ -29,6 +29,19 @@ impl EgressRuntime {
     }
 }
 
+/// Hosts this workspace may reach, taken from the merged permission files.
+///
+/// Nothing is pre-allowed. A host is reachable only when the personal
+/// `permissions.toml` contains a matching `host(...)` allow (or `host(*)`
+/// for unrestricted network). Repo-committed `allow` rules never loosen
+/// this — same trust split as the HITL path.
+pub fn egress_policy_for_workspace(
+    workspace: &std::path::Path,
+) -> forge_tools::egress::EgressPolicy {
+    let (permissions, _) = forge_config::load_permissions(workspace);
+    forge_tools::egress::EgressPolicy::from_permissions(&permissions)
+}
+
 /// Start the egress proxy for a session.
 ///
 /// Returns `None` when a proxy cannot be started, which leaves the network off
@@ -36,17 +49,16 @@ impl EgressRuntime {
 /// need the network fail with the sandbox's own explanation rather than
 /// silently reaching it.
 ///
-/// The allow-list is currently [`EgressPolicy::with_default_ecosystems`]: the
-/// package registries a first build needs, plus `**.github.com` so `gh` can
-/// reach `api.github.com`. That is a policy decision made on
-/// the user's behalf, and it is the weakest part of this — Claude Code
-/// pre-allows nothing and prompts per host, Codex defaults to `"*" = "deny"`.
-/// Seeding is only defensible here because forge has no per-domain prompt yet;
-/// when one exists this should become the fallback, not the default.
-pub async fn start_egress(session_id: uuid::Uuid) -> Option<EgressRuntime> {
-    use forge_tools::egress::{EgressPolicy, EgressProxy};
+/// The allow-list is empty unless the caller passes hosts the user allowed.
+/// That matches Codex: pre-allow nothing, fail closed, let the user add
+/// destinations (or `host(*)` for unrestricted network). There is no
+/// hardcoded set of "trusted" registries.
+pub async fn start_egress(
+    session_id: uuid::Uuid,
+    policy: forge_tools::egress::EgressPolicy,
+) -> Option<EgressRuntime> {
+    use forge_tools::egress::EgressProxy;
 
-    let policy = EgressPolicy::with_default_ecosystems();
     let mut proxy = EgressProxy::start(policy.clone()).await.ok()?;
 
     // The socket lives outside the workspace: inside it, the agent could
@@ -77,7 +89,12 @@ mod egress_runtime_tests {
     /// would fail looking like a broken network.
     #[tokio::test]
     async fn a_started_proxy_is_listening_and_addressable() {
-        let Some(runtime) = start_egress(uuid::Uuid::new_v4()).await else {
+        let Some(runtime) = start_egress(
+            uuid::Uuid::new_v4(),
+            forge_tools::egress::EgressPolicy::new(),
+        )
+        .await
+        else {
             return; // could not bind on this host; nothing to assert
         };
         let grant = runtime.grant();
@@ -98,7 +115,12 @@ mod egress_runtime_tests {
     /// collide with.
     #[tokio::test]
     async fn dropping_the_runtime_removes_the_socket() {
-        let Some(runtime) = start_egress(uuid::Uuid::new_v4()).await else {
+        let Some(runtime) = start_egress(
+            uuid::Uuid::new_v4(),
+            forge_tools::egress::EgressPolicy::new(),
+        )
+        .await
+        else {
             return;
         };
         let path = runtime.grant().socket_path.clone();
@@ -107,11 +129,79 @@ mod egress_runtime_tests {
         assert!(!path.exists(), "a stale socket would break the next bind");
     }
 
+    /// A proxy started with the default (empty) policy must refuse the
+    /// registries that used to be pre-allowed. The decision is host-level,
+    /// so this does not need the destination to exist.
+    #[tokio::test]
+    async fn the_default_policy_refuses_former_ecosystem_hosts() {
+        let Some(runtime) = start_egress(
+            uuid::Uuid::new_v4(),
+            forge_tools::egress::EgressPolicy::new(),
+        )
+        .await
+        else {
+            return;
+        };
+        let port = runtime.grant().proxy_port;
+        for host in [
+            "crates.io:443",
+            "registry.npmjs.org:443",
+            "pypi.org:443",
+            "github.com:443",
+        ] {
+            let status = connect_status(port, host).await;
+            assert!(
+                status.contains("403"),
+                "{host} must be refused until the user allows it, got {status:?}"
+            );
+        }
+    }
+
+    /// `host(*)` is the unrestricted-network escape hatch: the proxy still
+    /// runs, but every host is permitted unless a deny matches.
+    #[tokio::test]
+    async fn a_star_allow_lets_an_arbitrary_host_through_the_policy() {
+        let mut policy = forge_tools::egress::EgressPolicy::new();
+        policy.allow("*");
+        let Some(runtime) = start_egress(uuid::Uuid::new_v4(), policy).await else {
+            return;
+        };
+        let status = connect_status(
+            runtime.grant().proxy_port,
+            "definitely-not-allowed.invalid:443",
+        )
+        .await;
+        assert!(
+            !status.contains("403"),
+            "host(*) must not 403, got {status:?}"
+        );
+    }
+
+    async fn connect_status(port: u16, target: &str) -> String {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        stream
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut status = String::new();
+        reader.read_line(&mut status).await.unwrap();
+        status
+    }
+
     /// The socket belongs outside the workspace: inside it the agent could
     /// delete or replace the thing carrying its own traffic.
     #[tokio::test]
     async fn the_socket_lives_outside_the_workspace() {
-        let Some(runtime) = start_egress(uuid::Uuid::new_v4()).await else {
+        let Some(runtime) = start_egress(
+            uuid::Uuid::new_v4(),
+            forge_tools::egress::EgressPolicy::new(),
+        )
+        .await
+        else {
             return;
         };
         let path = runtime.grant().socket_path.clone();
@@ -126,6 +216,151 @@ mod egress_runtime_tests {
 #[cfg(test)]
 mod session_egress_tests {
     use crate::*;
+
+    /// Serializes tests that redirect `HOME` / `XDG_CONFIG_HOME` so they
+    /// cannot race with each other. Restores the environment on drop.
+    struct IsolatedUserConfig {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home: tempfile::TempDir,
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl IsolatedUserConfig {
+        fn new() -> Self {
+            let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = Vec::new();
+            for key in ["HOME", "XDG_CONFIG_HOME"] {
+                saved.push((key.to_string(), std::env::var(key).ok()));
+            }
+            let home = tempfile::TempDir::new().unwrap();
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::set_var("HOME", home.path());
+            Self {
+                _lock,
+                _home: home,
+                saved,
+            }
+        }
+    }
+
+    impl Drop for IsolatedUserConfig {
+        fn drop(&mut self) {
+            for (key, val) in self.saved.drain(..) {
+                match val {
+                    Some(v) => std::env::set_var(&key, v),
+                    None => std::env::remove_var(&key),
+                }
+            }
+        }
+    }
+
+    async fn connect_status(port: u16, target: &str) -> String {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        stream
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut status = String::new();
+        reader.read_line(&mut status).await.unwrap();
+        status
+    }
+
+    /// A session in an empty workspace, with no personal host rules, must
+    /// not pre-allow package registries or GitHub.
+    #[tokio::test]
+    async fn a_session_does_not_pre_allow_ecosystem_hosts() {
+        let _user = IsolatedUserConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let policy = super::egress_policy_for_workspace(dir.path());
+        for host in [
+            "crates.io",
+            "registry.npmjs.org",
+            "pypi.org",
+            "github.com",
+            "api.github.com",
+        ] {
+            assert!(
+                !policy.permits(host),
+                "{host} must stay denied until the user allows it"
+            );
+        }
+    }
+
+    /// Personal `host(...)` allows are the only thing that open the proxy.
+    /// A repo-committed `host(*)` must not.
+    #[tokio::test]
+    async fn only_personal_host_allows_open_egress() {
+        let _user = IsolatedUserConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("permissions.toml"),
+            "allow = [\"host(*)\"]\n",
+        )
+        .unwrap();
+        let policy = super::egress_policy_for_workspace(dir.path());
+        assert!(
+            !policy.permits("crates.io"),
+            "a repo-committed host allow must not loosen egress"
+        );
+
+        let user_path = forge_config::user_permissions_path().expect("redirected HOME");
+        std::fs::create_dir_all(user_path.parent().unwrap()).unwrap();
+        std::fs::write(&user_path, "allow = [\"host(**.example.com)\"]\n").unwrap();
+        let policy = super::egress_policy_for_workspace(dir.path());
+        assert!(policy.permits("api.example.com"));
+        assert!(policy.permits("example.com"));
+        assert!(!policy.permits("crates.io"));
+    }
+
+    /// Applying a personal host policy must replace the empty default, not
+    /// leave the original deny-all proxy in place.
+    #[tokio::test]
+    async fn applying_a_host_allow_replaces_the_session_proxy() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
+        let mut session = AgentSession::create(
+            LoopConfig {
+                max_turns: 1,
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                ..Default::default()
+            },
+            model,
+            forge_tools::ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let Some(grant) = session.egress_grant() else {
+            return;
+        };
+        let denied = connect_status(grant.proxy_port, "crates.io:443").await;
+        assert!(
+            denied.contains("403"),
+            "a fresh session must refuse crates.io, got {denied:?}"
+        );
+
+        let file = forge_config::PermissionsFile {
+            allow: vec!["host(*)".into()],
+            deny: vec![],
+        };
+        session
+            .apply_egress_policy(forge_tools::egress::EgressPolicy::from_permissions(&file))
+            .await;
+        let grant = session.egress_grant().expect("replacement proxy");
+        let status = connect_status(grant.proxy_port, "definitely-not-allowed.invalid:443").await;
+        assert!(
+            !status.contains("403"),
+            "host(*) must replace the deny-all proxy, got {status:?}"
+        );
+    }
 
     /// Egress is on by default: a session starts its proxy and hands every
     /// tool a grant pointing at it. Without this the allow-list exists but

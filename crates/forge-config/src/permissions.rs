@@ -13,7 +13,8 @@
 //!
 //! Pattern syntax (`tool(pattern)`) is interpreted by `forge_governance`,
 //! not here — this module only knows how to find, read, and merge the raw
-//! strings.
+//! strings. `host(...)` rules are an exception at the consumer: they are
+//! applied to the egress proxy rather than the HITL gate.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

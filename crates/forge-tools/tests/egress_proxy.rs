@@ -90,9 +90,7 @@ async fn an_empty_policy_refuses_everything() {
 /// becomes a general-purpose relay that ignores the allowlist entirely.
 #[tokio::test]
 async fn a_non_connect_request_is_rejected() {
-    let proxy = EgressProxy::start(EgressPolicy::with_default_ecosystems())
-        .await
-        .unwrap();
+    let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
     let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
     stream
         .write_all(b"GET http://crates.io/ HTTP/1.1\r\nHost: crates.io\r\n\r\n")
@@ -111,9 +109,7 @@ async fn a_non_connect_request_is_rejected() {
 /// decision cannot depend on the destination being reachable.
 #[tokio::test]
 async fn refusal_does_not_require_the_destination_to_exist() {
-    let proxy = EgressProxy::start(EgressPolicy::with_default_ecosystems())
-        .await
-        .unwrap();
+    let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
     let status = connect_through(&proxy, "definitely-not-allowed.invalid:443").await;
     assert!(status.contains("403"), "got: {status}");
 }
