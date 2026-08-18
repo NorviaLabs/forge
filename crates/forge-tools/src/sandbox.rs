@@ -39,8 +39,7 @@ pub enum Unavailable {
 }
 
 impl Unavailable {
-    /// Short reason, shown to the user next to the permission mode so an
-    /// unexpected prompt is explainable without reading docs.
+    /// Short reason for logs and tests.
     pub fn reason(&self) -> String {
         match self {
             Self::UnsupportedPlatform => {
@@ -49,12 +48,41 @@ impl Unavailable {
             Self::MissingDependency(what) => format!("sandbox unavailable: {what} not found"),
         }
     }
+
+    /// Stderr copy when Forge refuses to start. The CLI prints this and
+    /// exits; it is the only user-facing surface for a missing sandbox.
+    pub fn startup_message(&self) -> String {
+        match self {
+            Self::UnsupportedPlatform => {
+                format!(
+                    "{}\nInside WSL2, install bubblewrap: sudo apt install bubblewrap",
+                    self.reason()
+                )
+            }
+            Self::MissingDependency("bubblewrap") => {
+                format!(
+                    "{}\nInstall it with: sudo apt install bubblewrap   or   brew install bubblewrap",
+                    self.reason()
+                )
+            }
+            Self::MissingDependency("sandbox-exec") => {
+                format!(
+                    "{}\nForge needs /usr/bin/sandbox-exec, which ships with macOS.",
+                    self.reason()
+                )
+            }
+            Self::MissingDependency(what) => {
+                format!("{}\nInstall {what} and retry.", self.reason())
+            }
+        }
+    }
 }
 
 /// Whether this host can confine a spawned process.
 ///
-/// Callers must treat `Err` as "fall back to asking the user", never as
-/// "run it anyway". Forge does not run agent commands unconfined silently.
+/// The supported CLI treats `Err` as "do not start". `wrap_shell_command`
+/// still returns `None` here so a caller that reaches spawn without a
+/// sandbox cannot run the command unconfined.
 pub fn availability() -> Result<(), Unavailable> {
     if cfg!(target_os = "macos") {
         return if Path::new("/usr/bin/sandbox-exec").exists() {
@@ -701,6 +729,29 @@ mod tests {
         assert!(Unavailable::MissingDependency("bubblewrap")
             .reason()
             .contains("bubblewrap"));
+    }
+
+    #[test]
+    fn startup_message_includes_the_install_line() {
+        let linux = Unavailable::MissingDependency("bubblewrap").startup_message();
+        assert!(
+            linux.contains("sandbox unavailable: bubblewrap not found"),
+            "{linux}"
+        );
+        assert!(linux.contains("sudo apt install bubblewrap"), "{linux}");
+        assert!(linux.contains("brew install bubblewrap"), "{linux}");
+
+        let windows = Unavailable::UnsupportedPlatform.startup_message();
+        assert!(windows.contains("run under WSL2 on Windows"), "{windows}");
+        assert!(
+            windows.contains("Inside WSL2, install bubblewrap: sudo apt install bubblewrap"),
+            "{windows}"
+        );
+
+        let macos = Unavailable::MissingDependency("sandbox-exec").startup_message();
+        assert!(macos.contains("sandbox-exec not found"), "{macos}");
+        assert!(macos.contains("/usr/bin/sandbox-exec"), "{macos}");
+        assert!(!macos.contains("brew install bubblewrap"), "{macos}");
     }
 
     #[cfg(target_os = "macos")]

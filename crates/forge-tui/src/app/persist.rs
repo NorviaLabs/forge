@@ -43,13 +43,6 @@ impl TuiApp {
 
     pub(super) fn load_ui_state(&mut self) {
         self.restore_persisted_ui_state();
-        // Clamp unconditionally, outside the restore. That function has three
-        // exits that skip the mode entirely — no state file, malformed file,
-        // id mismatch — and `PermissionMode` derives `Default` as
-        // `AcceptEdits`. Clamping only on the success path would leave a fresh
-        // session in Auto with no floor under it, which is the exact case a
-        // brand-new workspace hits.
-        self.set_permission_mode_clamped(self.session.permission_mode());
     }
 
     fn restore_persisted_ui_state(&mut self) {
@@ -74,26 +67,8 @@ impl TuiApp {
                     self.apply_theme(theme_id, false);
                 }
             }
-            if let Some(mode) = state.permission_mode {
-                self.set_permission_mode_clamped(mode);
-            }
+            // Old files may still carry `"permission_mode"`. Serde ignores it.
         }
-    }
-
-    /// Apply `requested`, narrowed to what this host can actually enforce.
-    ///
-    /// The single place a permission mode is set, so the invariant "Auto is
-    /// only ever entered when there is an enforcement floor underneath it"
-    /// cannot be bypassed by adding another call site. Returns the reason the
-    /// request was capped, when it was.
-    pub(super) fn set_permission_mode_clamped(
-        &mut self,
-        requested: forge_governance::PermissionMode,
-    ) -> Option<String> {
-        let (ceiling, reason) = forge_core::permission_ceiling();
-        let effective = requested.clamped_to(ceiling);
-        self.session.apply_permission_mode(effective);
-        (effective != requested).then_some(reason).flatten()
     }
 
     pub(super) fn save_ui_state(&mut self) {
@@ -103,7 +78,6 @@ impl TuiApp {
             repository_or_workspace_id: self.repository_or_workspace_id(),
             files_visibility: FilesVisibility::from_open(self.workspace_files.visible),
             theme: Some(self.runtime.theme_id.clone()),
-            permission_mode: Some(self.session.permission_mode()),
         };
         let result = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
             .and_then(|_| fs::write(&path, serde_json::to_vec_pretty(&state).unwrap_or_default()));
@@ -166,5 +140,34 @@ mod tests {
         reloaded.workspace_files.visible = true;
         reloaded.load_ui_state();
         assert!(!reloaded.workspace_files.visible);
+    }
+
+    #[tokio::test]
+    async fn old_permission_mode_field_is_ignored_and_dropped() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let mut app = test_app(dir.path()).await;
+        let path = app.ui_state_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "repository_or_workspace_id": app.repository_or_workspace_id(),
+                "files_visibility": "Open",
+                "permission_mode": "manual"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        app.load_ui_state();
+        app.save_ui_state();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            saved.get("permission_mode").is_none(),
+            "old permission_mode must be omitted on write: {saved}"
+        );
     }
 }
