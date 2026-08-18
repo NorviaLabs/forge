@@ -1229,10 +1229,16 @@ mod tests {
         assert!(matches!(m.items[0], ChatItem::User { .. }));
         assert!(matches!(m.items[1], ChatItem::Thinking { .. }));
         assert!(matches!(m.items[2], ChatItem::Assistant { .. }));
+        // Intent change: routine tool cards group from the *first* card now
+        // (see `flush_activity_group`), so a lone `read_file` is an
+        // ActivityGroup rather than a standalone ToolCard. Grouping at the
+        // semantic layer was always true — the `semantic_blocks` assertion
+        // below predates this — and what moved is the item layer, which is
+        // what stops the block shrinking when a sibling completes.
         assert!(m
             .items
             .iter()
-            .any(|i| matches!(i, ChatItem::ToolCard { .. })));
+            .any(|i| matches!(i, ChatItem::ActivityGroup { .. })));
         // Full system prompt must not appear in rendered lines
         let rendered: String = m
             .lines()
@@ -3118,5 +3124,117 @@ mod tests {
             tail_of_whole,
             "the window must be the tail of the full render, not a different render"
         );
+    }
+
+    fn plain_msg(role: MessageRole, content: &str) -> Message {
+        Message {
+            outcome: Default::default(),
+            role,
+            content: content.into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        }
+    }
+
+    fn tool_result(id: &str, name: &str) -> Message {
+        Message {
+            tool_call_id: Some(id.into()),
+            name: Some(name.into()),
+            ..plain_msg(MessageRole::Tool, "ok")
+        }
+    }
+
+    fn rendered_height(msgs: &[Message]) -> usize {
+        ConversationModel::from_messages(
+            msgs,
+            &[],
+            TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        )
+        .lines_for_width(80)
+        .len()
+    }
+
+    /// The view must never get shorter as work arrives.
+    ///
+    /// A lone routine card used to render full-height and then collapse the
+    /// moment a sibling completed, shrinking the block under everything above
+    /// it — which reads as the whole transcript jumping.
+    #[test]
+    fn routine_group_height_never_shrinks() {
+        let mut msgs = vec![plain_msg(MessageRole::User, "hi")];
+        let mut previous = rendered_height(&msgs);
+        for i in 0..4 {
+            msgs.push(tool_result(&i.to_string(), "read_file"));
+            let now = rendered_height(&msgs);
+            assert!(
+                now >= previous,
+                "height shrank from {previous} to {now} when routine card {i} arrived"
+            );
+            previous = now;
+        }
+    }
+
+    /// `ChatItem::Thinking` flushes any pending activity group before pushing
+    /// its own block, so its arrival can force a collapse too.
+    #[test]
+    fn a_thinking_block_arriving_mid_group_does_not_shrink_the_view() {
+        let mut msgs = vec![
+            plain_msg(MessageRole::User, "hi"),
+            tool_result("1", "read_file"),
+            tool_result("2", "glob"),
+        ];
+        let before = rendered_height(&msgs);
+
+        let mut thinking = plain_msg(MessageRole::Assistant, "answer");
+        thinking.thinking = Some("planning the edit".into());
+        thinking.thinking_duration_secs = Some(1.2);
+        msgs.push(thinking);
+
+        let after = rendered_height(&msgs);
+        assert!(
+            after >= before,
+            "height shrank from {before} to {after} when a thinking block arrived"
+        );
+    }
+
+    /// Every routine tool can now form a group of one, and not all of them have
+    /// a counter in `activity_group_summary` — `ls` and read-only `git` are
+    /// neither a read nor a search, so the counts come back empty. That was
+    /// invisible while a lone card skipped grouping.
+    #[test]
+    fn no_routine_group_renders_a_blank_summary() {
+        for name in ["read_file", "ls", "glob", "grep", "rg"] {
+            let msgs = vec![plain_msg(MessageRole::User, "hi"), tool_result("1", name)];
+            let model = ConversationModel::from_messages(
+                &msgs,
+                &[],
+                TaskLifecycle::Working,
+                ConversationViewOpts::default(),
+            );
+            let summaries: Vec<&str> = model
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ChatItem::ActivityGroup { summary, .. } => Some(summary.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !summaries.is_empty(),
+                "{name} should form a routine group: {:?}",
+                model.items
+            );
+            for summary in summaries {
+                assert!(
+                    !summary.trim().is_empty(),
+                    "{name} rendered a blank group summary"
+                );
+            }
+        }
     }
 }
