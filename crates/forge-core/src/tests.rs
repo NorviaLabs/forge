@@ -2834,6 +2834,52 @@ async fn edit_tool_produces_file_evidence_so_a_real_edit_is_not_reported_as_fail
 }
 
 #[tokio::test]
+async fn a_missing_verification_command_is_reported_without_failing_the_edit() {
+    // The exact shape from the usability report: the model edits a file, then
+    // runs a checker that isn't installed. `bash` itself dispatches fine, so
+    // the tool is not `is_error` — only the non-zero exit marks the command as
+    // having not finished. The edit must still read as done, and the missing
+    // check must still be named.
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("mod.txt"), "before\n").unwrap();
+    let model = script(vec![
+        tool_call_response(vec![
+            ToolCall {
+                id: "1".into(),
+                name: "edit".into(),
+                arguments: json!({
+                    "path": "mod.txt",
+                    "old_string": "before",
+                    "new_string": "after"
+                }),
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "definitely-not-installed --check"}),
+            },
+        ]),
+        text_only("Edited the file and tried to verify it."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("edit and verify").await.unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("mod.txt")).unwrap(),
+        "after\n"
+    );
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    let completion = s.last_completion.as_ref().unwrap();
+    assert_eq!(
+        completion.reason,
+        CompletionReason::CompletedWithIncompleteChecks
+    );
+    assert_eq!(completion.evidence_summary.incomplete.len(), 1);
+}
+
+#[tokio::test]
 async fn search_zero_matches_completes() {
     let dir = tempdir().unwrap();
     let model = script(vec![
