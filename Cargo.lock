@@ -1193,6 +1193,7 @@ dependencies = [
  "forge-connect",
  "forge-core",
  "forge-session",
+ "forge-tools",
  "forge-tui",
  "forge-types",
  "predicates",

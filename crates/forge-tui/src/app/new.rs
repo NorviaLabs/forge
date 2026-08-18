@@ -11,13 +11,10 @@ impl TuiApp {
     }
 
     pub fn new_with_startup_resume_picker(
-        mut session: AgentSession,
+        session: AgentSession,
         runtime: TuiRuntimeConfig,
         startup_items: Option<Vec<ResumeSessionItem>>,
     ) -> Self {
-        // Default Accept Edits (tight dev-loop shell free); load_ui_state may
-        // restore a persisted mode afterward.
-        session.apply_permission_mode(forge_governance::PermissionMode::AcceptEdits);
         let startup_resume_session_id = startup_items.as_ref().map(|_| session.session_id);
         let workspace_root = session.workspace_root().to_path_buf();
         let (registry, theme_notices) =

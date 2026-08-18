@@ -303,16 +303,12 @@ fn normalize_relative_path(path: &str) -> Option<String> {
     }
     Some(components.join("/"))
 }
-/// Default `hitl_tools` entries for shell-equivalent execution and external
-/// MCP servers. MCP tools run in independently configured processes, which
-/// Forge cannot workspace-confine, so every MCP call requires approval.
-pub fn default_shell_hitl_tools() -> Vec<String> {
-    vec![
-        "bash".into(),
-        "background_run".into(),
-        "exec_command".into(),
-        "mcp:*".into(),
-    ]
+/// Default `hitl_tools` entries. MCP tools run in independently configured
+/// processes, which Forge cannot workspace-confine, so every MCP call
+/// requires approval. Shell is not listed: the OS sandbox is the boundary,
+/// and a host that cannot confine never reaches this policy.
+pub fn default_hitl_tools() -> Vec<String> {
+    vec!["mcp:*".into()]
 }
 
 fn is_file_tool(tool: &str) -> bool {

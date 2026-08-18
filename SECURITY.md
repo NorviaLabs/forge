@@ -45,11 +45,11 @@ egress proxy. Forge does not attempt to classify a command as safe or
 dangerous before running it; that judgement is the thing we are trying not to
 depend on.
 
-The approval prompt is a second, weaker layer that sits on top. In the default
-mode it does not appear for shell commands at all, because the confinement is
-what makes running them acceptable. On a host where the OS cannot confine,
-Forge caps the session at Manual mode and says why, rather than running
-unconfined and unannounced.
+The approval prompt is a second, weaker layer that sits on top. It does not
+appear for shell commands at all, because the confinement is what makes
+running them acceptable. MCP tools still ask; a `deny` pattern re-prompts.
+On a host where the OS cannot confine, Forge does not start. It prints why
+and exits, rather than running unconfined.
 
 What the sandbox does **not** protect: anything a command can legitimately do
 inside your workspace, and anything it can send to an allow-listed host. A

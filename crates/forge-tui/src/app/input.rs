@@ -941,15 +941,13 @@ impl TuiApp {
         Ok(consumed)
     }
 
-    /// Navigate the footer's three controls (which-LLM, effort, mode) while
+    /// Navigate the footer's two controls (which-LLM, effort) while
     /// `FocusBlock::Footer` is active — an ordinary Tab stop now, not a
-    /// separate `F3` side-channel. 0 = which-LLM, 1 = effort, 2 = mode;
+    /// separate `F3` side-channel. 0 = which-LLM, 1 = effort;
     /// `composer_chip_focus`'s lifecycle is managed by
-    /// `focus.rs::normalize_focus`. Enter is the one action key: it opens
-    /// the relevant picker, or cycles the mode chip.
+    /// `focus.rs::normalize_focus`. Enter opens the relevant picker.
     async fn handle_footer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
-        const N: usize = 3;
-        const MODE_IDX: usize = 2;
+        const N: usize = 2;
         let idx = self.composer_chip_focus.unwrap_or(0).min(N - 1);
         match key.code {
             KeyCode::Left if key.modifiers.is_empty() => {
@@ -961,18 +959,12 @@ impl TuiApp {
                 Ok(true)
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
-                if idx == MODE_IDX {
-                    // The mode chip has no picker; Enter toggles Manual/Auto.
-                    self.execute_semantic_command(SemanticCommand::CyclePermissionMode)
-                        .await?;
+                let focus = if idx == 0 {
+                    FooterFocus::Llm
                 } else {
-                    let focus = if idx == 0 {
-                        FooterFocus::Llm
-                    } else {
-                        FooterFocus::Effort
-                    };
-                    self.activate_composer_chip(focus).await?;
-                }
+                    FooterFocus::Effort
+                };
+                self.activate_composer_chip(focus).await?;
                 Ok(true)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
@@ -1004,8 +996,6 @@ impl TuiApp {
                 ))
                 .await?;
             }
-            // Mode is cycled in place with ↑/↓ while focused, never activated.
-            FooterFocus::Mode => {}
         }
         Ok(())
     }

@@ -75,10 +75,10 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
         },
     );
     // This test is about approving from the sidebar, so it needs a prompt to
-    // approve. Accept Edits does not gate shell any more — it is only
-    // reachable when a sandbox is confining it — so ask for Manual, which
-    // every host can reach because narrowing is always permitted.
-    app.set_permission_mode_clamped(forge_governance::PermissionMode::Manual);
+    // approve. Shell is not gated by default; add bash to HITL for this
+    // scenario.
+    app.session
+        .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
 
     let id = app
         .session

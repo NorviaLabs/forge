@@ -732,6 +732,7 @@ mod tests {
             ],
         )
         .await;
+        s.set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
 
         let id = s
             .spawn_subagent(SubagentSpec {
@@ -799,6 +800,7 @@ mod tests {
             ],
         )
         .await;
+        s.set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
 
         let id = s
             .spawn_subagent(SubagentSpec {

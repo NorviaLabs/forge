@@ -616,7 +616,7 @@ impl TuiApp {
         );
         // Only three focusable footer controls now (which-LLM, effort, mode).
         if let Some(idx) = self.composer_chip_focus {
-            self.composer_chip_focus = Some(idx.min(2));
+            self.composer_chip_focus = Some(idx.min(1));
         }
         if theme_picking {
             self.composer_area = None;
@@ -660,7 +660,6 @@ impl TuiApp {
                     not_connected: !connected,
                     focused: composer_focused,
                     waiting: self.session_view.is_awaiting_approval(),
-                    permission_mode: self.session.permission_mode(),
                 },
                 regions.input,
             );
@@ -685,11 +684,9 @@ impl TuiApp {
             llm_label,
             llm_connected: connected,
             effort_label,
-            mode_label: self.session.permission_mode().label().to_string(),
             focus: self.composer_chip_focus.map(|idx| match idx {
                 0 => FooterFocus::Llm,
-                1 => FooterFocus::Effort,
-                _ => FooterFocus::Mode,
+                _ => FooterFocus::Effort,
             }),
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),

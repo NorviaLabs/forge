@@ -280,20 +280,6 @@ impl AgentSession {
         self.governance = g;
     }
 
-    /// Apply a named permission mode in place — preserves the ACL and any
-    /// loaded pattern rules, only pre-seeding `hitl_classes` (see
-    /// `Governance::apply_mode`). Unlike `set_governance`, this can't
-    /// accidentally drop rules a `permissions.toml` load already put in
-    /// place.
-    pub fn apply_permission_mode(&mut self, mode: forge_governance::PermissionMode) {
-        self.governance.apply_mode(mode);
-    }
-
-    /// The active named permission mode, owned by the governance policy.
-    pub fn permission_mode(&self) -> forge_governance::PermissionMode {
-        self.governance.permission_mode()
-    }
-
     /// Remember the suggested pattern for `call` for the rest of this session.
     pub fn allow_suggested_pattern_for_session(&mut self, call: &forge_types::ToolCall) -> String {
         self.governance.allow_suggested_pattern_for_session(call)

@@ -258,6 +258,8 @@ mod tests {
             dir.path(),
         )
         .await;
+        session
+            .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
         session.run_user_message("push").await.unwrap();
 
         let snapshot = SessionSnapshot::capture(&session);

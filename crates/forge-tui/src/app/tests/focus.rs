@@ -93,17 +93,12 @@ async fn left_right_move_between_footer_controls() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.composer_chip_focus, Some(2));
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
     assert_eq!(app.composer_chip_focus, Some(0), "wraps back to which-LLM");
 
     app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.composer_chip_focus, Some(2), "wraps the other way too");
+    assert_eq!(app.composer_chip_focus, Some(1), "wraps the other way too");
 }
 
 #[tokio::test]
@@ -121,54 +116,6 @@ async fn enter_on_which_llm_chip_opens_the_connect_picker() {
         matches!(app.overlay, Some(Overlay::ConnectModel { .. })),
         "Enter on which-LLM chip should open the model picker, got {:?}",
         app.overlay
-    );
-}
-
-#[tokio::test]
-async fn mode_chip_cycles_permission_mode_with_enter() {
-    // The footer's third control is the mode chip: Enter toggles Manual/Auto
-    // (the old F2), while ←/→ keep moving between chips.
-    let (_dir, mut app) = focus_test_app().await;
-    app.focus_block(FocusBlock::Footer);
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.composer_chip_focus, Some(2));
-
-    let before = app.session.permission_mode();
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    // Without a sandbox the mode cannot leave Manual, so Enter is a no-op on
-    // the chip and there is no toggle to observe. The chip focus assertions
-    // below still apply.
-    let cycles = forge_core::permission_ceiling().0 != forge_governance::PermissionMode::Manual;
-    if cycles {
-        assert_ne!(
-            app.session.permission_mode(),
-            before,
-            "Enter should cycle the mode"
-        );
-    } else {
-        assert_eq!(
-            app.session.permission_mode(),
-            before,
-            "no floor means no reachable second mode"
-        );
-    }
-    assert_eq!(app.composer_chip_focus, Some(2), "stays on the mode chip");
-
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(
-        app.session.permission_mode(),
-        before,
-        "Enter cycles back to where it started"
     );
 }
 
@@ -709,9 +656,9 @@ async fn footer_focus_hint_is_relevant_to_the_selected_chip() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    let mode_hint = app.contextual_hint().expect("footer focus should hint");
+    let wrap_hint = app.contextual_hint().expect("footer focus should hint");
     assert!(
-        mode_hint.contains("Hit Enter ⏎ to cycle permission mode"),
-        "{mode_hint}"
+        wrap_hint.contains("Hit Enter ⏎ to open model"),
+        "two chips wrap back to model: {wrap_hint}"
     );
 }

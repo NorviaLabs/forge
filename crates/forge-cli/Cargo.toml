@@ -16,6 +16,7 @@ forge-connect = { workspace = true }
 forge-core = { workspace = true }
 forge-session = { workspace = true }
 forge-tui = { workspace = true }
+forge-tools = { workspace = true }
 forge-types = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

@@ -360,10 +360,6 @@ pub struct InputBar<'a> {
     pub focused: bool,
     /// Approval pending — show the distinct waiting border (see `InputModel.waiting`).
     pub waiting: bool,
-    /// Drives the composer's border color — amber when Manual (expect more
-    /// interruptions), ordinary idle otherwise. The mode itself shows on
-    /// the footer's mode chip, not as a border tag.
-    pub permission_mode: forge_governance::PermissionMode,
 }
 
 fn composer_text(model: &InputModel, show_cursor: bool) -> String {
@@ -556,19 +552,10 @@ impl Widget for InputBar<'_> {
             theme::waiting_border()
         } else if self.not_connected {
             theme::warn()
-        } else if self.permission_mode == forge_governance::PermissionMode::Manual {
-            // Amber means "expect more interruptions" (every shell-equivalent
-            // call asks) — not "unsafe." Accept Edits keeps the ordinary
-            // idle border; it's the default, calmer mode.
-            theme::warn()
         } else {
             theme::composer_border_idle()
         };
-        let border_type = if text_focused
-            || self.waiting
-            || self.not_connected
-            || self.permission_mode == forge_governance::PermissionMode::Manual
-        {
+        let border_type = if text_focused || self.waiting || self.not_connected {
             BorderType::Thick
         } else {
             BorderType::Plain
@@ -672,7 +659,6 @@ mod tests {
                     not_connected,
                     focused,
                     waiting: model.waiting,
-                    permission_mode: forge_governance::PermissionMode::default(),
                 },
                 f.area(),
             );
@@ -1018,58 +1004,23 @@ mod tests {
         assert!(rendered.contains("type here"));
     }
 
-    fn render_input_bar_with_mode(
-        mode: forge_governance::PermissionMode,
-    ) -> ratatui::buffer::Buffer {
+    fn render_idle_input_bar() -> ratatui::buffer::Buffer {
         let model = InputModel {
             hint: "type here".into(),
             ..Default::default()
         };
-        let backend = TestBackend::new(40, 5);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            f.render_widget(
-                InputBar {
-                    model: &model,
-                    attachment: None,
-                    dimmed: false,
-                    not_connected: false,
-                    focused: false,
-                    waiting: false,
-                    permission_mode: mode,
-                },
-                f.area(),
-            );
-        })
-        .unwrap();
-        term.backend().buffer().clone()
+        draw_input_bar(&model, 40, 5, false, false, None)
     }
 
     #[test]
-    fn manual_mode_border_is_amber_without_a_text_tag() {
-        let buf = render_input_bar_with_mode(forge_governance::PermissionMode::Manual);
+    fn idle_composer_has_no_mode_tag() {
+        let buf = render_idle_input_bar();
         let top: String = (0..buf.area().width)
             .map(|x| buf[(x, 0)].symbol())
             .collect();
         assert!(
-            !top.contains(">>"),
-            "mode no longer renders as a composer border tag: {top:?}"
-        );
-        assert_eq!(
-            buf[(0, 0)].style().fg,
-            Some(theme::palette(forge_config::DEFAULT_THEME_ID).warn)
-        );
-    }
-
-    #[test]
-    fn auto_mode_keeps_idle_border_without_a_text_tag() {
-        let buf = render_input_bar_with_mode(forge_governance::PermissionMode::AcceptEdits);
-        let top: String = (0..buf.area().width)
-            .map(|x| buf[(x, 0)].symbol())
-            .collect();
-        assert!(
-            !top.contains(">>"),
-            "mode no longer renders as a composer border tag: {top:?}"
+            !top.contains(">>") && !top.contains("Manual") && !top.contains("Auto"),
+            "composer must not render a permission-mode tag: {top:?}"
         );
     }
 

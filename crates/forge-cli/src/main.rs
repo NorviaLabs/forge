@@ -36,6 +36,11 @@ async fn main() {
         .with_ansi(false)
         .init();
 
+    if let Err(message) = refuse_without_sandbox(forge_tools::sandbox::availability()) {
+        eprintln!("{message}");
+        std::process::exit(ExitCode::Failed.code());
+    }
+
     let code = match run(cli).await {
         Ok(c) => c,
         Err(e) => {
@@ -44,6 +49,14 @@ async fn main() {
         }
     };
     std::process::exit(code.code());
+}
+
+/// Launch gate: a host that cannot confine does not start. Injected in tests
+/// so a sandboxed CI host can still exercise the failure path.
+fn refuse_without_sandbox(
+    availability: Result<(), forge_tools::sandbox::Unavailable>,
+) -> Result<(), String> {
+    availability.map_err(|unavailable| unavailable.startup_message())
 }
 
 /// Turn `--resume` into a concrete target. A bare `--resume` means "the most
@@ -221,5 +234,23 @@ mod tests {
         let (target, notice) = resolve_target(&cfg, None).await.unwrap();
         assert_eq!(target, SessionTarget::New);
         assert!(notice.is_none());
+    }
+
+    #[test]
+    fn refuse_without_sandbox_passes_when_available() {
+        assert!(refuse_without_sandbox(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn refuse_without_sandbox_prints_the_startup_message() {
+        let err = refuse_without_sandbox(Err(
+            forge_tools::sandbox::Unavailable::MissingDependency("bubblewrap"),
+        ))
+        .expect_err("missing sandbox must refuse");
+        assert!(
+            err.contains("sandbox unavailable: bubblewrap not found"),
+            "{err}"
+        );
+        assert!(err.contains("sudo apt install bubblewrap"), "{err}");
     }
 }

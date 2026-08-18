@@ -494,39 +494,6 @@ impl TuiApp {
                 self.paste_clipboard_image();
             }
             SemanticCommand::ToggleToolDetails => self.tool_detail.toggle(),
-            SemanticCommand::CyclePermissionMode => {
-                let requested = self.session.permission_mode().next();
-                let capped = self.set_permission_mode_clamped(requested);
-                self.save_ui_state();
-                // A refused request has to say why, or the mode chip simply
-                // does not change when you press the key and the user is left
-                // guessing whether the binding is broken.
-                if let Some(reason) = capped {
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        format!(
-                            "staying in {} — {reason}",
-                            self.session.permission_mode().label()
-                        ),
-                    );
-                    return Ok(false);
-                }
-                let detail = match self.session.permission_mode() {
-                    forge_governance::PermissionMode::AcceptEdits => {
-                        forge_governance::Governance::accept_edits_toast_summary()
-                    }
-                    forge_governance::PermissionMode::Manual => {
-                        "Manual: every shell command asks for approval"
-                    }
-                };
-                self.set_feedback(
-                    FeedbackSeverity::Info,
-                    format!(
-                        "permission mode: {} — {detail}",
-                        self.session.permission_mode().label()
-                    ),
-                );
-            }
             SemanticCommand::StepReasoningEffort(forward) => {
                 let stepped = self
                     .reasoning_effort
@@ -1085,53 +1052,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cycle_permission_mode_moves_through_manual_and_accept_edits_and_back() {
-        let (_dir, mut app) = app().await;
-
-        // Auto is only reachable when a sandbox can hold the line under it, so
-        // what "cycling" does depends on the host. Without a floor the cycle is
-        // a no-op by design — assert that, rather than asserting a transition
-        // that must not happen. See `forge_core::permission_ceiling`.
-        if forge_core::permission_ceiling().0 == forge_governance::PermissionMode::Manual {
-            assert_eq!(
-                app.session.permission_mode(),
-                forge_governance::PermissionMode::Manual,
-                "a host with no sandbox starts in Manual"
-            );
-            app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
-                .await
-                .unwrap();
-            assert_eq!(
-                app.session.permission_mode(),
-                forge_governance::PermissionMode::Manual,
-                "cycling must not reach Auto without a floor"
-            );
-            return;
-        }
-
-        assert_eq!(
-            app.session.permission_mode(),
-            forge_governance::PermissionMode::AcceptEdits
-        );
-
-        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
-            .await
-            .unwrap();
-        assert_eq!(
-            app.session.permission_mode(),
-            forge_governance::PermissionMode::Manual
-        );
-
-        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
-            .await
-            .unwrap();
-        assert_eq!(
-            app.session.permission_mode(),
-            forge_governance::PermissionMode::AcceptEdits
-        );
-    }
-
-    #[tokio::test]
     async fn help_binding_yields_to_an_open_overlay() {
         let (_d, mut app) = app().await;
         assert_eq!(
@@ -1487,35 +1407,28 @@ mod tests {
                 thinking: None,
             },
         ]));
+        let mut tools = ToolRegistry::new();
+        for tool in forge_tools::default_builtins() {
+            tools.register(tool);
+        }
         let session = AgentSession::create(
             LoopConfig {
                 max_turns: 4,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
-                enable_context_lifecycle: true,
+                enable_context_lifecycle: false,
                 enable_governance: true,
                 ..Default::default()
             },
             model,
-            {
-                // The registry was empty, so `bash` was not a registered tool
-                // and the call was dropped before it could ever be authorized:
-                // the turn ran straight on to the next model response and
-                // completed, with no approval to resume from. A test about
-                // approving a tool has to have the tool.
-                let mut tools = ToolRegistry::new();
-                for tool in forge_tools::default_builtins() {
-                    tools.register(tool);
-                }
-                tools
-            },
+            tools,
         )
         .await
         .unwrap();
         let mut app = TuiApp::new(
             session,
             TuiRuntimeConfig {
-                model_label: "mock".into(),
+                model_label: "forge-test/hitl-resume".into(),
                 provider: "mock".into(),
                 cwd: dir.path().to_path_buf(),
                 version: "forge test".into(),
@@ -1524,11 +1437,8 @@ mod tests {
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );
-        // This test is about resuming a turn after an approval, so it needs an
-        // approval to resume from. Accept Edits stopped gating shell — it is
-        // only reachable when a sandbox is confining it — so ask for Manual,
-        // which every host can reach because narrowing is always permitted.
-        app.set_permission_mode_clamped(forge_governance::PermissionMode::Manual);
+        app.session
+            .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
 
         app.pending_turn.queue("push it".into(), Vec::new());
         app.drain_pending_prompt(None).await.unwrap();
