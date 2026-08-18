@@ -48,6 +48,7 @@ impl TuiApp {
         self.session_view = SessionSnapshot::capture(&self.session);
         self.transcript_view.refresh(&self.session);
         let area = frame.area();
+        self.last_frame_width = area.width;
         if is_too_small(area) {
             self.focus.reset_to_workspace();
             self.workspace_files.explorer.focused = false;
@@ -692,6 +693,7 @@ impl TuiApp {
             }),
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
+            lifecycle_detail: status.incomplete_checks.clone(),
             ctx_pct: status.ctx_pct,
             prompt_tokens: self.session_view.prompt_tokens,
             completion_tokens: self.session_view.completion_tokens,

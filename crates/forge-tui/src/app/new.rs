@@ -144,6 +144,9 @@ impl TuiApp {
                 refresh_rx: None,
                 warmed: false,
             },
+            // 0 until the first draw: "unknown", which the explorer toggle
+            // treats as "don't refuse" rather than guessing a width.
+            last_frame_width: 0,
         };
         app.init_file_watcher();
         app.load_ui_state();

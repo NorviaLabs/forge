@@ -46,6 +46,32 @@ pub enum TaskExpectation {
     Unclassifiable,
 }
 
+impl TaskExpectation {
+    /// The `ToolCall.id`s this expectation actually requires to succeed.
+    ///
+    /// Evidence from any *other* operation is ancillary: the model chose to run
+    /// it, but the turn's success was never defined in terms of it. Callers use
+    /// this to tell a genuine failure of the requested work apart from a
+    /// secondary step that merely didn't finish.
+    pub fn required_operation_ids(&self) -> Vec<&str> {
+        match self {
+            Self::ReadOnly | Self::Search { .. } | Self::Unclassifiable => Vec::new(),
+            Self::ToolExecution { required_tools } => required_tools
+                .iter()
+                .map(|t| t.operation_id.as_str())
+                .collect(),
+            Self::FileEdit { expected_effects } => expected_effects
+                .iter()
+                .map(|e| e.operation_id.as_str())
+                .collect(),
+            Self::GitOperation { expected_effects } => expected_effects
+                .iter()
+                .map(|e| e.operation_id.as_str())
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolExpectation {
     /// Ties this expectation to the `ToolCall.id` that must satisfy it.
@@ -251,6 +277,10 @@ pub enum CompletionReason {
     NoEditEvidence,
     EditVerificationFailed,
     PartialFailure,
+    /// The turn's required effect verified, but a step the expectation did not
+    /// require (typically a post-edit verification command) did not finish.
+    /// Resolves to `Completed` — the requested work did happen.
+    CompletedWithIncompleteChecks,
     PatchRejected,
     GitEffectVerified,
     GitCommandFailed,
@@ -280,6 +310,7 @@ impl CompletionReason {
             Self::NoEditEvidence => "no_edit_evidence",
             Self::EditVerificationFailed => "edit_verification_failed",
             Self::PartialFailure => "partial_failure",
+            Self::CompletedWithIncompleteChecks => "completed_with_incomplete_checks",
             Self::PatchRejected => "patch_rejected",
             Self::GitEffectVerified => "git_effect_verified",
             Self::GitCommandFailed => "git_command_failed",
@@ -300,6 +331,16 @@ pub struct EvidenceSummary {
     /// Short machine strings, e.g. `"write_file:src/a.rs"`.
     pub succeeded: Vec<String>,
     pub failed: Vec<String>,
+    /// Steps that did not finish, but which the turn's *expectation* did not
+    /// require — e.g. a verification command the model chose to run after an
+    /// edit that itself verified fine.
+    ///
+    /// These never make a turn `Failed`: the work the user asked for did
+    /// happen, and claiming otherwise is the false-failure bug this field
+    /// exists to prevent. They are still reported, just not as failure — the
+    /// UI renders them as unfinished checks alongside a `Completed` turn, so
+    /// the turn stays honest without overstating the damage.
+    pub incomplete: Vec<String>,
     /// The one line the UI shows, e.g.
     /// "Updated 3 files, but 2 required edits failed."
     pub detail: String,
@@ -381,6 +422,7 @@ fn decision(state: TaskLifecycle, reason: CompletionReason, detail: &str) -> Com
         evidence_summary: EvidenceSummary {
             succeeded: Vec::new(),
             failed: Vec::new(),
+            incomplete: Vec::new(),
             detail: detail.to_string(),
         },
     }
@@ -709,6 +751,7 @@ fn decision_with_lists(
         evidence_summary: EvidenceSummary {
             succeeded,
             failed,
+            incomplete: Vec::new(),
             detail: detail.into(),
         },
     }
