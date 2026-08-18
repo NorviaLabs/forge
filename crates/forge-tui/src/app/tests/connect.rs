@@ -452,6 +452,69 @@ async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
     assert_eq!(restarted.session.active_model, "openai/gpt-5.6-luna");
 }
 
+/// Regression (#346): a restart must restore the *route*, not just the model.
+///
+/// Real startup passes the saved model as `model_label` — forge-cli reads it
+/// from preferences — so it is not "default-looking" and `restore_saved_auth`
+/// takes the branch that only sets the model. Since #346 the transport is
+/// chosen from `route_id` alone, with `transport_for_route(None)` falling back
+/// to OpenAI-compat, so an Anthropic or Codex profile silently sent every
+/// request over the wrong wire until the user re-picked the model by hand.
+///
+/// The existing restart test passes an empty `model_label`, which goes through
+/// `apply_selection` and sets the route as a side effect — which is why this
+/// went unnoticed.
+#[tokio::test]
+async fn restart_restores_the_route_and_not_only_the_model() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+
+    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    app.apply_overlay_action(action).await.unwrap();
+    app.persist_selection();
+    let expected_route = app.session.active_route_id.clone();
+    assert!(
+        !expected_route.is_empty(),
+        "the picker must set a route, or this test proves nothing"
+    );
+
+    let (_dir2, session2) = test_session().await;
+    let mut restarted = TuiApp::new(
+        session2,
+        TuiRuntimeConfig {
+            // What forge-cli actually passes after a previous session: the
+            // saved model, not an empty string.
+            model_label: "openai/gpt-5.6-luna".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    restarted.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    restarted.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+    restarted
+        .connect
+        .store
+        .set_api_key("openai", "sk-test-openai-credential")
+        .unwrap();
+    let restarted = restarted.restore_saved_auth();
+
+    assert_eq!(
+        restarted.session.active_route_id, expected_route,
+        "restart must restore the route; without it transport_for_route falls \
+         back to OpenAI-compat and every call goes over the wrong wire"
+    );
+    assert_eq!(
+        restarted.session.build_model_request().route_id,
+        Some(expected_route),
+        "the restored route must reach the request that is actually sent"
+    );
+}
+
 #[tokio::test]
 async fn first_request_after_switching_models_uses_the_new_complete_id() {
     let cred_dir = tempfile::tempdir().unwrap();
