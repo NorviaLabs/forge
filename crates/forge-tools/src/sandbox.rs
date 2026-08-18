@@ -454,6 +454,15 @@ fn bubblewrap_invocation(
     // The one route out, when egress is granted at all. Bound after the mask
     // for the same reason as the workspace: the socket may live under /tmp.
     let relay = match (&policy.egress_socket, socat_path()) {
+        // A grant can outlive the proxy that backs it: the session's proxy dies
+        // and takes its socket file with it, while the grant is still attached
+        // to the next command. Binding a source that no longer exists makes
+        // bwrap refuse to start, and the caller then sees the generic
+        // "blocked by the sandbox: writes are confined to the workspace"
+        // message — which points at the wrong thing entirely. Drop the dead
+        // grant instead and run with no route out, which is what a dead proxy
+        // means; still fail closed, just legibly.
+        (Some(socket), _) if !socket.exists() => None,
         (Some(socket), Some(socat)) => {
             let socket = socket.to_str()?.to_string();
             args.extend(["--bind".into(), socket.clone(), socket.clone()]);
@@ -773,6 +782,30 @@ mod bubblewrap_tests {
     /// The socket is bind-mounted *after* --unshare-net, which is the whole
     /// trick: the namespace removes every network route, and a filesystem
     /// object survives that.
+    /// A grant can outlive the proxy that backs it. Binding a source that no
+    /// longer exists makes bwrap refuse to start, so the command never runs and
+    /// the caller is told "writes are confined to the workspace" — an
+    /// explanation that has nothing to do with a dead egress proxy.
+    #[test]
+    fn a_grant_whose_socket_has_vanished_is_dropped_rather_than_bound() {
+        let ws = workspace();
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("egress.sock");
+        // Deliberately never created: this is the proxy-died-first case.
+
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_egress_socket(&sock);
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &policy) else {
+            return;
+        };
+
+        assert!(
+            !args.iter().any(|a| a == sock.to_str().unwrap()),
+            "a socket that does not exist must not be bound: {args:?}"
+        );
+        // Still fails closed: no relay, and the network stays unshared.
+        assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
+    }
+
     #[test]
     fn a_granted_socket_is_bound_in_after_the_network_is_unshared() {
         let ws = workspace();
