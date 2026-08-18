@@ -260,6 +260,22 @@ async fn opening_and_closing_bottom_panel_transfers_focus() {
 }
 
 #[tokio::test]
+async fn esc_closes_the_focused_terminal_panel_like_ctrl_backtick() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Workspace);
+    app.handle_key(press(KeyCode::Char('`'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+    assert!(app.bottom_panel.open);
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert!(!app.bottom_panel.open);
+}
+
+#[tokio::test]
 async fn arrows_switch_tabs_only_in_the_active_navigation_block() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
