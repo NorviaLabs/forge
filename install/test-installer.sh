@@ -13,6 +13,32 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 # Everything above the main marker: the function definitions, safe to source.
 awk '/^# --- main ---$/ { exit } { print }' "$SCRIPT" > "$WORK/lib.sh"
 
+# A system PATH with bwrap and socat deliberately removed.
+#
+# Every "dependency is missing" case depends on `command -v bwrap` failing, but
+# the cases ran with /bin:/usr/bin on PATH — so on any host where the real
+# binaries are installed they were found, the installer short-circuited, and
+# ten cases asserted against a branch that never ran. CI installs bubblewrap
+# and socat in the step *before* this suite, which is exactly that host: 18/18
+# on a developer machine without them, 8/18 on CI.
+#
+# Absence has to be something the harness controls rather than something the
+# host decides, so build a sanitized mirror of the system path once and let the
+# per-case stub dir supply these two when a case wants them present.
+SYSBIN="$WORK/sysbin"
+mkdir -p "$SYSBIN"
+for dir in /bin /usr/bin; do
+    [ -d "$dir" ] || continue
+    for path in "$dir"/*; do
+        [ -x "$path" ] || continue
+        base="${path##*/}"
+        case "$base" in
+            bwrap | socat) continue ;;
+        esac
+        [ -e "$SYSBIN/$base" ] || ln -s "$path" "$SYSBIN/$base"
+    done
+done
+
 PASS=0
 FAIL=0
 
@@ -33,8 +59,9 @@ run_case() {
     chmod 755 "$bin/sudo"
 
     out="$( CASE_BIN="$bin" CASE_LOG="$log" SETUP="$setup" LIB="$WORK/lib.sh" \
+        SYSBIN="$SYSBIN" \
         /bin/sh -c '
-            PATH="$CASE_BIN:/bin:/usr/bin"
+            PATH="$CASE_BIN:$SYSBIN"
             export PATH
             OS=Linux
             SKIP_DEPS=""
