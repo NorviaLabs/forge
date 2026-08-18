@@ -40,6 +40,10 @@ pub struct FooterModel {
     /// HITL pending — dim the row, don't look interactive.
     pub dimmed: bool,
     pub lifecycle: TurnLifecycle,
+    /// Short qualifier shown after the lifecycle label, e.g. naming a check
+    /// that didn't finish on an otherwise completed turn. Styled as secondary
+    /// text, never as failure — the lifecycle glyph alone carries severity.
+    pub lifecycle_detail: Option<String>,
     /// 0.0..=1.0
     pub ctx_pct: f64,
     /// Session API-reported prompt/input tokens.
@@ -131,6 +135,11 @@ fn shimmer_label(label: &'static str, base: Style) -> Vec<Span<'static>> {
 /// still fit the full model label plus every chip.
 const PAD: u16 = 1;
 
+/// Columns the model id needs to stay recognisable once middle-truncated
+/// (e.g. `…-luna`). Below this the footer drops the token unit label rather
+/// than the chips.
+const MIN_MODEL_CHARS: u16 = 6;
+
 impl Widget for FooterBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -189,18 +198,6 @@ impl Widget for FooterBar<'_> {
             return;
         }
 
-        // ---- right: live activity, or the custom hint when one is set ----
-        use ratatui::text::Span;
-        let right = if hints.is_empty() {
-            self.activity_line()
-        } else {
-            // The focused footer's per-chip hint reads as a whisper: dimmed
-            // and italic, clearly secondary to the chips it describes.
-            let hint_style = theme::dim().add_modifier(Modifier::ITALIC);
-            ratatui::text::Line::from(Span::styled(hints.to_string(), hint_style))
-        };
-        let right_w = right.width() as u16;
-
         // ---- left: configuration chips (which-LLM, effort, mode) ----
         let dim = m.dimmed;
         let mode_display = m.mode_label.clone();
@@ -209,6 +206,35 @@ impl Widget for FooterBar<'_> {
             + 1 + 1 + 1 // " │ " before the mode chip
             + mode_display.chars().count();
         let effort_chars = m.effort_label.chars().count() as u16;
+
+        // ---- right: live activity, or the custom hint when one is set ----
+        use ratatui::text::Span;
+        let right = if hints.is_empty() {
+            // Spelling out the token unit costs columns the narrowest frames
+            // don't have. Which chip loses is not a wash: the mode chip says
+            // whether Forge asks before it acts, so it must never be traded for
+            // a unit label. Take the labeled form only when the chips and a
+            // still-recognisable model id survive it.
+            let labeled = self.activity_line(true);
+            let min_left = config_chrome as u16 + effort_chars + MIN_MODEL_CHARS;
+            let fits = area
+                .width
+                .saturating_sub(labeled.width() as u16)
+                .saturating_sub(1)
+                >= min_left;
+            if fits {
+                labeled
+            } else {
+                self.activity_line(false)
+            }
+        } else {
+            // The focused footer's per-chip hint reads as a whisper: dimmed
+            // and italic, clearly secondary to the chips it describes.
+            let hint_style = theme::dim().add_modifier(Modifier::ITALIC);
+            ratatui::text::Line::from(Span::styled(hints.to_string(), hint_style))
+        };
+        let right_w = right.width() as u16;
+
         let left_budget = area.width.saturating_sub(right_w).saturating_sub(1);
         let model_max = left_budget
             .saturating_sub(config_chrome as u16 + effort_chars)
@@ -299,7 +325,7 @@ impl Widget for FooterBar<'_> {
 }
 
 impl FooterBar<'_> {
-    fn activity_line(&self) -> ratatui::text::Line<'static> {
+    fn activity_line(&self, labeled_usage: bool) -> ratatui::text::Line<'static> {
         use ratatui::text::Span;
         let m = self.model;
         let dim = m.dimmed;
@@ -312,6 +338,14 @@ impl FooterBar<'_> {
             right.extend(shimmer_label(m.lifecycle.label(), theme::text_secondary()));
         } else {
             right.push(Span::styled(m.lifecycle.label(), theme::text_secondary()));
+        }
+        if let Some(detail) = m
+            .lifecycle_detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+        {
+            right.push(Span::styled(format!(" · {detail}"), theme::dim()));
         }
         right.extend([
             Span::raw("  "),
@@ -328,7 +362,12 @@ impl FooterBar<'_> {
             Span::raw("  "),
         ]);
         right.push(Span::styled(
-            format_footer_usage_slot(m.prompt_tokens, m.completion_tokens, m.prompt_cache_reads),
+            format_footer_usage_slot(
+                m.prompt_tokens,
+                m.completion_tokens,
+                m.prompt_cache_reads,
+                labeled_usage,
+            ),
             theme::text_secondary(),
         ));
         if dim {
@@ -342,21 +381,28 @@ impl FooterBar<'_> {
 
 /// Last footer segment: session total + cache hit rate.
 ///
-/// `0 · —` until any prompt tokens are reported (including "the model ran
-/// but the provider sent no usage"). After that: `12.4k · 81% cache`.
+/// `0 tokens · —` until any prompt tokens are reported (including "the model ran
+/// but the provider sent no usage"). After that: `12.4k tokens · 81% cache`.
 pub(crate) fn format_footer_usage_slot(
     prompt_tokens: u64,
     completion_tokens: u64,
     cache_reads: u64,
+    labeled: bool,
 ) -> String {
+    // `labeled` spells out the unit: a bare "0 · —" (and even a populated
+    // "125k · 35% cache") tells a first-time reader nothing about what is being
+    // counted, and the idle state — the very first thing they see — carried no
+    // clue at all. The caller drops the label only when the row is too narrow
+    // to afford it (see `MIN_MODEL_CHARS`).
+    let unit = if labeled { " tokens" } else { "" };
     if prompt_tokens == 0 {
-        return "0 · —".into();
+        return format!("0{unit} · —");
     }
     let total = prompt_tokens.saturating_add(completion_tokens);
     let rate = ((cache_reads as f64 / prompt_tokens as f64) * 100.0)
         .clamp(0.0, 100.0)
         .round() as u32;
-    format!("{} · {rate}% cache", compact_token_count(total))
+    format!("{}{unit} · {rate}% cache", compact_token_count(total))
 }
 
 /// Compact count for the footer: `999`, `1.2k`, `12k`, `1.2M`.
@@ -507,7 +553,7 @@ mod tests {
         let out = rendered(&m, 90);
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
-        assert!(out.contains("0 · —"), "{out:?}");
+        assert!(out.contains("0 tokens · —"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
     }
 
@@ -619,7 +665,26 @@ mod tests {
         assert!(out.contains("Auto"), "{out:?}");
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
+        assert!(out.contains("0 tokens · —"), "{out:?}");
+    }
+
+    #[test]
+    fn usage_slot_names_its_unit_when_the_row_can_afford_it() {
+        // "0 · —" told a first-time reader nothing about what was being
+        // counted, and the idle state is the first thing they see.
+        let m = model(TurnLifecycle::Ready, 0.1);
+        assert!(rendered(&m, 120).contains("0 tokens · —"));
+    }
+
+    #[test]
+    fn a_cramped_row_drops_the_unit_label_before_the_mode_chip() {
+        // The mode chip says whether Forge asks before acting; it must never be
+        // traded away for a unit label.
+        let m = model(TurnLifecycle::Working, 0.34);
+        let out = rendered(&m, 60);
+        assert!(out.contains("Auto") || out.contains("Manual"), "{out:?}");
         assert!(out.contains("0 · —"), "{out:?}");
+        assert!(!out.contains("0 tokens"), "{out:?}");
     }
 
     #[test]
@@ -629,7 +694,7 @@ mod tests {
         m.completion_tokens = 36;
         m.prompt_cache_reads = 5_504;
         let out = rendered(&m, 90);
-        assert!(out.contains("6.1k · 90% cache"), "{out:?}");
+        assert!(out.contains("6.1k tokens · 90% cache"), "{out:?}");
         assert!(!out.contains("2 changes"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
     }
@@ -646,19 +711,25 @@ mod tests {
         let out = rendered(&m, 76);
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("100%"), "{out:?}");
-        assert!(out.contains("0 · —"), "{out:?}");
+        assert!(out.contains("0 tokens · —"), "{out:?}");
     }
 
     #[test]
     fn format_footer_usage_slot_stays_blank_until_prompt_tokens() {
-        assert_eq!(format_footer_usage_slot(0, 0, 0), "0 · —");
-        assert_eq!(format_footer_usage_slot(0, 500, 0), "0 · —");
-        assert_eq!(format_footer_usage_slot(100, 0, 0), "100 · 0% cache");
+        assert_eq!(format_footer_usage_slot(0, 0, 0, true), "0 tokens · —");
+        assert_eq!(format_footer_usage_slot(0, 500, 0, true), "0 tokens · —");
         assert_eq!(
-            format_footer_usage_slot(6_094, 36, 5_504),
-            "6.1k · 90% cache"
+            format_footer_usage_slot(100, 0, 0, true),
+            "100 tokens · 0% cache"
         );
-        assert_eq!(format_footer_usage_slot(100, 0, 200), "100 · 100% cache");
+        assert_eq!(
+            format_footer_usage_slot(6_094, 36, 5_504, true),
+            "6.1k tokens · 90% cache"
+        );
+        assert_eq!(
+            format_footer_usage_slot(100, 0, 200, true),
+            "100 tokens · 100% cache"
+        );
     }
 
     #[test]

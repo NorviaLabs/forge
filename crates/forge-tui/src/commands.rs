@@ -44,6 +44,11 @@ pub enum SlashCommand {
     },
     /// Show session status overlay.
     Status,
+    /// Open (and focus) the terminal panel. The `Ctrl+\`` chord is the fast
+    /// path, but it is an unusual key to guess and appears only in the help
+    /// overlay — without a palette entry the terminal is unreachable for
+    /// anyone who hasn't memorised it.
+    Terminal,
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -96,6 +101,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             name: parts.next().map(|s| s.to_string()),
         }),
         "status" => Ok(SlashCommand::Status),
+        "terminal" | "term" | "shell" => Ok(SlashCommand::Terminal),
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -108,6 +114,35 @@ mod tests {
     fn parses_phase1_commands() {
         assert!(parse_slash("/tools").unwrap().is_err());
         assert!(parse_slash("/journal").unwrap().is_err());
+    }
+
+    #[test]
+    fn terminal_is_reachable_by_name_and_common_synonyms() {
+        // `Ctrl+\`` is the fast path but an unusual chord to guess, and it
+        // appears only in the help overlay — without these the terminal is
+        // undiscoverable from the command palette.
+        for line in ["/terminal", "/term", "/shell"] {
+            assert_eq!(
+                parse_slash(line).unwrap().unwrap(),
+                SlashCommand::Terminal,
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_palette_entry_parses() {
+        // The palette advertises commands; a listed command that doesn't parse
+        // is a dead end the user can only find by trying it.
+        for item in crate::overlays::default_palette_items() {
+            let parsed = parse_slash(&item.cmd)
+                .unwrap_or_else(|| panic!("{} is not a slash command", item.cmd));
+            assert!(
+                parsed.is_ok(),
+                "palette advertises unparseable {}",
+                item.cmd
+            );
+        }
     }
 
     #[test]

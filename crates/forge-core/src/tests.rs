@@ -2733,14 +2733,18 @@ async fn acl_denial_message_carries_denied_outcome() {
 }
 
 #[tokio::test]
-async fn write_then_failing_validation_in_same_turn_never_completes() {
+async fn write_then_failing_validation_completes_with_the_check_reported_as_incomplete() {
     // `classify_turn` picks exactly one `TaskExpectation` category per
     // turn by precedence (git > file-edit > tool-execution > search >
     // read-only). A turn that both writes a file (succeeds) and runs a
-    // failing validation command classifies as `FileEdit` only, so
-    // without the cross-category evidence gate in `apply_model_response`
-    // the failing bash evidence would never be consulted and this turn
-    // would incorrectly read `Completed`.
+    // failing validation command classifies as `FileEdit` only.
+    //
+    // The failing bash still has to surface — but it is *not* part of the
+    // expectation, so it must not turn a verified write into a failed turn.
+    // Reporting "Failed" here is the false-failure bug: the file really is on
+    // disk, and telling the user nothing was applied sends them to `git diff`
+    // to find out Forge lied. Complete the turn, and carry the unfinished
+    // check separately.
     let dir = tempdir().unwrap();
     let model = script(vec![
         tool_call_response(vec![
@@ -2761,17 +2765,118 @@ async fn write_then_failing_validation_in_same_turn_never_completes() {
         .await
         .unwrap();
     s.run_user_message("write and validate").await.unwrap();
-    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
+
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    let completion = s.last_completion.as_ref().unwrap();
     assert_eq!(
-        s.last_completion.as_ref().unwrap().reason,
-        CompletionReason::PartialFailure
+        completion.reason,
+        CompletionReason::CompletedWithIncompleteChecks
     );
-    // The write still happened on disk — the gate fails the turn without
-    // pretending the edit didn't occur.
+    // The unfinished check is named by its command, not swallowed — the
+    // command label is what the user recognizes ("exit 1", "pytest ..."),
+    // not the tool that ran it.
+    assert_eq!(completion.evidence_summary.incomplete, vec!["exit 1"]);
+    assert!(
+        completion.evidence_summary.detail.contains("didn't finish"),
+        "detail should say the check didn't finish, got: {}",
+        completion.evidence_summary.detail
+    );
+    // ...and the turn never claims the edit failed.
+    assert!(
+        !completion
+            .evidence_summary
+            .detail
+            .contains("No file modifications"),
+        "a verified write must never be reported as no modifications"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("ok.txt")).unwrap(),
         "fine\n"
     );
+}
+
+#[tokio::test]
+async fn edit_tool_produces_file_evidence_so_a_real_edit_is_not_reported_as_failed() {
+    // Regression: `pre_edit_snapshot` captured pre-state for `edit`, but
+    // `push_file_edit_evidence` only matched `write_file`/`apply_patch`, so an
+    // `edit` call pushed no evidence at all. Its own `FileEdit` expectation was
+    // then permanently unverifiable and every successful `edit` reported
+    // "No file modifications were successfully applied."
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("edit_me.txt"), "before\n").unwrap();
+    let model = script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "1".into(),
+            name: "edit".into(),
+            arguments: json!({
+                "path": "edit_me.txt",
+                "old_string": "before",
+                "new_string": "after"
+            }),
+        }]),
+        text_only("Edited the file."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("edit it").await.unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("edit_me.txt")).unwrap(),
+        "after\n",
+        "precondition: the edit must actually land on disk"
+    );
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    assert_eq!(
+        s.last_completion.as_ref().unwrap().reason,
+        CompletionReason::EditVerified
+    );
+}
+
+#[tokio::test]
+async fn a_missing_verification_command_is_reported_without_failing_the_edit() {
+    // The exact shape from the usability report: the model edits a file, then
+    // runs a checker that isn't installed. `bash` itself dispatches fine, so
+    // the tool is not `is_error` — only the non-zero exit marks the command as
+    // having not finished. The edit must still read as done, and the missing
+    // check must still be named.
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("mod.txt"), "before\n").unwrap();
+    let model = script(vec![
+        tool_call_response(vec![
+            ToolCall {
+                id: "1".into(),
+                name: "edit".into(),
+                arguments: json!({
+                    "path": "mod.txt",
+                    "old_string": "before",
+                    "new_string": "after"
+                }),
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "definitely-not-installed --check"}),
+            },
+        ]),
+        text_only("Edited the file and tried to verify it."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("edit and verify").await.unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("mod.txt")).unwrap(),
+        "after\n"
+    );
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    let completion = s.last_completion.as_ref().unwrap();
+    assert_eq!(
+        completion.reason,
+        CompletionReason::CompletedWithIncompleteChecks
+    );
+    assert_eq!(completion.evidence_summary.incomplete.len(), 1);
 }
 
 #[tokio::test]

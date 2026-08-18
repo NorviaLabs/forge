@@ -4,7 +4,7 @@ use crate::widgets::BusyPhase;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BottomPanelState {
@@ -32,15 +32,33 @@ impl Widget for BottomPanel<'_> {
         if area.height == 0 || !self.model.state.open {
             return;
         }
+        // Focus has to be legible without color: the panel is a single top
+        // rule, so an active/inactive *style* swap alone is invisible in
+        // low-color terminals and easy to miss even in full color. Match the
+        // composer's structural cue — a thick border when focused — so
+        // "where do my keystrokes go" is answerable from shape, and mark the
+        // title too, since the rule is only one cell tall.
         let block = Block::default()
             .borders(Borders::TOP)
+            .border_type(if self.focused {
+                BorderType::Thick
+            } else {
+                BorderType::Plain
+            })
             .border_style(if self.focused {
                 theme::active_panel_border()
             } else {
                 theme::inactive_panel_border()
             })
             .style(theme::panel())
-            .title(Line::from(Span::styled(" Terminal ", theme::text())));
+            .title(Line::from(Span::styled(
+                if self.focused {
+                    " ● Terminal "
+                } else {
+                    " Terminal "
+                },
+                theme::text(),
+            )));
         let inner = block.inner(area);
         block.render(area, buf);
         let lines = terminal_lines(
@@ -189,6 +207,45 @@ mod tests {
         assert!(rendered.contains("Terminal"));
         assert!(!rendered.contains("BOTTOM"));
         assert!(!rendered.contains("Ctrl+P close"));
+    }
+
+    #[test]
+    fn terminal_focus_is_legible_without_color() {
+        // Regression: focus was signalled only by swapping the border *style*
+        // on a one-cell top rule, so a focused terminal was visually identical
+        // to an unfocused one and the only way to find out where keystrokes
+        // were going was to type and see what happened.
+        let activity = ActivityFeed::default();
+        let render = |focused: bool| {
+            let state = BottomPanelState {
+                open: true,
+                focused,
+            };
+            rendered_text(
+                BottomPanelModel {
+                    state: &state,
+                    busy_phase: &BusyPhase::Idle,
+                    activity: &activity,
+                    terminal_content: "",
+                    terminal_running: false,
+                    terminal_shell: None,
+                    terminal_cursor: None,
+                },
+                focused,
+            )
+        };
+
+        let focused = render(true);
+        let unfocused = render(false);
+        assert_ne!(
+            focused, unfocused,
+            "focused and unfocused terminals must differ in glyphs, not only color"
+        );
+        assert!(focused.contains("● Terminal"), "{focused}");
+        assert!(!unfocused.contains("● Terminal"), "{unfocused}");
+        // Thick top rule when focused, plain when not.
+        assert!(focused.contains('━'), "{focused}");
+        assert!(!unfocused.contains('━'), "{unfocused}");
     }
 
     #[test]
