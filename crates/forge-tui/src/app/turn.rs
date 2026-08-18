@@ -36,10 +36,10 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 impl TuiApp {
-    async fn execute_tool_application(
+    async fn execute_tool_application<B: ratatui::backend::Backend>(
         &mut self,
         pending: PendingToolApplication,
-        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+        mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<ModelResponseApplication, LoopError> {
         let execution = AbortOnDrop::new(tokio::spawn(pending.execute()));
         loop {
@@ -52,10 +52,14 @@ impl TuiApp {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
             if terminal.is_some() {
-                // A tool application owns the session while it is in flight. Do not
-                // re-enter the general input dispatcher here: it can enqueue prompts,
-                // open overlays, or otherwise mutate session-owned state mid-apply.
-                // Pending input remains in Crossterm's queue for the outer event loop.
+                // Tool execution owns only its detached PendingToolApplication;
+                // AgentSession is deliberately available to the UI during this wait.
+                // Keep the same input contract as model streaming so navigation,
+                // composer typing, queueing and cancellation do not freeze until a
+                // long command finishes.
+                drain_events(self, terminal.as_deref_mut())
+                    .await
+                    .map_err(|error| LoopError::Other(error.to_string()))?;
                 self.poll_interactive_terminal();
                 if self.cancellation.take_requested() || self.exit.is_requested() {
                     return Err(LoopError::Cancelled);
@@ -773,5 +777,84 @@ impl TuiApp {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod responsiveness_tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyEventState};
+    use forge_core::LoopConfig;
+    use forge_model::MockModelClient;
+    use forge_tools::{BashTool, ToolRegistry};
+    use forge_types::{ModelResponse, ToolCall};
+    use ratatui::backend::TestBackend;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn composer_keeps_receiving_input_while_a_tool_runs() {
+        crate::app::tests::helpers::isolate_global_skills();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(BashTool));
+        let mut session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: workspace.path().to_path_buf(),
+                journal_dir: workspace.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: false,
+                ..Default::default()
+            },
+            Arc::new(MockModelClient::script(Vec::new())),
+            tools,
+        )
+        .await
+        .unwrap();
+        session
+            .append_user_message("run a slow command")
+            .await
+            .unwrap();
+
+        let application = session
+            .begin_model_response_application(ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "slow-command".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command": "sleep 0.3"}),
+                }],
+                usage: None,
+                thinking: None,
+            })
+            .await
+            .unwrap();
+        let ModelResponseApplication::Execute(pending) = application else {
+            panic!("bash should be returned as a pending tool application");
+        };
+
+        let mut app = TuiApp::new(session, crate::app::tests::helpers::test_runtime_config());
+        app.enter_chat_composer();
+        app.busy_state.start(BusyPhase::Tool {
+            name: "bash".into(),
+        });
+        app.test_events.push_back(Event::Key(KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        let result = app
+            .execute_tool_application(*pending, Some(&mut terminal))
+            .await
+            .unwrap();
+
+        assert_eq!(app.input.text, "x");
+        assert!(matches!(
+            result,
+            ModelResponseApplication::Finished(ApplyOutcome::Continue)
+        ));
     }
 }

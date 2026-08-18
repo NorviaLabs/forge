@@ -335,6 +335,13 @@ impl TuiApp {
         &mut self,
         command: SemanticCommand,
     ) -> Result<bool, TuiError> {
+        if self.busy_state.is_active() && !command.available_while_busy() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "unavailable while Forge is working · wait or Esc to interrupt",
+            );
+            return Ok(true);
+        }
         match command {
             SemanticCommand::GoHome => self.go_home_workspace(),
             SemanticCommand::GoBack => self.go_back_workspace(),
@@ -583,6 +590,17 @@ impl TuiApp {
         let line = skill_line.as_deref().unwrap_or(line);
         if let Some(cmd_res) = parse_slash(line) {
             let slash_name = line.split_whitespace().next().unwrap_or("/");
+            if let Ok(command) = &cmd_res {
+                if self.busy_state.is_active() && !command.available_while_busy() {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!(
+                            "{slash_name} unavailable while Forge is working · wait or Esc to interrupt"
+                        ),
+                    );
+                    return Ok(());
+                }
+            }
             self.push_activity(ActivityKind::Slash, FeedbackSeverity::Info, slash_name);
             match cmd_res {
                 Ok(SlashCommand::Help) => {
@@ -880,6 +898,32 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[test]
+    fn busy_turns_keep_navigation_and_cancellation_but_gate_runtime_mutations() {
+        for command in [
+            SemanticCommand::QuickSwitchModel,
+            SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
+            SemanticCommand::StepReasoningEffort(true),
+            SemanticCommand::OpenExternalEditor,
+            SemanticCommand::SaveEditor,
+            SemanticCommand::BeginCreateFile,
+            SemanticCommand::BeginCreateDirectory,
+            SemanticCommand::BeginRename,
+            SemanticCommand::RequestDelete,
+        ] {
+            assert!(!command.available_while_busy(), "{command:?}");
+        }
+        for command in [
+            SemanticCommand::FocusComposer,
+            SemanticCommand::SubmitMessage,
+            SemanticCommand::ToggleBottomPanel,
+            SemanticCommand::ToggleToolDetails,
+            SemanticCommand::QuitOrInterrupt,
+        ] {
+            assert!(command.available_while_busy(), "{command:?}");
+        }
+    }
 
     /// Git-initializes `dir` so writes routed through the runtime-storage
     /// resolver (UI state, run history, context offload/progress) resolve

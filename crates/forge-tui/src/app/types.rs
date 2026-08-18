@@ -406,6 +406,27 @@ pub(crate) enum SemanticCommand {
     Quit,
 }
 
+impl SemanticCommand {
+    /// Operations that must not overlap a foreground turn. The event pump
+    /// still accepts navigation, composer input, queue operations and
+    /// cancellation; these commands would change the active runtime route or
+    /// write the workspace while a detached tool still has an in-flight view.
+    pub(crate) fn available_while_busy(&self) -> bool {
+        !matches!(
+            self,
+            Self::QuickSwitchModel
+                | Self::OpenModelControl(_)
+                | Self::StepReasoningEffort(_)
+                | Self::OpenExternalEditor
+                | Self::SaveEditor
+                | Self::BeginCreateFile
+                | Self::BeginCreateDirectory
+                | Self::BeginRename
+                | Self::RequestDelete
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabNavCommand {
     PreviousTab,
@@ -1115,6 +1136,10 @@ pub struct TuiApp {
     /// Approved HITL tool running off the event loop so frames keep painting.
     pub(crate) pending_approved_tool:
         Option<tokio::task::JoinHandle<forge_core::CompletedHitlExecution>>,
+    /// Synthetic terminal events used by responsiveness tests. Production
+    /// input still comes directly from Crossterm.
+    #[cfg(test)]
+    pub(crate) test_events: std::collections::VecDeque<Event>,
     pub(crate) attachment: AttachmentState,
     /// Selected queued row for keyboard cancellation.
     pub(crate) task_selection: TaskSelectionState,
