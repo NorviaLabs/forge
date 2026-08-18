@@ -217,6 +217,10 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
         parse_pattern_rules(&permissions.allow),
         parse_pattern_rules(&permissions.deny),
     ));
+    let egress = forge_core::egress_policy_for_workspace(cfg.workspace_root());
+    if !egress.is_empty() {
+        session.apply_egress_policy(egress).await;
+    }
 
     Ok(OpenedSession { session, notices })
 }

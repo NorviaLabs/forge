@@ -33,7 +33,7 @@ pub use forge_context::compaction::{
     CompactionTrigger, ProtectedFact, ProtectedFactKind, SessionContextState,
 };
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
-pub use permission::EgressRuntime;
+pub use permission::{egress_policy_for_workspace, EgressRuntime};
 pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::compact_tokens;
 pub use session::tools::{
