@@ -184,7 +184,7 @@ pub(crate) fn render_markdown_open(text: &str, width: usize) -> Vec<Line<'static
     renderer.finish_open()
 }
 
-/// Render a buffer whose settled prefix is already rendered.
+/// Join an open settled prefix with already-rendered open tail lines.
 ///
 /// `settled_open` must come from [`render_markdown_open`] on exactly
 /// `buffer[..cut]`, where `cut` is [`settled_prefix_len`]. Because that cut
@@ -193,13 +193,12 @@ pub(crate) fn render_markdown_open(text: &str, width: usize) -> Vec<Line<'static
 /// buffer would — and the separator is already in `settled_open`.
 ///
 /// `settled_and_tail_render_as_the_whole` pins the equality.
-pub(crate) fn render_markdown_split(
+pub(crate) fn render_markdown_join(
     settled_open: &[Line<'static>],
-    tail: &str,
-    width: usize,
+    tail: Vec<Line<'static>>,
 ) -> Vec<Line<'static>> {
     let mut out = settled_open.to_vec();
-    out.extend(render_markdown_open(tail, width));
+    out.extend(tail);
     trim_trailing_blanks(out)
 }
 
@@ -1271,6 +1270,14 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn render_markdown_split(
+        settled_open: &[Line<'static>],
+        tail: &str,
+        width: usize,
+    ) -> Vec<Line<'static>> {
+        render_markdown_join(settled_open, render_markdown_open(tail, width))
     }
 
     /// Helper: the settled prefix, as text, so cases read as intent.
