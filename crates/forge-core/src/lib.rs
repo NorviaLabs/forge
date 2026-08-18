@@ -47,7 +47,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use forge_config::WebSearchConfig;
-use forge_context::{estimate_messages_tokens, estimate_tokens, ContextEngine};
+use forge_context::compaction::messages_tokens;
+use forge_context::{estimate_tokens, ContextEngine};
 use forge_durable::{new_session_id, Journal};
 use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest, SharedMessages, StreamEventTx};
