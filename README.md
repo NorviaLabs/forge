@@ -147,7 +147,9 @@ Useful in-app commands:
 /refresh       Refresh the file explorer's Git state
 /edit          Open the active file in your editor
 /context-file  Attach the active file to the next message
+/terminal      Open the terminal panel
 /theme         Change the presentation theme
+/status        Session status and diagnostics
 /help          Open help
 /quit          Exit Forge
 ```
@@ -167,25 +169,35 @@ controls are:
 | `Enter` / `i` | Interact with the focused block or control |
 | `Esc` | Leave the current interaction level |
 | `↑` / `↓` | Navigate a local list or input |
-| `Ctrl+Backtick` | Toggle the bottom panel |
-| `Alt+1`–`Alt+3` | Open a bottom-panel tab |
-| `Shift+←` / `Shift+→` | Switch the active block's tab |
-| `F2` | Cycle permission mode (Manual ↔ Accept Edits) |
-| `F3` | Focus composer chips (mode · connect · model · effort) |
+| `F1` | Open help |
 | `F4` | Open model picker |
+| `Ctrl+E` | Toggle the Files explorer |
+| `Ctrl+Backtick` | Toggle the terminal panel (or `/terminal`) |
+| `Ctrl+O` | Expand or collapse tool details |
+| `Alt+M` | Quick-switch model |
+| `Alt+,` / `Alt+.` | Step reasoning effort down or up |
+| `Alt+←` | Go back to the previous workspace view |
+| `Ctrl+↑` / `Ctrl+↓` | Move the selection in the queued-message list |
+| `Ctrl+Backspace` | Cancel the selected queued message |
+| `Ctrl+C` | Interrupt the running turn, or quit when idle |
+| `Ctrl+D` | Quit |
 | `Ctrl+Shift+V` | Attach a screenshot from the local OS clipboard |
-| `?` | Open help |
 
-The composer shows a chip row under the input: permission mode, connection,
-model, and effort. `F3` then `←`/`→`/`Enter` activates a chip (disconnected
-→ connect flow). `Enter` still sends; `⏎` is a hint only. `Ctrl+Shift+V`
-attaches a PNG/JPEG/GIF/WebP from the local clipboard (workspace-only;
-SSH has no image clipboard). The model can also call `view_image` on a
-workspace file when the active model accepts image input.
+The footer carries a chip row: model, effort, and permission mode. It is an
+ordinary `Tab` stop — `Tab` to it, `←`/`→` to pick a chip, `Enter` to activate
+(the mode chip toggles Manual ↔ Auto; the others open their picker). `Enter`
+still sends from the composer; `⏎` is a hint only. `Ctrl+Shift+V` attaches a
+PNG/JPEG/GIF/WebP from the local clipboard (workspace-only; SSH has no image
+clipboard). The model can also call `view_image` on a workspace file when the
+active model accepts image input.
 
-When the bottom panel is focused, it is an interactive login shell. Type or
-paste commands directly into it; standard control keys, arrows, Tab, and
-terminal resize are forwarded to the shell. `Ctrl+Backtick` closes the panel.
+The Files explorer needs a terminal at least 116 columns wide. Below that
+`Ctrl+E` says so rather than toggling a pane that cannot be drawn.
+
+When the terminal panel is focused, it is an interactive login shell, and its
+title shows a `●` with a thicker rule so you can tell it holds the keyboard.
+Type or paste commands directly into it; standard control keys, arrows, Tab,
+and terminal resize are forwarded to the shell. `Ctrl+Backtick` closes it.
 
 When a text file is open, the workspace uses Vim-style editing. Files start in
 Normal mode; press `i` to insert, `Esc` to return to Normal mode, and `Alt+E`
@@ -292,6 +304,18 @@ Inside the sandbox a command can:
 `.git` and `.forge` are read-only: the agent can inspect history but cannot
 rewrite it, and cannot edit the permission rules that govern it.
 
+Reading broadly has one known cost, and it is worth stating plainly. On Linux
+the sandbox exposes the host filesystem read-only, and a read-only *mount* does
+not stop a process connecting to a Unix socket — that check looks at the inode,
+not the mount flag. Forge masks `/run` and `/tmp`, which covers the sockets
+with the worst blast radius: `docker.sock` (root on the host), systemd, D-Bus,
+and `$XDG_RUNTIME_DIR`, where ssh-agent and gpg-agent live. A pathname socket
+somewhere else — `~/.docker` is the realistic example — is still reachable from
+inside the sandbox. A confined command already runs as you, so this widens what
+it can touch rather than crossing a privilege boundary. Closing it needs
+Landlock's `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, which is newer than the kernels
+forge runs on today; seccomp cannot express it. Tracked in issue #392.
+
 If the OS cannot confine — bubblewrap missing, an unsupported platform — forge
 does not pretend otherwise. It caps the session at Manual mode and tells you
 why. Auto is unreachable without a sandbox under it; there is no combination
@@ -345,8 +369,9 @@ Menu rows (when a prompt appears):
 
 ### Permission modes
 
-`F2` cycles the session's oversight level (persisted per workspace).
-Default is **Accept Edits**, shown in the composer as **Auto**.
+The footer's mode chip cycles the session's oversight level (persisted per
+workspace): `Tab` to the footer, `←`/`→` to the mode chip, `Enter` to toggle.
+Default is **Accept Edits**, shown in the footer as **Auto**.
 
 The mode decides only whether you are *asked*. It never decides what a command
 can *reach* — the sandbox does that, identically in both modes.
@@ -361,7 +386,7 @@ can *reach* — the sandbox does that, identically in both modes.
   session `always`) allows it.
 
 Auto requires a working sandbox. On a host that cannot confine, the mode is
-capped at Manual and the composer chip explains why.
+capped at Manual and the footer's mode chip explains why.
 
 Modes never override an ACL deny or ignore your `permissions.toml` rules: a
 `deny` pattern is checked first and re-prompts in Auto exactly as in Manual.
@@ -422,8 +447,8 @@ shell with an AI interface:
    can reach; it does not make an untrusted repository safe to build.
 2. Read each approval prompt, including the exact command and consequence.
    In Auto mode most shell commands do not prompt — the sandbox is what
-   stands in for that review, so check that it is active (the composer chip
-   says when the mode is capped).
+   stands in for that review, so check that it is active (the footer's mode
+   chip says when the mode is capped).
 3. Keep credentials in your environment or trusted user configuration. The
    sandbox restricts where a command may connect, but a command that legitimately
    reaches an allow-listed host can carry whatever it can read.
