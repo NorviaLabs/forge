@@ -118,7 +118,8 @@ impl EgressRuntime {
 /// silently reaching it.
 ///
 /// The allow-list is currently [`EgressPolicy::with_default_ecosystems`]: the
-/// package registries a first build needs. That is a policy decision made on
+/// package registries a first build needs, plus `**.github.com` so `gh` can
+/// reach `api.github.com`. That is a policy decision made on
 /// the user's behalf, and it is the weakest part of this — Claude Code
 /// pre-allows nothing and prompts per host, Codex defaults to `"*" = "deny"`.
 /// Seeding is only defensible here because forge has no per-domain prompt yet;
