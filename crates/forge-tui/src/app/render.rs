@@ -48,6 +48,7 @@ impl TuiApp {
         self.session_view = SessionSnapshot::capture(&self.session);
         self.transcript_view.refresh(&self.session);
         let area = frame.area();
+        self.last_frame_width = area.width;
         if is_too_small(area) {
             self.focus.reset_to_workspace();
             self.workspace_files.explorer.focused = false;

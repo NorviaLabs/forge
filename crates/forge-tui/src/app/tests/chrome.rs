@@ -432,6 +432,44 @@ async fn completed_turn_renders_unfinished_checks_without_claiming_failure() {
     );
 }
 
+#[tokio::test]
+async fn toggling_files_on_a_narrow_terminal_explains_itself() {
+    // The explorer has a width threshold in `layout.rs`. Below it, toggling
+    // `visible` changed nothing on screen and focusing it parked the cursor in
+    // a pane that was never rendered — a silent no-op with no way to learn the
+    // requirement.
+    let (_dir, mut app) = focus_test_app().await;
+    render_app_text(&mut app, 80, 24);
+    assert!(!crate::layout::files_fit(80));
+
+    app.toggle_files_panel();
+
+    assert!(
+        app.feedback.text.contains("wider terminal"),
+        "expected an explanation, got {:?}",
+        app.feedback.text
+    );
+    assert!(
+        !matches!(app.focus.block(), FocusBlock::Files | FocusBlock::Search),
+        "focus must not move into a pane that cannot render"
+    );
+}
+
+#[tokio::test]
+async fn toggling_files_on_a_wide_terminal_still_works() {
+    let (_dir, mut app) = focus_test_app().await;
+    render_app_text(&mut app, 140, 40);
+    assert!(crate::layout::files_fit(140));
+
+    app.toggle_files_panel();
+
+    assert!(
+        !app.feedback.text.contains("wider terminal"),
+        "a wide terminal must not be refused: {:?}",
+        app.feedback.text
+    );
+}
+
 /// The detail shares the footer row with the model/effort/mode identity, so a
 /// long command name must degrade to a count rather than crowding out which
 /// model the user is talking to.

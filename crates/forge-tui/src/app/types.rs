@@ -1182,6 +1182,10 @@ pub struct TuiApp {
     pub(crate) terminal_area: Option<ratatui::layout::Rect>,
     pub(crate) terminal_rows: Vec<String>,
     pub(crate) catalog_fetch: CatalogFetchState,
+    /// Frame width from the most recent draw. Key handling runs before the
+    /// next render, so commands that depend on whether a pane can physically
+    /// fit (e.g. the explorer toggle) need last frame's width to answer.
+    pub(crate) last_frame_width: u16,
 }
 
 #[derive(Debug, Clone)]

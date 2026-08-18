@@ -365,6 +365,34 @@ fn group_model_items(items: Vec<ModelItem>) -> Vec<ModelGroup> {
     out
 }
 
+/// Within each group, move the route belonging to the active profile to the
+/// front.
+///
+/// The picker resets the selection to row 0 on every keystroke, so typing a
+/// model name that several providers offer selects whichever route happened to
+/// sort first — pressing Enter then silently moves the session to a different
+/// provider and account than the one it was already on. Ordering the active
+/// route first makes row 0 the "stay where I am" choice, so the highlight and
+/// the Enter action agree and the fast path is no longer a trap. Every route
+/// stays present and individually selectable.
+fn promote_active_route(groups: &mut [ModelGroup], active_profile_id: Option<&str>) {
+    let Some(active) = active_profile_id else {
+        return;
+    };
+    for group in groups {
+        if group.routes.len() < 2 {
+            continue;
+        }
+        if let Some(pos) = group
+            .routes
+            .iter()
+            .position(|route| route.profile_id.as_deref() == Some(active))
+        {
+            group.routes[..=pos].rotate_right(1);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalExecutionMode {
     Direct,
@@ -475,6 +503,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Restore a previous session".into(),
         },
         PaletteItem {
+            cmd: "/terminal".into(),
+            desc: "Open the terminal panel (Ctrl+`)".into(),
+        },
+        PaletteItem {
             cmd: "/clear".into(),
             desc: "Clear the TUI screen".into(),
         },
@@ -523,10 +555,15 @@ impl Overlay {
             all_items,
             groups,
             selected_route,
+            active_profile_id,
             ..
         } = self
         {
-            *groups = Self::scoped_groups(&items, selected_route.as_deref());
+            *groups = Self::scoped_groups(
+                &items,
+                selected_route.as_deref(),
+                active_profile_id.as_deref(),
+            );
             *all_items = items;
         }
     }
@@ -546,7 +583,13 @@ impl Overlay {
 
     /// Build items scoped to `route` (or every reachable item when `route`
     /// is `None`, e.g. before any provider has ever been picked).
-    fn scoped_groups(items: &[ModelItem], route: Option<&str>) -> Vec<ModelGroup> {
+    ///
+    /// `active_profile_id` only orders routes within a group — it never filters.
+    fn scoped_groups(
+        items: &[ModelItem],
+        route: Option<&str>,
+        active_profile_id: Option<&str>,
+    ) -> Vec<ModelGroup> {
         let filtered: Vec<ModelItem> = match route {
             Some(pid) => items
                 .iter()
@@ -555,7 +598,9 @@ impl Overlay {
                 .collect(),
             None => items.to_vec(),
         };
-        group_model_items(filtered)
+        let mut groups = group_model_items(filtered);
+        promote_active_route(&mut groups, active_profile_id);
+        groups
     }
 
     /// Index into the *flattened* rows `flatten_model_rows(groups)` would
@@ -685,7 +730,7 @@ impl Overlay {
         focus: ConnectModelColumn,
     ) -> Self {
         let selected_route = route_scope.map(str::to_string);
-        let groups = Self::scoped_groups(&items, selected_route.as_deref());
+        let groups = Self::scoped_groups(&items, selected_route.as_deref(), current_profile_id);
         let model_selected = Self::index_of_model(&groups, current_model);
         let effort_items = effort_options(current_model);
         let default_effort = ReasoningEffort::default_for_model(current_model);
@@ -2617,6 +2662,78 @@ mod tests {
             source: forge_connect::CatalogSource::Default,
             route_label: "OpenAI Codex".into(),
         }
+    }
+
+    /// Two providers offering the same model name.
+    fn duplicate_name_items() -> Vec<ModelItem> {
+        vec![
+            ModelItem {
+                provider: "native".into(),
+                model: "opencode-zen/gpt-5.6-luna".into(),
+                profile_id: Some("opencode_zen".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenCode · Zen".into(),
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "openai-codex/gpt-5.6-luna".into(),
+                profile_id: Some("openai_codex".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenAI · ChatGPT".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn typing_a_duplicated_model_name_keeps_the_provider_you_are_already_on() {
+        // The picker resets the selection to row 0 on every keystroke, so
+        // typing a name two providers offer used to confirm whichever route
+        // sorted first — silently moving the session to a different provider
+        // and account. Row 0 must be the "stay put" choice.
+        let mut overlay = Overlay::connect_model_open_compact(
+            vec![],
+            duplicate_name_items(),
+            Some("openai_codex"),
+            "openai-codex/gpt-5.6-luna",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        for c in "gpt-5.6-luna".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SelectModel {
+                provider: "native".into(),
+                model: "openai-codex/gpt-5.6-luna".into(),
+                profile_id: Some("openai_codex".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn the_other_provider_is_still_selectable_after_promotion() {
+        // Promotion reorders; it must never hide a route.
+        let mut overlay = Overlay::connect_model_open_compact(
+            vec![],
+            duplicate_name_items(),
+            Some("openai_codex"),
+            "openai-codex/gpt-5.6-luna",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        for c in "gpt-5.6-luna".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        handle_overlay_key(&mut overlay, Key::Down);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SelectModel {
+                provider: "native".into(),
+                model: "opencode-zen/gpt-5.6-luna".into(),
+                profile_id: Some("opencode_zen".into()),
+            }
+        );
     }
 
     #[test]

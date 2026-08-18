@@ -774,6 +774,13 @@ impl TuiApp {
                         lines: self.status_report_lines(),
                     });
                 }
+                Ok(SlashCommand::Terminal) => {
+                    // Open rather than toggle: the user asked for the terminal
+                    // by name, so closing an already-open one would be the
+                    // opposite of the request. `open_bottom_panel` also focuses
+                    // it, which is the point of asking for it.
+                    self.open_bottom_panel();
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());

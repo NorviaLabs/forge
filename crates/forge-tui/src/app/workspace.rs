@@ -30,6 +30,21 @@ impl TuiApp {
     /// a text-mutating surface is now only reachable deliberately, from the
     /// explorer itself.
     pub(super) fn toggle_files_panel(&mut self) {
+        // Below the layout's width threshold the explorer is never rendered, so
+        // toggling `visible` changes nothing on screen and focusing it parks the
+        // cursor in an invisible pane. Say why instead of doing nothing: the
+        // width requirement is otherwise undiscoverable.
+        if self.last_frame_width > 0 && !crate::layout::files_fit(self.last_frame_width) {
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                format!(
+                    "Files needs a wider terminal ({} columns; this one is {}).",
+                    crate::layout::files_min_frame_width(),
+                    self.last_frame_width
+                ),
+            );
+            return;
+        }
         let already_in_files = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
         if self.workspace_files.visible && !already_in_files {
             self.focus_block(FocusBlock::Search);
