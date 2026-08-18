@@ -220,12 +220,35 @@ impl AgentSession {
             // turn (git > file-edit > tool-execution > search > read-only), so
             // a turn that e.g. both writes a file and runs a failing
             // validation command evaluates the file-edit evidence only — the
-            // failing bash evidence never gets consulted, and the turn could
-            // read `Completed` despite it. Independent of which category the
-            // evaluator matched, any failed evidence entry anywhere in this
-            // turn must prevent a success framing.
+            // failing bash evidence never gets consulted.
+            //
+            // Errored evidence still has to surface, but *how* depends on whose
+            // failure it is:
+            //
+            // - An operation the expectation required failed → the requested
+            //   work did not happen. Fail the turn, loudly.
+            // - Any other operation failed → the requested work *did* happen and
+            //   some extra step the model chose to run did not. Reporting that
+            //   as a failed turn is the false-failure bug: it erases a verified
+            //   edit because an unrelated command was missing. Stay `Completed`
+            //   and carry the unfinished steps in `incomplete` instead.
             if decision.state == TaskLifecycle::Completed {
-                if let Some(bad) = self.turn.evidence().0.iter().find(|e| e.error.is_some()) {
+                let required = expectation.required_operation_ids();
+                let is_required = |entry: &EvidenceEntry| {
+                    entry
+                        .operation_id
+                        .as_deref()
+                        .is_some_and(|id| required.contains(&id))
+                };
+                let errored: Vec<&EvidenceEntry> = self
+                    .turn
+                    .evidence()
+                    .0
+                    .iter()
+                    .filter(|e| e.error.is_some())
+                    .collect();
+
+                if let Some(bad) = errored.iter().copied().find(|e| is_required(e)) {
                     let tool = bad.tool_name.clone().unwrap_or_else(|| "a step".into());
                     decision = CompletionDecision {
                         state: TaskLifecycle::Failed,
@@ -233,9 +256,37 @@ impl AgentSession {
                         evidence_summary: EvidenceSummary {
                             succeeded: decision.evidence_summary.succeeded,
                             failed: vec![tool.clone()],
+                            incomplete: Vec::new(),
                             detail: format!(
                                 "{tool} did not finish successfully, so this turn is not complete."
                             ),
+                        },
+                    };
+                } else if !errored.is_empty() {
+                    let mut incomplete: Vec<String> = Vec::new();
+                    for entry in errored {
+                        let tool = entry.tool_name.clone().unwrap_or_else(|| "a step".into());
+                        if !incomplete.contains(&tool) {
+                            incomplete.push(tool);
+                        }
+                    }
+                    let detail = format!(
+                        "{} {} didn't finish.",
+                        incomplete.join(", "),
+                        if incomplete.len() == 1 {
+                            "check"
+                        } else {
+                            "checks"
+                        }
+                    );
+                    decision = CompletionDecision {
+                        state: TaskLifecycle::Completed,
+                        reason: CompletionReason::CompletedWithIncompleteChecks,
+                        evidence_summary: EvidenceSummary {
+                            succeeded: decision.evidence_summary.succeeded,
+                            failed: decision.evidence_summary.failed,
+                            incomplete,
+                            detail,
                         },
                     };
                 }
@@ -249,6 +300,15 @@ impl AgentSession {
             );
             match decision.state {
                 TaskLifecycle::Completed => {
+                    // Unfinished ancillary steps travel as their own event so
+                    // the UI can report them next to a completed turn without
+                    // borrowing failure styling.
+                    if !decision.evidence_summary.incomplete.is_empty() {
+                        self.events.push(TurnEvent {
+                            kind: "turn_incomplete_checks".into(),
+                            detail: decision.evidence_summary.incomplete.join(", "),
+                        });
+                    }
                     self.transition(
                         TaskLifecycle::Completed,
                         TransitionReason::Completion(decision.reason),
