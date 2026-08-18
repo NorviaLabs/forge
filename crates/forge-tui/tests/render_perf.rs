@@ -526,3 +526,72 @@ fn perf_report_stream_preview_cost_by_answer_length() {
     }
     println!();
 }
+
+/// Streaming one answer must cost roughly its length, not its length squared.
+///
+/// Before the settled-prefix cache, doubling the answer multiplied total
+/// allocations by ~3.7 — converging on 4x, the signature of quadratic growth.
+/// The guard is set at 3.0 so it fails on a return to that shape while leaving
+/// room for the constant overhead that dominates the shorter samples.
+#[test]
+fn streaming_cost_does_not_grow_quadratically() {
+    let _guard = lock_measurement();
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let measure = |chunks: usize| -> usize {
+        let (_dir, mut app) = rt.block_on(app_with_turns(4));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test backend");
+        terminal.draw(|frame| app.draw(frame)).expect("warm draw");
+        ALLOCS.store(0, Relaxed);
+        COUNTING.store(1, Relaxed);
+        for piece in &stream_chunks(chunks) {
+            app.stream_preview_for_tests(piece);
+            terminal.draw(|frame| app.draw(frame)).expect("draw");
+        }
+        COUNTING.store(0, Relaxed);
+        ALLOCS.load(Relaxed)
+    };
+
+    let short = measure(64);
+    let long = measure(128);
+    let growth = long as f64 / short as f64;
+
+    assert!(
+        growth < 3.0,
+        "doubling the answer multiplied allocations by {growth:.2} \
+         ({short} -> {long}). Above ~3 the streaming preview is re-reading \
+         work it has already done; see docs/streaming-preview-commit-boundary.md"
+    );
+}
+
+/// Visual check: dump the streamed pane at two widths, mid-fence.
+///
+/// The cache is the only thing between a settled prefix and the screen, so a
+/// human should be able to read the frame it produces.
+#[test]
+#[ignore = "visual check, not a gate"]
+fn perf_report_streamed_frame_dump() {
+    let _guard = lock_measurement();
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let (_dir, mut app) = rt.block_on(app_with_turns(1));
+
+    for piece in [
+        "Here is the plan.\n\n",
+        "- discover the boundary\n- cache the prefix\n\n",
+        "Now the code:\n\n```rust\n",
+        "fn apply(x: usize) -> usize {\n    x + 1\n",
+    ] {
+        app.stream_preview_for_tests(piece);
+    }
+
+    for (w, h) in [(120u16, 24u16), (90, 24)] {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("backend");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+        println!("\n===== {w}x{h} =====");
+        let buf = terminal.backend().buffer();
+        for y in 0..h {
+            let row: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
+            println!("{}", row.trim_end());
+        }
+    }
+}

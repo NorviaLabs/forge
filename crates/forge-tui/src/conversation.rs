@@ -363,15 +363,36 @@ pub struct StreamMarkdownCache {
 }
 
 impl StreamMarkdownCache {
-    fn render(&mut self, text: &str, width: usize) -> Vec<Line<'static>> {
+    /// Lines for `text`, materialising at most `keep_from_end` of them.
+    ///
+    /// Caching the parse stops the answer being re-read, but copying every
+    /// cached line into the output is O(total lines) on its own, so a long turn
+    /// stays quadratic. Only the tail is ever on screen, so only the tail is
+    /// built — the same windowing `lines_for_width_from_end` already applies to
+    /// the transcript, moved inside a single block.
+    fn render(&mut self, text: &str, width: usize, keep_from_end: usize) -> Vec<Line<'static>> {
         let cut = crate::markdown::settled_prefix_len(text);
         let settled = &text[..cut];
-        if self.width != width || self.prefix != settled {
+        // Grow the cache rather than rebuild it. Re-rendering the whole settled
+        // prefix on every boundary advance is O(n) per advance, which is the
+        // quadratic this cache exists to remove. Appending is sound for the
+        // same reason the split is: each advance lands on a top-level block
+        // boundary, where the renderer's state is its initial state.
+        if self.width != width || !settled.starts_with(&self.prefix) {
             self.width = width;
-            self.prefix = settled.to_string();
-            self.open_lines = crate::markdown::render_markdown_open(settled, width);
+            self.prefix.clear();
+            self.open_lines.clear();
         }
-        crate::markdown::render_markdown_split(&self.open_lines, &text[cut..], width)
+        if settled.len() > self.prefix.len() {
+            let fresh = &settled[self.prefix.len()..];
+            self.open_lines
+                .extend(crate::markdown::render_markdown_open(fresh, width));
+            self.prefix.push_str(fresh);
+        }
+        let tail = crate::markdown::render_markdown_open(&text[cut..], width);
+        let from_prefix = keep_from_end.saturating_sub(tail.len());
+        let skip = self.open_lines.len().saturating_sub(from_prefix);
+        crate::markdown::render_markdown_join(&self.open_lines[skip..], tail)
     }
 }
 
@@ -518,7 +539,9 @@ impl ConversationRender for ConversationModel {
                 }
                 ConversationBlock::AssistantAnswer(p) => {
                     let parts = match stream_cache.as_deref_mut() {
-                        Some(cache) if p.streaming => cache.render(&p.text, prose_width),
+                        Some(cache) if p.streaming => {
+                            cache.render(&p.text, prose_width, keep_from_end)
+                        }
                         _ => render_markdown(&p.text, prose_width),
                     };
                     for line in parts {
@@ -3016,6 +3039,84 @@ mod tests {
                 (None, Some(22), '+'),
                 (Some(12), Some(23), ' '),
             ]
+        );
+    }
+
+    /// The cache is fed one chunk at a time for a whole turn; every
+    /// intermediate state must equal a one-shot render of the same buffer.
+    ///
+    /// This is the test that would catch an incremental append going wrong —
+    /// the cache grows in place, so a bad append is frozen for the rest of the
+    /// turn rather than corrected on the next frame.
+    #[test]
+    fn the_stream_cache_matches_a_one_shot_render_at_every_prefix() {
+        let full = "Here is the plan.\n\n- step one\n- step two\n\nNow the code:\n\n```rust\nfn apply(x: usize) -> usize {\n    x + 1\n}\n```\n\nAnd a table:\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nDone.\n";
+        let mut cache = StreamMarkdownCache::default();
+        for end in 0..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            let buffer = &full[..end];
+            let incremental = lines_text(&cache.render(buffer, 60, usize::MAX));
+            let one_shot = lines_text(&crate::markdown::render_markdown(buffer, 60));
+            assert_eq!(
+                incremental, one_shot,
+                "cache diverged from a one-shot render at prefix length {end}"
+            );
+        }
+    }
+
+    /// A width change must discard the cache: the lines were wrapped to the old
+    /// width and cannot be appended to.
+    #[test]
+    fn the_stream_cache_rebuilds_on_a_width_change() {
+        let text =
+            "Alpha beta gamma delta epsilon zeta eta theta.\n\nSecond paragraph here.\n\nTail.";
+        let mut cache = StreamMarkdownCache::default();
+        let narrow = lines_text(&cache.render(text, 30, usize::MAX));
+        let wide = lines_text(&cache.render(text, 90, usize::MAX));
+        let back = lines_text(&cache.render(text, 30, usize::MAX));
+
+        assert_eq!(
+            wide,
+            lines_text(&crate::markdown::render_markdown(text, 90))
+        );
+        assert_eq!(
+            back, narrow,
+            "returning to a width must reproduce it exactly"
+        );
+        assert_ne!(
+            narrow, wide,
+            "the widths must actually differ, or this proves nothing"
+        );
+    }
+
+    /// Only the visible tail is materialised, which is what keeps a rebuild
+    /// from costing more as the answer grows.
+    #[test]
+    fn the_stream_cache_materialises_only_the_window() {
+        let mut body = String::new();
+        for i in 0..80 {
+            body.push_str(&format!("Paragraph number {i} of the answer.\n\n"));
+        }
+        // A live tail, or `keep_from_end` and `keep_from_end - tail.len()` are
+        // the same number and the windowing arithmetic goes untested.
+        body.push_str("A trailing paragraph still being written");
+        let mut cache = StreamMarkdownCache::default();
+        let windowed = cache.render(&body, 60, 10);
+        let whole = cache.render(&body, 60, usize::MAX);
+
+        assert!(windowed.len() <= 10, "got {} lines", windowed.len());
+        assert!(
+            whole.len() > windowed.len(),
+            "the window must actually bite"
+        );
+
+        let tail_of_whole = lines_text(&whole[whole.len() - windowed.len()..]);
+        assert_eq!(
+            lines_text(&windowed),
+            tail_of_whole,
+            "the window must be the tail of the full render, not a different render"
         );
     }
 }
