@@ -667,14 +667,38 @@ fn listen_and_leak(path: &Path) {
     });
 }
 
-/// A socket outside the workspace, somewhere the sandbox does not mask.
+/// A socket in a directory the sandbox masks with a tmpfs.
 ///
-/// `/run` and `/tmp` are covered by a tmpfs, which already accounts for
-/// docker.sock, systemd, D-Bus, X11 and `$XDG_RUNTIME_DIR`; probing there
-/// would pass for the wrong reason. `$HOME` is unmasked, and is where a real
-/// dangerous socket lives — Docker Desktop keeps one under `~/.docker`.
+/// `/run` is where the sockets that matter most actually live: `docker.sock`
+/// (root on the host), systemd, D-Bus, and `$XDG_RUNTIME_DIR` at
+/// `/run/user/$UID`, which is where ssh-agent and gpg-agent land on a modern
+/// desktop. Probe there when the test can write to it — the WSL2 job runs as
+/// root and can.
+///
+/// `/run` is root-owned, though, and the Ubuntu job runs as `runner`, so fall
+/// back to `/tmp`. Both carry the same `--tmpfs` mask from the same two lines
+/// of `bubblewrap_invocation`, so `/tmp` proves the mechanism just as well;
+/// that both directories are masked at all is held by `socket_directories_are_masked`.
+/// The chosen path is named in the failure message so a failure is never
+/// ambiguous about what it probed.
 #[cfg(target_os = "linux")]
-fn host_probe_dir() -> std::path::PathBuf {
+fn masked_probe_dir() -> std::path::PathBuf {
+    let name = format!("forge-uds-probe-{}", std::process::id());
+    let preferred = Path::new("/run").join(&name);
+    if std::fs::create_dir_all(&preferred).is_ok() {
+        return preferred;
+    }
+    let fallback = Path::new("/tmp").join(&name);
+    std::fs::create_dir_all(&fallback).expect("a masked probe dir must be creatable");
+    fallback
+}
+
+/// A socket under `$HOME`, which the sandbox does *not* mask.
+///
+/// See `a_confined_command_can_still_reach_a_socket_under_home` for why this
+/// is a known gap rather than an assertion.
+#[cfg(target_os = "linux")]
+fn unmasked_probe_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").expect("HOME must be set");
     let dir = Path::new(&home).join(format!(".forge-uds-probe-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -683,11 +707,17 @@ fn host_probe_dir() -> std::path::PathBuf {
 
 /// Linux: reachability *is* the boundary, so prove it discriminates.
 ///
-/// This is the question the deferred seccomp work was really about. A confined
-/// process can always *create* an `AF_UNIX` socket — forge cannot block that,
-/// because the egress relay running inside the sandbox needs one. So the
-/// boundary comes from what the mount namespace exposes, and that is only a
-/// boundary if it holds.
+/// A confined process can always *create* an `AF_UNIX` socket — forge cannot
+/// block that, because the egress relay running inside the sandbox needs one.
+/// So the boundary comes from what the mount namespace exposes, and that is
+/// only a boundary if it holds.
+///
+/// This asserts the guarantee forge actually makes: sockets under the masked
+/// directories are unreachable. `/run` is the one that matters — docker.sock is
+/// root on the host, and `$XDG_RUNTIME_DIR` under `/run/user/$UID` is where
+/// ssh-agent and gpg-agent live. The scope of the guarantee, and what sits
+/// outside it, is documented on `SandboxPolicy` and in
+/// `a_confined_command_can_still_reach_a_socket_under_home` below.
 ///
 /// Both halves matter. The in-workspace connect must succeed, or the probe
 /// cannot tell reachable from unreachable and "everything failed" gets scored
@@ -697,7 +727,7 @@ fn host_probe_dir() -> std::path::PathBuf {
 /// namespace, and `--unshare-net` gives the sandbox its own.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_confined_command_reaches_workspace_sockets_but_not_host_sockets() {
+fn a_confined_command_reaches_workspace_sockets_but_not_masked_host_sockets() {
     require_sandbox!();
 
     let ws = workspace();
@@ -712,7 +742,7 @@ fn a_confined_command_reaches_workspace_sockets_but_not_host_sockets() {
          nothing.\n{inside_out}"
     );
 
-    let probe_dir = host_probe_dir();
+    let probe_dir = masked_probe_dir();
     let outside = probe_dir.join("probe.sock");
     listen_and_leak(&outside);
     let (_, outside_out) = run_confined(ws.path(), &unix_connect_probe(&outside));
@@ -720,10 +750,57 @@ fn a_confined_command_reaches_workspace_sockets_but_not_host_sockets() {
 
     assert!(
         !outside_out.contains("CONNECTED"),
-        "a confined command reached a host Unix socket at {}.\n\
-         The filesystem boundary is the only thing between the sandbox and \
-         every socket on this machine, and it did not hold.\n{outside_out}",
+        "a confined command reached a host Unix socket at {}, which sits under \
+         a directory the sandbox masks with a tmpfs.\n\
+         This is the boundary forge actually claims, and it did not hold — \
+         docker.sock and $XDG_RUNTIME_DIR live here.\n{outside_out}",
         outside.display()
+    );
+}
+
+/// Documents a known gap rather than asserting a guarantee.
+///
+/// `--ro-bind / /` exposes every host path read-only, and a read-only *mount*
+/// does not stop `connect()`: that checks the inode, not `MNT_READONLY`. The
+/// sandbox masks `/run` and `/tmp`, so the sockets with the worst blast radius
+/// are covered — but a socket anywhere else, `$HOME` most realistically, is
+/// still reachable from inside the sandbox.
+///
+/// Closing this needs a mechanism the mount namespace does not have:
+///
+///   - seccomp-bpf cannot do it. A filter sees `args[6]` as scalar registers
+///     and cannot dereference the `sockaddr_un *` to read the path.
+///   - seccomp user-notification can read the target's memory, but
+///     `seccomp_unotify(2)` states it "must not be used to make security policy
+///     decisions about the system call, which would be inherently race-prone".
+///   - Landlock ABI 9 added `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, which restricts
+///     `connect(2)` to pathname sockets and is exactly the right primitive. ABI
+///     5 shipped in 6.10, 6 in 6.12, 7 in 6.15, so 9 is far newer than the 6.8
+///     kernel on the CI runner and than most users' kernels.
+///
+/// This test is `#[ignore]`d rather than deleted: it is the executable record
+/// of the gap. Run it with `--ignored` to check whether a kernel or a change to
+/// the mask has closed it, and when Landlock lands, promote it back to an
+/// assertion. Tracked in #390.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "known gap: sockets outside /run and /tmp are reachable; see #390"]
+fn a_confined_command_can_still_reach_a_socket_under_home() {
+    require_sandbox!();
+
+    let ws = workspace();
+    let probe_dir = unmasked_probe_dir();
+    let outside = probe_dir.join("probe.sock");
+    listen_and_leak(&outside);
+    let (_, out) = run_confined(ws.path(), &unix_connect_probe(&outside));
+    let _ = std::fs::remove_dir_all(&probe_dir);
+
+    assert!(
+        out.contains("CONNECTED"),
+        "this test documents a gap by reproducing it. It did not reproduce, \
+         which means the boundary is now stronger than recorded — verify why, \
+         then promote this back to an assertion that the socket is \
+         unreachable.\n{out}"
     );
 }
 

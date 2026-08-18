@@ -223,13 +223,36 @@ impl SandboxPolicy {
     /// descriptor in instead of running socat inside, which is a redesign of
     /// the relay rather than a dependency away.
     ///
-    /// What that leaves is a filesystem question, and it is answered where it
-    /// can be checked: `/run` and `/tmp` are masked with a tmpfs (docker.sock,
-    /// systemd, D-Bus, X11, `$XDG_RUNTIME_DIR`), and the abstract `AF_UNIX`
-    /// namespace is scoped to the network namespace that `--unshare-net`
-    /// replaces. `a_confined_command_reaches_workspace_sockets_but_not_host_sockets`
-    /// holds the remainder, with an in-workspace connect as the control that
-    /// keeps it from passing vacuously.
+    /// What that leaves is a filesystem question, and the answer is partial.
+    /// State it plainly, because the shape of the guarantee is the security
+    /// property:
+    ///
+    /// **Covered.** `/run` and `/tmp` are masked with a tmpfs, which accounts
+    /// for docker.sock (root on the host), systemd, D-Bus, X11, and
+    /// `$XDG_RUNTIME_DIR` at `/run/user/$UID` — where ssh-agent and gpg-agent
+    /// live. The abstract `AF_UNIX` namespace is scoped to the network
+    /// namespace that `--unshare-net` replaces. Held by
+    /// `a_confined_command_reaches_workspace_sockets_but_not_masked_host_sockets`,
+    /// with an in-workspace connect as the control that keeps it from passing
+    /// vacuously.
+    ///
+    /// **Not covered.** `--ro-bind / /` exposes every other host path, and a
+    /// read-only *mount* does not stop `connect()` — that checks the inode, not
+    /// `MNT_READONLY`. A pathname socket outside the masked directories,
+    /// `$HOME` most realistically (Docker Desktop keeps one under `~/.docker`),
+    /// is reachable from inside the sandbox. Reproduced by the `#[ignore]`d
+    /// `a_confined_command_can_still_reach_a_socket_under_home`, and tracked in
+    /// #390.
+    ///
+    /// Closing it needs a path-aware mechanism the mount namespace lacks.
+    /// seccomp-bpf cannot: it sees scalar registers and cannot dereference the
+    /// `sockaddr_un *`. seccomp user-notification can read the target's memory
+    /// but `seccomp_unotify(2)` says it "must not be used to make security
+    /// policy decisions about the system call, which would be inherently
+    /// race-prone". Landlock ABI 9's `LANDLOCK_ACCESS_FS_RESOLVE_UNIX` is the
+    /// right primitive and restricts `connect(2)` on pathname sockets — ABI 5
+    /// shipped in 6.10, 6 in 6.12, 7 in 6.15, so it is far ahead of the kernels
+    /// forge runs on today. Adopt it opportunistically when it is reachable.
     ///
     /// macOS has no such gap: Seatbelt refuses `AF_UNIX` connects outright.
     pub fn with_egress_socket(mut self, path: impl AsRef<Path>) -> Self {
@@ -454,6 +477,15 @@ fn bubblewrap_invocation(
     // The one route out, when egress is granted at all. Bound after the mask
     // for the same reason as the workspace: the socket may live under /tmp.
     let relay = match (&policy.egress_socket, socat_path()) {
+        // A grant can outlive the proxy that backs it: the session's proxy dies
+        // and takes its socket file with it, while the grant is still attached
+        // to the next command. Binding a source that no longer exists makes
+        // bwrap refuse to start, and the caller then sees the generic
+        // "blocked by the sandbox: writes are confined to the workspace"
+        // message — which points at the wrong thing entirely. Drop the dead
+        // grant instead and run with no route out, which is what a dead proxy
+        // means; still fail closed, just legibly.
+        (Some(socket), _) if !socket.exists() => None,
         (Some(socket), Some(socat)) => {
             let socket = socket.to_str()?.to_string();
             args.extend(["--bind".into(), socket.clone(), socket.clone()]);
@@ -773,6 +805,30 @@ mod bubblewrap_tests {
     /// The socket is bind-mounted *after* --unshare-net, which is the whole
     /// trick: the namespace removes every network route, and a filesystem
     /// object survives that.
+    /// A grant can outlive the proxy that backs it. Binding a source that no
+    /// longer exists makes bwrap refuse to start, so the command never runs and
+    /// the caller is told "writes are confined to the workspace" — an
+    /// explanation that has nothing to do with a dead egress proxy.
+    #[test]
+    fn a_grant_whose_socket_has_vanished_is_dropped_rather_than_bound() {
+        let ws = workspace();
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("egress.sock");
+        // Deliberately never created: this is the proxy-died-first case.
+
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_egress_socket(&sock);
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &policy) else {
+            return;
+        };
+
+        assert!(
+            !args.iter().any(|a| a == sock.to_str().unwrap()),
+            "a socket that does not exist must not be bound: {args:?}"
+        );
+        // Still fails closed: no relay, and the network stays unshared.
+        assert!(args.iter().any(|a| a == "--unshare-net"), "{args:?}");
+    }
+
     #[test]
     fn a_granted_socket_is_bound_in_after_the_network_is_unshared() {
         let ws = workspace();
