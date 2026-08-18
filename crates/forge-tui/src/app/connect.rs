@@ -341,6 +341,14 @@ impl TuiApp {
                 self.session.apply_provider_env(&pairs);
             }
             self.connect.profile = Some(profile.id.clone());
+            // The route decides the *transport*, and `transport_for_route(None)`
+            // falls back to OpenAI-compat. Restoring the model without the route
+            // therefore sends an Anthropic or Codex profile's requests over the
+            // wrong wire, and every call fails until the user re-picks the model
+            // — which is the only other path that sets it. The route follows the
+            // profile, not the model, so it is restored either way below.
+            self.session
+                .set_active_route_id(route_id_for_profile(&profile.id));
             // Only switch the active model when it still looks like the forge default
             // (don't clobber an explicit --model / test runtime label).
             let cur = self.runtime.model_label.as_str();
