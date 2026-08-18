@@ -250,7 +250,13 @@ impl AgentSession {
         output: &ToolOutput,
     ) {
         match call.name.as_str() {
-            "write_file" => {
+            // `edit` must be handled here alongside `write_file`: both are
+            // classified as `FileEffectKind::Modified` expectations by
+            // `classify_turn`, so an `edit` that pushed no evidence would leave
+            // its own expectation permanently unverifiable and report
+            // "No file modifications were successfully applied" for an edit
+            // that actually landed on disk.
+            "write_file" | "edit" => {
                 let Some((path, pre_hash)) = pre.into_iter().next() else {
                     return;
                 };
@@ -264,7 +270,7 @@ impl AgentSession {
                 };
                 let mut entry = EvidenceEntry::new(event)
                     .operation_id(call.id.clone())
-                    .tool_name("write_file")
+                    .tool_name(call.name.clone())
                     .path(path)
                     .checksum_before(pre_hash)
                     .checksum_after(post_hash);
