@@ -77,7 +77,7 @@ impl EgressPolicy {
             "static.crates.io",
             "index.crates.io",
             "**.crates.io",
-            "github.com",
+            "**.github.com",
             "**.githubusercontent.com",
             "registry.npmjs.org",
             "pypi.org",
@@ -415,10 +415,25 @@ mod tests {
     #[test]
     fn the_default_seed_covers_a_first_cargo_build() {
         let p = EgressPolicy::with_default_ecosystems();
-        for host in ["crates.io", "static.crates.io", "index.crates.io"] {
-            assert!(p.permits(host), "{host} is needed by a first cargo build");
+        for host in [
+            "crates.io",
+            "static.crates.io",
+            "index.crates.io",
+            "github.com",
+            "api.github.com",
+            "gist.github.com",
+            "uploads.github.com",
+            "codeload.github.com",
+            "raw.githubusercontent.com",
+        ] {
+            assert!(
+                p.permits(host),
+                "{host} is needed by a first cargo build or `gh`"
+            );
         }
         assert!(!p.permits("evil.example.com"));
+        assert!(!p.permits("notgithub.com"));
+        assert!(!p.permits("github.com.evil.com"));
     }
 
     #[test]
