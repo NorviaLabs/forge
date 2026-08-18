@@ -525,6 +525,43 @@ async fn focused_bottom_panel_alt_arrows_do_not_type_into_chat() {
 }
 
 #[tokio::test]
+async fn typing_at_the_footer_never_becomes_a_chat_message() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    // Regression: Tab from the composer lands on the Footer, which has no
+    // Char handler, so every letter fell through to `type_to_compose` — which
+    // silently moved focus back to the composer and inserted there. A shell
+    // command typed after one Tab became a chat draft, and the Enter meant to
+    // run it submitted it to the model instead.
+    let (dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.focus_block(FocusBlock::Footer);
+    assert_eq!(app.focus.block(), FocusBlock::Footer);
+
+    for c in "git status".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+
+    // Nothing typed into the composer...
+    assert_eq!(app.input.text, "");
+    // ...and focus never silently moved out from under the user.
+    assert_eq!(app.focus.block(), FocusBlock::Footer);
+}
+
+#[tokio::test]
 async fn editor_uppercase_g_does_not_reach_chat_input() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (dir, session) = test_session().await;

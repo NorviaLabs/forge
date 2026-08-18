@@ -240,12 +240,17 @@ impl AgentSession {
                         .as_deref()
                         .is_some_and(|id| required.contains(&id))
                 };
+                // A step "didn't finish" if the tool itself errored *or* the
+                // command it ran exited non-zero. `is_error` alone misses the
+                // common case: `bash` dispatches fine and the command inside it
+                // fails (a missing `pytest` exits 127 with `is_error` unset),
+                // which is exactly the step worth reporting.
                 let errored: Vec<&EvidenceEntry> = self
                     .turn
                     .evidence()
                     .0
                     .iter()
-                    .filter(|e| e.error.is_some())
+                    .filter(|e| e.error.is_some() || e.exit_code.is_some_and(|code| code != 0))
                     .collect();
 
                 if let Some(bad) = errored.iter().copied().find(|e| is_required(e)) {
