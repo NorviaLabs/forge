@@ -223,13 +223,36 @@ impl SandboxPolicy {
     /// descriptor in instead of running socat inside, which is a redesign of
     /// the relay rather than a dependency away.
     ///
-    /// What that leaves is a filesystem question, and it is answered where it
-    /// can be checked: `/run` and `/tmp` are masked with a tmpfs (docker.sock,
-    /// systemd, D-Bus, X11, `$XDG_RUNTIME_DIR`), and the abstract `AF_UNIX`
-    /// namespace is scoped to the network namespace that `--unshare-net`
-    /// replaces. `a_confined_command_reaches_workspace_sockets_but_not_host_sockets`
-    /// holds the remainder, with an in-workspace connect as the control that
-    /// keeps it from passing vacuously.
+    /// What that leaves is a filesystem question, and the answer is partial.
+    /// State it plainly, because the shape of the guarantee is the security
+    /// property:
+    ///
+    /// **Covered.** `/run` and `/tmp` are masked with a tmpfs, which accounts
+    /// for docker.sock (root on the host), systemd, D-Bus, X11, and
+    /// `$XDG_RUNTIME_DIR` at `/run/user/$UID` — where ssh-agent and gpg-agent
+    /// live. The abstract `AF_UNIX` namespace is scoped to the network
+    /// namespace that `--unshare-net` replaces. Held by
+    /// `a_confined_command_reaches_workspace_sockets_but_not_masked_host_sockets`,
+    /// with an in-workspace connect as the control that keeps it from passing
+    /// vacuously.
+    ///
+    /// **Not covered.** `--ro-bind / /` exposes every other host path, and a
+    /// read-only *mount* does not stop `connect()` — that checks the inode, not
+    /// `MNT_READONLY`. A pathname socket outside the masked directories,
+    /// `$HOME` most realistically (Docker Desktop keeps one under `~/.docker`),
+    /// is reachable from inside the sandbox. Reproduced by the `#[ignore]`d
+    /// `a_confined_command_can_still_reach_a_socket_under_home`, and tracked in
+    /// #390.
+    ///
+    /// Closing it needs a path-aware mechanism the mount namespace lacks.
+    /// seccomp-bpf cannot: it sees scalar registers and cannot dereference the
+    /// `sockaddr_un *`. seccomp user-notification can read the target's memory
+    /// but `seccomp_unotify(2)` says it "must not be used to make security
+    /// policy decisions about the system call, which would be inherently
+    /// race-prone". Landlock ABI 9's `LANDLOCK_ACCESS_FS_RESOLVE_UNIX` is the
+    /// right primitive and restricts `connect(2)` on pathname sockets — ABI 5
+    /// shipped in 6.10, 6 in 6.12, 7 in 6.15, so it is far ahead of the kernels
+    /// forge runs on today. Adopt it opportunistically when it is reachable.
     ///
     /// macOS has no such gap: Seatbelt refuses `AF_UNIX` connects outright.
     pub fn with_egress_socket(mut self, path: impl AsRef<Path>) -> Self {
