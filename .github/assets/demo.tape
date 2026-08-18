@@ -8,13 +8,13 @@
 #   cargo build --release
 #   sh .github/assets/demo-fixture.sh
 #   vhs .github/assets/demo.tape
-#   ffmpeg -t 50 -i demo.gif -vf "fps=10,split[s0][s1];[s0]palettegen=max_colors=96[p];\
+#   ffmpeg -i demo.gif -vf "fps=10,split[s0][s1];[s0]palettegen=max_colors=96[p];\
 #     [s1][p]paletteuse=dither=bayer:bayer_scale=3" -loop 0 -y demo.gif
 #
-# The ffmpeg pass is not optional. It trims the tail and quantises the palette
-# (1.3M -> 1.0M). Trimming is deliberate: the tape cannot time the end of a live
-# model turn, so it records past the payoff and the cut lands on the diff card
-# instead of on whatever the agent did next.
+# The ffmpeg pass is not optional: it quantises the palette and trims any tail
+# left after the final run. Check the last frame before committing — the demo
+# has to end on report.py printing clean output, because the claim being made
+# is verified code, not a diff that merely looks right.
 #
 # Notes for whoever re-records this:
 #   - `Ctrl+\`` is not expressible in a tape, so the terminal is opened with the
@@ -106,4 +106,16 @@ Sleep 700ms
 Type "spread() has the same empty-list bug. Fix it the same way, no need to run anything."
 Sleep 600ms
 Enter
-Sleep 24s
+Sleep 26s
+
+# --- 5. verify the agent's fix the way you verified your own ------------
+# The point of the demo is verified code, not a diff that looks plausible, so
+# it has to end on the program actually running clean.
+Type "/terminal"
+Sleep 400ms
+Enter
+Sleep 1.2s
+Type "python3 report.py"
+Sleep 300ms
+Enter
+Sleep 5s

@@ -2834,6 +2834,93 @@ async fn edit_tool_produces_file_evidence_so_a_real_edit_is_not_reported_as_fail
 }
 
 #[tokio::test]
+async fn a_failed_git_inspection_does_not_fail_a_turn_that_edited_a_file() {
+    // Caught while re-recording the README demo: the agent fixed a function,
+    // then ran `git log` to review its own work. The inspection failed, and
+    // because `classify_turn` ranked any git call above the file edit the turn
+    // was judged solely on it — the demo's closing frame showed the fix working
+    // in the terminal above the words "1 of 2 required git operations
+    // succeeded; log failed", with the status Failed.
+    //
+    // Reviewing your work is not the work.
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("fix_me.txt"), "before\n").unwrap();
+    let model = script(vec![
+        tool_call_response(vec![
+            ToolCall {
+                id: "1".into(),
+                name: "edit".into(),
+                arguments: json!({
+                    "path": "fix_me.txt",
+                    "old_string": "before",
+                    "new_string": "after"
+                }),
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "git".into(),
+                arguments: json!({"subcommand": "log", "args": ["--oneline", "-1"]}),
+            },
+        ]),
+        text_only("Fixed it and looked at the log."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("fix it").await.unwrap();
+
+    // `git log` fails here: the tempdir is not a repository.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("fix_me.txt")).unwrap(),
+        "after\n",
+        "precondition: the edit must land on disk"
+    );
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    let completion = s.last_completion.as_ref().unwrap();
+    assert!(
+        !completion
+            .evidence_summary
+            .detail
+            .contains("git operations"),
+        "a failed inspection must not be reported as the turn's outcome: {}",
+        completion.evidence_summary.detail
+    );
+}
+
+#[tokio::test]
+async fn a_failed_git_mutation_still_fails_the_turn() {
+    // The guardrail for the test above: `commit` changes the repository, so it
+    // is the work, and its failure is the turn's — even alongside an edit.
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("fix_me.txt"), "before\n").unwrap();
+    let model = script(vec![
+        tool_call_response(vec![
+            ToolCall {
+                id: "1".into(),
+                name: "edit".into(),
+                arguments: json!({
+                    "path": "fix_me.txt",
+                    "old_string": "before",
+                    "new_string": "after"
+                }),
+            },
+            ToolCall {
+                id: "2".into(),
+                name: "git".into(),
+                arguments: json!({"subcommand": "commit", "args": ["-m", "fix"]}),
+            },
+        ]),
+        text_only("Fixed and committed."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("fix and commit").await.unwrap();
+
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
+}
+
+#[tokio::test]
 async fn a_missing_verification_command_is_reported_without_failing_the_edit() {
     // The exact shape from the usability report: the model edits a file, then
     // runs a checker that isn't installed. `bash` itself dispatches fine, so
