@@ -5,11 +5,15 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 const SCROLLBACK_LINES: usize = 1_024;
+const INTERACTIVE_SHELL_ARGS: &[&str] = &["-il"];
 /// Cap queued PTY chunks so a command that outpaces terminal rendering applies
 /// backpressure to its reader instead of growing process memory without bound.
 const OUTPUT_QUEUE_CAPACITY: usize = 64;
 /// Leave time for input and drawing when a program emits a large burst.
 const MAX_OUTPUT_CHUNKS_PER_POLL: usize = 64;
+/// Readline/zsh kill-to-start-of-line. Used to wipe a typed `exit` we never
+/// want the shell to execute.
+const LINE_KILL: u8 = 0x15;
 
 pub(crate) struct InteractiveTerminal {
     master: Box<dyn MasterPty + Send>,
@@ -21,6 +25,7 @@ pub(crate) struct InteractiveTerminal {
     size: (u16, u16),
     pub(crate) running: bool,
     pub(crate) shell: String,
+    pending_command: String,
 }
 
 impl InteractiveTerminal {
@@ -35,7 +40,9 @@ impl InteractiveTerminal {
             })
             .map_err(other)?;
         let mut command = CommandBuilder::new(&shell);
-        command.arg("-l");
+        for argument in INTERACTIVE_SHELL_ARGS {
+            command.arg(*argument);
+        }
         command.cwd(cwd);
         let child = pty.slave.spawn_command(command).map_err(other)?;
         let mut reader = pty.master.try_clone_reader().map_err(other)?;
@@ -67,6 +74,7 @@ impl InteractiveTerminal {
             size: (cols.max(20), rows.max(2)),
             running: true,
             shell,
+            pending_command: String::new(),
         })
     }
 
@@ -101,6 +109,16 @@ impl InteractiveTerminal {
     pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.writer.write_all(bytes)?;
         self.writer.flush()
+    }
+
+    /// Forward typed or pasted input, but treat a submitted `exit` as a request
+    /// to close the panel instead of killing the login shell.
+    pub(crate) fn consume_input(&mut self, bytes: &[u8]) -> io::Result<bool> {
+        let (forward, close) = feed_pending_command(&mut self.pending_command, bytes);
+        if !forward.is_empty() {
+            self.write(&forward)?;
+        }
+        Ok(close)
     }
 
     pub(crate) fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
@@ -143,6 +161,81 @@ fn other(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
 }
 
+fn is_panel_close_command(line: &str) -> bool {
+    line.trim() == "exit"
+}
+
+fn erase_last_word(line: &mut String) {
+    let without_trailing = line.trim_end_matches(char::is_whitespace);
+    let prefix_len = without_trailing
+        .rmatch_indices(char::is_whitespace)
+        .next()
+        .map(|(idx, ws)| idx + ws.len())
+        .unwrap_or(0);
+    line.truncate(prefix_len);
+}
+
+/// Track the in-progress prompt line so a submitted `exit` can close the
+/// panel without reaching the shell. Returns bytes to write and whether the
+/// caller should close the panel after writing them.
+fn feed_pending_command(line: &mut String, bytes: &[u8]) -> (Vec<u8>, bool) {
+    let mut forward = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' | b'\n' => {
+                if is_panel_close_command(line) {
+                    line.clear();
+                    forward.push(LINE_KILL);
+                    return (forward, true);
+                }
+                forward.push(bytes[i]);
+                line.clear();
+                i += 1;
+            }
+            0x7f | 0x08 => {
+                forward.push(bytes[i]);
+                let _ = line.pop();
+                i += 1;
+            }
+            0x15 | 0x03 => {
+                forward.push(bytes[i]);
+                line.clear();
+                i += 1;
+            }
+            0x17 => {
+                forward.push(bytes[i]);
+                erase_last_word(line);
+                i += 1;
+            }
+            b if b.is_ascii_control() => {
+                forward.push(bytes[i]);
+                line.clear();
+                i += 1;
+            }
+            _ => {
+                let rest = &bytes[i..];
+                if let Some(ch) = std::str::from_utf8(rest)
+                    .ok()
+                    .and_then(|s| s.chars().next())
+                {
+                    if !ch.is_control() {
+                        line.push(ch);
+                        let len = ch.len_utf8();
+                        forward.extend_from_slice(&bytes[i..i + len]);
+                        i += len;
+                        continue;
+                    }
+                }
+                forward.push(bytes[i]);
+                line.clear();
+                i += 1;
+            }
+        }
+    }
+    (forward, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::InteractiveTerminal;
@@ -155,6 +248,57 @@ mod tests {
         let mut terminal = vt100::Parser::new(3, 20, 0);
         terminal.process(b"one\r two\x1b[31m!\x1b[0m\r\nthree\r\n");
         assert_eq!(terminal.screen().contents(), " two!\nthree");
+    }
+
+    #[test]
+    fn interactive_shell_args_enable_filename_completion() {
+        assert_eq!(super::INTERACTIVE_SHELL_ARGS, &["-il"]);
+    }
+
+    #[test]
+    fn submitted_exit_closes_panel_instead_of_reaching_the_shell() {
+        let mut line = String::new();
+        assert_eq!(
+            super::feed_pending_command(&mut line, b"exit\r"),
+            (vec![b'e', b'x', b'i', b't', super::LINE_KILL], true)
+        );
+        assert!(line.is_empty());
+
+        line = String::from("ex");
+        assert_eq!(
+            super::feed_pending_command(&mut line, b"it\n"),
+            (vec![b'i', b't', super::LINE_KILL], true)
+        );
+        assert!(line.is_empty());
+    }
+
+    #[test]
+    fn other_commands_and_partial_exit_still_reach_the_shell() {
+        let mut line = String::new();
+        assert_eq!(
+            super::feed_pending_command(&mut line, b"ls\r"),
+            (b"ls\r".to_vec(), false)
+        );
+        assert!(line.is_empty());
+
+        line = String::new();
+        assert_eq!(
+            super::feed_pending_command(&mut line, b"exit 0\r"),
+            (b"exit 0\r".to_vec(), false)
+        );
+        assert!(line.is_empty());
+
+        line = String::new();
+        assert_eq!(
+            super::feed_pending_command(&mut line, b"ex"),
+            (b"ex".to_vec(), false)
+        );
+        assert_eq!(line, "ex");
+        assert_eq!(
+            super::feed_pending_command(&mut line, &[0x7f]),
+            (vec![0x7f], false)
+        );
+        assert_eq!(line, "e");
     }
 
     #[test]

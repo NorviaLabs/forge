@@ -268,9 +268,7 @@ impl TuiApp {
             return None;
         }
         match key.code {
-            KeyCode::Esc if key.modifiers.is_empty() => {
-                Some(SemanticCommand::CancelCurrentInteraction)
-            }
+            KeyCode::Esc if key.modifiers.is_empty() => Some(SemanticCommand::ToggleBottomPanel),
             _ => None,
         }
     }
@@ -1247,7 +1245,7 @@ mod tests {
         app.bottom_panel.open = true;
         assert_eq!(
             app.semantic_command_for_bottom_panel_key(key(KeyCode::Esc, NONE)),
-            Some(SemanticCommand::CancelCurrentInteraction)
+            Some(SemanticCommand::ToggleBottomPanel)
         );
     }
 

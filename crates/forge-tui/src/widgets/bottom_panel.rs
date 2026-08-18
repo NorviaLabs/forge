@@ -111,7 +111,7 @@ fn terminal_lines<'a>(
         ),
     ])];
     if let Some(shell) = terminal_shell {
-        lines.push(Line::styled(format!("$ {shell} -l"), theme::muted()));
+        lines.push(Line::styled(format!("$ {shell} -il"), theme::muted()));
     }
 
     if !terminal_content.is_empty() {

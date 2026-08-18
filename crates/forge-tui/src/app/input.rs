@@ -390,11 +390,13 @@ impl TuiApp {
         }
         if self.focus.block() == FocusBlock::BottomPanel {
             if let Some(terminal) = self.interactive_terminal.as_mut() {
-                if let Err(error) = terminal.write(data.as_bytes()) {
-                    self.set_feedback(
+                match terminal.consume_input(data.as_bytes()) {
+                    Ok(true) => self.toggle_bottom_panel(),
+                    Ok(false) => {}
+                    Err(error) => self.set_feedback(
                         FeedbackSeverity::Error,
                         format!("terminal paste failed: {error}"),
-                    );
+                    ),
                 }
                 return;
             }
@@ -623,13 +625,20 @@ impl TuiApp {
         }
         if let Some(bytes) = terminal_key_bytes(key) {
             if let Some(terminal) = self.interactive_terminal.as_mut() {
-                if let Err(error) = terminal.write(&bytes) {
-                    self.set_feedback(
-                        FeedbackSeverity::Error,
-                        format!("terminal input failed: {error}"),
-                    );
+                match terminal.consume_input(&bytes) {
+                    Ok(true) => {
+                        self.toggle_bottom_panel();
+                        return Ok(true);
+                    }
+                    Ok(false) => return Ok(true),
+                    Err(error) => {
+                        self.set_feedback(
+                            FeedbackSeverity::Error,
+                            format!("terminal input failed: {error}"),
+                        );
+                        return Ok(true);
+                    }
                 }
-                return Ok(true);
             }
         }
         if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
@@ -1103,6 +1112,13 @@ impl TuiApp {
                 }
             }
             FocusMode::Navigation => {
+                if self.focus.block() == FocusBlock::BottomPanel
+                    && key.code == KeyCode::Tab
+                    && key.modifiers.is_empty()
+                    && self.handle_active_block_key(key).await?
+                {
+                    return Ok(());
+                }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
                     self.execute_semantic_command(SemanticCommand::CycleFocus {
                         forward: !matches!(key.code, KeyCode::BackTab),

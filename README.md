@@ -197,7 +197,9 @@ The Files explorer needs a terminal at least 116 columns wide. Below that
 When the terminal panel is focused, it is an interactive login shell, and its
 title shows a `●` with a thicker rule so you can tell it holds the keyboard.
 Type or paste commands directly into it; standard control keys, arrows, Tab,
-and terminal resize are forwarded to the shell. `Ctrl+Backtick` closes it.
+and terminal resize are forwarded to the shell. `Ctrl+Backtick`, `Esc`, or a
+submitted `exit` closes the panel without killing the shell, so reopening
+resumes the same session.
 
 When a text file is open, the workspace uses Vim-style editing. Files start in
 Normal mode; press `i` to insert, `Esc` to return to Normal mode, and `Alt+E`
