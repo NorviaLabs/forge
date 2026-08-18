@@ -13,6 +13,37 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 # Everything above the main marker: the function definitions, safe to source.
 awk '/^# --- main ---$/ { exit } { print }' "$SCRIPT" > "$WORK/lib.sh"
 
+# A system PATH with every binary this suite simulates deliberately removed.
+#
+# The cases ran with /bin:/usr/bin on PATH, so whether a "missing" dependency
+# was actually missing depended on the host. Two ways that broke:
+#
+#   - `command -v bwrap` succeeded wherever bubblewrap and socat are really
+#     installed, so the installer short-circuited and the "dependency is
+#     missing" cases asserted against a branch that never ran. CI installs both
+#     in the step immediately before this suite.
+#   - `command -v apt-get` succeeded on any Debian-family host, so the pacman,
+#     apk, and no-package-manager cases silently took the apt branch instead.
+#
+# The suite was green where it tested nothing (18/18 on a macOS dev box) and
+# red where it mattered (8/18 on Ubuntu CI). Absence has to be something the
+# harness controls rather than something the host decides, so build a sanitized
+# mirror of the system path once; a case that wants one of these present
+# supplies it through its own stub dir, which precedes this on PATH.
+SYSBIN="$WORK/sysbin"
+mkdir -p "$SYSBIN"
+for dir in /bin /usr/bin; do
+    [ -d "$dir" ] || continue
+    for path in "$dir"/*; do
+        [ -x "$path" ] || continue
+        base="${path##*/}"
+        case "$base" in
+            bwrap | socat | apt-get | pacman | apk) continue ;;
+        esac
+        [ -e "$SYSBIN/$base" ] || ln -s "$path" "$SYSBIN/$base"
+    done
+done
+
 PASS=0
 FAIL=0
 
@@ -33,8 +64,9 @@ run_case() {
     chmod 755 "$bin/sudo"
 
     out="$( CASE_BIN="$bin" CASE_LOG="$log" SETUP="$setup" LIB="$WORK/lib.sh" \
+        SYSBIN="$SYSBIN" \
         /bin/sh -c '
-            PATH="$CASE_BIN:/bin:/usr/bin"
+            PATH="$CASE_BIN:$SYSBIN"
             export PATH
             OS=Linux
             SKIP_DEPS=""

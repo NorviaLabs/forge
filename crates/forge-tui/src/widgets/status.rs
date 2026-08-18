@@ -189,7 +189,12 @@ fn format_lifecycle_label(life: TurnLifecycle, detail: Option<&str>, _animated: 
         Some(detail)
             if matches!(
                 life,
-                TurnLifecycle::Working | TurnLifecycle::Waiting | TurnLifecycle::Failed
+                TurnLifecycle::Working
+                    | TurnLifecycle::Waiting
+                    | TurnLifecycle::Failed
+                    // A completed turn carries detail only to name steps that
+                    // didn't finish; the state itself stays "Completed".
+                    | TurnLifecycle::Completed
             ) =>
         {
             format!("{core} · {detail}")
@@ -236,6 +241,11 @@ pub struct StatusModel {
     pub failure_category: Option<String>,
     /// Waiting reason detail when blocked on the operator.
     pub waiting_detail: Option<String>,
+    /// Steps that didn't finish on an otherwise `Completed` turn (e.g. a
+    /// verification command that wasn't available). Rendered next to the
+    /// completed state in muted styling — these are reported, never dressed
+    /// up as failure, because the work the user asked for did happen.
+    pub incomplete_checks: Option<String>,
 }
 
 impl StatusModel {
@@ -316,6 +326,12 @@ impl StatusModel {
                 }),
             TurnLifecycle::Failed => self
                 .failure_category
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            TurnLifecycle::Completed => self
+                .incomplete_checks
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -559,6 +575,7 @@ mod tests {
             activity: None,
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         }
     }
@@ -590,6 +607,7 @@ mod tests {
             activity: None,
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         };
         assert!(m.status_label().0.contains("Waiting"));
@@ -622,6 +640,7 @@ mod tests {
             activity: None,
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         };
         // Busy detail is activity-level; lifecycle stays Working.
@@ -656,6 +675,7 @@ mod tests {
             activity: None,
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         };
         let lines = session_chrome_lines(&m);
@@ -693,6 +713,7 @@ mod tests {
             activity: Some("2 changes".into()),
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         };
 
@@ -742,6 +763,7 @@ mod tests {
             activity: None,
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         };
         assert_eq!(m.current_state_label(), "Waiting");
@@ -774,6 +796,7 @@ mod tests {
             activity: Some("2 changes".into()),
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         };
         let area = Rect::new(0, 0, 80, 1);
@@ -812,6 +835,7 @@ mod tests {
             activity: Some("2 changes".into()),
             progress_description: None,
             failure_category: None,
+            incomplete_checks: None,
             waiting_detail: None,
         };
         let area = Rect::new(0, 0, 24, 1);
@@ -820,6 +844,22 @@ mod tests {
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         // Narrow width falls back to left-aligned rather than dropping content.
         assert!(rendered.contains("Projects/forge") || rendered.contains("main"));
+    }
+
+    #[test]
+    fn completed_turn_with_unfinished_checks_reports_them_without_failure_styling() {
+        let mut m = status_model(TaskLifecycle::Completed, false, BusyPhase::Idle);
+        m.incomplete_checks = Some("pytest didn't finish".into());
+        let (label, style) = m.status_label();
+
+        // The state itself stays Completed — the edit really did land.
+        assert!(label.contains("Completed"), "{label}");
+        assert!(!label.contains("Failed"), "{label}");
+        // ...and the unfinished check is still named, not swallowed.
+        assert!(label.contains("pytest didn't finish"), "{label}");
+        // Reported, but never in failure styling.
+        assert_eq!(style, TurnLifecycle::Completed.style());
+        assert_ne!(style, TurnLifecycle::Failed.style());
     }
 
     #[test]

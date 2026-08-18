@@ -48,7 +48,30 @@ const FILES_WIDTH_THRESHOLD: u16 = 110;
 const SIDEBAR_MIN_CONTENT_WIDTH: u16 = 40;
 
 fn content_width(area: Rect) -> u16 {
-    (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16
+    content_width_for(area.width)
+}
+
+fn content_width_for(frame_width: u16) -> u16 {
+    (u32::from(frame_width) * CONTENT_WIDTH_PERCENT / 100) as u16
+}
+
+/// Whether the file explorer can be rendered at this terminal width.
+///
+/// Shares [`FILES_WIDTH_THRESHOLD`] with `split_areas_ex` so a caller asking
+/// "will this show?" can never disagree with what the layout actually does.
+/// Callers use it to explain a refusal instead of toggling a flag that has no
+/// visible effect.
+pub fn files_fit(frame_width: u16) -> bool {
+    content_width_for(frame_width) >= FILES_WIDTH_THRESHOLD
+}
+
+/// Narrowest terminal that can show the explorer, for user-facing messages.
+pub fn files_min_frame_width() -> u16 {
+    let mut width = FILES_WIDTH_THRESHOLD;
+    while !files_fit(width) {
+        width += 1;
+    }
+    width
 }
 
 fn sidebar_width(content_width: u16) -> u16 {

@@ -777,6 +777,23 @@ impl TuiApp {
         if self.session.pending_hitl().is_some() {
             return Ok(false);
         }
+        // Control surfaces own their own keystrokes. Falling through to the
+        // composer from here silently *moves focus* and inserts, so a command
+        // typed at the footer — or at a terminal whose PTY has exited — turns
+        // into a chat draft, and the Enter that was meant to run it sends it to
+        // the model instead. Refuse the hijack: keep the focus the UI is
+        // showing and drop the key, rather than doing something plausible in
+        // the wrong pane.
+        //
+        // Navigational blocks (Files/Search/Workspace/Sidebar) deliberately
+        // keep type-to-chat: there the keystroke has no local meaning, so
+        // starting a message is the only thing it could have meant.
+        if matches!(
+            self.focus.block(),
+            FocusBlock::Footer | FocusBlock::BottomPanel
+        ) {
+            return Ok(false);
+        }
         let Some(c) = Self::printable_chat_char(key) else {
             return Ok(false);
         };
