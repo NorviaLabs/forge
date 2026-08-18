@@ -13,18 +13,23 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 # Everything above the main marker: the function definitions, safe to source.
 awk '/^# --- main ---$/ { exit } { print }' "$SCRIPT" > "$WORK/lib.sh"
 
-# A system PATH with bwrap and socat deliberately removed.
+# A system PATH with every binary this suite simulates deliberately removed.
 #
-# Every "dependency is missing" case depends on `command -v bwrap` failing, but
-# the cases ran with /bin:/usr/bin on PATH — so on any host where the real
-# binaries are installed they were found, the installer short-circuited, and
-# ten cases asserted against a branch that never ran. CI installs bubblewrap
-# and socat in the step *before* this suite, which is exactly that host: 18/18
-# on a developer machine without them, 8/18 on CI.
+# The cases ran with /bin:/usr/bin on PATH, so whether a "missing" dependency
+# was actually missing depended on the host. Two ways that broke:
 #
-# Absence has to be something the harness controls rather than something the
-# host decides, so build a sanitized mirror of the system path once and let the
-# per-case stub dir supply these two when a case wants them present.
+#   - `command -v bwrap` succeeded wherever bubblewrap and socat are really
+#     installed, so the installer short-circuited and the "dependency is
+#     missing" cases asserted against a branch that never ran. CI installs both
+#     in the step immediately before this suite.
+#   - `command -v apt-get` succeeded on any Debian-family host, so the pacman,
+#     apk, and no-package-manager cases silently took the apt branch instead.
+#
+# The suite was green where it tested nothing (18/18 on a macOS dev box) and
+# red where it mattered (8/18 on Ubuntu CI). Absence has to be something the
+# harness controls rather than something the host decides, so build a sanitized
+# mirror of the system path once; a case that wants one of these present
+# supplies it through its own stub dir, which precedes this on PATH.
 SYSBIN="$WORK/sysbin"
 mkdir -p "$SYSBIN"
 for dir in /bin /usr/bin; do
@@ -33,7 +38,7 @@ for dir in /bin /usr/bin; do
         [ -x "$path" ] || continue
         base="${path##*/}"
         case "$base" in
-            bwrap | socat) continue ;;
+            bwrap | socat | apt-get | pacman | apk) continue ;;
         esac
         [ -e "$SYSBIN/$base" ] || ln -s "$path" "$SYSBIN/$base"
     done
