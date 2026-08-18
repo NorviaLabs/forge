@@ -1461,10 +1461,10 @@ fn flush_activity_group(grouped: &mut Vec<ChatItem>, pending: &mut Vec<ChatItem>
     if pending.is_empty() {
         return;
     }
-    if pending.len() == 1 {
-        grouped.push(pending.pop().expect("pending item"));
-        return;
-    }
+    // No single-item shortcut: a lone routine card used to render full-height
+    // and then *collapse* when a sibling completed, shrinking the block under
+    // everything above it. Grouping from the first card means arrival only ever
+    // adds height. `routine_group_height_never_shrinks` holds this.
     let category = pending
         .first()
         .and_then(item_routine_category)
