@@ -450,10 +450,6 @@ impl TuiApp {
         let short = if id.len() > 8 { &id[..8] } else { &id };
         lines.push(format!("session_id={short}"));
         lines.push(format!("journal={}", self.session.journal_dir().display()));
-        lines.push(format!(
-            "permission_mode={}",
-            self.session.permission_mode().label()
-        ));
         let usage = self.session.token_usage_report();
         lines.push(format!(
             "context_tokens={} / {}",

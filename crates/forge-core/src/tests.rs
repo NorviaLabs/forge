@@ -4,7 +4,7 @@
 
 use super::*;
 use async_trait::async_trait;
-use forge_governance::AclPolicy;
+use forge_governance::{AclPolicy, Governance};
 use forge_model::MockModelClient;
 use forge_types::{Message, MessageRole, SideEffectClass, ToolCall, ToolOutput, Usage};
 use serde_json::json;
@@ -250,6 +250,12 @@ fn base_cfg(dir: &std::path::Path) -> LoopConfig {
         enable_governance: true,
         ..Default::default()
     }
+}
+
+/// Tests of the HITL machinery still need a gated shell call. The shipped
+/// policy no longer asks about bash, so these scenarios opt back in.
+fn with_shell_hitl(session: &mut AgentSession) {
+    session.set_governance(Governance::default().require_hitl_for_tool("bash"));
 }
 
 /// `tool_count` is the cheap form of `list_tools().len()` and must stay
@@ -1484,6 +1490,7 @@ async fn repeated_hitl_denials_stop_the_turn_instead_of_retrying_to_max_turns() 
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("push").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
@@ -1527,6 +1534,7 @@ async fn hitl_pauses_on_git_push() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     let r = s.run_user_message("push").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     assert!(s.pending_hitl().is_some());
@@ -1565,20 +1573,13 @@ async fn inspection_bash_runs_without_a_prompt_in_accept_edits() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
         .await
         .unwrap();
-    // `Governance::default()` reports Accept Edits but still gates shell until
-    // a mode is applied — conservative on purpose, since nothing has yet
-    // established that a sandbox is confining anything. Declare it here.
-    s.apply_permission_mode(forge_governance::PermissionMode::AcceptEdits);
-
     s.run_user_message("look around").await.unwrap();
 
-    // This used to pass because `readonly.rs` recognised `ls` and rewrote it
-    // onto the dedicated tool, dodging the prompt. There is no classifier now:
-    // Accept Edits does not gate shell at all, because it is only reachable
-    // when a sandbox is confining it.
+    // There is no classifier and no permission mode: shell is not gated.
+    // The OS sandbox is the boundary.
     assert!(
         s.pending_hitl().is_none(),
-        "inspection bash must not prompt in Accept Edits"
+        "inspection bash must not prompt"
     );
     assert_ne!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     assert!(
@@ -1653,6 +1654,7 @@ async fn hitl_deny_with_feedback_reaches_the_agent_as_tool_result_content() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("push").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
@@ -1694,6 +1696,7 @@ async fn hitl_deny_with_blank_feedback_omits_it_from_the_message() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("push").await.unwrap();
 
     s.resolve_hitl_with_feedback(HitlDecision::Deny, "test", Some("   "))
@@ -1741,6 +1744,7 @@ async fn resuming_from_hitl_does_not_leak_stale_waiting_evidence_into_completion
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("run it").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
@@ -1784,6 +1788,7 @@ async fn hitl_large_tool_output_is_offloaded_before_insert() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("run it").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
@@ -1908,6 +1913,7 @@ async fn hitl_approve_does_not_take_the_denial_path() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("run it").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
@@ -1973,6 +1979,7 @@ async fn session_pattern_allow_skips_hitl_for_the_command_family() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("run it").await.unwrap();
     assert!(s.pending_hitl().is_some());
     assert_eq!(
@@ -2183,6 +2190,7 @@ async fn resume_restores_a_valid_waiting_session_and_can_resolve_it() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("run it").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     let request_id = s.pending_hitl().unwrap().call_id.clone();
@@ -2672,6 +2680,7 @@ async fn hitl_denial_message_carries_denied_outcome() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
+    with_shell_hitl(&mut s);
     s.run_user_message("push").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
