@@ -42,7 +42,7 @@ fn default_offload() -> usize {
     2000
 }
 fn default_capacity() -> usize {
-    200_000
+    500_000
 }
 fn default_offload_dir() -> String {
     ".forge/offload".into()

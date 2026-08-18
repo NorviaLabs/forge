@@ -469,13 +469,12 @@ impl TuiApp {
         }
         let supported = cache.model_accepts_image_input(&self.session.active_model);
         self.session.set_image_input_supported(supported);
-        // Context compaction sizes itself from the model's real window, not a
-        // fixed guess. An id the registry does not publish keeps the previous
-        // policy rather than inventing a window for it.
-        if let Some(limits) = cache.model_limits(&self.session.active_model) {
-            self.session
-                .set_context_window(limits.context, (limits.output > 0).then_some(limits.output));
-        }
+        // Use one fixed context budget across providers. Keep the catalog's
+        // output limit when available so reply headroom remains provider-aware.
+        let output = cache
+            .model_limits(&self.session.active_model)
+            .and_then(|limits| (limits.output > 0).then_some(limits.output));
+        self.session.set_context_window(500_000, output);
     }
 
     pub(super) fn apply_selection(&mut self, selection: &ModelSelection) {
