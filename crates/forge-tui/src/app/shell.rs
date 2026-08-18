@@ -37,15 +37,24 @@ impl TuiApp {
 /// frames without dropping any input.
 const MAX_EVENTS_PER_FRAME: usize = 8;
 
-pub(super) async fn drain_events(
+pub(super) async fn drain_events<B: ratatui::backend::Backend>(
     app: &mut TuiApp,
-    mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    mut terminal: Option<&mut Terminal<B>>,
 ) -> Result<(), TuiError> {
     for _ in 0..MAX_EVENTS_PER_FRAME {
-        if !event::poll(Duration::from_millis(0))? {
-            break;
-        }
-        match event::read()? {
+        #[cfg(test)]
+        let next = match app.test_events.pop_front() {
+            Some(event) => event,
+            None => break,
+        };
+        #[cfg(not(test))]
+        let next = {
+            if !event::poll(Duration::from_millis(0))? {
+                break;
+            }
+            event::read()?
+        };
+        match next {
             Event::Key(key) => {
                 app.handle_key(key).await?;
             }
@@ -57,7 +66,8 @@ pub(super) async fn drain_events(
             }
             Event::Resize(_, _) => {
                 if let Some(term) = terminal.as_deref_mut() {
-                    term.autoresize()?;
+                    term.autoresize()
+                        .map_err(|error| TuiError::Other(error.to_string()))?;
                 }
             }
             _ => {}

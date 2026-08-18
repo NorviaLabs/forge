@@ -51,6 +51,24 @@ pub enum SlashCommand {
     Terminal,
 }
 
+impl SlashCommand {
+    /// Commands that can run while a foreground model/tool turn owns the
+    /// session. Lifecycle, provider, or terminal-ownership changes wait until
+    /// the turn is finished (or interrupted); view-only commands stay usable.
+    pub fn available_while_busy(&self) -> bool {
+        !matches!(
+            self,
+            Self::ResumeList
+                | Self::Resume { .. }
+                | Self::Model
+                | Self::Compact
+                | Self::Connect
+                | Self::Disconnect { .. }
+                | Self::Edit
+        )
+    }
+}
+
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
     let line = line.trim();
     if !line.starts_with('/') {
@@ -114,6 +132,32 @@ mod tests {
     fn parses_phase1_commands() {
         assert!(parse_slash("/tools").unwrap().is_err());
         assert!(parse_slash("/journal").unwrap().is_err());
+    }
+
+    #[test]
+    fn busy_turns_reject_session_mutations_but_keep_ui_commands_available() {
+        for command in [
+            SlashCommand::ResumeList,
+            SlashCommand::Model,
+            SlashCommand::Compact,
+            SlashCommand::Connect,
+            SlashCommand::Disconnect { profile_id: None },
+            SlashCommand::Edit,
+        ] {
+            assert!(!command.available_while_busy(), "{command:?}");
+        }
+        for command in [
+            SlashCommand::Help,
+            SlashCommand::Quit,
+            SlashCommand::Clear,
+            SlashCommand::Refresh,
+            SlashCommand::ContextFile,
+            SlashCommand::Theme { name: None },
+            SlashCommand::Status,
+            SlashCommand::Terminal,
+        ] {
+            assert!(command.available_while_busy(), "{command:?}");
+        }
     }
 
     #[test]
