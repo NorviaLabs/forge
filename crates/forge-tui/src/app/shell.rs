@@ -76,6 +76,49 @@ pub(super) async fn drain_events<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+/// Advance every non-blocking service owned by the TUI application.
+///
+/// A foreground model turn temporarily drives its own model/tool state machine,
+/// but it must not replace the application loop while it waits. Keeping this
+/// tick in one place makes foreground waits and the idle loop service the same
+/// file watcher, background tasks, approvals, connection state and transient
+/// chrome. Rendering and terminal input stay with the single Ratatui owner.
+pub(super) async fn tick_application(app: &mut TuiApp) -> Result<(), TuiError> {
+    app.poll_file_changes();
+    app.poll_interactive_terminal();
+    app.tick_render_state();
+    app.warm_catalog_once_connected();
+    app.poll_catalog_refresh();
+    app.poll_background_tasks().await?;
+    app.poll_approved_hitl().await?;
+    app.tick_toast();
+    app.tick_feedback();
+    app.tick_notices();
+    app.drain_auto_hitl().await?;
+    // Newly arrived approvals claim focus + scroll-into-view once.
+    app.sync_approval_focus();
+    // Grok-style device-code: poll token endpoint while overlay is open.
+    app.poll_oauth_tick();
+    Ok(())
+}
+
+/// Run one complete TUI tick while foreground work is in flight, then consume
+/// terminal input and paint the resulting state.
+pub(super) async fn tick_foreground_frame<B: ratatui::backend::Backend>(
+    app: &mut TuiApp,
+    mut terminal: Option<&mut Terminal<B>>,
+) -> Result<(), TuiError> {
+    tick_application(app).await?;
+    if terminal.is_some() {
+        drain_events(app, terminal.as_deref_mut()).await?;
+        if let Some(term) = terminal {
+            term.draw(|frame| app.draw(frame))
+                .map_err(|error| TuiError::Other(error.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Wait for user input without making PTY output wait for the full idle tick.
 /// Crossterm only wakes for terminal input, while the interactive shell is
 /// read by a separate thread. Check that channel in short slices and repaint
@@ -209,21 +252,7 @@ async fn run_loop(
     let mut last_idle_draw = std::time::Instant::now();
 
     while !app.exit.is_requested() {
-        app.poll_file_changes();
-        app.poll_interactive_terminal();
-        app.tick_render_state();
-        app.warm_catalog_once_connected();
-        app.poll_catalog_refresh();
-        app.poll_background_tasks().await?;
-        app.poll_approved_hitl().await?;
-        app.tick_toast();
-        app.tick_feedback();
-        app.tick_notices();
-        app.drain_auto_hitl().await?;
-        // Newly arrived approvals claim focus + scroll-into-view once.
-        app.sync_approval_focus();
-        // Grok-style device-code: poll token endpoint while overlay is open
-        app.poll_oauth_tick();
+        tick_application(app).await?;
         let is_animating = app.busy_state.is_active()
             || app.pending_approved_tool.is_some()
             || app.interactive_terminal.is_some();
