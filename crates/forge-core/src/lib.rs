@@ -12,6 +12,7 @@ mod subagent;
 mod task_runtime;
 mod turn;
 pub(crate) mod turn_state;
+mod work;
 
 pub use stream::{
     accumulate_stream_event, merge_streamed_response, observe_stream_event, stream_turn_event,
@@ -35,12 +36,15 @@ pub use forge_context::compaction::{
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use permission::{egress_policy_for_workspace, EgressRuntime};
 pub use queue::{QueuedTask, TaskQueue};
-pub use session::compaction::compact_tokens;
+pub use session::compaction::{
+    compact_tokens, CompletedContextCompaction, PendingContextCompaction,
+};
 pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
     PendingHitlExecution, PendingToolApplication,
 };
 pub use subagent::{SubagentOutcome, SubagentSpec};
+pub use work::IsolatedTask;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

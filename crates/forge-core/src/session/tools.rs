@@ -672,7 +672,12 @@ impl AgentSession {
         budget: &mut ValidationBudget,
     ) -> Result<(), LoopError> {
         if let Some(pending) = self.begin_hitl_execution(call, budget).await? {
-            self.finish_hitl_execution(pending.execute().await).await?;
+            let completed = IsolatedTask::spawn(pending.execute())
+                .join()
+                .await
+                .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?
+                .ok_or(LoopError::Cancelled)?;
+            self.finish_hitl_execution(completed).await?;
         }
         Ok(())
     }

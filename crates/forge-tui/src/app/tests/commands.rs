@@ -327,6 +327,7 @@ async fn compact_reports_the_before_and_after_size_and_the_surviving_objective()
 
     app.dispatch_line("/compact").await.unwrap();
 
+    assert!(!app.busy_state.is_active());
     let record = app.session.compaction_telemetry().last.clone().unwrap();
     assert!(record.succeeded());
     assert_eq!(
@@ -365,6 +366,7 @@ async fn a_failed_compact_says_the_context_is_unchanged_rather_than_claiming_suc
 
     app.dispatch_line("/compact").await.unwrap();
 
+    assert!(!app.busy_state.is_active());
     assert_eq!(app.session.messages.len(), before);
     assert_eq!(app.session.compaction_telemetry().compaction_count, 0);
     assert_eq!(app.session.compaction_telemetry().failure_count, 1);

@@ -161,17 +161,28 @@ impl AgentSession {
             }
         });
         let model = self.model.clone();
-        let handle = tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
+        let mut handle =
+            crate::IsolatedTask::spawn(
+                async move { model.complete_with_stream(req, Some(tx)).await },
+            );
 
         let mut acc = ModelStepAccumulator::default();
-        tokio::pin!(handle);
         let cancel_token = self.cancel_token.clone();
+        let mut stream_open = true;
         let response = loop {
+            if handle.is_finished() {
+                break handle
+                    .join()
+                    .await
+                    .map_err(|error| LoopError::Other(format!("model task join: {error}")))?
+                    .ok_or(LoopError::Cancelled)?
+                    .map_err(|error| LoopError::Other(error.to_string()))?;
+            }
             // Only ever `Some` for a subagent session (see `AgentSession::cancel_token`'s
             // doc comment) — the foreground session is cancelled via the TUI's own
             // `cancel_requested` bool instead, checked in `app/turn.rs`.
             tokio::select! {
-                event = rx.recv() => {
+                event = rx.recv(), if stream_open => {
                     if let Some(event) = event {
                         drain_ready_stream_events(
                             &mut rx,
@@ -180,12 +191,11 @@ impl AgentSession {
                             forward.as_ref(),
                             &mut acc,
                         );
+                    } else {
+                        stream_open = false;
                     }
                 }
-                result = &mut handle => {
-                    break result
-                        .map_err(|error| LoopError::Other(format!("model task join: {error}")))?
-                        .map_err(|error| LoopError::Other(error.to_string()))?;
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
                 }
                 _ = async {
                     if let Some(token) = cancel_token.clone() {
@@ -194,7 +204,7 @@ impl AgentSession {
                         std::future::pending::<()>().await;
                     }
                 } => {
-                    handle.as_mut().abort();
+                    handle.abort();
                     return Err(LoopError::Cancelled);
                 }
             }

@@ -102,8 +102,12 @@ impl AgentSession {
             application = match application {
                 ModelResponseApplication::Finished(outcome) => return Ok(outcome),
                 ModelResponseApplication::Execute(pending) => {
-                    self.finish_tool_application((*pending).execute().await)
-                        .await?
+                    let completed = IsolatedTask::spawn((*pending).execute())
+                        .join()
+                        .await
+                        .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?
+                        .ok_or(LoopError::Cancelled)?;
+                    self.finish_tool_application(completed).await?
                 }
             };
         }
@@ -538,6 +542,15 @@ impl AgentSession {
         // double-count the epoch for a single boundary.
         let _ = self.maybe_auto_compact().await;
 
+        self.prepare_model_step_after_compaction(turn).await
+    }
+
+    /// Journal and build one model request after a frontend has responsively
+    /// handled any pending automatic context compaction.
+    pub async fn prepare_model_step_after_compaction(
+        &mut self,
+        turn: u32,
+    ) -> Result<ModelRequest, LoopError> {
         let request = self.build_model_request();
         self.record_prompt_snapshot(&request, None);
         tracing::debug!(turn, "model step");
