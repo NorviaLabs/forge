@@ -957,6 +957,13 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
     ];
     const FILESYSTEM: &[&str] = &["Operation not permitted", "Read-only file system"];
 
+    if output.contains(crate::egress::SANDBOX_DENIED_REASON) {
+        return Some(
+            "blocked by the sandbox: the destination host is not allowed by the personal \
+             host(...) network permissions. Approve an unconfined run, or allow the host \
+             in your user permissions file.",
+        );
+    }
     if NETWORK.iter().any(|sig| output.contains(sig)) {
         return Some(
             "blocked by the sandbox: network access is denied. This is not a DNS or \
@@ -964,6 +971,7 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
              needs a network-enabled run.",
         );
     }
+
     if FILESYSTEM.iter().any(|sig| output.contains(sig)) {
         return Some(FILESYSTEM_EXPLANATION);
     }
@@ -1034,6 +1042,13 @@ mod denial_tests {
         let out =
             "fatal: unable to access 'https://github.com/x/y': Could not resolve host: github.com";
         assert!(explain_denial(out, ws().path()).is_some_and(|e| e.contains("network")));
+    }
+
+    #[test]
+    fn a_proxy_policy_denial_is_not_reported_as_github_forbidden() {
+        let out = "failed to authenticate via web browser: Post \"https://github.com/login/device/code\": Forge Sandbox Denied";
+        let explained = explain_denial(out, ws().path()).expect("must be recognised as a denial");
+        assert!(explained.contains("host(...) network permissions"));
     }
 
     #[test]
