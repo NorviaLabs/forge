@@ -37,17 +37,12 @@ fn sandbox_denial(
     success: bool,
     output: &str,
     workspace_root: &std::path::Path,
+    grant: Option<&crate::sandbox::EgressGrant>,
 ) -> Option<ToolError> {
     if !confined || success {
         return None;
     }
-    crate::sandbox::explain_denial(output, workspace_root).map(|explanation| {
-        ToolError::SandboxDenied {
-            content: output.to_string(),
-            reason: explanation.to_string(),
-            denied_host: crate::egress::extract_denied_host(output),
-        }
-    })
+    crate::egress::denial_for_failed_confined_command(output, workspace_root, grant)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -72,6 +67,7 @@ struct Session {
     command: String,
     confined: bool,
     workspace_root: PathBuf,
+    egress: Option<Arc<crate::sandbox::EgressGrant>>,
     _session_tmp: Option<Arc<crate::SessionTempDir>>,
     child: Child,
     stdin: Option<ChildStdin>,
@@ -170,6 +166,7 @@ async fn collect(
                 status.success(),
                 &session.output,
                 &session.workspace_root,
+                session.egress.as_deref(),
             ) {
                 return Err(error);
             }
@@ -274,6 +271,7 @@ async fn start(
         command: args.cmd.clone(),
         confined,
         workspace_root: ctx.workspace_root.clone(),
+        egress: ctx.egress.clone(),
         _session_tmp: ctx.session_tmp.clone(),
         stdin: Some(
             child
@@ -414,7 +412,7 @@ mod tests {
     fn failed_confined_network_command_is_a_sandbox_denial() {
         let dir = tempdir().unwrap();
         let output = "curl: (6) Could not resolve host: api.github.com";
-        let error = sandbox_denial(true, false, output, dir.path())
+        let error = sandbox_denial(true, false, output, dir.path(), None)
             .expect("a confined network failure must be escalated");
 
         assert!(matches!(error, ToolError::SandboxDenied { .. }));
@@ -425,7 +423,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let output = "curl: (6) Could not resolve host: api.github.com";
 
-        assert!(sandbox_denial(false, false, output, dir.path()).is_none());
+        assert!(sandbox_denial(false, false, output, dir.path(), None).is_none());
     }
 
     #[tokio::test]
@@ -435,6 +433,7 @@ mod tests {
         ctx.egress = Some(std::sync::Arc::new(crate::sandbox::EgressGrant {
             proxy_port: 9418,
             socket_path: dir.path().join("egress.sock"),
+            control: None,
         }));
         let (exec_command, _) = unified_exec_tools();
         let first = exec_command

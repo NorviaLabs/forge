@@ -401,17 +401,10 @@ async fn run_shell_command_inner(
     // on disk. Neither is true, and a model that believes them retries or
     // chases the wrong fix. Say which boundary stopped it.
     if confined_run && !status.success() {
-        if let Some(explanation) = crate::sandbox::explain_denial(&content, workspace_root) {
-            if !content.is_empty() {
-                content.push('\n');
-            }
-            content.push_str(explanation);
-            let denied_host = crate::egress::extract_denied_host(&content);
-            return Err(ToolError::SandboxDenied {
-                content,
-                reason: explanation.to_string(),
-                denied_host,
-            });
+        if let Some(error) =
+            crate::egress::denial_for_failed_confined_command(&content, workspace_root, egress)
+        {
+            return Err(error);
         }
     }
 
@@ -1734,6 +1727,7 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
         ctx.egress = Some(std::sync::Arc::new(crate::sandbox::EgressGrant {
             proxy_port: 9418,
             socket_path: workspace.path().join("egress.sock"),
+            control: None,
         }));
 
         let output = BashTool

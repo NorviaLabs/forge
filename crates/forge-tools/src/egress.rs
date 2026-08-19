@@ -59,6 +59,49 @@ pub struct EgressPolicy {
 
 pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
 
+/// Explanation attached when the proxy refused a host, even if the client
+/// printed something else (HTTP 403, "token invalid", "Forbidden", …).
+pub const HOST_DENIED_EXPLANATION: &str =
+    "blocked by the sandbox: the destination host is not allowed by \
+     the personal host(...) network permissions.";
+
+/// After a confined process exits non-zero, decide whether the sandbox
+/// (filesystem or egress) is why.
+///
+/// The proxy log is the source of truth for network. Client output is only
+/// used when `explain_denial` recognises a boundary string. A host taken
+/// from the grant is never inferred from a URL in the output alone — that
+/// would turn a real 403 from an already-allowed host into a grant prompt.
+pub fn denial_for_failed_confined_command(
+    output: &str,
+    workspace_root: &std::path::Path,
+    grant: Option<&crate::sandbox::EgressGrant>,
+) -> Option<crate::ToolError> {
+    let from_proxy = grant.and_then(crate::sandbox::EgressGrant::take_denied_host);
+    let (reason, denied_host) =
+        if let Some(explanation) = crate::sandbox::explain_denial(output, workspace_root) {
+            (
+                explanation.to_string(),
+                from_proxy.or_else(|| extract_denied_host(output)),
+            )
+        } else {
+            let host = from_proxy?;
+            (HOST_DENIED_EXPLANATION.to_string(), Some(host))
+        };
+    let mut content = output.to_string();
+    if !content.contains(&reason) {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&reason);
+    }
+    Some(crate::ToolError::SandboxDenied {
+        content,
+        reason,
+        denied_host,
+    })
+}
+
 impl EgressPolicy {
     pub fn new() -> Self {
         Self::default()
@@ -172,14 +215,6 @@ impl EgressShared {
         let host = denied.first().cloned();
         denied.clear();
         host
-    }
-
-    pub fn peek_denied_host(&self) -> Option<String> {
-        self.denied
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .first()
-            .cloned()
     }
 
     pub fn record_denied(&self, host: String) {
@@ -894,6 +929,48 @@ mod tests {
         assert_eq!(
             extract_denied_host("Forge Sandbox Denied: host crates.io is not allowed\n").as_deref(),
             Some("crates.io")
+        );
+    }
+
+    #[test]
+    fn a_proxy_refusal_is_a_sandbox_denial_even_when_the_client_prints_something_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = EgressShared::new(EgressPolicy::new());
+        shared.record_denied("example.com".into());
+        let grant = crate::sandbox::EgressGrant {
+            proxy_port: 1,
+            socket_path: dir.path().join("e.sock"),
+            control: Some(shared),
+        };
+        let error = denial_for_failed_confined_command(
+            "HTTP 403: unexpected status from the remote API",
+            dir.path(),
+            Some(&grant),
+        )
+        .expect("a proxy refusal must be a sandbox denial");
+        let crate::ToolError::SandboxDenied {
+            denied_host,
+            reason,
+            ..
+        } = error
+        else {
+            panic!("expected SandboxDenied");
+        };
+        assert_eq!(denied_host.as_deref(), Some("example.com"));
+        assert!(reason.contains("host(...)"), "{reason}");
+    }
+
+    #[test]
+    fn a_failed_command_is_not_a_sandbox_denial_without_a_proxy_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            denial_for_failed_confined_command(
+                "HTTP 403: unexpected status from the remote API\nhttps://example.com/v1",
+                dir.path(),
+                None,
+            )
+            .is_none(),
+            "a URL in a real HTTP 403 must not invent a host grant"
         );
     }
 

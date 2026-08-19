@@ -1352,6 +1352,15 @@ mod relay_tests {
 pub struct EgressGrant {
     pub proxy_port: u16,
     pub socket_path: PathBuf,
+    /// Shared with the in-process proxy so a spawn can read hosts it refused.
+    /// `None` only in tests that construct a grant without a live proxy.
+    pub control: Option<crate::egress::EgressShared>,
+}
+
+impl EgressGrant {
+    pub fn take_denied_host(&self) -> Option<String> {
+        self.control.as_ref().and_then(|c| c.take_denied_host())
+    }
 }
 
 impl SandboxPolicy {

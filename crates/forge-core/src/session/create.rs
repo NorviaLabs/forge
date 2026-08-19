@@ -308,18 +308,6 @@ impl AgentSession {
             .and_then(|runtime| runtime.take_denied_host())
     }
 
-    pub fn peek_denied_egress_host(&self) -> Option<String> {
-        self.egress
-            .as_ref()
-            .and_then(|runtime| runtime.peek_denied_host())
-    }
-
-    pub fn record_denied_egress_host(&self, host: impl Into<String>) {
-        if let Some(runtime) = &self.egress {
-            runtime.record_denied_host(host);
-        }
-    }
-
     /// Remember the suggested pattern for `call` for the rest of this session.
     pub fn allow_suggested_pattern_for_session(&mut self, call: &forge_types::ToolCall) -> String {
         self.governance.allow_suggested_pattern_for_session(call)
