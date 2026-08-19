@@ -578,6 +578,10 @@ impl AgentSession {
             ));
         }
 
+        if call.name == "ask_user_question" {
+            return self.dispatch_ask_user_question(&call).await;
+        }
+
         Ok(ToolExecutionStart::Execute(PendingToolExecution {
             call: call.clone(),
             tools: self.tools.clone(),
@@ -729,6 +733,11 @@ impl AgentSession {
                     .await?;
             }
             self.dispatch_background_run(call).await?;
+            return Ok(None);
+        }
+        if call.name == "ask_user_question" {
+            self.turn.record_call(call.clone());
+            self.dispatch_ask_user_question(call).await?;
             return Ok(None);
         }
         self.turn.record_call(call.clone());

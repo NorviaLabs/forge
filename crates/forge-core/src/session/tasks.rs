@@ -22,8 +22,7 @@ impl AgentSession {
     }
 
     /// The HITL payload the active task is waiting on, if any — a
-    /// convenience view over `active_task.wait_reason`'s `Approval` variant
-    /// (the only wait reason with a real producer today).
+    /// convenience view over `active_task.wait_reason`'s `Approval` variant.
     pub fn pending_hitl(&self) -> Option<&HitlPayload> {
         match &self.active_task.wait_reason {
             Some(WaitReason::Approval { payload, .. }) => Some(payload),

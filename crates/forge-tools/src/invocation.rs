@@ -28,6 +28,18 @@ pub fn tool_invocation(name: &str, args: &Value) -> Option<String> {
         "glob" | "grep" | "rg" => str_arg(args, "pattern"),
         "web_search" => str_arg(args, "query"),
         "load_skill" => str_arg(args, "name"),
+        "ask_user_question" => args
+            .get("questions")
+            .and_then(|value| value.as_array())
+            .and_then(|questions| questions.first())
+            .and_then(|question| {
+                question
+                    .get("header")
+                    .and_then(Value::as_str)
+                    .filter(|header| !header.is_empty())
+                    .or_else(|| question.get("question").and_then(Value::as_str))
+            })
+            .map(str::to_owned),
         _ => None,
     }
 }
@@ -110,6 +122,13 @@ mod tests {
         assert_eq!(
             tool_invocation("web_search", &json!({"query": "tokio docs"})),
             Some("tokio docs".into())
+        );
+        assert_eq!(
+            tool_invocation(
+                "ask_user_question",
+                &json!({"questions": [{"header": "Auth", "question": "Which method?"}]})
+            ),
+            Some("Auth".into())
         );
     }
 

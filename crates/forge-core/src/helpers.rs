@@ -391,10 +391,18 @@ pub(crate) fn restore_system_message(messages: &mut Vec<Message>, assembled: Str
 }
 
 /// Reconstruct the `WaitReason` a restored session was blocked on, from the
-/// raw HITL payload the journal replayed. Only `Approval` is ever produced
-/// today — the sole wait reason with a real runtime producer.
+/// raw wait payload the journal replayed. `ask_user_question` waits are a
+/// tagged envelope (`kind: ask_user_question`); everything else is a HITL
+/// [`HitlPayload`].
 pub(crate) fn restored_wait_reason(pending_hitl: &Option<serde_json::Value>) -> Option<WaitReason> {
-    let payload: HitlPayload = serde_json::from_value(pending_hitl.clone()?).ok()?;
+    let value = pending_hitl.clone()?;
+    if let Some(payload) = crate::session::question::question_from_journal(&value) {
+        return Some(WaitReason::Question {
+            request_id: payload.call_id.clone(),
+            payload,
+        });
+    }
+    let payload: HitlPayload = serde_json::from_value(value).ok()?;
     Some(WaitReason::Approval {
         request_id: payload.call_id.clone(),
         payload,

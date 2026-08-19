@@ -208,6 +208,7 @@ pub(super) async fn tick_application(app: &mut TuiApp) -> Result<(), TuiError> {
     app.drain_auto_hitl().await?;
     // Newly arrived approvals claim focus + scroll-into-view once.
     app.sync_approval_focus();
+    app.sync_question_focus();
     // Grok-style device-code: poll token endpoint while overlay is open.
     app.poll_oauth_tick();
     Ok(())
@@ -400,6 +401,10 @@ async fn run_loop(
         }
         if app.pending_interaction.has_hitl_decision() {
             app.drain_pending_hitl(Some(terminal)).await?;
+            continue;
+        }
+        if app.pending_interaction.has_question_submit() {
+            app.drain_pending_question(Some(terminal)).await?;
             continue;
         }
         if app.pending_interaction.context_reset_pending() {
