@@ -259,6 +259,30 @@ impl ToolRegistry {
         *self.descriptors.get_mut().unwrap() = None;
     }
 
+    /// Register built-ins that are not already present, then start the
+    /// workspace file index in the background so the first glob/grep/find
+    /// overlaps journal I/O instead of stalling the first tool call.
+    pub fn install_default_builtins(
+        &mut self,
+        web_search: &forge_config::WebSearchConfig,
+        workspace: &Path,
+    ) {
+        for tool in crate::default_builtins_with_web_search(web_search) {
+            if self.get(tool.name()).is_none() {
+                self.register(tool);
+            }
+        }
+        self.warm_workspace_index(workspace);
+    }
+
+    /// Kick off each tool's workspace-scoped background work. Safe to call
+    /// more than once: search tools share one FFF scan per root.
+    pub fn warm_workspace_index(&self, workspace: &Path) {
+        for tool in self.tools.values() {
+            tool.warm_workspace(workspace);
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .get(name)
@@ -803,6 +827,24 @@ mod tests {
             arguments: json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
         });
         assert_eq!(call.name, "edit");
+    }
+
+    #[tokio::test]
+    async fn install_default_builtins_warms_search_and_serves_glob() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("hit.rs"), "hello from install\n").unwrap();
+        let mut reg = ToolRegistry::new();
+        reg.install_default_builtins(&forge_config::WebSearchConfig::default(), dir.path());
+        assert!(reg.get("glob").is_some());
+        assert!(reg.get("grep").is_some());
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let mut budget = ValidationBudget::with_default_max();
+        let out = reg
+            .call(&ctx, "glob", json!({"pattern": "hit.rs"}), &mut budget)
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("hit.rs"), "{}", out.content);
     }
 
     #[tokio::test]

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
@@ -84,48 +85,85 @@ impl From<&FffModeArg> for GrepQueryMode {
     }
 }
 
+type WorkspaceIndexSlot = Arc<OnceLock<Result<Arc<WorkspaceIndex>, String>>>;
+type WorkspaceIndexSlots = Mutex<HashMap<PathBuf, WorkspaceIndexSlot>>;
+
+/// Per-workspace FFF index cache shared by glob/grep/edit.
+///
+/// Opening starts the scan but does not wait for it. [`Self::index_for`]
+/// waits so a tool call still sees a complete index; [`Self::warm`] starts
+/// that scan on a background thread so session startup can overlap it with
+/// journal I/O and the first prompt.
 pub(crate) struct FastFileState {
-    indices: Mutex<HashMap<PathBuf, Arc<WorkspaceIndex>>>,
+    slots: WorkspaceIndexSlots,
 }
 
 impl FastFileState {
     pub(crate) fn new() -> Self {
         Self {
-            indices: Mutex::new(HashMap::new()),
+            slots: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn index_for(&self, root: &Path) -> Result<Arc<WorkspaceIndex>, ToolError> {
+    fn slot_for(&self, root: &Path) -> Result<(PathBuf, WorkspaceIndexSlot, bool), ToolError> {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        if let Some(index) = self
-            .indices
+        let mut slots = self
+            .slots
             .lock()
-            .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?
-            .get(&canonical)
-        {
-            return Ok(index.clone());
-        }
-        // Build outside the cache lock: the first scan of a large workspace can
-        // take seconds, and holding the mutex across it serialized every
-        // concurrent find/grep behind the cold-cache scan. `watch: true` (the
-        // default the TUI already uses) keeps the tool index live so files the
-        // agent itself writes become searchable, instead of freezing the first
-        // scan for the whole session.
-        let index = WorkspaceIndex::open_with_options(
-            &canonical,
+            .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?;
+        let mut inserted = false;
+        let slot = slots
+            .entry(canonical.clone())
+            .or_insert_with(|| {
+                inserted = true;
+                Arc::new(OnceLock::new())
+            })
+            .clone();
+        Ok((canonical, slot, inserted))
+    }
+
+    fn open_index(root: &Path) -> Result<Arc<WorkspaceIndex>, String> {
+        // Do not wait here: the scan runs in FilePicker's own thread. Callers
+        // that need a complete index call `wait_for_scan` themselves.
+        WorkspaceIndex::open_with_options(
+            root,
             WorkspaceIndexOptions {
                 watch: true,
+                wait_for_scan: false,
                 ..Default::default()
             },
         )
-        .map_err(search_err)?;
-        let mut guard = self
-            .indices
-            .lock()
-            .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?;
-        // Another caller may have finished opening the same root while we
-        // scanned. Prefer the winner so we do not leak a second watcher.
-        Ok(guard.entry(canonical).or_insert(index).clone())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Start the workspace scan if it is not already running. Returns
+    /// immediately; the first tool call still waits via [`Self::index_for`].
+    pub(crate) fn warm(&self, root: &Path) {
+        let Ok((canonical, slot, inserted)) = self.slot_for(root) else {
+            return;
+        };
+        if !inserted {
+            return;
+        }
+        let _ = thread::Builder::new()
+            .name("forge-workspace-index".into())
+            .spawn(move || {
+                let _ = slot.get_or_init(|| Self::open_index(&canonical));
+            });
+    }
+
+    pub(crate) fn index_for(&self, root: &Path) -> Result<Arc<WorkspaceIndex>, ToolError> {
+        let (canonical, slot, _) = self.slot_for(root)?;
+        // `get_or_init` serialises concurrent first-open: a session-start warm
+        // and the first glob/grep share one FilePicker instead of leaking a
+        // second watcher.
+        match slot.get_or_init(|| Self::open_index(&canonical)) {
+            Ok(index) => {
+                index.wait_for_scan().map_err(search_err)?;
+                Ok(index.clone())
+            }
+            Err(error) => Err(ToolError::Execution(error.clone())),
+        }
     }
 }
 
@@ -164,6 +202,10 @@ impl Tool for FffFindTool {
     }
     fn idempotent(&self) -> bool {
         true
+    }
+
+    fn warm_workspace(&self, root: &Path) {
+        self.state.warm(root);
     }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
@@ -251,6 +293,10 @@ impl Tool for FffGrepTool {
         true
     }
 
+    fn warm_workspace(&self, root: &Path) {
+        self.state.warm(root);
+    }
+
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: FffGrepArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
@@ -336,7 +382,10 @@ fn reject_blank_or_oversized(tool: &str, field: &str, value: &str) -> Option<Too
 }
 
 pub fn fff_tools() -> Vec<Arc<dyn Tool>> {
-    let state = Arc::new(FastFileState::new());
+    fff_tools_with(Arc::new(FastFileState::new()))
+}
+
+pub(crate) fn fff_tools_with(state: Arc<FastFileState>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(FffFindTool::new(state.clone(), "glob")),
         Arc::new(FffGrepTool::new(state.clone(), "grep")),
@@ -455,6 +504,43 @@ mod tests {
         let first = state.index_for(dir.path()).unwrap();
         let second = state.index_for(dir.path()).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn warm_starts_the_index_the_first_search_reuses() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        let state = FastFileState::new();
+        state.warm(dir.path());
+        let first = state.index_for(dir.path()).unwrap();
+        let second = state.index_for(dir.path()).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        let response = first.find_files("main.rs", 10, None).unwrap();
+        assert_eq!(
+            response.hits.first().map(|hit| hit.path.as_str()),
+            Some("main.rs")
+        );
+    }
+
+    #[tokio::test]
+    async fn warming_shared_tools_then_glob_finds_files() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn lib() {}\n").unwrap();
+        let tools = fff_tools();
+        for tool in &tools {
+            tool.warm_workspace(dir.path());
+        }
+        for tool in &tools {
+            tool.warm_workspace(dir.path());
+        }
+        let glob = tools.iter().find(|tool| tool.name() == "glob").unwrap();
+        let ctx = crate::registry::ToolContext::new(dir.path().to_path_buf());
+        let out = glob
+            .call(&ctx, serde_json::json!({"pattern": "lib.rs"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("lib.rs"), "{}", out.content);
     }
 
     #[tokio::test]
