@@ -369,8 +369,14 @@ async fn run_shell_command_inner(
     for name in PROVIDER_CREDENTIAL_ENV {
         shell.env_remove(name);
     }
-    for (name, value) in crate::sandbox::egress_env(&policy) {
-        shell.env(name, value);
+    // The proxy env points at the in-sandbox relay (Linux) or the filtered
+    // host proxy (macOS). An approved unconfined retry is supposed to use
+    // the real network — `gh pr create` and friends fail if we leave them
+    // talking to a proxy that is either not listening or still deny-all.
+    if confined_run {
+        for (name, value) in crate::sandbox::egress_env(&policy) {
+            shell.env(name, value);
+        }
     }
     for (name, value) in crate::sandbox::temp_env(&policy) {
         shell.env(name, value);
@@ -1709,6 +1715,46 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
 
         assert!(!output.is_error, "{}", output.content);
         assert_eq!(std::fs::read_to_string(target).unwrap(), "approved");
+    }
+
+    /// A session almost always carries an egress grant. After HITL approves
+    /// an unconfined retry, that grant must not still be injected as
+    /// `HTTP(S)_PROXY` — `gh pr create` then talks to the sandbox relay
+    /// (nothing listens on the host) or the deny-all host proxy.
+    #[tokio::test]
+    async fn approved_bash_does_not_keep_the_sandbox_proxy() {
+        let workspace = tempdir().unwrap();
+        let _http = EnvVarGuard::set("HTTP_PROXY", "http://host-proxy.test:8080");
+        let _https = EnvVarGuard::set("HTTPS_PROXY", "http://host-proxy.test:8080");
+        let _http_lc = EnvVarGuard::set("http_proxy", "http://host-proxy.test:8080");
+        let _https_lc = EnvVarGuard::set("https_proxy", "http://host-proxy.test:8080");
+        let mut ctx = ToolContext::new(workspace.path().to_path_buf()).with_unconfined_shell();
+        ctx.egress = Some(std::sync::Arc::new(crate::sandbox::EgressGrant {
+            proxy_port: 9418,
+            socket_path: workspace.path().join("egress.sock"),
+        }));
+
+        let output = BashTool
+            .call(
+                &ctx,
+                json!({
+                    "command": "printf '%s|%s|%s|%s' \"$HTTP_PROXY\" \"$HTTPS_PROXY\" \"$http_proxy\" \"$https_proxy\""
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.is_error, "{}", output.content);
+        assert!(
+            !output.content.contains("127.0.0.1:9418")
+                && !output.content.contains("127.0.0.1:8118"),
+            "sandbox proxy leaked into the unconfined retry: {}",
+            output.content
+        );
+        assert_eq!(
+            output.content,
+            "http://host-proxy.test:8080|http://host-proxy.test:8080|http://host-proxy.test:8080|http://host-proxy.test:8080"
+        );
     }
 
     /// Restores an environment variable on drop, so a test that has to touch the
