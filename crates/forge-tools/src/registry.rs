@@ -105,7 +105,8 @@ impl ToolContext {
         self
     }
 
-    /// Resolve a tool-supplied path for reading, confined to the workspace.
+    /// Resolve a tool-supplied path for reading, confined to the workspace or
+    /// this session's private temp directory.
     pub fn resolve_path(&self, rel: &str) -> Result<PathBuf, ToolError> {
         self.resolve(rel, PathAccess::Read)
     }
@@ -116,6 +117,21 @@ impl ToolContext {
     /// files — writing them is equivalent to running a command.
     pub fn resolve_write_path(&self, rel: &str) -> Result<PathBuf, ToolError> {
         self.resolve(rel, PathAccess::Write)
+    }
+
+    fn allowed_roots(&self) -> Result<Vec<PathBuf>, ToolError> {
+        let workspace = self
+            .workspace_root
+            .canonicalize()
+            .map_err(|error| ToolError::Execution(format!("cannot resolve workspace: {error}")))?;
+        let mut roots = vec![workspace];
+        if let Some(tmp) = &self.session_tmp {
+            let tmp = tmp.path().canonicalize().map_err(|error| {
+                ToolError::Execution(format!("cannot resolve session temp: {error}"))
+            })?;
+            roots.push(tmp);
+        }
+        Ok(roots)
     }
 
     fn resolve(&self, rel: &str, access: PathAccess) -> Result<PathBuf, ToolError> {
@@ -133,7 +149,7 @@ impl ToolContext {
         // comparison passes for `<root>/../../etc/x`, which the kernel then
         // resolves outside the workspace at open time.
         if full.components().any(|c| matches!(c, Component::ParentDir)) {
-            return Err(escapes_workspace(rel));
+            return Err(self.escapes_allowed(rel));
         }
 
         // Judge the `.git` denial on the portion below the workspace root, so a
@@ -152,17 +168,14 @@ impl ToolContext {
             }
         }
 
-        let root = self
-            .workspace_root
-            .canonicalize()
-            .map_err(|error| ToolError::Execution(format!("cannot resolve workspace: {error}")))?;
+        let roots = self.allowed_roots()?;
 
         // Existing target: resolve it completely. This follows symlinks, so a
-        // link pointing outside the workspace is caught by the containment
+        // link pointing outside the allowed roots is caught by the containment
         // check rather than honoured.
         if let Ok(canonical) = full.canonicalize() {
-            if !canonical.starts_with(&root) {
-                return Err(escapes_workspace(rel));
+            if !contained_in(&canonical, &roots) {
+                return Err(self.escapes_allowed(rel));
             }
             return Ok(canonical);
         }
@@ -176,21 +189,36 @@ impl ToolContext {
         // a repository could then redirect a write anywhere on disk.
         let mut ancestor = full.as_path();
         while ancestor.symlink_metadata().is_err() {
-            ancestor = ancestor.parent().ok_or_else(|| escapes_workspace(rel))?;
+            ancestor = ancestor.parent().ok_or_else(|| self.escapes_allowed(rel))?;
         }
 
         // `canonicalize` resolves links, so an ancestor pointing outside the
-        // workspace is caught by the containment check below and one pointing
-        // inside still works. A dangling link cannot be resolved at all, so it
-        // cannot be shown to be contained, and is refused rather than trusted.
+        // allowed roots is caught by the containment check below and one
+        // pointing inside still works. A dangling link cannot be resolved at
+        // all, so it cannot be shown to be contained, and is refused rather
+        // than trusted.
         let canonical = ancestor.canonicalize().map_err(|_| {
             ToolError::Execution(format!("path `{rel}` resolves through a broken symlink"))
         })?;
-        if !canonical.starts_with(&root) {
-            return Err(escapes_workspace(rel));
+        if !contained_in(&canonical, &roots) {
+            return Err(self.escapes_allowed(rel));
         }
         Ok(full)
     }
+
+    fn escapes_allowed(&self, rel: &str) -> ToolError {
+        if self.session_tmp.is_some() {
+            ToolError::Execution(format!(
+                "path `{rel}` is outside the workspace and session temp"
+            ))
+        } else {
+            escapes_workspace(rel)
+        }
+    }
+}
+
+fn contained_in(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
 }
 
 /// Whether a resolved path is about to be read or written.
@@ -386,6 +414,73 @@ mod tests {
 
         drop(session_tmp);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn resolve_path_allows_session_temp_and_rejects_the_rest_of_tmp() {
+        let workspace = tempdir().unwrap();
+        let session_tmp = SessionTempDir::create("read-temp").unwrap();
+        let ctx =
+            ToolContext::new(workspace.path().to_path_buf()).with_session_tmp(session_tmp.clone());
+
+        let existing = session_tmp.path().join("note.txt");
+        std::fs::write(&existing, "scratch").unwrap();
+        assert_eq!(
+            ctx.resolve_path(existing.to_str().unwrap()).unwrap(),
+            existing.canonicalize().unwrap()
+        );
+
+        let missing = session_tmp.path().join("nested/new.txt");
+        assert_eq!(
+            ctx.resolve_write_path(missing.to_str().unwrap()).unwrap(),
+            missing
+        );
+
+        let stray = std::env::temp_dir().join("gh-pr-create.json");
+        let err = ctx.resolve_path(stray.to_str().unwrap()).unwrap_err();
+        match &err {
+            ToolError::Execution(message) => {
+                assert!(
+                    message.contains("outside the workspace and session temp"),
+                    "{err}"
+                );
+            }
+            other => panic!("expected execution error, got {other}"),
+        }
+        let tmp_root = std::env::temp_dir();
+        let err = ctx.resolve_path(tmp_root.to_str().unwrap()).unwrap_err();
+        match &err {
+            ToolError::Execution(message) => {
+                assert!(
+                    message.contains("outside the workspace and session temp"),
+                    "{err}"
+                );
+            }
+            other => panic!("expected execution error, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_file_reads_session_temp() {
+        let workspace = tempdir().unwrap();
+        let session_tmp = SessionTempDir::create("read-file-temp").unwrap();
+        let path = session_tmp.path().join("probe.txt");
+        std::fs::write(&path, "from tmp\n").unwrap();
+
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(ReadFileTool));
+        let ctx = ToolContext::new(workspace.path().to_path_buf()).with_session_tmp(session_tmp);
+        let mut b = ValidationBudget::with_default_max();
+        let out = reg
+            .call(
+                &ctx,
+                "read_file",
+                json!({"path": path.to_str().unwrap()}),
+                &mut b,
+            )
+            .await
+            .unwrap();
+        assert!(out.content.contains("from tmp"), "{out:?}");
     }
 
     #[tokio::test]
