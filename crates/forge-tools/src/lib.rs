@@ -19,12 +19,14 @@ pub mod web_search;
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
     default_builtins, default_builtins_with_web_search, run_shell_command,
-    run_shell_command_with_egress, BashTool, GitTool, LsTool, ReadFileTool, UpdatePlanTool,
-    WriteFileTool, PROVIDER_CREDENTIAL_ENV,
+    run_shell_command_with_egress, run_shell_command_with_egress_and_temp, BashTool, GitTool,
+    LsTool, ReadFileTool, UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
 pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
-pub use registry::{canonical_tool_name, canonicalize_tool_call, ToolContext, ToolRegistry};
+pub use registry::{
+    canonical_tool_name, canonicalize_tool_call, SessionTempDir, ToolContext, ToolRegistry,
+};
 pub use skills::{LoadSkillArgs, LoadSkillTool};
 pub use unified_exec::{unified_exec_tools, ExecCommandTool, WriteStdinTool};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};

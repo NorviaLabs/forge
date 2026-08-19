@@ -331,14 +331,20 @@ async fn run_shell_job(
     command: String,
     workspace_root: std::path::PathBuf,
     egress: Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>>,
+    session_tmp: Option<std::sync::Arc<forge_tools::SessionTempDir>>,
 ) -> BackgroundTaskOutcome {
     // Backgrounded work gets the same network the foreground has. It was
     // calling the grantless variant, so a background `cargo build` was confined
     // *and* offline while the identical foreground command worked — a
     // difference with no reason behind it, and one that would have surfaced as
     // a mysteriously failing build rather than as a permission decision.
-    match forge_tools::run_shell_command_with_egress(&command, &workspace_root, egress.as_deref())
-        .await
+    match forge_tools::run_shell_command_with_egress_and_temp(
+        &command,
+        &workspace_root,
+        egress.as_deref(),
+        session_tmp.as_deref().map(|temp| temp.path()),
+    )
+    .await
     {
         Ok(out) => BackgroundTaskOutcome::Shell {
             output: out.content,
@@ -448,9 +454,10 @@ impl AgentSession {
         let (tx, rx) = std::sync::mpsc::channel();
         let workspace_root = self.tool_ctx.workspace_root.clone();
         let egress = self.tool_ctx.egress.clone();
+        let session_tmp = self.tool_ctx.session_tmp.clone();
         tokio::spawn(async move {
             let outcome = tokio::select! {
-                outcome = run_shell_job(command, workspace_root, egress) => outcome,
+                outcome = run_shell_job(command, workspace_root, egress, session_tmp) => outcome,
                 _ = cancel.cancelled() => BackgroundTaskOutcome::Cancelled,
             };
             let _ = tx.send(outcome);

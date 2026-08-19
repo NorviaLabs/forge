@@ -9,6 +9,29 @@ use serde_json::Value;
 use crate::validation::{validate_args_with, ValidationBudget};
 use crate::{Tool, ToolError};
 
+#[derive(Debug)]
+pub struct SessionTempDir {
+    dir: tempfile::TempDir,
+}
+
+impl SessionTempDir {
+    pub fn create(session_id: impl std::fmt::Display) -> Result<Arc<Self>, ToolError> {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("forge-{}-", session_id))
+            .tempdir_in(std::env::temp_dir())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(Arc::new(Self { dir }))
+    }
+
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+}
+
 /// Resolve a model-supplied tool name to the registered built-in.
 ///
 /// OpenCode advertises only `grep` and implements it with ripgrep. Models
@@ -52,6 +75,8 @@ pub struct ToolContext {
     /// clippy's `large_enum_variant` threshold. One session shares one grant,
     /// so sharing is also the honest shape.
     pub egress: Option<std::sync::Arc<crate::sandbox::EgressGrant>>,
+    /// Private writable scratch space outside the repository.
+    pub session_tmp: Option<Arc<SessionTempDir>>,
     /// True only for an exact sandbox-denied invocation replayed after HITL.
     pub unconfined_shell: bool,
 }
@@ -65,8 +90,14 @@ impl ToolContext {
             active_model: String::new(),
             // Default: no network. A session that starts a proxy overrides it.
             egress: None,
+            session_tmp: None,
             unconfined_shell: false,
         }
+    }
+
+    pub fn with_session_tmp(mut self, session_tmp: Arc<SessionTempDir>) -> Self {
+        self.session_tmp = Some(session_tmp);
+        self
     }
 
     pub fn with_unconfined_shell(mut self) -> Self {
@@ -330,6 +361,32 @@ mod tests {
     use crate::ValidationBudget;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn session_temp_is_external_private_and_removed_on_drop() {
+        let workspace = tempdir().unwrap();
+        let session_tmp = SessionTempDir::create("test-session").unwrap();
+        let path = session_tmp.path().to_path_buf();
+
+        assert!(!path.starts_with(workspace.path()));
+        assert!(path.starts_with(std::env::temp_dir()));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("forge-test-session-"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+
+        drop(session_tmp);
+        assert!(!path.exists());
+    }
 
     #[tokio::test]
     async fn unknown_tool() {
