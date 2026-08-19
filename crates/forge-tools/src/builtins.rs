@@ -1643,6 +1643,25 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
         assert!(error.to_string().contains("invalid type"), "{error}");
     }
 
+    #[tokio::test]
+    async fn approved_bash_context_runs_the_exact_command_unconfined() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("approved.txt");
+        let ctx = ToolContext::new(workspace.path().to_path_buf()).with_unconfined_shell();
+
+        let output = BashTool
+            .call(
+                &ctx,
+                json!({"command": format!("printf approved > {}", target.display())}),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.is_error, "{}", output.content);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "approved");
+    }
+
     /// Restores an environment variable on drop, so a test that has to touch the
     /// process environment does not leak into the rest of the suite.
     struct EnvVarGuard {

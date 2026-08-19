@@ -46,9 +46,12 @@ impl forge_tools::Tool for SandboxDeniedTool {
 
     async fn call(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         _args: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
+        if ctx.unconfined_shell {
+            return Ok(ToolOutput::success("approved retry ran unconfined"));
+        }
         Err(ToolError::SandboxDenied {
             content: "Operation not permitted\nblocked by the sandbox".into(),
             reason: "blocked by the sandbox: writes are confined to the workspace".into(),
@@ -102,6 +105,23 @@ async fn sandbox_denial_pauses_for_hitl_instead_of_recording_failure() {
         message.tool_call_id.as_deref() != Some("call-sandbox-denied")
             || message.role != MessageRole::Tool
     }));
+
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should retry the denied tool");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    assert_eq!(session.active_task.lifecycle, TaskLifecycle::Working);
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-sandbox-denied"))
+        .expect("approved retry should record a tool result");
+    assert_eq!(result.content, "approved retry ran unconfined");
 }
 
 #[async_trait]
