@@ -148,6 +148,7 @@ pub(crate) struct FileWatchState {
     change_tx: Sender<FileChangeEvent>,
     pending: std::collections::HashMap<PathBuf, bool>,
     ready_at: Option<Instant>,
+    deferred_tree_refresh: bool,
 }
 
 impl FileWatchState {
@@ -161,6 +162,7 @@ impl FileWatchState {
             change_tx,
             pending: std::collections::HashMap::new(),
             ready_at: None,
+            deferred_tree_refresh: false,
         }
     }
 
@@ -193,6 +195,14 @@ impl FileWatchState {
             paths,
             tree_changed,
         })
+    }
+
+    pub(super) fn defer_tree_refresh(&mut self) {
+        self.deferred_tree_refresh = true;
+    }
+
+    pub(super) fn take_deferred_tree_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.deferred_tree_refresh)
     }
 
     #[cfg(test)]
@@ -1134,8 +1144,7 @@ pub struct TuiApp {
     /// External-editor request queued for the event loop (terminal suspend/resume).
     pub(crate) external_editor: ExternalEditorState,
     /// Approved HITL tool running off the event loop so frames keep painting.
-    pub(crate) pending_approved_tool:
-        Option<tokio::task::JoinHandle<forge_core::CompletedHitlExecution>>,
+    pub(crate) pending_approved_tool: Option<IsolatedTask<forge_core::CompletedHitlExecution>>,
     /// Synthetic terminal events used by responsiveness tests. Production
     /// input still comes directly from Crossterm.
     #[cfg(test)]

@@ -7,6 +7,28 @@
 use super::*;
 
 impl TuiApp {
+    pub(super) async fn execute_context_compaction_responsive<B: ratatui::backend::Backend>(
+        &mut self,
+        pending: forge_core::PendingContextCompaction,
+        mut terminal: Option<&mut Terminal<B>>,
+    ) -> Result<Option<forge_core::CompletedContextCompaction>, TuiError> {
+        let mut execution = IsolatedTask::spawn(pending.execute());
+        loop {
+            if execution.is_finished() {
+                return execution
+                    .join()
+                    .await
+                    .map_err(|error| TuiError::Other(format!("compaction task join: {error}")));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            super::shell::tick_foreground_frame(self, terminal.as_deref_mut()).await?;
+            if self.cancellation.take_requested() || self.exit.is_requested() {
+                execution.abort();
+                return Ok(None);
+            }
+        }
+    }
+
     pub(super) fn queue_context_reset(&mut self) {
         if self.busy_state.is_active()
             || self.pending_turn.has_prompt()
@@ -18,7 +40,7 @@ impl TuiApp {
         }
         self.pending_interaction.request_context_reset();
         self.busy_state
-            .set_phase(BusyPhase::Other("compacting context".into()));
+            .start(BusyPhase::Other("compacting context".into()));
         self.status_state.message = "compacting context…".into();
         self.set_feedback(FeedbackSeverity::Info, "compacting context…");
     }
@@ -35,10 +57,22 @@ impl TuiApp {
         }
         // A failed compaction is not a failed session: the previous context is
         // still valid and still installed, so report and carry on.
-        let record = match self.session.force_context_reset_async().await {
+        let pending = self
+            .session
+            .begin_context_compaction(forge_core::CompactionTrigger::Manual);
+        let Some(completed) =
+            Box::pin(self.execute_context_compaction_responsive(pending, terminal.as_deref_mut()))
+                .await?
+        else {
+            self.busy_state.stop();
+            self.status_state.message = "compaction cancelled".into();
+            self.set_feedback(FeedbackSeverity::Warn, "compaction cancelled");
+            return Ok(());
+        };
+        let record = match self.session.finish_context_compaction(completed).await {
             Ok(record) => record,
             Err(error) => {
-                self.busy_state.set_phase(BusyPhase::Idle);
+                self.busy_state.stop();
                 self.set_feedback(
                     FeedbackSeverity::Warn,
                     format!("compaction failed · context unchanged · {error}"),
@@ -88,7 +122,7 @@ impl TuiApp {
         self.push_activity(ActivityKind::Context, FeedbackSeverity::Ok, summary.clone());
         self.status_state.message = summary;
         self.notice_state.items.clear();
-        self.busy_state.set_phase(BusyPhase::Idle);
+        self.busy_state.stop();
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }

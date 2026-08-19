@@ -56,6 +56,11 @@ impl TuiApp {
     }
 
     pub(super) fn poll_file_changes(&mut self) {
+        let files_are_active = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
+            && self.focus.mode() == FocusMode::Navigation;
+        if !files_are_active && self.file_watch.take_deferred_tree_refresh() {
+            self.note_workspace_changed();
+        }
         let Some(batch) = self.file_watch.take_ready_batch() else {
             return;
         };
@@ -135,9 +140,16 @@ impl TuiApp {
             && self.focus.mode() == FocusMode::Navigation;
         if tree_changed && !files_are_active {
             self.note_workspace_changed();
+        } else if tree_changed {
+            // Rebuilding while the operator moves through Files can shift the
+            // selected row underneath them. Preserve the current tree now,
+            // but do not consume the change forever: the next application
+            // tick after focus leaves Files performs one coalesced refresh.
+            self.file_watch.defer_tree_refresh();
+            self.workspace_files.explorer.refresh_git_status();
         } else {
-            // Content writes and changes while the user is navigating files do
-            // not justify recursively refreshing every loaded directory.
+            // Content writes do not justify recursively refreshing every
+            // loaded directory.
             self.workspace_files.explorer.refresh_git_status();
         }
         if let Some(notice) = renamed_notice {
