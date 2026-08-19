@@ -13,6 +13,8 @@ impl TuiApp {
         mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<Option<forge_core::CompletedContextCompaction>, TuiError> {
         let mut execution = IsolatedTask::spawn(pending.execute());
+        let mut ui_tick = tokio::time::interval(Duration::from_millis(100));
+        ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             if execution.is_finished() {
                 return execution
@@ -20,8 +22,8 @@ impl TuiApp {
                     .await
                     .map_err(|error| TuiError::Other(format!("compaction task join: {error}")));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            super::shell::tick_foreground_frame(self, terminal.as_deref_mut()).await?;
+            super::shell::tick_foreground_frame(self, terminal.as_deref_mut(), &mut ui_tick)
+                .await?;
             if self.cancellation.take_requested() || self.exit.is_requested() {
                 execution.abort();
                 return Ok(None);
@@ -198,6 +200,15 @@ impl TuiApp {
             let _ = term.draw(|f| self.draw(f));
         }
 
+        // Stop the async Crossterm reader before handing stdin to the external
+        // editor. It is recreated after Forge retakes the terminal.
+        let resume_terminal_events = if let Some(events) = self.terminal_events.take() {
+            events.shutdown().await;
+            true
+        } else {
+            false
+        };
+
         // 5. Suspend the TUI terminal (restore normal terminal state).
         crate::terminal::restore_terminal();
 
@@ -212,6 +223,9 @@ impl TuiApp {
             Ok(s) => s,
             Err(e) => {
                 let _ = self.resume_after_external_editor(terminal.as_deref_mut());
+                if resume_terminal_events {
+                    self.terminal_events = Some(super::shell::TerminalEventSource::spawn());
+                }
                 self.set_feedback(
                     FeedbackSeverity::Warn,
                     EditorError::SpawnFailed(e).to_string(),
@@ -232,6 +246,9 @@ impl TuiApp {
         }
 
         let _ = self.resume_after_external_editor(terminal);
+        if resume_terminal_events {
+            self.terminal_events = Some(super::shell::TerminalEventSource::spawn());
+        }
 
         // 9. Refresh the active file and Git status.
         self.refresh_post_editor();

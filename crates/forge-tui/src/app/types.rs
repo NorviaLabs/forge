@@ -1145,8 +1145,11 @@ pub struct TuiApp {
     pub(crate) external_editor: ExternalEditorState,
     /// Approved HITL tool running off the event loop so frames keep painting.
     pub(crate) pending_approved_tool: Option<IsolatedTask<forge_core::CompletedHitlExecution>>,
+    /// Wake-driven terminal input for the full-screen runtime. Tests inject
+    /// events through `test_events` instead of opening the process TTY.
+    pub(crate) terminal_events: Option<super::shell::TerminalEventSource>,
     /// Synthetic terminal events used by responsiveness tests. Production
-    /// input still comes directly from Crossterm.
+    /// input comes from `terminal_events`.
     #[cfg(test)]
     pub(crate) test_events: std::collections::VecDeque<Event>,
     pub(crate) attachment: AttachmentState,

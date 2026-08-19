@@ -5,6 +5,71 @@
 //! Methods are moved verbatim.
 
 use super::*;
+pub(crate) struct TerminalEventSource {
+    rx: tokio::sync::mpsc::UnboundedReceiver<io::Result<Event>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TerminalEventSource {
+    pub(super) fn spawn() -> Self {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_stop = Arc::clone(&stop);
+        let task = tokio::task::spawn_blocking(move || {
+            while !reader_stop.load(std::sync::atomic::Ordering::Acquire) {
+                match event::poll(Duration::from_millis(20)) {
+                    Ok(true) => match event::read() {
+                        Ok(event) => {
+                            if tx.send(Ok(event)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Err(error));
+                            break;
+                        }
+                    },
+                    Ok(false) => {}
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            rx,
+            stop,
+            task: Some(task),
+        }
+    }
+
+    async fn recv(&mut self) -> Option<io::Result<Event>> {
+        self.rx.recv().await
+    }
+
+    #[cfg(not(test))]
+    fn try_recv(&mut self) -> Result<io::Result<Event>, tokio::sync::mpsc::error::TryRecvError> {
+        self.rx.try_recv()
+    }
+
+    pub(super) async fn shutdown(mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for TerminalEventSource {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(task) = self.task.as_ref() {
+            task.abort();
+        }
+    }
+}
 
 impl TuiApp {
     pub(super) fn poll_interactive_terminal(&mut self) -> bool {
@@ -35,7 +100,32 @@ impl TuiApp {
 /// user pauses. Bracketed paste is still delivered as one `Event::Paste`; older
 /// terminals that emit a paste as key events are processed over successive
 /// frames without dropping any input.
-const MAX_EVENTS_PER_FRAME: usize = 8;
+const MAX_EVENTS_PER_FRAME: usize = 32;
+
+pub(super) enum ForegroundWake {
+    Input(Event),
+    Tick,
+}
+
+async fn dispatch_terminal_event<B: ratatui::backend::Backend>(
+    app: &mut TuiApp,
+    event: Event,
+    terminal: Option<&mut Terminal<B>>,
+) -> Result<(), TuiError> {
+    match event {
+        Event::Key(key) => app.handle_key(key).await?,
+        Event::Mouse(event) => app.handle_mouse(event).await?,
+        Event::Paste(data) => app.handle_paste(&data),
+        Event::Resize(_, _) => {
+            if let Some(term) = terminal {
+                term.autoresize()
+                    .map_err(|error| TuiError::Other(error.to_string()))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 pub(super) async fn drain_events<B: ratatui::backend::Backend>(
     app: &mut TuiApp,
@@ -49,31 +139,52 @@ pub(super) async fn drain_events<B: ratatui::backend::Backend>(
         };
         #[cfg(not(test))]
         let next = {
-            if !event::poll(Duration::from_millis(0))? {
+            let Some(events) = app.terminal_events.as_mut() else {
                 break;
-            }
-            event::read()?
-        };
-        match next {
-            Event::Key(key) => {
-                app.handle_key(key).await?;
-            }
-            Event::Mouse(event) => {
-                app.handle_mouse(event).await?;
-            }
-            Event::Paste(data) => {
-                app.handle_paste(&data);
-            }
-            Event::Resize(_, _) => {
-                if let Some(term) = terminal.as_deref_mut() {
-                    term.autoresize()
-                        .map_err(|error| TuiError::Other(error.to_string()))?;
+            };
+            match events.try_recv() {
+                Ok(event) => event?,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(TuiError::Other("terminal event stream closed".into()));
                 }
             }
-            _ => {}
-        }
+        };
+        dispatch_terminal_event(app, next, terminal.as_deref_mut()).await?;
     }
     Ok(())
+}
+
+/// Wait until terminal input actually arrives or a time-based UI service is due.
+/// Stream/model events use their own wake source and never wait for this ticker.
+pub(super) async fn next_foreground_wake(
+    app: &mut TuiApp,
+    ticker: &mut tokio::time::Interval,
+) -> Result<ForegroundWake, TuiError> {
+    #[cfg(test)]
+    {
+        if let Some(event) = app.test_events.pop_front() {
+            return Ok(ForegroundWake::Input(event));
+        }
+        ticker.tick().await;
+        Ok(ForegroundWake::Tick)
+    }
+
+    #[cfg(not(test))]
+    {
+        let Some(events) = app.terminal_events.as_mut() else {
+            ticker.tick().await;
+            return Ok(ForegroundWake::Tick);
+        };
+        tokio::select! {
+            event = events.recv() => {
+                let event = event
+                    .ok_or_else(|| TuiError::Other("terminal event stream closed".into()))??;
+                Ok(ForegroundWake::Input(event))
+            }
+            _ = ticker.tick() => Ok(ForegroundWake::Tick),
+        }
+    }
 }
 
 /// Advance every non-blocking service owned by the TUI application.
@@ -104,11 +215,14 @@ pub(super) async fn tick_application(app: &mut TuiApp) -> Result<(), TuiError> {
 
 /// Run one complete TUI tick while foreground work is in flight, then consume
 /// terminal input and paint the resulting state.
-pub(super) async fn tick_foreground_frame<B: ratatui::backend::Backend>(
+pub(super) async fn paint_foreground_frame<B: ratatui::backend::Backend>(
     app: &mut TuiApp,
     mut terminal: Option<&mut Terminal<B>>,
+    service_application: bool,
 ) -> Result<(), TuiError> {
-    tick_application(app).await?;
+    if service_application {
+        tick_application(app).await?;
+    }
     if terminal.is_some() {
         drain_events(app, terminal.as_deref_mut()).await?;
         if let Some(term) = terminal {
@@ -119,26 +233,38 @@ pub(super) async fn tick_foreground_frame<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-/// Wait for user input without making PTY output wait for the full idle tick.
-/// Crossterm only wakes for terminal input, while the interactive shell is
-/// read by a separate thread. Check that channel in short slices and repaint
-/// as soon as the reader has delivered a changed state.
-fn wait_for_input_or_terminal_output(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+pub(super) async fn render_foreground_wake<B: ratatui::backend::Backend>(
     app: &mut TuiApp,
-) -> Result<bool, TuiError> {
-    let deadline = Instant::now() + Duration::from_millis(200);
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
-        }
-        if event::poll(remaining.min(Duration::from_millis(20)))? {
-            return Ok(true);
-        }
-        if app.poll_interactive_terminal() {
-            terminal.draw(|f| app.draw(f))?;
-        }
+    mut terminal: Option<&mut Terminal<B>>,
+    wake: ForegroundWake,
+) -> Result<(), TuiError> {
+    let service_application = matches!(wake, ForegroundWake::Tick);
+    if let ForegroundWake::Input(event) = wake {
+        dispatch_terminal_event(app, event, terminal.as_deref_mut()).await?;
+    }
+    paint_foreground_frame(app, terminal, service_application).await
+}
+
+pub(super) async fn tick_foreground_frame<B: ratatui::backend::Backend>(
+    app: &mut TuiApp,
+    terminal: Option<&mut Terminal<B>>,
+    ticker: &mut tokio::time::Interval,
+) -> Result<(), TuiError> {
+    let wake = next_foreground_wake(app, ticker).await?;
+    render_foreground_wake(app, terminal, wake).await
+}
+
+async fn wait_for_idle_event(
+    app: &mut TuiApp,
+    timeout: Duration,
+) -> Result<Option<Event>, TuiError> {
+    let Some(events) = app.terminal_events.as_mut() else {
+        return Ok(None);
+    };
+    match tokio::time::timeout(timeout, events.recv()).await {
+        Ok(Some(event)) => Ok(Some(event?)),
+        Ok(None) => Err(TuiError::Other("terminal event stream closed".into())),
+        Err(_) => Ok(None),
     }
 }
 
@@ -212,6 +338,7 @@ async fn run_tui_inner(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = TuiApp::new_with_startup_resume_picker(session, runtime, launch.startup_items);
+    app.terminal_events = Some(TerminalEventSource::spawn());
     app.onboarding_connect = launch.onboarding_connect;
     if launch.ready_placeholder {
         app.input.hint = "What does this project do?".into();
@@ -284,30 +411,16 @@ async fn run_loop(
             continue;
         }
 
-        let input_ready = if app.interactive_terminal.is_some() {
-            wait_for_input_or_terminal_output(terminal, app)?
+        let input_wait = if app.interactive_terminal.is_some() {
+            Duration::from_millis(20)
         } else {
-            event::poll(Duration::from_millis(200))?
+            Duration::from_millis(200)
         };
-        if input_ready {
+        if let Some(event) = wait_for_idle_event(app, input_wait).await? {
             // Any terminal input changes state directly or through the drained
             // queue; force the next frame rather than waiting for idle cadence.
             frame_dirty = true;
-            // Read the ready event, then drain the rest of the queue so a paste
-            // of a long API key is not truncated to a handful of characters.
-            match event::read()? {
-                Event::Key(key) => {
-                    app.handle_key(key).await?;
-                }
-                Event::Mouse(event) => {
-                    app.handle_mouse(event).await?;
-                }
-                Event::Paste(data) => {
-                    app.handle_paste(&data);
-                }
-                Event::Resize(_, _) => {}
-                _ => {}
-            }
+            dispatch_terminal_event(app, event, Some(terminal)).await?;
             drain_events(app, Some(terminal)).await?;
             app.poll_interactive_terminal();
             // Next loop iteration draws once after all input and background polls.
