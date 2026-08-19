@@ -228,13 +228,12 @@ async fn bash_tool_is_confined() {
     let outside = tempfile::tempdir().unwrap();
     let target = escape_target(&outside);
 
-    let out = run_shell_command(&format!("echo pwned > {target}"), ws.path())
+    let error = run_shell_command(&format!("echo pwned > {target}"), ws.path())
         .await
-        .expect("the tool itself must not error");
+        .expect_err("escaping the workspace must be denied");
     assert!(
-        out.is_error,
-        "escaping the workspace must fail: {:?}",
-        out.content
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "escaping the workspace must report a sandbox denial: {error}"
     );
     assert!(
         !std::path::Path::new(&target).exists(),
@@ -257,10 +256,13 @@ async fn bash_tool_still_works_inside_the_workspace() {
 async fn bash_tool_cannot_write_git() {
     require_sandbox!();
     let ws = workspace();
-    let out = run_shell_command("echo clobbered > .git/HEAD", ws.path())
+    let error = run_shell_command("echo clobbered > .git/HEAD", ws.path())
         .await
-        .unwrap();
-    assert!(out.is_error, "the recovery mechanism must stay read-only");
+        .expect_err("the recovery mechanism must stay read-only");
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "writing .git must report a sandbox denial: {error}"
+    );
     assert_eq!(
         std::fs::read_to_string(ws.path().join(".git/HEAD")).unwrap(),
         "ref: refs/heads/main\n"
@@ -276,16 +278,15 @@ async fn a_denied_command_explains_which_boundary_stopped_it() {
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("nope.txt");
 
-    let out = run_shell_command(&format!("echo x > {}", target.to_str().unwrap()), ws.path())
+    let error = run_shell_command(&format!("echo x > {}", target.to_str().unwrap()), ws.path())
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert!(out.is_error);
-    assert!(
-        out.content.contains("blocked by the sandbox"),
-        "a denial must name the boundary, got: {}",
-        out.content
-    );
+    let forge_tools::ToolError::SandboxDenied { content, reason } = error else {
+        panic!("expected a structured sandbox denial");
+    };
+    assert!(content.contains("blocked by the sandbox"), "{content}");
+    assert!(reason.contains("writes are confined"), "{reason}");
 }
 
 /// And an ordinary failure must not be dressed up as a sandbox problem.
@@ -473,14 +474,15 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
     // Any other destination stays denied, even with a grant. This is the line
     // between "routed through the proxy" and "the network is simply on".
     let reach_direct = format!("exec 3<>/dev/tcp/127.0.0.1/{allowed_port}");
-    let out = run_shell_command_with_egress(&reach_direct, ws.path(), Some(&grant))
-        .await
-        .unwrap();
-    assert!(
-        out.is_error,
-        "a direct connection must be denied, or the allowlist is advisory: {}",
-        out.content
-    );
+    match run_shell_command_with_egress(&reach_direct, ws.path(), Some(&grant)).await {
+        Err(forge_tools::ToolError::SandboxDenied { .. }) => {}
+        Ok(out) => assert!(
+            out.is_error,
+            "a direct connection must be denied, or the allowlist is advisory: {}",
+            out.content
+        ),
+        Err(error) => panic!("direct connection failed for the wrong reason: {error}"),
+    }
 }
 
 /// CI must actually exercise the sandbox, not skip it.
