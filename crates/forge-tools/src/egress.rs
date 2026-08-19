@@ -174,7 +174,15 @@ impl EgressShared {
         host
     }
 
-    fn record_denied(&self, host: String) {
+    pub fn peek_denied_host(&self) -> Option<String> {
+        self.denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .first()
+            .cloned()
+    }
+
+    pub fn record_denied(&self, host: String) {
         self.denied
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

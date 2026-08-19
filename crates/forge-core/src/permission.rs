@@ -36,6 +36,14 @@ impl EgressRuntime {
     pub fn take_denied_host(&self) -> Option<String> {
         self.shared.take_denied_host()
     }
+
+    pub fn peek_denied_host(&self) -> Option<String> {
+        self.shared.peek_denied_host()
+    }
+
+    pub fn record_denied_host(&self, host: impl Into<String>) {
+        self.shared.record_denied(host.into());
+    }
 }
 
 /// Hosts this workspace may reach, taken from the merged permission files.
