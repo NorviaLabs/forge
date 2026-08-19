@@ -26,10 +26,53 @@ use forge_context::compaction::{
     plan_compaction, protected_fact, Checkpoint, CompactionError, CompactionPlan, CompactionPolicy,
     CompactionRecord, CompactionTelemetry, CompactionTrigger, SessionContextState,
 };
-use forge_types::strip_protocol_markers;
+use forge_model::{ModelClient, ModelRequest};
+use forge_types::{strip_protocol_markers, ModelResponse};
 use serde_json::json;
+use std::sync::Arc;
 
 use crate::{AgentSession, LoopError, TurnEvent};
+
+/// Provider work for one context compaction, detached from the mutable session.
+///
+/// Frontends may execute this on an isolated worker while continuing to service
+/// input and rendering, then hand the result back to [`AgentSession`].
+pub struct PendingContextCompaction {
+    trigger: CompactionTrigger,
+    started: Instant,
+    epoch_before: u64,
+    tokens_before: usize,
+    request: ModelRequest,
+    model: Arc<dyn ModelClient>,
+}
+
+/// The provider result plus the transaction metadata needed to finish a
+/// context compaction against the session that created it.
+pub struct CompletedContextCompaction {
+    trigger: CompactionTrigger,
+    started: Instant,
+    epoch_before: u64,
+    tokens_before: usize,
+    response: Result<ModelResponse, CompactionError>,
+}
+
+impl PendingContextCompaction {
+    /// Perform only the provider call. No session state is mutated here.
+    pub async fn execute(self) -> CompletedContextCompaction {
+        let response = self
+            .model
+            .complete(self.request)
+            .await
+            .map_err(|error| CompactionError::Provider(error.to_string()));
+        CompletedContextCompaction {
+            trigger: self.trigger,
+            started: self.started,
+            epoch_before: self.epoch_before,
+            tokens_before: self.tokens_before,
+            response,
+        }
+    }
+}
 
 impl AgentSession {
     /// Window arithmetic used for the automatic trigger and tail sizing.
@@ -98,10 +141,51 @@ impl AgentSession {
         &mut self,
         trigger: CompactionTrigger,
     ) -> Result<CompactionRecord, LoopError> {
-        let started = Instant::now();
-        let epoch_before = self.cache_epoch;
-        let tokens_before = self.context_tokens();
-        match self.run_compaction(trigger).await {
+        let completed = self.begin_context_compaction(trigger).execute().await;
+        self.finish_context_compaction(completed).await
+    }
+
+    /// Build a compaction request without borrowing the session while the
+    /// provider is in flight.
+    pub fn begin_context_compaction(&self, trigger: CompactionTrigger) -> PendingContextCompaction {
+        let mut request = self.build_model_request();
+        request.messages.push(compaction_message(
+            self.context_state.checkpoint.as_ref(),
+            &self.context_state.protected_facts,
+        ));
+        PendingContextCompaction {
+            trigger,
+            started: Instant::now(),
+            epoch_before: self.cache_epoch,
+            tokens_before: self.context_tokens(),
+            request,
+            model: self.model.clone(),
+        }
+    }
+
+    /// Commit a completed provider response, or record a failed compaction
+    /// while preserving the currently installed context.
+    pub async fn finish_context_compaction(
+        &mut self,
+        completed: CompletedContextCompaction,
+    ) -> Result<CompactionRecord, LoopError> {
+        let CompletedContextCompaction {
+            trigger,
+            started,
+            epoch_before,
+            tokens_before,
+            response,
+        } = completed;
+        match self
+            .finish_context_compaction_inner(
+                trigger,
+                started,
+                epoch_before,
+                tokens_before,
+                response,
+            )
+            .await
+        {
             Ok(record) => Ok(record),
             Err(error) => {
                 let record = CompactionRecord {
@@ -135,29 +219,38 @@ impl AgentSession {
         }
     }
 
+    /// Begin automatic compaction only when the pressure policy requires it.
+    pub fn begin_auto_context_compaction(&self) -> Option<PendingContextCompaction> {
+        if !self.enable_context || !self.context_pressure_reached() {
+            return None;
+        }
+        Some(self.begin_context_compaction(CompactionTrigger::Automatic))
+    }
+
     /// Automatic compaction: runs only under pressure, and a failure is never
     /// allowed to fail the user's turn — the old context is still valid, so
     /// the step proceeds on it.
     pub(crate) async fn maybe_auto_compact(&mut self) -> Option<CompactionRecord> {
-        if !self.enable_context || !self.context_pressure_reached() {
-            return None;
-        }
-        self.compact_context(CompactionTrigger::Automatic)
-            .await
-            .ok()
+        let pending = self.begin_auto_context_compaction()?;
+        let completed = pending.execute().await;
+        self.finish_context_compaction(completed).await.ok()
     }
 
     /// The fallible half, so `compact_context` can record one failure record
     /// for every way this can go wrong.
-    async fn run_compaction(
+    async fn finish_context_compaction_inner(
         &mut self,
         trigger: CompactionTrigger,
+        started: Instant,
+        epoch_before: u64,
+        tokens_before: usize,
+        response: Result<ModelResponse, CompactionError>,
     ) -> Result<CompactionRecord, CompactionError> {
-        let started = Instant::now();
-        let epoch_before = self.cache_epoch;
-        let tokens_before = self.context_tokens();
-
-        let checkpoint = self.request_checkpoint().await?;
+        let response = response?;
+        // A real provider call: its tokens belong in the session totals.
+        self.token_usage
+            .record_response(response.usage.as_ref(), response.thinking.as_deref());
+        let checkpoint = Checkpoint::parse(&strip_protocol_markers(&response.text))?;
         let plan = plan_compaction(
             &self.messages,
             &checkpoint,
@@ -184,30 +277,6 @@ impl AgentSession {
         // Commit point. Everything above this line is read-only.
         self.install_compaction(plan, &record).await?;
         Ok(record)
-    }
-
-    /// Ask the active provider/model for a checkpoint, reusing the live
-    /// context as the request prefix.
-    ///
-    /// This is what makes compaction cheap (§7): the request is byte-identical
-    /// to the next normal request up to one appended user message, so the
-    /// provider serves the whole conversation from its cache instead of
-    /// re-reading a second copy of it.
-    async fn request_checkpoint(&mut self) -> Result<Checkpoint, CompactionError> {
-        let mut request = self.build_model_request();
-        request.messages.push(compaction_message(
-            self.context_state.checkpoint.as_ref(),
-            &self.context_state.protected_facts,
-        ));
-        let response = self
-            .model
-            .complete(request)
-            .await
-            .map_err(|error| CompactionError::Provider(error.to_string()))?;
-        // A real provider call: its tokens belong in the session totals.
-        self.token_usage
-            .record_response(response.usage.as_ref(), response.thinking.as_deref());
-        Ok(Checkpoint::parse(&strip_protocol_markers(&response.text))?)
     }
 
     /// Install a validated plan: replace the projection, journal it, and open
