@@ -586,6 +586,43 @@ Use this as a structured checklist the user can see — not as a substitute for 
     }
 }
 
+/// Model-callable questionnaire. The agent loop intercepts this and pauses
+/// on [`forge_types::WaitReason::Question`]; `call` is only reached if that
+/// intercept is missing.
+pub struct AskUserQuestionTool;
+
+#[async_trait]
+impl Tool for AskUserQuestionTool {
+    fn name(&self) -> &str {
+        "ask_user_question"
+    }
+
+    fn description(&self) -> &str {
+        "Ask the user one to four concise questions when you need confirmation, a choice, or missing information before proceeding. \
+Each question needs a stable `id` (echoed in the answer), the question text, an optional short `header`, and either no options (free text) or 2–4 options with a label and a one-sentence tradeoff. \
+Put a recommended option first and append \"(Recommended)\" to that label. Do not include an \"Other\" option — the host adds free-text input automatically. \
+Set `multi_select` when more than one option may apply."
+    }
+
+    fn input_schema(&self) -> Value {
+        schema_for::<forge_types::AskUserQuestionArgs>()
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Meta
+    }
+
+    fn idempotent(&self) -> bool {
+        true
+    }
+
+    async fn call(&self, _ctx: &ToolContext, _args: Value) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::Execution(
+            "ask_user_question must be intercepted by the agent loop, not executed directly".into(),
+        ))
+    }
+}
+
 /// Allowlisted git subcommands (not a free-form shell).
 ///
 /// Every name here must have a [`git_policy`] entry; `git_policy_covers_every_subcommand`
@@ -1470,6 +1507,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(exec_command),
         std::sync::Arc::new(write_stdin),
         std::sync::Arc::new(UpdatePlanTool),
+        std::sync::Arc::new(AskUserQuestionTool),
         std::sync::Arc::new(crate::skills::LoadSkillTool),
         crate::web_fetch::web_fetch_tool(),
     ];
@@ -1952,7 +1990,33 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
             "rg is a silent synonym for grep, not a second advertised tool"
         );
         assert!(tools.iter().any(|t| t.name() == "update_plan"));
+        assert!(tools.iter().any(|t| t.name() == "ask_user_question"));
         assert!(tools.iter().any(|t| t.name() == "ls"));
+    }
+
+    #[test]
+    fn ask_user_question_schema_requires_questions() {
+        let err = validate_args(
+            "ask_user_question",
+            &AskUserQuestionTool.input_schema(),
+            &json!({}),
+        )
+        .unwrap_err();
+        assert_eq!(err.tool, "ask_user_question");
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_direct_call_is_rejected() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let err = AskUserQuestionTool
+            .call(
+                &ctx,
+                json!({"questions": [{"id": "q1", "question": "Go?"}]}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("intercepted"), "{err}");
     }
 
     #[tokio::test]

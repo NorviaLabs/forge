@@ -218,6 +218,14 @@ pub(crate) fn set_pending_hitl(app: &mut TuiApp, payload: HitlPayload) {
     });
 }
 
+pub(crate) fn set_pending_question(app: &mut TuiApp, payload: forge_types::QuestionPayload) {
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
+    app.session.active_task.wait_reason = Some(forge_types::WaitReason::Question {
+        request_id: payload.call_id.clone(),
+        payload,
+    });
+}
+
 pub(crate) fn press(code: KeyCode, mods: KeyModifiers) -> event::KeyEvent {
     event::KeyEvent {
         code,

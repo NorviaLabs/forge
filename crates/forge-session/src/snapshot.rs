@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_core::{AgentSession, TurnEvent};
-use forge_types::{HitlPayload, Message, SessionId, TaskLifecycle};
+use forge_types::{HitlPayload, Message, QuestionPayload, SessionId, TaskLifecycle};
 
 /// What a frontend needs to draw one frame, minus the transcript.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +36,9 @@ pub struct SessionSnapshot {
     pub lifecycle: TaskLifecycle,
     /// The outstanding approval request, if the session is waiting on one.
     pub pending_hitl: Option<HitlPayload>,
+    /// The outstanding `ask_user_question` request, if the session is waiting
+    /// on answers.
+    pub pending_question: Option<QuestionPayload>,
     pub queue_len: usize,
     pub background_len: usize,
     pub workspace_root: PathBuf,
@@ -59,6 +62,7 @@ impl SessionSnapshot {
             session_id: session.session_id,
             lifecycle: session.active_task.lifecycle,
             pending_hitl: session.pending_hitl().cloned(),
+            pending_question: session.pending_question().cloned(),
             queue_len: session.queue().len(),
             background_len: session.background().len(),
             workspace_root: session.workspace_root().to_path_buf(),
@@ -77,6 +81,10 @@ impl SessionSnapshot {
         self.pending_hitl.is_some()
     }
 
+    pub fn is_awaiting_question(&self) -> bool {
+        self.pending_question.is_some()
+    }
+
     pub fn workspace_root(&self) -> &Path {
         &self.workspace_root
     }
@@ -90,6 +98,7 @@ impl Default for SessionSnapshot {
             session_id: SessionId::nil(),
             lifecycle: TaskLifecycle::Ready,
             pending_hitl: None,
+            pending_question: None,
             queue_len: 0,
             background_len: 0,
             workspace_root: PathBuf::new(),

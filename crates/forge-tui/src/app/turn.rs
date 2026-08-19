@@ -211,6 +211,13 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "resolve HITL before dequeuing");
             return;
         }
+        if self.session.pending_question().is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "answer the question before dequeuing",
+            );
+            return;
+        }
         if !self.is_provider_connected() {
             let msg = format!(
                 "{} · cannot send queued message",
@@ -763,6 +770,19 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
+        } else if self.session.pending_question().is_some() {
+            self.stream.preview.clear();
+            self.stream.thinking.clear();
+            self.timing.started = None;
+            self.timing.thinking_started = None;
+            self.timing.thought_secs = None;
+            self.exit.set_code(ExitCode::AwaitingHitl);
+            self.set_feedback(FeedbackSeverity::Warn, "awaiting your answer");
+            self.push_activity(
+                ActivityKind::Hitl,
+                FeedbackSeverity::Warn,
+                "question waiting",
+            );
         } else {
             self.stream.preview.clear();
             self.stream.thinking.clear();
