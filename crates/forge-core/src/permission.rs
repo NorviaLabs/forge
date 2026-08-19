@@ -13,6 +13,7 @@
 pub struct EgressRuntime {
     _proxy: forge_tools::egress::EgressProxy,
     grant: std::sync::Arc<forge_tools::sandbox::EgressGrant>,
+    shared: forge_tools::egress::EgressShared,
 }
 
 impl std::fmt::Debug for EgressRuntime {
@@ -26,6 +27,14 @@ impl std::fmt::Debug for EgressRuntime {
 impl EgressRuntime {
     pub fn grant(&self) -> std::sync::Arc<forge_tools::sandbox::EgressGrant> {
         std::sync::Arc::clone(&self.grant)
+    }
+
+    pub fn grant_host(&self, pattern: &str) {
+        self.shared.grant_host(pattern);
+    }
+
+    pub fn take_denied_host(&self) -> Option<String> {
+        self.shared.take_denied_host()
     }
 }
 
@@ -75,6 +84,7 @@ pub async fn start_egress(
             proxy_port: proxy.addr().port(),
             socket_path,
         }),
+        shared: proxy.shared().clone(),
         _proxy: proxy,
     })
 }

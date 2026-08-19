@@ -433,6 +433,12 @@ impl ApprovalOverlayState {
             command,
             cwd: approval.working_directory,
             env_delta: approval.environment_delta,
+            question: payload.denied_host.as_ref().map(|host| {
+                format!(
+                    "Forge wants to allow network access to {}.",
+                    forge_tools::egress::suggest_host_pattern(host)
+                )
+            }),
         }
     }
 
@@ -3675,6 +3681,7 @@ mod request_view_tests {
                 args_redacted: serde_json::json!({"command": "git push -u origin feature"}),
                 reason: "policy requires human approval".into(),
                 sandbox_escalation: false,
+                denied_host: None,
             },
             "workspace",
         );
@@ -3693,6 +3700,7 @@ mod request_view_tests {
                 args_redacted: serde_json::json!({"path": "a.txt", "content": "hi"}),
                 reason: "policy".into(),
                 sandbox_escalation: false,
+                denied_host: None,
             },
             "wd",
         );
