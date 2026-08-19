@@ -52,6 +52,8 @@ pub struct ToolContext {
     /// clippy's `large_enum_variant` threshold. One session shares one grant,
     /// so sharing is also the honest shape.
     pub egress: Option<std::sync::Arc<crate::sandbox::EgressGrant>>,
+    /// True only for an exact sandbox-denied invocation replayed after HITL.
+    pub unconfined_shell: bool,
 }
 
 impl ToolContext {
@@ -63,7 +65,13 @@ impl ToolContext {
             active_model: String::new(),
             // Default: no network. A session that starts a proxy overrides it.
             egress: None,
+            unconfined_shell: false,
         }
+    }
+
+    pub fn with_unconfined_shell(mut self) -> Self {
+        self.unconfined_shell = true;
+        self
     }
 
     /// Resolve a tool-supplied path for reading, confined to the workspace.

@@ -297,6 +297,15 @@ pub async fn run_shell_command_with_egress(
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
 ) -> Result<ToolOutput, ToolError> {
+    run_shell_command_inner(command, workspace_root, egress, true).await
+}
+
+async fn run_shell_command_inner(
+    command: &str,
+    workspace_root: &Path,
+    egress: Option<&crate::sandbox::EgressGrant>,
+    confined: bool,
+) -> Result<ToolOutput, ToolError> {
     // Do not use a login shell: `bash -l` sources profile files, which can
     // re-export credentials after the explicit removals below.
     //
@@ -304,7 +313,9 @@ pub async fn run_shell_command_with_egress(
     // it can be: a process that starts unconfined stays unconfined for its
     // whole life. The supported CLI never starts when the host cannot confine.
     let policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root).with_egress(egress);
-    let wrapped = crate::sandbox::wrap_shell_command("bash", command, &policy);
+    let wrapped = confined
+        .then(|| crate::sandbox::wrap_shell_command("bash", command, &policy))
+        .flatten();
 
     // `wrap_shell_command` returns `None` for two very different reasons.
     // "This host has no sandbox" is a launch-time refusal in the supported
@@ -313,7 +324,7 @@ pub async fn run_shell_command_with_egress(
     // cannot be canonicalised — and nothing upstream knows it happened, so
     // falling back would drop confinement with no prompt and no message.
     // Refuse instead.
-    if wrapped.is_none() && crate::sandbox::availability().is_ok() {
+    if confined && wrapped.is_none() && crate::sandbox::availability().is_ok() {
         return Err(ToolError::Execution(format!(
             "refusing to run unconfined: this host can sandbox, but no sandbox \
              could be built for workspace {}",
@@ -370,6 +381,10 @@ pub async fn run_shell_command_with_egress(
                 content.push('\n');
             }
             content.push_str(explanation);
+            return Err(ToolError::SandboxDenied {
+                content,
+                reason: explanation.to_string(),
+            });
         }
     }
 
@@ -454,7 +469,13 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: BashArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        run_shell_command_with_egress(&a.command, &ctx.workspace_root, ctx.egress.as_deref()).await
+        run_shell_command_inner(
+            &a.command,
+            &ctx.workspace_root,
+            ctx.egress.as_deref(),
+            !ctx.unconfined_shell,
+        )
+        .await
     }
 }
 
@@ -1620,6 +1641,25 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
             .await
             .unwrap_err();
         assert!(error.to_string().contains("invalid type"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn approved_bash_context_runs_the_exact_command_unconfined() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("approved.txt");
+        let ctx = ToolContext::new(workspace.path().to_path_buf()).with_unconfined_shell();
+
+        let output = BashTool
+            .call(
+                &ctx,
+                json!({"command": format!("printf approved > {}", target.display())}),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.is_error, "{}", output.content);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "approved");
     }
 
     /// Restores an environment variable on drop, so a test that has to touch the

@@ -539,17 +539,16 @@ mod propagation_contract {
         // Confined: a background command cannot leave the workspace.
         let outside = tempfile::tempdir().unwrap();
         let target = outside.path().join("escape-background.txt");
-        let out = forge_tools::run_shell_command_with_egress(
+        let error = forge_tools::run_shell_command_with_egress(
             &format!("echo pwned > {}", target.to_str().unwrap()),
             dir.path(),
             session.egress_grant().as_deref(),
         )
         .await
-        .unwrap();
+        .expect_err("background work outside the workspace must be denied");
         assert!(
-            out.is_error,
-            "background work must be confined: {}",
-            out.content
+            matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+            "background work must report a sandbox denial: {error}"
         );
         assert!(!target.exists(), "background work escaped the sandbox");
 

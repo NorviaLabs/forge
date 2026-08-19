@@ -139,10 +139,23 @@ impl AgentSession {
         // Restore args from pending — we only have redacted; for tests use redacted as args
         self.clear_hitl_wait_and_resume().await?;
         let mut budget = ValidationBudget::with_default_max();
-        // Execute with stored args (may be redacted in production; Phase 2 keeps full call in journal intent before wait ideally)
-        // Re-fetch from last HitlWait — for approve path re-execute with redacted args is weak;
-        // store original args in pending for this implementation:
-        self.run_one_tool_exec_only(&call, &mut budget).await?;
+        let sandbox_escalation = payload.sandbox_escalation;
+        if let Some(pending) = self
+            .begin_hitl_execution_with_options(
+                &call,
+                &mut budget,
+                sandbox_escalation,
+                !sandbox_escalation,
+            )
+            .await?
+        {
+            let completed = IsolatedTask::spawn(pending.execute())
+                .join()
+                .await
+                .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?
+                .ok_or(LoopError::Cancelled)?;
+            self.finish_hitl_execution(completed).await?;
+        }
         Ok(())
     }
 
@@ -192,7 +205,14 @@ impl AgentSession {
         }
         self.clear_hitl_wait_and_resume().await?;
         let mut budget = ValidationBudget::with_default_max();
-        self.begin_hitl_execution(&call, &mut budget).await
+        let sandbox_escalation = payload.sandbox_escalation;
+        self.begin_hitl_execution_with_options(
+            &call,
+            &mut budget,
+            sandbox_escalation,
+            !sandbox_escalation,
+        )
+        .await
     }
 
     async fn clear_hitl_wait_and_resume(&mut self) -> Result<(), LoopError> {
