@@ -57,6 +57,8 @@ pub struct EgressPolicy {
     deny: Vec<String>,
 }
 
+pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
+
 impl EgressPolicy {
     pub fn new() -> Self {
         Self::default()
@@ -285,7 +287,7 @@ where
     };
 
     if !policy.permits(&host) {
-        return respond(&mut write_half, 403, "Forbidden").await;
+        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON).await;
     }
 
     let upstream = match TcpStream::connect((host.as_str(), port)).await {
@@ -324,6 +326,7 @@ fn split_host_port(target: &str) -> Option<(String, u16)> {
         let port = tail.strip_prefix(':')?.parse().ok()?;
         return Some((host.to_string(), port));
     }
+
     let (host, port) = target.rsplit_once(':')?;
     // A bare IPv6 address without brackets is ambiguous with host:port, and
     // an empty host is never valid.
@@ -356,6 +359,18 @@ where
 mod tests {
     use super::*;
 
+    async fn connect_status(port: u16, target: &str) -> String {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut status = String::new();
+        reader.read_line(&mut status).await.unwrap();
+        status
+    }
+
     fn policy(patterns: &[&str]) -> EgressPolicy {
         let mut p = EgressPolicy::new();
         for pattern in patterns {
@@ -367,6 +382,13 @@ mod tests {
     #[test]
     fn an_empty_policy_permits_nothing() {
         assert!(!EgressPolicy::new().permits("crates.io"));
+    }
+
+    #[tokio::test]
+    async fn denied_connect_identifies_the_sandbox() {
+        let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+        let status = connect_status(proxy.addr().port(), "github.com:443").await;
+        assert_eq!(status, "HTTP/1.1 403 Forge Sandbox Denied\r\n");
     }
 
     #[test]
