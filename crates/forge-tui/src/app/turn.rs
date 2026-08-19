@@ -11,43 +11,22 @@ use super::*;
 
 use super::shell::tick_foreground_frame;
 
-struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
-
-impl<T> AbortOnDrop<T> {
-    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
-        Self(Some(handle))
-    }
-
-    fn is_finished(&self) -> bool {
-        self.0.as_ref().is_some_and(|handle| handle.is_finished())
-    }
-
-    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
-        self.0.take().expect("tool task handle missing").await
-    }
-}
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            handle.abort();
-        }
-    }
-}
-
 impl TuiApp {
     async fn execute_tool_application<B: ratatui::backend::Backend>(
         &mut self,
         pending: PendingToolApplication,
         mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<ModelResponseApplication, LoopError> {
-        let execution = AbortOnDrop::new(tokio::spawn(pending.execute()));
+        let execution = IsolatedTask::spawn(pending.execute());
         loop {
             if execution.is_finished() {
                 let completed = execution
                     .join()
                     .await
                     .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?;
+                let Some(completed) = completed else {
+                    return Err(LoopError::Cancelled);
+                };
                 return self.session.finish_tool_application(completed).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -63,10 +42,10 @@ impl TuiApp {
         }
     }
 
-    async fn apply_model_response_responsive(
+    async fn apply_model_response_responsive<B: ratatui::backend::Backend>(
         &mut self,
         response: forge_types::ModelResponse,
-        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+        mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<ApplyOutcome, LoopError> {
         let mut application = self
             .session
@@ -432,7 +411,14 @@ impl TuiApp {
     /// When `terminal` is `None` (unit tests), runs without intermediate draws.
     pub async fn drain_pending_prompt(
         &mut self,
-        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+        terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        self.drain_pending_prompt_with_terminal(terminal).await
+    }
+
+    async fn drain_pending_prompt_with_terminal<B: ratatui::backend::Backend>(
+        &mut self,
+        mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<(), TuiError> {
         let (line, continuing, attachments) = self.pending_turn.take();
         if line.is_none() && !continuing {
@@ -467,7 +453,8 @@ impl TuiApp {
 
         // Paint YOU message immediately
         if let Some(term) = terminal.as_deref_mut() {
-            term.draw(|f| self.draw(f))?;
+            term.draw(|f| self.draw(f))
+                .map_err(|error| TuiError::Other(error.to_string()))?;
         }
 
         self.sync_effort_to_session();
@@ -479,7 +466,21 @@ impl TuiApp {
         let mut saw_thinking = false;
 
         'turns: for turn in 0..max_turns {
-            let req = match self.session.prepare_model_step(turn).await {
+            if let Some(pending) = self.session.begin_auto_context_compaction() {
+                let completed = self
+                    .execute_context_compaction_responsive(pending, terminal.as_deref_mut())
+                    .await?;
+                let Some(completed) = completed else {
+                    turn_cancelled = true;
+                    outcome_err = Some("cancelled".into());
+                    break;
+                };
+                // Automatic compaction is opportunistic. A failed checkpoint
+                // leaves the old context installed and the model turn remains
+                // valid, matching AgentSession's non-interactive path.
+                let _ = self.session.finish_context_compaction(completed).await;
+            }
+            let req = match self.session.prepare_model_step_after_compaction(turn).await {
                 Ok(r) => r,
                 Err(e) => {
                     outcome_err = Some(e.to_string());
@@ -489,8 +490,8 @@ impl TuiApp {
 
             let model = self.session.model_client();
             let (tx, rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
-            let handle =
-                tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
+            let mut handle =
+                IsolatedTask::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
 
             let mut step_acc = ModelStepAccumulator::default();
             // A provider can outpace terminal rendering. Bound normal-tick
@@ -546,7 +547,8 @@ impl TuiApp {
                     // Thinking-only or late thinking dump: close the clock now
                     self.close_thinking_timer();
                     if let Some(term) = terminal.as_deref_mut() {
-                        term.draw(|f| self.draw(f))?;
+                        term.draw(|f| self.draw(f))
+                            .map_err(|error| TuiError::Other(error.to_string()))?;
                     }
                     break;
                 }
@@ -555,10 +557,15 @@ impl TuiApp {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
-            let mut last = match handle.await {
-                Ok(Ok(r)) => merge_streamed_response(r, &step_acc),
-                Ok(Err(e)) => {
+            let mut last = match handle.join().await {
+                Ok(Some(Ok(r))) => merge_streamed_response(r, &step_acc),
+                Ok(Some(Err(e))) => {
                     outcome_err = Some(e.to_string());
+                    break;
+                }
+                Ok(None) => {
+                    turn_cancelled = true;
+                    outcome_err = Some("cancelled".into());
                     break;
                 }
                 Err(e) => {
@@ -603,7 +610,8 @@ impl TuiApp {
                     format!("tool_intent {}", call.name),
                 );
                 if let Some(term) = terminal.as_deref_mut() {
-                    term.draw(|f| self.draw(f))?;
+                    term.draw(|f| self.draw(f))
+                        .map_err(|error| TuiError::Other(error.to_string()))?;
                 }
             }
             match self
@@ -627,7 +635,8 @@ impl TuiApp {
                         ApplyOutcome::Continue => {
                             self.busy_state.set_phase(BusyPhase::Model);
                             if let Some(term) = terminal.as_deref_mut() {
-                                term.draw(|f| self.draw(f))?;
+                                term.draw(|f| self.draw(f))
+                                    .map_err(|error| TuiError::Other(error.to_string()))?;
                             }
                             continue;
                         }
@@ -761,13 +770,58 @@ impl TuiApp {
 #[cfg(test)]
 mod responsiveness_tests {
     use super::*;
+    use async_trait::async_trait;
     use crossterm::event::{KeyEvent, KeyEventState};
     use forge_core::LoopConfig;
-    use forge_model::MockModelClient;
-    use forge_tools::{BashTool, ToolRegistry};
-    use forge_types::{ModelResponse, ToolCall};
+    use forge_model::{MockModelClient, ModelClient, ModelError, ModelRequest};
+    use forge_tools::{BashTool, Tool, ToolError, ToolRegistry};
+    use forge_types::{ModelResponse, SideEffectClass, ToolCall, ToolOutput};
     use ratatui::backend::TestBackend;
-    use serde_json::json;
+    use serde_json::{json, Value};
+
+    struct BlockingTool;
+    struct BlockingModel;
+
+    #[async_trait]
+    impl ModelClient for BlockingModel {
+        async fn complete(&self, _req: ModelRequest) -> Result<ModelResponse, ModelError> {
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(ModelResponse {
+                text: "not reached before cancellation".into(),
+                tool_calls: Vec::new(),
+                usage: None,
+                thinking: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Tool for BlockingTool {
+        fn name(&self) -> &str {
+            "blocking_test"
+        }
+
+        fn description(&self) -> &str {
+            "blocks its executor thread to reproduce an uncooperative tool"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn side_effect_class(&self) -> SideEffectClass {
+            SideEffectClass::Exec
+        }
+
+        async fn call(
+            &self,
+            _ctx: &forge_tools::ToolContext,
+            _args: Value,
+        ) -> Result<ToolOutput, ToolError> {
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(ToolOutput::success("finished blocking"))
+        }
+    }
 
     #[tokio::test]
     async fn tui_runtime_keeps_processing_while_a_tool_runs() {
@@ -851,5 +905,159 @@ mod responsiveness_tests {
             result,
             ModelResponseApplication::Finished(ApplyOutcome::Continue)
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_tool_cannot_starve_tui_cancellation() {
+        crate::app::tests::helpers::isolate_global_skills();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(BlockingTool));
+        let mut session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: workspace.path().to_path_buf(),
+                journal_dir: workspace.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: false,
+                ..Default::default()
+            },
+            Arc::new(MockModelClient::script(Vec::new())),
+            tools,
+        )
+        .await
+        .unwrap();
+        session
+            .append_user_message("run blocking work")
+            .await
+            .unwrap();
+        let application = session
+            .begin_model_response_application(ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "blocking-command".into(),
+                    name: "blocking_test".into(),
+                    arguments: json!({}),
+                }],
+                usage: None,
+                thinking: None,
+            })
+            .await
+            .unwrap();
+        let ModelResponseApplication::Execute(pending) = application else {
+            panic!("blocking tool should be returned as pending work");
+        };
+
+        let mut app = TuiApp::new(session, crate::app::tests::helpers::test_runtime_config());
+        app.enter_chat_composer();
+        app.busy_state.start(BusyPhase::Tool {
+            name: "blocking_test".into(),
+        });
+        app.test_events.push_back(Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        let started = Instant::now();
+        let result = app
+            .execute_tool_application(*pending, Some(&mut terminal))
+            .await;
+
+        assert!(matches!(result, Err(LoopError::Cancelled)));
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "blocking work starved the TUI for {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_compaction_model_cannot_starve_tui_cancellation() {
+        crate::app::tests::helpers::isolate_global_skills();
+        let workspace = tempfile::tempdir().unwrap();
+        let session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: workspace.path().to_path_buf(),
+                journal_dir: workspace.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: false,
+                ..Default::default()
+            },
+            Arc::new(BlockingModel),
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let pending = session.begin_context_compaction(forge_core::CompactionTrigger::Manual);
+        let mut app = TuiApp::new(session, crate::app::tests::helpers::test_runtime_config());
+        app.enter_chat_composer();
+        app.busy_state
+            .start(BusyPhase::Other("compacting context".into()));
+        app.test_events.push_back(Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        let started = Instant::now();
+        let completed = app
+            .execute_context_compaction_responsive(pending, Some(&mut terminal))
+            .await
+            .unwrap();
+
+        assert!(completed.is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "blocking compaction starved the TUI for {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_model_call_cannot_starve_tui_cancellation() {
+        crate::app::tests::helpers::isolate_global_skills();
+        let workspace = tempfile::tempdir().unwrap();
+        let session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: workspace.path().to_path_buf(),
+                journal_dir: workspace.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: false,
+                ..Default::default()
+            },
+            Arc::new(BlockingModel),
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let mut app = TuiApp::new(session, crate::app::tests::helpers::test_runtime_config());
+        app.pending_turn
+            .queue("wait for the model".into(), Vec::new());
+        app.test_events.push_back(Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        let started = Instant::now();
+        app.drain_pending_prompt_with_terminal(Some(&mut terminal))
+            .await
+            .unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "blocking model call starved the TUI for {:?}",
+            started.elapsed()
+        );
+        assert!(!app.busy_state.is_active());
     }
 }

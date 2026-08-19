@@ -1433,6 +1433,7 @@ dependencies = [
 name = "forge-tui"
 version = "0.1.0-beta.5"
 dependencies = [
+ "async-trait",
  "chrono",
  "crossterm",
  "dirs 6.0.0",

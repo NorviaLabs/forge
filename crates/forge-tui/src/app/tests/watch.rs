@@ -136,6 +136,7 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
     app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
+    fs::write(dir.path().join("added-while-focused.txt"), "new\n").unwrap();
 
     app.file_watch
         .inject_change(app.session.workspace_root().join("changed.txt"));
@@ -148,6 +149,22 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
         .visible_nodes()
         .iter()
         .any(|node| node.display_name == "Cargo.toml"));
+    assert!(!app
+        .workspace_files
+        .explorer
+        .visible_nodes()
+        .iter()
+        .any(|node| node.display_name == "added-while-focused.txt"));
+
+    app.focus_block(FocusBlock::Composer);
+    app.poll_file_changes();
+
+    assert!(app
+        .workspace_files
+        .explorer
+        .visible_nodes()
+        .iter()
+        .any(|node| node.display_name == "added-while-focused.txt"));
 }
 
 #[test]

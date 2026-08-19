@@ -429,10 +429,10 @@ impl TuiApp {
         let tool_name = pending.tool_name().to_string();
         self.busy_state.start(BusyPhase::Tool { name: tool_name });
         self.enter_chat_composer();
-        if let Some(handle) = self.pending_approved_tool.take() {
+        if let Some(mut handle) = self.pending_approved_tool.take() {
             handle.abort();
         }
-        self.pending_approved_tool = Some(tokio::spawn(pending.execute()));
+        self.pending_approved_tool = Some(IsolatedTask::spawn(pending.execute()));
     }
 
     pub(super) async fn poll_approved_hitl(&mut self) -> Result<(), TuiError> {
@@ -440,7 +440,7 @@ impl TuiApp {
             return Ok(());
         }
         if self.cancellation.take_requested() || self.exit.is_requested() {
-            if let Some(handle) = self.pending_approved_tool.take() {
+            if let Some(mut handle) = self.pending_approved_tool.take() {
                 handle.abort();
             }
             if !self.exit.is_requested() {
@@ -460,8 +460,12 @@ impl TuiApp {
             return Ok(());
         };
         let completed = handle
+            .join()
             .await
             .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?;
+        let Some(completed) = completed else {
+            return Ok(());
+        };
         self.session.finish_hitl_execution(completed).await?;
         self.resume_turn_after_hitl();
         self.enter_chat_composer();
@@ -521,7 +525,7 @@ impl TuiApp {
 
 impl Drop for TuiApp {
     fn drop(&mut self) {
-        if let Some(handle) = self.pending_approved_tool.take() {
+        if let Some(mut handle) = self.pending_approved_tool.take() {
             handle.abort();
         }
     }

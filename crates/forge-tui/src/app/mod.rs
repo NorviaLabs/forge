@@ -23,8 +23,9 @@ use forge_connect::{
     PreferenceStore,
 };
 use forge_core::{
-    merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, LoopError,
-    ModelResponseApplication, ModelStepAccumulator, PendingHitlExecution, PendingToolApplication,
+    merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, IsolatedTask,
+    LoopError, ModelResponseApplication, ModelStepAccumulator, PendingHitlExecution,
+    PendingToolApplication,
 };
 use forge_session::{SessionSnapshot, TranscriptSnapshot};
 use forge_types::{
