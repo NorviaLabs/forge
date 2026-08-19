@@ -18,7 +18,8 @@ pub(crate) fn schema_for<T: JsonSchema>() -> Value {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ReadFileArgs {
-    /// Path relative to workspace root (or absolute under workspace).
+    /// Path relative to workspace root (or absolute under the workspace or
+    /// session temp).
     pub path: String,
     /// 1-based start line (integer or null). Separate field from `limit`.
     #[serde(default)]
@@ -37,7 +38,7 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        "Read a text file from the workspace"
+        "Read a text file from the workspace or session temp"
     }
     fn input_schema(&self) -> Value {
         schema_for::<ReadFileArgs>()
@@ -1530,7 +1531,10 @@ mod tests {
     fn read_file_describes_itself() {
         let t = ReadFileTool;
         assert_eq!(t.name(), "read_file");
-        assert_eq!(t.description(), "Read a text file from the workspace");
+        assert_eq!(
+            t.description(),
+            "Read a text file from the workspace or session temp"
+        );
         assert_eq!(t.side_effect_class(), SideEffectClass::Read);
         assert!(t.idempotent());
     }
