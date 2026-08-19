@@ -56,9 +56,7 @@ use forge_context::{estimate_tokens, ContextEngine};
 use forge_durable::{new_session_id, Journal};
 use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest, SharedMessages, StreamEventTx};
-use forge_tools::{
-    default_builtins_with_web_search, ToolContext, ToolError, ToolRegistry, ValidationBudget,
-};
+use forge_tools::{ToolContext, ToolError, ToolRegistry, ValidationBudget};
 use forge_types::{
     BackgroundTaskId, ExecutionOutcome, HitlDecision, HitlPayload, Message, MessageRole,
     ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall,

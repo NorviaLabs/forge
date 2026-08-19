@@ -32,6 +32,11 @@ pub enum SearchError {
 pub struct WorkspaceIndexOptions {
     pub watch: bool,
     pub scan_timeout: Duration,
+    /// When true (the default), [`WorkspaceIndex::open_with_options`] blocks
+    /// until the first scan finishes. Session startup sets this to false so
+    /// the scan overlaps journal open / first-prompt wait; [`Self::find_files`]
+    /// and [`Self::grep`] still wait before returning hits.
+    pub wait_for_scan: bool,
 }
 
 impl Default for WorkspaceIndexOptions {
@@ -39,6 +44,7 @@ impl Default for WorkspaceIndexOptions {
         Self {
             watch: true,
             scan_timeout: DEFAULT_SCAN_TIMEOUT,
+            wait_for_scan: true,
         }
     }
 }
@@ -82,7 +88,9 @@ impl WorkspaceIndex {
             shared_frecency,
             scan_timeout: options.scan_timeout,
         });
-        index.wait_for_scan()?;
+        if options.wait_for_scan {
+            index.wait_for_scan()?;
+        }
         Ok(index)
     }
 
@@ -412,6 +420,28 @@ fn format_grep_context(before: &[String], after: &[String]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::types::GrepQueryMode;
+
+    #[test]
+    fn open_without_waiting_still_serves_find_after_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                wait_for_scan: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let response = index.find_files("main.rs", 10, None).unwrap();
+        assert_eq!(
+            response.hits.first().map(|hit| hit.path.as_str()),
+            Some("src/main.rs")
+        );
+    }
 
     #[test]
     fn find_files_returns_structured_hits() {

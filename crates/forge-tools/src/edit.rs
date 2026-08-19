@@ -65,6 +65,10 @@ and `apply_patch` for multi-hunk or multi-file diffs."
         SideEffectClass::Write
     }
 
+    fn warm_workspace(&self, root: &Path) {
+        self.state.warm(root);
+    }
+
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: EditArgs = serde_json::from_value(args).map_err(|e| {
             ToolError::Execution(format!("internal deserialize after validation: {e}"))

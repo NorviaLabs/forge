@@ -102,4 +102,8 @@ pub trait Tool: Send + Sync {
             idempotent: self.idempotent(),
         }
     }
+
+    /// Start any workspace-scoped background work this tool wants ready
+    /// before the first call. Default is a no-op.
+    fn warm_workspace(&self, _root: &std::path::Path) {}
 }
