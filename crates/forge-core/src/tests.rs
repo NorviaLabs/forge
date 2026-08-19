@@ -19,6 +19,18 @@ struct GatedTool {
 
 struct SandboxDeniedTool;
 
+struct NetworkDeniedOnceTool {
+    calls: std::sync::atomic::AtomicU32,
+}
+
+impl NetworkDeniedOnceTool {
+    fn new() -> Self {
+        Self {
+            calls: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+}
+
 /// Emits more events than the core relay can buffer before returning. This
 /// models a provider burst and guards the relay-drain ordering from regressing
 /// into a completion-time deadlock.
@@ -55,7 +67,45 @@ impl forge_tools::Tool for SandboxDeniedTool {
         Err(ToolError::SandboxDenied {
             content: "Operation not permitted\nblocked by the sandbox".into(),
             reason: "blocked by the sandbox: writes are confined to the workspace".into(),
+            denied_host: None,
         })
+    }
+}
+
+#[async_trait]
+impl forge_tools::Tool for NetworkDeniedOnceTool {
+    fn name(&self) -> &str {
+        "network_denied"
+    }
+
+    fn description(&self) -> &str {
+        "Simulate a command blocked by the egress proxy"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "additionalProperties": false})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        if ctx.unconfined_shell {
+            return Ok(ToolOutput::success("should not retry unconfined"));
+        }
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(ToolError::SandboxDenied {
+                content: "Post \"https://api.github.com/graphql\": Forge Sandbox Denied".into(),
+                reason: "blocked by the sandbox: the destination host is not allowed".into(),
+                denied_host: Some("api.github.com".into()),
+            });
+        }
+        Ok(ToolOutput::success("retried confined after host grant"))
     }
 }
 
@@ -122,6 +172,64 @@ async fn sandbox_denial_pauses_for_hitl_instead_of_recording_failure() {
         .find(|message| message.tool_call_id.as_deref() == Some("call-sandbox-denied"))
         .expect("approved retry should record a tool result");
     assert_eq!(result.content, "approved retry ran unconfined");
+}
+
+#[tokio::test]
+async fn a_denied_host_prompts_for_a_grant_and_retries_confined() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.append_user_message("open a pr").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-gh".into(),
+                name: "network_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    let application = session.finish_tool_application(completed).await.unwrap();
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let payload = session.pending_hitl().expect("host denial should prompt");
+    assert_eq!(payload.denied_host.as_deref(), Some("api.github.com"));
+    assert!(
+        !payload.sandbox_escalation,
+        "a host grant must not unsandbox the command"
+    );
+
+    session.grant_egress_host("**.github.com");
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should retry the denied tool");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-gh"))
+        .expect("confined retry should record a tool result");
+    assert_eq!(result.content, "retried confined after host grant");
 }
 
 #[async_trait]

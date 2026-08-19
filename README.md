@@ -379,6 +379,15 @@ Menu rows (when a prompt appears):
   prompt; a different family still asks. Not written to `permissions.toml`.
 - **Don't run** — block the call.
 
+When the sandbox blocked a host (for example `gh` talking to
+`api.github.com`), the menu is a host grant instead, and the command is
+retried still confined:
+
+- **Always allow `**.github.com`** — writes `host(**.github.com)` to the
+  personal permissions file so the next session does not ask again.
+- **Allow `**.github.com` this session** — live proxy only.
+- **Don't run** — block the call.
+
 ### Approvals
 
 There is no permission-mode setting. Shell commands and file writes run

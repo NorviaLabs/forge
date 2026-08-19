@@ -202,6 +202,7 @@ pub(crate) fn direct_hitl_payload(call_id: &str, path: &str) -> HitlPayload {
         args_redacted: json!({"path": path}),
         reason: "test approval".into(),
         sandbox_escalation: false,
+        denied_host: None,
     }
 }
 
