@@ -87,10 +87,7 @@ pub(super) async fn complete(
         .collect();
     let mut stream = response.bytes_stream();
     let mut pending = String::new();
-    let mut text = String::new();
-    let mut thinking = String::new();
-    let mut tool_calls = Vec::new();
-    let mut usage = None;
+    let mut parsed = CodexStream::default();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
         pending.push_str(&String::from_utf8_lossy(&chunk));
@@ -103,20 +100,12 @@ pub(super) async fn complete(
             }
             let event: Value = serde_json::from_str(data)
                 .map_err(|error| ModelError::Protocol(format!("invalid SSE JSON: {error}")))?;
-            consume_event(
-                &event,
-                &reverse_aliases,
-                &mut text,
-                &mut thinking,
-                &mut tool_calls,
-                &mut usage,
-                tx.as_ref(),
-            )?;
+            parsed.consume(&event, &reverse_aliases, tx.as_ref())?;
             Ok(())
         })?;
     }
     if let Some(tx) = tx {
-        if let Some(ref usage) = usage {
+        if let Some(ref usage) = parsed.usage {
             let _ = tx.send(ModelStreamEvent::Usage {
                 usage: usage.clone(),
             });
@@ -124,10 +113,10 @@ pub(super) async fn complete(
         let _ = tx.send(ModelStreamEvent::MessageEnd);
     }
     Ok(ModelResponse {
-        text,
-        tool_calls,
-        usage,
-        thinking: (!thinking.is_empty()).then_some(thinking),
+        text: parsed.text,
+        tool_calls: parsed.tool_calls,
+        usage: parsed.usage,
+        thinking: (!parsed.thinking.is_empty()).then_some(parsed.thinking),
     })
 }
 
@@ -281,87 +270,137 @@ pub(super) fn request_body(
     body
 }
 
-#[allow(clippy::too_many_arguments)]
-fn consume_event(
-    event: &Value,
-    reverse_aliases: &BTreeMap<String, String>,
-    text: &mut String,
-    thinking: &mut String,
-    tool_calls: &mut Vec<ToolCall>,
-    usage: &mut Option<Usage>,
-    tx: Option<&StreamEventTx>,
-) -> Result<(), ModelError> {
-    match event.get("type").and_then(Value::as_str).unwrap_or("") {
-        "response.output_text.delta" => {
-            let piece = event.get("delta").and_then(Value::as_str).unwrap_or("");
-            text.push_str(piece);
-            if let Some(tx) = tx {
-                let _ = tx.send(ModelStreamEvent::TextDelta { text: piece.into() });
+#[derive(Default)]
+struct CodexStream {
+    text: String,
+    thinking: String,
+    tool_calls: Vec<ToolCall>,
+    usage: Option<Usage>,
+    last_reasoning_part: Option<(String, String, u64)>,
+}
+
+impl CodexStream {
+    fn consume(
+        &mut self,
+        event: &Value,
+        reverse_aliases: &BTreeMap<String, String>,
+        tx: Option<&StreamEventTx>,
+    ) -> Result<(), ModelError> {
+        match event.get("type").and_then(Value::as_str).unwrap_or("") {
+            "response.output_text.delta" => {
+                let piece = event.get("delta").and_then(Value::as_str).unwrap_or("");
+                self.text.push_str(piece);
+                if let Some(tx) = tx {
+                    let _ = tx.send(ModelStreamEvent::TextDelta { text: piece.into() });
+                }
             }
-        }
-        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-            let piece = event.get("delta").and_then(Value::as_str).unwrap_or("");
-            thinking.push_str(piece);
-            if let Some(tx) = tx {
-                let _ = tx.send(ModelStreamEvent::ThinkingDelta { text: piece.into() });
+            "response.reasoning_summary_part.added" => {
+                self.enter_reasoning_part(reasoning_part_key(event), tx);
             }
-        }
-        "response.output_item.done"
-            if event.pointer("/item/type").and_then(Value::as_str) == Some("function_call") =>
-        {
-            let alias = event
-                .pointer("/item/name")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let raw_arguments = event
-                .pointer("/item/arguments")
-                .and_then(Value::as_str)
-                .unwrap_or("{}");
-            let arguments = serde_json::from_str(raw_arguments)
-                .unwrap_or_else(|_| json!({"_raw": raw_arguments}));
-            let call = ToolCall {
-                id: event
-                    .pointer("/item/call_id")
-                    .or_else(|| event.pointer("/item/id"))
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                self.enter_reasoning_part(reasoning_part_key(event), tx);
+                let piece = event.get("delta").and_then(Value::as_str).unwrap_or("");
+                if !piece.is_empty() {
+                    self.thinking.push_str(piece);
+                    if let Some(tx) = tx {
+                        let _ = tx.send(ModelStreamEvent::ThinkingDelta { text: piece.into() });
+                    }
+                }
+            }
+            "response.output_item.done"
+                if event.pointer("/item/type").and_then(Value::as_str) == Some("function_call") =>
+            {
+                let alias = event
+                    .pointer("/item/name")
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .into(),
-                name: reverse_aliases
-                    .get(alias)
-                    .cloned()
-                    .unwrap_or_else(|| alias.into()),
-                arguments,
-            };
-            if let Some(tx) = tx {
-                let _ = tx.send(ModelStreamEvent::ToolCallStart {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                });
-                let _ = tx.send(ModelStreamEvent::ToolCallEnd { call: call.clone() });
+                    .unwrap_or("");
+                let raw_arguments = event
+                    .pointer("/item/arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
+                let arguments = serde_json::from_str(raw_arguments)
+                    .unwrap_or_else(|_| json!({"_raw": raw_arguments}));
+                let call = ToolCall {
+                    id: event
+                        .pointer("/item/call_id")
+                        .or_else(|| event.pointer("/item/id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .into(),
+                    name: reverse_aliases
+                        .get(alias)
+                        .cloned()
+                        .unwrap_or_else(|| alias.into()),
+                    arguments,
+                };
+                if let Some(tx) = tx {
+                    let _ = tx.send(ModelStreamEvent::ToolCallStart {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                    });
+                    let _ = tx.send(ModelStreamEvent::ToolCallEnd { call: call.clone() });
+                }
+                self.tool_calls.push(call);
             }
-            tool_calls.push(call);
+            "response.completed" => {
+                let raw_usage = event.pointer("/response/usage").unwrap_or(&Value::Null);
+                self.usage = Some(usage_from_provider(
+                    raw_usage,
+                    raw_usage
+                        .get("input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    raw_usage
+                        .get("output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    InputTokens::Total,
+                ));
+            }
+            "error" | "response.failed" => {
+                return Err(ModelError::Provider(event.to_string()));
+            }
+            _ => {}
         }
-        "response.completed" => {
-            let raw_usage = event.pointer("/response/usage").unwrap_or(&Value::Null);
-            *usage = Some(usage_from_provider(
-                raw_usage,
-                raw_usage
-                    .get("input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as u32,
-                raw_usage
-                    .get("output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as u32,
-                InputTokens::Total,
-            ));
-        }
-        "error" | "response.failed" => {
-            return Err(ModelError::Provider(event.to_string()));
-        }
-        _ => {}
+        Ok(())
     }
-    Ok(())
+
+    fn enter_reasoning_part(&mut self, key: (String, String, u64), tx: Option<&StreamEventTx>) {
+        if self
+            .last_reasoning_part
+            .as_ref()
+            .is_some_and(|previous| previous != &key)
+            && !self.thinking.is_empty()
+            && !self.thinking.ends_with('\n')
+        {
+            self.thinking.push_str("\n\n");
+            if let Some(tx) = tx {
+                let _ = tx.send(ModelStreamEvent::ThinkingDelta {
+                    text: "\n\n".into(),
+                });
+            }
+        }
+        self.last_reasoning_part = Some(key);
+    }
+}
+
+fn reasoning_part_key(event: &Value) -> (String, String, u64) {
+    let kind = match event.get("type").and_then(Value::as_str).unwrap_or("") {
+        "response.reasoning_text.delta" => "reasoning",
+        _ => "summary",
+    };
+    let item_id = event
+        .get("item_id")
+        .or_else(|| event.pointer("/item/id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let summary_index = event
+        .get("summary_index")
+        .or_else(|| event.pointer("/part/summary_index"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    (kind.into(), item_id, summary_index)
 }
 
 pub(super) fn tool_aliases(req: &ModelRequest) -> BTreeMap<String, String> {
@@ -465,21 +504,15 @@ mod tests {
         let aliases = tool_aliases(&req);
         let alias = aliases["mcp.server/read_file"].clone();
         let reverse = BTreeMap::from([(alias.clone(), "mcp.server/read_file".into())]);
-        let mut text = String::new();
-        let mut thinking = String::new();
-        let mut calls = Vec::new();
-        let mut usage = None;
-        consume_event(
-            &json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"c1","name":alias,"arguments":"{\"path\":\"README.md\"}"}}),
-            &reverse,
-            &mut text,
-            &mut thinking,
-            &mut calls,
-            &mut usage,
-            None,
-        )
-        .unwrap();
-        assert_eq!(calls[0].name, "mcp.server/read_file");
+        let mut parsed = CodexStream::default();
+        parsed
+            .consume(
+                &json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"c1","name":alias,"arguments":"{\"path\":\"README.md\"}"}}),
+                &reverse,
+                None,
+            )
+            .unwrap();
+        assert_eq!(parsed.tool_calls[0].name, "mcp.server/read_file");
     }
 
     #[test]
@@ -638,10 +671,7 @@ mod tests {
     #[test]
     fn consumes_text_thinking_usage_raw_tools_and_errors() {
         let reverse = BTreeMap::new();
-        let mut text = String::new();
-        let mut thinking = String::new();
-        let mut calls = Vec::new();
-        let mut usage = None;
+        let mut parsed = CodexStream::default();
         let (tx, rx) = std::sync::mpsc::channel();
         for event in [
             json!({"type":"response.output_text.delta","delta":"hello"}),
@@ -649,38 +679,69 @@ mod tests {
             json!({"type":"response.output_item.done","item":{"type":"function_call","id":"i1","name":"raw_tool","arguments":"not-json"}}),
             json!({"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}),
         ] {
-            consume_event(
-                &event,
-                &reverse,
-                &mut text,
-                &mut thinking,
-                &mut calls,
-                &mut usage,
-                Some(&tx),
-            )
-            .unwrap();
+            parsed.consume(&event, &reverse, Some(&tx)).unwrap();
         }
-        assert_eq!(text, "hello");
-        assert_eq!(thinking, "think");
-        assert_eq!(calls[0].id, "i1");
-        assert_eq!(calls[0].arguments["_raw"], "not-json");
-        assert_eq!(usage.unwrap().completion_tokens, 3);
+        assert_eq!(parsed.text, "hello");
+        assert_eq!(parsed.thinking, "think");
+        assert_eq!(parsed.tool_calls[0].id, "i1");
+        assert_eq!(parsed.tool_calls[0].arguments["_raw"], "not-json");
+        assert_eq!(parsed.usage.as_ref().unwrap().completion_tokens, 3);
         let events: Vec<_> = rx.try_iter().collect();
         assert!(matches!(events[0], ModelStreamEvent::TextDelta { .. }));
         assert!(matches!(events[1], ModelStreamEvent::ThinkingDelta { .. }));
 
-        let mut error_usage = None;
-        let error = consume_event(
-            &json!({"type":"response.failed","error":"bad"}),
-            &reverse,
-            &mut text,
-            &mut thinking,
-            &mut calls,
-            &mut error_usage,
-            None,
-        )
-        .unwrap_err();
+        let error = parsed
+            .consume(
+                &json!({"type":"response.failed","error":"bad"}),
+                &reverse,
+                None,
+            )
+            .unwrap_err();
         assert!(error.to_string().contains("response.failed"));
+    }
+
+    fn consume_thinking(events: &[Value]) -> String {
+        let reverse = BTreeMap::new();
+        let mut parsed = CodexStream::default();
+        for event in events {
+            parsed.consume(event, &reverse, None).unwrap();
+        }
+        parsed.thinking
+    }
+
+    #[test]
+    fn separates_reasoning_summary_parts_with_a_blank_line() {
+        let thinking = consume_thinking(&[
+            json!({"type":"response.reasoning_summary_part.added","item_id":"rs1","summary_index":0}),
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"rs1","summary_index":0,"delta":"**Designing SessionTemp**"}),
+            json!({"type":"response.reasoning_summary_part.added","item_id":"rs1","summary_index":1}),
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"rs1","summary_index":1,"delta":"**Planning safe creation**"}),
+        ]);
+        assert_eq!(
+            thinking,
+            "**Designing SessionTemp**\n\n**Planning safe creation**"
+        );
+    }
+
+    #[test]
+    fn separates_reasoning_summary_index_changes_without_part_events() {
+        let thinking = consume_thinking(&[
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"rs1","summary_index":0,"delta":"**Designing SessionTemp**"}),
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"rs1","summary_index":1,"delta":"**Planning safe creation**"}),
+        ]);
+        assert_eq!(
+            thinking,
+            "**Designing SessionTemp**\n\n**Planning safe creation**"
+        );
+    }
+
+    #[test]
+    fn keeps_same_summary_part_deltas_contiguous() {
+        let thinking = consume_thinking(&[
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"rs1","summary_index":0,"delta":"**Design"}),
+            json!({"type":"response.reasoning_summary_text.delta","item_id":"rs1","summary_index":0,"delta":"ing**"}),
+        ]);
+        assert_eq!(thinking, "**Designing**");
     }
 
     #[tokio::test]

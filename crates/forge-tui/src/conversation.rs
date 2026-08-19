@@ -1371,6 +1371,35 @@ mod tests {
     }
 
     #[test]
+    fn thinking_headings_on_separate_paragraphs_render_without_asterisks() {
+        let model = ConversationModel {
+            items: vec![ChatItem::Thinking {
+                text: "**Designing SessionTemp temporary directory management**\n\n**Planning safe session temp directory creation**".into(),
+                duration_secs: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let lines = model.lines_for_width(80);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(!text.contains('*'), "heading markers leaked: {text:?}");
+        let designing = lines
+            .iter()
+            .position(|line| line_text(line).contains("Designing SessionTemp"))
+            .expect("first heading");
+        let planning = lines
+            .iter()
+            .position(|line| line_text(line).contains("Planning safe session"))
+            .expect("second heading");
+        assert!(
+            planning > designing,
+            "headings should be on separate lines, got:\n{text}"
+        );
+    }
+
+    #[test]
     fn thinking_renders_dim_italic_indented_and_precedes_the_answer() {
         let msgs = vec![Message {
             outcome: Default::default(),
