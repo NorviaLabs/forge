@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -31,6 +32,23 @@ pub struct ExecCommandArgs {
     pub max_output_tokens: Option<usize>,
 }
 
+fn sandbox_denial(
+    confined: bool,
+    success: bool,
+    output: &str,
+    workspace_root: &std::path::Path,
+) -> Option<ToolError> {
+    if !confined || success {
+        return None;
+    }
+    crate::sandbox::explain_denial(output, workspace_root).map(|explanation| {
+        ToolError::SandboxDenied {
+            content: output.to_string(),
+            reason: explanation.to_string(),
+        }
+    })
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteStdinArgs {
     pub session_id: u64,
@@ -51,6 +69,8 @@ fn default_stdin_yield() -> u64 {
 
 struct Session {
     command: String,
+    confined: bool,
+    workspace_root: PathBuf,
     child: Child,
     stdin: Option<ChildStdin>,
     stdout: ChildStdout,
@@ -75,6 +95,13 @@ fn append_output(session: &mut Session, bytes: &[u8]) {
     if end < text.len() {
         session.output_truncated = true;
     }
+}
+
+fn session_finished(result: &Result<ToolOutput, ToolError>) -> bool {
+    result
+        .as_ref()
+        .is_ok_and(|output| output.exit_code.is_some())
+        || matches!(result, Err(ToolError::SandboxDenied { .. }))
 }
 
 /// Sessions belong to one tool-registry installation. They must never be
@@ -136,6 +163,14 @@ async fn collect(
             let mut tail = Vec::new();
             session.stderr.read_to_end(&mut tail).await?;
             append_output(session, &tail);
+            if let Some(error) = sandbox_denial(
+                session.confined,
+                status.success(),
+                &session.output,
+                &session.workspace_root,
+            ) {
+                return Err(error);
+            }
             let body = output_for(session_id, session, max_tokens);
             return Ok(ToolOutput {
                 outcome: Default::default(),
@@ -195,7 +230,9 @@ async fn start(
     // commands unconfined for as long as it lives.
     let shell = args.shell.as_deref().unwrap_or("sh");
     let policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root);
-    let mut command = match crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy) {
+    let wrapped = crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy);
+    let confined = wrapped.is_some();
+    let mut command = match wrapped {
         Some((program, wrapped)) => {
             let mut confined = Command::new(program);
             confined.args(wrapped);
@@ -219,6 +256,8 @@ async fn start(
         .spawn()?;
     let session = Session {
         command: args.cmd.clone(),
+        confined,
+        workspace_root: ctx.workspace_root.clone(),
         stdin: Some(
             child
                 .stdin
@@ -249,10 +288,7 @@ async fn start(
         args.max_output_tokens,
     )
     .await;
-    if result
-        .as_ref()
-        .is_ok_and(|output| output.exit_code.is_some())
-    {
+    if session_finished(&result) {
         sessions.sessions.lock().await.remove(&id);
     }
     result
@@ -344,10 +380,7 @@ impl Tool for WriteStdinTool {
             args.max_output_tokens,
         )
         .await;
-        if result
-            .as_ref()
-            .is_ok_and(|output| output.exit_code.is_some())
-        {
+        if session_finished(&result) {
             self.sessions.sessions.lock().await.remove(&args.session_id);
         }
         result
@@ -359,6 +392,24 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn failed_confined_network_command_is_a_sandbox_denial() {
+        let dir = tempdir().unwrap();
+        let output = "curl: (6) Could not resolve host: api.github.com";
+        let error = sandbox_denial(true, false, output, dir.path())
+            .expect("a confined network failure must be escalated");
+
+        assert!(matches!(error, ToolError::SandboxDenied { .. }));
+    }
+
+    #[test]
+    fn unconfined_network_failure_is_not_a_sandbox_denial() {
+        let dir = tempdir().unwrap();
+        let output = "curl: (6) Could not resolve host: api.github.com";
+
+        assert!(sandbox_denial(false, false, output, dir.path()).is_none());
+    }
 
     #[tokio::test]
     async fn starts_running_session_and_polls_without_input() {
