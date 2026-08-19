@@ -17,11 +17,91 @@ struct GatedTool {
     release: Arc<Notify>,
 }
 
+struct SandboxDeniedTool;
+
 /// Emits more events than the core relay can buffer before returning. This
 /// models a provider burst and guards the relay-drain ordering from regressing
 /// into a completion-time deadlock.
 struct BurstStreamingModel {
     events: usize,
+}
+
+#[async_trait]
+impl forge_tools::Tool for SandboxDeniedTool {
+    fn name(&self) -> &str {
+        "sandbox_denied"
+    }
+
+    fn description(&self) -> &str {
+        "Simulate a command blocked by the sandbox"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "additionalProperties": false})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::SandboxDenied {
+            content: "Operation not permitted\nblocked by the sandbox".into(),
+            reason: "blocked by the sandbox: writes are confined to the workspace".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn sandbox_denial_pauses_for_hitl_instead_of_recording_failure() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SandboxDeniedTool));
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.append_user_message("run it").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-sandbox-denied".into(),
+                name: "sandbox_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    let application = session.finish_tool_application(completed).await.unwrap();
+
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    assert_eq!(session.active_task.lifecycle, TaskLifecycle::Waiting);
+    let payload = session
+        .pending_hitl()
+        .expect("sandbox denial should prompt");
+    assert_eq!(payload.call_id, "call-sandbox-denied");
+    assert_eq!(payload.tool, "sandbox_denied");
+    assert!(payload.reason.starts_with("blocked by the sandbox:"));
+    assert!(payload.sandbox_escalation);
+    assert!(session.messages.iter().all(|message| {
+        message.tool_call_id.as_deref() != Some("call-sandbox-denied")
+            || message.role != MessageRole::Tool
+    }));
 }
 
 #[async_trait]

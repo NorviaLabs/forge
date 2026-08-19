@@ -206,6 +206,49 @@ impl AgentSession {
         completed: CompletedToolApplication,
     ) -> Result<ModelResponseApplication, LoopError> {
         let mut pending = completed.remaining;
+        if let Err(ToolError::SandboxDenied { reason, .. }) = &completed.execution.result {
+            let call = completed.execution.call.clone();
+            pending.budget = completed.execution.budget;
+            self.turn.restore_validation_budget(pending.budget);
+            let payload = HitlPayload {
+                call_id: call.id.clone(),
+                tool: call.name.clone(),
+                args_redacted: self.governance.redact_args(&call.arguments),
+                reason: reason.clone(),
+                sandbox_escalation: true,
+            };
+            self.journal
+                .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
+                .await?;
+            self.enter_waiting(
+                WaitReason::Approval {
+                    request_id: payload.call_id.clone(),
+                    payload: payload.clone(),
+                },
+                TransitionReason::HitlWait,
+            )
+            .await?;
+            self.events.push(TurnEvent {
+                kind: "hitl_wait".into(),
+                detail: payload.tool.clone(),
+            });
+            self.turn.push_evidence(
+                EvidenceEntry::new(ExecutionEvent::WaitingForUser)
+                    .operation_id(call.id.clone())
+                    .tool_name(call.name.clone()),
+            );
+            return Ok(ModelResponseApplication::Finished(ApplyOutcome::Hitl(
+                ModelResponse {
+                    text: format!(
+                        "Sandbox blocked {}; awaiting approval to run unconfined",
+                        call.name
+                    ),
+                    tool_calls: vec![call],
+                    usage: None,
+                    thinking: None,
+                },
+            )));
+        }
         let (budget, result) = self.finish_tool_call(completed.execution).await;
         pending.budget = budget;
         if let Err(error) = result {
@@ -495,6 +538,7 @@ impl AgentSession {
                         tool: call.name.clone(),
                         args_redacted: redacted,
                         reason: "policy requires human approval".into(),
+                        sandbox_escalation: false,
                     };
                     self.journal
                         .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
@@ -666,6 +710,7 @@ impl AgentSession {
         (budget, finish_result)
     }
 
+    #[cfg(test)]
     pub(crate) async fn run_one_tool_exec_only(
         &mut self,
         call: &ToolCall,
@@ -687,26 +732,45 @@ impl AgentSession {
         call: &ToolCall,
         budget: &mut ValidationBudget,
     ) -> Result<Option<PendingHitlExecution>, LoopError> {
-        if self.try_serve_journaled_tool(call).await? {
+        self.begin_hitl_execution_with_options(call, budget, false, true)
+            .await
+    }
+
+    pub(crate) async fn begin_hitl_execution_with_options(
+        &mut self,
+        call: &ToolCall,
+        budget: &mut ValidationBudget,
+        unconfined: bool,
+        append_intent: bool,
+    ) -> Result<Option<PendingHitlExecution>, LoopError> {
+        if !unconfined && self.try_serve_journaled_tool(call).await? {
             return Ok(None);
         }
         if call.name == "background_run" {
             self.turn.record_call(call.clone());
-            self.journal
-                .append_tool_intent(self.session_id, call)
-                .await?;
+            if append_intent {
+                self.journal
+                    .append_tool_intent(self.session_id, call)
+                    .await?;
+            }
             self.dispatch_background_run(call).await?;
             return Ok(None);
         }
         self.turn.record_call(call.clone());
-        self.journal
-            .append_tool_intent(self.session_id, call)
-            .await?;
+        if append_intent {
+            self.journal
+                .append_tool_intent(self.session_id, call)
+                .await?;
+        }
         Ok(Some(PendingHitlExecution {
             execution: PendingToolExecution {
                 call: call.clone(),
                 tools: self.tools.clone(),
-                tool_ctx: self.tool_ctx.clone(),
+                tool_ctx: if unconfined {
+                    self.tool_ctx.clone().with_unconfined_shell()
+                } else {
+                    self.tool_ctx.clone()
+                },
                 budget: std::mem::take(budget),
             },
         }))

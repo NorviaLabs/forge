@@ -276,16 +276,15 @@ async fn a_denied_command_explains_which_boundary_stopped_it() {
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("nope.txt");
 
-    let out = run_shell_command(&format!("echo x > {}", target.to_str().unwrap()), ws.path())
+    let error = run_shell_command(&format!("echo x > {}", target.to_str().unwrap()), ws.path())
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert!(out.is_error);
-    assert!(
-        out.content.contains("blocked by the sandbox"),
-        "a denial must name the boundary, got: {}",
-        out.content
-    );
+    let forge_tools::ToolError::SandboxDenied { content, reason } = error else {
+        panic!("expected a structured sandbox denial");
+    };
+    assert!(content.contains("blocked by the sandbox"), "{content}");
+    assert!(reason.contains("writes are confined"), "{reason}");
 }
 
 /// And an ordinary failure must not be dressed up as a sandbox problem.
