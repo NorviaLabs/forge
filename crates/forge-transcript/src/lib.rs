@@ -464,15 +464,9 @@ impl ConversationModel {
                             });
                         }
                     }
-                    // Terminal failure summaries are durable assistant messages with a
-                    // structural marker — never treated as final answers.
-                    if let Some(summary) = m.content.strip_prefix(TURN_FAILED_MARKER) {
-                        if m.tool_calls.is_empty() && !summary.trim().is_empty() {
-                            items.push(ChatItem::Banner {
-                                text: summary.trim().to_string(),
-                                kind: BannerKind::Error,
-                            });
-                        }
+                    // Terminal failure summaries are durable state for resume and header
+                    // status, not transcript content.
+                    if m.content.starts_with(TURN_FAILED_MARKER) {
                         continue;
                     }
                     // Assistant text is durable primary-channel content. A model may
@@ -2476,7 +2470,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_failed_marker_is_not_an_assistant_answer() {
+    fn turn_failed_marker_is_hidden_from_transcript() {
         let messages = vec![
             Message {
                 outcome: Default::default(),
@@ -2509,17 +2503,12 @@ mod tests {
         );
         let blocks = model.semantic_blocks();
         assert!(
-            !blocks
-                .iter()
-                .any(|b| matches!(b, ConversationBlock::AssistantAnswer(_))),
-            "failure marker must not render as answer: {blocks:?}"
+            !blocks.iter().any(|block| matches!(
+                block,
+                ConversationBlock::AssistantAnswer(_) | ConversationBlock::Callout(_)
+            )),
+            "failure marker must not render in the transcript: {blocks:?}"
         );
-        assert!(blocks.iter().any(|b| matches!(
-            b,
-            ConversationBlock::Callout(c)
-                if matches!(c.kind, BannerKind::Error)
-                    && c.text.contains("couldn't complete")
-        )));
     }
 
     #[test]
