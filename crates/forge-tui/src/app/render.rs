@@ -308,11 +308,9 @@ impl TuiApp {
             });
         }
         let width = sidebar_width.saturating_sub(2) as usize;
-        // A rebuild re-parses only the unsettled tail (see
-        // `StreamMarkdownCache`), but it still materialises and clones every
-        // line of the answer, which is O(n) per rebuild on its own. Until that
-        // is bounded too, rebuilds stay rate-limited: running them per frame
-        // would raise the frequency of a cost that has not stopped growing.
+        // Tail-only changes use `StreamMarkdownCache` and must become visible
+        // on the frame that received them. Only width changes re-render the
+        // settled prefix, so only resize churn is rate-limited.
         const STREAM_PREVIEW_RENDER_INTERVAL: Duration = Duration::from_millis(150);
         let live_lines = if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
             let key = (
@@ -326,12 +324,17 @@ impl TuiApp {
                 .as_ref()
                 .map(|(w, t, p, _)| (*w, *t, *p) == key)
                 .unwrap_or(false);
-            let ready = self
+            let width_changed = self
+                .stream
+                .live_lines
+                .as_ref()
+                .is_some_and(|(cached_width, ..)| *cached_width != key.0);
+            let resize_ready = self
                 .stream
                 .last_preview_render
                 .map(|at| at.elapsed() >= STREAM_PREVIEW_RENDER_INTERVAL)
                 .unwrap_or(true);
-            if key_matches || !ready {
+            if key_matches || (width_changed && !resize_ready) {
                 self.stream
                     .live_lines
                     .as_ref()
@@ -359,7 +362,9 @@ impl TuiApp {
                     ),
                 );
                 self.stream.live_lines = Some((key.0, key.1, key.2, Arc::clone(&lines)));
-                self.stream.last_preview_render = Some(Instant::now());
+                if width_changed || self.stream.last_preview_render.is_none() {
+                    self.stream.last_preview_render = Some(Instant::now());
+                }
                 lines
             }
         } else {
