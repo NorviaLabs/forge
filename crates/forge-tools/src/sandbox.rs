@@ -983,17 +983,21 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
         return Some(FILESYSTEM_EXPLANATION);
     }
 
-    // Linux reports a blocked write as "No such file or directory", not as a
-    // permission error: masked and unbound paths genuinely do not exist inside
-    // the sandbox. That string is also the single most common legitimate
-    // error, so matching on it alone would blame the sandbox for every typo —
-    // which is worse than saying nothing.
+    // Linux reports a blocked write as a missing path, not as a permission
+    // error: masked and unbound paths genuinely do not exist inside the
+    // sandbox. bash says "No such file or directory"; dash (Debian/Ubuntu
+    // `sh`, and therefore the `exec_command` default) says "Directory
+    // nonexistent". Either string is also a common legitimate error, so
+    // matching on it alone would blame the sandbox for every typo — which is
+    // worse than saying nothing.
     //
     // The distinguishing fact is *which* path is missing. Inside the sandbox
     // an absolute path outside the workspace really is absent, and that is the
     // boundary. A missing file inside the workspace is an ordinary mistake and
     // is left alone.
-    if output.contains("No such file or directory") && mentions_path_outside(output, workspace_root)
+    const MISSING: &[&str] = &["No such file or directory", "Directory nonexistent"];
+    if MISSING.iter().any(|sig| output.contains(sig))
+        && mentions_path_outside(output, workspace_root)
     {
         return Some(FILESYSTEM_EXPLANATION);
     }
@@ -1076,6 +1080,17 @@ mod denial_tests {
         assert!(explained.contains("do not exist inside the sandbox"));
     }
 
+    /// dash, the default `sh` on Debian/Ubuntu and therefore `exec_command`'s
+    /// default shell, uses a different ENOENT string than bash. Captured from
+    /// the Linux CI failure of `exec_command_cannot_write_outside_the_workspace`.
+    #[test]
+    fn dash_missing_path_outside_the_workspace_is_named_as_the_boundary() {
+        let ws = ws();
+        let out = "sh: 1: cannot create /tmp/.tmpABCDEF/nope.txt: Directory nonexistent";
+        let explained = explain_denial(out, ws.path()).expect("must be recognised");
+        assert!(explained.contains("do not exist inside the sandbox"));
+    }
+
     /// ...but a missing file *inside* the workspace is an ordinary mistake and
     /// must not be blamed on the sandbox. This is the case that stops every
     /// typo being reported as a policy decision.
@@ -1085,6 +1100,20 @@ mod denial_tests {
         let inside = ws.path().canonicalize().unwrap().join("typo.txt");
         let out = format!(
             "bash: line 1: {}: No such file or directory",
+            inside.display()
+        );
+        assert!(
+            explain_denial(&out, ws.path()).is_none(),
+            "an ordinary missing file must not be called a denial"
+        );
+    }
+
+    #[test]
+    fn dash_missing_path_inside_the_workspace_is_left_alone() {
+        let ws = ws();
+        let inside = ws.path().canonicalize().unwrap().join("typo.txt");
+        let out = format!(
+            "sh: 1: cannot create {}: Directory nonexistent",
             inside.display()
         );
         assert!(

@@ -631,13 +631,24 @@ async fn polled_exec_command_escalates_sandbox_denial() {
         .iter()
         .find(|tool| tool.name() == "write_stdin")
         .expect("write_stdin must be a builtin");
-    let error = write_stdin
-        .call(
-            &ctx,
-            serde_json::json!({ "session_id": session_id, "yield_time_ms": 400 }),
-        )
-        .await
-        .expect_err("polling must surface the completed sandbox denial");
+    // WSL2 sandbox spawn can take longer than a single 400ms poll. Keep
+    // asking until the session finishes or the budget runs out.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let error = loop {
+        let result = write_stdin
+            .call(
+                &ctx,
+                serde_json::json!({ "session_id": session_id, "yield_time_ms": 200 }),
+            )
+            .await;
+        match result {
+            Err(error) => break error,
+            Ok(output) if output.exit_code.is_some() || std::time::Instant::now() >= deadline => {
+                panic!("polling must surface the completed sandbox denial: {output:?}");
+            }
+            Ok(_) => {}
+        }
+    };
 
     assert!(!target.exists(), "the polled command escaped the sandbox");
     assert!(

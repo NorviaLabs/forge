@@ -235,7 +235,9 @@ async fn start(
     if let Some(session_tmp) = &ctx.session_tmp {
         policy = policy.with_session_tmp(session_tmp.path());
     }
-    let wrapped = crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy);
+    let wrapped = (!ctx.unconfined_shell)
+        .then(|| crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy))
+        .flatten();
     let confined = wrapped.is_some();
     let mut command = match wrapped {
         Some((program, wrapped)) => {
@@ -255,8 +257,10 @@ async fn start(
     for (name, value) in crate::sandbox::temp_env(&policy) {
         command.env(name, value);
     }
-    for (name, value) in crate::sandbox::egress_env(&policy) {
-        command.env(name, value);
+    if confined {
+        for (name, value) in crate::sandbox::egress_env(&policy) {
+            command.env(name, value);
+        }
     }
     let mut child = command
         .current_dir(&ctx.workspace_root)
@@ -421,6 +425,33 @@ mod tests {
         let output = "curl: (6) Could not resolve host: api.github.com";
 
         assert!(sandbox_denial(false, false, output, dir.path()).is_none());
+    }
+
+    #[tokio::test]
+    async fn approved_exec_command_does_not_keep_the_sandbox_proxy() {
+        let dir = tempdir().unwrap();
+        let mut ctx = ToolContext::new(dir.path().to_path_buf()).with_unconfined_shell();
+        ctx.egress = Some(std::sync::Arc::new(crate::sandbox::EgressGrant {
+            proxy_port: 9418,
+            socket_path: dir.path().join("egress.sock"),
+        }));
+        let (exec_command, _) = unified_exec_tools();
+        let first = exec_command
+            .call(
+                &ctx,
+                json!({
+                    "cmd": "printf '%s|%s' \"$HTTP_PROXY\" \"$HTTPS_PROXY\"",
+                    "yield_time_ms": 1_000
+                }),
+            )
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&first.content).unwrap();
+        let printed = body["output"].as_str().unwrap_or_default();
+        assert!(
+            !printed.contains("127.0.0.1:9418") && !printed.contains("127.0.0.1:8118"),
+            "sandbox proxy leaked into the unconfined exec session: {printed}"
+        );
     }
 
     #[tokio::test]
