@@ -12,6 +12,7 @@ mod approval;
 pub(crate) mod compaction;
 mod create;
 mod inspect;
+pub(crate) mod question;
 mod tasks;
 pub(crate) mod tools;
 mod turn_ops;

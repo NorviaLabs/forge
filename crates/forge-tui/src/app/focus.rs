@@ -17,7 +17,8 @@ impl TuiApp {
             // FocusAvailability for that case).
             sidebar: true,
             bottom_panel: self.bottom_panel.open,
-            approval: self.session.pending_hitl().is_some(),
+            approval: self.session.pending_hitl().is_some()
+                || self.session.pending_question().is_some(),
         }
     }
 
@@ -145,6 +146,9 @@ impl TuiApp {
     pub(super) fn contextual_hint(&self) -> Option<String> {
         if self.explorer_dialog.is_open() {
             return Some("Enter confirm · Esc cancel".into());
+        }
+        if self.session.pending_question().is_some() {
+            return Some("Waiting · question · ↑↓  Enter  Esc skip".into());
         }
         if self.session.pending_hitl().is_some() {
             return Some("Waiting · approval · ↑↓  Enter  Esc don't run".into());

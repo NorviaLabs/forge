@@ -21,6 +21,7 @@ use tempfile::TempDir;
 /// tool is an obvious assert failure, not an order flake.
 const DEFAULT_TOOL_NAMES: &[&str] = &[
     "apply_patch",
+    "ask_user_question",
     "background_run",
     "bash",
     "edit",
@@ -173,6 +174,7 @@ async fn every_tool_rejects_missing_required_args() {
         ("exec_command", json!({})),
         ("write_stdin", json!({})),
         ("update_plan", json!({})),
+        ("ask_user_question", json!({})),
         ("load_skill", json!({})),
         ("glob", json!({})),
         ("grep", json!({})),

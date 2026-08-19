@@ -19,8 +19,9 @@ pub mod web_search;
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
     default_builtins, default_builtins_with_web_search, run_shell_command,
-    run_shell_command_with_egress, run_shell_command_with_egress_and_temp, BashTool, GitTool,
-    LsTool, ReadFileTool, UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
+    run_shell_command_with_egress, run_shell_command_with_egress_and_temp, AskUserQuestionTool,
+    BashTool, GitTool, LsTool, ReadFileTool, UpdatePlanTool, WriteFileTool,
+    PROVIDER_CREDENTIAL_ENV,
 };
 pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
