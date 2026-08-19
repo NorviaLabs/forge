@@ -452,6 +452,7 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
     let grant = EgressGrant {
         proxy_port: proxy.addr().port(),
         socket_path,
+        control: Some(proxy.shared().clone()),
     };
 
     // Reaching the allowed host *through the proxy* succeeds. The address comes
@@ -694,6 +695,7 @@ async fn a_granted_command_returns_rather_than_hanging() {
     let grant = EgressGrant {
         proxy_port: proxy.addr().port(),
         socket_path,
+        control: Some(proxy.shared().clone()),
     };
 
     let finished = tokio::time::timeout(
@@ -1027,6 +1029,7 @@ async fn egress_fails_closed_when_the_proxy_is_gone() {
     let grant = EgressGrant {
         proxy_port,
         socket_path: socket_path.clone(),
+        control: None,
     };
 
     let out = tokio::time::timeout(
