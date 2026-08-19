@@ -9,7 +9,9 @@
 
 use super::*;
 
-use super::shell::tick_foreground_frame;
+use super::shell::{
+    next_foreground_wake, paint_foreground_frame, render_foreground_wake, tick_foreground_frame,
+};
 
 impl TuiApp {
     async fn execute_tool_application<B: ratatui::backend::Backend>(
@@ -18,6 +20,8 @@ impl TuiApp {
         mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<ModelResponseApplication, LoopError> {
         let execution = IsolatedTask::spawn(pending.execute());
+        let mut ui_tick = tokio::time::interval(Duration::from_millis(100));
+        ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             if execution.is_finished() {
                 let completed = execution
@@ -29,11 +33,10 @@ impl TuiApp {
                 };
                 return self.session.finish_tool_application(completed).await;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
             // Foreground execution owns only its detached tool data. The full TUI
             // application keeps ticking around it: input, file watching, background
             // tasks, approvals, connection polling and transient chrome all advance.
-            tick_foreground_frame(self, terminal.as_deref_mut())
+            tick_foreground_frame(self, terminal.as_deref_mut(), &mut ui_tick)
                 .await
                 .map_err(|error| LoopError::Other(error.to_string()))?;
             if self.cancellation.take_requested() || self.exit.is_requested() {
@@ -489,9 +492,19 @@ impl TuiApp {
             };
 
             let model = self.session.model_client();
-            let (tx, rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
+            let (tx, provider_rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
+            let (stream_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let relay = tokio::task::spawn_blocking(move || {
+                while let Ok(event) = provider_rx.recv() {
+                    if stream_tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            });
             let mut handle =
                 IsolatedTask::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
+            let mut ui_tick = tokio::time::interval(Duration::from_millis(100));
+            ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             let mut step_acc = ModelStepAccumulator::default();
             // A provider can outpace terminal rendering. Bound normal-tick
@@ -499,6 +512,7 @@ impl TuiApp {
             // or the next paint; the completion path below still drains every
             // remaining event before the final response is applied.
             const MAX_STREAM_EVENTS_PER_TICK: usize = 256;
+            let mut stream_open = true;
             // Pump stream events + redraw until the model call finishes
             loop {
                 if self.cancellation.is_requested() {
@@ -509,20 +523,35 @@ impl TuiApp {
                     outcome_err = Some("cancelled".into());
                     break 'turns;
                 }
-                for _ in 0..MAX_STREAM_EVENTS_PER_TICK {
-                    let Ok(ev) = rx.try_recv() else {
-                        break;
-                    };
-                    if let Some(message) = self.handle_stream_event(&ev, &mut step_acc) {
-                        handle.abort();
-                        outcome_err = Some(message);
-                        break 'turns;
+                tokio::select! {
+                    event = rx.recv(), if stream_open => {
+                        if let Some(event) = event {
+                            if let Some(message) = self.handle_stream_event(&event, &mut step_acc) {
+                                handle.abort();
+                                outcome_err = Some(message);
+                                break 'turns;
+                            }
+                            for _ in 1..MAX_STREAM_EVENTS_PER_TICK {
+                                let Ok(event) = rx.try_recv() else {
+                                    break;
+                                };
+                                if let Some(message) = self.handle_stream_event(&event, &mut step_acc) {
+                                    handle.abort();
+                                    outcome_err = Some(message);
+                                    break 'turns;
+                                }
+                            }
+                            // Stream arrival is itself the wake source: paint the new
+                            // prefix now instead of waiting for an arbitrary poll delay.
+                            paint_foreground_frame(self, terminal.as_deref_mut(), false).await?;
+                        } else {
+                            stream_open = false;
+                        }
+                    }
+                    wake = next_foreground_wake(self, &mut ui_tick) => {
+                        render_foreground_wake(self, terminal.as_deref_mut(), wake?).await?;
                     }
                 }
-                // Model streaming is foreground work, not a replacement event loop.
-                // Service the complete TUI before each repaint just as the idle loop
-                // does, including input and every application-owned background poll.
-                tick_foreground_frame(self, terminal.as_deref_mut()).await?;
                 if self.exit.is_requested() {
                     handle.abort();
                     self.busy_state.stop();
@@ -537,6 +566,9 @@ impl TuiApp {
                 }
 
                 if handle.is_finished() {
+                    relay
+                        .await
+                        .map_err(|error| TuiError::Other(format!("stream relay join: {error}")))?;
                     // Drain remaining events
                     while let Ok(ev) = rx.try_recv() {
                         if let Some(message) = self.handle_stream_event(&ev, &mut step_acc) {
@@ -552,9 +584,6 @@ impl TuiApp {
                     }
                     break;
                 }
-
-                // ~10 Hz keeps the timer + spinner smooth without burning CPU
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
             let mut last = match handle.join().await {
@@ -781,6 +810,50 @@ mod responsiveness_tests {
 
     struct BlockingTool;
     struct BlockingModel;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_key_burst_is_not_rate_limited_by_the_animation_tick() {
+        crate::app::tests::helpers::isolate_global_skills();
+        let workspace = tempfile::tempdir().unwrap();
+        let session = AgentSession::create(
+            LoopConfig {
+                workspace: workspace.path().to_path_buf(),
+                journal_dir: workspace.path().join("j"),
+                ..Default::default()
+            },
+            Arc::new(MockModelClient::script(Vec::new())),
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let mut app = TuiApp::new(session, crate::app::tests::helpers::test_runtime_config());
+        app.enter_chat_composer();
+        for _ in 0..160 {
+            app.test_events.push_back(Event::Key(KeyEvent {
+                code: KeyCode::Char('x'),
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            }));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut ui_tick = tokio::time::interval(Duration::from_secs(1));
+        ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let started = Instant::now();
+        while !app.test_events.is_empty() {
+            tick_foreground_frame(&mut app, Some(&mut terminal), &mut ui_tick)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(app.input.text.len(), 160);
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "ready key events waited for the animation tick: {:?}",
+            started.elapsed()
+        );
+    }
 
     #[async_trait]
     impl ModelClient for BlockingModel {
