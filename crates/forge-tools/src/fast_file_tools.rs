@@ -85,6 +85,9 @@ impl From<&FffModeArg> for GrepQueryMode {
     }
 }
 
+type WorkspaceIndexSlot = Arc<OnceLock<Result<Arc<WorkspaceIndex>, String>>>;
+type WorkspaceIndexSlots = Mutex<HashMap<PathBuf, WorkspaceIndexSlot>>;
+
 /// Per-workspace FFF index cache shared by glob/grep/edit.
 ///
 /// Opening starts the scan but does not wait for it. [`Self::index_for`]
@@ -92,7 +95,7 @@ impl From<&FffModeArg> for GrepQueryMode {
 /// that scan on a background thread so session startup can overlap it with
 /// journal I/O and the first prompt.
 pub(crate) struct FastFileState {
-    slots: Mutex<HashMap<PathBuf, Arc<OnceLock<Result<Arc<WorkspaceIndex>, String>>>>>,
+    slots: WorkspaceIndexSlots,
 }
 
 impl FastFileState {
@@ -102,17 +105,7 @@ impl FastFileState {
         }
     }
 
-    fn slot_for(
-        &self,
-        root: &Path,
-    ) -> Result<
-        (
-            PathBuf,
-            Arc<OnceLock<Result<Arc<WorkspaceIndex>, String>>>,
-            bool,
-        ),
-        ToolError,
-    > {
+    fn slot_for(&self, root: &Path) -> Result<(PathBuf, WorkspaceIndexSlot, bool), ToolError> {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let mut slots = self
             .slots
