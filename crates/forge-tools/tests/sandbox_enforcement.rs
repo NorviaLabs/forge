@@ -522,8 +522,11 @@ fn sandbox_is_available_on_linux_in_ci() {
 // until now nothing checked it took.
 // ---------------------------------------------------------------------------
 
-/// Drive `exec_command` to completion and return its combined output.
-async fn exec_command(ws: &Path, cmd: &str) -> String {
+/// Drive `exec_command` to completion and return its result.
+async fn exec_command(
+    ws: &Path,
+    cmd: &str,
+) -> Result<forge_types::ToolOutput, forge_tools::ToolError> {
     use forge_tools::{default_builtins, ToolContext};
 
     let ctx = ToolContext::new(ws.to_path_buf());
@@ -532,14 +535,11 @@ async fn exec_command(ws: &Path, cmd: &str) -> String {
         .find(|t| t.name() == "exec_command")
         .expect("exec_command must be a builtin");
 
-    let started = tool
-        .call(
-            &ctx,
-            serde_json::json!({ "cmd": cmd, "yield_time_ms": 400 }),
-        )
-        .await
-        .expect("exec_command should not error at the tool layer");
-    started.content
+    tool.call(
+        &ctx,
+        serde_json::json!({ "cmd": cmd, "yield_time_ms": 400 }),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -549,15 +549,20 @@ async fn exec_command_cannot_write_outside_the_workspace() {
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("escape-exec.txt");
 
-    let out = exec_command(
+    let error = exec_command(
         ws.path(),
         &format!("echo pwned > {}", target.to_str().unwrap()),
     )
-    .await;
+    .await
+    .expect_err("the sandbox denial must reach the tool layer");
 
     assert!(
         !target.exists(),
-        "the persistent-session path escaped the sandbox: {out}"
+        "the persistent-session path escaped the sandbox: {error}"
+    );
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "exec_command must escalate sandbox denials: {error}"
     );
 }
 
@@ -565,11 +570,17 @@ async fn exec_command_cannot_write_outside_the_workspace() {
 async fn exec_command_cannot_write_git() {
     require_sandbox!();
     let ws = workspace();
-    let out = exec_command(ws.path(), "echo clobbered > .git/HEAD").await;
+    let error = exec_command(ws.path(), "echo clobbered > .git/HEAD")
+        .await
+        .expect_err("the sandbox denial must reach the tool layer");
     assert_eq!(
         std::fs::read_to_string(ws.path().join(".git/HEAD")).unwrap(),
         "ref: refs/heads/main\n",
-        "exec_command wrote .git: {out}"
+        "exec_command wrote .git: {error}"
+    );
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "exec_command must escalate sandbox denials: {error}"
     );
 }
 
@@ -581,10 +592,57 @@ async fn exec_command_still_works_inside_the_workspace() {
         ws.path(),
         "echo hello > inside-exec.txt && cat inside-exec.txt",
     )
-    .await;
+    .await
+    .expect("ordinary workspace command should succeed");
     assert!(
         ws.path().join("inside-exec.txt").exists(),
-        "ordinary work through this path must be unaffected: {out}"
+        "ordinary work through this path must be unaffected: {}",
+        out.content
+    );
+}
+
+#[tokio::test]
+async fn polled_exec_command_escalates_sandbox_denial() {
+    require_sandbox!();
+    use forge_tools::{default_builtins, ToolContext};
+
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("escape-polled-exec.txt");
+    let ctx = ToolContext::new(ws.path().to_path_buf());
+    let tools = default_builtins();
+    let exec = tools
+        .iter()
+        .find(|tool| tool.name() == "exec_command")
+        .expect("exec_command must be a builtin");
+    let started = exec
+        .call(
+            &ctx,
+            serde_json::json!({
+                "cmd": format!("sleep 0.1; echo pwned > {}", target.display()),
+                "yield_time_ms": 10
+            }),
+        )
+        .await
+        .expect("the command should still be running after the initial yield");
+    let body: serde_json::Value = serde_json::from_str(&started.content).unwrap();
+    let session_id = body["session_id"].as_u64().unwrap();
+    let write_stdin = tools
+        .iter()
+        .find(|tool| tool.name() == "write_stdin")
+        .expect("write_stdin must be a builtin");
+    let error = write_stdin
+        .call(
+            &ctx,
+            serde_json::json!({ "session_id": session_id, "yield_time_ms": 400 }),
+        )
+        .await
+        .expect_err("polling must surface the completed sandbox denial");
+
+    assert!(!target.exists(), "the polled command escaped the sandbox");
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "write_stdin must escalate the session denial: {error}"
     );
 }
 
