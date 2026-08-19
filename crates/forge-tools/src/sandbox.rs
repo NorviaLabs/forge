@@ -967,8 +967,7 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
     if output.contains(crate::egress::SANDBOX_DENIED_REASON) {
         return Some(
             "blocked by the sandbox: the destination host is not allowed by the personal \
-             host(...) network permissions. Approve an unconfined run, or allow the host \
-             in your user permissions file.",
+             host(...) network permissions.",
         );
     }
     if NETWORK.iter().any(|sig| output.contains(sig)) {

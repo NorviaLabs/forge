@@ -33,7 +33,7 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use std::path::{Path, PathBuf};
 
@@ -86,7 +86,10 @@ impl EgressPolicy {
     }
 
     pub fn allow(&mut self, pattern: impl Into<String>) -> &mut Self {
-        self.allow.push(pattern.into().to_ascii_lowercase());
+        let pattern = pattern.into().to_ascii_lowercase();
+        if !self.allow.iter().any(|existing| existing == &pattern) {
+            self.allow.push(pattern);
+        }
         self
     }
 
@@ -134,6 +137,58 @@ fn matches_pattern(pattern: &str, host: &str) -> bool {
     pattern == host
 }
 
+/// Live policy and the hosts this proxy has refused, shared by every listener.
+///
+/// The session mutates the policy when the user grants a host so the next
+/// CONNECT (and a confined retry of the same command) sees the new allow
+/// without tearing down the socket.
+#[derive(Clone, Debug)]
+pub struct EgressShared {
+    policy: Arc<RwLock<EgressPolicy>>,
+    denied: Arc<Mutex<Vec<String>>>,
+}
+
+impl EgressShared {
+    fn new(policy: EgressPolicy) -> Self {
+        Self {
+            policy: Arc::new(RwLock::new(policy)),
+            denied: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Permit `pattern` for the rest of this proxy's life.
+    pub fn grant_host(&self, pattern: &str) {
+        self.policy
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .allow(pattern);
+    }
+
+    pub fn take_denied_host(&self) -> Option<String> {
+        let mut denied = self
+            .denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let host = denied.first().cloned();
+        denied.clear();
+        host
+    }
+
+    fn record_denied(&self, host: String) {
+        self.denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(host);
+    }
+
+    fn permits(&self, host: &str) -> bool {
+        self.policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .permits(host)
+    }
+}
+
 /// A running CONNECT proxy.
 ///
 /// Dropping it stops accepting new connections.
@@ -141,6 +196,7 @@ pub struct EgressProxy {
     addr: SocketAddr,
     socket_path: Option<PathBuf>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    shared: EgressShared,
 }
 
 impl Drop for EgressProxy {
@@ -161,13 +217,14 @@ impl EgressProxy {
     pub async fn start(policy: EgressPolicy) -> io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let addr = listener.local_addr()?;
-        let policy = Arc::new(policy);
+        let shared = EgressShared::new(policy);
 
+        let accept = shared.clone();
         let task = tokio::spawn(async move {
             while let Ok((client, _)) = listener.accept().await {
-                let policy = Arc::clone(&policy);
+                let shared = accept.clone();
                 tokio::spawn(async move {
-                    let _ = serve(client, policy).await;
+                    let _ = serve(client, shared).await;
                 });
             }
         });
@@ -176,7 +233,12 @@ impl EgressProxy {
             addr,
             socket_path: None,
             tasks: vec![task],
+            shared,
         })
+    }
+
+    pub fn shared(&self) -> &EgressShared {
+        &self.shared
     }
 
     /// Additionally serve on a Unix socket at `path`.
@@ -205,18 +267,18 @@ impl EgressProxy {
     pub async fn serve_on_unix_socket(
         &mut self,
         path: impl AsRef<Path>,
-        policy: EgressPolicy,
+        _policy: EgressPolicy,
     ) -> io::Result<()> {
         let path = path.as_ref().to_path_buf();
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
-        let policy = Arc::new(policy);
+        let shared = self.shared.clone();
 
         self.tasks.push(tokio::spawn(async move {
             while let Ok((client, _)) = listener.accept().await {
-                let policy = Arc::clone(&policy);
+                let shared = shared.clone();
                 tokio::spawn(async move {
-                    let _ = serve_unix(client, policy).await;
+                    let _ = serve_unix(client, shared).await;
                 });
             }
         }));
@@ -253,7 +315,7 @@ impl EgressProxy {
 /// The stream is split *before* buffering so the read half can be buffered
 /// while the write half stays usable. Wrapping the whole stream and later
 /// unwrapping would discard anything the client pipelined behind its headers.
-async fn serve<S>(client: S, policy: Arc<EgressPolicy>) -> io::Result<()>
+async fn serve<S>(client: S, shared: EgressShared) -> io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
 {
@@ -264,7 +326,7 @@ where
     reader.read_line(&mut request).await?;
 
     let Some(target) = parse_connect(&request) else {
-        return respond(&mut write_half, 400, "Bad Request").await;
+        return respond(&mut write_half, 400, "Bad Request", None).await;
     };
 
     // Drain the remaining request headers before replying.
@@ -283,16 +345,17 @@ where
     // earlier version approved `[crates.io]:443` as `crates.io` and then dialled
     // the bracketed form.
     let Some((host, port)) = split_host_port(&target) else {
-        return respond(&mut write_half, 400, "Bad Request").await;
+        return respond(&mut write_half, 400, "Bad Request", None).await;
     };
 
-    if !policy.permits(&host) {
-        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON).await;
+    if !shared.permits(&host) {
+        shared.record_denied(host.clone());
+        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON, Some(&host)).await;
     }
 
     let upstream = match TcpStream::connect((host.as_str(), port)).await {
         Ok(stream) => stream,
-        Err(_) => return respond(&mut write_half, 502, "Bad Gateway").await,
+        Err(_) => return respond(&mut write_half, 502, "Bad Gateway", None).await,
     };
 
     write_half
@@ -309,8 +372,99 @@ where
     Ok(())
 }
 
-async fn serve_unix(client: UnixStream, policy: Arc<EgressPolicy>) -> io::Result<()> {
-    serve(client, policy).await
+async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> {
+    serve(client, shared).await
+}
+
+/// Family pattern for a denied host, used as `host(...)` in permissions.toml.
+///
+/// `api.github.com` and `github.com` both become `**.github.com` so one grant
+/// covers `gh`, git-over-https, and the rest of that apex.
+pub fn suggest_host_pattern(host: &str) -> String {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {
+        return host;
+    }
+    let labels: Vec<&str> = host.split('.').filter(|label| !label.is_empty()).collect();
+    if labels.len() >= 2 {
+        format!(
+            "**.{}.{}",
+            labels[labels.len() - 2],
+            labels[labels.len() - 1]
+        )
+    } else {
+        host
+    }
+}
+
+pub fn host_allow_rule(host: &str) -> String {
+    format!("host({})", suggest_host_pattern(host))
+}
+
+/// Best-effort host from a failed command's output, when the proxy log is not
+/// available (tests, or a client that never printed the 403 body).
+pub fn extract_denied_host(output: &str) -> Option<String> {
+    if let Some(host) = output
+        .split("host ")
+        .nth(1)
+        .and_then(|rest| rest.split(" is not allowed").next())
+    {
+        if let Some(host) = sanitize_host(host) {
+            return Some(host);
+        }
+    }
+    for marker in [
+        "Could not resolve host: ",
+        "Could not resolve host ",
+        "Failed to connect to ",
+    ] {
+        if let Some(rest) = output.split(marker).nth(1) {
+            let token = rest
+                .split(|c: char| c.is_whitespace() || ['\'', '"', ')', ','].contains(&c))
+                .next()
+                .unwrap_or("");
+            if let Some(host) = sanitize_host(token) {
+                return Some(host);
+            }
+        }
+    }
+    for prefix in ["https://", "http://"] {
+        if let Some(idx) = output.find(prefix) {
+            let rest = &output[idx + prefix.len()..];
+            let hostport = rest
+                .split(['/', '"', '\'', ' ', '\n', '?', '#'])
+                .next()
+                .unwrap_or("");
+            let host = hostport
+                .rsplit_once('@')
+                .map(|(_, h)| h)
+                .unwrap_or(hostport);
+            let host = host.rsplit_once(']').map(|(_, h)| h).unwrap_or(host);
+            let host = host.split(':').next().unwrap_or(host);
+            if let Some(host) = sanitize_host(host) {
+                return Some(host);
+            }
+        }
+    }
+    None
+}
+
+fn sanitize_host(raw: &str) -> Option<String> {
+    let host = raw
+        .trim()
+        .trim_matches(|c| matches!(c, '.' | '"' | '\'' | '`'))
+        .to_ascii_lowercase();
+    if host.is_empty() || host.starts_with('.') || host.contains("..") || host.contains('/') {
+        return None;
+    }
+    if host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+    {
+        Some(host)
+    } else {
+        None
+    }
 }
 
 /// Split a CONNECT target into the host to authorize and the port to dial.
@@ -345,13 +499,27 @@ fn parse_connect(line: &str) -> Option<String> {
     (!target.is_empty()).then(|| target.to_string())
 }
 
-async fn respond<W>(client: &mut W, code: u16, reason: &str) -> io::Result<()>
+async fn respond<W>(
+    client: &mut W,
+    code: u16,
+    reason: &str,
+    denied_host: Option<&str>,
+) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let body =
-        format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-    client.write_all(body.as_bytes()).await?;
+    let body = match denied_host {
+        Some(host) => format!("{reason}: host {host} is not allowed\n"),
+        None => String::new(),
+    };
+    let header = format!(
+        "HTTP/1.1 {code} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    client.write_all(header.as_bytes()).await?;
+    if !body.is_empty() {
+        client.write_all(body.as_bytes()).await?;
+    }
     client.shutdown().await
 }
 
@@ -687,5 +855,79 @@ mod tests {
                 "{malformed:?} must not parse; anything that does is dialled"
             );
         }
+    }
+
+    #[test]
+    fn a_github_api_host_suggests_the_apex_family() {
+        assert_eq!(suggest_host_pattern("api.github.com"), "**.github.com");
+        assert_eq!(suggest_host_pattern("github.com"), "**.github.com");
+        assert_eq!(suggest_host_pattern("uploads.github.com"), "**.github.com");
+        assert_eq!(host_allow_rule("api.github.com"), "host(**.github.com)");
+        assert_eq!(suggest_host_pattern("127.0.0.1"), "127.0.0.1");
+        assert_eq!(suggest_host_pattern("localhost"), "localhost");
+    }
+
+    #[test]
+    fn denied_host_is_pulled_from_gh_and_git_errors() {
+        assert_eq!(
+            extract_denied_host(
+                "failed to authenticate: Post \"https://api.github.com/graphql\": Forge Sandbox Denied"
+            )
+            .as_deref(),
+            Some("api.github.com")
+        );
+        assert_eq!(
+            extract_denied_host(
+                "fatal: unable to access 'https://github.com/x/y': Could not resolve host: github.com"
+            )
+            .as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            extract_denied_host("Forge Sandbox Denied: host crates.io is not allowed\n").as_deref(),
+            Some("crates.io")
+        );
+    }
+
+    #[tokio::test]
+    async fn granting_a_host_unblocks_the_next_connect() {
+        let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+        let status = {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            let mut stream = TcpStream::connect(("127.0.0.1", proxy.addr().port()))
+                .await
+                .unwrap();
+            stream
+                .write_all(b"CONNECT api.github.com:443 HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            line
+        };
+        assert!(status.contains("403"), "{status}");
+        assert_eq!(
+            proxy.shared().take_denied_host().as_deref(),
+            Some("api.github.com")
+        );
+
+        proxy.shared().grant_host("**.github.com");
+        let status = {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            let mut stream = TcpStream::connect(("127.0.0.1", proxy.addr().port()))
+                .await
+                .unwrap();
+            stream
+                .write_all(b"CONNECT api.github.com:443 HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            line
+        };
+        assert!(
+            !status.contains("403"),
+            "a granted family must not 403, got {status:?}"
+        );
     }
 }

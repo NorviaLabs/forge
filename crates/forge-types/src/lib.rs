@@ -560,6 +560,10 @@ pub struct HitlPayload {
     pub reason: String,
     #[serde(default)]
     pub sandbox_escalation: bool,
+    /// Host the egress proxy refused, when this prompt is a network grant
+    /// rather than an unconfined retry. `None` for MCP and filesystem HITL.
+    #[serde(default)]
+    pub denied_host: Option<String>,
 }
 
 /// Identifies one user-requested unit of work within a session. A new task
@@ -682,6 +686,7 @@ mod tests {
                 args_redacted: serde_json::json!({}),
                 reason: "policy requires human approval".into(),
                 sandbox_escalation: false,
+                denied_host: None,
             },
         };
         assert_eq!(approval.request_id(), "r1");

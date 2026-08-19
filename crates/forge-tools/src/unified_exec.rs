@@ -45,6 +45,7 @@ fn sandbox_denial(
         ToolError::SandboxDenied {
             content: output.to_string(),
             reason: explanation.to_string(),
+            denied_host: crate::egress::extract_denied_host(output),
         }
     })
 }
