@@ -206,16 +206,25 @@ impl AgentSession {
         completed: CompletedToolApplication,
     ) -> Result<ModelResponseApplication, LoopError> {
         let mut pending = completed.remaining;
-        if let Err(ToolError::SandboxDenied { reason, .. }) = &completed.execution.result {
+        if let Err(ToolError::SandboxDenied {
+            reason,
+            denied_host,
+            ..
+        }) = &completed.execution.result
+        {
             let call = completed.execution.call.clone();
             pending.budget = completed.execution.budget;
             self.turn.restore_validation_budget(pending.budget);
+            let denied_host = self
+                .take_denied_egress_host()
+                .or_else(|| denied_host.clone());
             let payload = HitlPayload {
                 call_id: call.id.clone(),
                 tool: call.name.clone(),
                 args_redacted: self.governance.redact_args(&call.arguments),
                 reason: reason.clone(),
-                sandbox_escalation: true,
+                sandbox_escalation: denied_host.is_none(),
+                denied_host,
             };
             self.journal
                 .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
@@ -539,6 +548,7 @@ impl AgentSession {
                         args_redacted: redacted,
                         reason: "policy requires human approval".into(),
                         sandbox_escalation: false,
+                        denied_host: None,
                     };
                     self.journal
                         .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())

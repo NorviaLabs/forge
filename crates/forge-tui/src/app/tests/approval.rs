@@ -12,6 +12,7 @@ fn bash_hitl_payload(call_id: &str, command: &str) -> HitlPayload {
         args_redacted: json!({"command": command}),
         reason: "test approval".into(),
         sandbox_escalation: false,
+        denied_host: None,
     }
 }
 
@@ -64,6 +65,7 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
             args_redacted: json!({"command": "git push -u origin main"}),
             reason: "test approval".into(),
             sandbox_escalation: false,
+            denied_host: None,
         },
     );
 
@@ -104,6 +106,7 @@ async fn approval_leaves_underlying_workspace_untouched() {
             args_redacted: json!({"command": "cargo test"}),
             reason: "test approval".into(),
             sandbox_escalation: false,
+            denied_host: None,
         },
     );
 
@@ -570,6 +573,41 @@ async fn interrupting_an_approved_command_clears_the_card_and_recovers() {
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(
         !rendered.contains("Forge wants to run a shell command."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn a_denied_host_offers_a_persistent_grant_not_an_unconfined_run() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(
+        &mut app,
+        HitlPayload {
+            call_id: "gh".into(),
+            tool: "bash".into(),
+            args_redacted: json!({"command": "gh pr create"}),
+            reason: "blocked by the sandbox: the destination host is not allowed".into(),
+            sandbox_escalation: false,
+            denied_host: Some("api.github.com".into()),
+        },
+    );
+
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(
+        rendered.contains("Forge wants to allow network access to **.github.com."),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Always allow **.github.com"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Allow **.github.com this session"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Run once"), "{rendered}");
+    assert!(
+        !rendered.contains("Remember similar commands this session"),
         "{rendered}"
     );
 }

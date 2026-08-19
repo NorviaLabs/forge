@@ -168,6 +168,13 @@ impl TuiApp {
         let Some(payload) = self.session.pending_hitl() else {
             return Vec::new();
         };
+        if payload.denied_host.is_some() {
+            return vec![
+                ApprovalMenuKind::AllowPattern,
+                ApprovalMenuKind::AllowOnce,
+                ApprovalMenuKind::Deny,
+            ];
+        }
         let approval = self.approval_state_for_payload(payload);
         let mut kinds = vec![ApprovalMenuKind::AllowOnce];
         if approval.pattern_allow_eligible {
@@ -181,6 +188,35 @@ impl TuiApp {
         let Some(payload) = self.session.pending_hitl() else {
             return Vec::new();
         };
+        if let Some(host) = payload.denied_host.as_deref() {
+            let pattern = forge_tools::egress::suggest_host_pattern(host);
+            return self
+                .approval_menu_kinds()
+                .into_iter()
+                .map(|kind| match kind {
+                    ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
+                        label: format!("Always allow {pattern}"),
+                        detail: Some(forge_tools::egress::host_allow_rule(host)),
+                        help: Some(format!(
+                            "Writes {rule} to your personal permissions file. Kept next session.",
+                            rule = forge_tools::egress::host_allow_rule(host)
+                        )),
+                    },
+                    ApprovalMenuKind::AllowOnce => crate::conversation::ApprovalMenuRow {
+                        label: format!("Allow {pattern} this session"),
+                        detail: Some(pattern.clone()),
+                        help: Some(
+                            "The sandbox stays on. You will be asked again next session.".into(),
+                        ),
+                    },
+                    ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
+                        label: "Don't run".into(),
+                        detail: None,
+                        help: Some("The agent is told the command was denied.".into()),
+                    },
+                })
+                .collect();
+        }
         let call = tool_call_for_payload(payload);
         let remembered = forge_governance::suggest_pattern(&call);
         self.approval_menu_kinds()
@@ -308,7 +344,9 @@ impl TuiApp {
                 let Some(payload) = self.session.pending_hitl().cloned() else {
                     return;
                 };
-                if self.session_pattern_call_for_payload(&payload).is_none() {
+                if payload.denied_host.is_none()
+                    && self.session_pattern_call_for_payload(&payload).is_none()
+                {
                     self.set_feedback(
                         FeedbackSeverity::Warn,
                         "this call has no session pattern to remember; use Run once or Don't run",
@@ -375,6 +413,28 @@ impl TuiApp {
         let Some(payload) = self.session.pending_hitl().cloned() else {
             return Ok(());
         };
+
+        if let Some(host) = payload.denied_host.clone() {
+            let pattern = forge_tools::egress::suggest_host_pattern(&host);
+            if remember_exact_direct {
+                if let Err(error) = forge_config::append_user_allow_rule(
+                    &forge_tools::egress::host_allow_rule(&host),
+                ) {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("could not write personal permissions: {error}"),
+                    );
+                }
+            }
+            self.session.grant_egress_host(&pattern);
+            self.apply_approved_hitl(terminal).await?;
+            self.push_toast(if remember_exact_direct {
+                format!("always allowed {pattern}")
+            } else {
+                format!("allowed {pattern} for the session")
+            });
+            return Ok(());
+        }
 
         if remember_exact_direct {
             let Some(call) = self.session_pattern_call_for_payload(&payload) else {

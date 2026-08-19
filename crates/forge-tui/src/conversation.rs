@@ -659,7 +659,10 @@ impl ConversationRender for ConversationModel {
                 ConversationBlock::ApprovalPending(p) => {
                     const HINT: &str = "↑↓  Enter  Esc don't run";
                     let pad = " ".repeat(MESSAGE_PADDING);
-                    let question = approval_question(&p.tool);
+                    let question = p
+                        .question
+                        .as_deref()
+                        .unwrap_or_else(|| approval_question(&p.tool));
                     let question_style = if p.focused {
                         theme::text().add_modifier(Modifier::BOLD)
                     } else {
@@ -2490,6 +2493,7 @@ mod tests {
                 command: "git push -u origin feature".into(),
                 cwd: "workspace".into(),
                 env_delta: "inherited".into(),
+                question: None,
             },
             vec![
                 ApprovalMenuRow {
@@ -2555,6 +2559,7 @@ mod tests {
                 command: "ls".into(),
                 cwd: "wd".into(),
                 env_delta: "inherited".into(),
+                question: None,
             },
             vec![ApprovalMenuRow {
                 label: "Run once".into(),

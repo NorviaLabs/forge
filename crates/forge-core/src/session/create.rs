@@ -303,6 +303,19 @@ impl AgentSession {
         self.egress = runtime;
     }
 
+    /// Permit `pattern` on the live proxy without replacing the socket.
+    pub fn grant_egress_host(&self, pattern: &str) {
+        if let Some(runtime) = &self.egress {
+            runtime.grant_host(pattern);
+        }
+    }
+
+    pub fn take_denied_egress_host(&self) -> Option<String> {
+        self.egress
+            .as_ref()
+            .and_then(|runtime| runtime.take_denied_host())
+    }
+
     /// Remember the suggested pattern for `call` for the rest of this session.
     pub fn allow_suggested_pattern_for_session(&mut self, call: &forge_types::ToolCall) -> String {
         self.governance.allow_suggested_pattern_for_session(call)

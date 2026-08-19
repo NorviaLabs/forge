@@ -335,6 +335,7 @@ pub struct ApprovalRequestView {
     pub command: String,
     pub cwd: String,
     pub env_delta: String,
+    pub question: Option<String>,
 }
 
 /// One selectable row on the inline approval menu.
@@ -355,6 +356,7 @@ pub struct ApprovalPendingPresentation {
     pub command: String,
     pub cwd: String,
     pub env_delta: String,
+    pub question: Option<String>,
     pub options: Vec<ApprovalMenuRow>,
     pub selected: usize,
     /// Whether the approval card itself holds focus (accent border vs muted).
@@ -733,6 +735,7 @@ impl ConversationModel {
                 command: request.command,
                 cwd: request.cwd,
                 env_delta: request.env_delta,
+                question: request.question,
                 options,
                 selected,
                 focused,

@@ -282,7 +282,12 @@ async fn a_denied_command_explains_which_boundary_stopped_it() {
         .await
         .unwrap_err();
 
-    let forge_tools::ToolError::SandboxDenied { content, reason } = error else {
+    let forge_tools::ToolError::SandboxDenied {
+        content,
+        reason,
+        denied_host: _,
+    } = error
+    else {
         panic!("expected a structured sandbox denial");
     };
     assert!(content.contains("blocked by the sandbox"), "{content}");

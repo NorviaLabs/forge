@@ -54,7 +54,11 @@ pub enum ToolError {
     #[error("execution failed: {0}")]
     Execution(String),
     #[error("sandbox denied command: {reason}")]
-    SandboxDenied { content: String, reason: String },
+    SandboxDenied {
+        content: String,
+        reason: String,
+        denied_host: Option<String>,
+    },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

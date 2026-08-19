@@ -406,9 +406,11 @@ async fn run_shell_command_inner(
                 content.push('\n');
             }
             content.push_str(explanation);
+            let denied_host = crate::egress::extract_denied_host(&content);
             return Err(ToolError::SandboxDenied {
                 content,
                 reason: explanation.to_string(),
+                denied_host,
             });
         }
     }

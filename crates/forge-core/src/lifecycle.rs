@@ -201,6 +201,7 @@ mod tests {
                 args_redacted: serde_json::json!({}),
                 reason: "policy requires human approval".into(),
                 sandbox_escalation: false,
+                denied_host: None,
             },
         }
     }
