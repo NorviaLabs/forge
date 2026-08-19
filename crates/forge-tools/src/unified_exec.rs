@@ -71,6 +71,7 @@ struct Session {
     command: String,
     confined: bool,
     workspace_root: PathBuf,
+    _session_tmp: Option<Arc<crate::SessionTempDir>>,
     child: Child,
     stdin: Option<ChildStdin>,
     stdout: ChildStdout,
@@ -229,7 +230,11 @@ async fn start(
     // itself gated — a session that starts unconfined accepts arbitrary
     // commands unconfined for as long as it lives.
     let shell = args.shell.as_deref().unwrap_or("sh");
-    let policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root);
+    let mut policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root)
+        .with_egress(ctx.egress.as_deref());
+    if let Some(session_tmp) = &ctx.session_tmp {
+        policy = policy.with_session_tmp(session_tmp.path());
+    }
     let wrapped = crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy);
     let confined = wrapped.is_some();
     let mut command = match wrapped {
@@ -247,6 +252,12 @@ async fn start(
     for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
         command.env_remove(name);
     }
+    for (name, value) in crate::sandbox::temp_env(&policy) {
+        command.env(name, value);
+    }
+    for (name, value) in crate::sandbox::egress_env(&policy) {
+        command.env(name, value);
+    }
     let mut child = command
         .current_dir(&ctx.workspace_root)
         .stdin(Stdio::piped())
@@ -258,6 +269,7 @@ async fn start(
         command: args.cmd.clone(),
         confined,
         workspace_root: ctx.workspace_root.clone(),
+        _session_tmp: ctx.session_tmp.clone(),
         stdin: Some(
             child
                 .stdin

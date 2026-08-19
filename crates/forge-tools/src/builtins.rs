@@ -35,6 +35,7 @@ impl Tool for ReadFileTool {
     fn name(&self) -> &str {
         "read_file"
     }
+
     fn description(&self) -> &str {
         "Read a text file from the workspace"
     }
@@ -297,13 +298,23 @@ pub async fn run_shell_command_with_egress(
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, true).await
+    run_shell_command_inner(command, workspace_root, egress, None, true).await
+}
+
+pub async fn run_shell_command_with_egress_and_temp(
+    command: &str,
+    workspace_root: &Path,
+    egress: Option<&crate::sandbox::EgressGrant>,
+    session_tmp: Option<&Path>,
+) -> Result<ToolOutput, ToolError> {
+    run_shell_command_inner(command, workspace_root, egress, session_tmp, true).await
 }
 
 async fn run_shell_command_inner(
     command: &str,
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
+    session_tmp: Option<&Path>,
     confined: bool,
 ) -> Result<ToolOutput, ToolError> {
     // Do not use a login shell: `bash -l` sources profile files, which can
@@ -312,7 +323,11 @@ async fn run_shell_command_inner(
     // Confinement is applied here, at spawn, because that is the only moment
     // it can be: a process that starts unconfined stays unconfined for its
     // whole life. The supported CLI never starts when the host cannot confine.
-    let policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root).with_egress(egress);
+    let mut policy =
+        crate::sandbox::SandboxPolicy::for_workspace(workspace_root).with_egress(egress);
+    if let Some(session_tmp) = session_tmp {
+        policy = policy.with_session_tmp(session_tmp);
+    }
     let wrapped = confined
         .then(|| crate::sandbox::wrap_shell_command("bash", command, &policy))
         .flatten();
@@ -354,6 +369,9 @@ async fn run_shell_command_inner(
         shell.env_remove(name);
     }
     for (name, value) in crate::sandbox::egress_env(&policy) {
+        shell.env(name, value);
+    }
+    for (name, value) in crate::sandbox::temp_env(&policy) {
         shell.env(name, value);
     }
 
@@ -473,6 +491,7 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
             &a.command,
             &ctx.workspace_root,
             ctx.egress.as_deref(),
+            ctx.session_tmp.as_deref().map(|temp| temp.path()),
             !ctx.unconfined_shell,
         )
         .await
@@ -1473,6 +1492,32 @@ mod tests {
     use crate::validation::validate_args;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn bash_tool_uses_private_session_temp() {
+        let workspace = tempfile::tempdir().unwrap();
+        let session_tmp = crate::SessionTempDir::create("bash-temp-test").unwrap();
+        let ctx = ToolContext::new(workspace.path().to_path_buf())
+            .with_session_tmp(session_tmp.clone())
+            .with_unconfined_shell();
+        let output = BashTool
+            .call(
+                &ctx,
+                serde_json::json!({
+                    "command": "printf '%s\\n%s\\n%s' \"$TMPDIR\" \"$TMP\" \"$TEMP\"; touch \"$TMPDIR/probe\""
+                }),
+            )
+            .await
+            .unwrap();
+
+        let expected = session_tmp.path().to_string_lossy();
+        assert_eq!(
+            output.content,
+            format!("{expected}\n{expected}\n{expected}")
+        );
+        assert!(session_tmp.path().join("probe").exists());
+        assert!(!workspace.path().join("probe").exists());
+    }
 
     #[test]
     fn read_schema_rejects_number_path() {

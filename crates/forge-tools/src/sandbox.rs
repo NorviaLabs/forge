@@ -38,6 +38,13 @@ pub enum Unavailable {
     MissingDependency(&'static str),
 }
 
+pub fn temp_env(policy: &SandboxPolicy) -> Vec<(&'static str, &Path)> {
+    match policy.session_tmp.as_deref() {
+        Some(path) => vec![("TMPDIR", path), ("TMP", path), ("TEMP", path)],
+        None => Vec::new(),
+    }
+}
+
 impl Unavailable {
     /// Short reason for logs and tests.
     pub fn reason(&self) -> String {
@@ -1288,6 +1295,21 @@ mod relay_tests {
     fn no_egress_grant_means_no_proxy_env() {
         let ws = workspace();
         assert!(egress_env(&SandboxPolicy::for_workspace(ws.path())).is_empty());
+    }
+
+    #[test]
+    fn session_temp_sets_all_standard_temp_variables() {
+        let ws = workspace();
+        let scratch = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_session_tmp(scratch.path());
+        let env = temp_env(&policy);
+
+        assert_eq!(env.len(), 3);
+        for name in ["TMPDIR", "TMP", "TEMP"] {
+            assert!(env
+                .iter()
+                .any(|(key, value)| { *key == name && *value == scratch.path() }));
+        }
     }
 }
 
