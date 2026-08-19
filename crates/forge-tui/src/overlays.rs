@@ -3674,6 +3674,7 @@ mod request_view_tests {
                 tool: "bash".into(),
                 args_redacted: serde_json::json!({"command": "git push -u origin feature"}),
                 reason: "policy requires human approval".into(),
+                sandbox_escalation: false,
             },
             "workspace",
         );
@@ -3691,6 +3692,7 @@ mod request_view_tests {
                 tool: "write_file".into(),
                 args_redacted: serde_json::json!({"path": "a.txt", "content": "hi"}),
                 reason: "policy".into(),
+                sandbox_escalation: false,
             },
             "wd",
         );

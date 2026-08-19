@@ -201,6 +201,7 @@ pub(crate) fn direct_hitl_payload(call_id: &str, path: &str) -> HitlPayload {
         tool: "read_file".into(),
         args_redacted: json!({"path": path}),
         reason: "test approval".into(),
+        sandbox_escalation: false,
     }
 }
 

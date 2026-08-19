@@ -200,6 +200,7 @@ mod tests {
                 tool: "bash".into(),
                 args_redacted: serde_json::json!({}),
                 reason: "policy requires human approval".into(),
+                sandbox_escalation: false,
             },
         }
     }

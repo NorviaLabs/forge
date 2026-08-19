@@ -51,6 +51,8 @@ pub enum ToolError {
     Unknown(String),
     #[error("execution failed: {0}")]
     Execution(String),
+    #[error("sandbox denied command: {reason}")]
+    SandboxDenied { content: String, reason: String },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -63,11 +65,12 @@ impl ToolError {
     pub fn as_outcome(&self) -> ExecutionOutcome {
         match self {
             ToolError::Validation(_) => ExecutionOutcome::Failed { exit_code: None },
-            ToolError::Unknown(_) | ToolError::Execution(_) | ToolError::Io(_) => {
-                ExecutionOutcome::SpawnFailed {
-                    reason: self.to_string(),
-                }
-            }
+            ToolError::Unknown(_)
+            | ToolError::Execution(_)
+            | ToolError::SandboxDenied { .. }
+            | ToolError::Io(_) => ExecutionOutcome::SpawnFailed {
+                reason: self.to_string(),
+            },
         }
     }
 }

@@ -558,6 +558,8 @@ pub struct HitlPayload {
     pub tool: String,
     pub args_redacted: serde_json::Value,
     pub reason: String,
+    #[serde(default)]
+    pub sandbox_escalation: bool,
 }
 
 /// Identifies one user-requested unit of work within a session. A new task
@@ -679,6 +681,7 @@ mod tests {
                 tool: "bash".into(),
                 args_redacted: serde_json::json!({}),
                 reason: "policy requires human approval".into(),
+                sandbox_escalation: false,
             },
         };
         assert_eq!(approval.request_id(), "r1");

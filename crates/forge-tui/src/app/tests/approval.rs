@@ -11,6 +11,7 @@ fn bash_hitl_payload(call_id: &str, command: &str) -> HitlPayload {
         tool: "bash".into(),
         args_redacted: json!({"command": command}),
         reason: "test approval".into(),
+        sandbox_escalation: false,
     }
 }
 
@@ -62,6 +63,7 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
             tool: "bash".into(),
             args_redacted: json!({"command": "git push -u origin main"}),
             reason: "test approval".into(),
+            sandbox_escalation: false,
         },
     );
 
@@ -101,6 +103,7 @@ async fn approval_leaves_underlying_workspace_untouched() {
             tool: "bash".into(),
             args_redacted: json!({"command": "cargo test"}),
             reason: "test approval".into(),
+            sandbox_escalation: false,
         },
     );
 
