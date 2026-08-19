@@ -206,57 +206,17 @@ impl AgentSession {
         completed: CompletedToolApplication,
     ) -> Result<ModelResponseApplication, LoopError> {
         let mut pending = completed.remaining;
-        if let Err(ToolError::SandboxDenied {
-            reason,
-            denied_host,
-            ..
-        }) = &completed.execution.result
+        if let Some((reason, denied_host)) =
+            sandbox_hitl_from_result(&completed.execution.result, self.peek_denied_egress_host())
         {
             let call = completed.execution.call.clone();
             pending.budget = completed.execution.budget;
             self.turn.restore_validation_budget(pending.budget);
-            let denied_host = self
-                .take_denied_egress_host()
-                .or_else(|| denied_host.clone());
-            let payload = HitlPayload {
-                call_id: call.id.clone(),
-                tool: call.name.clone(),
-                args_redacted: self.governance.redact_args(&call.arguments),
-                reason: reason.clone(),
-                sandbox_escalation: denied_host.is_none(),
-                denied_host,
-            };
-            self.journal
-                .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
-                .await?;
-            self.enter_waiting(
-                WaitReason::Approval {
-                    request_id: payload.call_id.clone(),
-                    payload: payload.clone(),
-                },
-                TransitionReason::HitlWait,
-            )
-            .await?;
-            self.events.push(TurnEvent {
-                kind: "hitl_wait".into(),
-                detail: payload.tool.clone(),
-            });
-            self.turn.push_evidence(
-                EvidenceEntry::new(ExecutionEvent::WaitingForUser)
-                    .operation_id(call.id.clone())
-                    .tool_name(call.name.clone()),
-            );
-            return Ok(ModelResponseApplication::Finished(ApplyOutcome::Hitl(
-                ModelResponse {
-                    text: format!(
-                        "Sandbox blocked {}; awaiting approval to run unconfined",
-                        call.name
-                    ),
-                    tool_calls: vec![call],
-                    usage: None,
-                    thinking: None,
-                },
-            )));
+            let denied_host = self.take_denied_egress_host().or(denied_host);
+            return self
+                .enter_sandbox_hitl(call, reason, denied_host)
+                .await
+                .map(ModelResponseApplication::Finished);
         }
         let (budget, result) = self.finish_tool_call(completed.execution).await;
         pending.budget = budget;
@@ -837,5 +797,84 @@ impl AgentSession {
             }
         }
         Ok(())
+    }
+
+    async fn enter_sandbox_hitl(
+        &mut self,
+        call: ToolCall,
+        reason: String,
+        denied_host: Option<String>,
+    ) -> Result<ApplyOutcome, LoopError> {
+        let payload = HitlPayload {
+            call_id: call.id.clone(),
+            tool: call.name.clone(),
+            args_redacted: self.governance.redact_args(&call.arguments),
+            reason,
+            sandbox_escalation: denied_host.is_none(),
+            denied_host: denied_host.clone(),
+        };
+        self.journal
+            .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
+            .await?;
+        self.enter_waiting(
+            WaitReason::Approval {
+                request_id: payload.call_id.clone(),
+                payload: payload.clone(),
+            },
+            TransitionReason::HitlWait,
+        )
+        .await?;
+        self.events.push(TurnEvent {
+            kind: "hitl_wait".into(),
+            detail: payload.tool.clone(),
+        });
+        self.turn.push_evidence(
+            EvidenceEntry::new(ExecutionEvent::WaitingForUser)
+                .operation_id(call.id.clone())
+                .tool_name(call.name.clone()),
+        );
+        let text = match denied_host {
+            Some(host) => {
+                format!("Sandbox blocked network to {host}; awaiting approval to allow that host")
+            }
+            None => format!(
+                "Sandbox blocked {}; awaiting approval to run unconfined",
+                call.name
+            ),
+        };
+        Ok(ApplyOutcome::Hitl(ModelResponse {
+            text,
+            tool_calls: vec![call],
+            usage: None,
+            thinking: None,
+        }))
+    }
+}
+
+/// When to pause for a sandbox HITL.
+///
+/// A confined `gh` / curl failure often looks like GitHub auth (`HTTP 403`,
+/// `token is invalid`) because the CONNECT proxy's 403 is what the client
+/// prints. The proxy log is the source of truth: if it refused a host during
+/// this command, ask to grant that host rather than recording a fake auth
+/// failure.
+fn sandbox_hitl_from_result(
+    result: &Result<ToolOutput, ToolError>,
+    peeked_denied_host: Option<String>,
+) -> Option<(String, Option<String>)> {
+    const HOST_REASON: &str = "blocked by the sandbox: the destination host is not allowed by \
+         the personal host(...) network permissions.";
+    match result {
+        Err(ToolError::SandboxDenied {
+            reason,
+            denied_host,
+            ..
+        }) => Some((reason.clone(), denied_host.clone())),
+        Err(ToolError::Validation(_)) => None,
+        Ok(output) if output.is_error => {
+            peeked_denied_host.map(|host| (HOST_REASON.into(), Some(host)))
+        }
+        Err(_) => peeked_denied_host.map(|host| (HOST_REASON.into(), Some(host))),
+        Ok(_) => None,
     }
 }
