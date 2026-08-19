@@ -11,8 +11,8 @@ pub(crate) enum InputRoute {
     StartNewTask,
     /// `Working`: not answering anything active, becomes a future queue item.
     QueueFutureTask,
-    /// `Waiting` on `WaitReason::Clarification` — no runtime producer exists
-    /// yet, kept for structural completeness (see `forge_types::WaitReason`).
+    /// `Waiting` on `WaitReason::Question` (or the unused `Clarification`
+    /// stub): composer text is a free-text / Other answer.
     AnswerClarification,
     /// `Waiting` on `WaitReason::Selection` — same caveat as above.
     ResolveSelection,
@@ -43,7 +43,9 @@ pub(crate) fn classify_input(
         }
         return match &active.wait_reason {
             Some(WaitReason::Approval { .. }) => InputRoute::RejectStaleResponse,
-            Some(WaitReason::Clarification { .. }) => InputRoute::AnswerClarification,
+            Some(WaitReason::Question { .. }) | Some(WaitReason::Clarification { .. }) => {
+                InputRoute::AnswerClarification
+            }
             Some(WaitReason::Selection { .. }) => InputRoute::ResolveSelection,
             // `MissingConfiguration`/`ExternalAction` (and any future
             // variant) have no defined resolution-via-composer-text path.
@@ -150,10 +152,26 @@ mod tests {
 
     #[test]
     fn waiting_on_clarification_or_selection_route_distinctly() {
+        let question = state(
+            TaskLifecycle::Waiting,
+            Some(WaitReason::Question {
+                request_id: "r2".into(),
+                payload: forge_types::QuestionPayload {
+                    call_id: "r2".into(),
+                    tool: "ask_user_question".into(),
+                    questions: vec![],
+                },
+            }),
+        );
+        assert_eq!(
+            classify_input(&question, false, "OAuth 2.0"),
+            InputRoute::AnswerClarification
+        );
+
         let clarification = state(
             TaskLifecycle::Waiting,
             Some(WaitReason::Clarification {
-                request_id: "r2".into(),
+                request_id: "r2b".into(),
             }),
         );
         assert_eq!(

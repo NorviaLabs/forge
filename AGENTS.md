@@ -15,7 +15,8 @@ Key crates:
 - `crates/forge-connect`: Provider profiles, credential store, model catalog, `/connect` support.
 - `crates/forge-tools`: Built-in tools and validation.
   Includes `update_plan` (model-callable checklist; emits a `plan_update`
-  turn event; no persisted plan state).
+  turn event; no persisted plan state) and `ask_user_question` (pauses the
+  turn on `WaitReason::Question` until the user answers).
 - `crates/forge-mcp`: MCP client and remote tool registration.
 - `crates/forge-config`: Config loading and model/provider migration.
 - `docs/`: User/design documentation.

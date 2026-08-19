@@ -2676,6 +2676,144 @@ async fn update_plan_emits_plan_update_event_and_ack_message() {
     assert_eq!(tool_msg.name.as_deref(), Some("update_plan"));
 }
 
+#[tokio::test]
+async fn ask_user_question_pauses_until_answered() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "q-1".into(),
+                name: "ask_user_question".into(),
+                arguments: json!({
+                    "questions": [{
+                        "id": "db",
+                        "header": "Database",
+                        "question": "Which database?",
+                        "options": [
+                            {"label": "Postgres (Recommended)", "description": "Relational."},
+                            {"label": "SQLite", "description": "Local file."}
+                        ]
+                    }]
+                }),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "Using Postgres.".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    let result = s.run_user_message("pick a db").await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+    assert!(s.pending_question().is_some());
+    assert!(result.text.contains("Awaiting answers"));
+
+    s.resolve_question(
+        Some(forge_types::AskUserQuestionResult {
+            answers: vec![forge_types::AskUserQuestionAnswerItem {
+                id: "db".into(),
+                selected: vec!["Postgres (Recommended)".into()],
+                custom: None,
+            }],
+        }),
+        "test",
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
+    assert!(s.pending_question().is_none());
+    let tool_msg = s
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Tool)
+        .expect("tool message");
+    assert!(tool_msg.content.contains("Postgres (Recommended)"));
+
+    s.run_agent_turns(None).await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+}
+
+#[tokio::test]
+async fn ask_user_question_dismiss_returns_a_tool_result() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+    let mut budget = ValidationBudget::default();
+    let call = ToolCall {
+        id: "q-2".into(),
+        name: "ask_user_question".into(),
+        arguments: json!({"questions": [{"question": "Continue?"}]}),
+    };
+    s.transition_to_new_task(TaskId(1)).await.unwrap();
+    s.start_tool_call(&call, &mut budget).await.unwrap();
+    assert!(s.pending_question().is_some());
+
+    s.resolve_question(None, "test").await.unwrap();
+    let tool_msg = s
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Tool)
+        .expect("tool message");
+    assert!(tool_msg.content.contains("dismissed"));
+}
+
+#[tokio::test]
+async fn ask_user_question_invalid_args_do_not_pause() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+    let mut budget = ValidationBudget::default();
+    let call = ToolCall {
+        id: "q-bad".into(),
+        name: "ask_user_question".into(),
+        arguments: json!({"questions": []}),
+    };
+    s.transition_to_new_task(TaskId(1)).await.unwrap();
+    s.start_tool_call(&call, &mut budget).await.unwrap();
+    assert!(s.pending_question().is_none());
+    let tool_msg = s
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Tool)
+        .expect("tool message");
+    assert!(tool_msg.content.contains("1–4") || tool_msg.content.contains("1-4"));
+}
+
+#[test]
+fn restored_wait_reason_reads_question_envelope() {
+    let value = json!({
+        "kind": "ask_user_question",
+        "call_id": "c1",
+        "tool": "ask_user_question",
+        "questions": [{
+            "id": "q1",
+            "question": "Go?",
+            "header": "Go",
+            "options": [],
+            "multi_select": false
+        }]
+    });
+    let reason = restored_wait_reason(&Some(value)).unwrap();
+    match reason {
+        WaitReason::Question {
+            request_id,
+            payload,
+        } => {
+            assert_eq!(request_id, "c1");
+            assert_eq!(payload.questions[0].question, "Go?");
+        }
+        other => panic!("expected question wait, got {other:?}"),
+    }
+}
+
 // --- Verified Task Completion: integration tests --------------------
 
 /// Governance/HITL gating is orthogonal to completion verification —

@@ -319,7 +319,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
         ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
         ConversationBlock::ActiveProgress(_) | ConversationBlock::Metadata(_) => 1,
-        ConversationBlock::ApprovalPending(_) => 8,
+        ConversationBlock::ApprovalPending(_) | ConversationBlock::QuestionPending(_) => 8,
     };
     body.saturating_add(2)
 }
@@ -730,6 +730,84 @@ impl ConversationRender for ConversationModel {
                         }
                     }
                     for wrapped in wrap(HINT, prose_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(pad.clone()),
+                            Span::styled(wrapped, theme::metadata_style()),
+                        ]));
+                    }
+                    if gap {
+                        lines.extend([Line::from(""), Line::from("")]);
+                    }
+                }
+                ConversationBlock::QuestionPending(p) => {
+                    const HINT_SINGLE: &str = "↑↓  Enter  Esc skip";
+                    const HINT_MULTI: &str = "↑↓  Space  Enter  Esc skip";
+                    const HINT_TABS: &str = "←/→ questions  ↑↓  Enter  Esc skip";
+                    let pad = " ".repeat(MESSAGE_PADDING);
+                    let title = if p.question_count > 1 {
+                        format!(
+                            "{} ({}/{})",
+                            p.header,
+                            p.question_index + 1,
+                            p.question_count
+                        )
+                    } else {
+                        p.header.clone()
+                    };
+                    let title_style = if p.focused {
+                        theme::text().add_modifier(Modifier::BOLD)
+                    } else {
+                        theme::text()
+                    };
+                    for wrapped in wrap(&title, prose_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(pad.clone()),
+                            Span::styled(wrapped, title_style),
+                        ]));
+                    }
+                    for wrapped in wrap(&p.question, prose_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(pad.clone()),
+                            Span::styled(wrapped, theme::text()),
+                        ]));
+                    }
+                    for (idx, opt) in p.options.iter().enumerate() {
+                        let selected = idx == p.selected;
+                        let marker = if selected { "›" } else { " " };
+                        let check = if opt.chosen { "● " } else { "" };
+                        let style = if selected {
+                            theme::text().add_modifier(Modifier::BOLD)
+                        } else {
+                            theme::muted()
+                        };
+                        let row = format!("{marker} {check}{}", opt.label);
+                        for wrapped in wrap(&row, prose_width) {
+                            lines.push(Line::from(vec![
+                                Span::raw(pad.clone()),
+                                Span::styled(wrapped, style),
+                            ]));
+                        }
+                        if selected {
+                            if let Some(desc) =
+                                opt.description.as_deref().filter(|desc| !desc.is_empty())
+                            {
+                                for wrapped in wrap(desc, prose_width.saturating_sub(4)) {
+                                    lines.push(Line::from(vec![
+                                        Span::raw(pad.clone()),
+                                        Span::styled(format!("    {wrapped}"), theme::muted()),
+                                    ]));
+                                }
+                            }
+                        }
+                    }
+                    let hint = if p.question_count > 1 {
+                        HINT_TABS
+                    } else if p.multi_select {
+                        HINT_MULTI
+                    } else {
+                        HINT_SINGLE
+                    };
+                    for wrapped in wrap(hint, prose_width) {
                         lines.push(Line::from(vec![
                             Span::raw(pad.clone()),
                             Span::styled(wrapped, theme::metadata_style()),
@@ -2578,6 +2656,48 @@ mod tests {
         assert!(
             lines.iter().all(|line| !line_text(line).starts_with('┌')),
             "approval must not render as a boxed card: {text}"
+        );
+    }
+
+    #[test]
+    fn pending_question_renders_inline_not_as_a_card() {
+        const PANE_WIDTH: usize = 100;
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            TaskLifecycle::Waiting,
+            ConversationViewOpts::default(),
+        )
+        .with_pending_question(QuestionPendingPresentation {
+            header: "Database".into(),
+            question: "Which database?".into(),
+            options: vec![
+                QuestionMenuRow {
+                    label: "Postgres (Recommended)".into(),
+                    description: Some("Relational default.".into()),
+                    chosen: false,
+                },
+                QuestionMenuRow {
+                    label: "Other".into(),
+                    description: Some("Type a custom answer in the composer.".into()),
+                    chosen: false,
+                },
+            ],
+            selected: 0,
+            multi_select: false,
+            question_index: 0,
+            question_count: 1,
+            focused: true,
+        });
+        let lines = m.lines_for_width(PANE_WIDTH);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Which database?"), "{text}");
+        assert!(text.contains("› Postgres (Recommended)"), "{text}");
+        assert!(text.contains("Relational default."), "{text}");
+        assert!(text.contains("Other"), "{text}");
+        assert!(
+            lines.iter().all(|line| !line_text(line).starts_with('┌')),
+            "question must not render as a boxed card: {text}"
         );
     }
 

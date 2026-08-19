@@ -618,6 +618,9 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) pending_hitl: Option<String>,
     pub(crate) approval_menu_selected: usize,
     pub(crate) approval_focused: bool,
+    pub(crate) pending_question: Option<String>,
+    pub(crate) question_idx: usize,
+    pub(crate) question_option_idx: usize,
 }
 
 pub(crate) struct ConversationRenderCache {
@@ -781,6 +784,7 @@ impl PendingTurnState {
 pub(crate) struct PendingInteractionState {
     hitl_decision: Option<HitlDecision>,
     hitl_remember: bool,
+    question_submit: Option<questions::QuestionSubmit>,
     context_reset: bool,
 }
 
@@ -801,6 +805,18 @@ impl PendingInteractionState {
         })
     }
 
+    pub(crate) fn has_question_submit(&self) -> bool {
+        self.question_submit.is_some()
+    }
+
+    pub(crate) fn request_question_submit(&mut self, submit: questions::QuestionSubmit) {
+        self.question_submit = Some(submit);
+    }
+
+    pub(crate) fn take_question_submit(&mut self) -> Option<questions::QuestionSubmit> {
+        self.question_submit.take()
+    }
+
     pub(crate) fn context_reset_pending(&self) -> bool {
         self.context_reset
     }
@@ -817,6 +833,7 @@ impl PendingInteractionState {
     pub(crate) fn clear(&mut self) {
         self.hitl_decision = None;
         self.hitl_remember = false;
+        self.question_submit = None;
         self.context_reset = false;
     }
 }
@@ -1189,6 +1206,7 @@ pub struct TuiApp {
     /// Approval state is owned by `app::approvals`; other TUI areas interact
     /// with it through `TuiApp` methods instead of its internal collections.
     pub(crate) approval_session: approvals::ApprovalSessionState,
+    pub(crate) question_session: questions::QuestionSessionState,
     pub(crate) toast: ToastState,
     pub(crate) editor_viewport: EditorViewportState,
     /// Session message/event offsets hidden by the most recent `/clear`.

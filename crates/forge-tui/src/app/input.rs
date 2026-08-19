@@ -499,10 +499,14 @@ impl TuiApp {
             input_route::InputRoute::QueueFutureTask => {
                 self.enqueue_user_message(line).await;
             }
-            input_route::InputRoute::AnswerClarification
-            | input_route::InputRoute::ResolveSelection => {
-                // No runtime producer exists yet for these wait reasons —
-                // structurally routable, but nothing sets them today.
+            input_route::InputRoute::AnswerClarification => {
+                if self.session.pending_question().is_some() {
+                    self.apply_clarification_text(&line);
+                } else {
+                    self.set_feedback(FeedbackSeverity::Warn, "nothing pending to answer");
+                }
+            }
+            input_route::InputRoute::ResolveSelection => {
                 self.set_feedback(FeedbackSeverity::Warn, "nothing pending to answer");
             }
             input_route::InputRoute::RejectStaleResponse => {
@@ -1039,6 +1043,10 @@ impl TuiApp {
 
         if self.context_menu.is_some() {
             self.handle_context_menu_key(key);
+            return Ok(());
+        }
+
+        if self.session.pending_question().is_some() && self.handle_question_menu_key(key).await? {
             return Ok(());
         }
 

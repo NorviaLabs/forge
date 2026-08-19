@@ -543,7 +543,7 @@ impl TuiApp {
     /// turn that isn't actually running. Re-arm the same continuation flag
     /// `dequeue_and_send_next` uses so `run_loop` restarts the model call on
     /// its next tick.
-    fn resume_turn_after_hitl(&mut self) {
+    pub(super) fn resume_turn_after_hitl(&mut self) {
         self.pending_turn.request_continue();
         self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());

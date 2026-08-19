@@ -17,6 +17,7 @@ pub(crate) mod helpers;
 mod highlight;
 mod mouse;
 mod prelude;
+mod questions;
 mod tasks;
 mod theme;
 mod watch;

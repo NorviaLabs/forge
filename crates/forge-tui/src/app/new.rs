@@ -113,6 +113,7 @@ impl TuiApp {
             focus: FocusState::default(),
             cancellation: CancellationState::default(),
             approval_session: approvals::ApprovalSessionState::default(),
+            question_session: questions::QuestionSessionState::default(),
             toast: ToastState::default(),
             conversation_view: ConversationViewState {
                 message_start: 0,

@@ -251,6 +251,12 @@ impl TuiApp {
                 .map(|payload| payload.call_id.clone()),
             approval_menu_selected: self.approval_menu_selected(),
             approval_focused: self.focus.block() == FocusBlock::Approval,
+            pending_question: self
+                .session
+                .pending_question()
+                .map(|payload| payload.call_id.clone()),
+            question_idx: self.question_menu_indexes().0,
+            question_option_idx: self.question_menu_indexes().1,
         };
         if self
             .render_cache
@@ -293,6 +299,7 @@ impl TuiApp {
                 self.task_selection.queue(),
             );
             self.sync_approval_menu();
+            self.sync_question_menu();
             if let Some(payload) = self.session_view.pending_hitl.clone() {
                 let rows = self.approval_menu_rows();
                 let selected = self.approval_menu_selected();
@@ -300,6 +307,9 @@ impl TuiApp {
                 let cwd = self.session_view.workspace_root().display().to_string();
                 let request = crate::overlays::ApprovalOverlayState::request_view(&payload, cwd);
                 conv = conv.with_pending_approval(request, rows, selected, approval_focused);
+            }
+            if let Some(presentation) = self.question_presentation() {
+                conv = conv.with_pending_question(presentation);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {

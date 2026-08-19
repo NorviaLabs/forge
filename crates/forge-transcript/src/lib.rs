@@ -192,6 +192,9 @@ pub enum ChatItem {
     /// Pending human-in-the-loop approval — the full redacted payload,
     /// rendered inline in the transcript until the composer resolves it.
     ApprovalPending(ApprovalPendingPresentation),
+    /// Pending `ask_user_question` questionnaire, rendered inline like
+    /// approval (not a boxed card).
+    QuestionPending(QuestionPendingPresentation),
     /// Structured TODO checklist from the `update_plan` tool.
     PlanChecklist {
         explanation: Option<String>,
@@ -221,6 +224,7 @@ pub enum ConversationBlock {
     CodeBlock(CodeBlockPresentation),
     DiffBlock(DiffBlockPresentation),
     ApprovalPending(ApprovalPendingPresentation),
+    QuestionPending(QuestionPendingPresentation),
     PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
     Thinking(ThinkingPresentation),
@@ -360,6 +364,27 @@ pub struct ApprovalPendingPresentation {
     pub options: Vec<ApprovalMenuRow>,
     pub selected: usize,
     /// Whether the approval card itself holds focus (accent border vs muted).
+    pub focused: bool,
+}
+
+/// One option row on the inline question prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionMenuRow {
+    pub label: String,
+    pub description: Option<String>,
+    pub chosen: bool,
+}
+
+/// The questionnaire awaiting a human answer, shown one question at a time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestionPendingPresentation {
+    pub header: String,
+    pub question: String,
+    pub options: Vec<QuestionMenuRow>,
+    pub selected: usize,
+    pub multi_select: bool,
+    pub question_index: usize,
+    pub question_count: usize,
     pub focused: bool,
 }
 
@@ -743,6 +768,12 @@ impl ConversationModel {
         self
     }
 
+    /// Append the pending questionnaire as a full inline transcript item.
+    pub fn with_pending_question(mut self, presentation: QuestionPendingPresentation) -> Self {
+        self.items.push(ChatItem::QuestionPending(presentation));
+        self
+    }
+
     pub fn with_queued_messages(
         mut self,
         items: impl IntoIterator<Item = String>,
@@ -977,6 +1008,11 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::ApprovalPending(presentation.clone()));
+            }
+            ChatItem::QuestionPending(presentation) => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::QuestionPending(presentation.clone()));
             }
             ChatItem::PlanChecklist { explanation, steps } => {
                 flush_progress(&mut blocks, &mut progress);

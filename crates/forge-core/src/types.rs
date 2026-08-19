@@ -24,6 +24,8 @@ pub enum LoopError {
     AwaitingHitl,
     #[error("no pending HITL")]
     NoPendingHitl,
+    #[error("no pending question")]
+    NoPendingQuestion,
     #[error(transparent)]
     Transition(#[from] TransitionError),
     /// A `cancel_token` (subagent cancellation) fired mid-step — distinct

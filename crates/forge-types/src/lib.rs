@@ -504,6 +504,133 @@ pub struct UpdatePlanArgs {
     pub plan: Vec<PlanItem>,
 }
 
+/// One selectable answer offered by `ask_user_question`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskUserQuestionOption {
+    /// Short user-facing label (1–5 words).
+    pub label: String,
+    /// One sentence explaining the tradeoff. Optional so models that omit it
+    /// still validate.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// One question in an `ask_user_question` call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskUserQuestionItem {
+    /// Stable id echoed in the answer. Empty ids are filled as `q1`, `q2`, …
+    #[serde(default)]
+    pub id: String,
+    pub question: String,
+    /// Short heading shown as a chip (max 30 characters after normalize).
+    #[serde(default)]
+    pub header: String,
+    /// 2–4 choices, or empty for a free-text-only question. Do not include
+    /// "Other" — the host adds free-text input automatically.
+    #[serde(default)]
+    pub options: Vec<AskUserQuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
+/// Arguments for the model-callable `ask_user_question` tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskUserQuestionArgs {
+    pub questions: Vec<AskUserQuestionItem>,
+}
+
+/// Answer to one question in an `ask_user_question` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskUserQuestionAnswerItem {
+    pub id: String,
+    pub selected: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<String>,
+}
+
+/// Canonical tool result for `ask_user_question`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskUserQuestionResult {
+    pub answers: Vec<AskUserQuestionAnswerItem>,
+}
+
+/// Durable payload for [`WaitReason::Question`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionPayload {
+    pub call_id: String,
+    pub tool: String,
+    pub questions: Vec<AskUserQuestionItem>,
+}
+
+impl AskUserQuestionArgs {
+    pub const MIN_QUESTIONS: usize = 1;
+    pub const MAX_QUESTIONS: usize = 4;
+    pub const MIN_OPTIONS: usize = 2;
+    pub const MAX_OPTIONS: usize = 4;
+    pub const MAX_HEADER_CHARS: usize = 30;
+
+    /// Fill missing ids/headers and reject shapes the TUI cannot present.
+    pub fn normalize(mut self) -> Result<Self, String> {
+        if self.questions.len() < Self::MIN_QUESTIONS || self.questions.len() > Self::MAX_QUESTIONS
+        {
+            return Err(format!(
+                "ask_user_question requires {}–{} questions, got {}",
+                Self::MIN_QUESTIONS,
+                Self::MAX_QUESTIONS,
+                self.questions.len()
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (index, question) in self.questions.iter_mut().enumerate() {
+            if question.question.trim().is_empty() {
+                return Err(format!("question {} is missing text", index + 1));
+            }
+            if question.id.trim().is_empty() {
+                question.id = format!("q{}", index + 1);
+            }
+            if !seen.insert(question.id.clone()) {
+                return Err(format!("duplicate question id `{}`", question.id));
+            }
+            if question.header.trim().is_empty() {
+                question.header = question
+                    .question
+                    .chars()
+                    .take(Self::MAX_HEADER_CHARS)
+                    .collect();
+            } else if question.header.chars().count() > Self::MAX_HEADER_CHARS {
+                question.header = question
+                    .header
+                    .chars()
+                    .take(Self::MAX_HEADER_CHARS)
+                    .collect();
+            }
+            let option_count = question.options.len();
+            if option_count == 1 || option_count > Self::MAX_OPTIONS {
+                return Err(format!(
+                    "question `{}` must have 0 or {}–{} options, got {option_count}",
+                    question.id,
+                    Self::MIN_OPTIONS,
+                    Self::MAX_OPTIONS
+                ));
+            }
+            for (opt_index, option) in question.options.iter_mut().enumerate() {
+                option.label = option.label.trim().to_string();
+                if option.label.is_empty() {
+                    return Err(format!(
+                        "question `{}` option {} is missing a label",
+                        question.id,
+                        opt_index + 1
+                    ));
+                }
+            }
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -581,16 +708,19 @@ pub struct AttemptId(pub u64);
 /// stable `request_id` so a response can be correlated to (and rejected if
 /// stale against) the specific outstanding request.
 ///
-/// Only `Approval` has a real producer in Forge today (the tool-call HITL
-/// gate); the remaining variants are structurally complete but currently
-/// unreachable — built ahead of need so adding a real clarification/selection
-/// flow later is additive, not a migration.
+/// `Approval` is the tool-call HITL gate. `Question` is the
+/// `ask_user_question` producer. The remaining variants are structurally
+/// complete but currently unused.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum WaitReason {
     Approval {
         request_id: String,
         payload: HitlPayload,
+    },
+    Question {
+        request_id: String,
+        payload: QuestionPayload,
     },
     Clarification {
         request_id: String,
@@ -613,6 +743,7 @@ impl WaitReason {
     pub fn request_id(&self) -> &str {
         match self {
             WaitReason::Approval { request_id, .. }
+            | WaitReason::Question { request_id, .. }
             | WaitReason::Clarification { request_id }
             | WaitReason::Selection { request_id }
             | WaitReason::MissingConfiguration { request_id, .. }
@@ -691,10 +822,26 @@ mod tests {
         };
         assert_eq!(approval.request_id(), "r1");
 
-        let clarification = WaitReason::Clarification {
+        let question = WaitReason::Question {
             request_id: "r2".into(),
+            payload: QuestionPayload {
+                call_id: "r2".into(),
+                tool: "ask_user_question".into(),
+                questions: vec![AskUserQuestionItem {
+                    id: "q1".into(),
+                    question: "Which auth?".into(),
+                    header: "Auth".into(),
+                    options: vec![],
+                    multi_select: false,
+                }],
+            },
         };
-        assert_eq!(clarification.request_id(), "r2");
+        assert_eq!(question.request_id(), "r2");
+
+        let clarification = WaitReason::Clarification {
+            request_id: "r2b".into(),
+        };
+        assert_eq!(clarification.request_id(), "r2b");
 
         let selection = WaitReason::Selection {
             request_id: "r3".into(),
@@ -844,5 +991,47 @@ mod tests {
         assert_eq!(args.plan.len(), 3);
         assert_eq!(args.plan[1].status, PlanStepStatus::InProgress);
         assert_eq!(args.plan[1].status.as_str(), "in_progress");
+    }
+
+    #[test]
+    fn ask_user_question_args_normalize_fills_ids_and_rejects_bad_counts() {
+        let args = AskUserQuestionArgs {
+            questions: vec![AskUserQuestionItem {
+                id: String::new(),
+                question: "Which database?".into(),
+                header: String::new(),
+                options: vec![
+                    AskUserQuestionOption {
+                        label: "Postgres (Recommended)".into(),
+                        description: "Relational default.".into(),
+                    },
+                    AskUserQuestionOption {
+                        label: "SQLite".into(),
+                        description: "Local file.".into(),
+                    },
+                ],
+                multi_select: false,
+            }],
+        };
+        let normalized = args.normalize().unwrap();
+        assert_eq!(normalized.questions[0].id, "q1");
+        assert_eq!(normalized.questions[0].header, "Which database?");
+
+        let empty = AskUserQuestionArgs { questions: vec![] };
+        assert!(empty.normalize().unwrap_err().contains("1–4"));
+
+        let one_option = AskUserQuestionArgs {
+            questions: vec![AskUserQuestionItem {
+                id: "db".into(),
+                question: "Which database?".into(),
+                header: "DB".into(),
+                options: vec![AskUserQuestionOption {
+                    label: "Postgres".into(),
+                    description: String::new(),
+                }],
+                multi_select: false,
+            }],
+        };
+        assert!(one_option.normalize().unwrap_err().contains("0 or 2–4"));
     }
 }
