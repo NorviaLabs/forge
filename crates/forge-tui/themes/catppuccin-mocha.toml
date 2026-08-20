@@ -26,11 +26,9 @@ diff_add = "#1A2E1F"
 diff_remove = "#2E1A22"
 selection = "#45475A"
 cursor = "#F5E0DC"
-user_gutter_active = "#89B4FA"
 tag = "#7F849C"
 search_match = "#313244"
 waiting_border = "#F9E2AF"
-approval_accent = "#89B4FA"
 
 [syntax]
 comment = "#9399B2"

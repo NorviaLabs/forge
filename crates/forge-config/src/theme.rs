@@ -123,13 +123,10 @@ pub struct ThemePalette {
     pub diff_remove: Rgb,
     pub selection: Rgb,
     pub cursor: Rgb,
-    pub user_gutter_active: Rgb,
     pub tag: Rgb,
     pub search_match: Rgb,
     /// Border for the composer while an approval is pending ("paused" look).
     pub waiting_border: Rgb,
-    /// Accent for the focused approval card border.
-    pub approval_accent: Rgb,
     pub syntax: SyntaxPalette,
 }
 
@@ -166,15 +163,12 @@ struct ThemeFile {
     diff_remove: Rgb,
     selection: Rgb,
     cursor: Rgb,
-    user_gutter_active: Rgb,
     tag: Rgb,
     search_match: Rgb,
-    /// Optional: falls back to the theme's `warning`/`accent` when absent, so
-    /// existing user theme drops without these keys keep parsing.
+    /// Optional: falls back to the theme's `warning` when absent, so existing
+    /// user theme drops without this key keep parsing.
     #[serde(default)]
     waiting_border: Option<Rgb>,
-    #[serde(default)]
-    approval_accent: Option<Rgb>,
     syntax: ThemeFileSyntax,
 }
 
@@ -223,11 +217,9 @@ impl From<ThemeFile> for ThemeDefinition {
                 diff_remove: file.diff_remove,
                 selection: file.selection,
                 cursor: file.cursor,
-                user_gutter_active: file.user_gutter_active,
                 tag: file.tag,
                 search_match: file.search_match,
                 waiting_border: file.waiting_border.unwrap_or(file.warning),
-                approval_accent: file.approval_accent.unwrap_or(file.accent),
                 syntax: SyntaxPalette {
                     comment: file.syntax.comment,
                     keyword: file.syntax.keyword,
@@ -289,6 +281,9 @@ diff_add = "#244A32"
 diff_remove = "#542B31"
 selection = "#29486F"
 cursor = "#F0F6FC"
+# Retired key, deliberately left in this fixture: user themes in the wild
+# still carry it, and they must keep parsing. See
+# `retired_keys_are_ignored_so_existing_user_themes_keep_parsing`.
 user_gutter_active = "#8AC0FF"
 tag = "#C0C6D0"
 search_match = "#334257"
@@ -348,5 +343,39 @@ default = "#E6EDF3"
         assert_eq!(theme.id, "sample");
         assert_eq!(theme.name, "Sample");
         assert_eq!(theme.palette.accent, Rgb(104, 168, 255));
+    }
+
+    /// `user_gutter_active` and `approval_accent` were retired: the first
+    /// was parsed but never mapped into the runtime palette, and the second
+    /// only existed to work around an accent that matched `success`.
+    ///
+    /// `ThemeFile` does not set `deny_unknown_fields`, so a drop-in theme
+    /// that still lists them parses with the keys ignored. Dropping a theme
+    /// out of the picker because it names a token forge no longer has would
+    /// be a silent failure — `merge_directory` skips files it cannot parse.
+    #[test]
+    fn retired_keys_are_ignored_so_existing_user_themes_keep_parsing() {
+        // SAMPLE_THEME still carries `user_gutter_active`.
+        assert!(SAMPLE_THEME.contains("user_gutter_active"));
+        let legacy = SAMPLE_THEME.replace(
+            "search_match = \"#334257\"",
+            "search_match = \"#334257\"\napproval_accent = \"#68A8FF\"",
+        );
+        let theme = parse_theme_toml(&legacy).expect("legacy theme should still parse");
+        assert_eq!(theme.palette.accent, Rgb(104, 168, 255));
+    }
+
+    /// The reverse: a theme omitting the retired keys is now valid, where
+    /// `user_gutter_active` used to be a required field.
+    #[test]
+    fn themes_without_the_retired_keys_parse() {
+        let modern = SAMPLE_THEME
+            .lines()
+            .filter(|line| !line.starts_with("user_gutter_active"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!modern.contains("user_gutter_active = "));
+        let theme = parse_theme_toml(&modern).expect("theme without retired keys should parse");
+        assert_eq!(theme.palette.cursor, Rgb(240, 246, 252));
     }
 }

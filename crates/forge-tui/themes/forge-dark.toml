@@ -33,7 +33,6 @@ diff_add = "#244A32"
 diff_remove = "#542B31"
 selection = "#303B55"
 cursor = "#AEC0EA"
-user_gutter_active = "#8C9A90"
 # Neutral, not teal: `tag` is a dedicated low-emphasis text step, and every
 # other built-in already treats it as one (S <= 17). Forge Dark's was the
 # only saturated value, which made "current"/"connected" labels read as a
