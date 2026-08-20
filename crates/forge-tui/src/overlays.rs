@@ -439,6 +439,9 @@ impl ApprovalOverlayState {
                     forge_tools::egress::suggest_host_pattern(host)
                 )
             }),
+            reason: Some(payload.reason.clone())
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty()),
         }
     }
 
