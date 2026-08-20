@@ -460,7 +460,7 @@ mod tests {
             missing
         );
 
-        let stray = std::env::temp_dir().join("gh-pr-create.json");
+        let stray = std::env::temp_dir().join("outside-workspace.json");
         let err = ctx.resolve_path(stray.to_str().unwrap()).unwrap_err();
         match &err {
             ToolError::Execution(message) => {

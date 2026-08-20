@@ -189,7 +189,7 @@ async fn a_denied_host_prompts_for_a_grant_and_retries_confined() {
         .begin_model_response_application(ModelResponse {
             text: String::new(),
             tool_calls: vec![ToolCall {
-                id: "call-gh".into(),
+                id: "call-host".into(),
                 name: "network_denied".into(),
                 arguments: json!({}),
             }],
@@ -227,7 +227,7 @@ async fn a_denied_host_prompts_for_a_grant_and_retries_confined() {
         .messages
         .iter()
         .rev()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-gh"))
+        .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
         .expect("confined retry should record a tool result");
     assert_eq!(result.content, "retried confined after host grant");
 }

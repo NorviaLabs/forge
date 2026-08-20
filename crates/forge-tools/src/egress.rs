@@ -128,6 +128,11 @@ impl EgressPolicy {
         self.allow.is_empty() && self.deny.is_empty()
     }
 
+    /// Patterns currently allowed, as stored (`**.example.com`, `host`, `*`).
+    pub fn allow_patterns(&self) -> &[String] {
+        &self.allow
+    }
+
     pub fn allow(&mut self, pattern: impl Into<String>) -> &mut Self {
         let pattern = pattern.into().to_ascii_lowercase();
         if !self.allow.iter().any(|existing| existing == &pattern) {
@@ -219,6 +224,14 @@ impl EgressShared {
 
     pub fn permits_host(&self, host: &str) -> bool {
         self.permits(host)
+    }
+
+    pub fn allow_patterns(&self) -> Vec<String> {
+        self.policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .allow_patterns()
+            .to_vec()
     }
 
     pub fn record_denied(&self, host: String) {
@@ -426,7 +439,7 @@ async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> 
 /// Family pattern for a denied host, used as `host(...)` in permissions.toml.
 ///
 /// `api.github.com` and `github.com` both become `**.github.com` so one grant
-/// covers `gh`, git-over-https, and the rest of that apex.
+/// covers every client of that apex.
 pub fn suggest_host_pattern(host: &str) -> String {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {

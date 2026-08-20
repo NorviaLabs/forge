@@ -583,9 +583,9 @@ async fn a_denied_host_offers_a_persistent_grant_not_an_unconfined_run() {
     set_pending_approval(
         &mut app,
         HitlPayload {
-            call_id: "gh".into(),
+            call_id: "call-host".into(),
             tool: "bash".into(),
-            args_redacted: json!({"command": "gh pr create"}),
+            args_redacted: json!({"command": "curl -I https://api.github.com"}),
             reason: "blocked by the sandbox: the destination host is not allowed".into(),
             sandbox_escalation: false,
             denied_host: Some("api.github.com".into()),
