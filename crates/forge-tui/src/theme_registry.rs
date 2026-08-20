@@ -36,27 +36,31 @@ impl ThemeRegistry {
     /// message for every drop-in file that failed to parse, so a bad
     /// `theme.toml` doesn't vanish from the picker with no explanation.
     pub fn load_with_diagnostics(workspace: Option<&Path>) -> (Self, Vec<String>) {
-        let mut by_id: HashMap<String, ThemeDefinition> = HashMap::new();
+        let mut by_id = builtin_definitions();
         let mut diagnostics = Vec::new();
-
-        for (label, content) in BUILTIN_THEMES {
-            match parse_theme_toml(content) {
-                Ok(theme) => {
-                    by_id.insert(theme.id.clone(), theme);
-                }
-                Err(error) => {
-                    debug_assert!(false, "built-in theme {label} failed to parse: {error}");
-                }
-            }
-        }
 
         for dir in discovery_directories(workspace) {
             merge_directory(&mut by_id, &dir, &mut diagnostics);
         }
 
+        (Self::from_definitions(by_id), diagnostics)
+    }
+
+    /// Built-in themes only, skipping user and workspace discovery.
+    ///
+    /// Palette invariants are asserted against this set rather than
+    /// [`ThemeRegistry::load`]: discovery reads `~/.config/forge/themes`, so
+    /// testing against the loaded registry would let a drop-in theme on a
+    /// contributor's machine fail forge's own suite.
+    #[allow(dead_code)] // public registry surface for theme authors and tooling
+    pub fn builtin() -> Self {
+        Self::from_definitions(builtin_definitions())
+    }
+
+    fn from_definitions(by_id: HashMap<String, ThemeDefinition>) -> Self {
         let mut themes: Vec<ThemeDefinition> = by_id.into_values().collect();
         themes.sort_by(|a, b| a.name.cmp(&b.name));
-        (Self { themes }, diagnostics)
+        Self { themes }
     }
 
     #[allow(dead_code)] // public registry surface for theme authors and tooling
@@ -107,6 +111,21 @@ pub fn picker_entries(registry: &ThemeRegistry) -> Vec<(String, String)> {
         _ => a.1.cmp(&b.1),
     });
     items
+}
+
+fn builtin_definitions() -> HashMap<String, ThemeDefinition> {
+    let mut by_id: HashMap<String, ThemeDefinition> = HashMap::new();
+    for (label, content) in BUILTIN_THEMES {
+        match parse_theme_toml(content) {
+            Ok(theme) => {
+                by_id.insert(theme.id.clone(), theme);
+            }
+            Err(error) => {
+                debug_assert!(false, "built-in theme {label} failed to parse: {error}");
+            }
+        }
+    }
+    by_id
 }
 
 fn discovery_directories(workspace: Option<&Path>) -> Vec<PathBuf> {
