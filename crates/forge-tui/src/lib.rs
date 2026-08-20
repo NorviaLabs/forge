@@ -16,6 +16,7 @@ mod launch;
 mod layout;
 mod markdown;
 mod overlays;
+mod path_display;
 mod selection;
 mod setup;
 mod source_viewer;

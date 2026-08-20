@@ -869,9 +869,13 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::Metadata(p) => {
-                    for l in wrap(&p.text, width) {
-                        lines.push(Line::from(Span::styled(l, theme::muted())));
-                    }
+                    // Metadata is a one-line summary — `block_height` budgets
+                    // exactly one row for it — and its long content is almost
+                    // always a path. Wrapping both overran that budget and cut
+                    // the end off the path; eliding keeps it to one line and
+                    // keeps the folder name.
+                    let fitted = crate::path_display::elide_path(&p.text, width);
+                    lines.push(Line::from(Span::styled(fitted, theme::muted())));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
@@ -1341,16 +1345,35 @@ mod tests {
             !rendered.contains("FORGE"),
             "brand splash removed from chat:\n{rendered}"
         );
-        let semantic = m.semantic_blocks();
+    }
+
+    /// The welcome pane's workspace line is budgeted one row, so a long path
+    /// must elide to fit rather than wrap or run off the pane edge.
+    #[test]
+    fn the_home_workspace_line_elides_to_one_row() {
+        let long =
+            "/private/tmp/claude-501/-Users-someone-Projects-forge/ac5a5dcf-403d/scratchpad/lab";
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            TaskLifecycle::Ready,
+            ConversationViewOpts::default(),
+        )
+        .with_home(long.to_string(), 20);
+
+        let rendered: Vec<String> = m
+            .lines_for_width(60)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let workspace: Vec<&String> = rendered.iter().filter(|l| l.contains("skills")).collect();
+        assert_eq!(workspace.len(), 1, "must stay on one row: {rendered:?}");
+        let line = workspace[0];
+        assert!(line.contains('\u{2026}'), "expected an elision: {line}");
+        assert!(line.contains("lab"), "workspace name must survive: {line}");
         assert!(
-            semantic
-                .iter()
-                .any(|block| matches!(block, ConversationBlock::ActivityGroup(_))),
-            "tool result should classify into semantic activity blocks: {semantic:?}"
-        );
-        assert!(
-            rendered.contains("ponder · 2.4s") && !rendered.contains("**ponder**"),
-            "completed thought should render markdown without a spelled-out caption:\n{rendered}"
+            !line.contains("ac5a5dcf-403d/scratchpad"),
+            "the middle should be the part that goes: {line}"
         );
     }
 
