@@ -1,8 +1,8 @@
 //! Discover and load TUI themes from bundled files and optional directories.
 
 use forge_config::{
-    is_system_theme, parse_theme_toml, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID,
-    THEME_SYSTEM,
+    is_system_theme, parse_theme_toml, ThemeDefinition, ThemePalette,
+    ACCENT_STATUS_MIN_HUE_DISTANCE, DEFAULT_THEME_ID, THEME_SYSTEM,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -164,6 +164,17 @@ fn merge_directory(
         };
         match parse_theme_toml(&content) {
             Ok(theme) => {
+                // Warn, don't reject: the palette is the author's call, and
+                // a theme that loads with a note is far easier to fix than
+                // one that silently vanishes from the picker.
+                if let Some((role, distance)) = theme.palette.accent_status_collision() {
+                    diagnostics.push(format!(
+                        "theme: {} accent {} is only {distance:.0}° from {role} \
+                         (want {ACCENT_STATUS_MIN_HUE_DISTANCE:.0}°) — the focused \
+                         border, caret and selected row will read as {role}",
+                        theme.id, theme.palette.accent,
+                    ));
+                }
                 by_id.insert(theme.id.clone(), theme);
             }
             Err(error) => {
@@ -234,6 +245,59 @@ mod tests {
         assert!(!registry.contains("broken"));
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].contains("broken.toml"));
+    }
+
+    /// The Δ60 rule is asserted over built-ins at test time, but a drop-in
+    /// theme has to reach its author somehow. It warns rather than rejects:
+    /// the palette is the author's call, and a theme that vanishes from the
+    /// picker is far harder to debug than one that loads with a note.
+    #[test]
+    fn drop_in_theme_with_a_colliding_accent_loads_but_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join(".forge").join("themes");
+        fs::create_dir_all(&themes).unwrap();
+        fs::write(
+            themes.join("collides.toml"),
+            include_str!("../themes/solarized-dark.toml")
+                .replace("id = \"solarized-dark\"", "id = \"collides\"")
+                // Point the accent straight at `success`.
+                .replace("accent = \"#268BD2\"", "accent = \"#859900\""),
+        )
+        .unwrap();
+
+        let (registry, diagnostics) = ThemeRegistry::load_with_diagnostics(Some(dir.path()));
+
+        assert!(
+            registry.contains("collides"),
+            "a colliding theme must still load"
+        );
+        let notice = diagnostics
+            .iter()
+            .find(|d| d.contains("collides"))
+            .expect("expected a diagnostic for the colliding accent");
+        assert!(notice.contains("success"), "{notice}");
+        assert!(notice.contains("0°"), "{notice}");
+    }
+
+    #[test]
+    fn compliant_drop_in_theme_loads_without_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join(".forge").join("themes");
+        fs::create_dir_all(&themes).unwrap();
+        fs::write(
+            themes.join("fine.toml"),
+            include_str!("../themes/solarized-dark.toml")
+                .replace("id = \"solarized-dark\"", "id = \"fine\""),
+        )
+        .unwrap();
+
+        let (registry, diagnostics) = ThemeRegistry::load_with_diagnostics(Some(dir.path()));
+
+        assert!(registry.contains("fine"));
+        assert!(
+            diagnostics.is_empty(),
+            "a compliant theme should load silently: {diagnostics:?}"
+        );
     }
 
     #[test]
