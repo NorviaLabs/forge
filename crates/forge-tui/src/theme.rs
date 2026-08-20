@@ -445,6 +445,20 @@ pub fn code_gutter() -> Style {
     Style::default().fg(active_palette().border_muted)
 }
 
+/// Inline code inside an answer.
+///
+/// Primary text on the same tint the fenced block uses, so a symbol reads as
+/// code by its ground rather than by being dimmer than the sentence around it.
+/// It used to take `text_secondary`, which put file paths and identifiers —
+/// the most actionable tokens in an answer — *below* the prose containing
+/// them. Weight is left alone: bold now means `**bold**`, so code cannot
+/// borrow it, and the accent stays reserved for focus
+/// (`content_emphasis_does_not_borrow_the_accent`).
+pub fn inline_code() -> Style {
+    let p = active_palette();
+    Style::default().fg(p.text).bg(p.panel_alt)
+}
+
 /// A fenced code block inside the transcript.
 ///
 /// One step above [`code_block`]'s `surface`: a chat block sits directly on the
