@@ -1245,6 +1245,34 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         assert!(saw_header, "did not find header 'N' in painted buffer");
     }
 
+    /// Painted through the answer line style, an emphasised word must come out
+    /// heavier than the prose beside it. This failed while the line style was
+    /// itself bold: every cell was bold, so `**does**` and the words around it
+    /// were the same weight.
+    #[test]
+    fn strong_emphasis_survives_the_answer_line_style() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        let parts = render_markdown("it **does** matter", 40);
+        let line = parts.into_iter().next().expect("one rendered line");
+        let styled = Line::from(line.spans).style(theme::assistant_answer_style());
+        let width = styled.width().max(1) as u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+        Widget::render(styled, buf.area, &mut buf);
+
+        let bold_at = |needle: char| {
+            (0..width)
+                .find(|x| buf[(*x, 0)].symbol() == needle.to_string())
+                .map(|x| buf[(x, 0)].style().add_modifier.contains(Modifier::BOLD))
+                .expect("character painted")
+        };
+        // 'd' only occurs inside "does"; 'm' only inside "matter".
+        assert!(bold_at('d'), "emphasised word lost its weight");
+        assert!(!bold_at('m'), "ordinary prose came out bold");
+    }
+
     #[test]
     fn unterminated_fence_still_renders_its_code() {
         let streaming =
