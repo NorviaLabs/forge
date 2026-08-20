@@ -340,6 +340,9 @@ pub struct ApprovalRequestView {
     pub cwd: String,
     pub env_delta: String,
     pub question: Option<String>,
+    /// Why this call was gated, in the operator's words. Shown under the
+    /// question so the prompt does not read as arbitrary.
+    pub reason: Option<String>,
 }
 
 /// One selectable row on the inline approval menu.
@@ -361,6 +364,8 @@ pub struct ApprovalPendingPresentation {
     pub cwd: String,
     pub env_delta: String,
     pub question: Option<String>,
+    /// Why this call was gated. See [`ApprovalRequestView::reason`].
+    pub reason: Option<String>,
     pub options: Vec<ApprovalMenuRow>,
     pub selected: usize,
     /// Whether the approval card itself holds focus (accent border vs muted).
@@ -761,6 +766,7 @@ impl ConversationModel {
                 cwd: request.cwd,
                 env_delta: request.env_delta,
                 question: request.question,
+                reason: request.reason,
                 options,
                 selected,
                 focused,

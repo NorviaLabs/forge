@@ -85,7 +85,8 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
         rendered.contains("Runs now. You will be asked again."),
         "{rendered}"
     );
-    assert!(!rendered.contains("Would match: git push"), "{rendered}");
+    // Wide enough for every option to carry its consequence line.
+    assert!(rendered.contains("Would match: git push"), "{rendered}");
     assert!(rendered.contains("Esc"), "{rendered}");
     assert!(rendered.contains("don't run"), "{rendered}");
     // The prompt is a card now, not bare prose in the transcript flow.

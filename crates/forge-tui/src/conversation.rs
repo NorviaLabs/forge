@@ -319,9 +319,11 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
         ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
         ConversationBlock::ActiveProgress(_) | ConversationBlock::Metadata(_) => 1,
-        // The approval card adds a border, inner padding and a hint row on top
-        // of its question, command, location and options.
-        ConversationBlock::ApprovalPending(_) => 14,
+        // Measured, not guessed. The card's height depends on the width (how
+        // far the question and each option's consequence wrap) and on how many
+        // options there are, and under-budgeting it scrolls its own top border
+        // — including the title — off the pane.
+        ConversationBlock::ApprovalPending(p) => render_approval_card(p, prose_width).len(),
         ConversationBlock::QuestionPending(_) => 8,
     };
     body.saturating_add(2)
@@ -1067,6 +1069,28 @@ fn key_hint_spans(pairs: &[(&str, &str)], budget: usize) -> Vec<Span<'static>> {
     Vec::new()
 }
 
+/// Below this inner width the card drops everything optional — the reason
+/// line and the inline consequences — and keeps only what the decision needs.
+/// The sidebar is around twenty columns wide, where each of those wraps to
+/// three or four rows and pushes the card's own title off the pane.
+const APPROVAL_COMPACT_WIDTH: usize = 40;
+
+/// Fewest columns worth giving an inline consequence. Below this it would be
+/// elided down to noise, so it is dropped instead.
+const APPROVAL_MIN_HELP_COLUMNS: usize = 14;
+
+/// First sentence of a help string, which is the part that says what happens.
+///
+/// The rest is qualification — where a rule would be written, the pattern it
+/// would match — and belongs to the selected option's full text, not to a
+/// one-line summary sitting beside a label.
+fn short_consequence(help: &str) -> String {
+    match help.split_once(". ") {
+        Some((first, _)) => first.to_string(),
+        None => help.trim_end_matches('.').to_string(),
+    }
+}
+
 /// Title in the approval card's top border.
 const APPROVAL_TITLE: &str = "Approval needed";
 
@@ -1082,6 +1106,7 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     // A row spends `pad` + `│` + ` ` + inner + `│`, so the card is
     // `MESSAGE_PADDING + 3` columns wider than its content.
     let inner = prose_width.saturating_sub(MESSAGE_PADDING + 3).max(8);
+    let compact = inner < APPROVAL_COMPACT_WIDTH;
     let border = if p.focused {
         theme::waiting_border()
     } else {
@@ -1129,6 +1154,25 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     for wrapped in wrap(question, inner) {
         row(vec![Span::styled(wrapped, theme::text())]);
     }
+    // Why this call was gated. Without it the prompt reads as arbitrary: the
+    // reason was already on the payload and simply never shown.
+    if let Some(reason) = p
+        .reason
+        .as_deref()
+        .filter(|r| !r.is_empty())
+        .filter(|_| !compact)
+    {
+        for (n, wrapped) in wrap(reason, inner.saturating_sub(2))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if n == 0 { "Asked because " } else { "" };
+            row(vec![
+                Span::styled(lead.to_string(), theme::metadata_style()),
+                Span::styled(wrapped, theme::muted()),
+            ]);
+        }
+    }
     row(vec![]);
 
     let command_lines: Vec<&str> = p.command.lines().collect();
@@ -1160,28 +1204,47 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     for (idx, opt) in p.options.iter().enumerate() {
         let selected = idx == p.selected;
         let (marker, style) = if selected {
-            ("❯ ", theme::text().add_modifier(Modifier::BOLD))
+            ("\u{276f} ", theme::text().add_modifier(Modifier::BOLD))
         } else {
             ("  ", theme::muted())
         };
-        for (n, wrapped) in wrap(&opt.label, inner.saturating_sub(2))
-            .into_iter()
-            .enumerate()
-        {
+        let help = opt.help.as_deref().unwrap_or("").trim();
+
+        // The selected option gets its consequence in full, on its own rows —
+        // it is the one about to happen. The others get a short form on the
+        // same row as the label, so every option explains itself without the
+        // card growing three rows taller than the pane it has to fit in.
+        // The label always gets the full width. Reserving a fixed column for
+        // the consequence made long labels wrap for no reason, which reads far
+        // worse than an option with no inline note.
+        let label_lines = wrap(&opt.label, inner.saturating_sub(2));
+        let label_rows = label_lines.len();
+        for (n, wrapped) in label_lines.into_iter().enumerate() {
             let lead = if n == 0 { marker } else { "  " };
-            row(vec![
+            let mut spans = vec![
                 Span::styled(lead.to_string(), theme::accent_style()),
                 Span::styled(wrapped, style),
-            ]);
-        }
-        if selected {
-            if let Some(help) = opt.help.as_deref().filter(|help| !help.is_empty()) {
-                for wrapped in wrap(help, inner.saturating_sub(4)) {
-                    row(vec![Span::styled(
-                        format!("    {wrapped}"),
+            ];
+            let last = n + 1 == label_rows;
+            if !selected && last && !help.is_empty() && !compact {
+                let used: usize = spans.iter().map(Span::width).sum();
+                let room = inner.saturating_sub(used + 2);
+                if room >= APPROVAL_MIN_HELP_COLUMNS {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        crate::path_display::elide_middle(&short_consequence(help), room),
                         theme::metadata_style(),
-                    )]);
+                    ));
                 }
+            }
+            row(spans);
+        }
+        if selected && !help.is_empty() {
+            for wrapped in wrap(help, inner.saturating_sub(4)) {
+                row(vec![Span::styled(
+                    format!("    {wrapped}"),
+                    theme::metadata_style(),
+                )]);
             }
         }
     }
@@ -1193,8 +1256,8 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     row(vec![]);
 
     // A content row is `│ ` + inner + `│` = inner + 3 columns. The top border
-    // spends `╭─ ` + title + ` ` + fill + `╮`, so fill must be inner - 17 for
-    // the corners to land on the same columns as the walls.
+    // spends `╭─ ` + title + ` ` + fill + `╮`, so the corners land on the same
+    // columns as the walls.
     let title_fill = (inner + 3).saturating_sub(APPROVAL_TITLE.chars().count() + 5);
     let top = Line::from(vec![
         Span::raw(pad.clone()),
@@ -2712,6 +2775,7 @@ mod tests {
             cwd: "workspace".into(),
             env_delta: "inherited".into(),
             question: None,
+            reason: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -2732,6 +2796,88 @@ mod tests {
         }
     }
 
+    fn approval_with_help(width: usize) -> Vec<Line<'static>> {
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "git push -u origin feature".into(),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            reason: Some("your permissions.toml denies bash(*)".into()),
+            options: vec![
+                ApprovalMenuRow {
+                    label: "Run once".into(),
+                    detail: None,
+                    help: Some("Runs now. You will be asked again.".into()),
+                },
+                ApprovalMenuRow {
+                    label: "Don't run".into(),
+                    detail: None,
+                    help: Some("The agent is told it was denied. Nothing runs.".into()),
+                },
+            ],
+            selected: 0,
+            focused: true,
+        };
+        render_approval_card(&p, width)
+    }
+
+    fn card_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The reason was already on the payload and simply never rendered, so the
+    /// prompt read as arbitrary.
+    #[test]
+    fn a_wide_approval_card_says_why_it_is_asking() {
+        let text = card_text(&approval_with_help(72));
+        assert!(
+            text.contains("Asked because") && text.contains("permissions.toml"),
+            "{text}"
+        );
+    }
+
+    /// An unselected option used to show nothing, so you had to arrow onto it
+    /// to learn what it did. It now carries a short consequence on its own row,
+    /// which costs the card no extra height.
+    #[test]
+    fn every_approval_option_explains_itself_when_there_is_room() {
+        let lines = approval_with_help(72);
+        let text = card_text(&lines);
+        assert!(text.contains("The agent is told it was denied"), "{text}");
+        // The qualifying sentence belongs to the selected option's full text.
+        assert!(!text.contains("Nothing runs"), "{text}");
+        let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
+        assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+    }
+
+    /// In the sidebar every optional row wraps to three or four lines and
+    /// pushes the card's own title off the pane, so the compact card carries
+    /// only what the decision needs.
+    #[test]
+    fn a_narrow_approval_card_drops_what_it_cannot_afford() {
+        let narrow = approval_with_help(30);
+        let text = card_text(&narrow);
+        assert!(!text.contains("Asked because"), "{text}");
+        assert!(!text.contains("The agent is told"), "{text}");
+        // The decision itself always survives.
+        assert!(
+            text.contains("Run once") && text.contains("Don't run"),
+            "{text}"
+        );
+        let widths: Vec<usize> = narrow.iter().map(|l| l.width()).collect();
+        assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+    }
+
     /// A working directory has no spaces, so `wrap` hands it back whole. It
     /// used to run straight out through the card's right border.
     #[test]
@@ -2742,6 +2888,7 @@ mod tests {
             cwd: "/private/tmp/claude-501/-Users-someone-Projects-forge/ac5a5dcf-403d-4bce-b017-233f3db8e1c0/scratchpad/lab".into(),
             env_delta: "inherited".into(),
             question: None,
+            reason: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -2774,6 +2921,7 @@ mod tests {
             cwd: "workspace".into(),
             env_delta: "inherited".into(),
             question: None,
+            reason: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -2805,6 +2953,7 @@ mod tests {
                 cwd: "workspace".into(),
                 env_delta: "inherited".into(),
                 question: None,
+                reason: None,
             },
             vec![
                 ApprovalMenuRow {
@@ -2850,7 +2999,9 @@ mod tests {
             text.contains("Runs now. You will be asked again."),
             "{text}"
         );
-        assert!(!text.contains("Would match: git push"), "{text}");
+        // Every option carries its consequence at this width, not just the
+        // selected one — an unselected option used to be unreadable.
+        assert!(text.contains("Would match: git push"), "{text}");
         assert!(text.contains("↑↓"), "{text}");
         assert!(text.contains("Enter"), "{text}");
         assert!(text.contains("Esc"), "{text}");
@@ -2873,6 +3024,7 @@ mod tests {
                 cwd: "wd".into(),
                 env_delta: "inherited".into(),
                 question: None,
+                reason: None,
             },
             vec![ApprovalMenuRow {
                 label: "Run once".into(),
