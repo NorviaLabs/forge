@@ -130,12 +130,16 @@ impl TuiApp {
         self.terminal_rows.clear();
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
+        // Questions reuse `FocusBlock::Approval` (same inline transcript
+        // prompt as HITL); omitting them here kicks focus off the menu on the
+        // first frame, so ↑↓ never move the selection.
         let available = FocusAvailability {
             search: regions.files.is_some(),
             files: regions.files.is_some(),
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
-            approval: self.session_view.is_awaiting_approval(),
+            approval: self.session_view.is_awaiting_approval()
+                || self.session_view.is_awaiting_question(),
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
