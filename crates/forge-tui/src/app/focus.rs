@@ -151,7 +151,9 @@ impl TuiApp {
             return Some("Waiting · question · ↑↓  Enter  Esc skip".into());
         }
         if self.session.pending_hitl().is_some() {
-            return Some("Waiting · approval · ↑↓  Enter  Esc don't run".into());
+            // State only. The card carries its own key hint a few rows above,
+            // and printing the same keys twice on one screen reads as noise.
+            return Some("Waiting for approval".into());
         }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {

@@ -319,7 +319,10 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
         ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
         ConversationBlock::ActiveProgress(_) | ConversationBlock::Metadata(_) => 1,
-        ConversationBlock::ApprovalPending(_) | ConversationBlock::QuestionPending(_) => 8,
+        // The approval card adds a border, inner padding and a hint row on top
+        // of its question, command, location and options.
+        ConversationBlock::ApprovalPending(_) => 14,
+        ConversationBlock::QuestionPending(_) => 8,
     };
     body.saturating_add(2)
 }
@@ -657,84 +660,7 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::ApprovalPending(p) => {
-                    const HINT: &str = "↑↓  Enter  Esc don't run";
-                    let pad = " ".repeat(MESSAGE_PADDING);
-                    let question = p
-                        .question
-                        .as_deref()
-                        .unwrap_or_else(|| approval_question(&p.tool));
-                    let question_style = if p.focused {
-                        theme::text().add_modifier(Modifier::BOLD)
-                    } else {
-                        theme::text()
-                    };
-                    for wrapped in wrap(question, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, question_style),
-                        ]));
-                    }
-                    let command_lines: Vec<&str> = p.command.lines().collect();
-                    if command_lines.is_empty() {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled("  (empty command)", theme::muted()),
-                        ]));
-                    } else {
-                        for command_line in command_lines {
-                            let display = if command_line.is_empty() {
-                                "  ".to_string()
-                            } else {
-                                format!("  {command_line}")
-                            };
-                            for wrapped in wrap(&display, prose_width) {
-                                lines.push(Line::from(vec![
-                                    Span::raw(pad.clone()),
-                                    Span::styled(wrapped, theme::muted()),
-                                ]));
-                            }
-                        }
-                    }
-                    let cwd_line = approval_location_line(&p.cwd, &p.env_delta);
-                    for wrapped in wrap(&cwd_line, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, theme::muted()),
-                        ]));
-                    }
-                    for (idx, opt) in p.options.iter().enumerate() {
-                        let selected = idx == p.selected;
-                        let marker = if selected { "›" } else { " " };
-                        let style = if selected {
-                            theme::text().add_modifier(Modifier::BOLD)
-                        } else {
-                            theme::muted()
-                        };
-                        let row = format!("{marker} {}", opt.label);
-                        for wrapped in wrap(&row, prose_width) {
-                            lines.push(Line::from(vec![
-                                Span::raw(pad.clone()),
-                                Span::styled(wrapped, style),
-                            ]));
-                        }
-                        if selected {
-                            if let Some(help) = opt.help.as_deref().filter(|help| !help.is_empty())
-                            {
-                                for wrapped in wrap(help, prose_width.saturating_sub(4)) {
-                                    lines.push(Line::from(vec![
-                                        Span::raw(pad.clone()),
-                                        Span::styled(format!("    {wrapped}"), theme::muted()),
-                                    ]));
-                                }
-                            }
-                        }
-                    }
-                    for wrapped in wrap(HINT, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, theme::metadata_style()),
-                        ]));
-                    }
+                    lines.extend(render_approval_card(&p, prose_width));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
@@ -1089,6 +1015,200 @@ fn approval_question(tool: &str) -> &'static str {
     } else {
         "Forge wants to run this tool."
     }
+}
+
+/// Hint shown under the approval options, as `key verb` pairs separated by a
+/// double space. The status bar deliberately does *not* repeat it — see
+/// `focus.rs`.
+const APPROVAL_HINT: &[(&str, &str)] =
+    &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "don't run")];
+
+/// Render `key verb` pairs with the key at bold weight, separated by a
+/// consistent gap. One grammar, one helper — the modal surfaces each invented
+/// their own before this.
+///
+/// Degrades within `budget` columns: first the verbs are dropped, leaving the
+/// bare keys, then trailing pairs are dropped from the right. Never wraps — a
+/// hint that reflows onto a second row breaks the card's height budget.
+fn key_hint_spans(pairs: &[(&str, &str)], budget: usize) -> Vec<Span<'static>> {
+    fn build(pairs: &[(&str, &str)], verbs: bool) -> Vec<Span<'static>> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (key, verb) in pairs {
+            if !spans.is_empty() {
+                spans.push(Span::raw(if verbs { "   " } else { " " }));
+            }
+            spans.push(Span::styled(
+                (*key).to_string(),
+                theme::metadata_style().add_modifier(Modifier::BOLD),
+            ));
+            if verbs {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled((*verb).to_string(), theme::metadata_style()));
+            }
+        }
+        spans
+    }
+    let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
+
+    let full = build(pairs, true);
+    if width(&full) <= budget {
+        return full;
+    }
+    let keys_only = build(pairs, false);
+    if width(&keys_only) <= budget {
+        return keys_only;
+    }
+    for take in (1..pairs.len()).rev() {
+        let trimmed = build(&pairs[..take], false);
+        if width(&trimmed) <= budget {
+            return trimmed;
+        }
+    }
+    Vec::new()
+}
+
+/// Title in the approval card's top border.
+const APPROVAL_TITLE: &str = "Approval needed";
+
+/// Render the pending-approval prompt as a bordered card.
+///
+/// It used to be emitted as bare lines in the transcript flow, styled like any
+/// other prose, which left the single most consequential prompt in the product
+/// with less visual weight than the empty composer below it. The presentation
+/// already carried a `focused` flag documented as "accent border vs muted" —
+/// there simply was no border for it to colour.
+fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> Vec<Line<'static>> {
+    let pad = " ".repeat(MESSAGE_PADDING);
+    // A row spends `pad` + `│` + ` ` + inner + `│`, so the card is
+    // `MESSAGE_PADDING + 3` columns wider than its content.
+    let inner = prose_width.saturating_sub(MESSAGE_PADDING + 3).max(8);
+    let border = if p.focused {
+        theme::waiting_border()
+    } else {
+        theme::border_muted()
+    };
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut row = |spans: Vec<Span<'static>>| {
+        let mut all = vec![
+            Span::raw(pad.clone()),
+            Span::styled("│", border),
+            Span::raw(" "),
+        ];
+        // Clip, don't just pad. Content with no break opportunity — a path, a
+        // long single-token command — comes back from `wrap` wider than asked
+        // for, and without this it runs straight out through the right border.
+        let mut used = 0usize;
+        for span in spans {
+            let w = span.width();
+            if used + w <= inner {
+                used += w;
+                all.push(span);
+            } else {
+                let room = inner - used;
+                if room > 0 {
+                    let clipped: String = span.content.chars().take(room).collect();
+                    used += clipped.chars().count();
+                    all.push(Span::styled(clipped, span.style));
+                }
+                break;
+            }
+        }
+        if used < inner {
+            all.push(Span::raw(" ".repeat(inner - used)));
+        }
+        all.push(Span::styled("│", border));
+        out.push(Line::from(all));
+    };
+
+    let question = p
+        .question
+        .as_deref()
+        .unwrap_or_else(|| approval_question(&p.tool));
+    row(vec![]);
+    for wrapped in wrap(question, inner) {
+        row(vec![Span::styled(wrapped, theme::text())]);
+    }
+    row(vec![]);
+
+    let command_lines: Vec<&str> = p.command.lines().collect();
+    if command_lines.is_empty() {
+        row(vec![Span::styled("(empty command)", theme::muted())]);
+    } else {
+        for command_line in command_lines {
+            for wrapped in wrap(command_line, inner.saturating_sub(2)) {
+                row(vec![Span::styled(
+                    format!(" {wrapped} "),
+                    theme::chat_code_block(),
+                )]);
+            }
+        }
+    }
+
+    // A working directory has no spaces to wrap on, so `wrap` returned it
+    // whole and it ran straight out through the card's right border. Elide it
+    // on separators instead, which also keeps the folder name.
+    let cwd_line = approval_location_line(
+        &crate::path_display::elide_path(&p.cwd, inner.saturating_sub(3)),
+        &p.env_delta,
+    );
+    for wrapped in wrap(&cwd_line, inner) {
+        row(vec![Span::styled(wrapped, theme::muted())]);
+    }
+    row(vec![]);
+
+    for (idx, opt) in p.options.iter().enumerate() {
+        let selected = idx == p.selected;
+        let (marker, style) = if selected {
+            ("❯ ", theme::text().add_modifier(Modifier::BOLD))
+        } else {
+            ("  ", theme::muted())
+        };
+        for (n, wrapped) in wrap(&opt.label, inner.saturating_sub(2))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if n == 0 { marker } else { "  " };
+            row(vec![
+                Span::styled(lead.to_string(), theme::accent_style()),
+                Span::styled(wrapped, style),
+            ]);
+        }
+        if selected {
+            if let Some(help) = opt.help.as_deref().filter(|help| !help.is_empty()) {
+                for wrapped in wrap(help, inner.saturating_sub(4)) {
+                    row(vec![Span::styled(
+                        format!("    {wrapped}"),
+                        theme::metadata_style(),
+                    )]);
+                }
+            }
+        }
+    }
+
+    row(vec![]);
+    // Built as spans, not wrapped text: `wrap` collapses runs of spaces, which
+    // would flatten the gaps that separate one key/verb pair from the next.
+    row(key_hint_spans(APPROVAL_HINT, inner));
+    row(vec![]);
+
+    // A content row is `│ ` + inner + `│` = inner + 3 columns. The top border
+    // spends `╭─ ` + title + ` ` + fill + `╮`, so fill must be inner - 17 for
+    // the corners to land on the same columns as the walls.
+    let title_fill = (inner + 3).saturating_sub(APPROVAL_TITLE.chars().count() + 5);
+    let top = Line::from(vec![
+        Span::raw(pad.clone()),
+        Span::styled("╭─ ", border),
+        Span::styled(APPROVAL_TITLE, border.add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {}╮", "─".repeat(title_fill)), border),
+    ]);
+    let bottom = Line::from(vec![
+        Span::raw(pad),
+        Span::styled(format!("╰{}╯", "─".repeat(inner + 1)), border),
+    ]);
+    out.insert(0, top);
+    out.push(bottom);
+    out
 }
 
 fn approval_location_line(cwd: &str, env_delta: &str) -> String {
@@ -2582,6 +2702,94 @@ mod tests {
         assert!(text.contains("Reading via read_file"));
     }
 
+    /// The card is a box: every content row must start and end on the same
+    /// columns as the corners, or the border visibly steps in and out.
+    #[test]
+    fn the_approval_card_border_is_square() {
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "git push -u origin feature".into(),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            options: vec![ApprovalMenuRow {
+                label: "Run once".into(),
+                detail: None,
+                help: Some("Runs now.".into()),
+            }],
+            selected: 0,
+            focused: true,
+        };
+        for width in [40usize, 60, 72] {
+            let lines = render_approval_card(&p, width);
+            let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
+            let first = widths[0];
+            assert!(
+                widths.iter().all(|w| *w == first),
+                "ragged card at width {width}: {widths:?}"
+            );
+            assert!(first <= width, "card overflowed {width}: {first}");
+        }
+    }
+
+    /// A working directory has no spaces, so `wrap` hands it back whole. It
+    /// used to run straight out through the card's right border.
+    #[test]
+    fn an_unbreakable_path_cannot_burst_the_approval_card() {
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "ls -la src".into(),
+            cwd: "/private/tmp/claude-501/-Users-someone-Projects-forge/ac5a5dcf-403d-4bce-b017-233f3db8e1c0/scratchpad/lab".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            options: vec![ApprovalMenuRow {
+                label: "Run once".into(),
+                detail: None,
+                help: None,
+            }],
+            selected: 0,
+            focused: true,
+        };
+        let lines = render_approval_card(&p, 72);
+        let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
+        assert!(
+            widths.iter().all(|w| *w == widths[0]),
+            "path burst the card: {widths:?}"
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("lab"), "folder name must survive:\n{text}");
+    }
+
+    /// A single unbreakable command token must be clipped by the card, not
+    /// allowed to push the border out.
+    #[test]
+    fn an_unbreakable_command_cannot_burst_the_approval_card() {
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "x".repeat(400),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            options: vec![ApprovalMenuRow {
+                label: "Run once".into(),
+                detail: None,
+                help: None,
+            }],
+            selected: 0,
+            focused: true,
+        };
+        let lines = render_approval_card(&p, 72);
+        let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
+        assert!(
+            widths.iter().all(|w| *w == widths[0]),
+            "command burst the card: {widths:?}"
+        );
+    }
+
     #[test]
     fn pending_approval_renders_full_redacted_payload_inline() {
         let m = ConversationModel::from_messages(
@@ -2632,7 +2840,8 @@ mod tests {
         assert!(text.contains("git push -u origin feature"), "{text}");
         assert!(text.contains("workspace"), "{text}");
         assert!(!text.contains("cwd: workspace"), "{text}");
-        assert!(text.contains("› Run once"), "{text}");
+        assert!(text.contains("\u{276f} Run once"), "{text}");
+        assert!(text.contains("Approval needed"), "{text}");
         assert!(
             text.contains("Remember similar commands this session"),
             "{text}"
@@ -2644,7 +2853,8 @@ mod tests {
         assert!(!text.contains("Would match: git push"), "{text}");
         assert!(text.contains("↑↓"), "{text}");
         assert!(text.contains("Enter"), "{text}");
-        assert!(text.contains("Esc don't run"), "{text}");
+        assert!(text.contains("Esc"), "{text}");
+        assert!(text.contains("don't run"), "{text}");
     }
 
     #[test]
