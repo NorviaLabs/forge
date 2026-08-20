@@ -293,10 +293,9 @@ impl MdRenderer {
                 Event::Start(tag) => self.on_start(tag),
                 Event::End(tag) => self.on_end(tag),
                 Event::Text(t) => self.on_text(t.into_string()),
-                Event::Code(t) => self.inline.push(Span::styled(
-                    t.into_string(),
-                    theme::text_secondary().add_modifier(Modifier::BOLD),
-                )),
+                Event::Code(t) => self
+                    .inline
+                    .push(Span::styled(t.into_string(), theme::inline_code())),
                 Event::InlineHtml(t) => self.push_span(t.into_string()),
                 Event::Html(t) => {
                     if self.in_html_block {
@@ -1055,7 +1054,38 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .flat_map(|line| line.spans.iter())
             .find(|span| span.content.as_ref() == "inline")
             .expect("inline code token present");
-        assert_eq!(code_span.style.fg, Some(theme::text_secondary_color()));
+        assert_eq!(code_span.style.fg, theme::inline_code().fg);
+        assert_eq!(code_span.style.bg, theme::inline_code().bg);
+    }
+
+    /// Inline code carries file paths and identifiers — the tokens a reader
+    /// acts on. Rendering them below the prose they sit in was backwards.
+    #[test]
+    fn inline_code_is_not_dimmer_than_the_prose_around_it() {
+        let rendered = render_markdown("see `src/stats.py` for it", 80);
+        let spans: Vec<&Span<'static>> = rendered.iter().flat_map(|l| l.spans.iter()).collect();
+        let code = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "src/stats.py")
+            .expect("code token");
+        let prose = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "see")
+            .expect("prose token");
+
+        assert_eq!(
+            code.style.fg,
+            Some(theme::text_primary_color()),
+            "code should read at primary weight of colour"
+        );
+        assert_ne!(
+            code.style.bg, prose.style.bg,
+            "the tint is what marks it as code"
+        );
+        // The accent belongs to focus, never to content.
+        assert_ne!(code.style.fg, Some(theme::accent_color()));
+        // Bold now means `**bold**`; code must not compete for it.
+        assert!(!code.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
