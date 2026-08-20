@@ -217,6 +217,10 @@ impl EgressShared {
         host
     }
 
+    pub fn permits_host(&self, host: &str) -> bool {
+        self.permits(host)
+    }
+
     pub fn record_denied(&self, host: String) {
         self.denied
             .lock()
