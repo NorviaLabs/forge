@@ -227,10 +227,7 @@ mod tests {
             include_str!("../themes/solarized-dark.toml")
                 .replace("id = \"solarized-dark\"", "id = \"broken\"")
                 // Truncated hex value: 5 digits instead of 6.
-                .replace(
-                    "user_gutter_active = \"#58A2D3\"",
-                    "user_gutter_active = \"#58A2D\"",
-                ),
+                .replace("cursor = \"#EEE8D5\"", "cursor = \"#EEE8D\""),
         )
         .unwrap();
         let (registry, diagnostics) = ThemeRegistry::load_with_diagnostics(Some(dir.path()));
