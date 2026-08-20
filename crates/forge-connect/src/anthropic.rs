@@ -49,44 +49,44 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
     // still returns 401 for bad keys vs 400 for good keys.
     let url = format!("{base}/v1/models");
     let resp = ureq::get(&url)
-        .set("x-api-key", key)
-        .set("anthropic-version", "2023-06-01")
-        .set(
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header(
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
-        .timeout(std::time::Duration::from_secs(15))
+        .config()
+        // Verification branches on the status itself, so a non-2xx is data
+        // rather than a transport failure. ureq 3 would otherwise turn every
+        // 401/404/500 into `Err` and leave the status arms below unreachable.
+        .http_status_as_error(false)
+        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
+        .build()
         .call();
     match resp {
-        Ok(r) if (200..300).contains(&r.status()) => Ok(()),
-        Ok(r) if r.status() == 401 || r.status() == 403 => Err(VerifyError::Unauthorized {
-            provider: "Anthropic",
-            guidance: "Create a key at https://console.anthropic.com/settings/keys.",
-        }),
-        Ok(r) if r.status() == 404 => {
-            // Older APIs may not expose /v1/models — fall back to a tiny messages call.
-            verify_via_messages(key, base)
-        }
-        Ok(r) => {
-            // 400/other with auth accepted is fine for key validity.
-            if r.status() < 500 {
-                Ok(())
-            } else {
-                Err(VerifyError::Status {
-                    provider: "Anthropic",
-                    status: r.status(),
-                    guidance: None,
-                })
-            }
-        }
-        Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => {
+        Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
+        Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
             Err(VerifyError::Unauthorized {
                 provider: "Anthropic",
                 guidance: "Create a key at https://console.anthropic.com/settings/keys.",
             })
         }
-        Err(ureq::Error::Status(404, _)) => verify_via_messages(key, base),
-        Err(ureq::Error::Status(code, _)) if code < 500 => Ok(()),
+        Ok(r) if r.status().as_u16() == 404 => {
+            // Older APIs may not expose /v1/models — fall back to a tiny messages call.
+            verify_via_messages(key, base)
+        }
+        Ok(r) => {
+            // 400/other with auth accepted is fine for key validity.
+            if r.status().as_u16() < 500 {
+                Ok(())
+            } else {
+                Err(VerifyError::Status {
+                    provider: "Anthropic",
+                    status: r.status().as_u16(),
+                    guidance: None,
+                })
+            }
+        }
         Err(other) => Err(VerifyError::Unreachable {
             provider: "Anthropic",
             message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
@@ -99,24 +99,27 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
     let url = format!("{base}/v1/messages");
     let body = r#"{"model":"","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
     match ureq::post(&url)
-        .set("x-api-key", key)
-        .set("anthropic-version", "2023-06-01")
-        .set("content-type", "application/json")
-        .set(
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .header(
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
-        .timeout(std::time::Duration::from_secs(15))
-        .send_string(body)
+        .config()
+        .http_status_as_error(false)
+        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .send(body)
     {
-        Ok(_) => Ok(()),
-        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+        Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
             Err(VerifyError::Unauthorized {
                 provider: "Anthropic",
                 guidance: "Create a key at https://console.anthropic.com/settings/keys.",
             })
         }
-        Err(ureq::Error::Status(_, _)) => Ok(()), // 400/404/etc. means auth passed
+        // 400/404/etc. means the credential was accepted and the payload was not.
+        Ok(_) => Ok(()),
         Err(other) => Err(VerifyError::Unreachable {
             provider: "Anthropic",
             message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
@@ -167,10 +170,12 @@ mod tests {
         assert!(err.contains("unauthorized"), "{err}");
         assert!(!err.contains("sk-ant-valid"));
 
+        // A 500 is now reported as a status failure rather than as
+        // "unreachable": the server answered, so the request did reach it.
         let err = verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![500]))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("status code 500"), "{err}");
+        assert!(err.contains("HTTP 500"), "{err}");
     }
 
     #[test]
