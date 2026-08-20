@@ -623,6 +623,26 @@ async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
         "projected credentials must authenticate gh api, got {}",
         api.content
     );
+
+    // SSH remotes cannot leave the sandbox; the projected gitconfig must
+    // rewrite them to HTTPS and authenticate with GH_TOKEN.
+    let ls_remote = run_shell_command_with_egress(
+        "git ls-remote git@github.com:NorviaLabs/forge.git HEAD",
+        ws.path(),
+        Some(&grant),
+    )
+    .await
+    .expect("git ls-remote should spawn");
+    assert!(
+        !ls_remote.is_error,
+        "SSH GitHub remotes must be rewritten to HTTPS through the proxy, got {}",
+        ls_remote.content
+    );
+    assert!(
+        ls_remote.content.contains("refs/heads/") || ls_remote.content.len() > 40,
+        "ls-remote should return a SHA, got {}",
+        ls_remote.content
+    );
 }
 
 /// CI must actually exercise the sandbox, not skip it.

@@ -21,6 +21,11 @@ use crate::sandbox::EgressGrant;
 /// which names a keychain account the sandbox cannot open — that path
 /// prints "Logged in (GH_TOKEN)" *and* "token in default is invalid" and
 /// exits 1 even when projection worked.
+///
+/// `GIT_CONFIG_GLOBAL` does the same for git: SSH remotes (`git@github.com:`)
+/// cannot leave the sandbox (Seatbelt/bwrap only allow the HTTPS CONNECT
+/// proxy), so they are rewritten to `https://github.com/` and authenticated
+/// with the projected token instead of osxkeychain.
 pub fn github_identity_env(
     command: &str,
     grant: Option<&EgressGrant>,
@@ -32,18 +37,41 @@ pub fn github_identity_env(
     if !grant.is_some_and(|g| g.permits_github()) {
         return Vec::new();
     }
-    match host_gh_token() {
-        Some(token) => vec![
-            ("GH_TOKEN".into(), token.clone()),
-            ("GH_ENTERPRISE_TOKEN".into(), token),
-            ("GIT_TERMINAL_PROMPT".into(), "0".into()),
-            (
-                "GH_CONFIG_DIR".into(),
-                config_dir.to_string_lossy().into_owned(),
-            ),
-        ],
-        None => Vec::new(),
+    let Some(token) = host_gh_token() else {
+        return Vec::new();
+    };
+    let gitconfig = write_github_gitconfig(config_dir);
+    let mut env = vec![
+        ("GH_TOKEN".into(), token.clone()),
+        ("GH_ENTERPRISE_TOKEN".into(), token),
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        (
+            "GH_CONFIG_DIR".into(),
+            config_dir.to_string_lossy().into_owned(),
+        ),
+    ];
+    if let Some(gitconfig) = gitconfig {
+        env.push(("GIT_CONFIG_GLOBAL".into(), gitconfig));
+        env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
     }
+    env
+}
+
+const GITHUB_GITCONFIG: &str = r#"# Written by Forge for a confined GitHub publish spawn.
+# SSH cannot use the CONNECT proxy; rewrite to HTTPS and auth with GH_TOKEN.
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+	insteadOf = ssh://git@github.com/
+[credential]
+	helper =
+[credential "https://github.com"]
+	helper = !f() { test "$1" = get || exit 0; printf 'username=x-access-token\npassword=%s\n' "$GH_TOKEN"; }; f
+"#;
+
+fn write_github_gitconfig(config_dir: &std::path::Path) -> Option<String> {
+    let path = config_dir.join("gitconfig");
+    std::fs::write(&path, GITHUB_GITCONFIG).ok()?;
+    Some(path.to_string_lossy().into_owned())
 }
 
 /// `gh pr create` and `git push` update refs under `.git`, which the default
@@ -137,6 +165,17 @@ mod tests {
     fn identity_is_not_projected_without_a_github_grant() {
         assert!(
             github_identity_env("gh auth status", None, std::path::Path::new("/tmp")).is_empty()
+        );
+    }
+
+    #[test]
+    fn gitconfig_rewrites_ssh_github_remotes_to_https() {
+        assert!(GITHUB_GITCONFIG.contains("insteadOf = git@github.com:"));
+        assert!(GITHUB_GITCONFIG.contains("insteadOf = ssh://git@github.com/"));
+        assert!(GITHUB_GITCONFIG.contains("https://github.com/"));
+        assert!(
+            GITHUB_GITCONFIG.contains("helper ="),
+            "must clear the host credential helper before adding ours"
         );
     }
 }
