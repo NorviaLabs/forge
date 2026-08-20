@@ -2008,14 +2008,16 @@ mod tests {
     }
 
     #[test]
-    fn inline_code_in_body_text_uses_secondary_body_color_not_interactive_accent() {
+    fn inline_code_in_body_text_is_tinted_not_given_an_interactive_accent() {
         let lines = render_markdown("plain text with `inline code` in it", 80);
         let code_span = lines
             .iter()
             .flat_map(|line| line.spans.iter())
             .find(|span| span.content.as_ref() == "inline")
             .expect("inline code token present");
-        assert_eq!(code_span.style.fg, Some(theme::text_secondary_color()));
+        // Code is marked by its ground, not by a hue: the accent means focus
+        // and info means a callout, so neither may leak into body content.
+        assert_eq!(code_span.style.bg, theme::inline_code().bg);
         assert_ne!(code_span.style.fg, Some(theme::accent_color()));
         assert_ne!(code_span.style.fg, Some(theme::info_color()));
     }
