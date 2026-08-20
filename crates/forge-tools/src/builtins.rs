@@ -374,8 +374,8 @@ async fn run_shell_command_inner(
     }
     // The proxy env points at the in-sandbox relay (Linux) or the filtered
     // host proxy (macOS). An approved unconfined retry is supposed to use
-    // the real network — `gh pr create` and friends fail if we leave them
-    // talking to a proxy that is either not listening or still deny-all.
+    // the real network — HTTPS clients fail if we leave them talking to a
+    // proxy that is either not listening or still deny-all.
     if confined_run {
         for (name, value) in crate::sandbox::egress_env(&policy) {
             shell.env(name, value);
@@ -490,7 +490,7 @@ Do not use this for listing, file search, content search, file reads, or git. \
 Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
 A host(...) grant projects HTTPS identity for that host into the confined \
 spawn (SSH git remotes become HTTPS; git-dir writes stay limited to git \
-frontends)."
+itself, never to git hooks)."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BashArgs>()
@@ -1777,7 +1777,7 @@ Do not use this for listing, file search, content search, file reads, or git. \
 Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
 A host(...) grant projects HTTPS identity for that host into the confined \
 spawn (SSH git remotes become HTTPS; git-dir writes stay limited to git \
-frontends)."
+itself, never to git hooks)."
         );
         assert_eq!(t.side_effect_class(), SideEffectClass::Exec);
     }
@@ -1814,7 +1814,7 @@ frontends)."
 
     /// A session almost always carries an egress grant. After HITL approves
     /// an unconfined retry, that grant must not still be injected as
-    /// `HTTP(S)_PROXY` — `gh pr create` then talks to the sandbox relay
+    /// `HTTP(S)_PROXY` — the retry would then talk to the sandbox relay
     /// (nothing listens on the host) or the deny-all host proxy.
     #[tokio::test]
     async fn approved_bash_does_not_keep_the_sandbox_proxy() {

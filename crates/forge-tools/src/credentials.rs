@@ -10,9 +10,11 @@
 //!
 //! A host grant therefore **projects** HTTPS identity for that host into the
 //! spawn: credentials filled on the host via `git credential`, a spawn-local
-//! gitconfig that rewrites SSH remotes to HTTPS, and a credential helper
-//! that answers for those hosts. The same grant is what authorized talking
-//! to the host in the first place.
+//! gitconfig that rewrites SSH remotes to HTTPS, a credential helper that
+//! answers for those hosts, and `{first-label}_TOKEN` plus XDG dirs so
+//! HTTPS CLIs that do not speak git-credential still authenticate without
+//! falling through to the host secret store. The same grant is what
+//! authorized talking to the host in the first place.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -41,41 +43,43 @@ pub fn host_identity_env(grant: Option<&EgressGrant>, config_dir: &Path) -> Vec<
     if credentials.is_empty() {
         return Vec::new();
     }
-    let mut env = vec![("GIT_TERMINAL_PROMPT".into(), "0".into())];
-    let store = config_dir.join("https-credentials");
-    if write_credential_store(&store, &credentials).is_ok() {
-        env.push((
-            "FORGE_HOST_CREDENTIALS".into(),
-            store.to_string_lossy().into_owned(),
-        ));
-    }
-    let helper = config_dir.join("git-credential-forge");
-    if write_credential_helper(&helper).is_ok() {
-        if let Some(gitconfig) = write_gitconfig(config_dir, &helper, &credentials) {
-            env.push(("GIT_CONFIG_GLOBAL".into(), gitconfig));
-            env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
-        }
-    }
-    for cred in &credentials {
-        env.extend(https_cli_env(&cred.host, &cred.password));
-    }
-    if env.iter().any(|(name, _)| name == "GH_TOKEN") {
-        env.push((
-            "GH_CONFIG_DIR".into(),
-            config_dir.to_string_lossy().into_owned(),
-        ));
-    }
-    env
+    project_identity(&credentials, config_dir)
 }
 
-/// Git (and git-frontend CLIs) update refs under `.git`, which the default
-/// policy carves out as read-only. This is about the git directory, not a
-/// particular forge.
+/// `.git` is read-only by default so a confined spawn cannot rewrite
+/// history. A spawn opts in when any segment of the command line runs git
+/// itself.
+///
+/// Every segment is checked, not just the leading one: `make release && git
+/// push` writes refs from the second segment, and keying off the leading
+/// executable denied it.
+///
+/// Frontends that shell out to git (`gh`, `glab`, ...) are deliberately
+/// **not** enumerated. Tracking providers here would be an architecture
+/// smell, and it buys nothing: such a tool needs `.git` writes only to push
+/// a branch on the caller's behalf, which it cannot do without a TTY to
+/// prompt on anyway. The working shape is an explicit `git push` — which
+/// this rule already covers, including when the two are chained in one
+/// command line.
 pub fn needs_git_writes(command: &str) -> bool {
-    matches!(
-        leading_executable(command),
-        "git" | "gh" | "glab" | "tea" | "hut"
-    )
+    command_segments(command).any(|segment| {
+        let exe = leading_executable(segment);
+        exe == "git" || exe.starts_with("git-")
+    })
+}
+
+/// Split a command line on the shell operators that start a new command.
+///
+/// This is a policy *widening* heuristic, not a security boundary: the
+/// sandbox is what enforces the result, and over-splitting can only ever
+/// propose git writability for a spawn, never grant it filesystem reach.
+/// Quoting is not honoured, so `echo "git push"` also proposes the
+/// carve-out — accepted, because the alternative is denying real pushes.
+fn command_segments(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split([';', '\n', '|', '&', '(', ')'])
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
 }
 
 fn credentials_for_grant(grant: &EgressGrant) -> Vec<HostCredential> {
@@ -171,25 +175,67 @@ fn parse_credential_fill(host: &str, body: &str) -> Option<HostCredential> {
         host: host.to_string(),
         username: username
             .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| "x-access-token".into()),
+            .unwrap_or_else(|| "git".into()),
         password,
     })
 }
 
-/// HTTPS CLIs that do not speak git-credential still need the password in
-/// an env var they already document. Unknown hosts get gitconfig only.
-/// This is an adapter, not spawn policy: identity is filled per granted host.
-fn https_cli_env(host: &str, password: &str) -> Vec<(String, String)> {
-    if host == "github.com" || host.ends_with(".github.com") {
-        vec![
-            ("GH_TOKEN".into(), password.to_string()),
-            ("GITHUB_TOKEN".into(), password.to_string()),
-        ]
-    } else if host == "gitlab.com" || host.ends_with(".gitlab.com") {
-        vec![("GITLAB_TOKEN".into(), password.to_string())]
-    } else {
-        Vec::new()
+fn project_identity(credentials: &[HostCredential], config_dir: &Path) -> Vec<(String, String)> {
+    let mut env = vec![("GIT_TERMINAL_PROMPT".into(), "0".into())];
+    let store = config_dir.join("https-credentials");
+    if write_credential_store(&store, credentials).is_ok() {
+        env.push((
+            "FORGE_HOST_CREDENTIALS".into(),
+            store.to_string_lossy().into_owned(),
+        ));
     }
+    let helper = config_dir.join("git-credential-forge");
+    if write_credential_helper(&helper).is_ok() {
+        if let Some(gitconfig) = write_gitconfig(config_dir, &helper, credentials) {
+            env.push(("GIT_CONFIG_GLOBAL".into(), gitconfig));
+            env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+        }
+    }
+    for cred in credentials {
+        if let Some(name) = token_env_name(&cred.host) {
+            env.push((name, cred.password.clone()));
+        }
+    }
+    // Isolate XDG state inside the spawn-local dir so HTTPS CLIs do not
+    // fall through to the host config / secret store (blocked in-sandbox,
+    // and a mixed "env token ok, keychain failed" status).
+    for (var, dir) in [
+        ("XDG_CONFIG_HOME", config_dir.join("xdg-config")),
+        ("XDG_CACHE_HOME", config_dir.join("xdg-cache")),
+        ("XDG_STATE_HOME", config_dir.join("xdg-state")),
+    ] {
+        let _ = std::fs::create_dir_all(&dir);
+        env.push((var.into(), dir.to_string_lossy().into_owned()));
+    }
+    env
+}
+
+/// `{first-label}_TOKEN` for `host`. `example.com` → `EXAMPLE_TOKEN`.
+///
+/// HTTPS CLIs that do not speak git-credential commonly document this
+/// shape. It is derived from the granted host, not a product table.
+fn token_env_name(host: &str) -> Option<String> {
+    let label = host.split('.').next().filter(|label| !label.is_empty())?;
+    let mut chars = label.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    let mut name = String::with_capacity(label.len() + 6);
+    for c in std::iter::once(first).chain(chars) {
+        if c.is_ascii_alphanumeric() {
+            name.push(c.to_ascii_uppercase());
+        } else {
+            name.push('_');
+        }
+    }
+    name.push_str("_TOKEN");
+    Some(name)
 }
 
 fn write_credential_store(path: &Path, credentials: &[HostCredential]) -> std::io::Result<()> {
@@ -281,13 +327,27 @@ mod tests {
     }
 
     #[test]
-    fn git_frontends_need_git_dir_writes() {
+    fn only_git_itself_needs_git_dir_writes() {
         assert!(needs_git_writes("git push origin HEAD"));
         assert!(needs_git_writes("git status"));
-        assert!(needs_git_writes("gh pr create"));
-        assert!(needs_git_writes("glab mr create"));
+        assert!(needs_git_writes("git-lfs push origin main"));
+        assert!(!needs_git_writes("gh pr create"));
+        assert!(!needs_git_writes("glab mr create"));
         assert!(!needs_git_writes("cargo test"));
-        assert!(!needs_git_writes("echo git push"));
+        assert!(!needs_git_writes("curl -I https://example.com"));
+    }
+
+    /// A git write can sit in any segment of a compound command. Checking
+    /// only the leading executable denied all of these.
+    #[test]
+    fn git_writes_are_detected_in_any_command_segment() {
+        assert!(needs_git_writes("make release && git push"));
+        assert!(needs_git_writes("cargo build; git tag -a v1 -m v1"));
+        assert!(needs_git_writes(
+            "gh pr create --head x && git update-ref HEAD x"
+        ));
+        assert!(needs_git_writes("ls | grep -q x || git commit -am wip"));
+        assert!(!needs_git_writes("cargo build && cargo test"));
     }
 
     #[test]
@@ -317,7 +377,6 @@ mod tests {
         assert!(body.contains("insteadOf = git@example.com:"));
         assert!(body.contains("insteadOf = ssh://git@example.com/"));
         assert!(body.contains("https://example.com/"));
-        assert!(!body.contains("github.com"));
     }
 
     #[test]
@@ -326,11 +385,42 @@ mod tests {
     }
 
     #[test]
-    fn extra_cli_env_is_only_for_documented_https_clis() {
-        assert!(https_cli_env("example.com", "x").is_empty());
-        let github = https_cli_env("github.com", "x");
-        assert!(github.iter().any(|(k, v)| k == "GH_TOKEN" && v == "x"));
-        let gitlab = https_cli_env("gitlab.com", "x");
-        assert!(gitlab.iter().any(|(k, v)| k == "GITLAB_TOKEN" && v == "x"));
+    fn token_env_name_is_the_first_dns_label() {
+        assert_eq!(
+            token_env_name("example.com").as_deref(),
+            Some("EXAMPLE_TOKEN")
+        );
+        assert_eq!(
+            token_env_name("my-git.internal").as_deref(),
+            Some("MY_GIT_TOKEN")
+        );
+        assert_eq!(token_env_name("10.0.0.1"), None);
+    }
+
+    #[test]
+    fn projected_env_uses_host_label_tokens_and_xdg_not_a_product_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = project_identity(
+            &[HostCredential {
+                host: "example.com".into(),
+                username: "me".into(),
+                password: "s3cret".into(),
+            }],
+            dir.path(),
+        );
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "EXAMPLE_TOKEN" && v == "s3cret"));
+        assert!(env.iter().any(|(k, _)| k == "XDG_CONFIG_HOME"));
+        assert!(env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"));
+        assert!(env.iter().any(|(k, _)| k == "XDG_STATE_HOME"));
+        assert_eq!(env.iter().filter(|(k, _)| k.ends_with("_TOKEN")).count(), 1);
+    }
+
+    #[test]
+    fn parse_fill_defaults_username_to_git() {
+        let cred = parse_credential_fill("example.com", "password=s3cret\n").unwrap();
+        assert_eq!(cred.username, "git");
+        assert_eq!(cred.password, "s3cret");
     }
 }

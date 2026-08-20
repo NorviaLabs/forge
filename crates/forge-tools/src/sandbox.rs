@@ -204,10 +204,10 @@ pub struct SandboxPolicy {
     /// route to the host's loopback, so a TCP port is unreachable from inside;
     /// a Unix socket is a filesystem object and a bind-mount still reaches it.
     egress_socket: Option<PathBuf>,
-    /// When true, `.git` is writable. Default is false: git is the recovery
-    /// mechanism. `gh pr create` / `git push` need this, and only those
-    /// spawns opt in — a host grant alone must not lift the carve-out for
-    /// every command in the session.
+    /// When true, `.git` is writable except for `.git/hooks`. Default is
+    /// false: git is the recovery mechanism. Only spawns that run git or a
+    /// git frontend opt in — a host grant alone must not lift the carve-out
+    /// for every command in the session.
     git_writable: bool,
 }
 
@@ -223,7 +223,8 @@ impl SandboxPolicy {
         }
     }
 
-    /// Permit writes under `.git` for this spawn only.
+    /// Permit writes under `.git` for this spawn only. `.git/hooks` stays
+    /// read-only regardless — see [`Self::readonly_subpaths_of`].
     pub fn with_git_writable(mut self) -> Self {
         self.git_writable = true;
         self
@@ -319,7 +320,15 @@ impl SandboxPolicy {
     /// root, resolved against `root`.
     fn readonly_subpaths_of(root: &Path, git_writable: bool) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        if !git_writable {
+        if git_writable {
+            // Refs, objects and config have to move for a push to happen.
+            // Hooks do not, and they are the one part of `.git` that is
+            // executed rather than read: a hook written here runs with the
+            // user's full privileges the next time they use git *outside*
+            // the sandbox. Publishing never needs to write one, so the
+            // carve-out stops short of them.
+            paths.push(root.join(".git/hooks"));
+        } else {
             paths.push(root.join(".git"));
         }
         paths.push(root.join(".forge"));
@@ -620,8 +629,8 @@ mod tests {
         );
         assert_eq!(
             p.clone().with_git_writable().readonly_subpaths(),
-            vec![ws.path().join(".forge")],
-            "a publish spawn must be able to update refs"
+            vec![ws.path().join(".git/hooks"), ws.path().join(".forge")],
+            "a publish spawn must be able to update refs, but never install a hook"
         );
     }
 

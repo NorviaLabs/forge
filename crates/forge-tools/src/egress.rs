@@ -439,7 +439,7 @@ async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> 
 /// Family pattern for a denied host, used as `host(...)` in permissions.toml.
 ///
 /// `api.github.com` and `github.com` both become `**.github.com` so one grant
-/// covers `gh`, git-over-https, and the rest of that apex.
+/// covers every client of that apex.
 pub fn suggest_host_pattern(host: &str) -> String {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {

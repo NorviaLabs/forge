@@ -10,8 +10,9 @@
 //! by parsing. Here they are guarded by the OS, which is the point of the
 //! change: the guarantee no longer depends on recognising a command.
 
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use forge_tools::sandbox::{availability, wrap_shell_command, SandboxPolicy};
 
@@ -114,9 +115,9 @@ fn git_directory_is_read_only() {
     );
 }
 
-/// `gh pr create` (and `git push`) update refs under `.git`. A host grant
-/// does not lift this carve-out for ordinary commands, so the default
-/// policy still refuses a ref update.
+/// `git push` updates refs under `.git`. A host grant does not lift this
+/// carve-out for ordinary commands, so the default policy still refuses a
+/// ref update.
 #[test]
 fn git_ref_updates_are_denied_inside_the_sandbox() {
     require_sandbox!();
@@ -128,7 +129,7 @@ fn git_ref_updates_are_denied_inside_the_sandbox() {
     );
     assert!(
         !ok,
-        "gh/git must not be able to publish a ref while .git is read-only: {out}"
+        "a confined spawn must not publish a ref while .git is read-only: {out}"
     );
     assert!(!ws.path().join(".git/refs/heads/feature").exists());
 }
@@ -157,26 +158,48 @@ fn a_publish_policy_can_update_git_refs() {
     );
 }
 
-/// `gh` keeps hosts.yml and the token cache under `GH_CONFIG_DIR`, which is
-/// outside the workspace. A confined `gh pr create` that tries to refresh
-/// that cache is a filesystem denial, not a host denial.
+/// A hook is the one part of `.git` that is *executed*, and it runs with the
+/// user's full privileges the next time they use git outside the sandbox.
+/// Publishing never needs to write one, so lifting the carve-out for a push
+/// must not hand over a code-execution vector along with the refs.
 #[test]
-fn gh_config_outside_the_workspace_is_not_writable() {
+fn a_publish_policy_still_cannot_write_git_hooks() {
+    require_sandbox!();
+    let ws = workspace();
+    std::fs::create_dir_all(ws.path().join(".git/hooks")).unwrap();
+    let policy = SandboxPolicy::for_workspace(ws.path()).with_git_writable();
+    let (program, args) =
+        wrap_shell_command("sh", "printf 'pwned' > .git/hooks/post-checkout", &policy).unwrap();
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(ws.path())
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a publish spawn must not be able to install a git hook: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(!ws.path().join(".git/hooks/post-checkout").exists());
+}
+
+/// HTTPS CLIs keep host tokens and caches under a config dir that is
+/// outside the workspace. A confined spawn that tries to refresh that
+/// cache is a filesystem denial, not a host denial.
+#[test]
+fn cli_config_outside_the_workspace_is_not_writable() {
     require_sandbox!();
     let ws = workspace();
     let home = tempfile::tempdir().unwrap();
-    let config = home.path().join("gh");
+    let config = home.path().join("cli-config");
     std::fs::create_dir_all(&config).unwrap();
     let (ok, out) = run_confined(
         ws.path(),
-        &format!(
-            "GH_CONFIG_DIR={} printf 'x' > \"$GH_CONFIG_DIR/hosts.yml\"",
-            config.display()
-        ),
+        &format!("printf 'x' > {}/hosts.yml", config.display()),
     );
     assert!(
         !ok,
-        "writing the gh config dir must be a sandbox boundary: {out}"
+        "writing a CLI config dir outside the workspace must be a sandbox boundary: {out}"
     );
     assert!(!config.join("hosts.yml").exists());
 }
@@ -558,30 +581,18 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
     }
 }
 
-/// Probe a real GitHub-talking CLI through Forge's sandbox + egress proxy.
+/// Probe a real git remote through Forge's sandbox + egress proxy.
 ///
-/// Skips when `gh` is not installed so CI without the CLI stays green.
-/// The grant is `**.github.com`; identity must come from that grant
-/// (git-credential on the host), not from a tool-specific special case.
+/// The remote is this repository's host; identity must come from that
+/// grant (`git credential` on the host), not from a tool-specific case.
+/// Skips when the host cannot fill HTTPS credentials so CI stays green.
 #[tokio::test]
-async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
+async fn host_grant_projects_git_identity_through_the_sandbox() {
     require_sandbox!();
-    if std::process::Command::new("gh")
-        .arg("--version")
-        .output()
-        .map(|o| !o.status.success())
-        .unwrap_or(true)
-    {
-        eprintln!("SKIP: gh is not installed");
-        return;
-    }
-    if !std::process::Command::new("gh")
-        .args(["auth", "token"])
-        .output()
-        .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(false)
-    {
-        eprintln!("SKIP: gh is not logged in on this host");
+    let remote_host = "github.com";
+    let remote = "git@github.com:NorviaLabs/forge.git";
+    if !host_has_https_credentials(remote_host) {
+        eprintln!("SKIP: no HTTPS credentials for {remote_host} on this host");
         return;
     }
 
@@ -592,7 +603,7 @@ async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
     let ws = workspace();
     let sockdir = tempfile::tempdir().unwrap();
     let mut policy = EgressPolicy::new();
-    policy.allow("**.github.com");
+    policy.allow(format!("**.{remote_host}"));
     let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
     let socket_path = sockdir.path().join("egress.sock");
     proxy
@@ -605,28 +616,10 @@ async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
         control: Some(proxy.shared().clone()),
     };
 
-    let auth = run_shell_command_with_egress("gh auth status", ws.path(), Some(&grant))
-        .await
-        .expect("gh auth status should spawn");
-    assert!(
-        !auth.is_error,
-        "a GitHub host grant must project gh credentials into the sandbox, got {}",
-        auth.content
-    );
-
-    let api = run_shell_command_with_egress("gh api user --jq .login", ws.path(), Some(&grant))
-        .await
-        .expect("gh api should spawn");
-    assert!(
-        !api.is_error,
-        "projected credentials must authenticate gh api, got {}",
-        api.content
-    );
-
     // SSH remotes cannot leave the sandbox; the projected gitconfig must
-    // rewrite them to HTTPS and authenticate with GH_TOKEN.
+    // rewrite them to HTTPS and authenticate with the filled credential.
     let ls_remote = run_shell_command_with_egress(
-        "git ls-remote git@github.com:NorviaLabs/forge.git HEAD",
+        &format!("git ls-remote {remote} HEAD"),
         ws.path(),
         Some(&grant),
     )
@@ -634,7 +627,7 @@ async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
     .expect("git ls-remote should spawn");
     assert!(
         !ls_remote.is_error,
-        "SSH GitHub remotes must be rewritten to HTTPS through the proxy, got {}",
+        "SSH remotes must be rewritten to HTTPS through the proxy, got {}",
         ls_remote.content
     );
     assert!(
@@ -642,6 +635,31 @@ async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
         "ls-remote should return a SHA, got {}",
         ls_remote.content
     );
+}
+
+fn host_has_https_credentials(host: &str) -> bool {
+    let mut child = match Command::new("git")
+        .args(["credential", "fill"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        return false;
+    };
+    if write!(stdin, "protocol=https\nhost={host}\n\n").is_err() {
+        return false;
+    }
+    drop(stdin);
+    let Ok(output) = child.wait_with_output() else {
+        return false;
+    };
+    output.status.success() && String::from_utf8_lossy(&output.stdout).contains("password=")
 }
 
 /// CI must actually exercise the sandbox, not skip it.
