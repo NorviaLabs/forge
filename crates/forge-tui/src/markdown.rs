@@ -356,7 +356,7 @@ impl MdRenderer {
                 let frame = ListFrame {
                     ordered: start.is_some(),
                     index: start.unwrap_or(1),
-                    indent: self.cont_prefix.len(),
+                    indent: display_width(&self.cont_prefix),
                     marker_w: 0,
                     saved_cont: self.cont_prefix.clone(),
                 };
@@ -372,7 +372,10 @@ impl MdRenderer {
                     } else {
                         "• ".to_string()
                     };
-                    frame.marker_w = marker.len();
+                    // Columns, not bytes: the bullet marker `• ` is four bytes
+                    // wide and two columns wide, so `.len()` pushed every
+                    // wrapped line two columns past the text it continues.
+                    frame.marker_w = display_width(&marker);
                     self.prefix = format!("{}{}", " ".repeat(frame.indent), marker);
                     self.cont_prefix = " ".repeat(frame.indent + frame.marker_w);
                 }
@@ -1088,6 +1091,50 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         assert!(!code.style.add_modifier.contains(Modifier::BOLD));
     }
 
+    /// A wrapped bullet must line up under the bullet's text. `marker_w` was
+    /// measured in bytes, and `• ` is four bytes for two columns, so every
+    /// continuation hung two columns to the right.
+    #[test]
+    fn a_wrapped_bullet_aligns_under_its_text() {
+        let rendered = text(&render_markdown(
+            "- median() mishandles even-length inputs by returning the upper value",
+            40,
+        ));
+        let mut lines = rendered.lines();
+        let first = lines.next().expect("bullet line");
+        let cont = lines.next().expect("continuation line");
+
+        // Columns, not bytes — `str::find` would report 4 for the 3-byte
+        // bullet, which is the very confusion under test.
+        let text_col = first[..first.find("median").expect("bullet text on first line")]
+            .chars()
+            .count();
+        let cont_col = cont.chars().take_while(|c| *c == ' ').count();
+        assert_eq!(
+            cont_col, text_col,
+            "continuation must align with the bullet text:\n{rendered}"
+        );
+    }
+
+    /// Ordered markers are ASCII, so they were always right — pin them so the
+    /// column fix cannot regress them.
+    #[test]
+    fn a_wrapped_numbered_item_aligns_under_its_text() {
+        let rendered = text(&render_markdown(
+            "1. median() mishandles even-length inputs by returning the upper value",
+            40,
+        ));
+        let mut lines = rendered.lines();
+        let first = lines.next().expect("item line");
+        let cont = lines.next().expect("continuation line");
+
+        let text_col = first[..first.find("median").expect("item text on first line")]
+            .chars()
+            .count();
+        let cont_col = cont.chars().take_while(|c| *c == ' ').count();
+        assert_eq!(cont_col, text_col, "{rendered}");
+    }
+
     #[test]
     fn separates_top_level_paragraphs() {
         let rendered = render_markdown("First paragraph.\n\nSecond paragraph.", 80);
@@ -1292,10 +1339,11 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .lines()
             .find(|l| l.contains('┌'))
             .unwrap_or_else(|| panic!("boxed table missing:\n{rendered}"));
-        // List continuation uses marker.len() (bytes), so `• ` indents 4.
-        // Match that existing indent rather than inventing a new one.
+        // The list continuation indent is the marker's *column* width, so the
+        // two-column `• ` puts the table at 2. It used to sit at 4, because
+        // `marker.len()` measured the bullet's four bytes.
         assert!(
-            top.starts_with("    ┌"),
+            top.starts_with("  ┌"),
             "table should sit on the list continuation indent:\n{rendered}"
         );
         assert!(
