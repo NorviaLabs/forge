@@ -629,14 +629,18 @@ fn wrap_spans(
     let mut cur_w = prefix_w;
     let mut has_content = false;
 
-    for (word, style) in spans.iter().flat_map(tokenize) {
+    for Token { word, style, glued } in tokenize(spans) {
         let mut remaining = word.as_str();
+        // `glued` only ever suppresses the separating space, and that space is
+        // only considered while `has_content` holds. Every wrap below clears
+        // `has_content`, so a token that hard-breaks onto a fresh line cannot
+        // pick up a stray space from having been glued.
         while !remaining.is_empty() {
-            let gap = usize::from(has_content);
+            let gap = usize::from(has_content && !glued);
             let room = width.saturating_sub(cur_w + gap);
             let wlen = display_width(remaining);
             if wlen <= room {
-                if has_content {
+                if has_content && !glued {
                     cur.push(Span::raw(" "));
                     cur_w += 1;
                 }
@@ -671,11 +675,51 @@ fn wrap_spans(
     out
 }
 
-fn tokenize(span: &Span<'static>) -> Vec<(String, Style)> {
-    span.content
-        .split_whitespace()
-        .map(|word| (word.to_string(), span.style))
-        .collect()
+/// A word to place, its style, and whether it was written flush against the
+/// word before it.
+struct Token {
+    word: String,
+    style: Style,
+    /// No whitespace separated this token from its predecessor in the source.
+    glued: bool,
+}
+
+/// Split a styled run into words, remembering where the source had no space.
+///
+/// Tokenising each span on its own loses that: inline code is its own span and
+/// the `.` after it is another, so two characters written flush against each
+/// other came back as separate words and the wrapper rejoined them with a
+/// space — `ZeroDivisionError .`. Whitespace only ever disappears *between*
+/// spans, so the run has to be walked as a whole, carrying whether the previous
+/// span ended on whitespace.
+fn tokenize(spans: &[Span<'static>]) -> Vec<Token> {
+    let mut out: Vec<Token> = Vec::new();
+    // Leading whitespace is not a join, so the first token is never glued.
+    let mut prev_ended_ws = true;
+    for span in spans {
+        let content = span.content.as_ref();
+        let starts_ws = content.starts_with(char::is_whitespace);
+        let mut words = content.split_whitespace();
+        if let Some(first) = words.next() {
+            out.push(Token {
+                word: first.to_string(),
+                style: span.style,
+                glued: !starts_ws && !prev_ended_ws,
+            });
+            for word in words {
+                out.push(Token {
+                    word: word.to_string(),
+                    style: span.style,
+                    glued: false,
+                });
+            }
+            prev_ended_ws = content.ends_with(char::is_whitespace);
+        } else if !content.is_empty() {
+            // Whitespace-only span: it separates, it does not produce a word.
+            prev_ended_ws = true;
+        }
+    }
+    out
 }
 
 /// Walls + inner verticals + `CELL_PAD` on each side of every column.
@@ -1243,6 +1287,51 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             }
         }
         assert!(saw_header, "did not find header 'N' in painted buffer");
+    }
+
+    /// Inline code and the punctuation written flush against it must stay
+    /// flush. They arrive as two spans, and rejoining every span boundary with
+    /// a space produced `ZeroDivisionError .` in almost every answer.
+    #[test]
+    fn punctuation_stays_attached_to_inline_code() {
+        let rendered = text(&render_markdown(
+            "`mean([])` raises `ZeroDivisionError`, and `median([])` raises `IndexError`.",
+            120,
+        ));
+        assert!(
+            rendered.contains("raises ZeroDivisionError, and"),
+            "comma drifted off the code span:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("raises IndexError."),
+            "full stop drifted off the code span:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(" ,") && !rendered.contains(" ."),
+            "a span boundary was rejoined with a space:\n{rendered}"
+        );
+    }
+
+    /// The flip side: whitespace that *was* in the source must survive, whether
+    /// it sat inside a span or between two of them.
+    #[test]
+    fn real_whitespace_between_styled_runs_is_kept() {
+        let rendered = text(&render_markdown("**bold** *italic* `code` plain", 120));
+        assert_eq!(rendered.trim(), "bold italic code plain", "{rendered}");
+    }
+
+    /// A glued token that lands at a wrap point starts the next line without
+    /// inheriting a separating space.
+    #[test]
+    fn gluing_does_not_leak_a_space_across_a_wrap() {
+        let rendered = text(&render_markdown("aaaa `bbbb`, cccc", 10));
+        for line in rendered.lines() {
+            assert!(
+                !line.starts_with(' ') || line.trim().is_empty(),
+                "wrapped line opened on a stray space:\n{rendered}"
+            );
+        }
+        assert!(rendered.contains("bbbb,"), "{rendered}");
     }
 
     /// Painted through the answer line style, an emphasised word must come out
