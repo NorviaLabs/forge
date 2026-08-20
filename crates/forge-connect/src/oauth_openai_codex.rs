@@ -1,7 +1,5 @@
 //! OpenAI Codex device authorization used directly by Forge.
 
-use std::io::Read;
-
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -59,10 +57,8 @@ impl OpenAiCodexOauthClient {
         format!("{}/oauth/token", self.auth_base)
     }
 
-    fn response_body(response: ureq::Response) -> String {
-        let mut body = String::new();
-        let _ = response.into_reader().read_to_string(&mut body);
-        body
+    fn response_body(mut response: ureq::http::Response<ureq::Body>) -> String {
+        response.body_mut().read_to_string().unwrap_or_default()
     }
 
     fn post_json(
@@ -70,34 +66,37 @@ impl OpenAiCodexOauthClient {
         body: serde_json::Value,
     ) -> Result<(u16, String), OpenAiCodexOauthError> {
         let request = ureq::post(url)
-            .set("Content-Type", "application/json")
-            .set(
+            .header("Content-Type", "application/json")
+            .header(
                 "User-Agent",
                 &format!("forge/{}", env!("CARGO_PKG_VERSION")),
             )
-            .timeout(std::time::Duration::from_secs(30));
+            .config()
+            // The OAuth error body carries `error`/`error_description`, which
+            // callers parse. ureq 3 drops the body when it raises a status as
+            // an error, so take every status as a response instead.
+            .http_status_as_error(false)
+            .timeout_per_call(Some(std::time::Duration::from_secs(30)))
+            .build();
         match request.send_json(body) {
-            Ok(response) => Ok((response.status(), Self::response_body(response))),
-            Err(ureq::Error::Status(status, response)) => {
-                Ok((status, Self::response_body(response)))
-            }
+            Ok(response) => Ok((response.status().as_u16(), Self::response_body(response))),
             Err(error) => Err(OpenAiCodexOauthError::Http(error.to_string())),
         }
     }
 
     fn post_form(url: &str, form: &[(&str, &str)]) -> Result<(u16, String), OpenAiCodexOauthError> {
         let request = ureq::post(url)
-            .set("Content-Type", "application/x-www-form-urlencoded")
-            .set(
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header(
                 "User-Agent",
                 &format!("forge/{}", env!("CARGO_PKG_VERSION")),
             )
-            .timeout(std::time::Duration::from_secs(30));
-        match request.send_form(form) {
-            Ok(response) => Ok((response.status(), Self::response_body(response))),
-            Err(ureq::Error::Status(status, response)) => {
-                Ok((status, Self::response_body(response)))
-            }
+            .config()
+            .http_status_as_error(false)
+            .timeout_per_call(Some(std::time::Duration::from_secs(30)))
+            .build();
+        match request.send_form(form.iter().copied()) {
+            Ok(response) => Ok((response.status().as_u16(), Self::response_body(response))),
             Err(error) => Err(OpenAiCodexOauthError::Http(error.to_string())),
         }
     }

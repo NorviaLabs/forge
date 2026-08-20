@@ -158,23 +158,34 @@ mod tests {
             (200, "first", vec![]),
             (404, "second", vec![("x-custom", "yes")]),
         ]);
-        let first = ureq::get(&base).call().unwrap();
+        let mut first = ureq::get(&base).call().unwrap();
         assert_eq!(first.status(), 200);
-        assert_eq!(first.into_string().unwrap(), "first");
+        assert_eq!(first.body_mut().read_to_string().unwrap(), "first");
 
-        match ureq::get(&base).call() {
-            Err(ureq::Error::Status(404, response)) => {
-                assert_eq!(response.header("x-custom"), Some("yes"));
-            }
-            other => panic!("expected a 404 status error, got {other:?}"),
-        }
+        // The assertion is about the 404's headers, and ureq 3 drops the
+        // response when it raises a status as an error — so take the status
+        // as data here rather than matching on an error variant.
+        let second = ureq::get(&base)
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .call()
+            .expect("a scripted 404 is a response, not a transport failure");
+        assert_eq!(second.status(), 404);
+        assert_eq!(
+            second
+                .headers()
+                .get("x-custom")
+                .and_then(|v| v.to_str().ok()),
+            Some("yes")
+        );
     }
 
     #[test]
     fn reads_a_request_body_larger_than_the_old_fixed_buffer() {
         let base = mock_http(vec![(200, "ok", vec![])]);
         let big_body = "x".repeat(8_000);
-        let response = ureq::post(&base).send_string(&big_body).unwrap();
+        let response = ureq::post(&base).send(&big_body).unwrap();
         assert_eq!(response.status(), 200);
     }
 

@@ -380,14 +380,17 @@ pub fn refresh_models_dev_registry(
     let models_dev_url =
         std::env::var("FORGE_MODELS_DEV_URL").unwrap_or_else(|_| MODELS_DEV_URL.to_string());
     let body: serde_json::Value = ureq::get(&models_dev_url)
-        .set("User-Agent", &ua)
-        .timeout(std::time::Duration::from_secs(10))
+        .header("User-Agent", &ua)
+        .config()
+        .timeout_per_call(Some(std::time::Duration::from_secs(10)))
+        .build()
         .call()
         .map_err(|e| CatalogError::Transport {
             label: "models.dev registry".into(),
             detail: e.to_string(),
         })?
-        .into_json()
+        .body_mut()
+        .read_json()
         .map_err(|e| CatalogError::Decode {
             label: "models.dev registry JSON".into(),
             detail: e.to_string(),
@@ -798,34 +801,44 @@ fn map_prefix(prefix: &str, raw: Vec<String>, keep: impl Fn(&str) -> bool) -> Ve
 fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>, CatalogError> {
     // ureq's built-in redirect handling may drop auth headers on redirect in some cases.
     // We follow redirects manually to ensure credentials are preserved.
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(15))
-        .redirects(0)
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .max_redirects(0)
+        // Redirects and auth failures are both inspected below for their
+        // `Location` header and body, which ureq 3 does not carry on an
+        // `Err`. Take every status as a response and branch on it here.
+        .http_status_as_error(false)
+        .build()
+        .into();
 
     let mut cur = url.to_string();
     for _ in 0..4 {
         let mut req = agent.get(&cur);
         for (k, v) in headers {
-            req = req.set(k, v);
+            req = req.header(*k, *v);
         }
         let resp = match req.call() {
-            Ok(r) => r,
-            Err(ureq::Error::Status(code, r)) if matches!(code, 301 | 302 | 303 | 307 | 308) => {
-                if let Some(loc) = r.header("Location").map(str::to_string) {
+            Ok(r) if matches!(r.status().as_u16(), 301 | 302 | 303 | 307 | 308) => {
+                if let Some(loc) = r
+                    .headers()
+                    .get("Location")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+                {
                     cur = loc;
                     continue;
                 }
                 return Err(CatalogError::Http {
                     label: format!("catalog GET {cur}"),
-                    status: code,
+                    status: r.status().as_u16(),
                     body: Some("(missing Location)".into()),
                 });
             }
-            Err(ureq::Error::Status(code, r)) => {
+            Ok(mut r) if !(200..300).contains(&r.status().as_u16()) => {
                 // Best-effort include small body to help operator debug auth failures.
                 let body = r
-                    .into_string()
+                    .body_mut()
+                    .read_to_string()
                     .unwrap_or_default()
                     .chars()
                     .take(240)
@@ -833,10 +846,11 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
                 let body = body.trim().to_string();
                 return Err(CatalogError::Http {
                     label: format!("catalog GET {cur}"),
-                    status: code,
+                    status: r.status().as_u16(),
                     body: (!body.is_empty()).then_some(body),
                 });
             }
+            Ok(r) => r,
             Err(e) => {
                 return Err(CatalogError::Transport {
                     label: format!("catalog GET {cur}"),
@@ -845,17 +859,14 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
             }
         };
 
-        if !(200..300).contains(&resp.status()) {
-            return Err(CatalogError::Http {
-                label: format!("catalog GET {cur}"),
-                status: resp.status(),
-                body: None,
-            });
-        }
-        let body: serde_json::Value = resp.into_json().map_err(|e| CatalogError::Decode {
-            label: "catalog JSON".into(),
-            detail: e.to_string(),
-        })?;
+        let mut resp = resp;
+        let body: serde_json::Value =
+            resp.body_mut()
+                .read_json()
+                .map_err(|e| CatalogError::Decode {
+                    label: "catalog JSON".into(),
+                    detail: e.to_string(),
+                })?;
         return parse_openai_style_model_ids(&body);
     }
     Err(CatalogError::TooManyRedirects {
@@ -949,25 +960,33 @@ fn parse_codex_cli_cached_model_ids(body: &serde_json::Value) -> Vec<String> {
 }
 
 fn http_get_ollama_names(url: &str, ua: &str) -> Result<Vec<String>, CatalogError> {
-    let resp = ureq::get(url)
-        .set("User-Agent", ua)
-        .timeout(std::time::Duration::from_secs(10))
+    let mut resp = ureq::get(url)
+        .header("User-Agent", ua)
+        .config()
+        // The status check below reports the tag endpoint's own failure, so
+        // it has to see the response rather than a transport error.
+        .http_status_as_error(false)
+        .timeout_per_call(Some(std::time::Duration::from_secs(10)))
+        .build()
         .call()
         .map_err(|e| CatalogError::Transport {
             label: "ollama tags".into(),
             detail: e.to_string(),
         })?;
-    if !(200..300).contains(&resp.status()) {
+    if !(200..300).contains(&resp.status().as_u16()) {
         return Err(CatalogError::Http {
             label: "ollama tags".into(),
-            status: resp.status(),
+            status: resp.status().as_u16(),
             body: None,
         });
     }
-    let body: serde_json::Value = resp.into_json().map_err(|e| CatalogError::Decode {
-        label: "ollama tags JSON".into(),
-        detail: e.to_string(),
-    })?;
+    let body: serde_json::Value =
+        resp.body_mut()
+            .read_json()
+            .map_err(|e| CatalogError::Decode {
+                label: "ollama tags JSON".into(),
+                detail: e.to_string(),
+            })?;
     Ok(parse_ollama_model_names(&body))
 }
 

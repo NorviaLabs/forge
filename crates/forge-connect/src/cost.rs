@@ -120,14 +120,17 @@ fn token_cost(tokens: u64, dollars_per_million: f64) -> f64 {
 
 fn fetch_models_dev_cost(provider: &str, model: &str) -> Result<Option<ModelCost>, String> {
     let body: Value = ureq::get(&models_dev_url())
-        .set(
+        .header(
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
-        .timeout(std::time::Duration::from_secs(10))
+        .config()
+        .timeout_per_call(Some(std::time::Duration::from_secs(10)))
+        .build()
         .call()
         .map_err(|error| format!("models.dev pricing: {error}"))?
-        .into_json()
+        .body_mut()
+        .read_json()
         .map_err(|error| format!("models.dev pricing JSON: {error}"))?;
     Ok(models_dev_cost_from_value(&body, provider, model))
 }
@@ -165,18 +168,21 @@ fn codex_cost_report(store: &CredentialStore) -> Result<Vec<String>, String> {
         .or_else(|| crate::openai_codex::account_id_from_token(&access_token).ok())
         .ok_or_else(|| "Codex credentials do not include a ChatGPT account".to_string())?;
 
-    let response = ureq::get(&codex_usage_url())
-        .set("Authorization", &format!("Bearer {access_token}"))
-        .set("ChatGPT-Account-Id", &account_id)
-        .set(
+    let mut response = ureq::get(&codex_usage_url())
+        .header("Authorization", &format!("Bearer {access_token}"))
+        .header("ChatGPT-Account-Id", &account_id)
+        .header(
             "User-Agent",
             &format!("forge/{}", env!("CARGO_PKG_VERSION")),
         )
-        .timeout(std::time::Duration::from_secs(15))
+        .config()
+        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
+        .build()
         .call()
         .map_err(|error| format!("could not fetch Codex limits: {error}"))?;
     let body = response
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|error| format!("could not read Codex limits: {error}"))?;
     let value: Value = serde_json::from_str(&body)
         .map_err(|error| format!("could not parse Codex limits: {error}"))?;
