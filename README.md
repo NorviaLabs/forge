@@ -379,16 +379,19 @@ Menu rows (when a prompt appears):
   prompt; a different family still asks. Not written to `permissions.toml`.
 - **Don't run** — block the call.
 
-When the sandbox blocked a host (for example `gh` talking to
+When the sandbox blocked a host (for example a CLI talking to
 `api.github.com`), the menu is a host grant instead, and the command is
-retried still confined. A GitHub grant also **projects** your host `gh`
-identity into that confined spawn — `gh` stores the token in the OS
-keychain, which the sandbox cannot open, so without projection the CLI
-prints HTTP 401 / "token is invalid" and looks like broken auth. SSH
-remotes (`git@github.com:`) cannot use the CONNECT proxy, so the same
-spawn rewrites them to `https://github.com/` and authenticates git with
-the projected token. `.git` stays read-only for ordinary commands; a
-`gh` / `git push` spawn may update refs without unsandboxing the process.
+retried still confined. A host grant also **projects HTTPS identity**
+for that host into the confined spawn: credentials are filled on the
+host (`git credential`), SSH remotes (`git@host:`) are rewritten to
+HTTPS (SSH cannot use the CONNECT proxy), git-dir writes are allowed
+only for spawns that run `git` itself — and never for `.git/hooks`,
+which would otherwise run on the host — and HTTPS CLIs
+that read a `{label}_TOKEN`
+environment variable receive one derived from the granted host. Ordinary
+commands still cannot write `.git`. The sandbox cannot open the OS
+secret store, so without projection an HTTPS client prints HTTP 401 /
+"invalid token" and looks like broken auth.
 
 - **Always allow `**.github.com`** — writes `host(**.github.com)` to the
   personal permissions file so the next session does not ask again.
