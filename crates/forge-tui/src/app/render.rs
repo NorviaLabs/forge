@@ -286,7 +286,7 @@ impl TuiApp {
             }
             if !slash_mode && !self.conversation_view.splash_dismissed {
                 conv = conv.with_home(
-                    self.runtime.cwd.display().to_string(),
+                    crate::widgets::status::shorten_home_path(&self.runtime.cwd),
                     self.session_view.loaded_skills_count,
                 );
             }
