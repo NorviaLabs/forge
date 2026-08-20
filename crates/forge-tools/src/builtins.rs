@@ -326,6 +326,9 @@ async fn run_shell_command_inner(
     // whole life. The supported CLI never starts when the host cannot confine.
     let mut policy =
         crate::sandbox::SandboxPolicy::for_workspace(workspace_root).with_egress(egress);
+    if crate::credentials::needs_git_writes(command) {
+        policy = policy.with_git_writable();
+    }
     if let Some(session_tmp) = session_tmp {
         policy = policy.with_session_tmp(session_tmp);
     }
@@ -375,6 +378,13 @@ async fn run_shell_command_inner(
     // talking to a proxy that is either not listening or still deny-all.
     if confined_run {
         for (name, value) in crate::sandbox::egress_env(&policy) {
+            shell.env(name, value);
+        }
+        let gh_config = session_tmp
+            .map(|dir| dir.join("gh-config"))
+            .unwrap_or_else(|| workspace_root.join(".forge-gh"));
+        let _ = std::fs::create_dir_all(&gh_config);
+        for (name, value) in crate::credentials::github_identity_env(command, egress, &gh_config) {
             shell.env(name, value);
         }
     }
@@ -477,7 +487,9 @@ impl Tool for BashTool {
     fn description(&self) -> &str {
         "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
-Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
+Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
+`gh` / `git push` stay confined: a host(**.github.com) grant projects your \
+host `gh` credentials into that spawn and allows `.git` writes for it."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BashArgs>()
@@ -1761,7 +1773,9 @@ mod tests {
             t.description(),
             "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
-Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
+Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
+`gh` / `git push` stay confined: a host(**.github.com) grant projects your \
+host `gh` credentials into that spawn and allows `.git` writes for it."
         );
         assert_eq!(t.side_effect_class(), SideEffectClass::Exec);
     }

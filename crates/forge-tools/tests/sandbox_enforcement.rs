@@ -114,6 +114,73 @@ fn git_directory_is_read_only() {
     );
 }
 
+/// `gh pr create` (and `git push`) update refs under `.git`. A host grant
+/// does not lift this carve-out for ordinary commands, so the default
+/// policy still refuses a ref update.
+#[test]
+fn git_ref_updates_are_denied_inside_the_sandbox() {
+    require_sandbox!();
+    let ws = workspace();
+    std::fs::create_dir_all(ws.path().join(".git/refs/heads")).unwrap();
+    let (ok, out) = run_confined(
+        ws.path(),
+        "printf '%s\n' 0000000000000000000000000000000000000000 > .git/refs/heads/feature",
+    );
+    assert!(
+        !ok,
+        "gh/git must not be able to publish a ref while .git is read-only: {out}"
+    );
+    assert!(!ws.path().join(".git/refs/heads/feature").exists());
+}
+
+#[test]
+fn a_publish_policy_can_update_git_refs() {
+    require_sandbox!();
+    let ws = workspace();
+    std::fs::create_dir_all(ws.path().join(".git/refs/heads")).unwrap();
+    let policy = SandboxPolicy::for_workspace(ws.path()).with_git_writable();
+    let (program, args) =
+        wrap_shell_command("sh", "printf x > .git/refs/heads/feature", &policy).unwrap();
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(ws.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "publish spawns must be able to write refs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join(".git/refs/heads/feature")).unwrap(),
+        "x"
+    );
+}
+
+/// `gh` keeps hosts.yml and the token cache under `GH_CONFIG_DIR`, which is
+/// outside the workspace. A confined `gh pr create` that tries to refresh
+/// that cache is a filesystem denial, not a host denial.
+#[test]
+fn gh_config_outside_the_workspace_is_not_writable() {
+    require_sandbox!();
+    let ws = workspace();
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("gh");
+    std::fs::create_dir_all(&config).unwrap();
+    let (ok, out) = run_confined(
+        ws.path(),
+        &format!(
+            "GH_CONFIG_DIR={} printf 'x' > \"$GH_CONFIG_DIR/hosts.yml\"",
+            config.display()
+        ),
+    );
+    assert!(
+        !ok,
+        "writing the gh config dir must be a sandbox boundary: {out}"
+    );
+    assert!(!config.join("hosts.yml").exists());
+}
+
 /// `.forge/permissions.toml` decides what forge allows next session. A
 /// confined process that could rewrite it would widen its own permissions
 /// using nothing but an ordinary in-workspace write.
@@ -489,6 +556,93 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
         ),
         Err(error) => panic!("direct connection failed for the wrong reason: {error}"),
     }
+}
+
+/// Probe the real `gh` binary through Forge's sandbox + egress proxy.
+///
+/// Skips when `gh` is not installed so CI without the CLI stays green.
+/// On a developer machine this is the reproduction for "gh pr create
+/// fails in Forge": even with `**.github.com` allowed, the command still
+/// needs `.git` writes and the host keychain.
+#[tokio::test]
+async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
+    require_sandbox!();
+    if std::process::Command::new("gh")
+        .arg("--version")
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
+    {
+        eprintln!("SKIP: gh is not installed");
+        return;
+    }
+    if !std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+    {
+        eprintln!("SKIP: gh is not logged in on this host");
+        return;
+    }
+
+    use forge_tools::egress::{EgressPolicy, EgressProxy};
+    use forge_tools::run_shell_command_with_egress;
+    use forge_tools::sandbox::EgressGrant;
+
+    let ws = workspace();
+    let sockdir = tempfile::tempdir().unwrap();
+    let mut policy = EgressPolicy::new();
+    policy.allow("**.github.com");
+    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    let socket_path = sockdir.path().join("egress.sock");
+    proxy
+        .serve_on_unix_socket(&socket_path, policy)
+        .await
+        .unwrap();
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path,
+        control: Some(proxy.shared().clone()),
+    };
+
+    let auth = run_shell_command_with_egress("gh auth status", ws.path(), Some(&grant))
+        .await
+        .expect("gh auth status should spawn");
+    assert!(
+        !auth.is_error,
+        "a GitHub host grant must project gh credentials into the sandbox, got {}",
+        auth.content
+    );
+
+    let api = run_shell_command_with_egress("gh api user --jq .login", ws.path(), Some(&grant))
+        .await
+        .expect("gh api should spawn");
+    assert!(
+        !api.is_error,
+        "projected credentials must authenticate gh api, got {}",
+        api.content
+    );
+
+    // SSH remotes cannot leave the sandbox; the projected gitconfig must
+    // rewrite them to HTTPS and authenticate with GH_TOKEN.
+    let ls_remote = run_shell_command_with_egress(
+        "git ls-remote git@github.com:NorviaLabs/forge.git HEAD",
+        ws.path(),
+        Some(&grant),
+    )
+    .await
+    .expect("git ls-remote should spawn");
+    assert!(
+        !ls_remote.is_error,
+        "SSH GitHub remotes must be rewritten to HTTPS through the proxy, got {}",
+        ls_remote.content
+    );
+    assert!(
+        ls_remote.content.contains("refs/heads/") || ls_remote.content.len() > 40,
+        "ls-remote should return a SHA, got {}",
+        ls_remote.content
+    );
 }
 
 /// CI must actually exercise the sandbox, not skip it.

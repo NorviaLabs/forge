@@ -3,6 +3,7 @@
 
 mod apply_patch;
 mod builtins;
+mod credentials;
 mod edit;
 pub mod egress;
 mod fast_file_tools;

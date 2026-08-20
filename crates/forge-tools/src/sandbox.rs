@@ -204,6 +204,11 @@ pub struct SandboxPolicy {
     /// route to the host's loopback, so a TCP port is unreachable from inside;
     /// a Unix socket is a filesystem object and a bind-mount still reaches it.
     egress_socket: Option<PathBuf>,
+    /// When true, `.git` is writable. Default is false: git is the recovery
+    /// mechanism. `gh pr create` / `git push` need this, and only those
+    /// spawns opt in — a host grant alone must not lift the carve-out for
+    /// every command in the session.
+    git_writable: bool,
 }
 
 impl SandboxPolicy {
@@ -214,7 +219,14 @@ impl SandboxPolicy {
             session_tmp: None,
             egress_proxy_port: None,
             egress_socket: None,
+            git_writable: false,
         }
+    }
+
+    /// Permit writes under `.git` for this spawn only.
+    pub fn with_git_writable(mut self) -> Self {
+        self.git_writable = true;
+        self
     }
 
     /// Grant one writable scratch directory. Callers that need a toolchain to
@@ -305,8 +317,13 @@ impl SandboxPolicy {
 
     /// Paths that stay read-only even though they sit inside the writable
     /// root, resolved against `root`.
-    fn readonly_subpaths_of(root: &Path) -> Vec<PathBuf> {
-        vec![root.join(".git"), root.join(".forge")]
+    fn readonly_subpaths_of(root: &Path, git_writable: bool) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if !git_writable {
+            paths.push(root.join(".git"));
+        }
+        paths.push(root.join(".forge"));
+        paths
     }
 
     /// The read-only carve-outs for this policy's workspace, as configured.
@@ -314,7 +331,7 @@ impl SandboxPolicy {
     /// Note these are *unresolved*; the profile resolves the root first. See
     /// [`seatbelt_profile`] for why that matters.
     pub fn readonly_subpaths(&self) -> Vec<PathBuf> {
-        Self::readonly_subpaths_of(&self.workspace_root)
+        Self::readonly_subpaths_of(&self.workspace_root, self.git_writable)
     }
 }
 
@@ -406,7 +423,7 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     //
     // Derived from the canonical root, not the configured one, for the same
     // reason the root itself is canonicalised.
-    for path in SandboxPolicy::readonly_subpaths_of(&canonical_root) {
+    for path in SandboxPolicy::readonly_subpaths_of(&canonical_root, policy.git_writable) {
         let literal = sbpl_literal(&path)?;
         profile.push_str(&format!("(deny file-write* (subpath \"{literal}\"))\n"));
     }
@@ -543,7 +560,7 @@ fn bubblewrap_invocation(
     // Carved back out last, because the last matching bind wins: emitted
     // before the workspace bind, these would be overridden and `.git` would be
     // writable.
-    for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root)) {
+    for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root), policy.git_writable) {
         let path = path.to_str()?.to_string();
         args.extend(["--ro-bind-try".into(), path.clone(), path]);
     }
@@ -600,6 +617,11 @@ mod tests {
         assert_eq!(
             p.readonly_subpaths(),
             vec![ws.path().join(".git"), ws.path().join(".forge")]
+        );
+        assert_eq!(
+            p.clone().with_git_writable().readonly_subpaths(),
+            vec![ws.path().join(".forge")],
+            "a publish spawn must be able to update refs"
         );
     }
 
@@ -963,6 +985,11 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
         "nodename nor servname provided",
     ];
     const FILESYSTEM: &[&str] = &["Operation not permitted", "Read-only file system"];
+    const CREDENTIAL: &[&str] = &[
+        "The token in default is invalid",
+        "Requires authentication (HTTP 401)",
+        "failed to log in to github.com",
+    ];
 
     if output.contains(crate::egress::SANDBOX_DENIED_REASON) {
         return Some(
@@ -980,6 +1007,9 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
 
     if FILESYSTEM.iter().any(|sig| output.contains(sig)) {
         return Some(FILESYSTEM_EXPLANATION);
+    }
+    if CREDENTIAL.iter().any(|sig| output.contains(sig)) {
+        return Some(CREDENTIAL_EXPLANATION);
     }
 
     // Linux reports a blocked write as a missing path, not as a permission
@@ -1008,6 +1038,12 @@ const FILESYSTEM_EXPLANATION: &str =
      .git/.forge are read-only inside it. Paths outside the workspace do not \
      exist inside the sandbox, so they report as missing rather than \
      forbidden. This is not a file-permission problem on disk.";
+
+const CREDENTIAL_EXPLANATION: &str =
+    "blocked by the sandbox: GitHub credentials live in the host keychain, \
+     which confined processes cannot read. This is not an invalid token — \
+     Forge projects your `gh` identity into a confined `gh`/`git push` \
+     spawn when host(**.github.com) is allowed.";
 
 /// Whether `output` names an absolute path that is not under `workspace_root`.
 ///
@@ -1059,6 +1095,16 @@ mod denial_tests {
         let out = "failed to authenticate via web browser: Post \"https://github.com/login/device/code\": Forge Sandbox Denied";
         let explained = explain_denial(out, ws().path()).expect("must be recognised as a denial");
         assert!(explained.contains("host(...) network permissions"));
+    }
+
+    #[test]
+    fn a_gh_keychain_failure_is_not_reported_as_bad_credentials() {
+        let out = "github.com\n  X Failed to log in to github.com account mohitranka (default)\n  - The token in default is invalid.\n";
+        let explained = explain_denial(out, ws().path()).expect("must be recognised as a denial");
+        assert!(
+            explained.contains("keychain"),
+            "the 401 is the boundary wearing auth's clothes: {explained}"
+        );
     }
 
     #[test]
@@ -1360,6 +1406,17 @@ pub struct EgressGrant {
 impl EgressGrant {
     pub fn take_denied_host(&self) -> Option<String> {
         self.control.as_ref().and_then(|c| c.take_denied_host())
+    }
+
+    /// Whether the live proxy (or a test double) currently permits `host`.
+    pub fn permits_host(&self, host: &str) -> bool {
+        self.control
+            .as_ref()
+            .is_some_and(|control| control.permits_host(host))
+    }
+
+    pub fn permits_github(&self) -> bool {
+        self.permits_host("github.com") || self.permits_host("api.github.com")
     }
 }
 
