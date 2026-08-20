@@ -1,4 +1,10 @@
 # Forge Dark — black-green terminal palette based on the approved Forge mock.
+#
+# The brand green lives in the ground, not in the signal: every neutral from
+# `background` to `text_primary` is green-tinted, which is what makes the
+# theme recognisable. The accent is deliberately *not* green, so that focus
+# ("where am I") and success ("what happened") can never be confused. See
+# `accent` below.
 id = "forge-dark"
 name = "Forge Dark"
 
@@ -12,8 +18,12 @@ border_muted = "#1D2822"
 text_primary = "#C7D1C8"
 text_secondary = "#8C9A90"
 text_muted = "#5F6C64"
-accent = "#9BD39A"
-accent_soft = "#233B2A"
+# Focus. Once success (119°), warning (39°), error (6°) and the agent violet
+# (274°) are placed, the only arc left with 60° of clearance from every
+# outcome hue is 179–234°; this sits at 222°, keeping the theme's own
+# saturation and lightness. 7.8:1 on `background`.
+accent = "#8FA4D6"
+accent_soft = "#262E40"
 agent = "#B9A4C9"
 success = "#9BD39A"
 warning = "#D8B779"
@@ -21,13 +31,12 @@ error = "#D77D73"
 info = "#8FBDB0"
 diff_add = "#244A32"
 diff_remove = "#542B31"
-selection = "#294732"
-cursor = "#B8E5B4"
-user_gutter_active = "#8AC0A0"
+selection = "#303B55"
+cursor = "#AEC0EA"
+user_gutter_active = "#8C9A90"
 tag = "#8FC2B4"
-search_match = "#334A38"
+search_match = "#394560"
 waiting_border = "#D8B779"
-approval_accent = "#9BD39A"
 
 [syntax]
 comment = "#66746B"
