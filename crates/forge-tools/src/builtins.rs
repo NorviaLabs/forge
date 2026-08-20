@@ -1646,6 +1646,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_file_without_a_range_returns_the_whole_file() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "one\ntwo\nthree").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = ReadFileTool
+            .call(&ctx, json!({"path": "notes.txt"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "one\ntwo\nthree");
+    }
+
+    #[tokio::test]
+    async fn read_file_offset_and_limit_return_a_line_window() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), "a\nb\nc\nd\ne\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = ReadFileTool
+            .call(&ctx, json!({"path": "lines.txt", "offset": 2, "limit": 2}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "b\nc");
+    }
+
+    #[tokio::test]
+    async fn read_file_allows_a_ranged_read_of_a_huge_file() {
+        let dir = tempdir().unwrap();
+        let huge = dir.path().join("huge.txt");
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&huge).unwrap();
+            writeln!(file, "first").unwrap();
+            writeln!(file, "second").unwrap();
+            file.set_len(2 * 1024 * 1024 + 1).unwrap();
+        }
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = ReadFileTool
+            .call(&ctx, json!({"path": "huge.txt", "offset": 1, "limit": 2}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "first\nsecond");
+    }
+
+    #[tokio::test]
     async fn read_file_rejects_image_and_names_view_image() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("shot.png"), forge_types::sample_png_bytes()).unwrap();

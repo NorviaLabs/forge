@@ -432,6 +432,19 @@ mod tests {
     fn estimate_tokens_rough() {
         assert!(estimate_tokens("abcd") >= 1);
         assert_eq!(estimate_tokens("a".repeat(400).as_str()), 100);
+        assert_eq!(estimate_tokens(""), 1, "empty text still occupies a token");
+        assert_eq!(
+            estimate_tokens(&"😀".repeat(4)),
+            1,
+            "the heuristic counts unicode scalars, not UTF-8 bytes"
+        );
+    }
+
+    #[test]
+    fn estimate_messages_tokens_counts_content_only() {
+        let mut message = Message::new(MessageRole::Assistant, "abcd");
+        message.thinking = Some("x".repeat(400));
+        assert_eq!(estimate_messages_tokens(&[message]), 1);
     }
 
     #[test]
@@ -615,6 +628,47 @@ mod tests {
         assert!(
             result.contains("offloaded tool output"),
             "expected offload summary, got: {result}"
+        );
+    }
+
+    #[test]
+    fn offload_threshold_is_inclusive() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        let mut eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        eng.config.offload_token_threshold = 2_000;
+        let at_threshold = "a".repeat(8_000);
+        assert_eq!(estimate_tokens(&at_threshold), 2_000);
+        assert!(
+            eng.offload_tool_output(&at_threshold).unwrap().is_none(),
+            "a body at the threshold stays in the transcript"
+        );
+        let over = "a".repeat(8_004);
+        assert_eq!(estimate_tokens(&over), 2_001);
+        assert!(
+            eng.offload_tool_output(&over).unwrap().is_some(),
+            "one token over the threshold must offload"
+        );
+    }
+
+    #[test]
+    fn offloaded_stub_keeps_the_first_500_characters() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let big = "z".repeat(20_000);
+        let offload = eng
+            .offload_tool_output(&big)
+            .unwrap()
+            .expect("body is above the default threshold");
+        assert_eq!(offload.summary, "z".repeat(500));
+        assert!(
+            offload.in_context.contains(&"z".repeat(500)),
+            "the in-context stub must include the summary"
+        );
+        assert!(
+            !offload.in_context.contains(&"z".repeat(501)),
+            "the stub must not keep the rest of the body"
         );
     }
 
