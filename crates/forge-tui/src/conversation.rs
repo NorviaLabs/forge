@@ -2377,8 +2377,8 @@ mod tests {
         let text = lines_text(&render_markdown(streaming, 80));
 
         assert!(
-            text.contains("```rust"),
-            "opening fence should render:\n{text}"
+            text.contains("rust"),
+            "the language should render as a chip:\n{text}"
         );
         assert!(
             text.contains("alpha"),
@@ -2386,8 +2386,8 @@ mod tests {
         );
         assert!(text.contains("beta"), "partial code should render:\n{text}");
         assert!(
-            !text.contains("  ```\n") && !text.ends_with("  ```"),
-            "no closing fence should be invented for an unterminated block:\n{text}"
+            !text.contains("```"),
+            "the source fence must not reach rendered output:\n{text}"
         );
     }
 

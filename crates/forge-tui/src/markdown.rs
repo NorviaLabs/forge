@@ -559,15 +559,38 @@ impl MdRenderer {
         self.inline.clear();
     }
 
+    /// One row of a fenced block: indent, gutter rule, content, then padding
+    /// out to the prose width so the tint reads as a block rather than as a
+    /// ragged highlight behind the text.
+    fn code_row(&self, content: Vec<Span<'static>>) -> Line<'static> {
+        let mut spans = vec![Span::styled(
+            format!("{CODE_INDENT}{CODE_GUTTER}"),
+            theme::code_gutter(),
+        )];
+        let mut used = display_width(CODE_INDENT) + display_width(CODE_GUTTER);
+        for span in content {
+            used += span.width();
+            spans.push(span);
+        }
+        if used < self.width {
+            spans.push(Span::raw(" ".repeat(self.width - used)));
+        }
+        Line::from(spans).style(theme::chat_code_block())
+    }
+
+    /// Render a code block as a block.
+    ///
+    /// This used to print the source fence — a literal ```` ``` ```` line —
+    /// above the body, which put raw markdown syntax in rendered output and,
+    /// because no closing fence is emitted, left the block with no visible end:
+    /// the next paragraph of prose ran straight into the code. The tint, the
+    /// gutter and the language chip carry the same information without
+    /// borrowing the author's syntax, and the tinted rows show where the block
+    /// stops.
     fn render_code(&mut self, code: CodeBuffer) {
-        if code.fenced {
-            let label = if code.language.is_empty() {
-                "  ```".to_string()
-            } else {
-                format!("  ```{}", code.language)
-            };
-            self.out
-                .push(Line::from(Span::styled(label, theme::code_punctuation())));
+        if code.fenced && !code.language.is_empty() {
+            let chip = Span::styled(code.language.clone(), theme::code_punctuation());
+            self.out.push(self.code_row(vec![chip]));
         }
         let body = code.body.trim_end_matches('\n');
         if body.is_empty() {
@@ -575,12 +598,16 @@ impl MdRenderer {
         }
         let theme = theme::syntax_theme();
         for line_segments in highlight_to_lines(&code.language, body, &theme).iter() {
-            self.out.push(
-                Line::from(render_highlighted_line(line_segments)).style(theme::code_block()),
-            );
+            let row = self.code_row(render_highlighted_line(line_segments));
+            self.out.push(row);
         }
     }
 }
+
+/// Left inset of a fenced code block, matching the prose inset.
+const CODE_INDENT: &str = "  ";
+/// Rule drawn down the left edge of every row of a fenced block.
+const CODE_GUTTER: &str = "▌ ";
 
 fn display_width(s: &str) -> usize {
     Span::raw(s).width()
@@ -953,7 +980,7 @@ fn shrink_widths(natural: &[usize], available: usize) -> Vec<usize> {
 }
 
 fn render_highlighted_line(segments: &[forge_syntax::HighlightedSegment]) -> Vec<Span<'static>> {
-    let block = theme::code_block();
+    let block = theme::chat_code_block();
     segments
         .iter()
         .map(|(text, rgb, bold, italic)| {
@@ -1367,12 +1394,48 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         let streaming =
             "Here is the function:\n\n```rust\npub fn alpha() -> usize { 41 }\npub fn beta() -> usize { 42 }";
         let rendered = text(&render_markdown(streaming, 80));
-        assert!(rendered.contains("```rust"), "{rendered}");
+        assert!(rendered.contains("rust"), "{rendered}");
         assert!(rendered.contains("alpha"), "{rendered}");
         assert!(rendered.contains("beta"), "{rendered}");
         assert!(
-            !rendered.contains("  ```\n") && !rendered.ends_with("  ```"),
-            "no closing fence should be invented:\n{rendered}"
+            !rendered.contains("```"),
+            "the source fence must not reach rendered output:\n{rendered}"
+        );
+        // Every row of the block carries the gutter; nothing stands in for a
+        // closing fence, because none was written.
+        let gutters = rendered
+            .lines()
+            .filter(|l| l.trim_start().starts_with(CODE_GUTTER.trim_end()))
+            .count();
+        assert_eq!(gutters, 3, "chip + two code lines:\n{rendered}");
+    }
+
+    /// The block must read as a block: a language chip, a gutter down every
+    /// row, and a tint that runs the full prose width so prose after the code
+    /// cannot look like part of it.
+    #[test]
+    fn a_fenced_block_renders_as_a_tinted_block() {
+        let lines = render_markdown("Intro.\n\n```python\nx = 1\n```\n\nAfter.\n", 40);
+        let rendered = text(&lines);
+        assert!(rendered.contains("python"), "{rendered}");
+        assert!(!rendered.contains("```"), "{rendered}");
+
+        let block_bg = theme::chat_code_block().bg;
+        let tinted: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|line| line.style.bg == block_bg && block_bg.is_some())
+            .collect();
+        assert_eq!(tinted.len(), 2, "chip row + one code row:\n{rendered}");
+        for line in tinted {
+            assert_eq!(
+                line.width(),
+                40,
+                "a tinted row must fill the prose width:\n{rendered}"
+            );
+        }
+        assert!(
+            rendered.lines().any(|l| l.trim() == "After."),
+            "prose after the block must stay untinted prose:\n{rendered}"
         );
     }
 

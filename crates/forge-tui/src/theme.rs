@@ -439,6 +439,23 @@ pub fn code_punctuation() -> Style {
     Style::default().fg(active_palette().muted)
 }
 
+/// Rule down the left edge of a fenced code block. Muted border weight: it
+/// marks the extent of the block without competing with the code inside it.
+pub fn code_gutter() -> Style {
+    Style::default().fg(active_palette().border_muted)
+}
+
+/// A fenced code block inside the transcript.
+///
+/// One step above [`code_block`]'s `surface`: a chat block sits directly on the
+/// answer background, and `surface` is close enough to it that the block did
+/// not read as a block at all. The source viewer keeps `code_block` — it fills
+/// a pane that already has its own border, so it does not need the lift.
+pub fn chat_code_block() -> Style {
+    let p = active_palette();
+    Style::default().fg(p.text).bg(p.panel_alt)
+}
+
 pub fn border() -> Style {
     Style::default().fg(border_color())
 }
