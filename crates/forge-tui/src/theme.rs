@@ -494,10 +494,15 @@ pub fn user_message_style() -> Style {
     user_message().fg(active_palette().text)
 }
 
+/// Base style for a rendered answer line.
+///
+/// Deliberately *not* bold. Rank inside the transcript is carried by colour —
+/// `text` for the answer, `text_secondary` for tool output — so weight is left
+/// free to mean what markdown says it means. Bolding the base line spent that
+/// channel: `**emphasis**` adds [`Modifier::BOLD`] to a span whose line style
+/// already had it, so emphasised words rendered identically to ordinary prose.
 pub fn assistant_answer_style() -> Style {
-    assistant_message()
-        .fg(active_palette().text)
-        .add_modifier(Modifier::BOLD)
+    assistant_message().fg(active_palette().text)
 }
 
 pub fn progress_style() -> Style {
@@ -860,6 +865,19 @@ mod tests {
     #[test]
     fn git_modified_uses_warning() {
         assert_eq!(git_modified().fg, warn().fg);
+    }
+
+    /// The answer line must not be bold. It is a base style every span in a
+    /// rendered answer inherits, so bolding it makes `**emphasis**`
+    /// indistinguishable from ordinary prose — weight stops carrying meaning
+    /// exactly where markdown needs it to.
+    #[test]
+    fn answer_lines_leave_weight_to_markdown() {
+        install_defaults();
+        assert!(!assistant_answer_style()
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert_eq!(assistant_answer_style().fg, Some(text_primary_color()));
     }
 
     /// Content rank is carried by weight; the accent stays reserved for
