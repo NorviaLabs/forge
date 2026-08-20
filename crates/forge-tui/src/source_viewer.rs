@@ -1032,7 +1032,7 @@ impl Widget for SourceViewerWidget<'_> {
 
 impl SourceViewerWidget<'_> {
     fn render_message(&self, area: Rect, buf: &mut Buffer, heading: &str, body: &str) {
-        let lines: Vec<Line> = std::iter::once(Line::styled(heading, theme::brand()))
+        let lines: Vec<Line> = std::iter::once(Line::styled(heading, theme::heading()))
             .chain(body.lines().map(Line::raw))
             .collect();
         Paragraph::new(lines)

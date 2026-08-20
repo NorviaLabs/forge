@@ -313,10 +313,24 @@ pub fn syntax_theme_for(theme_id: &str) -> forge_syntax::HighlightTheme {
     syntax_from_palette(&resolved_palette(theme_id))
 }
 
+/// Accent + bold, for chrome that owns the user's attention: overlay and
+/// panel titles, the focused pane's borders, the wordmark.
+///
+/// This is a *focus* style, not an emphasis style. Content that merely wants
+/// to stand out — an empty-state heading, a directory name — takes
+/// [`heading`] instead, so the accent keeps meaning "here" rather than
+/// degrading into "important".
 pub fn brand() -> Style {
     Style::default()
         .fg(accent_color())
         .add_modifier(Modifier::BOLD)
+}
+
+/// Emphasis for content headings: primary text at bold weight, no hue.
+///
+/// Rank within content is carried by weight, not colour — see [`brand`].
+pub fn heading() -> Style {
+    text().add_modifier(Modifier::BOLD)
 }
 
 pub fn muted() -> Style {
@@ -529,13 +543,21 @@ pub fn selected_file() -> Style {
     Style::default().fg(p.text).bg(p.accent_soft)
 }
 
+/// Directory rows in the explorer.
+///
+/// Bold primary text rather than the accent: being a directory is a kind of
+/// content, not a focus state, and the ▸/▾ disclosure glyph already carries
+/// the distinction. Leaving it on the accent meant every expanded tree
+/// competed with the one row the user had actually selected.
 pub fn directory() -> Style {
-    brand()
+    heading()
 }
 
+/// Symlink rows. Italic alone is the signal; the accent added nothing except
+/// a second claim on the eye.
 pub fn symlink() -> Style {
     Style::default()
-        .fg(active_palette().accent)
+        .fg(text_secondary_color())
         .add_modifier(Modifier::ITALIC)
 }
 
@@ -628,12 +650,6 @@ pub fn waiting_border() -> Style {
     Style::default().fg(active_palette().waiting_border)
 }
 
-/// Accent border for the focused approval card.
-#[allow(dead_code)]
-pub fn approval_accent() -> Style {
-    Style::default().fg(active_palette().approval_accent)
-}
-
 /// Status bar surface.
 pub fn status_bar() -> Style {
     panel_alt()
@@ -715,9 +731,6 @@ pub struct Palette {
     pub search_match: Color,
     /// Composer border while an approval is pending (see [`waiting_border`]).
     pub waiting_border: Color,
-    /// Accent border for the focused approval card (see [`approval_accent`]).
-    #[allow(dead_code)]
-    pub approval_accent: Color,
     /// Foreground for text painted on top of `selection` (see [`SELECTION_FG`]).
     pub selection_fg: Color,
     /// "current" / "connected" tag label color (see [`TAG`]).
@@ -759,7 +772,6 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         border_muted: to_color(src.border_muted),
         search_match: to_color(src.search_match),
         waiting_border: to_color(src.waiting_border),
-        approval_accent: to_color(src.approval_accent),
         selection_fg: to_color(src.text_primary),
         tag: to_color(src.tag),
         cursor: to_color(src.cursor),
@@ -846,6 +858,52 @@ mod tests {
     #[test]
     fn git_modified_uses_warning() {
         assert_eq!(git_modified().fg, warn().fg);
+    }
+
+    /// Content rank is carried by weight; the accent stays reserved for
+    /// focus. A directory competing with the selected row was the visible
+    /// symptom of collapsing those two ideas into one style.
+    #[test]
+    fn content_emphasis_does_not_borrow_the_accent() {
+        install_defaults();
+        let accent = Some(accent_color());
+
+        assert_eq!(heading().fg, Some(text_primary_color()));
+        assert!(heading().add_modifier.contains(Modifier::BOLD));
+        assert_ne!(heading().fg, accent);
+
+        assert_eq!(directory().fg, heading().fg);
+        assert!(directory().add_modifier.contains(Modifier::BOLD));
+        assert_ne!(directory().fg, accent);
+
+        assert_eq!(symlink().fg, Some(text_secondary_color()));
+        assert!(symlink().add_modifier.contains(Modifier::ITALIC));
+        assert_ne!(symlink().fg, accent);
+    }
+
+    /// Overlay chrome keeps the accent: a modal *is* the focused thing.
+    #[test]
+    fn overlay_chrome_keeps_the_accent() {
+        install_defaults();
+        assert_eq!(brand().fg, Some(accent_color()));
+        assert_eq!(active_panel_border().fg, Some(accent_color()));
+    }
+
+    /// `tag` is a low-emphasis text step, not a hue with a meaning of its
+    /// own. Anything above roughly 20% saturation reads as a colour the user
+    /// has to decode.
+    #[test]
+    fn tag_token_is_a_neutral_in_every_theme() {
+        for theme in ThemeRegistry::builtin().themes() {
+            let (_, saturation, _) = to_hsl(theme.palette.tag);
+            assert!(
+                saturation <= 20.0,
+                "{} tag {} is {saturation:.0}% saturated: a tag label is \
+                 low-emphasis text, not a semantic colour",
+                theme.id,
+                theme.palette.tag
+            );
+        }
     }
 
     #[test]
