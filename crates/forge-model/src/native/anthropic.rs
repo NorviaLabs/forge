@@ -505,6 +505,42 @@ mod tests {
     }
 
     #[test]
+    fn messages_body_omits_assistant_thinking() {
+        let req = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
+            model: "anthropic/claude".into(),
+            route_id: None,
+            prompt_cache: true,
+            reasoning_effort: None,
+            messages: vec![
+                Message::new(MessageRole::User, "hello"),
+                Message {
+                    outcome: Default::default(),
+                    role: MessageRole::Assistant,
+                    content: "visible".into(),
+                    tool_call_id: None,
+                    name: None,
+                    thinking: Some("secret thoughts".into()),
+                    thinking_duration_secs: None,
+                    tool_calls: vec![],
+                    attachments: Vec::new(),
+                },
+            ]
+            .into(),
+            tools: Vec::<ToolDescriptor>::new(),
+        };
+        let (_system, messages) = messages_body(&req);
+        let dumped = serde_json::to_string(&messages).unwrap();
+        assert!(dumped.contains("visible"), "{dumped}");
+        assert!(
+            !dumped.contains("secret thoughts"),
+            "thinking must not be replayed on the Anthropic wire: {dumped}"
+        );
+        assert_eq!(messages[1]["content"][0]["type"], "text");
+        assert_eq!(messages[1]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn message_start_records_cache_usage() {
         let mut text = String::new();
         let mut thinking = String::new();

@@ -2247,6 +2247,91 @@ async fn offload_large_tool_output() {
 }
 
 #[tokio::test]
+async fn tool_output_just_under_the_offload_threshold_stays_inline() {
+    let dir = tempdir().unwrap();
+    init_repo(dir.path()).await;
+    // 6_000 chars ≈ 1_500 tokens — below the 2_000-token offload gate.
+    let body = "m".repeat(6_000);
+    std::fs::write(dir.path().join("mid.txt"), &body).unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "mid.txt"}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    session.run_user_message("read mid").await.unwrap();
+    let tool_msg = session
+        .messages
+        .iter()
+        .find(|message| message.role == MessageRole::Tool)
+        .expect("tool result");
+    assert!(
+        !tool_msg.content.contains("offloaded tool output"),
+        "a just-under-threshold read must stay in the transcript, got {}",
+        tool_msg.content
+    );
+    assert_eq!(tool_msg.content, body);
+}
+
+#[tokio::test]
+async fn a_model_step_applies_multiple_tool_calls_in_order() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "bbb").unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "a.txt"}),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "b.txt"}),
+                },
+            ],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    session.run_user_message("read both").await.unwrap();
+    let tool_contents: Vec<_> = session
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::Tool)
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(tool_contents, ["aaa", "bbb"]);
+}
+
+#[tokio::test]
 async fn accumulates_prompt_cache_tokens_in_session_usage() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {

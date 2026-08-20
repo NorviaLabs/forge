@@ -260,4 +260,39 @@ mod tests {
         let dangling = vec![assistant_call("c1", "")];
         assert!(!tool_results_are_complete(&dangling));
     }
+
+    #[test]
+    fn message_tokens_counts_thinking_and_tool_arguments() {
+        let mut message = assistant("abcd");
+        message.thinking = Some("x".repeat(400));
+        message.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "notes.txt"}),
+        }];
+        let expected = estimate_tokens("abcd")
+            + estimate_tokens(&"x".repeat(400))
+            + estimate_tokens(&message.tool_calls[0].arguments.to_string());
+        assert_eq!(message_tokens(&message), expected);
+        assert_eq!(messages_tokens(&[message]), expected);
+    }
+
+    #[test]
+    fn is_valid_start_rejects_opening_on_a_tool_result() {
+        let body = vec![
+            user("go"),
+            assistant_call("c1", ""),
+            tool_result("c1", "ok"),
+        ];
+        assert!(is_valid_start(&body, 0));
+        assert!(
+            !is_valid_start(&body, 1),
+            "assistant-with-calls is not a start"
+        );
+        assert!(
+            !is_valid_start(&body, 2),
+            "a tool result cannot open the tail"
+        );
+        assert!(is_valid_start(&body, body.len()));
+    }
 }
