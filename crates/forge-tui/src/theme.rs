@@ -1127,7 +1127,12 @@ mod tests {
     /// listed theme *does* still collide, so fixing a palette without
     /// removing its entry fails just as loudly as introducing a new
     /// collision. The list only shrinks.
-    const ACCENT_COLLISION_ALLOWLIST: &[&str] = &["forge-dark", "gruvbox-dark"];
+    ///
+    /// Now empty: every built-in clears the threshold. A new theme that does
+    /// not should be fixed rather than listed here; the slot exists so that
+    /// a palette imported verbatim from upstream can land with its collision
+    /// recorded in code instead of in review.
+    const ACCENT_COLLISION_ALLOWLIST: &[&str] = &[];
 
     /// Nearest outcome hue to a theme's accent, as `(role, distance)`.
     fn nearest_status_hue(palette: &ThemePalette) -> (&'static str, f64) {

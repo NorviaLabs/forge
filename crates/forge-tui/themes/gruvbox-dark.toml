@@ -15,22 +15,26 @@ border_muted = "#504945"
 text_primary = "#EBDBB2"
 text_secondary = "#D5C4A9"
 text_muted = "#A89984"
-accent = "#FE8019"
-accent_soft = "#3D2F1F"
+# Focus. Gruvbox's orange sits 15° from `warning` and 21° from `error`, so
+# the warm quadrant was carrying the focused pane, the running tool and the
+# failed tool at once. Moved to gruvbox bright blue, 96–151° clear of every
+# outcome hue; `info` steps down to gruvbox neutral blue so the two stay one
+# family, separated by saturation and lightness rather than hue.
+accent = "#83A598"
+accent_soft = "#2E3B38"
 agent = "#D3869B"
 success = "#B8BB26"
 warning = "#FABD2F"
 error = "#FB4934"
-info = "#83A598"
+info = "#458588"
 diff_add = "#2D3A22"
 diff_remove = "#3D2220"
-selection = "#504945"
+selection = "#37474A"
 cursor = "#FBF1C7"
-user_gutter_active = "#83A598"
+user_gutter_active = "#D5C4A9"
 tag = "#A89984"
 search_match = "#3C3836"
 waiting_border = "#FABD2F"
-approval_accent = "#FE8019"
 
 [syntax]
 comment = "#928374"
