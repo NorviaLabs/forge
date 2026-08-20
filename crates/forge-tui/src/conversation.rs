@@ -1217,14 +1217,33 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         // The label always gets the full width. Reserving a fixed column for
         // the consequence made long labels wrap for no reason, which reads far
         // worse than an option with no inline note.
-        let label_lines = wrap(&opt.label, inner.saturating_sub(2));
+        let key_w = opt
+            .key
+            .as_deref()
+            .filter(|k| !k.is_empty())
+            .map(|k| k.chars().count() + 1)
+            .unwrap_or(0);
+        let label_lines = wrap(&opt.label, inner.saturating_sub(2 + key_w));
         let label_rows = label_lines.len();
         for (n, wrapped) in label_lines.into_iter().enumerate() {
             let lead = if n == 0 { marker } else { "  " };
-            let mut spans = vec![
-                Span::styled(lead.to_string(), theme::accent_style()),
-                Span::styled(wrapped, style),
-            ];
+            let mut spans = vec![Span::styled(lead.to_string(), theme::accent_style())];
+            // The key leads the row it triggers, so the mapping is visible
+            // without reading the hint line and counting. In front rather than
+            // after the label: trailing, it ate into the room the consequence
+            // needs and elided it down to nonsense.
+            if let Some(k) = opt.key.as_deref().filter(|k| !k.is_empty()) {
+                let text = if n == 0 {
+                    format!("{k} ")
+                } else {
+                    " ".repeat(k.chars().count() + 1)
+                };
+                spans.push(Span::styled(
+                    text,
+                    theme::metadata_style().add_modifier(Modifier::BOLD),
+                ));
+            }
+            spans.push(Span::styled(wrapped, style));
             let last = n + 1 == label_rows;
             if !selected && last && !help.is_empty() && !compact {
                 let used: usize = spans.iter().map(Span::width).sum();
@@ -2780,6 +2799,7 @@ mod tests {
                 label: "Run once".into(),
                 detail: None,
                 help: Some("Runs now.".into()),
+                key: None,
             }],
             selected: 0,
             focused: true,
@@ -2809,11 +2829,13 @@ mod tests {
                     label: "Run once".into(),
                     detail: None,
                     help: Some("Runs now. You will be asked again.".into()),
+                    key: None,
                 },
                 ApprovalMenuRow {
                     label: "Don't run".into(),
                     detail: None,
                     help: Some("The agent is told it was denied. Nothing runs.".into()),
+                    key: None,
                 },
             ],
             selected: 0,
@@ -2893,6 +2915,7 @@ mod tests {
                 label: "Run once".into(),
                 detail: None,
                 help: None,
+                key: None,
             }],
             selected: 0,
             focused: true,
@@ -2926,6 +2949,7 @@ mod tests {
                 label: "Run once".into(),
                 detail: None,
                 help: None,
+                key: None,
             }],
             selected: 0,
             focused: true,
@@ -2960,16 +2984,19 @@ mod tests {
                     label: "Run once".into(),
                     detail: None,
                     help: Some("Runs now. You will be asked again.".into()),
+                    key: None,
                 },
                 ApprovalMenuRow {
                     label: "Remember similar commands this session".into(),
                     detail: Some("bash(git push *)".into()),
                     help: Some("Would match: git push …".into()),
+                    key: None,
                 },
                 ApprovalMenuRow {
                     label: "Don't run".into(),
                     detail: None,
                     help: Some("The agent is told the command was denied.".into()),
+                    key: None,
                 },
             ],
             0,
@@ -3030,6 +3057,7 @@ mod tests {
                 label: "Run once".into(),
                 detail: None,
                 help: Some("Runs now. You will be asked again.".into()),
+                key: None,
             }],
             0,
             false,

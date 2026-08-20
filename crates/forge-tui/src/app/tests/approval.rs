@@ -76,7 +76,9 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     );
     assert!(!rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
-    assert!(rendered.contains("\u{276f} Run once"), "{rendered}");
+    // The shortcut leads the row it triggers.
+    assert!(rendered.contains("\u{276f} y Run once"), "{rendered}");
+    assert!(rendered.contains("n Don't run"), "{rendered}");
     assert!(
         rendered.contains("Remember similar commands this session"),
         "{rendered}"
@@ -143,6 +145,72 @@ async fn menu_allow_once_approves_without_remembering() {
         .messages
         .iter()
         .any(|message| message.content == "ok"));
+}
+
+/// `y` decides without arrowing to the row first.
+#[tokio::test]
+async fn shortcut_key_approves_without_arrowing() {
+    let (dir, mut app) = focus_test_app().await;
+    fs::write(dir.path().join("allowed.txt"), "ok").unwrap();
+    set_pending_approval(&mut app, direct_hitl_payload("direct-y", "allowed.txt"));
+
+    app.handle_key(press(KeyCode::Char('y'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    flush_queued_hitl(&mut app).await;
+
+    assert!(app.session.pending_hitl().is_none());
+    assert_eq!(app.remembered_approval_count(), 0);
+    assert!(app
+        .session
+        .messages
+        .iter()
+        .any(|message| message.content == "ok"));
+}
+
+/// `n` denies. The command must not run.
+#[tokio::test]
+async fn shortcut_key_denies_without_arrowing() {
+    let (dir, mut app) = focus_test_app().await;
+    fs::write(dir.path().join("allowed.txt"), "ok").unwrap();
+    set_pending_approval(&mut app, direct_hitl_payload("direct-n", "allowed.txt"));
+
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    flush_queued_hitl(&mut app).await;
+
+    assert!(app.session.pending_hitl().is_none());
+    assert!(
+        !app.session
+            .messages
+            .iter()
+            .any(|message| message.content == "ok"),
+        "denied call must not have run"
+    );
+}
+
+/// A key for a row this prompt does not offer must do nothing rather than
+/// silently pick a neighbouring row.
+#[tokio::test]
+async fn a_shortcut_for_an_absent_row_is_ignored() {
+    let (dir, mut app) = focus_test_app().await;
+    fs::write(dir.path().join("allowed.txt"), "ok").unwrap();
+    set_pending_approval(
+        &mut app,
+        direct_hitl_payload("direct-absent", "allowed.txt"),
+    );
+
+    let offered = app.approval_menu_shortcuts();
+    if !offered.iter().any(|k| k == "a") {
+        app.handle_key(press(KeyCode::Char('a'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.session.pending_hitl().is_some(),
+            "an unoffered shortcut must leave the prompt open"
+        );
+    }
 }
 
 #[tokio::test]
@@ -485,7 +553,7 @@ async fn approval_card_renders_in_every_shipped_theme() {
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("\u{276f} Run once"),
+                rendered.contains("\u{276f} y Run once"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(

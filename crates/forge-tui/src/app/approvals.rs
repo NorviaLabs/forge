@@ -21,6 +21,30 @@ pub(crate) enum ApprovalMenuKind {
     Deny,
 }
 
+impl ApprovalMenuKind {
+    /// Letter that picks this row without arrowing to it.
+    ///
+    /// Chosen for the decision, not the row's position, so the key for "run it"
+    /// is the same whether or not a pattern row is offered — muscle memory on a
+    /// prompt about running commands must not depend on the menu's shape.
+    pub(crate) fn shortcut(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "y",
+            Self::AllowPattern => "a",
+            Self::Deny => "n",
+        }
+    }
+
+    fn from_shortcut(c: char) -> Option<Self> {
+        match c.to_ascii_lowercase() {
+            'y' => Some(Self::AllowOnce),
+            'a' => Some(Self::AllowPattern),
+            'n' => Some(Self::Deny),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct ApprovalMenuState {
     /// `call_id` of the pending payload this menu was built for.
@@ -201,6 +225,7 @@ impl TuiApp {
                             "Writes {rule} to your personal permissions file. Kept next session.",
                             rule = forge_tools::egress::host_allow_rule(host)
                         )),
+                        key: Some(kind.shortcut().into()),
                     },
                     ApprovalMenuKind::AllowOnce => crate::conversation::ApprovalMenuRow {
                         label: format!("Allow {pattern} this session"),
@@ -208,11 +233,13 @@ impl TuiApp {
                         help: Some(
                             "The sandbox stays on. You will be asked again next session.".into(),
                         ),
+                        key: Some(kind.shortcut().into()),
                     },
                     ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
                         label: "Don't run".into(),
                         detail: None,
                         help: Some("The agent is told the command was denied.".into()),
+                        key: Some(kind.shortcut().into()),
                     },
                 })
                 .collect();
@@ -226,18 +253,30 @@ impl TuiApp {
                     label: "Run once".into(),
                     detail: None,
                     help: Some("Runs now. You will be asked again.".into()),
+                    key: Some(kind.shortcut().into()),
                 },
                 ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
                     label: "Remember similar commands this session".into(),
                     detail: Some(remembered.clone()),
                     help: Some(remember_help(&call, &remembered)),
+                    key: Some(kind.shortcut().into()),
                 },
                 ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
                     label: "Don't run".into(),
                     detail: None,
                     help: Some("The agent is told the command was denied.".into()),
+                    key: Some(kind.shortcut().into()),
                 },
             })
+            .collect()
+    }
+
+    /// Shortcut letters this prompt currently offers, in menu order.
+    #[cfg(test)]
+    pub(crate) fn approval_menu_shortcuts(&self) -> Vec<String> {
+        self.approval_menu_kinds()
+            .into_iter()
+            .map(|kind| kind.shortcut().to_string())
             .collect()
     }
 
@@ -277,6 +316,21 @@ impl TuiApp {
                 let Some(kind) = kinds.get(self.approval_session.menu.selected).copied() else {
                     return Ok(true);
                 };
+                self.queue_approval_line(kind);
+                Ok(true)
+            }
+            // Decide without arrowing first. Only keys for rows this prompt
+            // actually offers are accepted: `a` must do nothing when there is
+            // no pattern to remember, rather than silently picking a neighbour.
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == event::KeyModifiers::SHIFT =>
+            {
+                let Some(kind) = ApprovalMenuKind::from_shortcut(c) else {
+                    return Ok(false);
+                };
+                if !self.approval_menu_kinds().contains(&kind) {
+                    return Ok(false);
+                }
                 self.queue_approval_line(kind);
                 Ok(true)
             }
