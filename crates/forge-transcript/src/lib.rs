@@ -352,6 +352,8 @@ pub struct ApprovalMenuRow {
     pub detail: Option<String>,
     /// Consequence shown only while this row is selected.
     pub help: Option<String>,
+    /// Single-key shortcut that picks this row, shown beside its label.
+    pub key: Option<String>,
 }
 
 /// The redacted command awaiting a human approval decision, with enough
