@@ -381,7 +381,14 @@ Menu rows (when a prompt appears):
 
 When the sandbox blocked a host (for example `gh` talking to
 `api.github.com`), the menu is a host grant instead, and the command is
-retried still confined:
+retried still confined. A GitHub grant also **projects** your host `gh`
+identity into that confined spawn — `gh` stores the token in the OS
+keychain, which the sandbox cannot open, so without projection the CLI
+prints HTTP 401 / "token is invalid" and looks like broken auth. SSH
+remotes (`git@github.com:`) cannot use the CONNECT proxy, so the same
+spawn rewrites them to `https://github.com/` and authenticates git with
+the projected token. `.git` stays read-only for ordinary commands; a
+`gh` / `git push` spawn may update refs without unsandboxing the process.
 
 - **Always allow `**.github.com`** — writes `host(**.github.com)` to the
   personal permissions file so the next session does not ask again.
