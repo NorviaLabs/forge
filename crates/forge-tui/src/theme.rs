@@ -1084,6 +1084,123 @@ mod tests {
         install_defaults();
     }
 
+    // Hue-separation checks for the two-colour system: the accent answers
+    // "where am I and what will my next keystroke touch", the status hues
+    // answer "what happened to that thing". A theme where those two are the
+    // same colour cannot say both at once, so the separation is asserted
+    // here rather than left to a reviewer's eye.
+    fn to_hsl(c: ConfigRgb) -> (f64, f64, f64) {
+        let (r, g, b) = (c.0 as f64 / 255.0, c.1 as f64 / 255.0, c.2 as f64 / 255.0);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let lightness = (max + min) / 2.0;
+        let delta = max - min;
+        if delta == 0.0 {
+            return (0.0, 0.0, lightness * 100.0);
+        }
+        let saturation = delta / (1.0 - (2.0 * lightness - 1.0).abs());
+        let hue = if max == r {
+            60.0 * (((g - b) / delta) % 6.0)
+        } else if max == g {
+            60.0 * (((b - r) / delta) + 2.0)
+        } else {
+            60.0 * (((r - g) / delta) + 4.0)
+        };
+        ((hue + 360.0) % 360.0, saturation * 100.0, lightness * 100.0)
+    }
+
+    /// Shortest distance between two hues, in degrees (0-180).
+    fn hue_distance(a: ConfigRgb, b: ConfigRgb) -> f64 {
+        let raw = (to_hsl(a).0 - to_hsl(b).0).abs() % 360.0;
+        raw.min(360.0 - raw)
+    }
+
+    /// Minimum hue separation between the accent and any outcome-reporting
+    /// hue. 60 is not arbitrary: it is the threshold that separates the four
+    /// built-in themes whose accent is legible against their status colours
+    /// from the two where it is not.
+    const ACCENT_STATUS_MIN_HUE_DISTANCE: f64 = 60.0;
+
+    /// Themes whose accent still collides with a status hue.
+    ///
+    /// These are known, not tolerated — the test below asserts that every
+    /// listed theme *does* still collide, so fixing a palette without
+    /// removing its entry fails just as loudly as introducing a new
+    /// collision. The list only shrinks.
+    const ACCENT_COLLISION_ALLOWLIST: &[&str] = &["forge-dark", "gruvbox-dark"];
+
+    /// Nearest outcome hue to a theme's accent, as `(role, distance)`.
+    fn nearest_status_hue(palette: &ThemePalette) -> (&'static str, f64) {
+        [
+            ("success", palette.success),
+            ("warning", palette.warning),
+            ("error", palette.error),
+        ]
+        .into_iter()
+        .map(|(role, colour)| (role, hue_distance(palette.accent, colour)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("three status roles")
+    }
+
+    #[test]
+    fn accent_stays_clear_of_status_hues() {
+        for theme in ThemeRegistry::builtin().themes() {
+            let (role, distance) = nearest_status_hue(&theme.palette);
+            if ACCENT_COLLISION_ALLOWLIST.contains(&theme.id.as_str()) {
+                assert!(
+                    distance < ACCENT_STATUS_MIN_HUE_DISTANCE,
+                    "{} is on ACCENT_COLLISION_ALLOWLIST but its accent {} now clears \
+                     {role} by {distance:.0}° — delete its entry from the allowlist",
+                    theme.id,
+                    theme.palette.accent
+                );
+                continue;
+            }
+            assert!(
+                distance >= ACCENT_STATUS_MIN_HUE_DISTANCE,
+                "{} accent {} is only {distance:.0}° from {role} (need >= {:.0}°): the \
+                 focused border, the caret and the selected row would read as {role}",
+                theme.id,
+                theme.palette.accent,
+                ACCENT_STATUS_MIN_HUE_DISTANCE
+            );
+        }
+    }
+
+    /// `info` and `agent` are deliberately close to the accent — neither
+    /// reports an outcome, so they belong to the accent's family rather than
+    /// to the status set. They still have to be told apart from it, by hue
+    /// or by saturation/lightness.
+    ///
+    /// The floors are pinned to Solarized, whose `info` sits 29° from its
+    /// accent and separates on saturation alone (11 points). As with the
+    /// contrast tests below, the project keeps the authentic Solarized hex
+    /// values rather than deviating from the published palette, so the
+    /// tightest shipped pair sets the floor.
+    fn separable_from_accent(accent: ConfigRgb, other: ConfigRgb) -> bool {
+        let (_, accent_s, accent_l) = to_hsl(accent);
+        let (_, other_s, other_l) = to_hsl(other);
+        hue_distance(accent, other) >= 40.0
+            || (accent_s - other_s).abs() >= 10.0
+            || (accent_l - other_l).abs() >= 8.0
+    }
+
+    #[test]
+    fn accent_family_hues_stay_separable() {
+        for theme in ThemeRegistry::builtin().themes() {
+            let palette = &theme.palette;
+            for (role, colour) in [("info", palette.info), ("agent", palette.agent)] {
+                assert!(
+                    separable_from_accent(palette.accent, colour),
+                    "{} {role} {colour} is indistinguishable from accent {}: needs 40° of \
+                     hue, 10 points of saturation, or 8 points of lightness between them",
+                    theme.id,
+                    palette.accent
+                );
+            }
+        }
+    }
+
     // WCAG AA (4.5:1, normal text) contrast checks. These pin down the
     // actual rendered backgrounds each role appears on (canvas/panel/
     // panel_alt for the general case, plus SELECTED_BG for tag/selection_fg)
