@@ -24,8 +24,8 @@ pub use permissions::{
 };
 pub use theme::{
     is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
-    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_FORGE_DARK,
-    THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM,
+    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, ACCENT_STATUS_MIN_HUE_DISTANCE,
+    DEFAULT_THEME_ID, THEME_FORGE_DARK, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM,
 };
 pub use trust::{
     grant_trust, is_trusted, persist_committed_theme, persist_committed_theme_at,
