@@ -782,7 +782,9 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
 mod tests {
     use super::*;
     use crate::theme_registry::ThemeRegistry;
-    use forge_config::{THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
+    use forge_config::{
+        ACCENT_STATUS_MIN_HUE_DISTANCE, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT,
+    };
 
     #[test]
     fn system_theme_uses_terminal_background_hint() {
@@ -895,7 +897,7 @@ mod tests {
     #[test]
     fn tag_token_is_a_neutral_in_every_theme() {
         for theme in ThemeRegistry::builtin().themes() {
-            let (_, saturation, _) = to_hsl(theme.palette.tag);
+            let (_, saturation, _) = theme.palette.tag.to_hsl();
             assert!(
                 saturation <= 20.0,
                 "{} tag {} is {saturation:.0}% saturated: a tag label is \
@@ -1142,42 +1144,11 @@ mod tests {
         install_defaults();
     }
 
-    // Hue-separation checks for the two-colour system: the accent answers
-    // "where am I and what will my next keystroke touch", the status hues
-    // answer "what happened to that thing". A theme where those two are the
-    // same colour cannot say both at once, so the separation is asserted
-    // here rather than left to a reviewer's eye.
-    fn to_hsl(c: ConfigRgb) -> (f64, f64, f64) {
-        let (r, g, b) = (c.0 as f64 / 255.0, c.1 as f64 / 255.0, c.2 as f64 / 255.0);
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        let lightness = (max + min) / 2.0;
-        let delta = max - min;
-        if delta == 0.0 {
-            return (0.0, 0.0, lightness * 100.0);
-        }
-        let saturation = delta / (1.0 - (2.0 * lightness - 1.0).abs());
-        let hue = if max == r {
-            60.0 * (((g - b) / delta) % 6.0)
-        } else if max == g {
-            60.0 * (((b - r) / delta) + 2.0)
-        } else {
-            60.0 * (((r - g) / delta) + 4.0)
-        };
-        ((hue + 360.0) % 360.0, saturation * 100.0, lightness * 100.0)
-    }
-
-    /// Shortest distance between two hues, in degrees (0-180).
-    fn hue_distance(a: ConfigRgb, b: ConfigRgb) -> f64 {
-        let raw = (to_hsl(a).0 - to_hsl(b).0).abs() % 360.0;
-        raw.min(360.0 - raw)
-    }
-
-    /// Minimum hue separation between the accent and any outcome-reporting
-    /// hue. 60 is not arbitrary: it is the threshold that separates the four
-    /// built-in themes whose accent is legible against their status colours
-    /// from the two where it is not.
-    const ACCENT_STATUS_MIN_HUE_DISTANCE: f64 = 60.0;
+    // Hue-separation checks for the two-colour system. The rule itself lives
+    // in `forge_config` — `ACCENT_STATUS_MIN_HUE_DISTANCE` and
+    // `ThemePalette::accent_status_collision` — so that the built-ins are
+    // held to exactly the check that drop-in themes are warned against at
+    // load time, rather than a second copy of the arithmetic that can drift.
 
     /// Themes whose accent still collides with a status hue.
     ///
@@ -1192,23 +1163,10 @@ mod tests {
     /// recorded in code instead of in review.
     const ACCENT_COLLISION_ALLOWLIST: &[&str] = &[];
 
-    /// Nearest outcome hue to a theme's accent, as `(role, distance)`.
-    fn nearest_status_hue(palette: &ThemePalette) -> (&'static str, f64) {
-        [
-            ("success", palette.success),
-            ("warning", palette.warning),
-            ("error", palette.error),
-        ]
-        .into_iter()
-        .map(|(role, colour)| (role, hue_distance(palette.accent, colour)))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .expect("three status roles")
-    }
-
     #[test]
     fn accent_stays_clear_of_status_hues() {
         for theme in ThemeRegistry::builtin().themes() {
-            let (role, distance) = nearest_status_hue(&theme.palette);
+            let (role, distance) = theme.palette.nearest_status_hue();
             if ACCENT_COLLISION_ALLOWLIST.contains(&theme.id.as_str()) {
                 assert!(
                     distance < ACCENT_STATUS_MIN_HUE_DISTANCE,
@@ -1241,9 +1199,9 @@ mod tests {
     /// values rather than deviating from the published palette, so the
     /// tightest shipped pair sets the floor.
     fn separable_from_accent(accent: ConfigRgb, other: ConfigRgb) -> bool {
-        let (_, accent_s, accent_l) = to_hsl(accent);
-        let (_, other_s, other_l) = to_hsl(other);
-        hue_distance(accent, other) >= 40.0
+        let (_, accent_s, accent_l) = accent.to_hsl();
+        let (_, other_s, other_l) = other.to_hsl();
+        accent.hue_distance(other) >= 40.0
             || (accent_s - other_s).abs() >= 10.0
             || (accent_l - other_l).abs() >= 8.0
     }
