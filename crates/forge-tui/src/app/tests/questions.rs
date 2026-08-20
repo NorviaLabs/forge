@@ -45,6 +45,28 @@ async fn question_prompt_renders_inline() {
 }
 
 #[tokio::test]
+async fn drawing_a_question_keeps_menu_focus_so_arrows_move() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_question_focused(&mut app, db_question());
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+
+    let first = render_app_text(&mut app, 100, 24);
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    assert_eq!(app.question_menu_indexes(), (0, 0));
+    assert!(first.contains("› Postgres (Recommended)"), "{first}");
+
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.question_menu_indexes(), (0, 1));
+
+    let second = render_app_text(&mut app, 100, 24);
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    assert!(second.contains("› SQLite"), "{second}");
+    assert!(!second.contains("› Postgres (Recommended)"), "{second}");
+}
+
+#[tokio::test]
 async fn enter_on_an_option_submits_the_answer() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_question_focused(&mut app, db_question());
