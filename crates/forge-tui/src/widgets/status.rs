@@ -26,6 +26,10 @@ pub fn shorten_home_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// Fewest columns the workspace path is allowed before the branch is
+/// dropped to make room for it.
+const CWD_FLOOR: usize = 12;
+
 /// Progressive busy phase (Phase 10 / TUI-10; also used in chrome label).
 /// This is activity detail, not overall turn lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -288,7 +292,33 @@ impl StatusModel {
     /// shown (falls back to `cwd_display` even with no git repo); branch
     /// is omitted when there isn't one.
     pub fn identity_line(&self) -> String {
-        let mut line = format!("⌂ {}", self.cwd_display);
+        self.identity_line_for(&self.cwd_display)
+    }
+
+    /// [`identity_line`](Self::identity_line) narrowed to fit `width` columns.
+    ///
+    /// The workspace is the primary identity, so it gives ground first but
+    /// never disappears: below [`CWD_FLOOR`] columns the branch is dropped
+    /// instead. A long branch name must not be able to starve the path down to
+    /// nothing, which is what happens if the path simply absorbs the shortfall.
+    pub fn identity_line_within(&self, width: usize) -> String {
+        let full = self.identity_line();
+        if full.chars().count() <= width {
+            return full;
+        }
+        let overhead = full.chars().count() - self.cwd_display.chars().count();
+        let budget = width.saturating_sub(overhead);
+        if budget >= CWD_FLOOR {
+            let cwd = crate::path_display::elide_path(&self.cwd_display, budget);
+            return self.identity_line_for(&cwd);
+        }
+        // No room for both. Keep the workspace, drop the branch.
+        let cwd = crate::path_display::elide_path(&self.cwd_display, width.saturating_sub(2));
+        format!("⌂ {cwd}")
+    }
+
+    fn identity_line_for(&self, cwd: &str) -> String {
+        let mut line = format!("⌂ {cwd}");
         if let Some(branch) = self.branch.as_deref().filter(|b| !b.is_empty()) {
             line.push_str("  ·  ⎇ ");
             line.push_str(branch);
@@ -430,20 +460,17 @@ impl Widget for StatusBar<'_> {
         }
         // Centered single block: ⌂ path  ·  ⎇ branch — identity only,
         // full window width, changes only on project/branch switch.
-        let content = self.model.identity_line();
-
         let width = area.width as usize;
+        // Elide the workspace path rather than letting the line run off the
+        // right edge: clipping keeps the leading directories and drops the
+        // folder name, which is the only part that identifies the workspace.
+        let content = self.model.identity_line_within(width);
         let content_width = content.chars().count();
 
         theme::fill(area, buf, theme::status_bar());
-        if content_width <= width {
-            let pad = (width.saturating_sub(content_width)) / 2;
-            let padded = format!("{}{}", " ".repeat(pad), content);
-            buf.set_line(area.x, area.y, &Line::from(padded), area.width);
-        } else {
-            // Too wide: left-align the Forge line
-            buf.set_line(area.x, area.y, &Line::from(content), area.width);
-        }
+        let pad = (width.saturating_sub(content_width)) / 2;
+        let padded = format!("{}{}", " ".repeat(pad), content);
+        buf.set_line(area.x, area.y, &Line::from(padded), area.width);
     }
 }
 
@@ -1057,6 +1084,37 @@ mod tests {
         assert_eq!(m.turn_lifecycle(), TurnLifecycle::Working);
         assert!(m.status_label().0.contains("Working"));
         assert!(!m.status_label().0.contains("Failed"));
+    }
+
+    /// Clipping the identity line kept the leading directories and dropped the
+    /// folder name — the one part that says which workspace this is.
+    #[test]
+    fn a_long_workspace_path_elides_instead_of_clipping() {
+        let mut m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
+        m.cwd_display = "/private/tmp/claude-501/-Users-someone-Projects-forge/ac5a5dcf-403d-4bce-b017-233f3db8e1c0/scratchpad/lab".into();
+        m.branch = Some("main".into());
+
+        let line = m.identity_line_within(70);
+        assert!(line.chars().count() <= 70, "{line}");
+        assert!(line.contains('…'), "expected an elision: {line}");
+        assert!(line.contains("lab"), "workspace name must survive: {line}");
+        assert!(line.contains("⎇ main"), "branch must survive: {line}");
+    }
+
+    /// A long branch must not be able to squeeze the workspace out entirely.
+    #[test]
+    fn a_long_branch_is_dropped_before_the_workspace() {
+        let mut m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
+        m.cwd_display = "~/Projects/forge".into();
+        m.branch = Some("feature/an-extremely-long-branch-name-indeed".into());
+
+        let line = m.identity_line_within(24);
+        assert!(line.chars().count() <= 24, "{line}");
+        assert!(line.contains("Projects/forge"), "{line}");
+        assert!(
+            !line.contains('⎇'),
+            "branch should have been dropped: {line}"
+        );
     }
 
     #[test]
