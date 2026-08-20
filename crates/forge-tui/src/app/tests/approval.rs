@@ -76,7 +76,7 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     );
     assert!(!rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
-    assert!(rendered.contains("› Run once"), "{rendered}");
+    assert!(rendered.contains("\u{276f} Run once"), "{rendered}");
     assert!(
         rendered.contains("Remember similar commands this session"),
         "{rendered}"
@@ -86,7 +86,10 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
         "{rendered}"
     );
     assert!(!rendered.contains("Would match: git push"), "{rendered}");
-    assert!(rendered.contains("Esc don't run"), "{rendered}");
+    assert!(rendered.contains("Esc"), "{rendered}");
+    assert!(rendered.contains("don't run"), "{rendered}");
+    // The prompt is a card now, not bare prose in the transcript flow.
+    assert!(rendered.contains("Approval needed"), "{rendered}");
 }
 
 #[tokio::test]
@@ -481,11 +484,16 @@ async fn approval_card_renders_in_every_shipped_theme() {
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("› Run once"),
+                rendered.contains("\u{276f} Run once"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("Esc don't run"),
+                rendered.contains("don't run"),
+                "{theme_id} @ {width}:\n{rendered}"
+            );
+            // The card's border must close on every theme and width.
+            assert!(
+                rendered.contains("Approval needed") && rendered.contains('\u{256f}'),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             for line in rendered.lines() {
