@@ -988,7 +988,6 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
     const CREDENTIAL: &[&str] = &[
         "The token in default is invalid",
         "Requires authentication (HTTP 401)",
-        "failed to log in to github.com",
     ];
 
     if output.contains(crate::egress::SANDBOX_DENIED_REASON) {
@@ -1040,10 +1039,9 @@ const FILESYSTEM_EXPLANATION: &str =
      forbidden. This is not a file-permission problem on disk.";
 
 const CREDENTIAL_EXPLANATION: &str =
-    "blocked by the sandbox: GitHub credentials live in the host keychain, \
+    "blocked by the sandbox: credentials live in the host secret store, \
      which confined processes cannot read. This is not an invalid token — \
-     Forge projects your `gh` identity into a confined `gh`/`git push` \
-     spawn when host(**.github.com) is allowed.";
+     a host(...) grant projects HTTPS identity for that host into the spawn.";
 
 /// Whether `output` names an absolute path that is not under `workspace_root`.
 ///
@@ -1098,11 +1096,11 @@ mod denial_tests {
     }
 
     #[test]
-    fn a_gh_keychain_failure_is_not_reported_as_bad_credentials() {
-        let out = "github.com\n  X Failed to log in to github.com account mohitranka (default)\n  - The token in default is invalid.\n";
+    fn a_secret_store_failure_is_not_reported_as_bad_credentials() {
+        let out = "X Failed to log in\n  - The token in default is invalid.\n";
         let explained = explain_denial(out, ws().path()).expect("must be recognised as a denial");
         assert!(
-            explained.contains("keychain"),
+            explained.contains("secret store"),
             "the 401 is the boundary wearing auth's clothes: {explained}"
         );
     }
@@ -1415,8 +1413,11 @@ impl EgressGrant {
             .is_some_and(|control| control.permits_host(host))
     }
 
-    pub fn permits_github(&self) -> bool {
-        self.permits_host("github.com") || self.permits_host("api.github.com")
+    pub fn allow_patterns(&self) -> Vec<String> {
+        self.control
+            .as_ref()
+            .map(|control| control.allow_patterns())
+            .unwrap_or_default()
     }
 }
 

@@ -558,12 +558,11 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
     }
 }
 
-/// Probe the real `gh` binary through Forge's sandbox + egress proxy.
+/// Probe a real GitHub-talking CLI through Forge's sandbox + egress proxy.
 ///
 /// Skips when `gh` is not installed so CI without the CLI stays green.
-/// On a developer machine this is the reproduction for "gh pr create
-/// fails in Forge": even with `**.github.com` allowed, the command still
-/// needs `.git` writes and the host keychain.
+/// The grant is `**.github.com`; identity must come from that grant
+/// (git-credential on the host), not from a tool-specific special case.
 #[tokio::test]
 async fn gh_pr_create_through_the_sandbox_reports_the_boundary() {
     require_sandbox!();

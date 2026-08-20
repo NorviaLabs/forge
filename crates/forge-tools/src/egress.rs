@@ -128,6 +128,11 @@ impl EgressPolicy {
         self.allow.is_empty() && self.deny.is_empty()
     }
 
+    /// Patterns currently allowed, as stored (`**.example.com`, `host`, `*`).
+    pub fn allow_patterns(&self) -> &[String] {
+        &self.allow
+    }
+
     pub fn allow(&mut self, pattern: impl Into<String>) -> &mut Self {
         let pattern = pattern.into().to_ascii_lowercase();
         if !self.allow.iter().any(|existing| existing == &pattern) {
@@ -219,6 +224,14 @@ impl EgressShared {
 
     pub fn permits_host(&self, host: &str) -> bool {
         self.permits(host)
+    }
+
+    pub fn allow_patterns(&self) -> Vec<String> {
+        self.policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .allow_patterns()
+            .to_vec()
     }
 
     pub fn record_denied(&self, host: String) {

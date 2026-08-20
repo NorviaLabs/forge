@@ -380,11 +380,11 @@ async fn run_shell_command_inner(
         for (name, value) in crate::sandbox::egress_env(&policy) {
             shell.env(name, value);
         }
-        let gh_config = session_tmp
-            .map(|dir| dir.join("gh-config"))
-            .unwrap_or_else(|| workspace_root.join(".forge-gh"));
-        let _ = std::fs::create_dir_all(&gh_config);
-        for (name, value) in crate::credentials::github_identity_env(command, egress, &gh_config) {
+        let identity_dir = session_tmp
+            .map(|dir| dir.join("host-identity"))
+            .unwrap_or_else(|| workspace_root.join(".forge-host-identity"));
+        let _ = std::fs::create_dir_all(&identity_dir);
+        for (name, value) in crate::credentials::host_identity_env(egress, &identity_dir) {
             shell.env(name, value);
         }
     }
@@ -488,8 +488,9 @@ impl Tool for BashTool {
         "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
 Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
-`gh` / `git push` stay confined: a host(**.github.com) grant projects your \
-host `gh` credentials into that spawn and allows `.git` writes for it."
+A host(...) grant projects HTTPS identity for that host into the confined \
+spawn (SSH git remotes become HTTPS; git-dir writes stay limited to git \
+frontends)."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BashArgs>()
@@ -1774,8 +1775,9 @@ mod tests {
             "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
 Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
-`gh` / `git push` stay confined: a host(**.github.com) grant projects your \
-host `gh` credentials into that spawn and allows `.git` writes for it."
+A host(...) grant projects HTTPS identity for that host into the confined \
+spawn (SSH git remotes become HTTPS; git-dir writes stay limited to git \
+frontends)."
         );
         assert_eq!(t.side_effect_class(), SideEffectClass::Exec);
     }
