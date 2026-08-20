@@ -44,34 +44,38 @@ pub fn verify_reachable(base_url: &str) -> Result<(), VerifyError> {
     // Prefer native tags API; fall back to OpenAI-compatible /v1/models.
     let tags = format!("{base}/api/tags");
     match ureq::get(&tags)
-        .set(
+        .header(
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
-        .timeout(std::time::Duration::from_secs(3))
+        .config()
+        .timeout_per_call(Some(std::time::Duration::from_secs(3)))
+        .build()
         .call()
     {
-        Ok(r) if (200..300).contains(&r.status()) => Ok(()),
+        Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
         Ok(r) => Err(VerifyError::Unhealthy {
             provider: "Ollama",
-            status: r.status(),
+            status: r.status().as_u16(),
             endpoint: base.to_string(),
             guidance: "Is the server healthy?",
         }),
         Err(_) => {
             let models = format!("{base}/v1/models");
             match ureq::get(&models)
-                .set(
+                .header(
                     "User-Agent",
                     &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
                 )
-                .timeout(std::time::Duration::from_secs(3))
+                .config()
+                .timeout_per_call(Some(std::time::Duration::from_secs(3)))
+                .build()
                 .call()
             {
-                Ok(r) if (200..300).contains(&r.status()) => Ok(()),
+                Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
                 Ok(r) => Err(VerifyError::Unhealthy {
                     provider: "Ollama",
-                    status: r.status(),
+                    status: r.status().as_u16(),
                     endpoint: base.to_string(),
                     guidance: "Is the server healthy?",
                 }),
@@ -111,7 +115,7 @@ mod tests {
         let err = verify_reachable(&mock_server(vec![503, 500]))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("status code 500"), "{err}");
+        assert!(err.contains("http status: 500"), "{err}");
     }
 
     #[test]
@@ -121,6 +125,6 @@ mod tests {
         let err = verify_reachable(&mock_server(vec![404, 500]))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("status code 500"), "{err}");
+        assert!(err.contains("http status: 500"), "{err}");
     }
 }

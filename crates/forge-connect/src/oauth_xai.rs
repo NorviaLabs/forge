@@ -101,26 +101,27 @@ impl XaiOauthClient {
     }
 
     fn agent() -> ureq::Agent {
-        ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent(&format!("forge-connect/{}", env!("CARGO_PKG_VERSION")))
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .user_agent(format!("forge-connect/{}", env!("CARGO_PKG_VERSION")))
+            // The OAuth error body carries `error`/`error_description`, which
+            // callers parse. ureq 3 drops the body when it raises a status as
+            // an error, so take every status as a response instead.
+            .http_status_as_error(false)
             .build()
+            .into()
     }
 
     fn post_form(url: &str, form: &[(&str, &str)]) -> Result<(u16, String), XaiOauthError> {
         let agent = Self::agent();
         match agent
             .post(url)
-            .set("Content-Type", "application/x-www-form-urlencoded")
-            .send_form(form)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .send_form(form.iter().copied())
         {
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.into_string().unwrap_or_default();
-                Ok((status, body))
-            }
-            Err(ureq::Error::Status(status, resp)) => {
-                let body = resp.into_string().unwrap_or_default();
+            Ok(mut resp) => {
+                let status = resp.status().as_u16();
+                let body = resp.body_mut().read_to_string().unwrap_or_default();
                 Ok((status, body))
             }
             Err(e) => Err(XaiOauthError::Http(e.to_string())),

@@ -46,15 +46,19 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
     let base = base_url.trim().trim_end_matches('/');
     let url = format!("{base}/models");
     let resp = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {key}"))
-        .set(
+        .header("Authorization", &format!("Bearer {key}"))
+        .header(
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
-        .timeout(std::time::Duration::from_secs(15))
+        .config()
+        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
+        .build()
         .call()
         .map_err(|e| match e {
-            ureq::Error::Status(status, _) => VerifyError::Rejected {
+            // ureq 3 renamed the variant and no longer carries the response;
+            // only the status was ever used here.
+            ureq::Error::StatusCode(status) => VerifyError::Rejected {
                 provider: "OpenAI",
                 status,
                 guidance: "Check the key at https://platform.openai.com/api-keys.",
@@ -64,7 +68,7 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
                 message: format!("Could not reach OpenAI to verify key ({other}). Check network."),
             },
         })?;
-    let status = resp.status();
+    let status = resp.status().as_u16();
     if (200..300).contains(&status) {
         Ok(())
     } else if status == 401 || status == 403 {
