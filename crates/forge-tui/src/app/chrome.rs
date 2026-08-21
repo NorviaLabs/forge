@@ -453,6 +453,26 @@ impl TuiApp {
         })
     }
 
+    /// Swap the composer's opener for a working prompt once a turn has run.
+    ///
+    /// The hint was set once at launch and never changed, so `What does this
+    /// project do?` was still sitting under a conversation four turns deep —
+    /// and a later session opened on a different string entirely. Belongs to
+    /// the event-loop tick, not `draw`: rendering must not mutate state.
+    pub(super) fn sync_composer_placeholder(&mut self) {
+        // Only the started case is claimed here. Before the first turn the
+        // placeholder is whatever the launch chose — the opener when there is
+        // a workspace to ask about, the generic prompt otherwise — and
+        // overriding that would throw away context the launcher had and this
+        // does not.
+        if self.session.messages.is_empty() {
+            return;
+        }
+        if self.input.hint != crate::app::types::COMPOSER_WORKING {
+            self.input.hint = crate::app::types::COMPOSER_WORKING.into();
+        }
+    }
+
     pub(super) fn status_report_rows(&self) -> Vec<StatusRow> {
         use crate::overlays::thousands;
 

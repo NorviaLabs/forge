@@ -124,14 +124,12 @@ mod tests {
             .unwrap();
         app.runtime.cwd = repo.clone();
         app.handle_key(press(KeyCode::Char('x'))).await.unwrap();
-        let backend = TestBackend::new(40, 24);
+        // `MIN_WIDTH`: the narrowest frame that lays out at all.
+        let backend = TestBackend::new(80, 24);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         let top = text.lines().next().unwrap_or_default();
-        // At 40 cols the raw tmp-dir path can truncate before reaching the
-        // repo-name segment — real path-truncation rules for very narrow
-        // terminals are still an open question, not decided by this test.
         assert!(top.contains('⌂'), "missing directory identity:\n{text}");
         assert!(
             !top.contains("mock"),
@@ -368,14 +366,16 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
 
-        for expected in ["Describe a task…", "forge 0.8.0"] {
+        // The version splash is gone; the home card carries the wordmark.
+        for expected in ["Describe a task…", "FORGE", "Try one of these"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
         assert!(
             !text.contains("INSPECTOR"),
             "default shell should not show inspector:\n{text}"
         );
-        assert!(text.contains("Forge"), "missing branding:\n{text}");
+        // The wordmark is the branding now, in place of a version splash.
+        assert!(text.contains("FORGE"), "missing branding:\n{text}");
         assert!(
             !text.contains("Waiting for your first message."),
             "stale copy:\n{text}"
