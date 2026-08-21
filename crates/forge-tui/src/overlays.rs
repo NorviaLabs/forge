@@ -11,12 +11,132 @@ use ratatui::widgets::{
 };
 use std::path::Path;
 
+/// One row of the `/status` report.
+///
+/// `/status` used to be a flat list of `key=value` strings in snake_case with
+/// no grouping, alignment or units — a debug dump, on the screen people open
+/// when something feels wrong. Structuring the rows lets the renderer align a
+/// label column and give a value, a hint and a heading distinct styling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusRow {
+    /// Heading that opens a group of fields.
+    Heading(String),
+    /// A labelled value, with an optional trailing hint — usually the command
+    /// that changes it.
+    Field {
+        label: String,
+        value: String,
+        note: Option<String>,
+    },
+    /// A long comma-separated list, wrapped under its own label.
+    Section { label: String, items: Vec<String> },
+    /// Vertical space between groups.
+    Gap,
+}
+
+impl StatusRow {
+    pub fn field(label: &str, value: impl Into<String>) -> Self {
+        Self::Field {
+            label: label.into(),
+            value: value.into(),
+            note: None,
+        }
+    }
+
+    pub fn field_with_note(label: &str, value: impl Into<String>, note: impl Into<String>) -> Self {
+        Self::Field {
+            label: label.into(),
+            value: value.into(),
+            note: Some(note.into()),
+        }
+    }
+}
+
+/// Width of the label column in the `/status` report. Values line up against
+/// it so the report scans as two columns rather than as a wall of text.
+const STATUS_LABEL_WIDTH: usize = 16;
+
+/// Lay the rows out with an aligned label column.
+pub fn status_report_lines(rows: &[StatusRow], width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            StatusRow::Gap => out.push(Line::from("")),
+            StatusRow::Heading(text) => out.push(Line::from(Span::styled(
+                text.to_uppercase(),
+                theme::metadata_style().add_modifier(Modifier::BOLD),
+            ))),
+            StatusRow::Field { label, value, note } => {
+                let pad = STATUS_LABEL_WIDTH
+                    .saturating_sub(label.chars().count())
+                    .max(1);
+                let mut spans = vec![
+                    Span::styled(label.clone(), theme::muted()),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(value.clone(), theme::text()),
+                ];
+                if let Some(note) = note {
+                    spans.push(Span::raw("   "));
+                    spans.push(Span::styled(note.clone(), theme::metadata_style()));
+                }
+                out.push(Line::from(spans));
+            }
+            StatusRow::Section { label, items } => {
+                out.push(Line::from(Span::styled(
+                    label.to_uppercase(),
+                    theme::metadata_style().add_modifier(Modifier::BOLD),
+                )));
+                // Wrap the list under a small indent rather than letting it run
+                // the full width — a comma list at full bleed reads as prose.
+                let indent = "  ";
+                let budget = width.saturating_sub(indent.len()).max(8);
+                let mut line = String::new();
+                for (i, item) in items.iter().enumerate() {
+                    let piece = if i + 1 == items.len() {
+                        item.clone()
+                    } else {
+                        format!("{item} · ")
+                    };
+                    if line.chars().count() + piece.chars().count() > budget && !line.is_empty() {
+                        out.push(Line::from(Span::styled(
+                            format!("{indent}{line}"),
+                            theme::text_secondary(),
+                        )));
+                        line = String::new();
+                    }
+                    line.push_str(&piece);
+                }
+                if !line.is_empty() {
+                    out.push(Line::from(Span::styled(
+                        format!("{indent}{line}"),
+                        theme::text_secondary(),
+                    )));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Group a count with thousands separators: `500000` reads as `500,000`.
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub enum Overlay {
     Help,
     StatusReport {
         title: String,
-        lines: Vec<String>,
+        rows: Vec<StatusRow>,
     },
     TurnLimit {
         turns: u32,
@@ -1696,18 +1816,20 @@ impl Widget for OverlayWidget<'_> {
                 )
                 .render(r, buf);
             }
-            Overlay::StatusReport { title, lines } => {
+            Overlay::StatusReport { title, rows } => {
                 let r = centered_capped_rect(area, 74, 30);
-                Paragraph::new(lines.join("\n"))
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::warn())
-                            .style(theme::panel())
-                            .title(Span::styled(format!(" {title} "), theme::warn())),
-                    )
-                    .render(r, buf);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .padding(Padding::horizontal(1))
+                    .title(Span::styled(
+                        format!(" {title} "),
+                        theme::heading().add_modifier(Modifier::BOLD),
+                    ));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                Paragraph::new(status_report_lines(rows, inner.width as usize)).render(inner, buf);
             }
             Overlay::TurnLimit { turns } => {
                 let r = centered_rect(52, 24, area);
@@ -2311,7 +2433,7 @@ mod tests {
     fn status_report_closes_on_enter() {
         let mut overlay = Overlay::StatusReport {
             title: "Status".into(),
-            lines: vec!["status=idle".into()],
+            rows: vec![StatusRow::field("Status", "idle")],
         };
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
@@ -3483,6 +3605,41 @@ mod tests {
     }
 
     #[test]
+    fn thousands_groups_digits() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1000), "1,000");
+        assert_eq!(thousands(500000), "500,000");
+        assert_eq!(thousands(1234567), "1,234,567");
+    }
+
+    /// Values line up in a column, so the report scans as two columns rather
+    /// than as `key=value` prose.
+    #[test]
+    fn status_values_align_in_a_column() {
+        let rows = vec![
+            StatusRow::Heading("Model".into()),
+            StatusRow::field("Model", "gpt-5.6-sol"),
+            StatusRow::field("Web search", "off"),
+        ];
+        let lines = status_report_lines(&rows, 70);
+        let col_of = |needle: &str| -> usize {
+            let line = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .find(|t| t.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle}"));
+            line.find(needle).unwrap()
+        };
+        assert_eq!(col_of("gpt-5.6-sol"), col_of("off"));
+    }
+
+    #[test]
     fn overlay_widget_renders_help_status_and_turn_limit() {
         let help = render_text(&Overlay::Help);
         assert!(help.contains("Forge is an AI coding agent"));
@@ -3490,11 +3647,12 @@ mod tests {
 
         let status = render_text(&Overlay::StatusReport {
             title: "Status".into(),
-            lines: vec!["one".into(), "two".into()],
+            rows: vec![StatusRow::field("One", "1"), StatusRow::field("Two", "2")],
         });
         assert!(status.contains("Status"));
-        assert!(status.contains("one"));
-        assert!(status.contains("two"));
+        assert!(status.contains("One"), "{status}");
+        assert!(status.contains("1"), "{status}");
+        assert!(status.contains("Two"), "{status}");
 
         let turn_limit = render_text(&Overlay::turn_limit(64));
         assert!(turn_limit.contains("Turn limit reached"));
