@@ -13,7 +13,11 @@
 //! Methods and chrome-related free functions are moved verbatim. Types such as
 //! `FooterLimits` and `ActivitySummaryModel` live in `types.rs`.
 
-use crate::widgets::session_chrome_lines;
+use crate::overlays::StatusRow;
+use crate::widgets::session_chrome_rows;
+
+/// Columns a `/status` value may occupy before it is elided.
+const STATUS_VALUE_WIDTH: usize = 52;
 
 use super::util::relative_display;
 use super::*;
@@ -443,41 +447,100 @@ impl TuiApp {
         })
     }
 
-    pub(super) fn status_report_lines(&self) -> Vec<String> {
+    pub(super) fn status_report_rows(&self) -> Vec<StatusRow> {
+        use crate::overlays::thousands;
+
         let m = self.refresh_status_model();
-        let mut lines = session_chrome_lines(&m);
+        let mut rows = session_chrome_rows(&m);
+
+        // Session identity, inserted under the heading `session_chrome_rows`
+        // opened, so the group reads as one block.
         let id = self.session_view.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
-        lines.push(format!("session_id={short}"));
-        lines.push(format!("journal={}", self.session.journal_dir().display()));
+        let journal = self.session.journal_dir().display().to_string();
+        let at = rows
+            .iter()
+            .position(|row| matches!(row, StatusRow::Gap))
+            .unwrap_or(rows.len());
+        rows.splice(
+            at..at,
+            [
+                StatusRow::field("Session", short.to_string()),
+                StatusRow::field(
+                    "Workspace",
+                    crate::path_display::elide_path(
+                        &crate::widgets::status::shorten_home_path(&self.runtime.cwd),
+                        STATUS_VALUE_WIDTH,
+                    ),
+                ),
+                StatusRow::field(
+                    "Journal",
+                    crate::path_display::elide_path(&journal, STATUS_VALUE_WIDTH),
+                ),
+            ],
+        );
+
         let usage = self.session.token_usage_report();
-        lines.push(format!(
-            "context_tokens={} / {}",
-            usage.context_tokens_est, usage.context_capacity
+        rows.push(StatusRow::Gap);
+        rows.push(StatusRow::Heading("Context".into()));
+        rows.push(StatusRow::field_with_note(
+            "Used",
+            format!(
+                "{} / {} tokens",
+                thousands(usage.context_tokens_est as u64),
+                thousands(usage.context_capacity as u64)
+            ),
+            format!("{:.1}%", m.ctx_pct * 100.0),
         ));
-        lines.push(format!("messages={}", usage.message_count));
-        lines.push(format!("tool_results={}", usage.tool_message_count));
+        rows.push(StatusRow::field(
+            "Messages",
+            format!(
+                "{} · {} tool results",
+                usage.message_count, usage.tool_message_count
+            ),
+        ));
+        rows.push(StatusRow::field(
+            "Prompt cache",
+            format!(
+                "{} hits · {} writes",
+                m.prompt_cache_hits, m.prompt_cache_writes
+            ),
+        ));
         if let Some((before, after)) = self.conversation_view.context_reset_snapshot {
-            lines.push(format!("fresh_context={before:.0}% → {after:.0}%"));
+            rows.push(StatusRow::field(
+                "Fresh context",
+                format!("{before:.0}% → {after:.0}%"),
+            ));
         }
-        let skills = self.session.loaded_skill_names();
-        if skills.is_empty() {
-            lines.push("skills=none".into());
-        } else {
-            lines.push(format!("skills={}", skills.join(", ")));
-        }
+
+        rows.push(StatusRow::Gap);
+        rows.push(StatusRow::Heading("Capabilities".into()));
         let mut tools = self.session.list_tools();
         tools.sort();
-        if tools.is_empty() {
-            lines.push("tools=none".into());
-        } else {
-            lines.push(format!("tools={}", tools.join(", ")));
-        }
-        lines.push(format!(
-            "session_allows={}",
-            self.remembered_approval_count()
+        // `tools` used to name both the count and the list, the same key
+        // meaning two different things on two lines. They are separate fields
+        // now, and the list is its own section.
+        rows.push(StatusRow::field("Tools", m.tools_visible.to_string()));
+        let skills = self.session.loaded_skill_names();
+        // No skills *list* section: the overlay is height-capped, and the count
+        // plus `/skills to browse` already gets you there.
+        rows.push(StatusRow::field_with_note(
+            "Skills",
+            skills.len().to_string(),
+            "/skills to browse",
         ));
-        lines
+        rows.push(StatusRow::field(
+            "Session allows",
+            self.remembered_approval_count().to_string(),
+        ));
+        if !tools.is_empty() {
+            rows.push(StatusRow::Gap);
+            rows.push(StatusRow::Section {
+                label: "Tools available".into(),
+                items: tools,
+            });
+        }
+        rows
     }
 }
 

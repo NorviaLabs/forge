@@ -732,12 +732,17 @@ async fn tui09_status_renders_structured_session_card() {
         .await
         .unwrap();
     assert!(app.notice_state.items.is_empty());
-    let lines = match app.overlay.as_ref() {
-        Some(Overlay::StatusReport { lines, .. }) => lines,
+    let rows = match app.overlay.as_ref() {
+        Some(Overlay::StatusReport { rows, .. }) => rows,
         other => panic!("expected status overlay, got {other:?}"),
     };
-    assert!(lines.iter().any(|line| line.contains("provider=")));
-    assert!(lines.iter().any(|line| line.contains("model=")));
+    let labelled = |want: &str| {
+        rows.iter().any(
+            |row| matches!(row, crate::overlays::StatusRow::Field { label, .. } if label == want),
+        )
+    };
+    assert!(labelled("Provider"), "{rows:?}");
+    assert!(labelled("Model"), "{rows:?}");
 
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -755,9 +760,15 @@ async fn tui09_status_renders_structured_session_card() {
         text.contains("Status"),
         "status overlay should render:\n{text}"
     );
+    // Human labels in an aligned column, grouped under headings — not
+    // snake_case keys glued to their values.
     assert!(
-        text.contains("provider="),
+        text.contains("Provider") && text.contains("MODEL"),
         "status overlay should include session fields:\n{text}"
+    );
+    assert!(
+        !text.contains("provider="),
+        "status must not read as a debug dump:\n{text}"
     );
 }
 

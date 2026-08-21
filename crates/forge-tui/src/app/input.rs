@@ -1486,7 +1486,7 @@ mod tests {
         focus_composer(&mut app);
         app.overlay = Some(Overlay::StatusReport {
             title: "Status".into(),
-            lines: vec!["all good".into()],
+            rows: vec![crate::overlays::StatusRow::field("Status", "all good")],
         });
 
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
@@ -1501,7 +1501,7 @@ mod tests {
         focus_composer(&mut app);
         app.overlay = Some(Overlay::StatusReport {
             title: "Status".into(),
-            lines: vec!["all good".into()],
+            rows: vec![crate::overlays::StatusRow::field("Status", "all good")],
         });
 
         // Typing over the report dismisses it and keeps the keystroke, so the

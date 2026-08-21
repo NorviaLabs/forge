@@ -59,7 +59,7 @@ pub use validation::{
     ValidationSnapshot, ValidationStatus, MAX_FAILED_DISPLAY,
 };
 pub use widgets::{
-    classify_operator_error, session_chrome_lines, BusyPhase, FeedbackModel, FeedbackSeverity,
+    classify_operator_error, session_chrome_rows, BusyPhase, FeedbackModel, FeedbackSeverity,
     FooterModel, InputModel, StatusModel, TurnLifecycle,
 };
 
