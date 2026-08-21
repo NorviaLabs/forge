@@ -908,6 +908,10 @@ pub struct ConversationLinesWidget<'a> {
     pub scroll: u16,
     pub follow: bool,
     pub bottom_padding: u16,
+    /// Hold the transcript against the composer once a conversation has
+    /// started, instead of letting a short one float at the top of the pane
+    /// with the live edge stranded mid-screen.
+    pub anchor_bottom: bool,
 }
 
 /// The three slices a transcript frame is painted from, in paint order:
@@ -924,6 +928,7 @@ pub(super) fn render_conversation_lines(
     scroll_from_bottom: u16,
     follow: bool,
     bottom_padding: u16,
+    anchor_bottom: bool,
     area: Rect,
     buf: &mut Buffer,
 ) {
@@ -960,6 +965,21 @@ pub(super) fn render_conversation_lines(
             }
         })
         .collect::<Vec<_>>();
+    // Short transcripts painted from the top left the newest line — the one
+    // being written — floating in the middle of the pane with a screen of
+    // nothing under it. Push them down so the live edge sits where the reader
+    // is already looking: just above the composer.
+    let area = if anchor_bottom && total < area.height as usize {
+        let offset = area.height.saturating_sub(total as u16);
+        Rect::new(
+            area.x,
+            area.y.saturating_add(offset),
+            area.width,
+            total as u16,
+        )
+    } else {
+        area
+    };
     render_visible_conversation_lines(&visible, area, buf);
 }
 
@@ -1026,6 +1046,7 @@ impl Widget for ConversationLinesWidget<'_> {
             self.scroll,
             self.follow,
             self.bottom_padding,
+            self.anchor_bottom,
             area,
             buf,
         );
@@ -1055,6 +1076,7 @@ impl Widget for ConversationWidget<'_> {
             self.model.scroll,
             self.model.follow,
             0,
+            false,
             area,
             buf,
         );
@@ -3804,6 +3826,44 @@ mod tests {
                 "cache diverged from a one-shot render at prefix length {end}"
             );
         }
+    }
+
+    /// A short conversation used to paint from the top of the pane, leaving the
+    /// newest line — the one being written — stranded mid-screen above a
+    /// screenful of nothing.
+    #[test]
+    fn a_short_conversation_hugs_the_composer() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let lines = vec![Line::from("only line")];
+        let area = Rect::new(0, 0, 20, 10);
+        let row_of = |anchor_bottom: bool| {
+            let mut buf = Buffer::empty(area);
+            render_conversation_lines(
+                TranscriptSlices {
+                    lines: &lines,
+                    tail_lines: &[],
+                    status_lines: &[],
+                },
+                0,
+                true,
+                0,
+                anchor_bottom,
+                area,
+                &mut buf,
+            );
+            (0..area.height).find(|y| {
+                (0..area.width).any(|x| buf[(x, *y)].symbol().trim() == "only")
+                    || (0..area.width).any(|x| buf[(x, *y)].symbol() != " ")
+            })
+        };
+        assert_eq!(row_of(false), Some(0), "top-anchored content moved");
+        assert_eq!(
+            row_of(true),
+            Some(area.height - 1),
+            "content did not sink to the bottom of the pane"
+        );
     }
 
     /// Blocks were separated by a leading blank *and* a trailing pair, so gaps

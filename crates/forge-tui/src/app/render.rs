@@ -217,6 +217,13 @@ impl TuiApp {
             &all_messages[self.conversation_view.message_start.min(all_messages.len())..];
         let visible_events =
             &all_events[self.conversation_view.event_start.min(all_events.len())..];
+        // Computed here, while the message slice is still borrowed: the home
+        // splash is a landing page and stays at the top, but once someone has
+        // actually said something the pane behaves like a conversation and
+        // hugs the composer.
+        let anchor_bottom = visible_messages
+            .iter()
+            .any(|message| message.role == forge_types::MessageRole::User);
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
         let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);
@@ -496,6 +503,7 @@ impl TuiApp {
                     lines: &cached_lines,
                     tail_lines: &live_lines,
                     status_lines: &status_lines,
+                    anchor_bottom,
                     scroll: self.conversation_view.scroll,
                     follow: self.conversation_view.follow,
                     bottom_padding,
