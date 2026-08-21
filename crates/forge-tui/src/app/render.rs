@@ -59,7 +59,14 @@ impl TuiApp {
             self.bottom_panel.focused = false;
             self.source_viewer.focused = false;
             frame.render_widget(
-                Paragraph::new("Terminal too small — resize to at least 40x18"),
+                Paragraph::new(format!(
+                    "Terminal too small.\n\nForge needs at least {}x{} — this one is {}x{}.",
+                    crate::layout::MIN_WIDTH,
+                    crate::layout::MIN_HEIGHT,
+                    area.width,
+                    area.height
+                ))
+                .wrap(ratatui::widgets::Wrap { trim: true }),
                 area,
             );
             return;

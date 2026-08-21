@@ -74,15 +74,20 @@ fn ctx_bar_style(pct: f64) -> Style {
     }
 }
 
-const CTX_BAR_CELLS: usize = 9;
-
-fn ctx_bar(pct: f64) -> String {
-    let filled = ((pct.clamp(0.0, 1.0) * CTX_BAR_CELLS as f64).round() as usize).min(CTX_BAR_CELLS);
-    format!(
-        "{}{}",
-        "▓".repeat(filled),
-        "░".repeat(CTX_BAR_CELLS - filled)
-    )
+/// Context pressure, as a word.
+///
+/// This was a nine-cell `▓░` bar. At the percentages that dominate a session —
+/// single digits — every cell was `░`, and a row of 25%-density shade blocks
+/// reads as stipple texture rather than as a meter. The colour already carries
+/// the warning; a label says what the colour means, in the space the bar took.
+fn ctx_label(pct: f64) -> &'static str {
+    if pct >= 0.9 {
+        "context full"
+    } else if pct >= 0.7 {
+        "context high"
+    } else {
+        "context"
+    }
 }
 
 fn lifecycle_dot(life: TurnLifecycle) -> (&'static str, Style) {
@@ -233,7 +238,7 @@ impl Widget for FooterBar<'_> {
         let model_max = left_budget
             .saturating_sub(config_chrome as u16 + effort_chars)
             .min(left_budget);
-        let llm_label = truncate_middle(&m.llm_label, model_max as usize);
+        let llm_label = fit_model_label(&m.llm_label, model_max as usize);
 
         let mut left: Vec<Span<'static>> = Vec::new();
         let dot_style = if dim {
@@ -328,7 +333,7 @@ impl FooterBar<'_> {
             Span::raw("  "),
             Span::styled("·", theme::dim()),
             Span::raw("  "),
-            Span::styled(ctx_bar(m.ctx_pct), ctx_bar_style(m.ctx_pct)),
+            Span::styled(ctx_label(m.ctx_pct), theme::dim()),
             Span::raw(" "),
             Span::styled(
                 format!("{:.0}%", m.ctx_pct * 100.0),
@@ -358,7 +363,7 @@ impl FooterBar<'_> {
 
 /// Last footer segment: session total + cache hit rate.
 ///
-/// `0 tokens · —` until any prompt tokens are reported (including "the model ran
+/// `0 tokens` until any prompt tokens are reported (including "the model ran
 /// but the provider sent no usage"). After that: `12.4k tokens · 81% cache`.
 pub(crate) fn format_footer_usage_slot(
     prompt_tokens: u64,
@@ -366,14 +371,18 @@ pub(crate) fn format_footer_usage_slot(
     cache_reads: u64,
     labeled: bool,
 ) -> String {
-    // `labeled` spells out the unit: a bare "0 · —" (and even a populated
+    // `labeled` spells out the unit: a bare "0" (and even a populated
     // "125k · 35% cache") tells a first-time reader nothing about what is being
     // counted, and the idle state — the very first thing they see — carried no
     // clue at all. The caller drops the label only when the row is too narrow
     // to afford it (see `MIN_MODEL_CHARS`).
     let unit = if labeled { " tokens" } else { "" };
     if prompt_tokens == 0 {
-        return format!("0{unit} · —");
+        // No cache rate exists yet, so no slot for one. It used to print an em
+        // dash — a separator and a placeholder standing in for a value that has
+        // no label, which reads as something failing rather than as nothing
+        // having happened yet.
+        return format!("0{unit}");
     }
     let total = prompt_tokens.saturating_add(completion_tokens);
     let rate = ((cache_reads as f64 / prompt_tokens as f64) * 100.0)
@@ -402,6 +411,25 @@ fn compact_scaled(n: u64, scale: u64, suffix: &str) -> String {
     } else {
         format!("{}.{}{suffix}", tenths / 10, tenths % 10)
     }
+}
+
+/// Fit `Vendor/model` into `max` columns, sacrificing the vendor first.
+///
+/// Middle-truncating the whole label kept the vendor's first letters and the
+/// model's last ones — `OpenAI/gpt-5.6-sol` became `Open…-sol`, which names
+/// neither. The vendor is the recoverable half (it is in `/status`, and rarely
+/// changes mid-session); the model name is what the footer is for.
+fn fit_model_label(label: &str, max: usize) -> String {
+    if label.chars().count() <= max {
+        return label.to_string();
+    }
+    if let Some((_, model)) = label.split_once('/') {
+        if model.chars().count() <= max {
+            return model.to_string();
+        }
+        return truncate_middle(model, max);
+    }
+    truncate_middle(label, max)
 }
 
 /// Middle-truncate `text` to at most `max` chars, keeping both ends (the
@@ -529,7 +557,7 @@ mod tests {
         let out = rendered(&m, 90);
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
-        assert!(out.contains("0 tokens · —"), "{out:?}");
+        assert!(out.contains("0 tokens"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
     }
 
@@ -606,6 +634,38 @@ mod tests {
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
     }
 
+    /// `Open…-sol` named neither the vendor nor the model. The vendor goes
+    /// first, whole, so the model name survives intact.
+    #[test]
+    fn a_tight_footer_drops_the_vendor_not_the_model_name() {
+        assert_eq!(
+            fit_model_label("OpenAI/gpt-5.6-sol", 40),
+            "OpenAI/gpt-5.6-sol"
+        );
+        assert_eq!(fit_model_label("OpenAI/gpt-5.6-sol", 14), "gpt-5.6-sol");
+        // Only when even the bare model will not fit does it get elided.
+        let tiny = fit_model_label("OpenAI/gpt-5.6-sol", 8);
+        assert!(tiny.chars().count() <= 8, "{tiny}");
+        assert!(!tiny.starts_with("Open"), "vendor should be gone: {tiny}");
+    }
+
+    /// No cache rate exists before the first turn, so no slot for one.
+    #[test]
+    fn the_idle_usage_slot_has_no_placeholder() {
+        let out = format_footer_usage_slot(0, 0, 0, true);
+        assert_eq!(out, "0 tokens");
+        assert!(!out.contains('—'), "{out}");
+    }
+
+    /// The bar was nine shade cells that read as stipple at the percentages a
+    /// session actually spends its time at.
+    #[test]
+    fn context_pressure_reads_as_a_word() {
+        assert_eq!(ctx_label(0.01), "context");
+        assert_eq!(ctx_label(0.75), "context high");
+        assert_eq!(ctx_label(0.95), "context full");
+    }
+
     #[test]
     fn long_model_truncates_but_keeps_the_effort_control() {
         // The read-only model label is the side that shrinks under pressure;
@@ -615,10 +675,13 @@ mod tests {
         let out = rendered(&m, 76);
         assert!(out.contains("Medium"), "{out:?}");
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
+        // The vendor goes first and goes whole, so the model name stays
+        // readable instead of becoming `Open…free`.
         assert!(
-            out.contains('…'),
-            "long model should middle-truncate: {out:?}"
+            out.contains("deepseek-v4-flash-free"),
+            "model name should survive: {out:?}"
         );
+        assert!(!out.contains("OpenCode/"), "{out:?}");
     }
 
     #[test]
@@ -641,24 +704,26 @@ mod tests {
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
-        assert!(out.contains("0 tokens · —"), "{out:?}");
+        assert!(out.contains("0 tokens"), "{out:?}");
     }
 
     #[test]
     fn usage_slot_names_its_unit_when_the_row_can_afford_it() {
-        // "0 · —" told a first-time reader nothing about what was being
+        // "0" told a first-time reader nothing about what was being
         // counted, and the idle state is the first thing they see.
         let m = model(TurnLifecycle::Ready, 0.1);
-        assert!(rendered(&m, 120).contains("0 tokens · —"));
+        assert!(rendered(&m, 120).contains("0 tokens"));
     }
 
     #[test]
     fn a_cramped_row_drops_the_unit_label_before_the_effort_chip() {
         // The effort chip stays fully visible; the `tokens` unit drops first.
+        // Narrower than it used to be: retiring the nine-cell context bar and
+        // the idle `· —` gave the row back eleven columns.
         let m = model(TurnLifecycle::Working, 0.34);
-        let out = rendered(&m, 60);
+        let out = rendered(&m, 48);
         assert!(out.contains("Medium"), "{out:?}");
-        assert!(out.contains("0 · —"), "{out:?}");
+        assert!(out.contains("0"), "{out:?}");
         assert!(!out.contains("0 tokens"), "{out:?}");
     }
 
@@ -686,13 +751,13 @@ mod tests {
         let out = rendered(&m, 76);
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("100%"), "{out:?}");
-        assert!(out.contains("0 tokens · —"), "{out:?}");
+        assert!(out.contains("0 tokens"), "{out:?}");
     }
 
     #[test]
     fn format_footer_usage_slot_stays_blank_until_prompt_tokens() {
-        assert_eq!(format_footer_usage_slot(0, 0, 0, true), "0 tokens · —");
-        assert_eq!(format_footer_usage_slot(0, 500, 0, true), "0 tokens · —");
+        assert_eq!(format_footer_usage_slot(0, 0, 0, true), "0 tokens");
+        assert_eq!(format_footer_usage_slot(0, 500, 0, true), "0 tokens");
         assert_eq!(
             format_footer_usage_slot(100, 0, 0, true),
             "100 tokens · 0% cache"

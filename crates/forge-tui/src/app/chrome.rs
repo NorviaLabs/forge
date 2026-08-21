@@ -219,10 +219,16 @@ impl TuiApp {
         if self.session_view.lifecycle != forge_types::TaskLifecycle::Completed {
             return None;
         }
+        // Events are session-cumulative — only a resume clears them — so an
+        // unbounded reverse scan surfaced a crumb from an arbitrarily old turn
+        // and kept it on the footer for the rest of the session. The checks
+        // event is pushed after that turn's `assistant` answer, so hitting an
+        // `assistant` first means the next match belongs to an earlier turn.
         let event = transcript
             .events()
             .iter()
             .rev()
+            .take_while(|event| event.kind != "assistant")
             .find(|event| event.kind == "turn_incomplete_checks")?;
         let names = event.detail.trim();
         if names.is_empty() {
