@@ -673,8 +673,9 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
             .path()
             .join("empty-creds.toml"),
     );
-    // Width 60: no sidebar per layout MIN_WIDTH 80
-    let backend = TestBackend::new(60, 24);
+    // The narrowest frame Forge actually lays out: below `MIN_WIDTH` the
+    // splitter produces empty regions, so `is_too_small` takes over.
+    let backend = TestBackend::new(80, 24);
     let mut term = Terminal::new(backend).unwrap();
     term.draw(|f| app.draw(f)).unwrap();
     let mut text = String::new();
@@ -693,12 +694,11 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
         text.contains("N/A") || text.contains("Medium"),
         "effort chip should render in the footer:\n{text}"
     );
-    // The usage slot takes more of the row than the old flag, so the model
-    // id middle-truncates harder at this width. Assert the ellipsis and
-    // the tail survive. Header chrome must never duplicate
-    // model/vendor/ctx.
+    // The vendor prefix is dropped whole before the model name is touched,
+    // so the name itself survives at this width. Header chrome must never
+    // duplicate model/vendor/ctx.
     assert!(
-        text.contains('…') && text.contains("el"),
+        text.contains("model"),
         "model id should render in the footer:\n{text}"
     );
     assert!(

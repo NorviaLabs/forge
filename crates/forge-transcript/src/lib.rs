@@ -82,6 +82,11 @@ pub enum ChatItem {
     Home {
         workspace: String,
         skills_loaded: usize,
+        /// Model label, provider label and whether the provider is live. The
+        /// first screen used to name none of them.
+        model: String,
+        provider: String,
+        connected: bool,
     },
     ActivitySummary {
         label: String,
@@ -224,6 +229,7 @@ pub enum ConversationBlock {
     CodeBlock(CodeBlockPresentation),
     DiffBlock(DiffBlockPresentation),
     ApprovalPending(ApprovalPendingPresentation),
+    Home(HomePresentation),
     QuestionPending(QuestionPendingPresentation),
     PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
@@ -343,6 +349,16 @@ pub struct ApprovalRequestView {
     /// Why this call was gated, in the operator's words. Shown under the
     /// question so the prompt does not read as arbitrary.
     pub reason: Option<String>,
+}
+
+/// The first screen: who you are talking to, where, and a way in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomePresentation {
+    pub workspace: String,
+    pub skills_loaded: usize,
+    pub model: String,
+    pub provider: String,
+    pub connected: bool,
 }
 
 /// One selectable row on the inline approval menu.
@@ -674,7 +690,14 @@ impl ConversationModel {
         self
     }
 
-    pub fn with_home(mut self, workspace: String, skills_loaded: usize) -> Self {
+    pub fn with_home(
+        mut self,
+        workspace: String,
+        skills_loaded: usize,
+        model: String,
+        provider: String,
+        connected: bool,
+    ) -> Self {
         if !self
             .items
             .iter()
@@ -691,6 +714,9 @@ impl ConversationModel {
                 ChatItem::Home {
                     workspace,
                     skills_loaded,
+                    model,
+                    provider,
+                    connected,
                 },
             );
         }
@@ -954,13 +980,22 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             count_label: "1 item".into(),
                             outcome: match state {
                                 ToolCardState::Running => ActivityOutcome::Neutral,
-                                ToolCardState::Done => ActivityOutcome::Success,
+                                // `Done` means the tool finished, not that it
+                                // succeeded: a command that exits non-zero
+                                // completes normally. Reading `Done` as success
+                                // drew a green check over `curl: (56) CONNECT
+                                // tunnel failed`.
+                                ToolCardState::Done => ActivityOutcome::from(outcome),
                                 ToolCardState::Blocked => ActivityOutcome::Blocked,
                                 ToolCardState::Error => ActivityOutcome::from(outcome),
                             },
                             expanded: tool_expanded,
                             subcommands: subcommand_line(subcommand.as_deref(), summary),
-                            items: vec![format!("{name}: {summary}\n{detail}")],
+                            // Just the detail. The collapsed row already shows
+                            // the tool name, and `subcommands` already shows
+                            // the summary, so repeating `name: summary` here
+                            // printed the same line twice under itself.
+                            items: vec![detail.clone()],
                         },
                     ));
                 }
@@ -979,7 +1014,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     ToolCardState::Done if matches!(category, ActivityCategory::Exploring) => {
                         ActivityOutcome::Neutral
                     }
-                    ToolCardState::Done => ActivityOutcome::Success,
+                    ToolCardState::Done => ActivityOutcome::from(outcome),
                     ToolCardState::Blocked => ActivityOutcome::Blocked,
                     ToolCardState::Error => ActivityOutcome::from(outcome),
                 };
@@ -1049,11 +1084,18 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
             ChatItem::Home {
                 workspace,
                 skills_loaded,
+                model,
+                provider,
+                connected,
             } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
-                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
-                    text: format!("{workspace} · {skills_loaded} skills"),
+                blocks.push(ConversationBlock::Home(HomePresentation {
+                    workspace: workspace.clone(),
+                    skills_loaded: *skills_loaded,
+                    model: model.clone(),
+                    provider: provider.clone(),
+                    connected: *connected,
                 }));
             }
             ChatItem::ContextHandoff { goal, .. } => {
