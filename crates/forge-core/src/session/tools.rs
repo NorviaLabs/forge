@@ -101,6 +101,41 @@ async fn hash_workspace_path(tool_ctx: &ToolContext, relative: &str) -> Option<u
     hash_file(&tool_ctx.workspace_root.join(relative)).await
 }
 
+/// What the sandbox itself said, separated from the explanation of the
+/// category it belongs to.
+///
+/// A denial's `content` is the command's own output with `reason` appended
+/// when it was not already in there (`egress::sandbox_denial`). The appended
+/// copy is what the approval card already shows, so leaving it in would print
+/// the same paragraph twice. What is left is the evidence for *this* command:
+/// `Operation not permitted`, `curl: (6) Could not resolve host`.
+///
+/// Returns `None` when nothing survives the split — a denial raised before the
+/// command produced any output at all, where the category really is all we
+/// know.
+fn observed_failure(content: &str, reason: &str) -> Option<String> {
+    const MAX_LINES: usize = 3;
+    let observed: Vec<&str> = content
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty() && !reason.contains(line))
+        // The exit-status footer is the runner's own annotation, not anything
+        // the sandbox said, and "exited with code 1" adds nothing next to the
+        // error that caused it.
+        .filter(|line| !(line.starts_with("[process exited with code") && line.ends_with(']')))
+        .collect();
+    if observed.is_empty() {
+        return None;
+    }
+    Some(
+        observed
+            .into_iter()
+            .take(MAX_LINES)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 async fn run_git_readonly(tool_ctx: &ToolContext, args: &[&str]) -> Option<String> {
     let output = tokio::process::Command::new("git")
         .args(args)
@@ -207,9 +242,9 @@ impl AgentSession {
     ) -> Result<ModelResponseApplication, LoopError> {
         let mut pending = completed.remaining;
         if let Err(ToolError::SandboxDenied {
+            content,
             reason,
             denied_host,
-            ..
         }) = &completed.execution.result
         {
             let call = completed.execution.call.clone();
@@ -218,8 +253,9 @@ impl AgentSession {
             let denied_host = denied_host
                 .clone()
                 .or_else(|| self.take_denied_egress_host());
+            let failure = observed_failure(content, reason);
             return self
-                .enter_sandbox_hitl(call, reason.clone(), denied_host)
+                .enter_sandbox_hitl(call, reason.clone(), failure, denied_host)
                 .await
                 .map(ModelResponseApplication::Finished);
         }
@@ -512,6 +548,10 @@ impl AgentSession {
                         tool: call.name.clone(),
                         args_redacted: redacted,
                         reason: "policy requires human approval".into(),
+                        // Gated before the call ran, so there is no refusal to
+                        // quote — this is the one prompt where the category
+                        // really is everything we know.
+                        failure: None,
                         sandbox_escalation: false,
                         denied_host: None,
                     };
@@ -817,6 +857,7 @@ impl AgentSession {
         &mut self,
         call: ToolCall,
         reason: String,
+        failure: Option<String>,
         denied_host: Option<String>,
     ) -> Result<ApplyOutcome, LoopError> {
         let payload = HitlPayload {
@@ -824,6 +865,7 @@ impl AgentSession {
             tool: call.name.clone(),
             args_redacted: self.governance.redact_args(&call.arguments),
             reason,
+            failure,
             sandbox_escalation: denied_host.is_none(),
             denied_host: denied_host.clone(),
         };
@@ -862,5 +904,65 @@ impl AgentSession {
             usage: None,
             thinking: None,
         }))
+    }
+}
+
+#[cfg(test)]
+mod observed_failure_tests {
+    use super::observed_failure;
+
+    /// `egress::sandbox_denial` appends the category explanation onto the
+    /// command's own output. Echoing it back into the card would print the
+    /// same paragraph twice, once as evidence and once as explanation.
+    #[test]
+    fn the_appended_reason_is_not_repeated_as_evidence() {
+        let reason = "blocked by the sandbox: writes are confined to the workspace";
+        let content = format!("touch: /tmp/x: Operation not permitted\n{reason}");
+
+        assert_eq!(
+            observed_failure(&content, reason).as_deref(),
+            Some("touch: /tmp/x: Operation not permitted")
+        );
+    }
+
+    /// A denial raised before the command produced anything leaves no
+    /// evidence, and the card must fall back to the category rather than
+    /// print an empty quote.
+    #[test]
+    fn a_denial_with_no_output_of_its_own_reports_nothing() {
+        let reason = "blocked by the sandbox: network access is denied";
+
+        assert_eq!(observed_failure(reason, reason), None);
+        assert_eq!(observed_failure("   \n\n", reason), None);
+    }
+
+    /// The runner appends its own exit-status footer to the captured output.
+    /// It is not something the sandbox said, and it displaced a line of the
+    /// actual error inside the card's cap.
+    #[test]
+    fn the_exit_status_footer_is_not_evidence() {
+        let reason = "blocked by the sandbox: writes are confined to the workspace";
+        let content = "touch: /etc/x: Operation not permitted\n[process exited with code 1]";
+
+        assert_eq!(
+            observed_failure(content, reason).as_deref(),
+            Some("touch: /etc/x: Operation not permitted")
+        );
+    }
+
+    /// The card is a fixed-height surface in a pane that may be twenty rows
+    /// tall. A command that failed forty times over gets its first few lines.
+    #[test]
+    fn long_output_is_capped() {
+        let reason = "blocked by the sandbox: writes are confined to the workspace";
+        let content = (1..=10)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let observed = observed_failure(&content, reason).expect("output to quote");
+
+        assert_eq!(observed.lines().count(), 3);
+        assert!(observed.starts_with("line 1"));
     }
 }

@@ -1130,6 +1130,15 @@ const APPROVAL_COMPACT_WIDTH: usize = 40;
 /// elided down to noise, so it is dropped instead.
 const APPROVAL_MIN_HELP_COLUMNS: usize = 14;
 
+/// Rows the category explanation may spend when it is the only thing saying
+/// why the prompt appeared.
+const APPROVAL_REASON_LINES: usize = 3;
+
+/// Rows it may spend once the sandbox's own words are above it. The
+/// explanation is then a footnote to evidence the operator can already read,
+/// and the five-line version was taller than the command it was about.
+const APPROVAL_REASON_LINES_WITH_FAILURE: usize = 1;
+
 /// First sentence of a help string, which is the part that says what happens.
 ///
 /// The rest is qualification — where a rule would be written, the pattern it
@@ -1289,22 +1298,64 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     for wrapped in wrap(question, inner) {
         row(vec![Span::styled(wrapped, theme::text())]);
     }
+    // What the sandbox actually said about this command. The category
+    // explanation below reads identically for every command in that category,
+    // so the evidence for this one leads.
+    if let Some(failure) = p.failure.as_deref().filter(|f| !f.is_empty()) {
+        for (n, failure_line) in failure.lines().enumerate() {
+            let lead = if n == 0 {
+                "The sandbox refused it: "
+            } else {
+                ""
+            };
+            // The lead shares the row, so it has to come out of the width the
+            // text is wrapped to — the reason row below used to leave it out,
+            // which pushed the first line past the border and clipped it.
+            for (m, wrapped) in wrap(failure_line, inner.saturating_sub(lead.len()))
+                .into_iter()
+                .enumerate()
+            {
+                row(vec![
+                    Span::styled(
+                        if m == 0 { lead } else { "" }.to_string(),
+                        theme::metadata_style(),
+                    ),
+                    Span::styled(wrapped, theme::warn()),
+                ]);
+            }
+        }
+    }
     // Why this call was gated. Without it the prompt reads as arbitrary: the
-    // reason was already on the payload and simply never shown.
+    // reason was already on the payload and simply never shown. Capped, and
+    // dropped entirely once the failure above has said the same thing more
+    // specifically — five lines of policy is not worth the height.
+    let reason_lines = if p.failure.is_some() {
+        APPROVAL_REASON_LINES_WITH_FAILURE
+    } else {
+        APPROVAL_REASON_LINES
+    };
     if let Some(reason) = p
         .reason
         .as_deref()
         .filter(|r| !r.is_empty())
         .filter(|_| !compact)
     {
-        for (n, wrapped) in wrap(reason, inner.saturating_sub(2))
-            .into_iter()
-            .enumerate()
-        {
-            let lead = if n == 0 { "Asked because " } else { "" };
+        const LEAD: &str = "Asked because ";
+        let wrapped = wrap(reason, inner.saturating_sub(LEAD.len()));
+        let elided = wrapped.len() > reason_lines;
+        for (n, text) in wrapped.into_iter().take(reason_lines).enumerate() {
+            let lead = if n == 0 { LEAD } else { "" };
+            let last = n + 1 == reason_lines;
             row(vec![
                 Span::styled(lead.to_string(), theme::metadata_style()),
-                Span::styled(wrapped, theme::muted()),
+                Span::styled(
+                    if elided && last {
+                        format!("{text}…")
+                    } else {
+                        text
+                    },
+                    theme::muted(),
+                ),
             ]);
         }
     }
@@ -2982,6 +3033,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: None,
+            failure: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -3003,6 +3055,92 @@ mod tests {
         }
     }
 
+    /// The lead shares the row with the text it introduces, so it has to come
+    /// out of the wrap width. It did not, and the reason's first line ran past
+    /// the border and was clipped mid-word — "confined to the wo".
+    #[test]
+    fn a_reason_line_wraps_around_its_lead_instead_of_clipping() {
+        // Long enough that a line wrapped without allowing for the lead runs
+        // past the border, short enough to stay inside the line cap so every
+        // word must survive somewhere.
+        let reason = "writes are confined to the workspace root and the git \
+                      directory is read-only inside it";
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "rm -rf /tmp/cache".into(),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            reason: Some(reason.into()),
+            failure: None,
+            options: Vec::new(),
+            selected: 0,
+            focused: true,
+        };
+
+        let lines = render_approval_card(&p, 72);
+        let rendered: Vec<String> = lines.iter().map(line_text).collect();
+
+        // Every word of the reason has to survive somewhere on the card. A row
+        // clipped at the border drops the tail of the reason silently, which
+        // is exactly what this catches — the card still looks well-formed.
+        let printed = rendered.join(" ");
+        let missing: Vec<&str> = reason
+            .split_whitespace()
+            .filter(|word| !printed.contains(*word))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "the reason was clipped at the border, losing {missing:?}: {rendered:#?}"
+        );
+    }
+
+    /// The category explanation reads identically for every command in that
+    /// category. When the sandbox's own words are available they lead, and the
+    /// explanation shrinks to a footnote rather than five rows of policy.
+    #[test]
+    fn the_real_refusal_leads_and_the_category_is_demoted() {
+        let reason = "blocked by the sandbox: writes are confined to the workspace, \
+                      and .git/.forge are read-only inside it. Paths outside the \
+                      workspace do not exist inside the sandbox, so they report as \
+                      missing rather than forbidden.";
+        let mut p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "rm -rf /tmp/cache".into(),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            reason: Some(reason.into()),
+            failure: None,
+            options: Vec::new(),
+            selected: 0,
+            focused: true,
+        };
+
+        let without = render_approval_card(&p, 72).len();
+        p.failure = Some("rm: /tmp/cache: Operation not permitted".into());
+        let with = render_approval_card(&p, 72);
+        let text: Vec<String> = with.iter().map(line_text).collect();
+
+        assert!(
+            text.iter()
+                .any(|row| row.contains("Operation not permitted")),
+            "the sandbox's own words are missing: {text:#?}"
+        );
+        assert!(
+            text.iter()
+                .any(|row| row.contains("The sandbox refused it")),
+            "the evidence is not introduced: {text:#?}"
+        );
+        assert!(
+            with.len() < without,
+            "the card grew instead of trading policy for evidence: {} -> {}",
+            without,
+            with.len()
+        );
+    }
+
     fn approval_with_help(width: usize) -> Vec<Line<'static>> {
         let p = ApprovalPendingPresentation {
             tool: "bash".into(),
@@ -3011,6 +3149,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: Some("your permissions.toml denies bash(*)".into()),
+            failure: None,
             options: vec![
                 ApprovalMenuRow {
                     label: "Run once".into(),
@@ -3098,6 +3237,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: None,
+            failure: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -3132,6 +3272,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: None,
+            failure: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -3165,6 +3306,7 @@ mod tests {
                 env_delta: "inherited".into(),
                 question: None,
                 reason: None,
+                failure: None,
             },
             vec![
                 ApprovalMenuRow {
@@ -3239,6 +3381,7 @@ mod tests {
                 env_delta: "inherited".into(),
                 question: None,
                 reason: None,
+                failure: None,
             },
             vec![ApprovalMenuRow {
                 label: "Run once".into(),

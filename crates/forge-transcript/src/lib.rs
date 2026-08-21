@@ -375,6 +375,10 @@ pub struct ApprovalRequestView {
     /// Why this call was gated, in the operator's words. Shown under the
     /// question so the prompt does not read as arbitrary.
     pub reason: Option<String>,
+    /// What the sandbox actually reported for *this* command. `reason`
+    /// explains the category and reads the same for every command in it;
+    /// this is the evidence, and it leads the card when present.
+    pub failure: Option<String>,
 }
 
 /// The first screen: who you are talking to, where, and a way in.
@@ -410,6 +414,8 @@ pub struct ApprovalPendingPresentation {
     pub question: Option<String>,
     /// Why this call was gated. See [`ApprovalRequestView::reason`].
     pub reason: Option<String>,
+    /// See [`ApprovalRequestView::failure`].
+    pub failure: Option<String>,
     pub options: Vec<ApprovalMenuRow>,
     pub selected: usize,
     /// Whether the approval card itself holds focus (accent border vs muted).
@@ -821,6 +827,7 @@ impl ConversationModel {
                 env_delta: request.env_delta,
                 question: request.question,
                 reason: request.reason,
+                failure: request.failure,
                 options,
                 selected,
                 focused,
