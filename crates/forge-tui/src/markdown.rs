@@ -304,7 +304,13 @@ impl MdRenderer {
                         self.push_span(t.into_string());
                     }
                 }
-                Event::SoftBreak => {}
+                // A soft break is a word boundary in the source, so it has to
+                // leave one behind. Dropping it was harmless while wrapping
+                // spaced every token unconditionally; now that adjacent spans
+                // with no whitespace between them are deliberately glued (so
+                // `foo`. keeps its full stop), a dropped break reads as glue
+                // and renders "gate.Shell".
+                Event::SoftBreak => self.push_span(" ".into()),
                 Event::HardBreak => self.flush_para(),
                 Event::Rule => {
                     self.flush_para();
@@ -1133,6 +1139,27 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .count();
         let cont_col = cont.chars().take_while(|c| *c == ' ').count();
         assert_eq!(cont_col, text_col, "{rendered}");
+    }
+
+    /// A newline inside a paragraph is a word boundary, not glue. Models wrap
+    /// prose at arbitrary columns, so this is the common case, and losing the
+    /// space renders "gate.Shell" mid-sentence.
+    #[test]
+    fn a_soft_break_keeps_the_words_apart() {
+        let rendered = render_markdown(
+            "The shell execution was blocked by the approval gate.\nShell execution was denied.",
+            120,
+        );
+        let out = text(&rendered);
+        assert!(out.contains("gate. Shell"), "{out:?}");
+    }
+
+    /// The same tokenizer must still glue punctuation onto inline code, which
+    /// is the behaviour the soft-break fix has to not regress.
+    #[test]
+    fn inline_code_still_keeps_its_trailing_punctuation() {
+        let out = text(&render_markdown("Raises `ZeroDivisionError`.", 80));
+        assert!(out.contains("ZeroDivisionError."), "{out:?}");
     }
 
     #[test]
