@@ -314,8 +314,16 @@ async fn holding_arrows_in_a_large_tree_stays_on_a_frame_budget() {
         draw_app(&mut app, 120, 40);
     }
     let frame_ms = started.elapsed().as_secs_f64() * 1000.0;
+    // Sized for the slowest machine that runs it, not the fastest. This gates
+    // releases (`release.yml` verifies on a 4-vCPU runner, well below CI's),
+    // and at 500ms it had no headroom there: ~520-540ms on a tree that costs
+    // ~83ms here, so it blocked the beta.6 cut twice over 3% of honest growth.
+    //
+    // What this test is for is a blowup — a redraw that starts rescanning the
+    // whole tree, an accidental O(n^2) — which costs multiples, not percent.
+    // 1500ms still catches that while leaving the slow runner ~3x of room.
     assert!(
-        frame_ms < 500.0,
+        frame_ms < 1500.0,
         "30 down+draw steps in a 600-file tree took {frame_ms:.1}ms"
     );
 }
