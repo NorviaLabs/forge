@@ -1725,7 +1725,7 @@ pub fn render_theme_dock(
         .border_style(theme::border())
         .style(theme::panel())
         .title(Span::styled(
-            " Theme · ↑↓ preview · Enter confirm · Esc cancel ",
+            format!(" Theme · {} ", crate::hints::hint_text(crate::hints::THEME)),
             theme::brand(),
         ));
     let inner = block.inner(area);
@@ -2161,18 +2161,10 @@ impl Widget for OverlayWidget<'_> {
                 Paragraph::new(active_line)
                     .style(theme::text())
                     .render(regions[2], buf);
-                let key_style = theme::panel_alt()
-                    .fg(theme::text_primary_color())
-                    .add_modifier(Modifier::BOLD);
-                let label_style = theme::dim();
-                Paragraph::new(Line::from(vec![
-                    Span::styled(" ↑↓ ", key_style),
-                    Span::styled(" Select   ", label_style),
-                    Span::styled(" Enter ", key_style),
-                    Span::styled(" Confirm   ", label_style),
-                    Span::styled(" Esc ", key_style),
-                    Span::styled(" Close", label_style),
-                ]))
+                Paragraph::new(Line::from(crate::hints::hint_spans(
+                    crate::hints::MOVE_SELECT_CLOSE,
+                    regions[3].width as usize,
+                )))
                 .render(regions[3], buf);
             }
             Overlay::ConnectApiKey {
@@ -2268,7 +2260,10 @@ impl Widget for OverlayWidget<'_> {
                             .border_style(theme::border())
                             .style(theme::panel())
                             .title(Span::styled(
-                                " Resume a session · ↑↓ Enter · Esc cancel ",
+                                format!(
+                                    " Resume a session · {} ",
+                                    crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
+                                ),
                                 theme::brand(),
                             )),
                     )
@@ -2317,7 +2312,10 @@ impl Widget for OverlayWidget<'_> {
                     .border_style(theme::border())
                     .style(theme::panel())
                     .title(Span::styled(
-                        " File explorer · readonly · ↑↓ Enter · ←/Backspace up · Esc close ",
+                        format!(
+                            " File explorer · readonly · {} ",
+                            crate::hints::hint_text(crate::hints::BROWSE)
+                        ),
                         theme::brand(),
                     ));
                 let inner = block.inner(r);
@@ -2361,8 +2359,9 @@ impl Widget for OverlayWidget<'_> {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                let hint = crate::hints::hint_text(crate::hints::SCROLL_BACK_CLOSE);
                 let title = format!(
-                    " {} · readonly · {}/{} · ↑↓ scroll · ←/Backspace back · Esc close ",
+                    " {} · readonly · {}/{} · {hint} ",
                     path,
                     (*scroll + 1).min(lines.len().max(1)),
                     lines.len().max(1)
@@ -3530,7 +3529,7 @@ mod tests {
         let overlay = Overlay::theme_open(forge_config::THEME_SOLARIZED_DARK);
         let text = render_text(&overlay);
         assert!(
-            text.contains("Theme · ↑↓ preview · Enter confirm · Esc cancel"),
+            text.contains("Theme · ↑↓ preview · Enter apply · Esc cancel"),
             "expected live-preview dock chrome:\n{text}"
         );
         assert!(
@@ -3798,7 +3797,8 @@ mod tests {
         assert!(text.contains("/workspace/README.md"));
         assert!(text.contains("readonly"));
         assert!(text.contains("line 2"));
-        assert!(text.contains("←/Backspace back"));
+        // One hint grammar across every surface — see `hints`.
+        assert!(text.contains("← back"), "{text}");
     }
 
     #[test]
