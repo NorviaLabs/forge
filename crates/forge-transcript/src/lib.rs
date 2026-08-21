@@ -264,6 +264,11 @@ pub struct TurnSummaryPresentation {
 pub struct ThinkingPresentation {
     pub text: String,
     pub duration_secs: Option<f64>,
+    /// Spent reasoning: every step of it used to stay on screen in full, so a
+    /// multi-tool turn strewed dim orphan paragraphs between its tool rows.
+    /// All but the newest collapse to a single line; `tool_expanded` (Ctrl+O)
+    /// brings them back.
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -915,6 +920,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 blocks.push(ConversationBlock::Thinking(ThinkingPresentation {
                     text: text.clone(),
                     duration_secs: *duration_secs,
+                    collapsed: false,
                 }));
             }
             ChatItem::Assistant { text } => {
@@ -1175,6 +1181,11 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
     }
     flush_progress(&mut blocks, &mut progress);
     flush_activity(&mut blocks, &mut activity_group);
+    let blocks = if tool_expanded {
+        blocks
+    } else {
+        collapse_spent_reasoning(blocks)
+    };
     finalize_presentation(blocks)
 }
 
@@ -1182,6 +1193,27 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
 /// terminal-failure banners; do not re-bucket activity above answers.
 fn finalize_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
     collapse_duplicate_turn_failures(collapse_adjacent_streaming_snapshots(blocks))
+}
+
+/// Fold every reasoning block but the newest down to one line.
+///
+/// Reasoning was permanent: a turn that ran three tools left three dim
+/// paragraphs strewn between its tool rows, none of which the reader still
+/// needed. The newest stays open because it is the one describing what is
+/// happening now; `tool_expanded` (Ctrl+O) restores the rest.
+fn collapse_spent_reasoning(mut blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
+    let last = blocks
+        .iter()
+        .rposition(|block| matches!(block, ConversationBlock::Thinking(_)));
+    let Some(last) = last else {
+        return blocks;
+    };
+    for (index, block) in blocks.iter_mut().enumerate() {
+        if let ConversationBlock::Thinking(thinking) = block {
+            thinking.collapsed = index != last;
+        }
+    }
+    blocks
 }
 
 fn is_streaming_answer(block: &ConversationBlock) -> bool {
@@ -3174,5 +3206,77 @@ mod tests {
         m.scroll = 0;
         m.scroll_down(1);
         assert!(m.follow);
+    }
+}
+
+#[cfg(test)]
+mod spent_reasoning_tests {
+    use super::*;
+
+    fn thinking(text: &str, secs: f64) -> ChatItem {
+        ChatItem::Thinking {
+            text: text.into(),
+            duration_secs: Some(secs),
+        }
+    }
+
+    fn model(items: Vec<ChatItem>, tool_expanded: bool) -> ConversationModel {
+        ConversationModel {
+            items,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded,
+                ..ConversationViewOpts::default()
+            },
+        }
+    }
+
+    /// Reasoning used to be permanent: a turn that ran three tools left three
+    /// dim paragraphs behind. Only the newest stays open.
+    #[test]
+    fn only_the_newest_reasoning_stays_open() {
+        let blocks = model(
+            vec![
+                thinking("first pass", 1.0),
+                thinking("second pass", 2.0),
+                thinking("current", 3.0),
+            ],
+            false,
+        )
+        .semantic_blocks();
+        let collapsed: Vec<bool> = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ConversationBlock::Thinking(t) => Some(t.collapsed),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(collapsed, vec![true, true, false]);
+    }
+
+    /// Ctrl+O is the existing "show me everything" affordance, so it has to
+    /// bring the spent reasoning back too.
+    #[test]
+    fn expanding_restores_every_reasoning_block() {
+        let blocks = model(
+            vec![thinking("first pass", 1.0), thinking("current", 3.0)],
+            true,
+        )
+        .semantic_blocks();
+        assert!(blocks.iter().all(|block| !matches!(
+            block,
+            ConversationBlock::Thinking(t) if t.collapsed
+        )));
+    }
+
+    /// A single reasoning block is the newest one, so nothing collapses.
+    #[test]
+    fn a_lone_reasoning_block_is_never_collapsed() {
+        let blocks = model(vec![thinking("only", 1.0)], false).semantic_blocks();
+        assert!(matches!(
+            blocks.first(),
+            Some(ConversationBlock::Thinking(t)) if !t.collapsed
+        ));
     }
 }

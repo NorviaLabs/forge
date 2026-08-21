@@ -321,6 +321,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
             estimate_wrapped_lines(&p.text, width.saturating_sub(2))
         }
         ConversationBlock::AssistantAnswer(p) => estimate_wrapped_lines(&p.text, prose_width),
+        ConversationBlock::Thinking(p) if p.collapsed => 1,
         ConversationBlock::Thinking(p) => estimate_wrapped_lines(&p.text, prose_width),
         ConversationBlock::CodeBlock(p) => estimate_wrapped_lines(&p.text, width),
         ConversationBlock::DiffBlock(p) => p.lines.len().saturating_add(2),
@@ -840,6 +841,23 @@ impl ConversationRender for ConversationModel {
                     // keeps the folder name.
                     let fitted = crate::path_display::elide_path(&p.text, width);
                     lines.push(Line::from(Span::styled(fitted, theme::muted())));
+                    if gap {
+                        lines.extend([Line::from(""), Line::from("")]);
+                    }
+                }
+                ConversationBlock::Thinking(p) if p.collapsed => {
+                    // Spent reasoning: one line saying it happened and how
+                    // long it took, rather than a dim paragraph the reader has
+                    // already scrolled past.
+                    let indent = INDENT_UNIT.repeat(2);
+                    let label = match p.duration_secs {
+                        Some(secs) => format!("Thought for {}", format_elapsed_tenths(secs)),
+                        None => "Thought".to_string(),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(indent, theme::dim()),
+                        Span::styled(label, theme::dim().add_modifier(Modifier::ITALIC)),
+                    ]));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
