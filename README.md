@@ -60,7 +60,7 @@ irm https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-instal
 
 The installers select the current release for your platform and verify its
 SHA-256 checksum before installing. To install a specific release, set
-`FORGE_VERSION`, for example `v0.1.0-beta.5`.
+`FORGE_VERSION`, for example `v0.1.0-beta.6`.
 
 On Linux the installer also installs the sandbox's dependencies —
 `bubblewrap` and `socat` — if they are not already present, prompting once
