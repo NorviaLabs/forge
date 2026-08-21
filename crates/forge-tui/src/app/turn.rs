@@ -277,7 +277,7 @@ impl TuiApp {
                 self.busy_state.start(BusyPhase::Model);
                 self.timing.started = Some(Instant::now());
                 self.timing.turn_started.get_or_insert_with(Instant::now);
-                self.stream.preview.clear();
+                self.stream.clear_preview();
                 self.stream.thinking.clear();
                 self.push_activity(
                     ActivityKind::Model,
@@ -465,7 +465,7 @@ impl TuiApp {
         }
 
         self.busy_state.start(BusyPhase::Model);
-        self.stream.preview.clear();
+        self.stream.clear_preview();
         self.stream.thinking.clear();
         self.stream.live_lines = None;
         self.timing.started.get_or_insert_with(Instant::now);
@@ -587,7 +587,7 @@ impl TuiApp {
                 if self.exit.is_requested() {
                     handle.abort();
                     self.busy_state.stop();
-                    self.stream.preview.clear();
+                    self.stream.clear_preview();
                     self.stream.thinking.clear();
                     self.timing.started = None;
                     self.timing.turn_started = None;
@@ -658,7 +658,7 @@ impl TuiApp {
             self.close_thinking_timer();
 
             let thought = self.timing.thought_secs.take();
-            self.stream.preview.clear();
+            self.stream.clear_preview();
             self.stream.thinking.clear();
             self.stream.live_lines = None;
             // Keep turn_started until full agent turn ends (multi-tool steps).
@@ -730,7 +730,7 @@ impl TuiApp {
         self.busy_state.stop();
 
         if turn_limit_reached {
-            self.stream.preview.clear();
+            self.stream.clear_preview();
             self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.turn_started = None;
@@ -761,7 +761,7 @@ impl TuiApp {
             } else {
                 self.report_error(&e);
             }
-            self.stream.preview.clear();
+            self.stream.clear_preview();
             self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.turn_started = None;
@@ -789,7 +789,7 @@ impl TuiApp {
             }
             // Leave queue intact so the operator can fix and continue.
         } else if self.session.pending_hitl().is_some() {
-            self.stream.preview.clear();
+            self.stream.clear_preview();
             self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.turn_started = None;
@@ -800,7 +800,7 @@ impl TuiApp {
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
         } else if self.session.pending_question().is_some() {
-            self.stream.preview.clear();
+            self.stream.clear_preview();
             self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.turn_started = None;
@@ -815,7 +815,7 @@ impl TuiApp {
             );
         } else {
             self.record_turn_summary();
-            self.stream.preview.clear();
+            self.stream.clear_preview();
             self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.turn_started = None;

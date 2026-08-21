@@ -612,7 +612,7 @@ impl TuiApp {
         self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());
         self.timing.turn_started.get_or_insert_with(Instant::now);
-        self.stream.preview.clear();
+        self.stream.clear_preview();
         self.stream.thinking.clear();
     }
 

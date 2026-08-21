@@ -225,6 +225,10 @@ pub(super) async fn paint_foreground_frame<B: ratatui::backend::Backend>(
     if service_application {
         tick_application(app).await?;
     }
+    // Deltas arrive irregularly and each one paints, so the reveal has to
+    // advance here too — otherwise a burst would sit still until the next
+    // 100ms tick and the smoothing would show as stutter instead.
+    app.stream.advance_reveal(Instant::now());
     if terminal.is_some() {
         drain_events(app, terminal.as_deref_mut()).await?;
         if let Some(term) = terminal {

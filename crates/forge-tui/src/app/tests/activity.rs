@@ -18,6 +18,8 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
     app.busy_state.set_phase(BusyPhase::Model);
     app.pending_turn.clear();
     app.stream.preview = "partial answer".into();
+    // The event loop lets the preview through; this test renders directly.
+    app.stream.reveal_everything_for_tests();
     let rendered = render_app_text(&mut app, 100, 30);
 
     assert_eq!(app.workspace_navigation, before);

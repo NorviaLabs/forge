@@ -258,6 +258,7 @@ impl TuiApp {
         self.poll_repo_header();
         self.connected_cached();
         self.refresh_progress_state();
+        self.stream.advance_reveal(Instant::now());
     }
 
     fn refresh_progress_state(&mut self) {

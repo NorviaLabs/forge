@@ -701,7 +701,7 @@ impl TuiApp {
                             // the target session — do not clear it out from under
                             // that restoration.
                             self.task_selection.clear_queue();
-                            self.stream.preview.clear();
+                            self.stream.clear_preview();
                             self.stream.thinking.clear();
                             self.conversation_view.message_start = 0;
                             self.conversation_view.event_start = 0;
@@ -882,7 +882,7 @@ impl TuiApp {
         // previously scrolled up to inspect an older response.
         self.conversation_view.follow = true;
         self.conversation_view.scroll = 0;
-        self.stream.preview.clear();
+        self.stream.clear_preview();
         self.stream.thinking.clear();
         self.push_activity(
             ActivityKind::Model,

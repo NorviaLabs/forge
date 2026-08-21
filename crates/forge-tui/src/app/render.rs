@@ -39,6 +39,7 @@ impl TuiApp {
         self.busy_state
             .start(crate::widgets::status::BusyPhase::Model);
         self.stream.preview.push_str(text);
+        self.stream.reveal_everything_for_tests();
         // The renderer rate-limits itself; tests measure the rebuild, so clear
         // the throttle rather than sleep 150ms per sample.
         self.stream.last_preview_render = None;
@@ -356,7 +357,9 @@ impl TuiApp {
             let key = (
                 width as u16,
                 self.stream.thinking.len(),
-                self.stream.preview.len(),
+                // Keyed on what is *shown*, not what has arrived: the reveal
+                // advances between deltas, and the lines have to follow it.
+                self.stream.revealed_preview().len(),
             );
             let key_matches = self
                 .stream
@@ -390,7 +393,7 @@ impl TuiApp {
                     )
                     .with_streaming_preview(
                         self.stream.thinking.clone(),
-                        self.stream.preview.clone(),
+                        self.stream.revealed_preview().to_string(),
                     )
                     // The preview is a single block, so block-level tailing
                     // cannot trim it; the cache windows lines instead. Pass the

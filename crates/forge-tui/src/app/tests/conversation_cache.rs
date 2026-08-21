@@ -81,6 +81,9 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
     app.busy_state.activate();
     app.busy_state.set_phase(BusyPhase::Model);
     app.stream.preview = "first chunk".into();
+    // The event loop, not `draw`, lets the preview through; this test drives
+    // `draw` directly, so it stands in for the loop.
+    app.stream.reveal_everything_for_tests();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
     Arc::get_mut(&mut app.render_cache.conversation.as_mut().unwrap().lines)
@@ -95,6 +98,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
         .capacity();
 
     app.stream.preview.push_str(" and updated tail");
+    app.stream.reveal_everything_for_tests();
     terminal.draw(|frame| app.draw(frame)).unwrap();
 
     assert_eq!(

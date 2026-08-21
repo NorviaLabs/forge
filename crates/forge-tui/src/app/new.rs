@@ -78,6 +78,8 @@ impl TuiApp {
             task_selection: TaskSelectionState::default(),
             stream: StreamState {
                 preview: String::new(),
+                revealed: 0,
+                revealed_at: None,
                 thinking: String::new(),
                 live_lines: None,
                 last_preview_render: None,
