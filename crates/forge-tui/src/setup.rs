@@ -187,7 +187,7 @@ fn draw_theme_setup(area: Rect, buf: &mut ratatui::buffer::Buffer, overlay: &Ove
             .border_style(theme::border())
             .style(theme::panel())
             .title(Span::styled(
-                " Theme · ↑↓ preview · Enter confirm · Esc quit ",
+                format!(" Theme · {} ", crate::hints::hint_text(crate::hints::THEME)),
                 theme::brand(),
             )),
     );
@@ -236,7 +236,10 @@ fn draw_trust_setup(
     lines.push(choice_line(selected == 1, "No, exit"));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "↑↓  Enter confirm  Esc quit  ·  no project files written if you leave",
+        format!(
+            "{}  ·  no project files written if you leave",
+            crate::hints::hint_text(crate::hints::TRUST)
+        ),
         theme::muted(),
     )));
     let r = crate::overlays::centered_rect(78, 70, area);

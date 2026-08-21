@@ -579,15 +579,16 @@ impl TuiApp {
                         format!("  {}", suggestions[idx].desc),
                         theme::dim(),
                     )));
+                    let hint = crate::hints::hint_text(crate::hints::COMMANDS);
                     let title = if n > visible {
                         format!(
-                            " commands {}–{}/{} · Tab · ↑↓ ",
+                            " Commands {}–{} of {} · {hint} ",
                             start + 1,
                             start + visible,
                             n
                         )
                     } else {
-                        format!(" commands ({n}) · ↑↓ select · Tab complete · Enter run ")
+                        format!(" Commands ({n}) · {hint} ")
                     };
                     frame.render_widget(
                         Paragraph::new(lines).block(

@@ -10,6 +10,7 @@ mod editor;
 mod editor_session;
 mod effort;
 mod file_explorer;
+mod hints;
 mod history;
 mod interactive_terminal;
 mod launch;
