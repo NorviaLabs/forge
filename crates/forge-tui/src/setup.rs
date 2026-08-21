@@ -217,7 +217,10 @@ fn draw_trust_setup(
         Line::from(Span::styled("Trust this folder?", theme::brand())),
         Line::from(""),
         Line::from(Span::styled("Accessing workspace:", theme::muted())),
-        Line::from(Span::styled(display.to_string(), theme::text())),
+        Line::from(Span::styled(
+            crate::path_display::elide_path(display, TRUST_PATH_WIDTH),
+            theme::text(),
+        )),
         Line::from(""),
         Line::from(
             "Forge may read, edit, and run tools with this folder as the working directory.",
@@ -242,7 +245,11 @@ fn draw_trust_setup(
         ),
         theme::muted(),
     )));
-    let r = crate::overlays::centered_rect(78, 70, area);
+    // Sized to what it holds, with a column of inset on each side. It used to
+    // take 70% of the height whatever it contained — twenty-eight rows for ten
+    // rows of content — with text flush against the border.
+    let height = (lines.len() as u16).saturating_add(4);
+    let r = crate::overlays::centered_content_rect(area, TRUST_CARD_WIDTH, height, area.height);
     Paragraph::new(lines)
         .wrap(ratatui::widgets::Wrap { trim: true })
         .block(
@@ -250,10 +257,18 @@ fn draw_trust_setup(
                 .borders(Borders::ALL)
                 .border_style(theme::border())
                 .style(theme::panel())
+                .padding(ratatui::widgets::Padding::new(2, 2, 1, 1))
                 .title(Span::styled(" Trust ", theme::brand())),
         )
         .render(r, buf);
 }
+
+/// Widest the trust card is allowed to draw.
+const TRUST_CARD_WIDTH: u16 = 84;
+
+/// Columns the workspace path may take before it is elided. Without this the
+/// path wrapped and left a fragment (`2`) alone on the next line.
+const TRUST_PATH_WIDTH: usize = 76;
 
 fn choice_line(on: bool, label: &str) -> Line<'static> {
     if on {

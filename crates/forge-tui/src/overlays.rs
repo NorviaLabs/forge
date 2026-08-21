@@ -1635,6 +1635,16 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 /// Centred panel that remains usable on small terminals without becoming a
 /// nearly full-width dashboard on large ones.
+/// Centre a modal sized to what it actually holds.
+///
+/// `centered_capped_rect` always takes `max_height`, so a picker offering six
+/// models drew a twenty-eight-row box with fifteen blank rows in it. `content`
+/// is the height the body wants; the result is that, clamped to `max_height`
+/// and to the space available.
+pub fn centered_content_rect(area: Rect, max_width: u16, content: u16, max_height: u16) -> Rect {
+    centered_capped_rect(area, max_width, content.min(max_height).max(3))
+}
+
 fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
     let width = area.width.saturating_sub(4).min(max_width).max(1);
     let height = area.height.saturating_sub(4).min(max_height).max(1);
@@ -1661,10 +1671,18 @@ pub fn theme_preview_card(area: Rect) -> Rect {
         .saturating_sub(reserved)
         .clamp(24, 58)
         .min(area.width);
-    let height = area.height.min(16);
+    // One row and one column of clearance. Flush against the pane's corner the
+    // card's border landed on the pane's own border row, printing two corners
+    // side by side (`┘└`) — it read as a redraw artifact rather than a card.
+    let gap = 1;
+    let height = area.height.saturating_sub(gap).min(16);
     Rect {
-        x: area.x.saturating_add(area.width.saturating_sub(width)),
-        y: area.y.saturating_add(area.height.saturating_sub(height)),
+        x: area
+            .x
+            .saturating_add(area.width.saturating_sub(width + gap)),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height + gap)),
         width,
         height,
     }
@@ -1863,7 +1881,26 @@ impl Widget for OverlayWidget<'_> {
                 catalog_loading,
                 ..
             } => {
-                let r = centered_capped_rect(area, 78, 29);
+                // Borders (2) + padding (1) + info row + hint rows (2), plus
+                // the list itself. A picker with six models has no business
+                // drawing a twenty-eight-row box.
+                let body_rows = match focus {
+                    ConnectModelColumn::Providers => flatten_provider_rows(providers).len(),
+                    ConnectModelColumn::Models => {
+                        let filtered: Vec<&ModelGroup> = groups
+                            .iter()
+                            .filter(|g| group_matches_input(model_input, g))
+                            .collect();
+                        flatten_model_rows(&filtered).len().max(1)
+                    }
+                    ConnectModelColumn::Effort => {
+                        ReasoningEffort::options_for_model(active_model).len()
+                    }
+                };
+                // Fixed chrome around the list: 2 borders, 1 top pad, the info
+                // row, two footer rows, and the table's own 3 rows of header
+                // and spacing.
+                let r = centered_content_rect(area, 78, (body_rows as u16).saturating_add(9), 29);
                 // `dim_region` above only re-tones existing cell colors, it
                 // doesn't clear glyphs — without an explicit blank here,
                 // widgets that don't pad every cell to full width (like
