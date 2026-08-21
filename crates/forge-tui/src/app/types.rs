@@ -1127,6 +1127,12 @@ pub(crate) struct StreamState {
     /// tail. See `StreamMarkdownCache`.
     pub(crate) markdown: crate::conversation::StreamMarkdownCache,
 }
+/// Composer placeholder on an empty workspace.
+pub(crate) const COMPOSER_OPENER: &str = "What does this project do?";
+
+/// Composer placeholder once a turn has run.
+pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";
+
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     /// Per-frame view of `session`, refreshed at the top of `draw`. Render

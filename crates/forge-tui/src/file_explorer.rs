@@ -1009,7 +1009,15 @@ impl Widget for FileExplorerWidget<'_> {
             let search_box_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_BOX_HEIGHT);
             let search_box = Block::default()
                 .borders(Borders::ALL)
-                .border_style(theme::muted());
+                // The search box's own border carries whether search is
+                // active. A separate indicator below it (a rule with a dot
+                // centred in it) was the universal shape of a slider, and
+                // people tried to drag it.
+                .border_style(if self.search_active {
+                    theme::active_panel_border()
+                } else {
+                    theme::muted()
+                });
             let search_box_inner = search_box.inner(search_box_area);
             search_box.render(search_box_area, buf);
 
@@ -1049,23 +1057,11 @@ impl Widget for FileExplorerWidget<'_> {
 
             let rule_y = inner.y + SEARCH_BOX_HEIGHT;
             let width = inner.width as usize;
-            let center = width / 2;
-            let mut rule_spans = Vec::new();
-            if center > 0 {
-                rule_spans.push(Span::styled("─".repeat(center), theme::muted()));
-            }
-            let (dot, dot_style) = if self.search_active {
-                ("●", theme::active_panel_border())
-            } else {
-                ("○", theme::muted())
-            };
-            rule_spans.push(Span::styled(dot, dot_style));
-            let right_len = width.saturating_sub(center + 1);
-            if right_len > 0 {
-                rule_spans.push(Span::styled("─".repeat(right_len), theme::muted()));
-            }
-            Paragraph::new(Line::from(rule_spans))
-                .render(Rect::new(inner.x, rule_y, inner.width, 1), buf);
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(width),
+                theme::border_muted(),
+            )))
+            .render(Rect::new(inner.x, rule_y, inner.width, 1), buf);
 
             Paragraph::new(lines).render(
                 Rect::new(
@@ -1078,10 +1074,12 @@ impl Widget for FileExplorerWidget<'_> {
             );
         }
         if inner.height > 0 {
-            let selected = self
-                .explorer
-                .selected_relative_path()
-                .unwrap_or_else(|| "".into());
+            // `selected_relative_path` is "." at the workspace root, which
+            // left a lone full stop floating in the corner of the pane.
+            let selected = match self.explorer.selected_relative_path() {
+                Some(path) if path != "." => path,
+                _ => String::new(),
+            };
             let footer_y = inner.y + inner.height.saturating_sub(1);
             Paragraph::new(Line::styled(selected, theme::muted()))
                 .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
@@ -1888,26 +1886,43 @@ mod tests {
         assert!(bottom_row.contains('└') && bottom_row.contains('┘'));
     }
 
+    /// Search state lives on the search box's own border now. The old
+    /// indicator — a rule with a dot centred in it — was the universal shape
+    /// of a slider, and invited dragging.
     #[test]
-    fn search_rule_shows_solid_dot_when_search_active() {
+    fn search_state_shows_on_the_search_box_border_not_a_knob() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 24, 14);
-        let buf = render_widget(&mut explorer, area, true);
+
+        let idle = render_widget(&mut explorer, area, false);
+        let active = render_widget(&mut explorer, area, true);
+
         let rule_y = area.y + 1 + SEARCH_BOX_HEIGHT;
-        let row = row_text(&buf, area, rule_y);
-        assert!(row.contains('●'));
-        assert!(!row.contains('○'));
+        for buf in [&idle, &active] {
+            let row = row_text(buf, area, rule_y);
+            assert!(!row.contains('○') && !row.contains('●'), "{row}");
+        }
+
+        // The box border changes colour instead.
+        let border = (area.x + 2, area.y + 1);
+        assert_ne!(
+            idle[border].style().fg,
+            active[border].style().fg,
+            "the search box border must carry the state"
+        );
+        assert_eq!(active[border].style().fg, theme::active_panel_border().fg);
     }
 
+    /// `selected_relative_path` is "." at the workspace root, which left a
+    /// lone full stop floating in the corner of the pane.
     #[test]
-    fn search_rule_shows_hollow_dot_when_search_not_active() {
+    fn the_explorer_footer_does_not_show_a_bare_dot() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 24, 14);
         let buf = render_widget(&mut explorer, area, false);
-        let rule_y = area.y + 1 + SEARCH_BOX_HEIGHT;
-        let row = row_text(&buf, area, rule_y);
-        assert!(row.contains('○'));
-        assert!(!row.contains('●'));
+        let footer_y = area.y + area.height - 2;
+        let row = row_text(&buf, area, footer_y);
+        assert_ne!(row.trim(), ".", "{row:?}");
     }
 
     #[test]

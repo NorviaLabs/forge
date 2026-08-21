@@ -208,6 +208,7 @@ pub(super) async fn tick_application(app: &mut TuiApp) -> Result<(), TuiError> {
     app.drain_auto_hitl().await?;
     // Newly arrived approvals claim focus + scroll-into-view once.
     app.sync_approval_focus();
+    app.sync_composer_placeholder();
     app.sync_question_focus();
     // Grok-style device-code: poll token endpoint while overlay is open.
     app.poll_oauth_tick();
@@ -342,7 +343,7 @@ async fn run_tui_inner(
     app.terminal_events = Some(TerminalEventSource::spawn());
     app.onboarding_connect = launch.onboarding_connect;
     if launch.ready_placeholder {
-        app.input.hint = "What does this project do?".into();
+        app.input.hint = crate::app::types::COMPOSER_OPENER.into();
     }
     if app.overlay.is_none() && launch.onboarding_connect && !app.is_provider_connected() {
         app.open_connect_picker();

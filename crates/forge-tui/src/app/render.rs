@@ -292,13 +292,15 @@ impl TuiApp {
                 },
             )
             .with_extra_banners(self.banner_state.items.iter().cloned());
-            if !self.conversation_view.splash_dismissed {
-                conv = conv.with_brand(self.runtime.version.clone());
-            }
             if !slash_mode && !self.conversation_view.splash_dismissed {
                 conv = conv.with_home(
                     crate::widgets::status::shorten_home_path(&self.runtime.cwd),
                     self.session_view.loaded_skills_count,
+                    self.runtime.model_label.clone(),
+                    vendor_label
+                        .clone()
+                        .unwrap_or_else(|| self.runtime.provider.clone()),
+                    connected,
                 );
             }
             if let Some(summary) = activity_summary {

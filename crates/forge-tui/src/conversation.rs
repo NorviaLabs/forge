@@ -324,6 +324,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         // options there are, and under-budgeting it scrolls its own top border
         // — including the title — off the pane.
         ConversationBlock::ApprovalPending(p) => render_approval_card(p, prose_width).len(),
+        ConversationBlock::Home(p) => render_home_card(p, prose_width).len(),
         ConversationBlock::QuestionPending(_) => 8,
     };
     body.saturating_add(2)
@@ -621,7 +622,7 @@ impl ConversationRender for ConversationModel {
                     }
                     spans.push(Span::styled(
                         activity_detail_label(p.expanded),
-                        theme::metadata_style(),
+                        theme::dim(),
                     ));
                     let mut line = Line::from(spans);
                     if rail {
@@ -787,6 +788,12 @@ impl ConversationRender for ConversationModel {
                 }
                 ConversationBlock::PlanChecklist(p) => {
                     lines.extend(render_plan_checklist(&p, width));
+                    if gap {
+                        lines.extend([Line::from(""), Line::from("")]);
+                    }
+                }
+                ConversationBlock::Home(p) => {
+                    lines.extend(render_home_card(&p, prose_width));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
@@ -1038,6 +1045,90 @@ fn short_consequence(help: &str) -> String {
 
 /// Title in the approval card's top border.
 const APPROVAL_TITLE: &str = "Approval needed";
+
+/// Starter prompts on the first screen. Concrete enough to be worth pressing,
+/// generic enough to fit any repository.
+const HOME_STARTERS: &[&str] = &[
+    "Explain what this project does",
+    "Find the bugs in the file I have open",
+    "Write tests for every public function",
+];
+
+/// Width of the label column on the home card.
+const HOME_LABEL_WIDTH: usize = 11;
+
+/// The first screen.
+///
+/// It used to be a version string, a clipped path and an orphaned
+/// `· 20 skills`, then four hundred pixels of nothing — no model, no provider,
+/// no connection state, and no suggestion of what to type. Every comparable CLI
+/// puts at least the model here.
+fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'static>> {
+    let pad = " ".repeat(MESSAGE_PADDING);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut row = |spans: Vec<Span<'static>>| {
+        let mut all = vec![Span::raw(pad.clone())];
+        all.extend(spans);
+        out.push(Line::from(all));
+    };
+
+    let field = |label: &str, value: Vec<Span<'static>>| {
+        let mut spans = vec![Span::styled(
+            format!("{label:<HOME_LABEL_WIDTH$}"),
+            theme::muted(),
+        )];
+        spans.extend(value);
+        spans
+    };
+
+    row(vec![Span::styled(
+        "FORGE",
+        theme::brand().add_modifier(Modifier::BOLD),
+    )]);
+    row(vec![]);
+    row(field(
+        "model",
+        vec![Span::styled(p.model.clone(), theme::text())],
+    ));
+    row(field(
+        "provider",
+        vec![
+            Span::styled(p.provider.clone(), theme::text()),
+            Span::raw("  "),
+            if p.connected {
+                Span::styled("● connected", theme::ok())
+            } else {
+                Span::styled("● not connected", theme::warn())
+            },
+        ],
+    ));
+    row(field(
+        "workspace",
+        vec![Span::styled(
+            crate::path_display::elide_path(
+                &p.workspace,
+                prose_width.saturating_sub(HOME_LABEL_WIDTH + 2),
+            ),
+            theme::text(),
+        )],
+    ));
+    row(field(
+        "skills",
+        vec![Span::styled(
+            format!("{} loaded", p.skills_loaded),
+            theme::text(),
+        )],
+    ));
+    row(vec![]);
+    row(vec![Span::styled("Try one of these", theme::muted())]);
+    for starter in HOME_STARTERS {
+        row(vec![
+            Span::styled("  → ", theme::accent_style()),
+            Span::styled((*starter).to_string(), theme::text_secondary()),
+        ]);
+    }
+    out
+}
 
 /// Render the pending-approval prompt as a bordered card.
 ///
@@ -1341,11 +1432,16 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
     numbered
 }
 
+/// Expand/collapse hint on a tool row.
+///
+/// Spelled `Ctrl+O` — a chord is written without spaces around the plus — and
+/// unbracketed. It is rendered dim, beside a tool name at full text weight, so
+/// it stops competing with the label it sits next to.
 fn activity_detail_label(expanded: bool) -> &'static str {
     if expanded {
-        "  [Ctrl + o] collapse"
+        "  Ctrl+O to collapse"
     } else {
-        "  [Ctrl + o]"
+        "  Ctrl+O"
     }
 }
 
@@ -1506,14 +1602,23 @@ mod tests {
             TaskLifecycle::Ready,
             ConversationViewOpts::default(),
         )
-        .with_home(long.to_string(), 20);
+        .with_home(
+            long.to_string(),
+            20,
+            "gpt-5.6-sol".into(),
+            "OpenAI".into(),
+            true,
+        );
 
         let rendered: Vec<String> = m
             .lines_for_width(60)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        let workspace: Vec<&String> = rendered.iter().filter(|l| l.contains("skills")).collect();
+        let workspace: Vec<&String> = rendered
+            .iter()
+            .filter(|l| l.contains("workspace"))
+            .collect();
         assert_eq!(workspace.len(), 1, "must stay on one row: {rendered:?}");
         let line = workspace[0];
         assert!(line.contains('\u{2026}'), "expected an elision: {line}");
@@ -1522,6 +1627,44 @@ mod tests {
             !line.contains("ac5a5dcf-403d/scratchpad"),
             "the middle should be the part that goes: {line}"
         );
+    }
+
+    /// The first screen must name the model, the provider and its connection
+    /// state, and offer something to type. It used to carry none of them.
+    #[test]
+    fn the_home_card_names_the_model_and_offers_a_way_in() {
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            TaskLifecycle::Ready,
+            ConversationViewOpts::default(),
+        )
+        .with_home(
+            "~/demo".into(),
+            20,
+            "gpt-5.6-sol".into(),
+            "OpenAI".into(),
+            true,
+        );
+        let text: String = m
+            .lines_for_width(80)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("FORGE"), "{text}");
+        assert!(text.contains("gpt-5.6-sol"), "{text}");
+        assert!(text.contains("OpenAI"), "{text}");
+        assert!(text.contains("connected"), "{text}");
+        assert!(text.contains("~/demo"), "{text}");
+        assert!(text.contains("20 loaded"), "{text}");
+        assert!(text.contains(HOME_STARTERS[0]), "{text}");
     }
 
     #[test]
@@ -2184,7 +2327,7 @@ mod tests {
             "wrapped continuation must carry the connector:\n{text}"
         );
         assert!(text.contains("5 output lines"), "{text}");
-        assert!(text.contains("[Ctrl + o]"), "{text}");
+        assert!(text.contains("Ctrl+O"), "{text}");
     }
 
     #[test]
@@ -2198,7 +2341,7 @@ mod tests {
         // equality with the original string.
         assert!(text.contains("--test-threads=1 --nocapture"), "{text}");
         assert!(text.contains("git status --short"), "{text}");
-        assert!(text.contains("[Ctrl + o] collapse"), "{text}");
+        assert!(text.contains("Ctrl+O to collapse"), "{text}");
     }
 
     #[test]
@@ -2335,8 +2478,8 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if !group.items.is_empty() && group.count_label.contains("2")
         )));
-        assert_eq!(activity_detail_label(true), "  [Ctrl + o] collapse");
-        assert_eq!(activity_detail_label(false), "  [Ctrl + o]");
+        assert_eq!(activity_detail_label(true), "  Ctrl+O to collapse");
+        assert_eq!(activity_detail_label(false), "  Ctrl+O");
     }
 
     #[test]
@@ -2629,7 +2772,7 @@ mod tests {
             ConversationViewOpts::default(),
         )
         .with_brand("forge 0.8.0")
-        .with_home("workspace".into(), 2);
+        .with_home("workspace".into(), 2, "m".into(), "Mock".into(), true);
         let area = Rect::new(0, 0, 40, 8);
         let backend = TestBackend::new(area.width, area.height);
         let mut term = Terminal::new(backend).unwrap();

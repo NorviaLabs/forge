@@ -15,10 +15,19 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "forge",
     version,
-    about = "Forge AI coding agent",
-    long_about = "Open the full-screen TUI by default.\n\nUse --help or --version for CLI info."
+    about = "Forge — an AI coding agent, editor, and shell in one terminal workspace.",
+    // The long form used to *replace* the description with "Open the
+    // full-screen TUI by default. Use --help or --version for CLI info." — so
+    // `--help`, the form people reach for when they want more, said less than
+    // `-h` and advised running the command they had just run.
+    long_about = "Forge — an AI coding agent, editor, and shell in one terminal workspace.\n\n\
+                  Running `forge` with no arguments opens the full-screen TUI in the current \
+                  directory. Sessions are journalled to .forge/local/sessions in the workspace, \
+                  so an interrupted one can be reopened with --resume.",
+    after_help = "Run `forge` with no arguments to start. Press ? inside for keyboard shortcuts."
 )]
 struct Cli {
+    /// Reopen a previous session. Omit the id to pick from a list.
     #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
     resume: Option<Option<SessionId>>,
 }
