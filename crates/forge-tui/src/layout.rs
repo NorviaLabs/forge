@@ -340,8 +340,15 @@ pub fn estimate_composer_content_width(area: Rect) -> usize {
     sidebar_width(content_width(area)).max(1) as usize
 }
 
+/// Whether the frame is below the size the layout is built for.
+///
+/// This used to guard on a hardcoded 40 columns while every splitter below it
+/// assumes [`MIN_WIDTH`]. Between the two, `split_areas` handed back regions of
+/// zero height: at 60x20 Forge drew a header, a rule and a footer, and nothing
+/// to type into. Honouring the layout's own stated minimum turns that into a
+/// message that says what to do.
 pub fn is_too_small(area: Rect) -> bool {
-    area.width < 40 || area.height < MIN_HEIGHT
+    area.width < MIN_WIDTH || area.height < MIN_HEIGHT
 }
 
 #[cfg(test)]
