@@ -57,6 +57,13 @@ struct ApprovalMenuState {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ApprovalSessionState {
     menu: ApprovalMenuState,
+    /// `call_id` of the last approval that was given focus.
+    ///
+    /// Deliberately separate from `menu.call_id`: the menu is synced from
+    /// `draw`, so sharing one field let a frame that painted before the tick
+    /// mark the approval "already seen" and the focus grab never happened —
+    /// leaving a prompt on screen whose keys all did nothing.
+    focus_claimed_for: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -180,12 +187,15 @@ impl TuiApp {
     /// transition is over and this must not re-grab focus.
     pub(super) fn sync_approval_focus(&mut self) {
         let Some(payload) = self.session.pending_hitl() else {
+            self.approval_session.focus_claimed_for = None;
             return;
         };
-        if self.approval_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
-            self.focus_block(FocusBlock::Approval);
-            self.conversation_view.follow = true;
+        if self.approval_session.focus_claimed_for.as_deref() == Some(payload.call_id.as_str()) {
+            return;
         }
+        self.approval_session.focus_claimed_for = Some(payload.call_id.clone());
+        self.focus_block(FocusBlock::Approval);
+        self.conversation_view.follow = true;
     }
 
     fn approval_menu_kinds(&self) -> Vec<ApprovalMenuKind> {
