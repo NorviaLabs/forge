@@ -515,7 +515,7 @@ impl ConversationRender for ConversationModel {
                     theme::border_muted(),
                 )));
                 if gap {
-                    lines.extend([Line::from(""), Line::from("")]);
+                    lines.push(Line::from(""));
                 }
             }
             seen_any_block = true;
@@ -553,7 +553,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(Line::from(spans));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
@@ -573,7 +573,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(Line::from(spans).style(theme::assistant_answer_style()));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::ActiveProgress(p) => {
@@ -678,7 +678,7 @@ impl ConversationRender for ConversationModel {
                 ConversationBlock::ApprovalPending(p) => {
                     lines.extend(render_approval_card(&p, prose_width));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::QuestionPending(p) => {
@@ -751,7 +751,7 @@ impl ConversationRender for ConversationModel {
                     spans.extend(hints::hint_spans(hint, prose_width));
                     lines.push(Line::from(spans));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Callout(p) => {
@@ -765,7 +765,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(Line::from(Span::styled(format!("▸ {l}"), st)));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::CodeBlock(p) => {
@@ -773,7 +773,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(line.style(theme::code_block()));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::DiffBlock(p) => {
@@ -796,19 +796,19 @@ impl ConversationRender for ConversationModel {
                     ));
                     lines.push(Line::from(DIFF_BLOCK_END_MARKER));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::PlanChecklist(p) => {
                     lines.extend(render_plan_checklist(&p, width));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Home(p) => {
                     lines.extend(render_home_card(&p, prose_width));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::TurnSummary(p) => {
@@ -830,7 +830,7 @@ impl ConversationRender for ConversationModel {
                     spans.push(Span::styled(detail, theme::metadata_style()));
                     lines.push(Line::from(spans));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Metadata(p) => {
@@ -842,7 +842,7 @@ impl ConversationRender for ConversationModel {
                     let fitted = crate::path_display::elide_path(&p.text, width);
                     lines.push(Line::from(Span::styled(fitted, theme::muted())));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Thinking(p) if p.collapsed => {
@@ -859,7 +859,7 @@ impl ConversationRender for ConversationModel {
                         Span::styled(label, theme::dim().add_modifier(Modifier::ITALIC)),
                     ]));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Thinking(p) => {
@@ -884,9 +884,9 @@ impl ConversationRender for ConversationModel {
                         }));
                         lines.push(Line::from(spans));
                     }
-                    if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
-                    }
+                    // Deliberately no trailing blank: the tool call this
+                    // reasoning produced should hug it, and the next major
+                    // block opens with its own separator anyway.
                 }
             }
         }
@@ -3803,6 +3803,44 @@ mod tests {
                 incremental, one_shot,
                 "cache diverged from a one-shot render at prefix length {end}"
             );
+        }
+    }
+
+    /// Blocks were separated by a leading blank *and* a trailing pair, so gaps
+    /// doubled and tripled: the transcript read as a list of far-apart items
+    /// rather than a conversation.
+    #[test]
+    fn the_transcript_never_stacks_blank_lines() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "do the thing".into(),
+                },
+                ChatItem::Thinking {
+                    text: "planning".into(),
+                    duration_secs: Some(1.0),
+                },
+                ChatItem::Assistant {
+                    text: "Here you go.\n\n- one\n- two\n".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let lines = model.lines_for_width(80);
+        let mut blanks = 0usize;
+        for line in &lines {
+            if line.width() == 0 || line.spans.iter().all(|s| s.content.trim().is_empty()) {
+                blanks += 1;
+                assert!(
+                    blanks < 2,
+                    "two blank rows in a row:\n{}",
+                    lines_text(&lines)
+                );
+            } else {
+                blanks = 0;
+            }
         }
     }
 
