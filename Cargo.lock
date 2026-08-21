@@ -1213,7 +1213,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forge-cli"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "forge-config"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "dirs 6.0.0",
  "forge-types",
@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connect"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "base64 0.23.1",
  "dirs 6.0.0",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "forge-context"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "forge-core"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "forge-durable"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1317,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "forge-governance"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "forge-types",
  "serde",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "forge-mcp"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "forge-model"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "forge-search"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "fff-query-parser",
  "fff-search",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "forge-session"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "anyhow",
  "forge-config",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "forge-storage"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "dirs 6.0.0",
  "forge-test-support",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "forge-syntax"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "serde_json",
  "streaming-iterator",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "forge-test-support"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "tempfile",
  "ureq",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tools"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "forge-transcript"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "forge-core",
  "forge-tools",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "forge-types"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "chrono",
  "schemars",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "forge-workspace"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 dependencies = [
  "dirs 6.0.0",
  "tempfile",
