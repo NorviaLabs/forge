@@ -754,7 +754,7 @@ impl TuiApp {
                 Ok(SlashCommand::Status) => {
                     self.overlay = Some(Overlay::StatusReport {
                         title: "Status".into(),
-                        lines: self.status_report_lines(),
+                        rows: self.status_report_rows(),
                     });
                 }
                 Ok(SlashCommand::Terminal) => {
@@ -1105,7 +1105,7 @@ mod tests {
         // An overlay already owns the screen; F1 must not stack another.
         app.overlay = Some(Overlay::StatusReport {
             title: "t".into(),
-            lines: vec![],
+            rows: vec![],
         });
         assert_eq!(
             app.semantic_command_for_global_key(key(KeyCode::F(1), NONE)),

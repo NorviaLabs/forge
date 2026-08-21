@@ -1,5 +1,6 @@
 //! Session chrome data for `/status`.
 
+use crate::overlays::StatusRow;
 use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use forge_types::TaskLifecycle;
@@ -514,27 +515,28 @@ pub fn format_provider_model_effort(
 }
 
 /// Build chrome from app-facing fields (single source for status + /status).
-pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
+///
+/// Human labels, grouped, with the command that changes a value offered beside
+/// it. This was a flat list of snake_case `key=value` strings — the screen
+/// people open when something feels wrong, reading like a debug dump.
+pub fn session_chrome_rows(m: &StatusModel) -> Vec<StatusRow> {
     let (label, _) = m.status_label();
     vec![
-        format!("status={label}"),
-        format!("provider={}", m.provider),
-        format!("model={}", m.model),
-        format!("effort={}", m.effort),
-        format!("ctx={:.1}%", m.ctx_pct * 100.0),
-        format!("profile={}", m.connect_profile.as_deref().unwrap_or("—")),
-        format!(
-            "connected={}",
-            if m.provider_connected { "yes" } else { "no" }
+        StatusRow::Heading("Session".into()),
+        StatusRow::field("Status", label),
+        StatusRow::Gap,
+        StatusRow::Heading("Model".into()),
+        StatusRow::field_with_note("Model", m.model.clone(), "/model to change"),
+        StatusRow::field("Provider", m.provider.clone()),
+        StatusRow::field("Effort", m.effort.clone()),
+        StatusRow::field(
+            "Profile",
+            m.connect_profile.as_deref().unwrap_or("none").to_string(),
         ),
-        format!(
-            "web_search={}",
-            m.web_search_label.as_deref().unwrap_or("off")
-        ),
-        format!("tools={}", m.tools_visible),
-        format!(
-            "prompt_cache=hits:{} writes:{}",
-            m.prompt_cache_hits, m.prompt_cache_writes
+        StatusRow::field("Connected", if m.provider_connected { "yes" } else { "no" }),
+        StatusRow::field(
+            "Web search",
+            m.web_search_label.as_deref().unwrap_or("off").to_string(),
         ),
     ]
 }
@@ -705,12 +707,20 @@ mod tests {
             incomplete_checks: None,
             waiting_detail: None,
         };
-        let lines = session_chrome_lines(&m);
-        assert!(lines.iter().any(|l| l.contains("provider=native")));
-        assert!(lines.iter().any(|l| l.contains("model=openai/gpt")));
-        assert!(lines.iter().any(|l| l.contains("effort=medium")));
-        assert!(lines.iter().any(|l| l.contains("profile=xai")));
-        assert!(lines.iter().any(|l| l.contains("connected=yes")));
+        let rows = session_chrome_rows(&m);
+        let value_of = |want: &str| -> Option<String> {
+            rows.iter().find_map(|row| match row {
+                StatusRow::Field { label, value, .. } if label == want => Some(value.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(value_of("Provider").as_deref(), Some("native"));
+        assert_eq!(value_of("Model").as_deref(), Some("openai/gpt"));
+        assert_eq!(value_of("Effort").as_deref(), Some("medium"));
+        assert_eq!(value_of("Profile").as_deref(), Some("xai"));
+        assert_eq!(value_of("Connected").as_deref(), Some("yes"));
+        // Human labels, not snake_case keys glued to their values.
+        assert!(rows.iter().any(|row| matches!(row, StatusRow::Heading(_))));
     }
 
     #[test]
