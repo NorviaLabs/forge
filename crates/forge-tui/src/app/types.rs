@@ -792,12 +792,26 @@ impl PendingTurnState {
 
 /// Deferred interactions owned by the event loop.
 ///
+/// How far an approval's grant reaches.
+///
+/// A plain approval covers the one call; a pattern grant covers everything
+/// matching it for the rest of the session; an always grant writes the rule to
+/// the personal permissions file and outlives the session. The card names the
+/// scope in each option's label, so this is what it named.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ApprovalGrant {
+    #[default]
+    Once,
+    Session,
+    Always,
+}
+
 /// A drain consumes its pending flag before doing async work so the same
 /// interaction cannot be re-entered by another loop iteration.
 #[derive(Default)]
 pub(crate) struct PendingInteractionState {
     hitl_decision: Option<HitlDecision>,
-    hitl_remember: bool,
+    hitl_remember: ApprovalGrant,
     question_submit: Option<questions::QuestionSubmit>,
     context_reset: bool,
 }
@@ -807,15 +821,15 @@ impl PendingInteractionState {
         self.hitl_decision.is_some()
     }
 
-    pub(crate) fn request_hitl_decision(&mut self, decision: HitlDecision, remember: bool) {
+    pub(crate) fn request_hitl_decision(&mut self, decision: HitlDecision, grant: ApprovalGrant) {
         self.hitl_decision = Some(decision);
-        self.hitl_remember = remember;
+        self.hitl_remember = grant;
     }
 
-    pub(crate) fn take_hitl_decision(&mut self) -> Option<(HitlDecision, bool)> {
+    pub(crate) fn take_hitl_decision(&mut self) -> Option<(HitlDecision, ApprovalGrant)> {
         self.hitl_decision.take().map(|decision| {
-            let remember = std::mem::take(&mut self.hitl_remember);
-            (decision, remember)
+            let grant = std::mem::take(&mut self.hitl_remember);
+            (decision, grant)
         })
     }
 
@@ -846,7 +860,7 @@ impl PendingInteractionState {
 
     pub(crate) fn clear(&mut self) {
         self.hitl_decision = None;
-        self.hitl_remember = false;
+        self.hitl_remember = ApprovalGrant::default();
         self.question_submit = None;
         self.context_reset = false;
     }

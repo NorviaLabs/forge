@@ -25,14 +25,19 @@ fn set_pending_approval(app: &mut TuiApp, payload: HitlPayload) {
     app.sync_approval_focus();
 }
 
-/// Move the menu selection down to the row whose label matches `label`.
-/// Robust to eligibility (rows differ per tool), unlike hard-coded indexes.
-async fn press_down_to(app: &mut TuiApp, label: &str) {
+/// The session-pattern row names the pattern it grants, so tests address it
+/// by its shortcut rather than by a copy string that changes with the rule.
+async fn press_down_to_session_pattern(app: &mut TuiApp) {
     let rows = app.approval_menu_rows();
     let target = rows
         .iter()
-        .position(|row| row.label == label)
-        .unwrap_or_else(|| panic!("no approval row {label:?} in {rows:?}"));
+        .position(|row| row.key.as_deref() == Some("a"))
+        .unwrap_or_else(|| panic!("no session-pattern row in {rows:?}"));
+    press_down_to_index(app, target).await;
+}
+
+async fn press_down_to_index(app: &mut TuiApp, target: usize) {
+    let rows = app.approval_menu_rows();
     let current = app.approval_menu_selected();
     let steps = (target + rows.len() - current) % rows.len();
     for _ in 0..steps {
@@ -101,9 +106,15 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(rendered.contains("\u{276f} y Run once"), "{rendered}");
     assert!(rendered.contains("n Don't run"), "{rendered}");
     assert!(
-        rendered.contains("Remember similar commands this session"),
+        rendered.contains("Allow bash(git push *) this session"),
         "{rendered}"
     );
+    // Both halves of the grant are offered, and each says how far it reaches.
+    assert!(
+        rendered.contains("Always allow bash(git push *)"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Don't run, and say why"), "{rendered}");
     assert!(
         rendered.contains("Runs now. You will be asked again."),
         "{rendered}"
@@ -138,7 +149,11 @@ async fn approval_leaves_underlying_workspace_untouched() {
         },
     );
 
-    let rendered = render_app_text(&mut app, 100, 30);
+    // Wide enough that the whole card fits: this test is about the workspace
+    // being left alone, not about how the card crowds a narrow sidebar. The
+    // card gained two rows with the wider grant and the refusal note, and at
+    // 100 columns the sidebar copy now scrolls its own title off.
+    let rendered = render_app_text(&mut app, 160, 40);
     assert!(rendered.contains("Forge wants to run"), "{rendered}");
     assert!(rendered.contains("Run once"), "{rendered}");
     assert_eq!(app.workspace_navigation, before);
@@ -243,7 +258,7 @@ async fn menu_remember_approves_and_matches_the_suggested_family() {
     let payload = direct_hitl_payload("remember", "src/foo.txt");
     set_pending_approval(&mut app, payload.clone());
 
-    press_down_to(&mut app, "Remember similar commands this session").await;
+    press_down_to_session_pattern(&mut app).await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -266,7 +281,7 @@ async fn remembered_approval_expires_with_session() {
     let payload = direct_hitl_payload("session", "session.txt");
     set_pending_approval(&mut app, payload.clone());
 
-    press_down_to(&mut app, "Remember similar commands this session").await;
+    press_down_to_session_pattern(&mut app).await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -300,15 +315,17 @@ async fn shell_approval_offers_a_generalized_pattern() {
 
     let rows = app.approval_menu_rows();
     let labels: Vec<String> = rows.iter().map(|row| row.label.clone()).collect();
+    // The label names the grant outright — the operator should not have to
+    // read a separate column to learn what "similar" means.
     assert!(
         labels
             .iter()
-            .any(|label| label == "Remember similar commands this session"),
+            .any(|label| label == "Allow bash(git push *) this session"),
         "{labels:?}"
     );
     let pattern = rows
         .iter()
-        .find(|row| row.label == "Remember similar commands this session")
+        .find(|row| row.key.as_deref() == Some("a"))
         .and_then(|row| row.detail.as_deref());
     assert_eq!(pattern, Some("bash(git push *)"));
     assert!(app
@@ -326,14 +343,14 @@ async fn allow_pattern_row_shows_the_suggested_file_pattern() {
     let pattern = app
         .approval_menu_rows()
         .into_iter()
-        .find(|row| row.label == "Remember similar commands this session")
+        .find(|row| row.key.as_deref() == Some("a"))
         .and_then(|row| row.detail);
     assert_eq!(pattern.as_deref(), Some("read_file(src/**)"));
 
-    press_down_to(&mut app, "Remember similar commands this session").await;
+    press_down_to_session_pattern(&mut app).await;
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(
-        rendered.contains("Remember similar commands this session"),
+        rendered.contains("Allow read_file(src/**) this session"),
         "{rendered}"
     );
     assert!(rendered.contains("files under src/"), "{rendered}");
@@ -390,7 +407,7 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
         bash_hitl_payload("call-1", "git push -u origin main"),
     );
 
-    press_down_to(&mut app, "Remember similar commands this session").await;
+    press_down_to_session_pattern(&mut app).await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();

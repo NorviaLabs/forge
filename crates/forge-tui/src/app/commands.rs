@@ -1497,7 +1497,7 @@ mod tests {
         );
         assert!(app.session.pending_hitl().is_some());
 
-        app.resolve_hitl_overlay(HitlDecision::Approve, false)
+        app.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Once)
             .await
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
