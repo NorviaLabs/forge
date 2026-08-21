@@ -599,6 +599,10 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) events: usize,
     pub(crate) last_event_detail: usize,
     pub(crate) banners: usize,
+    /// The turn summary's own identity. Counting banners is not enough: one
+    /// summary replacing another leaves the count unchanged, so the closing
+    /// line of the previous turn would stay on screen through the next one.
+    pub(crate) turn_summary: Option<(u64, usize, usize)>,
     pub(crate) queue: usize,
     pub(crate) queue_selected: Option<usize>,
     pub(crate) chat_message_start: usize,
@@ -718,8 +722,18 @@ pub(crate) struct StartupResumeState {
 
 pub(crate) struct TurnTimingState {
     pub(crate) started: Option<Instant>,
+    /// When the *user's* turn began, as opposed to the current model step.
+    /// `started` is reset at every continuation (a tool result, a resumed
+    /// approval), so a turn that ran three tools reported the age of its last
+    /// step as its duration. This one survives step boundaries.
+    pub(crate) turn_started: Option<Instant>,
     pub(crate) thinking_started: Option<Instant>,
     pub(crate) thought_secs: Option<f64>,
+    /// Answer + reasoning characters streamed this turn, accumulated across
+    /// model steps because the live preview is cleared at each tool call.
+    pub(crate) chars: usize,
+    /// Tool calls made this turn.
+    pub(crate) tools: usize,
 }
 
 pub(crate) struct ExternalEditorState {

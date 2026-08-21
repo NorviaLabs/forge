@@ -209,6 +209,18 @@ pub enum ChatItem {
         text: String,
         kind: BannerKind,
     },
+    /// Closing line of a finished turn: how long it took and what it cost.
+    ///
+    /// Without one, a turn had no visible end — the answer simply stopped and
+    /// only the footer recorded that anything had concluded.
+    TurnSummary {
+        secs: f64,
+        /// Characters of answer text streamed. Characters, not tokens: no
+        /// provider reports token usage mid-stream, and an estimate dressed
+        /// up as a count is worse than an exact number of something else.
+        chars: usize,
+        tools: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +246,15 @@ pub enum ConversationBlock {
     PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
     Thinking(ThinkingPresentation),
+    TurnSummary(TurnSummaryPresentation),
+}
+
+/// The closing line of a finished turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnSummaryPresentation {
+    pub secs: f64,
+    pub chars: usize,
+    pub tools: usize,
 }
 
 /// Model reasoning. Recedes rather than announces: dim italic, indented past
@@ -1139,6 +1160,15 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 blocks.push(ConversationBlock::Callout(CalloutPresentation {
                     text: text.clone(),
                     kind: *kind,
+                }));
+            }
+            ChatItem::TurnSummary { secs, chars, tools } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::TurnSummary(TurnSummaryPresentation {
+                    secs: *secs,
+                    chars: *chars,
+                    tools: *tools,
                 }));
             }
         }

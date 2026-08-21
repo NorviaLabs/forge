@@ -85,8 +85,11 @@ impl TuiApp {
             },
             timing: TurnTimingState {
                 started: None,
+                turn_started: None,
                 thinking_started: None,
                 thought_secs: None,
+                chars: 0,
+                tools: 0,
             },
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,

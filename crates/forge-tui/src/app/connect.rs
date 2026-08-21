@@ -241,6 +241,7 @@ impl TuiApp {
         self.stream.preview.clear();
         self.stream.thinking.clear();
         self.timing.started = None;
+        self.timing.turn_started = None;
         self.timing.thinking_started = None;
         self.timing.thought_secs = None;
         self.cancellation.clear();

@@ -106,6 +106,7 @@ impl TuiApp {
         match event {
             ModelStreamEvent::TextDelta { text } => {
                 self.close_thinking_timer();
+                self.timing.chars += text.chars().count();
                 self.stream.preview.push_str(text);
             }
             ModelStreamEvent::ThinkingDelta { text } => {
@@ -113,9 +114,11 @@ impl TuiApp {
                     self.timing.thinking_started =
                         self.timing.started.or_else(|| Some(Instant::now()));
                 }
+                self.timing.chars += text.chars().count();
                 self.stream.thinking.push_str(text);
             }
             ModelStreamEvent::ToolCallStart { name, .. } => {
+                self.timing.tools += 1;
                 self.busy_state
                     .set_phase(BusyPhase::Tool { name: name.clone() });
             }
@@ -137,6 +140,26 @@ impl TuiApp {
                 m.thinking_duration_secs = Some(secs);
             }
         }
+    }
+
+    /// Close a finished turn with a line saying how long it took and what it
+    /// cost. Without one the transcript simply stopped: nothing marked the
+    /// bottom edge of a turn, and nothing recorded its duration.
+    ///
+    /// Only one summary is ever on screen — the previous turn's is replaced,
+    /// so the transcript doesn't fill with receipts.
+    pub(super) fn record_turn_summary(&mut self) {
+        let Some(started) = self.timing.turn_started else {
+            return;
+        };
+        self.banner_state
+            .items
+            .retain(|item| !matches!(item, ChatItem::TurnSummary { .. }));
+        self.banner_state.items.push(ChatItem::TurnSummary {
+            secs: started.elapsed().as_secs_f64(),
+            chars: self.timing.chars,
+            tools: self.timing.tools,
+        });
     }
 
     fn record_interrupted_stream(&mut self, error: &str) {
@@ -253,6 +276,7 @@ impl TuiApp {
                 self.pending_turn.request_continue();
                 self.busy_state.start(BusyPhase::Model);
                 self.timing.started = Some(Instant::now());
+                self.timing.turn_started.get_or_insert_with(Instant::now);
                 self.stream.preview.clear();
                 self.stream.thinking.clear();
                 self.push_activity(
@@ -526,6 +550,7 @@ impl TuiApp {
                     handle.abort();
                     self.cancellation.clear();
                     self.timing.started = None;
+                    self.timing.turn_started = None;
                     turn_cancelled = true;
                     outcome_err = Some("cancelled".into());
                     break 'turns;
@@ -565,6 +590,7 @@ impl TuiApp {
                     self.stream.preview.clear();
                     self.stream.thinking.clear();
                     self.timing.started = None;
+                    self.timing.turn_started = None;
                     self.timing.thinking_started = None;
                     self.timing.thought_secs = None;
                     self.exit.set_code(ExitCode::Canceled);
@@ -707,6 +733,7 @@ impl TuiApp {
             self.stream.preview.clear();
             self.stream.thinking.clear();
             self.timing.started = None;
+            self.timing.turn_started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             self.overlay = Some(Overlay::turn_limit(max_turns));
@@ -737,6 +764,7 @@ impl TuiApp {
             self.stream.preview.clear();
             self.stream.thinking.clear();
             self.timing.started = None;
+            self.timing.turn_started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             if was_cancel {
@@ -764,6 +792,7 @@ impl TuiApp {
             self.stream.preview.clear();
             self.stream.thinking.clear();
             self.timing.started = None;
+            self.timing.turn_started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             self.exit.set_code(ExitCode::AwaitingHitl);
@@ -774,6 +803,7 @@ impl TuiApp {
             self.stream.preview.clear();
             self.stream.thinking.clear();
             self.timing.started = None;
+            self.timing.turn_started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             self.exit.set_code(ExitCode::AwaitingHitl);
@@ -784,9 +814,11 @@ impl TuiApp {
                 "question waiting",
             );
         } else {
+            self.record_turn_summary();
             self.stream.preview.clear();
             self.stream.thinking.clear();
             self.timing.started = None;
+            self.timing.turn_started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             if saw_thinking {

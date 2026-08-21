@@ -28,6 +28,15 @@ pub(super) fn is_railed_block(block: &ConversationBlock) -> bool {
     )
 }
 
+/// Round a count for display: `842`, `1.2k`, `48k`.
+pub(super) fn compact_count(n: usize) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=9_999 => format!("{:.1}k", n as f64 / 1_000.0),
+        _ => format!("{}k", n / 1_000),
+    }
+}
+
 /// Add a blank separator line unless the last line is already blank.
 pub(super) fn ensure_blank_line(lines: &mut Vec<Line<'static>>) {
     let last_blank = lines
@@ -318,7 +327,9 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::Callout(p) => estimate_wrapped_lines(&p.text, width).saturating_add(1),
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
         ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
-        ConversationBlock::ActiveProgress(_) | ConversationBlock::Metadata(_) => 1,
+        ConversationBlock::ActiveProgress(_)
+        | ConversationBlock::Metadata(_)
+        | ConversationBlock::TurnSummary(_) => 1,
         // Measured, not guessed. The card's height depends on the width (how
         // far the question and each option's consequence wrap) and on how many
         // options there are, and under-budgeting it scrolls its own top border
@@ -799,6 +810,28 @@ impl ConversationRender for ConversationModel {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
+                ConversationBlock::TurnSummary(p) => {
+                    // A turn used to end by simply stopping: the answer ran
+                    // out and only the footer recorded that anything had
+                    // concluded. This is the bottom edge, and the cost.
+                    let mut spans = vec![
+                        Span::styled("  ✓  ", theme::ok()),
+                        Span::styled(
+                            format!("Answered in {}", format_elapsed_tenths(p.secs)),
+                            theme::text().add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    let mut detail = format!("   ·  {} chars", compact_count(p.chars));
+                    if p.tools > 0 {
+                        let unit = if p.tools == 1 { "tool" } else { "tools" };
+                        detail.push_str(&format!("  ·  {} {unit}", p.tools));
+                    }
+                    spans.push(Span::styled(detail, theme::metadata_style()));
+                    lines.push(Line::from(spans));
+                    if gap {
+                        lines.extend([Line::from(""), Line::from("")]);
+                    }
+                }
                 ConversationBlock::Metadata(p) => {
                     // Metadata is a one-line summary — `block_height` budgets
                     // exactly one row for it — and its long content is almost
@@ -851,14 +884,25 @@ pub struct ConversationWidget<'a> {
 pub struct ConversationLinesWidget<'a> {
     pub lines: &'a [Line<'static>],
     pub tail_lines: &'a [Line<'static>],
+    /// Rebuilt every frame and never cached: the live turn line animates, so
+    /// caching it by content length would freeze it.
+    pub status_lines: &'a [Line<'static>],
     pub scroll: u16,
     pub follow: bool,
     pub bottom_padding: u16,
 }
 
+/// The three slices a transcript frame is painted from, in paint order:
+/// settled history, the in-flight preview, and the live turn line.
+#[derive(Clone, Copy)]
+pub(super) struct TranscriptSlices<'a> {
+    pub lines: &'a [Line<'static>],
+    pub tail_lines: &'a [Line<'static>],
+    pub status_lines: &'a [Line<'static>],
+}
+
 pub(super) fn render_conversation_lines(
-    lines: &[Line<'static>],
-    tail_lines: &[Line<'static>],
+    slices: TranscriptSlices<'_>,
     scroll_from_bottom: u16,
     follow: bool,
     bottom_padding: u16,
@@ -866,7 +910,13 @@ pub(super) fn render_conversation_lines(
     buf: &mut Buffer,
 ) {
     theme::fill(area, buf, theme::assistant_message());
-    let content_len = lines.len().saturating_add(tail_lines.len());
+    let TranscriptSlices {
+        lines,
+        tail_lines,
+        status_lines,
+    } = slices;
+    let tail_end = lines.len().saturating_add(tail_lines.len());
+    let content_len = tail_end.saturating_add(status_lines.len());
     let total = content_len.saturating_add(bottom_padding as usize);
     let max_scroll = total.saturating_sub(area.height as usize);
     let scroll = if follow {
@@ -883,8 +933,10 @@ pub(super) fn render_conversation_lines(
         .map(|index| {
             if index < lines.len() {
                 &lines[index]
-            } else if index < content_len {
+            } else if index < tail_end {
                 &tail_lines[index - lines.len()]
+            } else if index < content_len {
+                &status_lines[index - tail_end]
             } else {
                 &blank
             }
@@ -948,8 +1000,11 @@ pub(super) fn render_visible_conversation_lines(
 impl Widget for ConversationLinesWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         render_conversation_lines(
-            self.lines,
-            self.tail_lines,
+            TranscriptSlices {
+                lines: self.lines,
+                tail_lines: self.tail_lines,
+                status_lines: self.status_lines,
+            },
             self.scroll,
             self.follow,
             self.bottom_padding,
@@ -974,8 +1029,11 @@ impl Widget for ConversationWidget<'_> {
         };
         let lines = self.model.lines_for_width(area.width as usize);
         render_conversation_lines(
-            &lines,
-            &[],
+            TranscriptSlices {
+                lines: &lines,
+                tail_lines: &[],
+                status_lines: &[],
+            },
             self.model.scroll,
             self.model.follow,
             0,

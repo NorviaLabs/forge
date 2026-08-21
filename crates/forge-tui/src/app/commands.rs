@@ -872,6 +872,11 @@ impl TuiApp {
             .queue(final_line, self.attachment.take_images());
         self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());
+        self.timing.turn_started.get_or_insert_with(Instant::now);
+        // Counters are per user turn, not per model step: a turn that runs
+        // three tools reports one summary covering all of it.
+        self.timing.chars = 0;
+        self.timing.tools = 0;
         // A new user turn should always follow the live conversation tail.
         // This also ensures its thinking block is visible after the user has
         // previously scrolled up to inspect an older response.
