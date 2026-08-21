@@ -668,9 +668,7 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::QuestionPending(p) => {
-                    const HINT_SINGLE: &str = "↑↓  Enter  Esc skip";
-                    const HINT_MULTI: &str = "↑↓  Space  Enter  Esc skip";
-                    const HINT_TABS: &str = "←/→ questions  ↑↓  Enter  Esc skip";
+                    use crate::hints;
                     let pad = " ".repeat(MESSAGE_PADDING);
                     let title = if p.question_count > 1 {
                         format!(
@@ -729,18 +727,15 @@ impl ConversationRender for ConversationModel {
                         }
                     }
                     let hint = if p.question_count > 1 {
-                        HINT_TABS
+                        hints::QUESTION_TABS
                     } else if p.multi_select {
-                        HINT_MULTI
+                        hints::QUESTION_MULTI
                     } else {
-                        HINT_SINGLE
+                        hints::QUESTION
                     };
-                    for wrapped in wrap(hint, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, theme::metadata_style()),
-                        ]));
-                    }
+                    let mut spans = vec![Span::raw(pad.clone())];
+                    spans.extend(hints::hint_spans(hint, prose_width));
+                    lines.push(Line::from(spans));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
@@ -1019,56 +1014,6 @@ fn approval_question(tool: &str) -> &'static str {
     }
 }
 
-/// Hint shown under the approval options, as `key verb` pairs separated by a
-/// double space. The status bar deliberately does *not* repeat it — see
-/// `focus.rs`.
-const APPROVAL_HINT: &[(&str, &str)] =
-    &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "don't run")];
-
-/// Render `key verb` pairs with the key at bold weight, separated by a
-/// consistent gap. One grammar, one helper — the modal surfaces each invented
-/// their own before this.
-///
-/// Degrades within `budget` columns: first the verbs are dropped, leaving the
-/// bare keys, then trailing pairs are dropped from the right. Never wraps — a
-/// hint that reflows onto a second row breaks the card's height budget.
-fn key_hint_spans(pairs: &[(&str, &str)], budget: usize) -> Vec<Span<'static>> {
-    fn build(pairs: &[(&str, &str)], verbs: bool) -> Vec<Span<'static>> {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        for (key, verb) in pairs {
-            if !spans.is_empty() {
-                spans.push(Span::raw(if verbs { "   " } else { " " }));
-            }
-            spans.push(Span::styled(
-                (*key).to_string(),
-                theme::metadata_style().add_modifier(Modifier::BOLD),
-            ));
-            if verbs {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled((*verb).to_string(), theme::metadata_style()));
-            }
-        }
-        spans
-    }
-    let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
-
-    let full = build(pairs, true);
-    if width(&full) <= budget {
-        return full;
-    }
-    let keys_only = build(pairs, false);
-    if width(&keys_only) <= budget {
-        return keys_only;
-    }
-    for take in (1..pairs.len()).rev() {
-        let trimmed = build(&pairs[..take], false);
-        if width(&trimmed) <= budget {
-            return trimmed;
-        }
-    }
-    Vec::new()
-}
-
 /// Below this inner width the card drops everything optional — the reason
 /// line and the inline consequences — and keeps only what the decision needs.
 /// The sidebar is around twenty columns wide, where each of those wraps to
@@ -1271,7 +1216,7 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     row(vec![]);
     // Built as spans, not wrapped text: `wrap` collapses runs of spaces, which
     // would flatten the gaps that separate one key/verb pair from the next.
-    row(key_hint_spans(APPROVAL_HINT, inner));
+    row(crate::hints::hint_spans(crate::hints::APPROVAL, inner));
     row(vec![]);
 
     // A content row is `│ ` + inner + `│` = inner + 3 columns. The top border
