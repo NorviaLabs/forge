@@ -395,7 +395,8 @@ impl StreamMarkdownCache {
                 .extend(crate::markdown::render_markdown_open(fresh, width));
             self.prefix.push_str(fresh);
         }
-        let tail = crate::markdown::render_markdown_open(&text[cut..], width);
+        let mut tail = crate::markdown::render_markdown_open(&text[cut..], width);
+        crate::markdown::fade_streaming_tail(&mut tail);
         let from_prefix = keep_from_end.saturating_sub(tail.len());
         let skip = self.open_lines.len().saturating_sub(from_prefix);
         crate::markdown::render_markdown_join(&self.open_lines[skip..], tail)
@@ -3727,6 +3728,45 @@ mod tests {
                 "cache diverged from a one-shot render at prefix length {end}"
             );
         }
+    }
+
+    /// Text that later bytes can still re-render is painted a step down in
+    /// value, so a streaming answer visibly sets. Settled text keeps its own
+    /// colour, and the caret — the live edge — keeps full brightness.
+    #[test]
+    fn the_unsettled_tail_renders_dimmer_than_settled_text() {
+        let mut cache = StreamMarkdownCache::default();
+        // The first paragraph is settled; the second is still being written.
+        let lines = cache.render("Settled paragraph.\n\nIn flight now▌", 60, usize::MAX);
+        let dim = crate::theme::text_dim_color();
+        let fg_of = |needle: &str| {
+            lines
+                .iter()
+                .find_map(|line| {
+                    line.spans
+                        .iter()
+                        .find(|span| span.content.contains(needle))
+                        .map(|span| span.style.fg)
+                })
+                .unwrap_or_else(|| panic!("{needle} rendered"))
+        };
+        assert_eq!(fg_of("flight"), Some(dim), "the tail was not faded");
+        assert_ne!(fg_of("Settled"), Some(dim), "settled text must not fade");
+        assert_ne!(
+            fg_of("▌"),
+            Some(dim),
+            "the caret marks the live edge and keeps its colour"
+        );
+    }
+
+    /// Fading is paint, not content: the characters on screen must not change.
+    #[test]
+    fn fading_the_tail_leaves_the_text_alone() {
+        let mut cache = StreamMarkdownCache::default();
+        let buffer = "Alpha.\n\n- one\n- two▌";
+        let faded = lines_text(&cache.render(buffer, 60, usize::MAX));
+        let plain = lines_text(&crate::markdown::render_markdown(buffer, 60));
+        assert_eq!(faded, plain);
     }
 
     /// A width change must discard the cache: the lines were wrapped to the old

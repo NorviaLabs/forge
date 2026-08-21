@@ -202,6 +202,47 @@ pub(crate) fn render_markdown_join(
     trim_trailing_blanks(out)
 }
 
+/// The streaming caret appended to the live preview by `forge-transcript`.
+pub(crate) const STREAM_CARET: char = '▌';
+
+/// Dim the lines of the unsettled tail so a streaming answer visibly *sets*.
+///
+/// `settled_prefix_len` already knows exactly which suffix of the buffer later
+/// bytes can still re-render — an open fence, a list that a further item can
+/// re-space, a half-written paragraph. Painting that region one step down in
+/// value is the only honest signal the transcript can give that the text on
+/// screen is not final yet, and it costs one pass over the tail lines.
+///
+/// The caret keeps its own colour: it marks the live edge, so fading it would
+/// hide the one thing that is definitely alive.
+pub(crate) fn fade_streaming_tail(lines: &mut [Line<'static>]) {
+    let dim = theme::text_dim_color();
+    for line in lines.iter_mut() {
+        for span in &mut line.spans {
+            span.style = span.style.fg(dim);
+        }
+    }
+    // An open render keeps its trailing separator, so the caret is on the last
+    // line that has any width, not necessarily the last line.
+    let Some(last) = lines.iter_mut().rev().find(|line| line.width() > 0) else {
+        return;
+    };
+    let Some(span) = last.spans.last_mut() else {
+        return;
+    };
+    if !span.content.ends_with(STREAM_CARET) {
+        return;
+    }
+    let body = span
+        .content
+        .strip_suffix(STREAM_CARET)
+        .expect("checked above")
+        .to_string();
+    span.content = body.into();
+    last.spans
+        .push(Span::styled(STREAM_CARET.to_string(), theme::text()));
+}
+
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut renderer = MdRenderer::new(width.max(1));
     renderer.feed(Parser::new_ext(text, markdown_options()));
