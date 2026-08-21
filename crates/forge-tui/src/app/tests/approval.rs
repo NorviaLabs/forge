@@ -54,6 +54,25 @@ async fn flush_queued_hitl(app: &mut TuiApp) {
     }
 }
 
+/// A frame can paint between the approval arriving and the tick that hands it
+/// focus. `draw` syncs the menu, so if the focus grab keyed off the menu's
+/// `call_id` it would read the prompt as already seen and never claim focus —
+/// leaving a card on screen whose keys are all inert.
+#[tokio::test]
+async fn approval_claims_focus_even_if_a_frame_paints_first() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("call-paint-first", "ls -la"));
+
+    app.sync_approval_menu(); // what draw() does
+    app.sync_approval_focus(); // what the tick does, one beat later
+
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.approval_menu_selected(), 1, "menu keys must route");
+}
+
 #[tokio::test]
 async fn inline_approval_renders_full_payload_in_sidebar() {
     let (_dir, mut app) = focus_test_app().await;
