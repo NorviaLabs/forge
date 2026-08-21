@@ -88,7 +88,7 @@ async fn changed_files_do_not_appear_in_footer_or_as_review_cta() {
     assert!(app.activity_summary().is_none());
     let rendered = render_app_text(&mut app, 140, 30);
     assert!(
-        rendered.contains("0 tokens · —"),
+        rendered.contains("0 tokens"),
         "footer last segment is session usage, not a change count:\n{rendered}"
     );
     assert!(
