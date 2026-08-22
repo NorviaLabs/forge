@@ -201,9 +201,23 @@ pub enum ChatItem {
     /// approval (not a boxed card).
     QuestionPending(QuestionPendingPresentation),
     /// Structured TODO checklist from the `update_plan` tool.
+    ///
+    /// Only the newest one survives in the transcript: see [`Self::PlanUpdated`].
     PlanChecklist {
         explanation: Option<String>,
         steps: Vec<forge_types::PlanItem>,
+    },
+    /// What a superseded `update_plan` call changed, in one line.
+    ///
+    /// Every call used to print the whole checklist again, so a six-step turn
+    /// left six near-identical lists down the transcript. The list itself is
+    /// state, and state belongs in one place — the card, kept at the live
+    /// edge. What history wants is the event: at this point, the plan moved.
+    PlanUpdated {
+        done: usize,
+        total: usize,
+        /// The step that was in progress at that point, if any.
+        step: Option<String>,
     },
     Banner {
         text: String,
@@ -356,6 +370,37 @@ pub struct DiffBlockPresentation {
     pub path: String,
     pub lines: Vec<String>,
     pub rationale: String,
+}
+
+/// Replace the newest plan card, if there is one, with a one-line record of
+/// where it had got to.
+///
+/// Called just before a newer card is pushed, so at most one checklist is ever
+/// in the transcript and it is always the current one. The line stays at the
+/// position the superseded card held, which is where that update happened.
+fn supersede_plan_checklist(items: &mut [ChatItem]) {
+    let Some(slot) = items
+        .iter()
+        .rposition(|item| matches!(item, ChatItem::PlanChecklist { .. }))
+    else {
+        return;
+    };
+    let ChatItem::PlanChecklist { steps, .. } = &items[slot] else {
+        return;
+    };
+    let done = steps
+        .iter()
+        .filter(|item| item.status == forge_types::PlanStepStatus::Completed)
+        .count();
+    let step = steps
+        .iter()
+        .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
+        .map(|item| item.step.clone());
+    items[slot] = ChatItem::PlanUpdated {
+        done,
+        total: steps.len(),
+        step,
+    };
 }
 
 /// An approval request reduced to what the transcript displays: the command
@@ -584,6 +629,11 @@ impl ConversationModel {
                             .as_deref()
                             .and_then(|id| tool_calls.get(id).copied());
                         if let Some(args) = call.and_then(parse_update_plan_args) {
+                            // The plan is state, not a series of events. An
+                            // earlier card is replaced where it stands by the
+                            // one line that says what changed, and the list
+                            // itself moves to the live edge.
+                            supersede_plan_checklist(&mut items);
                             items.push(ChatItem::PlanChecklist {
                                 explanation: args.explanation,
                                 steps: args.plan,
@@ -1100,6 +1150,16 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                         steps: steps.clone(),
                     },
                 ));
+            }
+            ChatItem::PlanUpdated { done, total, step } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                    text: match step {
+                        Some(step) => format!("Plan updated · {done} of {total} done · {step}"),
+                        None => format!("Plan updated · {done} of {total} done"),
+                    },
+                }));
             }
             ChatItem::System { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -2053,6 +2113,77 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use forge_types::{PlanItem, PlanStepStatus};
+
+    fn plan_step(step: &str, status: PlanStepStatus) -> PlanItem {
+        PlanItem {
+            step: step.into(),
+            status,
+        }
+    }
+
+    /// A turn that revises its plan four times used to leave four
+    /// near-identical checklists stacked down the transcript. The list is
+    /// state: one card, and one line of history per revision.
+    #[test]
+    fn a_revised_plan_replaces_its_card_and_leaves_a_line() {
+        let mut items = vec![ChatItem::PlanChecklist {
+            explanation: None,
+            steps: vec![
+                plan_step("Inspect the theme tokens", PlanStepStatus::Completed),
+                plan_step("Add the dark palette", PlanStepStatus::InProgress),
+                plan_step("Wire the toggle", PlanStepStatus::Pending),
+            ],
+        }];
+
+        supersede_plan_checklist(&mut items);
+        items.push(ChatItem::PlanChecklist {
+            explanation: None,
+            steps: vec![
+                plan_step("Inspect the theme tokens", PlanStepStatus::Completed),
+                plan_step("Add the dark palette", PlanStepStatus::Completed),
+                plan_step("Wire the toggle", PlanStepStatus::InProgress),
+            ],
+        });
+
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ChatItem::PlanChecklist { .. }))
+                .count(),
+            1,
+            "only the current plan should remain as a card"
+        );
+        // The record keeps where the superseded card had got to, at the
+        // position it held.
+        assert!(
+            matches!(
+                &items[0],
+                ChatItem::PlanUpdated { done, total, step }
+                    if *done == 1
+                        && *total == 3
+                        && step.as_deref() == Some("Add the dark palette")
+            ),
+            "{:?}",
+            items[0]
+        );
+    }
+
+    /// Nothing to supersede on the first call: the plan appears as a card and
+    /// no history line is invented for an update that never happened.
+    #[test]
+    fn a_first_plan_leaves_no_history_line() {
+        let mut items = vec![ChatItem::Assistant {
+            text: "here is the plan".into(),
+        }];
+
+        supersede_plan_checklist(&mut items);
+
+        assert!(items
+            .iter()
+            .all(|item| !matches!(item, ChatItem::PlanUpdated { .. })));
+    }
+
     use super::*;
     use forge_types::Message;
 
