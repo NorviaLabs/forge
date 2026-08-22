@@ -276,6 +276,31 @@ fn run_git(root: &Path, args: &[&str], allow_one: bool) -> Result<String, String
     ))
 }
 
+/// Add `path` to the index. Reversible with [`unstage_path`], which is why
+/// `/diff` binds it without a confirmation step.
+pub fn stage_path(root: &Path, path: &Path) -> Result<(), String> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    run_git(root, &["add", "--", &rel.to_string_lossy()], false)?;
+    Ok(())
+}
+
+/// Remove `path` from the index, leaving the worktree untouched.
+///
+/// `git restore --staged` fails on a repository with no commits yet, where
+/// there is no `HEAD` to restore from; `git rm --cached` is the fallback that
+/// still only touches the index.
+pub fn unstage_path(root: &Path, path: &Path) -> Result<(), String> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let name = rel.to_string_lossy().to_string();
+    match run_git(root, &["restore", "--staged", "--", &name], false) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            run_git(root, &["rm", "--cached", "--quiet", "--", &name], false)?;
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

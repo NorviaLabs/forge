@@ -104,13 +104,15 @@ pub const BROWSE: &[Hint] = &[
     ("Esc", "close"),
 ];
 pub const SCROLL_BACK_CLOSE: &[Hint] = &[("↑↓", "scroll"), ("←", "back"), ("Esc", "close")];
-/// `/diff`. Sized so the verbs survive at the width the patch pane actually
-/// gets with all three panes open (~50 columns); `d source` and the scroll
-/// keys live in the `?` table rather than crowding this line into keys-only.
+/// `/diff`. There are thirteen bindings; this row holds five, chosen so the
+/// verbs still fit at the width the patch pane actually gets with all three
+/// panes open (~50 columns). Everything else — `/` search, `o` open, `v`
+/// split, `s`/`u` stage, `d` source, the scroll keys — lives behind `?`,
+/// which is why `?` never leaves this row.
 pub const DIFF: &[Hint] = &[
     ("] [", "hunk"),
     ("n p", "file"),
-    ("o", "open"),
+    ("m", "done"),
     ("?", "keys"),
     ("Esc", "close"),
 ];
