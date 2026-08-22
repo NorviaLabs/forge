@@ -1318,6 +1318,9 @@ pub struct TuiApp {
     /// background git-status refresh can update the file list without the
     /// pane having to be re-opened.
     pub(crate) diff_view: crate::diff_view::DiffView,
+    /// Explorer visibility to restore when split view (which hides it) is
+    /// turned off or the diff view closes.
+    pub(crate) diff_explorer_was_visible: Option<bool>,
     /// Editing state staged for the editable workspace editor.
     #[allow(dead_code)] // Consumed when the editor rendering/input migration lands.
     pub(crate) editor_session: Option<EditorSession>,

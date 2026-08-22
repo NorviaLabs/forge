@@ -102,6 +102,7 @@ impl TuiApp {
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
             diff_view: crate::diff_view::DiffView::default(),
+            diff_explorer_was_visible: None,
             editor_session: None,
             editor_command: None,
             editor_message: None,

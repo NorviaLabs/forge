@@ -34,6 +34,9 @@ impl TuiApp {
     /// previous contents. One `Esc` closes the mode outright — it does not
     /// unwind level by level.
     pub(super) fn close_diff_view(&mut self) {
+        if let Some(previous) = self.diff_explorer_was_visible.take() {
+            self.workspace_files.visible = previous;
+        }
         self.workspace_files.explorer.set_diff_filter(None);
         let restored = self
             .workspace_navigation
@@ -199,6 +202,8 @@ impl TuiApp {
         self.diff_view.patch = crate::diff_view::PatchState::Loading;
         self.diff_view.loaded_for = None;
         self.diff_view.scroll = 0;
+        // A different set of changes is a different search.
+        self.diff_view.clear_search();
         self.refresh_diff_entries();
         self.status_state.message =
             format!("Reviewing changes · {}", self.diff_view.source.label());
@@ -269,6 +274,30 @@ impl TuiApp {
             return false;
         }
 
+        // The search prompt owns the keyboard while it is open: everything
+        // printable is query text, so no diff key can fire underneath it.
+        if self.diff_view.search.open {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.diff_view.close_search();
+                    true
+                }
+                KeyCode::Enter => {
+                    self.diff_view.next_match();
+                    true
+                }
+                KeyCode::Backspace => {
+                    self.diff_view.backspace_search();
+                    true
+                }
+                KeyCode::Char(ch) => {
+                    self.diff_view.push_search_char(ch);
+                    true
+                }
+                _ => false,
+            };
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.close_diff_view();
@@ -318,6 +347,34 @@ impl TuiApp {
                 self.toggle_diff_source();
                 true
             }
+            KeyCode::Char('/') => {
+                self.diff_view.open_search();
+                true
+            }
+            KeyCode::Tab => {
+                self.diff_view.next_match();
+                true
+            }
+            KeyCode::BackTab => {
+                self.diff_view.prev_match();
+                true
+            }
+            KeyCode::Char('m') => {
+                self.toggle_diff_reviewed();
+                true
+            }
+            KeyCode::Char('v') => {
+                self.toggle_diff_layout();
+                true
+            }
+            KeyCode::Char('s') => {
+                self.stage_selected_diff_file(true);
+                true
+            }
+            KeyCode::Char('u') => {
+                self.stage_selected_diff_file(false);
+                true
+            }
             // `o` only, deliberately not Enter. Enter already means "show me
             // this file's patch" in the explorer half of this mode; giving it
             // a second, opposite meaning in the patch half — leave review,
@@ -349,6 +406,11 @@ pub(super) fn diff_shortcut_rows() -> Vec<StatusRow> {
             ("g / G", "Top / bottom of the patch"),
             ("] / [", "Next / previous hunk"),
             ("n / p", "Next / previous changed file"),
+            ("/", "Search within the patch"),
+            ("Tab / Shift+Tab", "Next / previous search hit"),
+            ("m", "Mark this file reviewed"),
+            ("v", "Unified / split layout"),
+            ("s / u", "Stage / unstage this file"),
             ("o", "Open this file at the cursor's line"),
             ("d", "Switch working tree / last turn"),
             ("Esc", "Close the diff view"),
@@ -368,5 +430,107 @@ impl TuiApp {
         self.diff_view.select_path(relative);
         self.workspace_files.explorer.selected_path = Some(path.to_path_buf());
         self.focus_block(FocusBlock::Workspace);
+    }
+}
+
+impl TuiApp {
+    /// `m`. Reports where the review stands rather than toggling silently —
+    /// the whole value of the mark is knowing what is left.
+    pub(super) fn toggle_diff_reviewed(&mut self) {
+        let Some(path) = self.diff_view.selected_path().map(Path::to_path_buf) else {
+            return;
+        };
+        let now_reviewed = self.diff_view.toggle_reviewed();
+        let total = self.diff_view.entries.len();
+        let done = self.diff_view.reviewed_count();
+        self.status_state.message = if !now_reviewed {
+            format!("{} unmarked · {done} of {total} reviewed", path.display())
+        } else if self.diff_view.all_reviewed() {
+            format!("All {total} files reviewed")
+        } else {
+            format!("{done} of {total} reviewed")
+        };
+        // Marking a file done is a cue to move on to the next one.
+        if now_reviewed && !self.diff_view.all_reviewed() {
+            self.select_next_unreviewed();
+        }
+    }
+
+    fn select_next_unreviewed(&mut self) {
+        let total = self.diff_view.entries.len();
+        for step in 1..=total {
+            let index = (self.diff_view.selected + step) % total;
+            let path = self.diff_view.entries[index].path.clone();
+            if !self.diff_view.reviewed.contains(&path) {
+                self.diff_view.select(index);
+                return;
+            }
+        }
+    }
+
+    /// `v`. Split needs room the patch pane never gets beside the explorer,
+    /// so entering split hides the explorer and leaving it brings it back —
+    /// while you are reading one patch the file list is redundant anyway, and
+    /// the header already says which file this is.
+    pub(super) fn toggle_diff_layout(&mut self) {
+        self.diff_view.toggle_layout();
+        let split = self.diff_view.layout == crate::diff_view::PatchLayout::Split;
+        if split {
+            self.diff_explorer_was_visible = Some(self.workspace_files.visible);
+            self.workspace_files.visible = false;
+        } else if let Some(previous) = self.diff_explorer_was_visible.take() {
+            self.workspace_files.visible = previous;
+        }
+        self.normalize_focus();
+        self.report_diff_layout();
+    }
+
+    pub(super) fn report_diff_layout(&mut self) {
+        let width = self.diff_view.viewport_width;
+        let selected = self.diff_view.layout;
+        let effective = self.diff_view.effective_layout(width);
+        self.status_state.message = match (selected, effective) {
+            (crate::diff_view::PatchLayout::Split, crate::diff_view::PatchLayout::Unified) => {
+                format!(
+                    "Split view needs {} columns; showing unified",
+                    crate::diff_view::SPLIT_MIN_WIDTH
+                )
+            }
+            (crate::diff_view::PatchLayout::Split, _) => "Split view".into(),
+            _ => "Unified view".into(),
+        };
+    }
+
+    /// `s` / `u`. Staging is reversible and touches only the index, so it runs
+    /// without a confirmation; discarding work would not, and is not bound.
+    pub(super) fn stage_selected_diff_file(&mut self, stage: bool) {
+        if self.diff_view.source != DiffSource::WorkingTree {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "Staging applies to the working tree; press d to switch",
+            );
+            return;
+        }
+        let Some(relative) = self.diff_view.selected_path().map(Path::to_path_buf) else {
+            return;
+        };
+        let root = self.session_view.workspace_root().to_path_buf();
+        let result = if stage {
+            forge_workspace::git_review::stage_path(&root, &relative)
+        } else {
+            forge_workspace::git_review::unstage_path(&root, &relative)
+        };
+        match result {
+            Ok(()) => {
+                let verb = if stage { "Staged" } else { "Unstaged" };
+                self.status_state.message = format!("{verb} {}", relative.display());
+                // The index moved, so the status cache and every cached patch
+                // for this revision are stale.
+                self.note_workspace_changed();
+            }
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Warn, error);
+            }
+        }
     }
 }

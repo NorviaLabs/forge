@@ -311,7 +311,7 @@ async fn the_pane_shows_its_own_keymap() {
 
     let rendered = render_app_text(&mut app, 120, 35);
     assert!(rendered.contains("] [ hunk"), "{rendered}");
-    assert!(rendered.contains("o open"), "{rendered}");
+    assert!(rendered.contains("m done"), "{rendered}");
     assert!(rendered.contains("Esc close"), "{rendered}");
 }
 
@@ -330,7 +330,124 @@ async fn a_narrow_pane_keeps_every_key_even_when_the_verbs_go() {
         !rendered.contains("] [ hunk"),
         "verbs drop first:\n{rendered}"
     );
-    for key in ["] [", "n p", "o", "?", "Esc"] {
+    for key in ["] [", "n p", "m", "?", "Esc"] {
         assert!(rendered.contains(key), "lost {key:?} from:\n{rendered}");
     }
+}
+
+#[tokio::test]
+async fn the_search_prompt_owns_the_keyboard_while_it_is_open() {
+    // `n` is "next file" normally and a letter while searching. Nothing may
+    // fire underneath the prompt.
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("a.txt", "one\n"), ("b.txt", "one\n")],
+        &[("a.txt", "two\n"), ("b.txt", "two\n")],
+    );
+    app.open_diff_view(DiffSource::WorkingTree);
+    settle_git(&mut app);
+    settle_patch(&mut app);
+
+    let selected = app.diff_view.selected;
+    app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for ch in "no".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.diff_view.search.query, "no");
+    assert_eq!(
+        app.diff_view.selected, selected,
+        "`n` was query text, not a file jump"
+    );
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.diff_view.search.open);
+    assert!(
+        app.diff_view_is_open(),
+        "Esc closed the prompt, not the view"
+    );
+}
+
+#[tokio::test]
+async fn m_marks_reviewed_and_moves_on() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("a.txt", "one\n"), ("b.txt", "one\n")],
+        &[("a.txt", "two\n"), ("b.txt", "two\n")],
+    );
+    app.open_diff_view(DiffSource::WorkingTree);
+    settle_git(&mut app);
+
+    let first = app.diff_view.selected_path().unwrap().to_path_buf();
+    app.handle_key(press(KeyCode::Char('m'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(app.diff_view.reviewed.contains(&first));
+    assert_ne!(
+        app.diff_view.selected_path().unwrap(),
+        first,
+        "marking one done moves to the next unreviewed file"
+    );
+    assert!(app.status_state.message.contains("1 of 2 reviewed"));
+}
+
+#[tokio::test]
+async fn s_stages_the_selected_file_and_u_puts_it_back() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
+    app.open_diff_view(DiffSource::WorkingTree);
+    settle_git(&mut app);
+
+    let staged = |root: &std::path::Path| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(staged(dir.path()), "a.txt", "s stages");
+
+    app.handle_key(press(KeyCode::Char('u'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(staged(dir.path()), "", "u unstages");
+}
+
+#[tokio::test]
+async fn staging_is_refused_on_the_last_turn_source() {
+    // The last-turn view is a reading of the transcript, not of the index.
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
+    app.open_diff_view(DiffSource::WorkingTree);
+    settle_git(&mut app);
+    app.diff_view.source = DiffSource::LastTurn;
+
+    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "nothing was staged"
+    );
 }
