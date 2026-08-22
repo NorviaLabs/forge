@@ -104,6 +104,16 @@ pub const BROWSE: &[Hint] = &[
     ("Esc", "close"),
 ];
 pub const SCROLL_BACK_CLOSE: &[Hint] = &[("↑↓", "scroll"), ("←", "back"), ("Esc", "close")];
+/// `/diff`. Sized so the verbs survive at the width the patch pane actually
+/// gets with all three panes open (~50 columns); `d source` and the scroll
+/// keys live in the `?` table rather than crowding this line into keys-only.
+pub const DIFF: &[Hint] = &[
+    ("] [", "hunk"),
+    ("n p", "file"),
+    ("o", "open"),
+    ("?", "keys"),
+    ("Esc", "close"),
+];
 
 #[cfg(test)]
 mod tests {
@@ -131,6 +141,7 @@ mod tests {
             COMMANDS,
             BROWSE,
             SCROLL_BACK_CLOSE,
+            DIFF,
         ] {
             for (key, verb) in pairs {
                 assert!(!key.is_empty() && !verb.is_empty(), "{key:?}/{verb:?}");

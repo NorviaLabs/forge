@@ -80,6 +80,7 @@ mod chrome;
 mod commands;
 mod connect;
 mod context;
+mod diff;
 mod files;
 mod focus;
 mod input;
