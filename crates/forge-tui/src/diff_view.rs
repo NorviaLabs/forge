@@ -162,6 +162,50 @@ pub enum DiffStatus {
     Failed(String),
 }
 
+/// In-patch search. Mirrors the source viewer's `/`: a prompt while it is
+/// open, highlights that survive closing it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PatchSearch {
+    pub open: bool,
+    pub query: String,
+    /// Indices into the patch's lines, in order.
+    pub matches: Vec<usize>,
+    pub current: usize,
+}
+
+impl PatchSearch {
+    pub fn is_active(&self) -> bool {
+        !self.query.is_empty() && !self.matches.is_empty()
+    }
+
+    /// `2 of 7` for the header, or `no matches` once something is typed.
+    pub fn label(&self) -> Option<String> {
+        if self.query.is_empty() {
+            return None;
+        }
+        if self.matches.is_empty() {
+            return Some("no matches".into());
+        }
+        Some(format!("{} of {}", self.current + 1, self.matches.len()))
+    }
+}
+
+/// Whether the patch renders as one column or as old-beside-new.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatchLayout {
+    #[default]
+    Unified,
+    Split,
+}
+
+/// Below this many columns a split view gives each side too little room to
+/// read, so the pane falls back to unified even when Split is selected.
+///
+/// 72 leaves 36 per side. `v` also hides the explorer, because the patch pane
+/// alone never reaches this in the three-pane layout — the sidebar takes the
+/// width a wider terminal adds.
+pub const SPLIT_MIN_WIDTH: u16 = 72;
+
 #[derive(Debug, Clone)]
 pub struct DiffView {
     pub source: DiffSource,
@@ -175,6 +219,14 @@ pub struct DiffView {
     pub loaded_for: Option<(u64, PathBuf)>,
     /// Height of the patch viewport as of the last render, for paging.
     pub viewport_height: usize,
+    /// Width of the patch viewport as of the last render, so `v` can say
+    /// whether split will actually fit before the next frame proves it.
+    pub viewport_width: u16,
+    pub search: PatchSearch,
+    pub layout: PatchLayout,
+    /// Files the reviewer has ticked off. Session-scoped: a review is a
+    /// reading of *this* set of changes, so it does not outlive them.
+    pub reviewed: std::collections::HashSet<PathBuf>,
 }
 
 impl Default for DiffView {
@@ -188,6 +240,10 @@ impl Default for DiffView {
             status: DiffStatus::Ready,
             loaded_for: None,
             viewport_height: 20,
+            viewport_width: 0,
+            search: PatchSearch::default(),
+            layout: PatchLayout::default(),
+            reviewed: std::collections::HashSet::new(),
         }
     }
 }
@@ -365,8 +421,22 @@ impl DiffView {
     }
 
     pub fn set_patch(&mut self, revision: u64, path: PathBuf, patch: Patch) {
+        // A file whose patch changed is no longer the file that was reviewed.
+        let replaced = match (&self.patch, &self.loaded_for) {
+            (PatchState::Ready(current), Some((_, loaded))) => {
+                *loaded == path && current.lines != patch.lines
+            }
+            _ => false,
+        };
+        if replaced {
+            self.forget_review(&path);
+        }
+        let anchor = self.scroll;
         self.patch = PatchState::Ready(Box::new(patch));
         self.loaded_for = Some((revision, path));
+        self.scroll = anchor.min(self.max_scroll());
+        // Matches are line indices into a patch that just changed.
+        self.recompute_matches();
         self.scroll = self.scroll.min(self.max_scroll());
     }
 
@@ -386,23 +456,186 @@ impl DiffView {
         }
     }
 
+    /// Header text for a pane `width` columns wide.
+    ///
+    /// The path is elided rather than letting the whole line truncate: losing
+    /// leading directories still leaves a readable filename, whereas letting
+    /// the line run off the edge silently drops the counts and the position,
+    /// which is the state you cannot get anywhere else.
+    pub fn header_for_width(&self, width: usize) -> String {
+        let full = self.header();
+        if full.chars().count() <= width || width < 20 {
+            return full;
+        }
+        let Some(entry) = self.selected_entry() else {
+            return full;
+        };
+        let path = entry.path.display().to_string();
+        let overflow = full.chars().count() - width;
+        let budget = path.chars().count().saturating_sub(overflow).max(12);
+        full.replacen(&path, &crate::path_display::elide_path(&path, budget), 1)
+    }
+
     pub fn header(&self) -> String {
         let source = self.source.label();
         let Some(entry) = self.selected_entry() else {
             return format!("DIFF · {source}");
         };
-        let position = format!("{} of {}", self.selected + 1, self.entries.len());
-        let path = entry.path.display();
-        match &self.patch {
-            PatchState::Ready(patch) if patch.binary => {
-                format!("DIFF · {path} · binary · {position} · {source}")
-            }
-            PatchState::Ready(patch) => format!(
-                "DIFF · {path} · +{} −{} · {position} · {source}",
-                patch.added, patch.removed
-            ),
-            _ => format!("DIFF · {path} · {position} · {source}"),
+        let mut position = format!("{} of {}", self.selected + 1, self.entries.len());
+        let reviewed = self.reviewed_count();
+        if reviewed > 0 {
+            position.push_str(&format!(" · {reviewed} reviewed"));
         }
+        if self.selected_is_reviewed() {
+            position.insert_str(0, "✓ ");
+        }
+        let path = entry.path.display();
+        let counts = match &self.patch {
+            PatchState::Ready(patch) if patch.binary => " · binary".to_string(),
+            PatchState::Ready(patch) => format!(" · +{} −{}", patch.added, patch.removed),
+            _ => String::new(),
+        };
+        // The pane is ~50 columns wide in practice, so anything appended here
+        // is invisible. Only the *unusual* source earns a place; the working
+        // tree is the default and says nothing. Search and layout state live
+        // on the bottom row instead.
+        let source = match self.source {
+            DiffSource::WorkingTree => String::new(),
+            DiffSource::LastTurn => format!(" · {source}"),
+        };
+        format!("DIFF · {path}{counts} · {position}{source}")
+    }
+
+    // ---- review state -------------------------------------------------
+
+    pub fn reviewed_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| self.reviewed.contains(&entry.path))
+            .count()
+    }
+
+    pub fn selected_is_reviewed(&self) -> bool {
+        self.selected_path()
+            .is_some_and(|path| self.reviewed.contains(path))
+    }
+
+    /// `m`. Ticking the last file off is the end of the review, so say so by
+    /// leaving the caller something to report rather than silently wrapping.
+    pub fn toggle_reviewed(&mut self) -> bool {
+        let Some(path) = self.selected_path().map(Path::to_path_buf) else {
+            return false;
+        };
+        if !self.reviewed.remove(&path) {
+            self.reviewed.insert(path);
+            return true;
+        }
+        false
+    }
+
+    /// A file whose content changed is no longer the file that was reviewed.
+    pub fn forget_review(&mut self, path: &Path) {
+        self.reviewed.remove(path);
+    }
+
+    pub fn all_reviewed(&self) -> bool {
+        !self.entries.is_empty() && self.reviewed_count() == self.entries.len()
+    }
+
+    // ---- layout -------------------------------------------------------
+
+    /// `v`.
+    pub fn toggle_layout(&mut self) {
+        self.layout = match self.layout {
+            PatchLayout::Unified => PatchLayout::Split,
+            PatchLayout::Split => PatchLayout::Unified,
+        };
+    }
+
+    /// What the pane will actually draw at `width`, which is not always what
+    /// is selected — split needs room the three-pane layout may not have.
+    pub fn effective_layout(&self, width: u16) -> PatchLayout {
+        match self.layout {
+            PatchLayout::Split if width >= SPLIT_MIN_WIDTH => PatchLayout::Split,
+            _ => PatchLayout::Unified,
+        }
+    }
+
+    // ---- search -------------------------------------------------------
+
+    pub fn open_search(&mut self) {
+        self.search.open = true;
+    }
+
+    /// Closing keeps the query and its highlights; only the prompt goes away.
+    pub fn close_search(&mut self) {
+        self.search.open = false;
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search = PatchSearch::default();
+    }
+
+    pub fn push_search_char(&mut self, ch: char) {
+        if ch.is_control() {
+            return;
+        }
+        self.search.query.push(ch);
+        self.recompute_matches_and_jump();
+    }
+
+    pub fn backspace_search(&mut self) {
+        self.search.query.pop();
+        self.recompute_matches_and_jump();
+    }
+
+    /// Recompute from scratch: the patch may have been replaced underneath a
+    /// live query by a status refresh.
+    pub fn recompute_matches(&mut self) {
+        let query = self.search.query.to_lowercase();
+        self.search.matches = match (&self.patch, query.is_empty()) {
+            (PatchState::Ready(patch), false) => patch
+                .lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.to_lowercase().contains(&query))
+                .map(|(index, _)| index)
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.search.current = 0;
+    }
+
+    /// Typing in the prompt recomputes *and* jumps to the first hit. Reloading
+    /// a patch recomputes without moving the reader, which is why these are
+    /// two calls rather than one.
+    fn recompute_matches_and_jump(&mut self) {
+        self.recompute_matches();
+        if let Some(first) = self.search.matches.first().copied() {
+            self.scroll = first.min(self.max_scroll());
+        }
+    }
+
+    /// Enter while the prompt is open, and `Tab` once it is closed.
+    pub fn next_match(&mut self) {
+        if self.search.matches.is_empty() {
+            return;
+        }
+        self.search.current = (self.search.current + 1) % self.search.matches.len();
+        self.scroll = self.search.matches[self.search.current].min(self.max_scroll());
+    }
+
+    pub fn prev_match(&mut self) {
+        if self.search.matches.is_empty() {
+            return;
+        }
+        self.search.current =
+            (self.search.current + self.search.matches.len() - 1) % self.search.matches.len();
+        self.scroll = self.search.matches[self.search.current].min(self.max_scroll());
+    }
+
+    pub fn line_is_match(&self, index: usize) -> bool {
+        self.search.is_active() && self.search.matches.contains(&index)
     }
 }
 
@@ -470,7 +703,7 @@ impl Widget for DiffViewWidget<'_> {
             return;
         }
 
-        let header = self.view.header();
+        let header = self.view.header_for_width(inner.width as usize);
         let header_area = Rect { height: 1, ..inner };
         Paragraph::new(Line::from(Span::styled(
             header,
@@ -488,11 +721,47 @@ impl Widget for DiffViewWidget<'_> {
                 height: 1,
                 ..inner
             };
-            Paragraph::new(Line::from(crate::hints::hint_spans(
-                crate::hints::DIFF,
-                inner.width as usize,
-            )))
-            .render(hints, buf);
+            // While `/` is open the bottom row is the prompt: the keys it
+            // would otherwise advertise are not the keys that are live.
+            if self.view.search.open {
+                let mut spans = vec![
+                    Span::styled(
+                        "/".to_string(),
+                        theme::metadata_style().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(self.view.search.query.clone(), theme::text()),
+                    Span::styled("▏".to_string(), theme::text()),
+                ];
+                if let Some(label) = self.view.search.label() {
+                    spans.push(Span::styled(format!("  {label}"), theme::metadata_style()));
+                }
+                spans.push(Span::styled(
+                    "  Enter next · Esc close".to_string(),
+                    theme::metadata_style(),
+                ));
+                Paragraph::new(Line::from(spans)).render(hints, buf);
+            } else {
+                // A right-aligned tag for the layout, so the header does not
+                // have to carry state it has no room for.
+                let tag = match self.view.effective_layout(inner.width) {
+                    PatchLayout::Split => "split",
+                    PatchLayout::Unified => "",
+                };
+                let budget = inner.width as usize - tag.len().min(inner.width as usize);
+                Paragraph::new(Line::from(crate::hints::hint_spans(
+                    crate::hints::DIFF,
+                    budget,
+                )))
+                .render(hints, buf);
+                if !tag.is_empty() {
+                    Paragraph::new(Line::from(Span::styled(
+                        tag.to_string(),
+                        theme::metadata_style(),
+                    )))
+                    .alignment(Alignment::Right)
+                    .render(hints, buf);
+                }
+            }
         }
 
         let body = Rect {
@@ -504,6 +773,7 @@ impl Widget for DiffViewWidget<'_> {
             return;
         }
         self.view.viewport_height = body.height as usize;
+        self.view.viewport_width = body.width;
 
         match &self.view.status {
             DiffStatus::NotARepo => {
@@ -556,22 +826,115 @@ impl Widget for DiffViewWidget<'_> {
             PatchState::Ready(patch) if patch.is_empty() => {
                 render_message(body, buf, "No textual change", "");
             }
-            PatchState::Ready(patch) => {
-                let path = patch.path.display().to_string();
-                let rendered = crate::conversation::render_numbered_diff(
-                    &path,
-                    &patch.lines,
-                    body.width as usize,
-                );
-                let visible: Vec<Line> = rendered
-                    .into_iter()
-                    .skip(self.view.scroll)
-                    .take(body.height as usize)
-                    .collect();
-                Paragraph::new(visible).render(body, buf);
-            }
+            PatchState::Ready(patch) => match self.view.effective_layout(body.width) {
+                PatchLayout::Unified => {
+                    let path = patch.path.display().to_string();
+                    let rendered = crate::conversation::render_numbered_diff(
+                        &path,
+                        &patch.lines,
+                        body.width as usize,
+                    );
+                    let visible: Vec<Line> = rendered
+                        .into_iter()
+                        .enumerate()
+                        .skip(self.view.scroll)
+                        .take(body.height as usize)
+                        .map(|(index, line)| highlight_match(line, self.view.line_is_match(index)))
+                        .collect();
+                    Paragraph::new(visible).render(body, buf);
+                }
+                PatchLayout::Split => render_split(self.view, patch, body, buf),
+            },
         }
     }
+}
+
+/// Re-style a rendered patch row as a search hit. Applied after
+/// `render_numbered_diff` so syntax highlighting still decides the text and
+/// only the emphasis changes.
+fn highlight_match(line: Line<'static>, is_match: bool) -> Line<'static> {
+    if !is_match {
+        return line;
+    }
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let style = span.style.patch(theme::search_match());
+            Span::styled(span.content, style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
+/// Old on the left, new on the right. Context lines appear on both sides;
+/// a removal leaves the right side blank and an addition the left, so the
+/// two columns stay vertically aligned with each other.
+fn render_split(view: &DiffView, patch: &Patch, area: Rect, buf: &mut Buffer) {
+    let gutter = 1u16;
+    let column = area.width.saturating_sub(gutter) / 2;
+    if column < 4 {
+        return;
+    }
+    let left_area = Rect {
+        width: column,
+        ..area
+    };
+    let right_area = Rect {
+        x: area.x.saturating_add(column).saturating_add(gutter),
+        width: column,
+        ..area
+    };
+
+    let mut left: Vec<Line<'static>> = Vec::new();
+    let mut right: Vec<Line<'static>> = Vec::new();
+    for (index, raw) in patch.lines.iter().enumerate() {
+        let hit = view.line_is_match(index);
+        let (l, r) = split_row(raw);
+        left.push(split_line(l, raw, hit));
+        right.push(split_line(r, raw, hit));
+    }
+
+    let take = area.height as usize;
+    let skip = view.scroll;
+    Paragraph::new(left.into_iter().skip(skip).take(take).collect::<Vec<_>>())
+        .render(left_area, buf);
+    Paragraph::new(right.into_iter().skip(skip).take(take).collect::<Vec<_>>())
+        .render(right_area, buf);
+}
+
+/// Which side(s) a raw patch line belongs on.
+fn split_row(raw: &str) -> (Option<&str>, Option<&str>) {
+    if raw.starts_with("@@") {
+        return (Some(raw), Some(raw));
+    }
+    match raw.chars().next() {
+        Some('-') => (Some(&raw[1..]), None),
+        Some('+') => (None, Some(&raw[1..])),
+        Some(' ') => (Some(&raw[1..]), Some(&raw[1..])),
+        _ => (Some(raw), Some(raw)),
+    }
+}
+
+fn split_line(text: Option<&str>, raw: &str, hit: bool) -> Line<'static> {
+    let Some(text) = text else {
+        return Line::from(Span::styled(String::new(), theme::panel()));
+    };
+    let base = if raw.starts_with("@@") {
+        theme::diff_hunk()
+    } else if raw.starts_with('+') {
+        theme::diff_add()
+    } else if raw.starts_with('-') {
+        theme::diff_remove()
+    } else {
+        theme::diff_context()
+    };
+    let style = if hit {
+        base.patch(theme::search_match())
+    } else {
+        base
+    };
+    Line::from(Span::styled(text.to_string(), style))
 }
 
 fn render_message(area: Rect, buf: &mut Buffer, heading: &str, body: &str) {
@@ -766,7 +1129,6 @@ mod tests {
         assert!(header.contains("b.rs"), "{header}");
         assert!(header.contains("+1 −1"), "{header}");
         assert!(header.contains("2 of 2"), "{header}");
-        assert!(header.contains("working tree"), "{header}");
     }
 
     #[test]
@@ -884,8 +1246,233 @@ mod widget_tests {
         let mut view = view_with_patch();
         let out = render(&mut view, 30, 12);
         assert!(!out.contains("] [ hunk"), "verbs go first:\n{out}");
-        for key in ["] [", "n p", "?", "Esc"] {
+        for key in ["] [", "n p", "m", "?", "Esc"] {
             assert!(out.contains(key), "lost {key:?} from:\n{out}");
         }
+    }
+}
+
+#[cfg(test)]
+mod v2_tests {
+    use super::*;
+    use forge_workspace::git_review::DiffHunk;
+
+    fn patch_with(lines: &[&str]) -> Patch {
+        Patch::from_file_diff(&FileDiff {
+            path: PathBuf::from("a.rs"),
+            headers: Vec::new(),
+            hunks: vec![DiffHunk {
+                header: "@@ -1,4 +1,4 @@".into(),
+                lines: lines.iter().map(|l| (*l).to_string()).collect(),
+            }],
+            binary: false,
+            untracked: false,
+        })
+    }
+
+    fn view_with(lines: &[&str]) -> DiffView {
+        let mut view = DiffView::default();
+        view.set_entries(vec![DiffEntry {
+            path: PathBuf::from("a.rs"),
+            marker: "M",
+            untracked: false,
+        }]);
+        view.set_patch(1, PathBuf::from("a.rs"), patch_with(lines));
+        view
+    }
+
+    #[test]
+    fn search_finds_lines_case_insensitively_and_cycles() {
+        let mut view = view_with(&[" alpha", "+Beta", " gamma", "+beta again"]);
+        view.open_search();
+        for ch in "beta".chars() {
+            view.push_search_char(ch);
+        }
+        assert_eq!(view.search.matches.len(), 2, "{:?}", view.search.matches);
+        let first = view.scroll;
+        view.next_match();
+        assert_ne!(view.scroll, first);
+        view.next_match();
+        assert_eq!(view.scroll, first, "the hit list is a ring");
+        view.prev_match();
+        assert_ne!(view.scroll, first);
+    }
+
+    #[test]
+    fn closing_search_keeps_the_highlights() {
+        let mut view = view_with(&[" alpha", "+beta"]);
+        view.open_search();
+        for ch in "beta".chars() {
+            view.push_search_char(ch);
+        }
+        view.close_search();
+        assert!(!view.search.open, "the prompt is gone");
+        assert!(view.search.is_active(), "the highlights are not");
+        view.clear_search();
+        assert!(!view.search.is_active());
+    }
+
+    #[test]
+    fn a_query_with_no_hits_says_so_rather_than_looking_broken() {
+        let mut view = view_with(&[" alpha"]);
+        view.open_search();
+        for ch in "zzz".chars() {
+            view.push_search_char(ch);
+        }
+        assert_eq!(view.search.label().as_deref(), Some("no matches"));
+        assert!(!view.search.is_active());
+    }
+
+    #[test]
+    fn reloading_a_patch_recomputes_matches_without_moving_the_reader() {
+        let mut view = view_with(&[" a", " b", " c", "+needle", " d"]);
+        view.open_search();
+        for ch in "needle".chars() {
+            view.push_search_char(ch);
+        }
+        view.scroll = 1;
+        // Same content, new revision: the reader must not be yanked to the hit.
+        view.set_patch(
+            2,
+            PathBuf::from("a.rs"),
+            patch_with(&[" a", " b", " c", "+needle", " d"]),
+        );
+        assert_eq!(view.scroll, 1, "scroll is where the reader left it");
+        assert_eq!(view.search.matches.len(), 1, "matches are still correct");
+    }
+
+    #[test]
+    fn marking_a_file_reviewed_counts_it() {
+        let mut view = DiffView::default();
+        view.set_entries(vec![
+            DiffEntry {
+                path: PathBuf::from("a.rs"),
+                marker: "M",
+                untracked: false,
+            },
+            DiffEntry {
+                path: PathBuf::from("b.rs"),
+                marker: "M",
+                untracked: false,
+            },
+        ]);
+        assert!(view.toggle_reviewed(), "first press marks");
+        assert_eq!(view.reviewed_count(), 1);
+        assert!(view.selected_is_reviewed());
+        assert!(!view.all_reviewed());
+        assert!(!view.toggle_reviewed(), "second press unmarks");
+        assert_eq!(view.reviewed_count(), 0);
+    }
+
+    #[test]
+    fn a_file_that_changes_loses_its_review_mark() {
+        // A tick means "I read this". If the content moves under it, it is a
+        // claim about something that no longer exists.
+        let mut view = view_with(&[" a", "+b"]);
+        assert!(view.toggle_reviewed());
+        assert!(view.selected_is_reviewed());
+        view.set_patch(2, PathBuf::from("a.rs"), patch_with(&[" a", "+b", "+c"]));
+        assert!(
+            !view.selected_is_reviewed(),
+            "changed content invalidates the mark"
+        );
+    }
+
+    #[test]
+    fn split_falls_back_to_unified_when_the_pane_is_too_narrow() {
+        let mut view = view_with(&[" a"]);
+        view.toggle_layout();
+        assert_eq!(view.layout, PatchLayout::Split);
+        assert_eq!(
+            view.effective_layout(SPLIT_MIN_WIDTH - 1),
+            PatchLayout::Unified,
+            "a cramped split is worse than unified"
+        );
+        assert_eq!(view.effective_layout(SPLIT_MIN_WIDTH), PatchLayout::Split);
+    }
+
+    #[test]
+    fn split_rows_put_removals_left_and_additions_right() {
+        assert_eq!(split_row("-gone"), (Some("gone"), None));
+        assert_eq!(split_row("+new"), (None, Some("new")));
+        assert_eq!(split_row(" same"), (Some("same"), Some("same")));
+        let hunk = split_row("@@ -1 +1 @@");
+        assert_eq!(hunk.0, hunk.1, "a hunk header spans both columns");
+    }
+
+    #[test]
+    fn the_header_reports_review_state_and_leaves_the_rest_to_the_bottom_row() {
+        let mut view = view_with(&[" alpha", "+beta"]);
+        view.toggle_layout();
+        view.toggle_reviewed();
+        view.open_search();
+        for ch in "beta".chars() {
+            view.push_search_char(ch);
+        }
+        let header = view.header();
+        // Layout and search live on the bottom row: at the ~50 columns this
+        // pane really gets, anything appended past the counts is invisible.
+        assert!(!header.contains("split"), "{header}");
+        assert!(!header.contains("/beta"), "{header}");
+        assert!(header.contains("✓"), "{header}");
+        assert!(header.contains("1 reviewed"), "{header}");
+        assert!(header.contains("a.rs"), "{header}");
+    }
+}
+
+#[cfg(test)]
+mod header_budget_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_source_earns_no_words_in_the_header() {
+        // The pane is ~50 columns. "· working tree" is 14 of them spent
+        // saying the thing that is true unless stated otherwise.
+        let mut view = DiffView::default();
+        view.set_entries(vec![DiffEntry {
+            path: PathBuf::from("tracker/metrics.py"),
+            marker: "M",
+            untracked: false,
+        }]);
+        let working = view.header();
+        assert!(!working.contains("working tree"), "{working}");
+
+        view.source = DiffSource::LastTurn;
+        let turn = view.header();
+        assert!(turn.contains("last turn"), "{turn}");
+    }
+
+    #[test]
+    fn a_realistic_header_fits_the_pane_it_gets() {
+        let mut view = DiffView::default();
+        view.set_entries(
+            (1..=7)
+                .map(|n| DiffEntry {
+                    path: PathBuf::from(format!("crates/forge-tui/src/file_{n}.rs")),
+                    marker: "M",
+                    untracked: false,
+                })
+                .collect(),
+        );
+        view.set_patch(
+            1,
+            PathBuf::from("crates/forge-tui/src/file_1.rs"),
+            Patch::from_lines(
+                PathBuf::from("crates/forge-tui/src/file_1.rs"),
+                &["@@ -1 +1 @@".into(), "-a".into(), "+b".into()],
+            ),
+        );
+        let header = view.header_for_width(50);
+        assert!(
+            header.chars().count() <= 50,
+            "{} chars: {header}",
+            header.chars().count()
+        );
+        assert!(
+            header.contains("file_1.rs"),
+            "the filename survives: {header}"
+        );
+        assert!(header.contains("1 of 7"), "so does the position: {header}");
+        assert!(header.contains("+1 −1"), "and the counts: {header}");
     }
 }
