@@ -1250,3 +1250,89 @@ async fn a_finished_turn_is_closed_by_a_summary() {
     assert!(rendered.contains("3 tools"), "{rendered}");
     assert!(!rendered.contains("Answered in 7s"), "{rendered}");
 }
+
+#[test]
+fn conversation_wraps_to_the_width_it_is_drawn_into() {
+    // The sidebar block takes two columns for borders and two more for
+    // horizontal padding. Wrapping to `width - 2` made every full-width line
+    // two columns too long, and the widget clipped the tail — characters
+    // vanished mid-word with no ellipsis to admit it.
+    use crate::app::render::conversation_text_width;
+    for sidebar in [20u16, 40, 84, 120] {
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .padding(ratatui::widgets::Padding::horizontal(1));
+        let inner = block.inner(ratatui::layout::Rect::new(0, 0, sidebar, 10));
+        assert_eq!(
+            conversation_text_width(sidebar),
+            inner.width as usize,
+            "sidebar {sidebar}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn paging_the_conversation_moves_a_page_not_five_rows() {
+    let (_dir, mut app) = focus_test_app().await;
+    draw_app(&mut app, 120, 40);
+    let area = app.conversation_area.expect("conversation was drawn");
+    assert!(area.height > 8, "fixture pane is worth paging: {area:?}");
+    assert_eq!(app.conversation_page_rows(), area.height - 2);
+
+    let before = app.conversation_view.scroll;
+    app.handle_key(press(KeyCode::PageUp, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.conversation_view.scroll, before + (area.height - 2));
+}
+
+#[tokio::test]
+async fn a_page_falls_back_to_a_sane_step_before_the_first_draw() {
+    let (_dir, app) = focus_test_app().await;
+    assert_eq!(
+        app.conversation_page_rows(),
+        5,
+        "no pane measured yet, so no page to move"
+    );
+}
+
+#[tokio::test]
+async fn the_command_palette_does_not_repeat_a_description_that_already_fits() {
+    // The detail row exists for descriptions the selected row had to
+    // truncate. When nothing was truncated it just said the same thing twice.
+    let (_dir, mut app) = focus_test_app().await;
+    for ch in "/quit".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    let rendered = render_app_text(&mut app, 120, 35);
+    assert_eq!(
+        rendered.matches("Exit TUI").count(),
+        1,
+        "said twice:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn a_truncated_palette_description_gets_a_row_that_covers_what_is_under_it() {
+    // The detail row used to be written unpadded, so whatever it did not
+    // cover showed through from the transcript beneath — the benchmark caught
+    // "Open the terminal panel (Ctrl+`)and CLI option.".
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    for ch in "/con".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    // Narrow enough that the long /connect description cannot fit its row.
+    let rendered = render_app_text(&mut app, 70, 30);
+    for line in rendered.lines() {
+        let trimmed = line.trim_end();
+        assert!(
+            !trimmed.contains("Ollama)") || trimmed.ends_with("Ollama)") || line.len() >= 68,
+            "detail row left a gap for the transcript to show through: {line:?}"
+        );
+    }
+}

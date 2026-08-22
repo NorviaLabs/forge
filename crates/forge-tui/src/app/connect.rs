@@ -696,11 +696,29 @@ impl TuiApp {
     /// the user with an empty `active_model`.
     pub(super) fn apply_default_model_for_profile(&mut self, profile_id: &str, verb: &str) {
         self.connect.profile = Some(profile_id.to_string());
-        let model = self
+        // Credentials just changed. Without this the status card keeps
+        // serving the cached pre-sign-in answer until the TTL lapses, so the
+        // first screen after signing in says "connected" in the toast and
+        // "not connected" on the card at the same time.
+        self.invalidate_connected();
+        // The picker is sorted for reading, so its first row for a profile is
+        // alphabetical — `gpt-5.4` beats `gpt-5.6-*`. Honour the profile's own
+        // declared default when it is actually available, and only fall back
+        // to the first row when it is not.
+        let available: Vec<String> = self
             .model_picker_items_with_defaults(false)
             .into_iter()
-            .find(|item| item.profile_id.as_deref() == Some(profile_id))
-            .map(|item| item.model);
+            .filter(|item| item.profile_id.as_deref() == Some(profile_id))
+            .map(|item| item.model)
+            .collect();
+        let declared = self
+            .connect
+            .registry
+            .get(profile_id)
+            .and_then(|profile| profile.default_model().map(str::to_string));
+        let model = declared
+            .filter(|declared| available.iter().any(|model| model == declared))
+            .or_else(|| available.first().cloned());
         let Some(model) = model else {
             self.open_model_picker_after_connect(profile_id);
             return;
