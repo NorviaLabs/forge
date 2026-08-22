@@ -206,6 +206,8 @@ pub enum ChatItem {
     PlanChecklist {
         explanation: Option<String>,
         steps: Vec<forge_types::PlanItem>,
+        /// Tool subjects observed while each step was the one in progress.
+        evidence: Vec<Vec<String>>,
     },
     /// What a superseded `update_plan` call changed, in one line.
     ///
@@ -372,6 +374,34 @@ pub struct DiffBlockPresentation {
     pub rationale: String,
 }
 
+/// One tool call, as a plan step's evidence: the verb and what it acted on.
+///
+/// Short by construction — this sits under a checklist item, not in the
+/// activity log, and a step that ran nine commands should read as a list of
+/// subjects rather than a transcript of its own.
+fn plan_evidence_subject(name: &str, call: Option<&ToolCall>) -> String {
+    let subject = call.and_then(|call| {
+        call.arguments
+            .get("path")
+            .or_else(|| call.arguments.get("file_path"))
+            .or_else(|| call.arguments.get("command"))
+            .or_else(|| call.arguments.get("cmd"))
+            .and_then(|value| value.as_str())
+    });
+    match subject {
+        Some(subject) => {
+            let short = subject.rsplit('/').next().unwrap_or(subject);
+            let short: String = short
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{name} {short}")
+        }
+        None => name.to_string(),
+    }
+}
+
 /// Replace the newest plan card, if there is one, with a one-line record of
 /// where it had got to.
 ///
@@ -492,6 +522,12 @@ pub struct QuestionPendingPresentation {
 pub struct PlanChecklistPresentation {
     pub explanation: Option<String>,
     pub steps: Vec<forge_types::PlanItem>,
+    /// What each step actually did, parallel to `steps`.
+    ///
+    /// A plan says what was intended; this says what happened under it, so a
+    /// finished step can be checked rather than taken on trust. Empty for a
+    /// step nothing has run under yet.
+    pub evidence: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -563,6 +599,9 @@ impl ConversationModel {
         let mut repair_pending = false;
         let mut validation_retry_pending = false;
         let mut validation_failures = std::collections::HashMap::<String, usize>::new();
+        // What ran under each plan step, keyed by the step's own text.
+        let mut plan_evidence = std::collections::HashMap::<String, Vec<String>>::new();
+        let mut plan_step_in_progress: Option<String> = None;
         for m in messages {
             match m.role {
                 // System prompts are for the model, not the operator UI.
@@ -623,6 +662,20 @@ impl ConversationModel {
                 // Tool results are not shown as chat messages (keeps the transcript clean).
                 MessageRole::Tool => {
                     let name = m.name.as_deref().unwrap_or("tool");
+                    if name != "update_plan" {
+                        if let Some(step) = plan_step_in_progress.clone() {
+                            let subject = plan_evidence_subject(
+                                name,
+                                m.tool_call_id
+                                    .as_deref()
+                                    .and_then(|id| tool_calls.get(id).copied()),
+                            );
+                            let seen: &mut Vec<String> = plan_evidence.entry(step).or_default();
+                            if !seen.contains(&subject) {
+                                seen.push(subject);
+                            }
+                        }
+                    }
                     if name == "update_plan" {
                         let call = m
                             .tool_call_id
@@ -634,9 +687,25 @@ impl ConversationModel {
                             // one line that says what changed, and the list
                             // itself moves to the live edge.
                             supersede_plan_checklist(&mut items);
+                            // Evidence is keyed by step text, so it survives a
+                            // revision that reorders or completes steps, and
+                            // is dropped with any step the model removed.
+                            let evidence = args
+                                .plan
+                                .iter()
+                                .map(|item| {
+                                    plan_evidence.get(&item.step).cloned().unwrap_or_default()
+                                })
+                                .collect();
+                            plan_step_in_progress = args
+                                .plan
+                                .iter()
+                                .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
+                                .map(|item| item.step.clone());
                             items.push(ChatItem::PlanChecklist {
                                 explanation: args.explanation,
                                 steps: args.plan,
+                                evidence,
                             });
                             continue;
                         }
@@ -1141,13 +1210,18 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::QuestionPending(presentation.clone()));
             }
-            ChatItem::PlanChecklist { explanation, steps } => {
+            ChatItem::PlanChecklist {
+                explanation,
+                steps,
+                evidence,
+            } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::PlanChecklist(
                     PlanChecklistPresentation {
                         explanation: explanation.clone(),
                         steps: steps.clone(),
+                        evidence: evidence.clone(),
                     },
                 ));
             }
@@ -1852,7 +1926,9 @@ fn activity_group_detail(item: &ChatItem) -> String {
             ..
         } => format!("{name}: {summary}\n{detail}"),
         ChatItem::DiffCard { path, lines, .. } => format!("diff: {path}\n{}", lines.join("\n")),
-        ChatItem::PlanChecklist { explanation, steps } => {
+        ChatItem::PlanChecklist {
+            explanation, steps, ..
+        } => {
             let mut out = String::from("plan");
             if let Some(explanation) = explanation {
                 out.push_str(": ");
@@ -2134,6 +2210,7 @@ mod tests {
                 plan_step("Add the dark palette", PlanStepStatus::InProgress),
                 plan_step("Wire the toggle", PlanStepStatus::Pending),
             ],
+            evidence: Vec::new(),
         }];
 
         supersede_plan_checklist(&mut items);
@@ -2144,6 +2221,7 @@ mod tests {
                 plan_step("Add the dark palette", PlanStepStatus::Completed),
                 plan_step("Wire the toggle", PlanStepStatus::InProgress),
             ],
+            evidence: Vec::new(),
         });
 
         assert_eq!(
@@ -2167,6 +2245,39 @@ mod tests {
             "{:?}",
             items[0]
         );
+    }
+
+    /// A step marked done is the model's word for it. The card shows what
+    /// actually ran underneath, so the claim can be checked.
+    #[test]
+    fn a_step_carries_what_ran_under_it() {
+        assert_eq!(
+            plan_evidence_subject(
+                "read_file",
+                Some(&ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "crates/forge-tui/src/theme.rs"}),
+                }),
+            ),
+            "read_file theme.rs",
+            "a path should read as its file, not its whole prefix"
+        );
+        assert_eq!(
+            plan_evidence_subject(
+                "bash",
+                Some(&ToolCall {
+                    id: "2".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "cargo test --workspace --all"}),
+                }),
+            ),
+            "bash cargo test",
+            "a command should read as its first two words"
+        );
+        // Nothing identifying to show: the tool name alone is still evidence
+        // that something ran.
+        assert_eq!(plan_evidence_subject("web_search", None), "web_search");
     }
 
     /// Nothing to supersede on the first call: the plan appears as a card and
@@ -2422,6 +2533,7 @@ mod tests {
                         step: "Inspect code".into(),
                         status: forge_types::PlanStepStatus::Completed,
                     }],
+                    evidence: Vec::new(),
                 },
                 ChatItem::Assistant {
                     text: "Ready.".into(),

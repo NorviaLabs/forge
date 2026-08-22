@@ -275,7 +275,7 @@ pub(super) fn render_plan_checklist(
     let inner_w = longest_content.min(PROSE_MAX_WIDTH).min(available_interior);
     let border = theme::accent_style();
     lines.push(card_top_border(inner_w + 4, None, border));
-    for item in &plan.steps {
+    for (idx, item) in plan.steps.iter().enumerate() {
         let (marker, style) = match item.status {
             PlanStepStatus::Completed => ("[✓]", theme::ok()),
             PlanStepStatus::InProgress => ("[►]", theme::warn()),
@@ -301,6 +301,34 @@ pub(super) fn render_plan_checklist(
                 border,
                 None,
             ));
+        }
+        // What actually ran under this step. A plan states intent; without
+        // this, a step marked done is only the model's word for it.
+        if let Some(evidence) = plan.evidence.get(idx).filter(|e| !e.is_empty()) {
+            let summary = evidence.join(", ");
+            let shown = if evidence.len() > PLAN_EVIDENCE_ITEMS {
+                format!(
+                    "{}, +{} more",
+                    evidence[..PLAN_EVIDENCE_ITEMS].join(", "),
+                    evidence.len() - PLAN_EVIDENCE_ITEMS
+                )
+            } else {
+                summary
+            };
+            for wrapped in wrap(&shown, body_width.saturating_sub(2))
+                .into_iter()
+                .take(2)
+            {
+                lines.push(card_content_spans(
+                    vec![
+                        Span::raw("    "),
+                        Span::styled(wrapped, theme::metadata_style()),
+                    ],
+                    inner_w,
+                    border,
+                    None,
+                ));
+            }
         }
     }
     lines.push(card_bottom_border(inner_w + 4, border));
@@ -1062,6 +1090,9 @@ const APPROVAL_COMPACT_WIDTH: usize = 40;
 /// Fewest columns worth giving an inline consequence. Below this it would be
 /// elided down to noise, so it is dropped instead.
 const APPROVAL_MIN_HELP_COLUMNS: usize = 14;
+
+/// Tool subjects named under one plan step before the rest are counted.
+const PLAN_EVIDENCE_ITEMS: usize = 3;
 
 /// Rows one option's description may spend on the question card.
 const QUESTION_DESCRIPTION_LINES: usize = 2;
@@ -2760,7 +2791,8 @@ mod tests {
                 &m.items[..],
                 [ChatItem::PlanChecklist {
                     explanation: Some(exp),
-                    steps
+                    steps,
+                    ..
                 }] if exp == "Next steps" && steps.len() == 3
             ),
             "expected plan checklist item, got {:?}",
@@ -2797,6 +2829,7 @@ mod tests {
                 step: "Inspect code".into(),
                 status: forge_types::PlanStepStatus::Completed,
             }],
+            evidence: Vec::new(),
         };
         let lines = render_plan_checklist(&plan, 80);
         // The explanation ("Next steps") renders as an unboxed intro line
@@ -3764,12 +3797,14 @@ mod tests {
                 ChatItem::PlanChecklist {
                     explanation: Some("Next steps".into()),
                     steps: plan_items(),
+                    evidence: Vec::new(),
                 },
                 // A later plan_update in the same turn re-renders the
                 // checklist but must not open another phase rule.
                 ChatItem::PlanChecklist {
                     explanation: Some("Next steps".into()),
                     steps: plan_items(),
+                    evidence: Vec::new(),
                 },
                 ChatItem::ToolCard {
                     name: "run_shell".into(),
