@@ -272,7 +272,7 @@ pub(super) fn render_plan_checklist(
         .max()
         .unwrap_or(0);
     let available_interior = width.saturating_sub(4);
-    let inner_w = longest_content.min(PROSE_MAX_WIDTH).min(available_interior);
+    let inner_w = longest_content.min(CARD_MAX_WIDTH).min(available_interior);
     let border = theme::accent_style();
     lines.push(card_top_border(inner_w + 4, None, border));
     for (idx, item) in plan.steps.iter().enumerate() {
@@ -530,9 +530,7 @@ impl ConversationRender for ConversationModel {
         mut stream_cache: Option<&mut StreamMarkdownCache>,
     ) -> Vec<Line<'static>> {
         let width = available_width.max(4);
-        let prose_width = width
-            .saturating_sub(MESSAGE_PADDING * 2)
-            .clamp(4, PROSE_MAX_WIDTH);
+        let prose_width = prose_width_for(width);
         let mut lines = Vec::new();
         let gap = !self.opts.compact;
         let rail = width >= RAIL_MIN_WIDTH;
@@ -747,8 +745,11 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::CodeBlock(p) => {
+                    // `render_markdown` already renders a fenced block with
+                    // its rail and syntax colours. Styling the returned lines
+                    // again painted a second ground over the top of it.
                     for line in render_markdown(&p.text, width) {
-                        lines.push(line.style(theme::code_block()));
+                        lines.push(line);
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -827,7 +828,14 @@ impl ConversationRender for ConversationModel {
                     // Spent reasoning: one line saying it happened and how
                     // long it took, rather than a dim paragraph the reader has
                     // already scrolled past.
-                    let indent = INDENT_UNIT.repeat(2);
+                    //
+                    // Aligned with the answer, not with the deeper indent that
+                    // expanded reasoning uses. That indent subordinates a block
+                    // of text to the answer around it; on a single line sitting
+                    // above the answer it subordinates nothing and just starts
+                    // the reply on a different left edge from everything under
+                    // it.
+                    let indent = " ".repeat(MESSAGE_PADDING);
                     let label = match p.duration_secs {
                         Some(secs) => format!("Thought for {}", format_elapsed_tenths(secs)),
                         None => "Thought".to_string(),
@@ -920,9 +928,7 @@ fn plan_dock_for(
 ) -> Option<PlanDock> {
     let width = available_width.max(4);
     let blocks = model.semantic_blocks();
-    let prose_width = width
-        .saturating_sub(MESSAGE_PADDING * 2)
-        .clamp(4, PROSE_MAX_WIDTH);
+    let prose_width = prose_width_for(width);
     let start = start_block_for_tail(&blocks, width, prose_width, keep_from_end);
     let (index, plan) = blocks
         .iter()
@@ -1274,6 +1280,7 @@ const HOME_LABEL_WIDTH: usize = 11;
 /// no connection state, and no suggestion of what to type. Every comparable CLI
 /// puts at least the model here.
 fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'static>> {
+    let prose_width = prose_width.min(CARD_MAX_WIDTH);
     let pad = " ".repeat(MESSAGE_PADDING);
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut row = |spans: Vec<Span<'static>>| {
@@ -1360,6 +1367,7 @@ pub(super) fn render_question_card(
     p: &QuestionPendingPresentation,
     prose_width: usize,
 ) -> Vec<Line<'static>> {
+    let prose_width = prose_width.min(CARD_MAX_WIDTH);
     let pad = " ".repeat(MESSAGE_PADDING);
     let total = prose_width.saturating_sub(MESSAGE_PADDING).max(12);
     let inner = total.saturating_sub(4);
@@ -1492,6 +1500,8 @@ pub(super) fn render_question_card(
 }
 
 fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> Vec<Line<'static>> {
+    // Prose runs the width of the pane; a card does not follow it there.
+    let prose_width = prose_width.min(CARD_MAX_WIDTH);
     let pad = " ".repeat(MESSAGE_PADDING);
     // A row spends `pad` + `│` + ` ` + inner + `│`, so the card is
     // `MESSAGE_PADDING + 3` columns wider than its content.
@@ -1740,7 +1750,26 @@ const INDENT_UNIT: &str = "  ";
 
 const MESSAGE_PADDING: usize = 2;
 
-const PROSE_MAX_WIDTH: usize = 72;
+/// How wide the answer's text is allowed to run.
+///
+/// The pane, less a constant gutter — deliberately uncapped. A fixed measure
+/// of 72 left roughly two thirds of a wide pane empty while the text wrapped
+/// every few words, and most of an agent's answer is list items of ten to
+/// twenty-five words: at 72 columns each wraps to three lines, and given the
+/// room each is a single line instead. The gutter stays a constant two
+/// columns rather than a share of the width, so it reads as a margin at every
+/// size instead of growing into leftover space.
+fn prose_width_for(width: usize) -> usize {
+    width.saturating_sub(MESSAGE_PADDING * 2).max(4)
+}
+
+/// Widest a *card* may be drawn: the approval, question, home and plan cards.
+///
+/// Not a reading measure — those cards are mostly short labels and a command,
+/// and a three-word command inside a two-hundred-column border reads as a
+/// mistake. Prose has no ceiling (see `prose_width`); this is only about how
+/// wide a box should be allowed to get around small content.
+const CARD_MAX_WIDTH: usize = 80;
 
 /// Subtle left rail grouping tool calls and progress under the current turn.
 const RAIL_GLYPH: &str = "│";
@@ -2259,8 +2288,55 @@ mod tests {
         );
     }
 
+    /// The reply used to start on a different left edge from the answer it
+    /// introduces: 4 columns for the collapsed reasoning, 2 for everything
+    /// under it.
     #[test]
-    fn wide_viewport_does_not_wrap_at_the_old_column_limit() {
+    fn collapsed_reasoning_shares_the_answer_left_edge() {
+        // Only spent reasoning collapses — the newest block stays expanded —
+        // so the turn needs a later step for the first one to fold.
+        let think = |content: &str, thinking: &str| Message {
+            outcome: Default::default(),
+            role: MessageRole::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            name: None,
+            thinking: Some(thinking.into()),
+            thinking_duration_secs: Some(185.0),
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        };
+        let msgs = vec![
+            think("The answer itself.", "some private reasoning"),
+            think("And a later step.", "more reasoning"),
+        ];
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Completed,
+            ConversationViewOpts::default(),
+        );
+
+        let rendered: Vec<String> = model.lines_for_width(100).iter().map(line_text).collect();
+        let edge = |needle: &str| {
+            rendered
+                .iter()
+                .find(|row| row.contains(needle))
+                .map(|row| row.len() - row.trim_start().len())
+                .unwrap_or_else(|| panic!("{needle:?} missing from {rendered:#?}"))
+        };
+
+        assert_eq!(
+            edge("Thought for"),
+            edge("The answer itself."),
+            "reasoning and answer should start in the same column: {rendered:#?}"
+        );
+    }
+
+    /// A wide pane is used. 119 characters wrapped to two lines under the old
+    /// 72-column measure while two thirds of the pane sat empty.
+    #[test]
+    fn a_wide_viewport_gives_its_width_to_the_answer() {
         let content = std::iter::repeat_n("word", 24)
             .collect::<Vec<_>>()
             .join(" ");
@@ -2287,7 +2363,16 @@ mod tests {
             .iter()
             .filter(|line| line.spans.iter().any(|span| span.content.contains("word")))
             .count();
-        assert_eq!(answer_lines, 2);
+        assert_eq!(answer_lines, 1);
+
+        // Narrow panes are unaffected: there the pane, not a measure, was
+        // always the limit.
+        let narrow = model
+            .lines_for_width(48)
+            .iter()
+            .filter(|line| line.spans.iter().any(|span| span.content.contains("word")))
+            .count();
+        assert!(narrow >= 3, "a 48-column pane should still wrap: {narrow}");
     }
 
     #[test]
