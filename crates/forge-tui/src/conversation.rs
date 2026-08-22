@@ -476,6 +476,13 @@ pub trait ConversationRender {
         keep_from_end: usize,
         stream_cache: Option<&mut StreamMarkdownCache>,
     ) -> Vec<Line<'static>>;
+    /// As [`Self::lines_for_width_from_end`], also reporting where the plan
+    /// card sits so it can be docked once it scrolls away.
+    fn lines_and_plan_dock(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> (Vec<Line<'static>>, Option<PlanDock>);
 }
 
 impl ConversationRender for ConversationModel {
@@ -504,6 +511,16 @@ impl ConversationRender for ConversationModel {
         cache: &mut StreamMarkdownCache,
     ) -> Vec<Line<'static>> {
         self.render_lines(available_width, keep_from_end, Some(cache))
+    }
+
+    fn lines_and_plan_dock(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> (Vec<Line<'static>>, Option<PlanDock>) {
+        let lines = self.render_lines(available_width, keep_from_end, None);
+        let dock = plan_dock_for(self, available_width, keep_from_end, &lines);
+        (lines, dock)
     }
 
     fn render_lines(
@@ -873,6 +890,8 @@ pub struct ConversationLinesWidget<'a> {
     /// started, instead of letting a short one float at the top of the pane
     /// with the live edge stranded mid-screen.
     pub anchor_bottom: bool,
+    /// Stands in for the plan card once it has scrolled above the window.
+    pub plan_dock: Option<&'a PlanDock>,
 }
 
 /// The three slices a transcript frame is painted from, in paint order:
@@ -884,12 +903,117 @@ pub(super) struct TranscriptSlices<'a> {
     pub status_lines: &'a [Line<'static>],
 }
 
+/// Locate the plan card inside `lines`, and build the row that stands in
+/// for it.
+///
+/// The card is found by rendering it standalone and matching its first and
+/// last rows against what was produced, rather than by threading an index
+/// out of the block loop — the loop feeds three cached entry points and a
+/// tail window, and an index would have to be kept correct through all of
+/// them. Matching costs a scan of the rendered lines, and only when a plan
+/// exists at all.
+fn plan_dock_for(
+    model: &ConversationModel,
+    available_width: usize,
+    keep_from_end: usize,
+    lines: &[Line<'static>],
+) -> Option<PlanDock> {
+    let width = available_width.max(4);
+    let blocks = model.semantic_blocks();
+    let prose_width = width
+        .saturating_sub(MESSAGE_PADDING * 2)
+        .clamp(4, PROSE_MAX_WIDTH);
+    let start = start_block_for_tail(&blocks, width, prose_width, keep_from_end);
+    let (index, plan) = blocks
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, block)| match block {
+            ConversationBlock::PlanChecklist(p) => Some((i, p)),
+            _ => None,
+        })?;
+    // Follow mode renders only a tail window, so a plan far enough back is
+    // not in `lines` at all — which is exactly when it most needs docking.
+    // Treat "not rendered" as "above the window", not as "no plan".
+    let end = if index < start {
+        0
+    } else {
+        let card = render_plan_checklist(plan, width);
+        let located = card.first().zip(card.last()).and_then(|(first, last)| {
+            let (first, last) = (line_plain(first), line_plain(last));
+            let head = lines.iter().rposition(|line| line_plain(line) == first)?;
+            lines[head..]
+                .iter()
+                .position(|line| line_plain(line) == last)
+                .map(|offset| head + offset + 1)
+        });
+        located.unwrap_or(0)
+    };
+
+    let done = plan
+        .steps
+        .iter()
+        .filter(|item| item.status == forge_types::PlanStepStatus::Completed)
+        .count();
+    let total = plan.steps.len();
+    let current = plan
+        .steps
+        .iter()
+        .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
+        .map(|item| item.step.as_str());
+    let mut spans = vec![
+        Span::styled("\u{2191} ", theme::accent_style()),
+        Span::styled("Plan  ", theme::metadata_style()),
+        Span::styled(
+            "\u{2593}".repeat(done) + &"\u{2591}".repeat(total.saturating_sub(done)),
+            theme::accent_style(),
+        ),
+        Span::styled(format!("  {done}/{total}"), theme::muted()),
+    ];
+    if let Some(step) = current {
+        spans.push(Span::styled("  \u{b7}  ", theme::muted()));
+        spans.push(Span::styled(
+            crate::path_display::elide_middle(step, prose_width.saturating_sub(20).max(8)),
+            theme::text(),
+        ));
+    }
+    Some(PlanDock {
+        end,
+        summary: Line::from(spans),
+    })
+}
+
+/// A line's text with styling dropped, for comparing two renderings of the
+/// same content.
+fn line_plain(line: &Line<'static>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+/// A one-row stand-in for the plan card, and where the card it stands for
+/// ends.
+///
+/// The card is worth its height while it is on screen and worth nothing once
+/// it has scrolled past — which measurement showed happens about four seconds
+/// into a turn. When the card is above the window this row takes the top of
+/// the pane instead, so the plan is never simply gone.
+#[derive(Debug, Clone)]
+pub struct PlanDock {
+    /// Index just past the plan card's last line, within the rendered slice.
+    pub(super) end: usize,
+    pub(super) summary: Line<'static>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_conversation_lines(
     slices: TranscriptSlices<'_>,
     scroll_from_bottom: u16,
     follow: bool,
     bottom_padding: u16,
     anchor_bottom: bool,
+    dock: Option<&PlanDock>,
     area: Rect,
     buf: &mut Buffer,
 ) {
@@ -913,7 +1037,7 @@ pub(super) fn render_conversation_lines(
     // reused every frame. Deep-copying each visible one (and every owned string
     // inside its spans) was pure per-frame waste.
     let blank = Line::from("");
-    let visible = (scroll..end)
+    let mut visible = (scroll..end)
         .map(|index| {
             if index < lines.len() {
                 &lines[index]
@@ -926,6 +1050,15 @@ pub(super) fn render_conversation_lines(
             }
         })
         .collect::<Vec<_>>();
+    // The plan card has scrolled above the window: its one-row stand-in takes
+    // the top of the pane. Measured before this existed, the card was on
+    // screen for 8 frames out of 70 and nothing afterwards said a plan
+    // existed, which step was running, or how far in it was.
+    if let Some(dock) = dock.filter(|dock| dock.end <= scroll) {
+        if let Some(first) = visible.first_mut() {
+            *first = &dock.summary;
+        }
+    }
     // Short transcripts painted from the top left the newest line — the one
     // being written — floating in the middle of the pane with a screen of
     // nothing under it. Push them down so the live edge sits where the reader
@@ -1008,6 +1141,7 @@ impl Widget for ConversationLinesWidget<'_> {
             self.follow,
             self.bottom_padding,
             self.anchor_bottom,
+            self.plan_dock,
             area,
             buf,
         );
@@ -1038,6 +1172,7 @@ impl Widget for ConversationWidget<'_> {
             self.model.follow,
             0,
             false,
+            None,
             area,
             buf,
         );
@@ -2821,6 +2956,75 @@ mod tests {
         ));
     }
 
+    /// Measured before this existed: the plan card was on screen for 8 frames
+    /// out of 70, and after that nothing said a plan existed at all.
+    #[test]
+    fn the_plan_docks_once_its_card_has_scrolled_away() {
+        let mut items = vec![ChatItem::PlanChecklist {
+            explanation: None,
+            steps: vec![
+                forge_types::PlanItem {
+                    step: "Inspect the theme tokens".into(),
+                    status: forge_types::PlanStepStatus::Completed,
+                },
+                forge_types::PlanItem {
+                    step: "Add the dark palette".into(),
+                    status: forge_types::PlanStepStatus::InProgress,
+                },
+            ],
+            evidence: Vec::new(),
+        }];
+        // Enough answer under it to push the card off any reasonable pane.
+        for n in 0..40 {
+            items.push(ChatItem::Assistant {
+                text: format!("line {n}"),
+            });
+        }
+        let model = ConversationModel {
+            items,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let (lines, dock) = model.lines_and_plan_dock(80, usize::MAX);
+        let dock = dock.expect("a plan in the transcript should be dockable");
+
+        // The dock stands for a card that really is up there.
+        assert!(dock.end <= lines.len(), "{} vs {}", dock.end, lines.len());
+        let summary = line_text(&dock.summary);
+        assert!(summary.contains("1/2"), "{summary}");
+        assert!(
+            summary.contains("Add the dark palette"),
+            "the running step should be named: {summary}"
+        );
+
+        // Scrolled past the card, the top row is the summary. Still on it,
+        // the card speaks for itself and the row is left alone.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 10));
+        render_conversation_lines(
+            TranscriptSlices {
+                lines: &lines,
+                tail_lines: &[],
+                status_lines: &[],
+            },
+            0,
+            true,
+            0,
+            false,
+            Some(&dock),
+            Rect::new(0, 0, 80, 10),
+            &mut buf,
+        );
+        let top: String = (0..80)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect::<String>();
+        assert!(
+            top.contains("Plan") && top.contains("1/2"),
+            "docked row missing from the top of the pane: {top:?}"
+        );
+    }
+
     #[test]
     fn plan_checklist_card_is_bordered_with_no_background_fill() {
         let plan = PlanChecklistPresentation {
@@ -4126,6 +4330,7 @@ mod tests {
                 true,
                 0,
                 anchor_bottom,
+                None,
                 area,
                 &mut buf,
             );

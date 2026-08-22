@@ -343,9 +343,11 @@ impl TuiApp {
                 conv = conv.with_pending_question(presentation);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
+            let (lines, plan_dock) = conv.lines_and_plan_dock(width, keep_from_end);
             self.render_cache.conversation = Some(ConversationRenderCache {
                 key,
-                lines: Arc::new(conv.lines_for_width_from_end(width, keep_from_end)),
+                lines: Arc::new(lines),
+                plan_dock,
             });
         }
         let width = sidebar_width.saturating_sub(2) as usize;
@@ -468,6 +470,7 @@ impl TuiApp {
             .as_ref()
             .expect("conversation cache populated");
         let cached_lines = Arc::clone(&cached.lines);
+        let plan_dock = cached.plan_dock.clone();
         // The sidebar always shows the conversation, regardless of what the
         // center pane shows — it's no longer one of the `WorkspaceView`
         // options.
@@ -510,6 +513,7 @@ impl TuiApp {
                     scroll: self.conversation_view.scroll,
                     follow: self.conversation_view.follow,
                     bottom_padding,
+                    plan_dock: plan_dock.as_ref(),
                 },
                 conversation_area,
             );

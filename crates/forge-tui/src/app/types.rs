@@ -632,6 +632,9 @@ pub(crate) struct ConversationRenderCache {
     /// Shared so the render path can hold the lines without copying them. A
     /// frame clones the handle, not the ~940KB of `Line`/`Span` data behind it.
     pub(crate) lines: Arc<Vec<Line<'static>>>,
+    /// Where the plan card sits in `lines`, and the row that replaces it once
+    /// it has scrolled away. Cached with the lines it indexes into.
+    pub(crate) plan_dock: Option<crate::conversation::PlanDock>,
 }
 
 pub(crate) struct ConversationViewState {
