@@ -328,6 +328,9 @@ fn heading_rank(level: pulldown_cmark::HeadingLevel) -> u8 {
 
 /// Open a block with one blank line of separation, never two, and never a
 /// leading blank at the very top of the answer.
+/// Marks an H2 in the margin, where H1 has a rule under it instead.
+const HEADING_BAR: &str = "▌ ";
+
 fn blank_before_block(out: &mut Vec<Line<'static>>) {
     match out.last() {
         None => {}
@@ -416,6 +419,15 @@ impl MdRenderer {
                 let level = heading_rank(level);
                 self.heading_level = Some(level);
                 blank_before_block(&mut self.out);
+                // H1 is told apart by the rule under it. H2 had only bold,
+                // which in a monospace face at terminal sizes is nearly no
+                // signal against body text — a section heading read as another
+                // paragraph. A bar in the margin is ornament rather than more
+                // weight, so rank still reads without spending hue.
+                if level == 2 {
+                    self.prefix = HEADING_BAR.into();
+                    self.cont_prefix = " ".repeat(display_width(HEADING_BAR));
+                }
                 self.push_style(if level <= 2 {
                     theme::heading()
                 } else {
@@ -525,6 +537,8 @@ impl MdRenderer {
             TagEnd::Heading(_) => {
                 self.pop_style();
                 self.flush_para();
+                self.prefix.clear();
+                self.cont_prefix.clear();
                 if self.heading_level.take() == Some(1) {
                     self.out.push(Line::from(Span::styled(
                         "─".repeat(self.width),
@@ -1111,6 +1125,43 @@ fn render_highlighted_line(segments: &[forge_syntax::HighlightedSegment]) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// H1 is told apart by its rule. H2 had only bold, which at terminal
+    /// sizes reads as body text — a section heading that announces nothing.
+    #[test]
+    fn a_second_level_heading_is_marked_in_the_margin() {
+        let lines = render_markdown("# Title\n\n## Section\n\nbody text\n", 60);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert!(
+            text.iter().any(|row| row.starts_with("▌ Section")),
+            "H2 should carry a bar: {text:?}"
+        );
+        // H1 keeps the rule and does not also get a bar — two markers for one
+        // level would read as two levels.
+        assert!(
+            text.iter().any(|row| row.starts_with("Title")),
+            "H1 should stay unmarked: {text:?}"
+        );
+        assert!(
+            text.iter().any(|row| row.starts_with("───")),
+            "H1 should keep its rule: {text:?}"
+        );
+        // The bar belongs to the heading, not to what follows it.
+        assert!(
+            text.iter().any(|row| row.starts_with("body text")),
+            "body should not inherit the bar: {text:?}"
+        );
+    }
+
     use super::*;
 
     fn text(rendered: &[Line<'static>]) -> String {
