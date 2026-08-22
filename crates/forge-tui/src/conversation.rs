@@ -337,7 +337,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         // — including the title — off the pane.
         ConversationBlock::ApprovalPending(p) => render_approval_card(p, prose_width).len(),
         ConversationBlock::Home(p) => render_home_card(p, prose_width).len(),
-        ConversationBlock::QuestionPending(_) => 8,
+        ConversationBlock::QuestionPending(p) => render_question_card(p, prose_width).len(),
     };
     body.saturating_add(2)
 }
@@ -682,74 +682,7 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::QuestionPending(p) => {
-                    use crate::hints;
-                    let pad = " ".repeat(MESSAGE_PADDING);
-                    let title = if p.question_count > 1 {
-                        format!(
-                            "{} ({}/{})",
-                            p.header,
-                            p.question_index + 1,
-                            p.question_count
-                        )
-                    } else {
-                        p.header.clone()
-                    };
-                    let title_style = if p.focused {
-                        theme::text().add_modifier(Modifier::BOLD)
-                    } else {
-                        theme::text()
-                    };
-                    for wrapped in wrap(&title, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, title_style),
-                        ]));
-                    }
-                    for wrapped in wrap(&p.question, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, theme::text()),
-                        ]));
-                    }
-                    for (idx, opt) in p.options.iter().enumerate() {
-                        let selected = idx == p.selected;
-                        let marker = if selected { "›" } else { " " };
-                        let check = if opt.chosen { "● " } else { "" };
-                        let style = if selected {
-                            theme::text().add_modifier(Modifier::BOLD)
-                        } else {
-                            theme::muted()
-                        };
-                        let row = format!("{marker} {check}{}", opt.label);
-                        for wrapped in wrap(&row, prose_width) {
-                            lines.push(Line::from(vec![
-                                Span::raw(pad.clone()),
-                                Span::styled(wrapped, style),
-                            ]));
-                        }
-                        if selected {
-                            if let Some(desc) =
-                                opt.description.as_deref().filter(|desc| !desc.is_empty())
-                            {
-                                for wrapped in wrap(desc, prose_width.saturating_sub(4)) {
-                                    lines.push(Line::from(vec![
-                                        Span::raw(pad.clone()),
-                                        Span::styled(format!("    {wrapped}"), theme::muted()),
-                                    ]));
-                                }
-                            }
-                        }
-                    }
-                    let hint = if p.question_count > 1 {
-                        hints::QUESTION_TABS
-                    } else if p.multi_select {
-                        hints::QUESTION_MULTI
-                    } else {
-                        hints::QUESTION
-                    };
-                    let mut spans = vec![Span::raw(pad.clone())];
-                    spans.extend(hints::hint_spans(hint, prose_width));
-                    lines.push(Line::from(spans));
+                    lines.extend(render_question_card(&p, prose_width));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1130,6 +1063,9 @@ const APPROVAL_COMPACT_WIDTH: usize = 40;
 /// elided down to noise, so it is dropped instead.
 const APPROVAL_MIN_HELP_COLUMNS: usize = 14;
 
+/// Rows one option's description may spend on the question card.
+const QUESTION_DESCRIPTION_LINES: usize = 2;
+
 /// Rows the category explanation may spend when it is the only thing saying
 /// why the prompt appeared.
 const APPROVAL_REASON_LINES: usize = 3;
@@ -1245,6 +1181,150 @@ fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'stati
 /// with less visual weight than the empty composer below it. The presentation
 /// already carried a `focused` flag documented as "accent border vs muted" —
 /// there simply was no border for it to colour.
+/// The questionnaire's card.
+///
+/// Built like the approval card and for the same reason: these are the same
+/// weight of decision — the agent has stopped and cannot go on until the
+/// operator answers — and they should not look like two unrelated things.
+///
+/// Every option shows its description, not only the selected one. Choosing
+/// between three options means comparing them, and a description that appears
+/// only under the cursor makes the reader arrow up and down to do it.
+pub(super) fn render_question_card(
+    p: &QuestionPendingPresentation,
+    prose_width: usize,
+) -> Vec<Line<'static>> {
+    let pad = " ".repeat(MESSAGE_PADDING);
+    let total = prose_width.saturating_sub(MESSAGE_PADDING).max(12);
+    let inner = total.saturating_sub(4);
+    let compact = inner < APPROVAL_COMPACT_WIDTH;
+    let border = if p.focused {
+        theme::waiting_border()
+    } else {
+        theme::border_muted()
+    };
+
+    let title = if p.question_count > 1 {
+        format!(
+            "{} ({}/{})",
+            p.header,
+            p.question_index + 1,
+            p.question_count
+        )
+    } else {
+        p.header.clone()
+    };
+
+    let mut out: Vec<Line<'static>> = vec![{
+        let mut spans = vec![Span::raw(pad.clone())];
+        spans.extend(card_top_border(total, Some(&title), border).spans);
+        Line::from(spans)
+    }];
+    let mut row = |spans: Vec<Span<'static>>| {
+        let mut all = vec![Span::raw(pad.clone())];
+        all.extend(card_content_spans(spans, inner, border, None).spans);
+        out.push(Line::from(all));
+    };
+
+    for wrapped in wrap(&p.question, inner) {
+        row(vec![Span::styled(wrapped, theme::text())]);
+    }
+    row(vec![]);
+
+    for (idx, opt) in p.options.iter().enumerate() {
+        let selected = idx == p.selected;
+        // The marker is its own span. Folding it into the wrapped string let
+        // `wrap` trim the leading space off every unselected row, so the
+        // options sat two columns left of the one under the cursor and the
+        // list did not read as a list.
+        let marker = if selected { "\u{276f} " } else { "  " };
+        let style = if selected {
+            theme::text().add_modifier(Modifier::BOLD)
+        } else {
+            theme::text()
+        };
+        // The digit already answers the question — `handle_question_menu_key`
+        // has accepted 1-9 all along, with nothing on screen to say so.
+        let ordinal = format!("{}. ", idx + 1);
+        let chosen = if opt.chosen { "● " } else { "" };
+        let lead = marker.chars().count() + ordinal.chars().count() + chosen.chars().count();
+        for (n, wrapped) in wrap(&opt.label, inner.saturating_sub(lead))
+            .into_iter()
+            .enumerate()
+        {
+            let mut spans = vec![Span::styled(
+                if n == 0 {
+                    marker.to_string()
+                } else {
+                    " ".repeat(marker.chars().count())
+                },
+                theme::accent_style(),
+            )];
+            spans.push(Span::styled(
+                if n == 0 {
+                    ordinal.clone()
+                } else {
+                    " ".repeat(ordinal.chars().count())
+                },
+                theme::metadata_style().add_modifier(Modifier::BOLD),
+            ));
+            if !chosen.is_empty() {
+                spans.push(Span::styled(
+                    if n == 0 {
+                        chosen.to_string()
+                    } else {
+                        " ".repeat(chosen.chars().count())
+                    },
+                    theme::ok(),
+                ));
+            }
+            spans.push(Span::styled(wrapped, style));
+            row(spans);
+        }
+        if let Some(desc) = opt.description.as_deref().filter(|d| !d.is_empty()) {
+            if !compact {
+                // Capped: with every option explaining itself the card grows
+                // by the number of options, and a long description on each of
+                // five of them pushes the question itself off a short pane.
+                // Two lines is enough to distinguish options; the rest is
+                // prose the operator did not ask for.
+                let wrapped = wrap(desc, inner.saturating_sub(lead));
+                let elided = wrapped.len() > QUESTION_DESCRIPTION_LINES;
+                for (n, text) in wrapped
+                    .into_iter()
+                    .take(QUESTION_DESCRIPTION_LINES)
+                    .enumerate()
+                {
+                    let last = n + 1 == QUESTION_DESCRIPTION_LINES;
+                    row(vec![Span::styled(
+                        format!(
+                            "{}{text}{}",
+                            " ".repeat(lead),
+                            if elided && last { "…" } else { "" }
+                        ),
+                        theme::metadata_style(),
+                    )]);
+                }
+            }
+        }
+    }
+
+    row(vec![]);
+    let hint = if p.question_count > 1 {
+        crate::hints::QUESTION_TABS
+    } else if p.multi_select {
+        crate::hints::QUESTION_MULTI
+    } else {
+        crate::hints::QUESTION
+    };
+    row(crate::hints::hint_spans(hint, inner));
+
+    let mut bottom = vec![Span::raw(pad)];
+    bottom.extend(card_bottom_border(total, border).spans);
+    out.push(Line::from(bottom));
+    out
+}
+
 fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> Vec<Line<'static>> {
     let pad = " ".repeat(MESSAGE_PADDING);
     // A row spends `pad` + `│` + ` ` + inner + `│`, so the card is
@@ -3405,7 +3485,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_question_renders_inline_not_as_a_card() {
+    fn pending_question_renders_as_a_numbered_card() {
         const PANE_WIDTH: usize = 100;
         let m = ConversationModel::from_messages(
             &[],
@@ -3423,6 +3503,11 @@ mod tests {
                     chosen: false,
                 },
                 QuestionMenuRow {
+                    label: "SQLite".into(),
+                    description: Some("Embedded, single file.".into()),
+                    chosen: false,
+                },
+                QuestionMenuRow {
                     label: "Other".into(),
                     description: Some("Type a custom answer in the composer.".into()),
                     chosen: false,
@@ -3437,12 +3522,25 @@ mod tests {
         let lines = m.lines_for_width(PANE_WIDTH);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("Which database?"), "{text}");
-        assert!(text.contains("› Postgres (Recommended)"), "{text}");
+        // Numbered, because 1-9 already answer the question, and marked with
+        // the same caret the approval card uses.
+        assert!(
+            text.contains("\u{276f} 1. Postgres (Recommended)"),
+            "{text}"
+        );
         assert!(text.contains("Relational default."), "{text}");
         assert!(text.contains("Other"), "{text}");
+        // Every option explains itself, not only the one under the cursor:
+        // choosing between options means comparing them.
         assert!(
-            lines.iter().all(|line| !line_text(line).starts_with('┌')),
-            "question must not render as a boxed card: {text}"
+            text.contains("Embedded, single file."),
+            "unselected option lost its description: {text}"
+        );
+        // Framed like the approval card. Both are the same thing to the
+        // operator — the agent has stopped and cannot continue without them.
+        assert!(
+            lines.iter().any(|line| line_text(line).contains('┌')),
+            "question should render as a card: {text}"
         );
     }
 

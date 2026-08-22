@@ -37,9 +37,9 @@ fn set_pending_question_focused(app: &mut TuiApp, payload: QuestionPayload) {
 async fn question_prompt_renders_inline() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_question_focused(&mut app, db_question());
-    let text = render_app_text(&mut app, 100, 24);
+    let text = render_app_text(&mut app, 100, 34);
     assert!(text.contains("Which database?"), "{text}");
-    assert!(text.contains("Postgres (Recommended)"), "{text}");
+    assert!(text.contains("1. Postgres (Recommended)"), "{text}");
     assert!(text.contains("Other"), "{text}");
     assert!(text.contains("Esc skip"), "{text}");
 }
@@ -50,20 +50,26 @@ async fn drawing_a_question_keeps_menu_focus_so_arrows_move() {
     set_pending_question_focused(&mut app, db_question());
     assert_eq!(app.focus.block(), FocusBlock::Approval);
 
-    let first = render_app_text(&mut app, 100, 24);
+    let first = render_app_text(&mut app, 100, 34);
     assert_eq!(app.focus.block(), FocusBlock::Approval);
     assert_eq!(app.question_menu_indexes(), (0, 0));
-    assert!(first.contains("› Postgres (Recommended)"), "{first}");
+    assert!(
+        first.contains("\u{276f} 1. Postgres (Recommended)"),
+        "{first}"
+    );
 
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.question_menu_indexes(), (0, 1));
 
-    let second = render_app_text(&mut app, 100, 24);
+    let second = render_app_text(&mut app, 100, 34);
     assert_eq!(app.focus.block(), FocusBlock::Approval);
-    assert!(second.contains("› SQLite"), "{second}");
-    assert!(!second.contains("› Postgres (Recommended)"), "{second}");
+    assert!(second.contains("\u{276f} 2. SQLite"), "{second}");
+    assert!(
+        !second.contains("\u{276f} 1. Postgres (Recommended)"),
+        "{second}"
+    );
 }
 
 #[tokio::test]
