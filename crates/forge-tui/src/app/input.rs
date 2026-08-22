@@ -943,11 +943,13 @@ impl TuiApp {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => true,
             KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => true,
             KeyCode::PageUp if key.modifiers.is_empty() => {
-                self.scroll_conversation_up(5);
+                let page = self.conversation_page_rows();
+                self.scroll_conversation_up(page);
                 true
             }
             KeyCode::PageDown if key.modifiers.is_empty() => {
-                self.scroll_conversation_down(5);
+                let page = self.conversation_page_rows();
+                self.scroll_conversation_down(page);
                 true
             }
             _ => false,
