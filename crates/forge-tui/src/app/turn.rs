@@ -157,10 +157,21 @@ impl TuiApp {
         self.banner_state
             .items
             .retain(|item| !matches!(item, ChatItem::TurnSummary { .. }));
+        // The provider's own count for this turn: cumulative session usage
+        // less what it stood at when the turn began. `None` when the provider
+        // reported no usage, so the summary omits a rate rather than printing
+        // a confident zero.
+        let produced = self
+            .session
+            .token_usage_report()
+            .api
+            .completion_tokens
+            .saturating_sub(self.timing.completion_tokens_at_start);
         self.banner_state.items.push(ChatItem::TurnSummary {
             secs: started.elapsed().as_secs_f64(),
             chars: self.timing.chars,
             tools: self.timing.tools,
+            output_tokens: (produced > 0).then_some(produced),
         });
     }
 
