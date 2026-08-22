@@ -801,6 +801,14 @@ impl ConversationRender for ConversationModel {
                         ),
                     ];
                     let mut detail = format!("   ·  {} chars", compact_count(p.chars));
+                    // Tokens per second, from the provider's own count for
+                    // this turn. It belongs here and not on the live line:
+                    // usage only arrives once the turn is over, and a rate in
+                    // characters moved with how verbose the model was being
+                    // rather than how fast it was going.
+                    if let Some(rate) = p.tokens_per_second() {
+                        detail.push_str(&format!("  ·  {rate:.0} tok/s"));
+                    }
                     if p.tools > 0 {
                         let unit = if p.tools == 1 { "tool" } else { "tools" };
                         detail.push_str(&format!("  ·  {} {unit}", p.tools));

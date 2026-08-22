@@ -236,6 +236,8 @@ pub enum ChatItem {
         /// up as a count is worse than an exact number of something else.
         chars: usize,
         tools: usize,
+        /// See [`TurnSummaryPresentation::output_tokens`].
+        output_tokens: Option<u64>,
     },
 }
 
@@ -271,6 +273,26 @@ pub struct TurnSummaryPresentation {
     pub secs: f64,
     pub chars: usize,
     pub tools: usize,
+    /// Completion tokens this turn actually produced, as reported by the
+    /// provider. `None` when the provider sent no usage.
+    ///
+    /// Only available once the turn is over, which is why the live line
+    /// counts characters instead: no provider reports usage mid-stream.
+    pub output_tokens: Option<u64>,
+}
+
+impl TurnSummaryPresentation {
+    /// Output tokens per second of wall time, or `None` when there is nothing
+    /// honest to divide.
+    ///
+    /// Wall time, not model time: a turn that spent nine of its ten seconds
+    /// running tools did not generate at the rate the model alone managed,
+    /// and the reader is timing the turn they waited through. Turns under a
+    /// second report nothing rather than a figure a rounding error can double.
+    pub fn tokens_per_second(&self) -> Option<f64> {
+        let tokens = self.output_tokens?;
+        (self.secs >= 1.0 && tokens > 0).then(|| tokens as f64 / self.secs)
+    }
 }
 
 /// Model reasoning. Recedes rather than announces: dim italic, indented past
@@ -1309,13 +1331,19 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     kind: *kind,
                 }));
             }
-            ChatItem::TurnSummary { secs, chars, tools } => {
+            ChatItem::TurnSummary {
+                secs,
+                chars,
+                tools,
+                output_tokens,
+            } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::TurnSummary(TurnSummaryPresentation {
                     secs: *secs,
                     chars: *chars,
                     tools: *tools,
+                    output_tokens: *output_tokens,
                 }));
             }
         }
@@ -3461,6 +3489,43 @@ mod tests {
 
 #[cfg(test)]
 mod spent_reasoning_tests {
+
+    /// The live line counts characters because no provider reports usage
+    /// mid-stream. Once the turn is over the provider's own count is in hand,
+    /// and a rate can be a measurement rather than an estimate.
+    #[test]
+    fn a_finished_turn_reports_output_tokens_per_second() {
+        let summary = |secs: f64, output_tokens: Option<u64>| TurnSummaryPresentation {
+            secs,
+            chars: 900,
+            tools: 0,
+            output_tokens,
+        };
+
+        assert_eq!(summary(10.0, Some(400)).tokens_per_second(), Some(40.0));
+
+        // Nothing to divide, or nothing honest to divide by.
+        assert_eq!(summary(10.0, None).tokens_per_second(), None);
+        assert_eq!(summary(10.0, Some(0)).tokens_per_second(), None);
+        // Under a second, rounding can double the figure — say nothing.
+        assert_eq!(summary(0.4, Some(30)).tokens_per_second(), None);
+    }
+
+    /// Wall time, not model time: a turn that spent most of itself running
+    /// tools did not generate at the rate the model alone managed, and the
+    /// reader is timing the turn they waited through.
+    #[test]
+    fn the_rate_is_over_the_whole_turn_including_tool_time() {
+        let tool_heavy = TurnSummaryPresentation {
+            secs: 20.0,
+            chars: 900,
+            tools: 4,
+            output_tokens: Some(200),
+        };
+
+        assert_eq!(tool_heavy.tokens_per_second(), Some(10.0));
+    }
+
     use super::*;
 
     fn thinking(text: &str, secs: f64) -> ChatItem {

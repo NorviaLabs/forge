@@ -753,7 +753,11 @@ impl TuiApp {
         self.pending_turn.request_continue();
         self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());
-        self.timing.turn_started.get_or_insert_with(Instant::now);
+        if self.timing.turn_started.is_none() {
+            self.timing.turn_started = Some(Instant::now());
+            self.timing.completion_tokens_at_start =
+                self.session.token_usage_report().api.completion_tokens;
+        }
         self.stream.clear_preview();
         self.stream.thinking.clear();
     }
