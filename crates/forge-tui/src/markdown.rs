@@ -328,6 +328,9 @@ fn heading_rank(level: pulldown_cmark::HeadingLevel) -> u8 {
 
 /// Open a block with one blank line of separation, never two, and never a
 /// leading blank at the very top of the answer.
+/// Marks an H2 in the margin, where H1 has a rule under it instead.
+const HEADING_BAR: &str = "▌ ";
+
 fn blank_before_block(out: &mut Vec<Line<'static>>) {
     match out.last() {
         None => {}
@@ -416,6 +419,15 @@ impl MdRenderer {
                 let level = heading_rank(level);
                 self.heading_level = Some(level);
                 blank_before_block(&mut self.out);
+                // H1 is told apart by the rule under it. H2 had only bold,
+                // which in a monospace face at terminal sizes is nearly no
+                // signal against body text — a section heading read as another
+                // paragraph. A bar in the margin is ornament rather than more
+                // weight, so rank still reads without spending hue.
+                if level == 2 {
+                    self.prefix = HEADING_BAR.into();
+                    self.cont_prefix = " ".repeat(display_width(HEADING_BAR));
+                }
                 self.push_style(if level <= 2 {
                     theme::heading()
                 } else {
@@ -525,6 +537,8 @@ impl MdRenderer {
             TagEnd::Heading(_) => {
                 self.pop_style();
                 self.flush_para();
+                self.prefix.clear();
+                self.cont_prefix.clear();
                 if self.heading_level.take() == Some(1) {
                     self.out.push(Line::from(Span::styled(
                         "─".repeat(self.width),
@@ -672,19 +686,18 @@ impl MdRenderer {
     }
 
     fn code_row(&self, content: Vec<Span<'static>>) -> Line<'static> {
+        // No tinted ground. The rail and the syntax colours already say this
+        // is code, and a filled slab running the width of the pane is a lot of
+        // paint for that — more so since prose stopped capping at 72 columns.
+        // Rows are no longer padded either: the padding existed only to carry
+        // the tint to the right edge, and without it the trailing spaces are
+        // just trailing spaces.
         let mut spans = vec![Span::styled(
             format!("{CODE_INDENT}{CODE_GUTTER}"),
             theme::code_gutter(),
         )];
-        let mut used = display_width(CODE_INDENT) + display_width(CODE_GUTTER);
-        for span in content {
-            used += span.width();
-            spans.push(span);
-        }
-        if used < self.width {
-            spans.push(Span::raw(" ".repeat(self.width - used)));
-        }
-        Line::from(spans).style(theme::chat_code_block())
+        spans.extend(content);
+        Line::from(spans)
     }
 
     /// Render a code block as a block.
@@ -713,6 +726,12 @@ impl MdRenderer {
             let row = self.code_row(render_highlighted_line(line_segments));
             self.out.push(row);
         }
+        // A block opens with air above it and used to close with none, so the
+        // prose that follows started on the row under the last line of code —
+        // touching a tinted slab it has nothing to do with. Unlike a heading,
+        // which belongs to what comes after it, a fenced block belongs to
+        // itself.
+        self.out.push(Line::from(""));
     }
 }
 
@@ -1092,12 +1111,13 @@ fn shrink_widths(natural: &[usize], available: usize) -> Vec<usize> {
 }
 
 fn render_highlighted_line(segments: &[forge_syntax::HighlightedSegment]) -> Vec<Span<'static>> {
-    let block = theme::chat_code_block();
     segments
         .iter()
         .map(|(text, rgb, bold, italic)| {
-            let mut style =
-                theme::syntax_segment(*rgb, Some(block.bg.unwrap_or(theme::panel_alt_bg())));
+            // Foreground only. Each token used to carry the block's ground on
+            // its own span, so the tint ended wherever the token did and the
+            // block had a ragged edge rather than a shape.
+            let mut style = theme::syntax_segment(*rgb, None);
             if *bold {
                 style = style.add_modifier(Modifier::BOLD);
             }
@@ -1111,6 +1131,84 @@ fn render_highlighted_line(segments: &[forge_syntax::HighlightedSegment]) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// A fenced block opened with air above it and closed with none, so the
+    /// next paragraph started on the row under the last line of code, against
+    /// a tinted slab it has nothing to do with.
+    #[test]
+    fn a_code_block_closes_with_a_gap() {
+        let md = "Before.\n\n```rust\nfn run() {}\n```\nAfter the block.\n";
+        let lines = render_markdown(md, 60);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+
+        let code = text
+            .iter()
+            .position(|row| row.contains("fn run()"))
+            .expect("code row");
+        let after = text
+            .iter()
+            .position(|row| row.starts_with("After the block."))
+            .expect("prose after the block");
+
+        assert!(
+            text[code + 1..after].iter().any(|row| row.is_empty()),
+            "no gap between the block and the prose under it: {text:?}"
+        );
+        // One gap, not two: a following heading adds its own blank only when
+        // the last line is not already blank.
+        let blanks = text[code + 1..after]
+            .iter()
+            .filter(|r| r.is_empty())
+            .count();
+        assert_eq!(blanks, 1, "{text:?}");
+    }
+
+    /// H1 is told apart by its rule. H2 had only bold, which at terminal
+    /// sizes reads as body text — a section heading that announces nothing.
+    #[test]
+    fn a_second_level_heading_is_marked_in_the_margin() {
+        let lines = render_markdown("# Title\n\n## Section\n\nbody text\n", 60);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert!(
+            text.iter().any(|row| row.starts_with("▌ Section")),
+            "H2 should carry a bar: {text:?}"
+        );
+        // H1 keeps the rule and does not also get a bar — two markers for one
+        // level would read as two levels.
+        assert!(
+            text.iter().any(|row| row.starts_with("Title")),
+            "H1 should stay unmarked: {text:?}"
+        );
+        assert!(
+            text.iter().any(|row| row.starts_with("───")),
+            "H1 should keep its rule: {text:?}"
+        );
+        // The bar belongs to the heading, not to what follows it.
+        assert!(
+            text.iter().any(|row| row.starts_with("body text")),
+            "body should not inherit the bar: {text:?}"
+        );
+    }
+
     use super::*;
 
     fn text(rendered: &[Line<'static>]) -> String {
@@ -1622,36 +1720,38 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         );
     }
 
-    /// The block must read as a block: a language chip, a gutter down every
-    /// row, and a tint that runs the full prose width so prose after the code
-    /// cannot look like part of it.
+    /// The block reads as a block through its rail and its syntax colours,
+    /// not through a filled ground. The tint was a slab the width of the pane
+    /// — a lot of paint to say "this is code" — and it grew when prose stopped
+    /// capping at 72 columns.
     #[test]
-    fn a_fenced_block_renders_as_a_tinted_block() {
+    fn a_fenced_block_is_marked_by_its_rail_not_a_tint() {
         let lines = render_markdown("Intro.\n\n```python\nx = 1\n```\n\nAfter.\n", 40);
         let rendered = text(&lines);
         assert!(rendered.contains("python"), "{rendered}");
         assert!(!rendered.contains("```"), "{rendered}");
 
-        let block_bg = theme::chat_code_block().bg;
-        let tinted: Vec<&Line<'static>> = lines
-            .iter()
-            .filter(|line| line.style.bg == block_bg && block_bg.is_some())
-            .collect();
-        assert_eq!(
-            tinted.len(),
-            1,
-            "one code row; the chip is not part of the tinted block:\n{rendered}"
+        assert!(
+            lines.iter().all(|line| line.style.bg.is_none()),
+            "no row of the block should carry a filled ground:\n{rendered}"
         );
-        for line in tinted {
-            assert_eq!(
-                line.width(),
-                40,
-                "a tinted row must fill the prose width:\n{rendered}"
-            );
-        }
+        // The rail is what marks it, on every row of code.
+        let railed = rendered
+            .lines()
+            .filter(|l| l.trim_start().starts_with(CODE_GUTTER.trim_end()))
+            .count();
+        assert_eq!(railed, 1, "one code row, railed:\n{rendered}");
+        // And rows are no longer padded out to the pane: the padding existed
+        // only to carry the tint.
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.width() == 0 || !text(std::slice::from_ref(line)).ends_with("  ")),
+            "code rows should not trail padding:\n{rendered}"
+        );
         assert!(
             rendered.lines().any(|l| l.trim() == "After."),
-            "prose after the block must stay untinted prose:\n{rendered}"
+            "prose after the block must stay prose:\n{rendered}"
         );
     }
 
