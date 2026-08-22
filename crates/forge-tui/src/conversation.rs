@@ -745,8 +745,11 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::CodeBlock(p) => {
+                    // `render_markdown` already renders a fenced block with
+                    // its rail and syntax colours. Styling the returned lines
+                    // again painted a second ground over the top of it.
                     for line in render_markdown(&p.text, width) {
-                        lines.push(line.style(theme::code_block()));
+                        lines.push(line);
                     }
                     if gap {
                         lines.push(Line::from(""));

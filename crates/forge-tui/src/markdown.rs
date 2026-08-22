@@ -1111,12 +1111,13 @@ fn shrink_widths(natural: &[usize], available: usize) -> Vec<usize> {
 }
 
 fn render_highlighted_line(segments: &[forge_syntax::HighlightedSegment]) -> Vec<Span<'static>> {
-    let block = theme::chat_code_block();
     segments
         .iter()
         .map(|(text, rgb, bold, italic)| {
-            let mut style =
-                theme::syntax_segment(*rgb, Some(block.bg.unwrap_or(theme::panel_alt_bg())));
+            // Foreground only. Each token used to carry the block's ground on
+            // its own span, so the tint ended wherever the token did and the
+            // block had a ragged edge rather than a shape.
+            let mut style = theme::syntax_segment(*rgb, None);
             if *bold {
                 style = style.add_modifier(Modifier::BOLD);
             }
