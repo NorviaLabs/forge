@@ -686,19 +686,18 @@ impl MdRenderer {
     }
 
     fn code_row(&self, content: Vec<Span<'static>>) -> Line<'static> {
+        // No tinted ground. The rail and the syntax colours already say this
+        // is code, and a filled slab running the width of the pane is a lot of
+        // paint for that — more so since prose stopped capping at 72 columns.
+        // Rows are no longer padded either: the padding existed only to carry
+        // the tint to the right edge, and without it the trailing spaces are
+        // just trailing spaces.
         let mut spans = vec![Span::styled(
             format!("{CODE_INDENT}{CODE_GUTTER}"),
             theme::code_gutter(),
         )];
-        let mut used = display_width(CODE_INDENT) + display_width(CODE_GUTTER);
-        for span in content {
-            used += span.width();
-            spans.push(span);
-        }
-        if used < self.width {
-            spans.push(Span::raw(" ".repeat(self.width - used)));
-        }
-        Line::from(spans).style(theme::chat_code_block())
+        spans.extend(content);
+        Line::from(spans)
     }
 
     /// Render a code block as a block.
@@ -1720,36 +1719,38 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         );
     }
 
-    /// The block must read as a block: a language chip, a gutter down every
-    /// row, and a tint that runs the full prose width so prose after the code
-    /// cannot look like part of it.
+    /// The block reads as a block through its rail and its syntax colours,
+    /// not through a filled ground. The tint was a slab the width of the pane
+    /// — a lot of paint to say "this is code" — and it grew when prose stopped
+    /// capping at 72 columns.
     #[test]
-    fn a_fenced_block_renders_as_a_tinted_block() {
+    fn a_fenced_block_is_marked_by_its_rail_not_a_tint() {
         let lines = render_markdown("Intro.\n\n```python\nx = 1\n```\n\nAfter.\n", 40);
         let rendered = text(&lines);
         assert!(rendered.contains("python"), "{rendered}");
         assert!(!rendered.contains("```"), "{rendered}");
 
-        let block_bg = theme::chat_code_block().bg;
-        let tinted: Vec<&Line<'static>> = lines
-            .iter()
-            .filter(|line| line.style.bg == block_bg && block_bg.is_some())
-            .collect();
-        assert_eq!(
-            tinted.len(),
-            1,
-            "one code row; the chip is not part of the tinted block:\n{rendered}"
+        assert!(
+            lines.iter().all(|line| line.style.bg.is_none()),
+            "no row of the block should carry a filled ground:\n{rendered}"
         );
-        for line in tinted {
-            assert_eq!(
-                line.width(),
-                40,
-                "a tinted row must fill the prose width:\n{rendered}"
-            );
-        }
+        // The rail is what marks it, on every row of code.
+        let railed = rendered
+            .lines()
+            .filter(|l| l.trim_start().starts_with(CODE_GUTTER.trim_end()))
+            .count();
+        assert_eq!(railed, 1, "one code row, railed:\n{rendered}");
+        // And rows are no longer padded out to the pane: the padding existed
+        // only to carry the tint.
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.width() == 0 || !text(std::slice::from_ref(line)).ends_with("  ")),
+            "code rows should not trail padding:\n{rendered}"
+        );
         assert!(
             rendered.lines().any(|l| l.trim() == "After."),
-            "prose after the block must stay untinted prose:\n{rendered}"
+            "prose after the block must stay prose:\n{rendered}"
         );
     }
 
