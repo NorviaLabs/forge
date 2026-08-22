@@ -100,33 +100,40 @@ fn lifecycle_dot(life: TurnLifecycle) -> (&'static str, Style) {
     }
 }
 
-fn shimmer_phase_at(text_len: usize, millis: u128) -> usize {
-    if text_len == 0 {
-        return 0;
-    }
-    ((millis / 180) as usize) % text_len
+/// Cells in the working meter. Wide enough to read as a wave, narrow enough
+/// that the footer's 76-column floor still fits every chip beside it.
+const WAVE_CELLS: usize = 5;
+/// One period of the wave, sampled per cell. Rotating this is the animation.
+const WAVE: [&str; WAVE_CELLS] = ["▁", "▃", "▆", "▃", "▁"];
+
+fn wave_phase_at(millis: u128) -> usize {
+    ((millis / 120) as usize) % WAVE_CELLS
 }
 
-fn shimmer_phase(text_len: usize) -> usize {
+fn wave_phase() -> usize {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    shimmer_phase_at(text_len, millis)
+    wave_phase_at(millis)
 }
 
-fn shimmer_label(label: &'static str, base: Style) -> Vec<Span<'static>> {
-    let phase = shimmer_phase(label.chars().count());
-    label
-        .chars()
-        .enumerate()
-        .map(|(index, character)| {
-            let style = if index == phase {
-                theme::accent_style().add_modifier(Modifier::BOLD)
-            } else {
-                base
+/// A travelling wave, shown in place of the lifecycle dot while a turn runs.
+///
+/// This replaces a shimmer that brightened one character of the word
+/// "Working": a single cell changing colour, in the far corner of the screen,
+/// was motion only in the strictest sense. A wave of five cells reads as
+/// running at a glance.
+fn wave_meter(phase: usize) -> Vec<Span<'static>> {
+    (0..WAVE_CELLS)
+        .map(|index| {
+            let cell = WAVE[(index + phase) % WAVE_CELLS];
+            let style = match cell {
+                "▆" => theme::accent_style().add_modifier(Modifier::BOLD),
+                "▃" => theme::accent_style(),
+                _ => theme::dim(),
             };
-            Span::styled(character.to_string(), style)
+            Span::styled(cell, style)
         })
         .collect()
 }
@@ -214,17 +221,37 @@ impl Widget for FooterBar<'_> {
             // stays fully visible; the unit label drops before anything on
             // the left. Take the labeled form only when the chips and a
             // still-recognisable model id survive it.
-            let labeled = self.activity_line(true);
             let min_left = config_chrome as u16 + effort_chars + MIN_MODEL_CHARS;
-            let fits = area
-                .width
-                .saturating_sub(labeled.width() as u16)
-                .saturating_sub(1)
-                >= min_left;
-            if fits {
-                labeled
+            let fits = |line: &ratatui::text::Line<'static>| {
+                area.width
+                    .saturating_sub(line.width() as u16)
+                    .saturating_sub(1)
+                    >= min_left
+            };
+            // Degrade in order: the working meter costs the most columns and
+            // goes first, then the token unit label. The chips never drop.
+            //
+            // The meter is the one element that yields to the model id rather
+            // than the other way round: a truncated `deepseek-…flash-free`
+            // costs the reader more than an animation does, so the meter only
+            // appears when the id fits whole beside it.
+            let whole_model = footer_short_model_id(&m.llm_label).chars().count() as u16;
+            let room_for_meter = |line: &ratatui::text::Line<'static>| {
+                area.width
+                    .saturating_sub(line.width() as u16)
+                    .saturating_sub(1)
+                    >= config_chrome as u16 + effort_chars + whole_model
+            };
+            let metered = self.activity_line(true, true);
+            if room_for_meter(&metered) {
+                metered
             } else {
-                self.activity_line(false)
+                let labeled = self.activity_line(true, false);
+                if fits(&labeled) {
+                    labeled
+                } else {
+                    self.activity_line(false, false)
+                }
             }
         } else {
             // The focused footer's per-chip hint reads as a whisper: dimmed
@@ -307,20 +334,23 @@ impl Widget for FooterBar<'_> {
 }
 
 impl FooterBar<'_> {
-    fn activity_line(&self, labeled_usage: bool) -> ratatui::text::Line<'static> {
+    fn activity_line(&self, labeled_usage: bool, meter: bool) -> ratatui::text::Line<'static> {
         use ratatui::text::Span;
         let m = self.model;
         let dim = m.dimmed;
-        let (glyph, dot_style) = lifecycle_dot(m.lifecycle);
-        let mut right: Vec<Span<'static>> = vec![
-            Span::styled(glyph, dot_style.add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-        ];
-        if m.lifecycle == TurnLifecycle::Working && !dim {
-            right.extend(shimmer_label(m.lifecycle.label(), theme::text_secondary()));
+        let working = meter && m.lifecycle == TurnLifecycle::Working && !dim;
+        let mut right: Vec<Span<'static>> = if working {
+            let mut spans = wave_meter(wave_phase());
+            spans.push(Span::raw(" "));
+            spans
         } else {
-            right.push(Span::styled(m.lifecycle.label(), theme::text_secondary()));
-        }
+            let (glyph, dot_style) = lifecycle_dot(m.lifecycle);
+            vec![
+                Span::styled(glyph, dot_style.add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+            ]
+        };
+        right.push(Span::styled(m.lifecycle.label(), theme::text_secondary()));
         if let Some(detail) = m
             .lifecycle_detail
             .as_deref()
@@ -461,11 +491,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shimmer_moves_left_to_right_at_a_slow_cadence() {
-        assert_eq!(shimmer_phase_at(7, 0), 0);
-        assert_eq!(shimmer_phase_at(7, 179), 0);
-        assert_eq!(shimmer_phase_at(7, 180), 1);
-        assert_eq!(shimmer_phase_at(7, 1_260), 0);
+    fn the_wave_travels_and_repeats() {
+        assert_eq!(wave_phase_at(0), 0);
+        assert_eq!(wave_phase_at(119), 0);
+        assert_eq!(wave_phase_at(120), 1);
+        assert_eq!(wave_phase_at(600), 0);
+    }
+
+    /// The meter has to actually move: two frames a beat apart must differ,
+    /// or it is a static row of blocks pretending to be an indicator.
+    #[test]
+    fn the_meter_differs_between_beats() {
+        let cells = |phase: usize| {
+            wave_meter(phase)
+                .into_iter()
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(cells(0), cells(1));
+        assert_eq!(cells(0), cells(WAVE_CELLS));
     }
 
     fn model(lifecycle: TurnLifecycle, ctx_pct: f64) -> FooterModel {

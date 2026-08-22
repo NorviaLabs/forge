@@ -81,6 +81,7 @@ mod tests {
                 tool: "bash".into(),
                 args_redacted: serde_json::json!({}),
                 reason: "policy requires human approval".into(),
+                failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
             },

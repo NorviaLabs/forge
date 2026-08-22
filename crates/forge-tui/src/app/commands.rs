@@ -701,7 +701,7 @@ impl TuiApp {
                             // the target session — do not clear it out from under
                             // that restoration.
                             self.task_selection.clear_queue();
-                            self.stream.preview.clear();
+                            self.stream.clear_preview();
                             self.stream.thinking.clear();
                             self.conversation_view.message_start = 0;
                             self.conversation_view.event_start = 0;
@@ -872,12 +872,17 @@ impl TuiApp {
             .queue(final_line, self.attachment.take_images());
         self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());
+        self.timing.turn_started.get_or_insert_with(Instant::now);
+        // Counters are per user turn, not per model step: a turn that runs
+        // three tools reports one summary covering all of it.
+        self.timing.chars = 0;
+        self.timing.tools = 0;
         // A new user turn should always follow the live conversation tail.
         // This also ensures its thinking block is visible after the user has
         // previously scrolled up to inspect an older response.
         self.conversation_view.follow = true;
         self.conversation_view.scroll = 0;
-        self.stream.preview.clear();
+        self.stream.clear_preview();
         self.stream.thinking.clear();
         self.push_activity(
             ActivityKind::Model,
@@ -1492,7 +1497,7 @@ mod tests {
         );
         assert!(app.session.pending_hitl().is_some());
 
-        app.resolve_hitl_overlay(HitlDecision::Approve, false)
+        app.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Once)
             .await
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);

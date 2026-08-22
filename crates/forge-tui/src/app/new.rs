@@ -78,6 +78,8 @@ impl TuiApp {
             task_selection: TaskSelectionState::default(),
             stream: StreamState {
                 preview: String::new(),
+                revealed: 0,
+                revealed_at: None,
                 thinking: String::new(),
                 live_lines: None,
                 last_preview_render: None,
@@ -85,8 +87,11 @@ impl TuiApp {
             },
             timing: TurnTimingState {
                 started: None,
+                turn_started: None,
                 thinking_started: None,
                 thought_secs: None,
+                chars: 0,
+                tools: 0,
             },
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,

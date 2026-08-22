@@ -562,6 +562,11 @@ impl ApprovalOverlayState {
             reason: Some(payload.reason.clone())
                 .map(|r| r.trim().to_string())
                 .filter(|r| !r.is_empty()),
+            failure: payload
+                .failure
+                .clone()
+                .map(|f| f.trim().to_string())
+                .filter(|f| !f.is_empty()),
         }
     }
 
@@ -3878,6 +3883,7 @@ mod request_view_tests {
                 tool: "bash".into(),
                 args_redacted: serde_json::json!({"command": "git push -u origin feature"}),
                 reason: "policy requires human approval".into(),
+                failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
             },
@@ -3897,6 +3903,7 @@ mod request_view_tests {
                 tool: "write_file".into(),
                 args_redacted: serde_json::json!({"path": "a.txt", "content": "hi"}),
                 reason: "policy".into(),
+                failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
             },

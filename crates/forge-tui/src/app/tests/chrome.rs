@@ -1194,3 +1194,59 @@ async fn invalidating_forces_the_next_read_to_recompute() {
         "invalidating must force a recompute"
     );
 }
+
+/// While a turn runs, the transcript itself has to say so. Before the live
+/// turn line, the only indicator was in the footer — ninety columns from the
+/// text the reader is watching — and it said "Working" for every phase.
+#[tokio::test]
+async fn a_running_turn_paints_a_live_line_in_the_transcript() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.busy_state.activate();
+    app.timing.turn_started = Some(Instant::now() - Duration::from_secs(3));
+    app.stream.preview = "partial answer".into();
+    app.timing.chars = 14;
+
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(
+        rendered.contains("Writing the answer…"),
+        "no live turn line:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(crate::widgets::turn_line::INTERRUPT_HINT),
+        "the interrupt was not advertised:\n{rendered}"
+    );
+    assert!(rendered.contains("14 chars"), "no volume:\n{rendered}");
+}
+
+/// An idle app must not show a turn line — it is the one piece of chrome that
+/// means "something is happening right now".
+#[tokio::test]
+async fn an_idle_app_paints_no_turn_line() {
+    let (_dir, mut app) = focus_test_app().await;
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(!rendered.contains(crate::widgets::turn_line::INTERRUPT_HINT));
+}
+
+/// A finished turn gets a bottom edge and a cost. It used to just stop.
+#[tokio::test]
+async fn a_finished_turn_is_closed_by_a_summary() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.timing.turn_started = Some(Instant::now() - Duration::from_secs(7));
+    app.timing.chars = 810;
+    app.timing.tools = 1;
+    app.record_turn_summary();
+
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("Answered in 7s"), "{rendered}");
+    assert!(rendered.contains("810 chars"), "{rendered}");
+    assert!(rendered.contains("1 tool"), "{rendered}");
+    assert!(!rendered.contains("1 tools"), "plural for one:\n{rendered}");
+
+    // The next turn replaces it rather than stacking receipts.
+    app.timing.turn_started = Some(Instant::now() - Duration::from_secs(2));
+    app.timing.tools = 3;
+    app.record_turn_summary();
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("3 tools"), "{rendered}");
+    assert!(!rendered.contains("Answered in 7s"), "{rendered}");
+}
