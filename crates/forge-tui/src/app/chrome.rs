@@ -255,6 +255,9 @@ impl TuiApp {
             self.render_cache.conversation = None;
         }
         let _ = self.workspace_files.explorer.poll_git();
+        // Ordered after `poll_git` so a completed status or patch request is
+        // visible to `/diff` on the same tick it lands.
+        self.pump_diff_view();
         self.poll_repo_header();
         self.connected_cached();
         self.refresh_progress_state();
@@ -364,8 +367,11 @@ impl TuiApp {
         self.workspace_navigation
             .current()
             .as_ref()
-            .map(|WorkspaceView::File(path)| {
-                relative_display(self.session_view.workspace_root(), path)
+            .map(|view| match view {
+                WorkspaceView::File(path) => {
+                    relative_display(self.session_view.workspace_root(), path)
+                }
+                WorkspaceView::Diff => "Changes".to_string(),
             })
     }
 

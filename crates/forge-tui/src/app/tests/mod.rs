@@ -9,6 +9,7 @@ mod chrome;
 mod commands;
 mod connect;
 mod conversation_cache;
+mod diff;
 mod edge;
 mod editor;
 mod explorer;

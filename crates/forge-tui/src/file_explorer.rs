@@ -113,6 +113,11 @@ pub struct FileExplorer {
     search_loading: bool,
     /// Compact, immutable filesystem index shared across query keystrokes.
     search_index: Option<Arc<Vec<SearchEntry>>>,
+    /// `/diff` mode: show only these repository-relative paths, as a flat
+    /// list. Flat rather than tree-shaped on purpose — a changed file inside a
+    /// collapsed directory must still be reachable, and the lazy tree only
+    /// knows about directories someone has already expanded.
+    diff_filter: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug)]
@@ -143,6 +148,7 @@ impl FileExplorer {
             search_cancel: None,
             search_loading: false,
             search_index: None,
+            diff_filter: None,
         };
         explorer.load_root();
         if let Some(root) = root_path {
@@ -488,7 +494,41 @@ impl FileExplorer {
         }
     }
 
+    /// Restrict the listing to `paths` (repository-relative), or clear the
+    /// restriction with `None`. Tree expansion and scroll state are untouched
+    /// so leaving `/diff` restores exactly the listing the user had.
+    pub fn set_diff_filter(&mut self, paths: Option<Vec<PathBuf>>) {
+        if self.diff_filter == paths {
+            return;
+        }
+        self.diff_filter = paths;
+        self.rebuild_visible();
+    }
+
+    pub fn diff_filter_is_active(&self) -> bool {
+        self.diff_filter.is_some()
+    }
+
     fn rebuild_visible(&mut self) {
+        if let Some(paths) = self.diff_filter.clone() {
+            let root = self.root_path().map(Path::to_path_buf).unwrap_or_default();
+            self.visible = paths
+                .iter()
+                .map(|relative| VisibleNode {
+                    path: root.join(relative),
+                    display_name: relative.to_string_lossy().into_owned(),
+                    kind: FileKind::File,
+                    expanded: false,
+                    loading: false,
+                    loaded: true,
+                    error: None,
+                    child_count: 0,
+                    depth: 0,
+                })
+                .collect();
+            self.selected_index = None;
+            return;
+        }
         let mut visible = Vec::new();
         if !self.search_query.trim().is_empty() {
             if let Some(index) = &self.search_index {
@@ -1846,6 +1886,7 @@ mod tests {
             search_cancel: None,
             search_loading: false,
             search_index: None,
+            diff_filter: None,
         };
         explorer.rebuild_visible();
         let root_node = explorer.root.as_ref().unwrap();

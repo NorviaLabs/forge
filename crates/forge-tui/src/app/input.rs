@@ -752,6 +752,9 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
+        if self.diff_view_is_open() {
+            return Ok(self.handle_diff_key(key));
+        }
         if let Some(command) = self.semantic_command_for_workspace_key(key) {
             return self.execute_semantic_command(command).await;
         }

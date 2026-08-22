@@ -97,12 +97,12 @@ impl TuiApp {
         // footer's hint shares the content row (replacing the right-side
         // activity while focused), never adds a third row.
         let hint_h: u16 = 2;
-        // An open file occupies the center workspace pane. Anything else
-        // (home / empty) expands conversation into that pane and there is
+        // An open file or `/diff` occupies the center workspace pane. Anything
+        // else (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
         let expand_conversation = !matches!(
             self.workspace_navigation.current(),
-            Some(WorkspaceView::File(_))
+            Some(WorkspaceView::File(_) | WorkspaceView::Diff)
         );
         let regions = if expand_conversation {
             split_areas_with_expanded_conversation(
@@ -539,6 +539,15 @@ impl TuiApp {
                             editor: self.editor_session.as_mut(),
                             editor_command: self.editor_command.as_deref(),
                             editor_message: self.editor_message.as_deref(),
+                        },
+                        chat_area,
+                    );
+                }
+                Some(WorkspaceView::Diff) => {
+                    frame.render_widget(
+                        crate::diff_view::DiffViewWidget {
+                            view: &mut self.diff_view,
+                            focused: self.focus.block() == FocusBlock::Workspace,
                         },
                         chat_area,
                     );

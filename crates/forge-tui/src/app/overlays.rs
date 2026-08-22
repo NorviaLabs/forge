@@ -41,6 +41,7 @@ impl TuiApp {
             _ => match self.workspace_navigation.current() {
                 None => "No file open",
                 Some(WorkspaceView::File(_)) => "File",
+                Some(WorkspaceView::Diff) => "DIFF",
             },
         };
         let mut text = String::from("Forge is an AI coding agent for your terminal.\n\n");

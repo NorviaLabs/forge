@@ -645,6 +645,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Clear the TUI screen".into(),
         },
         PaletteItem {
+            cmd: "/diff".into(),
+            desc: "Review changed files in the workspace pane (/diff turn for the last turn)"
+                .into(),
+        },
+        PaletteItem {
             cmd: "/disconnect".into(),
             desc: "Log out and clear credentials".into(),
         },

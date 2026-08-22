@@ -139,7 +139,9 @@ impl EditorSession {
         self.state.search_pattern()
     }
 
-    #[cfg(test)]
+    /// Place the cursor. No longer test-only: `/diff`'s `o` opens a file at
+    /// the line the patch cursor was sitting on, which needs this in a
+    /// release build.
     pub(crate) fn set_cursor(&mut self, row: usize, col: usize) {
         let row = row.min(self.state.lines.len().saturating_sub(1));
         self.state.cursor = edtui::Index2::new(row, col);

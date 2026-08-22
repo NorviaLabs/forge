@@ -49,6 +49,11 @@ pub enum SlashCommand {
     /// overlay — without a palette entry the terminal is unreachable for
     /// anyone who hasn't memorised it.
     Terminal,
+    /// Review changes in the workspace pane. `source` is `None` for the
+    /// working tree and `Some(LastTurn)` for `/diff turn`.
+    Diff {
+        source: crate::diff_view::DiffSource,
+    },
 }
 
 impl SlashCommand {
@@ -119,6 +124,15 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             name: parts.next().map(|s| s.to_string()),
         }),
         "status" => Ok(SlashCommand::Status),
+        "diff" | "d" => match parts.next() {
+            None => Ok(SlashCommand::Diff {
+                source: crate::diff_view::DiffSource::WorkingTree,
+            }),
+            Some(arg) if arg.eq_ignore_ascii_case("turn") => Ok(SlashCommand::Diff {
+                source: crate::diff_view::DiffSource::LastTurn,
+            }),
+            Some(_) => Err(CommandError::Usage("/diff [turn]".into())),
+        },
         "terminal" | "term" | "shell" => Ok(SlashCommand::Terminal),
         other => Err(CommandError::Unknown(other.to_string())),
     }
@@ -212,8 +226,10 @@ mod tests {
 
     #[test]
     fn removed_commands_are_unknown() {
+        // `/diff` is deliberately absent from this list: it came back as the
+        // workspace pane's review mode.
         for command in [
-            "/cost", "/diff", "/appove", "/approve", "/deny", "/effort", "/sync", "/copy", "/file",
+            "/cost", "/appove", "/approve", "/deny", "/effort", "/sync", "/copy", "/file",
             "/files", "/open",
         ] {
             assert!(matches!(
@@ -221,6 +237,43 @@ mod tests {
                 CommandError::Unknown(_)
             ));
         }
+    }
+
+    #[test]
+    fn diff_parses_bare_and_with_a_source() {
+        use crate::diff_view::DiffSource;
+        assert_eq!(
+            parse_slash("/diff").unwrap().unwrap(),
+            SlashCommand::Diff {
+                source: DiffSource::WorkingTree
+            }
+        );
+        assert_eq!(
+            parse_slash("/d").unwrap().unwrap(),
+            SlashCommand::Diff {
+                source: DiffSource::WorkingTree
+            }
+        );
+        assert_eq!(
+            parse_slash("/diff turn").unwrap().unwrap(),
+            SlashCommand::Diff {
+                source: DiffSource::LastTurn
+            }
+        );
+        assert!(matches!(
+            parse_slash("/diff main").unwrap(),
+            Err(CommandError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn diff_stays_usable_while_a_turn_is_running() {
+        // Reviewing what the agent just wrote, while it is still writing, is
+        // the whole point of not being a full-screen modal.
+        assert!(SlashCommand::Diff {
+            source: crate::diff_view::DiffSource::WorkingTree
+        }
+        .available_while_busy());
     }
 
     #[test]

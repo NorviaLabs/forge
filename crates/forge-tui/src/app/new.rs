@@ -101,6 +101,7 @@ impl TuiApp {
             tool_detail: ToolDetailState::default(),
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
+            diff_view: crate::diff_view::DiffView::default(),
             editor_session: None,
             editor_command: None,
             editor_message: None,

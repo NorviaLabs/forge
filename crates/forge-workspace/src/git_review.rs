@@ -47,6 +47,18 @@ pub fn reviewability(status: PathStatus, diff: &FileDiff) -> Reviewability {
 /// Dirty worktree + index vs `HEAD`. Untracked files are a synthetic add diff.
 pub fn combined_diff(root: &Path, path: &Path) -> Result<FileDiff, String> {
     let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+    let (output, untracked) = combined_diff_text(root, path)?;
+    Ok(parse_file_diff(rel, &output, untracked))
+}
+
+/// The raw `git` output behind [`combined_diff`], plus whether the path was
+/// untracked (which decides how [`parse_file_diff`] reads it).
+///
+/// Split out so callers that cache diff text across a status revision — the
+/// `/diff` view — can hold the cheap `String` and parse on demand, instead of
+/// keeping a parsed [`FileDiff`] per changed file.
+pub fn combined_diff_text(root: &Path, path: &Path) -> Result<(String, bool), String> {
+    let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
     let tracked = is_tracked(root, &rel);
     let (output, untracked) = if tracked {
         (
@@ -75,7 +87,7 @@ pub fn combined_diff(root: &Path, path: &Path) -> Result<FileDiff, String> {
             true,
         )
     };
-    Ok(parse_file_diff(rel, &output, untracked))
+    Ok((output, untracked))
 }
 
 pub fn discard_hunk(root: &Path, path: &Path, hunk_index: usize) -> Result<(), String> {

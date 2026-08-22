@@ -65,6 +65,8 @@ impl TuiApp {
     pub(super) fn workspace_view_is_valid(view: &WorkspaceView) -> bool {
         match view {
             WorkspaceView::File(path) => path.is_file() || path.is_symlink(),
+            // Always valid: the diff view holds no path that can go stale.
+            WorkspaceView::Diff => true,
         }
     }
 
@@ -72,6 +74,9 @@ impl TuiApp {
         match view {
             WorkspaceView::File(path) => {
                 self.show_file_in_editor(path);
+            }
+            WorkspaceView::Diff => {
+                self.focus_block(FocusBlock::Workspace);
             }
         }
         self.normalize_focus();
