@@ -92,6 +92,7 @@ impl TuiApp {
                 thought_secs: None,
                 chars: 0,
                 tools: 0,
+                completion_tokens_at_start: 0,
             },
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,

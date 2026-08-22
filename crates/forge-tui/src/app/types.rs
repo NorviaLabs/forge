@@ -602,7 +602,7 @@ pub(crate) struct ConversationRenderKey {
     /// The turn summary's own identity. Counting banners is not enough: one
     /// summary replacing another leaves the count unchanged, so the closing
     /// line of the previous turn would stay on screen through the next one.
-    pub(crate) turn_summary: Option<(u64, usize, usize)>,
+    pub(crate) turn_summary: Option<(u64, usize, usize, Option<u64>)>,
     pub(crate) queue: usize,
     pub(crate) queue_selected: Option<usize>,
     pub(crate) chat_message_start: usize,
@@ -737,6 +737,13 @@ pub(crate) struct TurnTimingState {
     pub(crate) chars: usize,
     /// Tool calls made this turn.
     pub(crate) tools: usize,
+    /// Session completion-token count as it stood when this turn began.
+    ///
+    /// Token accounting is cumulative over the session, so a turn's own
+    /// output is the difference against this. Completion tokens only:
+    /// prompt tokens are not produced over the turn's duration, so including
+    /// them would inflate a generation rate with work that never took time.
+    pub(crate) completion_tokens_at_start: u64,
 }
 
 pub(crate) struct ExternalEditorState {

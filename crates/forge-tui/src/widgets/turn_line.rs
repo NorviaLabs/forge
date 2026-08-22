@@ -76,25 +76,23 @@ fn compact(n: usize) -> String {
     }
 }
 
-/// The metrics half of the line: elapsed, volume, rate.
+/// The metrics half of the line: elapsed and volume.
 ///
 /// Characters rather than tokens, deliberately: no provider reports token
 /// usage while the stream is still open, so a token count here would be an
-/// estimate presented as a measurement. The footer still shows real
-/// API-reported token usage once the turn ends.
+/// estimate presented as a measurement.
+///
+/// No rate. Characters per second measures the wrong thing — it moves with
+/// how verbose the model is being, not with how fast it is going, so the
+/// number swung between paragraphs and code without anything having changed.
+/// The turn summary reports tokens per second once the turn ends, where the
+/// provider's own usage figures make it a real measurement.
 fn metrics(model: &TurnLineModel) -> String {
     let elapsed = forge_transcript::format_elapsed_tenths(model.elapsed_secs);
     if model.chars == 0 {
         return elapsed;
     }
-    let mut out = format!("{elapsed} · ↓ {} chars", compact(model.chars));
-    if model.elapsed_secs >= 1.0 {
-        let rate = model.chars as f64 / model.elapsed_secs;
-        let per_sec = compact(rate.round() as usize);
-        let unit = if per_sec == "1" { "char/s" } else { "chars/s" };
-        out.push_str(&format!(" · {per_sec} {unit}"));
-    }
-    out
+    format!("{elapsed} · ↓ {} chars", compact(model.chars))
 }
 
 /// Build the line, right-aligning the interrupt hint to `width`.
@@ -234,18 +232,21 @@ mod tests {
         );
     }
 
-    /// "1 chars/s" is sloppy where the reader is watching one line very
-    /// closely.
+    /// Characters per second moved with how verbose the model was being
+    /// rather than how fast it was going, so it swung between a paragraph and
+    /// a code block with nothing having changed. The turn summary reports
+    /// tokens per second instead, where the provider's usage makes it real.
     #[test]
-    fn a_rate_of_one_reads_as_singular() {
+    fn the_live_line_reports_no_rate() {
         let slow = TurnLineModel {
             elapsed_secs: 30.0,
             chars: 30,
             ..model()
         };
         let rendered = text(&turn_line(&slow, 80, 0));
-        assert!(rendered.contains("1 char/s"), "{rendered}");
-        assert!(!rendered.contains("1 chars/s"), "{rendered}");
+        assert!(!rendered.contains("/s"), "{rendered}");
+        // The volume it is a rate of is still there.
+        assert!(rendered.contains("30 chars"), "{rendered}");
     }
 
     #[test]

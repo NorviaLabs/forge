@@ -258,9 +258,12 @@ impl TuiApp {
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.banner_state.items.len(),
             turn_summary: self.banner_state.items.iter().find_map(|item| match item {
-                ChatItem::TurnSummary { secs, chars, tools } => {
-                    Some((secs.to_bits(), *chars, *tools))
-                }
+                ChatItem::TurnSummary {
+                    secs,
+                    chars,
+                    tools,
+                    output_tokens,
+                } => Some((secs.to_bits(), *chars, *tools, *output_tokens)),
                 _ => None,
             }),
             queue: self.session_view.queue_len,
