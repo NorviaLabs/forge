@@ -685,6 +685,11 @@ pub struct HitlPayload {
     pub tool: String,
     pub args_redacted: serde_json::Value,
     pub reason: String,
+    /// What the sandbox actually reported, when this prompt follows a real
+    /// refusal. `reason` explains the *category* of denial and is identical
+    /// for every command in that category; this is the evidence for this one.
+    #[serde(default)]
+    pub failure: Option<String>,
     #[serde(default)]
     pub sandbox_escalation: bool,
     /// Host the egress proxy refused, when this prompt is a network grant
@@ -816,6 +821,7 @@ mod tests {
                 tool: "bash".into(),
                 args_redacted: serde_json::json!({}),
                 reason: "policy requires human approval".into(),
+                failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
             },

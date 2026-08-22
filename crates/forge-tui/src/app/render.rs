@@ -39,6 +39,7 @@ impl TuiApp {
         self.busy_state
             .start(crate::widgets::status::BusyPhase::Model);
         self.stream.preview.push_str(text);
+        self.stream.reveal_everything_for_tests();
         // The renderer rate-limits itself; tests measure the rebuild, so clear
         // the throttle rather than sleep 150ms per sample.
         self.stream.last_preview_render = None;
@@ -217,6 +218,13 @@ impl TuiApp {
             &all_messages[self.conversation_view.message_start.min(all_messages.len())..];
         let visible_events =
             &all_events[self.conversation_view.event_start.min(all_events.len())..];
+        // Computed here, while the message slice is still borrowed: the home
+        // splash is a landing page and stays at the top, but once someone has
+        // actually said something the pane behaves like a conversation and
+        // hugs the composer.
+        let anchor_bottom = visible_messages
+            .iter()
+            .any(|message| message.role == forge_types::MessageRole::User);
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
         let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);
@@ -249,6 +257,12 @@ impl TuiApp {
             events: visible_events.len(),
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.banner_state.items.len(),
+            turn_summary: self.banner_state.items.iter().find_map(|item| match item {
+                ChatItem::TurnSummary { secs, chars, tools } => {
+                    Some((secs.to_bits(), *chars, *tools))
+                }
+                _ => None,
+            }),
             queue: self.session_view.queue_len,
             queue_selected: self.task_selection.queue(),
             chat_message_start: self.conversation_view.message_start,
@@ -329,9 +343,11 @@ impl TuiApp {
                 conv = conv.with_pending_question(presentation);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
+            let (lines, plan_dock) = conv.lines_and_plan_dock(width, keep_from_end);
             self.render_cache.conversation = Some(ConversationRenderCache {
                 key,
-                lines: Arc::new(conv.lines_for_width_from_end(width, keep_from_end)),
+                lines: Arc::new(lines),
+                plan_dock,
             });
         }
         let width = sidebar_width.saturating_sub(2) as usize;
@@ -343,7 +359,9 @@ impl TuiApp {
             let key = (
                 width as u16,
                 self.stream.thinking.len(),
-                self.stream.preview.len(),
+                // Keyed on what is *shown*, not what has arrived: the reveal
+                // advances between deltas, and the lines have to follow it.
+                self.stream.revealed_preview().len(),
             );
             let key_matches = self
                 .stream
@@ -377,7 +395,7 @@ impl TuiApp {
                     )
                     .with_streaming_preview(
                         self.stream.thinking.clone(),
-                        self.stream.preview.clone(),
+                        self.stream.revealed_preview().to_string(),
                     )
                     // The preview is a single block, so block-level tailing
                     // cannot trim it; the cache windows lines instead. Pass the
@@ -397,12 +415,62 @@ impl TuiApp {
         } else {
             Arc::new(Vec::new())
         };
+        // The live turn line. Built fresh every frame — it animates, so the
+        // caches above (both keyed by content length) would freeze it — and
+        // cheap enough to be: one line, no markdown, no wrapping.
+        let status_lines: Vec<Line<'static>> =
+            if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
+                // The whole turn's age, not the current step's: `started` is reset
+                // at every continuation, so a turn that ran three tools kept
+                // restarting its clock.
+                let elapsed = self
+                    .timing
+                    .turn_started
+                    .or(self.timing.started)
+                    .map(|at| at.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+                // The live buffers are cleared at every tool call, so they say
+                // what is arriving *now*. The turn's running total comes from the
+                // counter that survives a step boundary — otherwise the volume
+                // fell back to zero at each tool and the phase read "Waiting for
+                // the model" for work that had already streamed.
+                let heard_from_model = !self.stream.thinking.is_empty() || self.timing.chars > 0;
+                let model = crate::widgets::TurnLineModel {
+                    verb: crate::widgets::phase_verb(
+                        &self.busy_state.phase(),
+                        heard_from_model,
+                        !self.stream.preview.is_empty(),
+                    ),
+                    elapsed_secs: elapsed,
+                    chars: self.timing.chars,
+                    // Esc interrupts a running turn; it does not interrupt a
+                    // turn that is already blocked waiting for the operator.
+                    interruptible: !self.session_view.is_awaiting_approval()
+                        && !self.session_view.is_awaiting_question(),
+                };
+                let millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since| since.as_millis())
+                    .unwrap_or(0);
+                // The pane paints inside a bordered block with one column of
+                // padding each side, so the line has 2 fewer columns than the
+                // prose width — without this the interrupt hint was clipped to
+                // "esc to interru".
+                let line_width = width.saturating_sub(2);
+                vec![
+                    Line::from(""),
+                    crate::widgets::turn_line(&model, line_width, millis),
+                ]
+            } else {
+                Vec::new()
+            };
         let cached = self
             .render_cache
             .conversation
             .as_ref()
             .expect("conversation cache populated");
         let cached_lines = Arc::clone(&cached.lines);
+        let plan_dock = cached.plan_dock.clone();
         // The sidebar always shows the conversation, regardless of what the
         // center pane shows — it's no longer one of the `WorkspaceView`
         // options.
@@ -429,6 +497,7 @@ impl TuiApp {
             self.conversation_rows = visible_conversation_copy_rows(
                 &cached_lines,
                 &live_lines,
+                &status_lines,
                 self.conversation_view.scroll,
                 self.conversation_view.follow,
                 bottom_padding,
@@ -439,9 +508,12 @@ impl TuiApp {
                 crate::conversation::ConversationLinesWidget {
                     lines: &cached_lines,
                     tail_lines: &live_lines,
+                    status_lines: &status_lines,
+                    anchor_bottom,
                     scroll: self.conversation_view.scroll,
                     follow: self.conversation_view.follow,
                     bottom_padding,
+                    plan_dock: plan_dock.as_ref(),
                 },
                 conversation_area,
             );
@@ -800,12 +872,14 @@ impl TuiApp {
 fn visible_conversation_copy_rows(
     lines: &[Line<'static>],
     tail_lines: &[Line<'static>],
+    status_lines: &[Line<'static>],
     scroll_from_bottom: u16,
     follow: bool,
     bottom_padding: u16,
     area: ratatui::layout::Rect,
 ) -> Vec<String> {
-    let content_len = lines.len().saturating_add(tail_lines.len());
+    let tail_end = lines.len().saturating_add(tail_lines.len());
+    let content_len = tail_end.saturating_add(status_lines.len());
     let total = content_len.saturating_add(bottom_padding as usize);
     let max_scroll = total.saturating_sub(area.height as usize);
     let scroll = if follow {
@@ -820,8 +894,10 @@ fn visible_conversation_copy_rows(
             // only to concatenate the text back out and drop the copy.
             let line = if index < lines.len() {
                 Some(&lines[index])
-            } else if index < content_len {
+            } else if index < tail_end {
                 Some(&tail_lines[index - lines.len()])
+            } else if index < content_len {
+                Some(&status_lines[index - tail_end])
             } else {
                 None
             };

@@ -67,9 +67,13 @@ async fn failed_turn_does_not_open_a_turn_limit_continuation() {
     let dir = TempDir::new().unwrap();
     let session = session_for_workspace_with_model(
         dir.path(),
-        Arc::new(MockModelClient::stream_error(
+        // A status forge must not retry, so the turn really does end here.
+        Arc::new(MockModelClient::stream_error_kind(
             vec![],
-            "HTTP 500 Internal Server Error",
+            forge_model::ModelError::ProviderStatus {
+                status: 400,
+                detail: "Bad Request".into(),
+            },
         )),
     )
     .await;
@@ -111,9 +115,12 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
     let dir = TempDir::new().unwrap();
     let session = session_for_workspace_with_model(
         dir.path(),
-        Arc::new(MockModelClient::stream_error(
+        Arc::new(MockModelClient::stream_error_kind(
             vec![],
-            "HTTP 400 Bad Request",
+            forge_model::ModelError::ProviderStatus {
+                status: 400,
+                detail: "Bad Request".into(),
+            },
         )),
     )
     .await;
@@ -243,4 +250,101 @@ async fn ctrl_u_clears_the_composer() {
         .await
         .unwrap();
     assert!(app.input.text.is_empty(), "{:?}", app.input.text);
+}
+
+/// forge classified provider errors as retryable and then never retried one,
+/// so a transient blip cost the whole turn. A 500 with nothing streamed yet is
+/// re-issued, and the turn completes.
+#[tokio::test]
+async fn a_transient_provider_failure_is_retried() {
+    let dir = TempDir::new().unwrap();
+    let session = session_for_workspace_with_model(
+        dir.path(),
+        Arc::new(MockModelClient::stream_error_then(
+            forge_model::ModelError::ProviderStatus {
+                status: 500,
+                detail: "Internal Server Error".into(),
+            },
+            vec![forge_types::ModelResponse {
+                text: "second attempt answer".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            }],
+        )),
+    )
+    .await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("first message").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    assert_ne!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Failed,
+        "a retryable failure must not end the turn"
+    );
+    assert!(
+        app.session
+            .messages
+            .iter()
+            .any(|message| message.content.contains("second attempt answer")),
+        "the retried step's answer never landed: {:?}",
+        app.session.messages
+    );
+}
+
+/// Once the answer has started arriving, re-issuing the step would duplicate
+/// text the reader has already seen, so a retryable failure stays terminal.
+#[tokio::test]
+async fn a_failure_after_partial_output_is_never_retried() {
+    let dir = TempDir::new().unwrap();
+    let session = session_for_workspace_with_model(
+        dir.path(),
+        Arc::new(MockModelClient::stream_error(
+            vec!["partial ".into(), "answer".into()],
+            "network connection lost",
+        )),
+    )
+    .await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("first message").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let transcript = app
+        .session
+        .messages
+        .iter()
+        .map(|message| message.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(transcript.contains("partial answer"), "{transcript}");
+    assert_eq!(
+        transcript.matches("partial answer").count(),
+        1,
+        "the partial answer was streamed twice:\n{transcript}"
+    );
 }

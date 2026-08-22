@@ -18,7 +18,13 @@ use super::*;
 pub(crate) enum ApprovalMenuKind {
     AllowOnce,
     AllowPattern,
+    /// The same pattern, written to the personal permissions file so it
+    /// outlives the session.
+    AllowPatternAlways,
     Deny,
+    /// Deny, then take a line of prose that reaches the agent as the tool
+    /// result — "not like that, do this instead" folded into the same turn.
+    DenyWithNote,
 }
 
 impl ApprovalMenuKind {
@@ -27,19 +33,27 @@ impl ApprovalMenuKind {
     /// Chosen for the decision, not the row's position, so the key for "run it"
     /// is the same whether or not a pattern row is offered — muscle memory on a
     /// prompt about running commands must not depend on the menu's shape.
+    ///
+    /// The shifted letter is the wider form of the same decision: `a` grants
+    /// the pattern for this session and `A` grants it for good, `n` refuses
+    /// and `N` refuses with a note. Nothing destructive hides behind a shift.
     pub(crate) fn shortcut(self) -> &'static str {
         match self {
             Self::AllowOnce => "y",
             Self::AllowPattern => "a",
+            Self::AllowPatternAlways => "A",
             Self::Deny => "n",
+            Self::DenyWithNote => "N",
         }
     }
 
     fn from_shortcut(c: char) -> Option<Self> {
-        match c.to_ascii_lowercase() {
-            'y' => Some(Self::AllowOnce),
+        match c {
+            'y' | 'Y' => Some(Self::AllowOnce),
             'a' => Some(Self::AllowPattern),
+            'A' => Some(Self::AllowPatternAlways),
             'n' => Some(Self::Deny),
+            'N' => Some(Self::DenyWithNote),
             _ => None,
         }
     }
@@ -64,7 +78,17 @@ pub(crate) struct ApprovalSessionState {
     /// mark the approval "already seen" and the focus grab never happened —
     /// leaving a prompt on screen whose keys all did nothing.
     focus_claimed_for: Option<String>,
+    /// Set when the operator picked "Don't run, and say why". The next
+    /// composer line is the note rather than a new instruction, and the
+    /// approval stays pending until it arrives — nothing is decided by
+    /// selecting the row alone.
+    awaiting_denial_note: Option<String>,
 }
+
+/// Consequence shown for the deny-with-note row, and the only place it is
+/// worded.
+const DENY_NOTE_HELP: &str =
+    "Type a line for the agent. It is refused either way; the note says what to do instead.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ApprovalIdentity {
@@ -204,17 +228,20 @@ impl TuiApp {
         };
         if payload.denied_host.is_some() {
             return vec![
+                ApprovalMenuKind::AllowPatternAlways,
                 ApprovalMenuKind::AllowPattern,
-                ApprovalMenuKind::AllowOnce,
                 ApprovalMenuKind::Deny,
+                ApprovalMenuKind::DenyWithNote,
             ];
         }
         let approval = self.approval_state_for_payload(payload);
         let mut kinds = vec![ApprovalMenuKind::AllowOnce];
         if approval.pattern_allow_eligible {
             kinds.push(ApprovalMenuKind::AllowPattern);
+            kinds.push(ApprovalMenuKind::AllowPatternAlways);
         }
         kinds.push(ApprovalMenuKind::Deny);
+        kinds.push(ApprovalMenuKind::DenyWithNote);
         kinds
     }
 
@@ -228,7 +255,7 @@ impl TuiApp {
                 .approval_menu_kinds()
                 .into_iter()
                 .map(|kind| match kind {
-                    ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
+                    ApprovalMenuKind::AllowPatternAlways => crate::conversation::ApprovalMenuRow {
                         label: format!("Always allow {pattern}"),
                         detail: Some(forge_tools::egress::host_allow_rule(host)),
                         help: Some(format!(
@@ -237,18 +264,27 @@ impl TuiApp {
                         )),
                         key: Some(kind.shortcut().into()),
                     },
-                    ApprovalMenuKind::AllowOnce => crate::conversation::ApprovalMenuRow {
-                        label: format!("Allow {pattern} this session"),
-                        detail: Some(pattern.clone()),
-                        help: Some(
-                            "The sandbox stays on. You will be asked again next session.".into(),
-                        ),
-                        key: Some(kind.shortcut().into()),
-                    },
+                    ApprovalMenuKind::AllowPattern | ApprovalMenuKind::AllowOnce => {
+                        crate::conversation::ApprovalMenuRow {
+                            label: format!("Allow {pattern} this session"),
+                            detail: Some(pattern.clone()),
+                            help: Some(
+                                "The sandbox stays on. You will be asked again next session."
+                                    .into(),
+                            ),
+                            key: Some(kind.shortcut().into()),
+                        }
+                    }
                     ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
                         label: "Don't run".into(),
                         detail: None,
                         help: Some("The agent is told the command was denied.".into()),
+                        key: Some(kind.shortcut().into()),
+                    },
+                    ApprovalMenuKind::DenyWithNote => crate::conversation::ApprovalMenuRow {
+                        label: "Don't run, and say why".into(),
+                        detail: None,
+                        help: Some(DENY_NOTE_HELP.into()),
                         key: Some(kind.shortcut().into()),
                     },
                 })
@@ -265,16 +301,34 @@ impl TuiApp {
                     help: Some("Runs now. You will be asked again.".into()),
                     key: Some(kind.shortcut().into()),
                 },
+                // The pattern goes in the label, not only in the elided detail
+                // column. "Remember similar commands" asked the operator to
+                // approve a rule they could not read.
                 ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
-                    label: "Remember similar commands this session".into(),
+                    label: format!("Allow {remembered} this session"),
                     detail: Some(remembered.clone()),
                     help: Some(remember_help(&call, &remembered)),
+                    key: Some(kind.shortcut().into()),
+                },
+                ApprovalMenuKind::AllowPatternAlways => crate::conversation::ApprovalMenuRow {
+                    label: format!("Always allow {remembered}"),
+                    detail: Some(remembered.clone()),
+                    help: Some(format!(
+                        "Writes {remembered} to your personal permissions file. \
+                         Kept next session."
+                    )),
                     key: Some(kind.shortcut().into()),
                 },
                 ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
                     label: "Don't run".into(),
                     detail: None,
                     help: Some("The agent is told the command was denied.".into()),
+                    key: Some(kind.shortcut().into()),
+                },
+                ApprovalMenuKind::DenyWithNote => crate::conversation::ApprovalMenuRow {
+                    label: "Don't run, and say why".into(),
+                    detail: None,
+                    help: Some(DENY_NOTE_HELP.into()),
                     key: Some(kind.shortcut().into()),
                 },
             })
@@ -388,13 +442,24 @@ impl TuiApp {
     ) -> Result<(), TuiError> {
         match action {
             ApprovalMenuKind::AllowOnce => {
-                self.resolve_hitl_overlay(HitlDecision::Approve, false)
+                self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Once)
                     .await
             }
             ApprovalMenuKind::AllowPattern => {
-                self.resolve_hitl_overlay(HitlDecision::Approve, true).await
+                self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Session)
+                    .await
             }
-            ApprovalMenuKind::Deny => self.resolve_hitl_overlay(HitlDecision::Deny, false).await,
+            ApprovalMenuKind::AllowPatternAlways => {
+                self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Always)
+                    .await
+            }
+            ApprovalMenuKind::Deny => {
+                self.resolve_hitl_overlay(HitlDecision::Deny, ApprovalGrant::Once)
+                    .await
+            }
+            // The note arrives from the composer, not from the menu row, so
+            // the row alone refuses with nothing attached.
+            ApprovalMenuKind::DenyWithNote => self.deny_pending_approval_with_note("").await,
         }
     }
 
@@ -402,9 +467,9 @@ impl TuiApp {
         match action {
             ApprovalMenuKind::AllowOnce => {
                 self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Approve, false);
+                    .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
             }
-            ApprovalMenuKind::AllowPattern => {
+            ApprovalMenuKind::AllowPattern | ApprovalMenuKind::AllowPatternAlways => {
                 let Some(payload) = self.session.pending_hitl().cloned() else {
                     return;
                 };
@@ -417,12 +482,31 @@ impl TuiApp {
                     );
                     return;
                 }
+                let grant = if action == ApprovalMenuKind::AllowPatternAlways {
+                    ApprovalGrant::Always
+                } else {
+                    ApprovalGrant::Session
+                };
                 self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Approve, true);
+                    .request_hitl_decision(HitlDecision::Approve, grant);
             }
             ApprovalMenuKind::Deny => {
                 self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Deny, false);
+                    .request_hitl_decision(HitlDecision::Deny, ApprovalGrant::Once);
+            }
+            // Nothing is decided yet: the refusal waits for the note, so the
+            // operator can still change their mind by clearing the composer.
+            ApprovalMenuKind::DenyWithNote => {
+                let Some(payload) = self.session.pending_hitl().cloned() else {
+                    return;
+                };
+                self.approval_session.awaiting_denial_note = Some(payload.call_id);
+                self.enter_chat_composer();
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    "type what the agent should do instead, then Enter — Esc refuses without a note",
+                );
+                return;
             }
         }
         if let Some(payload) = self.session.pending_hitl() {
@@ -432,17 +516,58 @@ impl TuiApp {
         }
     }
 
+    /// Whether the composer is currently collecting a refusal note rather
+    /// than a new instruction. Cleared as soon as the approval it belongs to
+    /// is gone, so an approval resolved another way (Esc, a shortcut, the
+    /// agent giving up) cannot leave the composer hijacked.
+    pub(super) fn approval_denial_note_pending(&mut self) -> bool {
+        let Some(waiting_for) = self.approval_session.awaiting_denial_note.clone() else {
+            return false;
+        };
+        let still_pending = self
+            .session
+            .pending_hitl()
+            .is_some_and(|payload| payload.call_id == waiting_for);
+        if !still_pending {
+            self.approval_session.awaiting_denial_note = None;
+        }
+        still_pending
+    }
+
+    /// Refuse the pending call and hand the agent the operator's line as the
+    /// tool result. An empty note is an ordinary refusal — the operator
+    /// changed their mind about explaining, not about refusing.
+    pub(super) async fn deny_pending_approval_with_note(
+        &mut self,
+        note: &str,
+    ) -> Result<(), TuiError> {
+        self.approval_session.awaiting_denial_note = None;
+        let note = note.trim();
+        let feedback = (!note.is_empty()).then_some(note);
+        self.session
+            .resolve_hitl_with_feedback(HitlDecision::Deny, "tui", feedback)
+            .await?;
+        self.push_toast(if feedback.is_some() {
+            "denied, with a note"
+        } else {
+            "denied"
+        });
+        self.resume_turn_after_hitl();
+        self.enter_chat_composer();
+        Ok(())
+    }
+
     pub async fn drain_pending_hitl(
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let Some((decision, remember)) = self.pending_interaction.take_hitl_decision() else {
+        let Some((decision, grant)) = self.pending_interaction.take_hitl_decision() else {
             return Ok(());
         };
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
-        self.apply_hitl_decision(decision.clone(), remember, terminal.as_deref_mut())
+        self.apply_hitl_decision(decision.clone(), grant, terminal.as_deref_mut())
             .await?;
         self.status_state.message = match decision {
             HitlDecision::Approve => "Action approved".into(),
@@ -462,16 +587,15 @@ impl TuiApp {
     pub(super) async fn resolve_hitl_overlay(
         &mut self,
         decision: HitlDecision,
-        remember_exact_direct: bool,
+        grant: ApprovalGrant,
     ) -> Result<(), TuiError> {
-        self.apply_hitl_decision(decision, remember_exact_direct, None)
-            .await
+        self.apply_hitl_decision(decision, grant, None).await
     }
 
     async fn apply_hitl_decision(
         &mut self,
         decision: HitlDecision,
-        remember_exact_direct: bool,
+        grant: ApprovalGrant,
         terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
         let Some(payload) = self.session.pending_hitl().cloned() else {
@@ -480,7 +604,7 @@ impl TuiApp {
 
         if let Some(host) = payload.denied_host.clone() {
             let pattern = forge_tools::egress::suggest_host_pattern(&host);
-            if remember_exact_direct {
+            if grant == ApprovalGrant::Always {
                 if let Err(error) = forge_config::append_user_allow_rule(
                     &forge_tools::egress::host_allow_rule(&host),
                 ) {
@@ -492,7 +616,7 @@ impl TuiApp {
             }
             self.session.grant_egress_host(&pattern);
             self.apply_approved_hitl(terminal).await?;
-            self.push_toast(if remember_exact_direct {
+            self.push_toast(if grant == ApprovalGrant::Always {
                 format!("always allowed {pattern}")
             } else {
                 format!("allowed {pattern} for the session")
@@ -500,7 +624,7 @@ impl TuiApp {
             return Ok(());
         }
 
-        if remember_exact_direct {
+        if grant != ApprovalGrant::Once {
             let Some(call) = self.session_pattern_call_for_payload(&payload) else {
                 self.set_feedback(
                     FeedbackSeverity::Warn,
@@ -509,8 +633,26 @@ impl TuiApp {
                 return Ok(());
             };
             let pattern = self.session.allow_suggested_pattern_for_session(&call);
+            // The session grant is applied either way: a rule written to the
+            // permissions file is not reloaded mid-session, so without it an
+            // "always" grant would still prompt again for the next matching
+            // call in this very session.
+            if grant == ApprovalGrant::Always {
+                if let Err(error) = forge_config::append_user_allow_rule(&pattern) {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("could not write personal permissions: {error}"),
+                    );
+                    self.apply_approved_hitl(terminal).await?;
+                    self.push_toast(format!("allowed {pattern} for the session only"));
+                    return Ok(());
+                }
+            }
             self.apply_approved_hitl(terminal).await?;
-            self.push_toast(format!("allowed {pattern} for the session"));
+            self.push_toast(match grant {
+                ApprovalGrant::Always => format!("always allowed {pattern}"),
+                _ => format!("allowed {pattern} for the session"),
+            });
             return Ok(());
         }
         match decision {
@@ -611,7 +753,8 @@ impl TuiApp {
         self.pending_turn.request_continue();
         self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());
-        self.stream.preview.clear();
+        self.timing.turn_started.get_or_insert_with(Instant::now);
+        self.stream.clear_preview();
         self.stream.thinking.clear();
     }
 
@@ -633,7 +776,7 @@ impl TuiApp {
             return Ok(());
         }
         self.pending_interaction
-            .request_hitl_decision(HitlDecision::Approve, false);
+            .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
         let label = identity
             .map(|identity| identity.label())
             .unwrap_or(payload.tool);

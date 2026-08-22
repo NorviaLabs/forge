@@ -28,6 +28,15 @@ pub(super) fn is_railed_block(block: &ConversationBlock) -> bool {
     )
 }
 
+/// Round a count for display: `842`, `1.2k`, `48k`.
+pub(super) fn compact_count(n: usize) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=9_999 => format!("{:.1}k", n as f64 / 1_000.0),
+        _ => format!("{}k", n / 1_000),
+    }
+}
+
 /// Add a blank separator line unless the last line is already blank.
 pub(super) fn ensure_blank_line(lines: &mut Vec<Line<'static>>) {
     let last_blank = lines
@@ -266,7 +275,7 @@ pub(super) fn render_plan_checklist(
     let inner_w = longest_content.min(PROSE_MAX_WIDTH).min(available_interior);
     let border = theme::accent_style();
     lines.push(card_top_border(inner_w + 4, None, border));
-    for item in &plan.steps {
+    for (idx, item) in plan.steps.iter().enumerate() {
         let (marker, style) = match item.status {
             PlanStepStatus::Completed => ("[✓]", theme::ok()),
             PlanStepStatus::InProgress => ("[►]", theme::warn()),
@@ -293,6 +302,34 @@ pub(super) fn render_plan_checklist(
                 None,
             ));
         }
+        // What actually ran under this step. A plan states intent; without
+        // this, a step marked done is only the model's word for it.
+        if let Some(evidence) = plan.evidence.get(idx).filter(|e| !e.is_empty()) {
+            let summary = evidence.join(", ");
+            let shown = if evidence.len() > PLAN_EVIDENCE_ITEMS {
+                format!(
+                    "{}, +{} more",
+                    evidence[..PLAN_EVIDENCE_ITEMS].join(", "),
+                    evidence.len() - PLAN_EVIDENCE_ITEMS
+                )
+            } else {
+                summary
+            };
+            for wrapped in wrap(&shown, body_width.saturating_sub(2))
+                .into_iter()
+                .take(2)
+            {
+                lines.push(card_content_spans(
+                    vec![
+                        Span::raw("    "),
+                        Span::styled(wrapped, theme::metadata_style()),
+                    ],
+                    inner_w,
+                    border,
+                    None,
+                ));
+            }
+        }
     }
     lines.push(card_bottom_border(inner_w + 4, border));
     lines
@@ -312,20 +349,23 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
             estimate_wrapped_lines(&p.text, width.saturating_sub(2))
         }
         ConversationBlock::AssistantAnswer(p) => estimate_wrapped_lines(&p.text, prose_width),
+        ConversationBlock::Thinking(p) if p.collapsed => 1,
         ConversationBlock::Thinking(p) => estimate_wrapped_lines(&p.text, prose_width),
         ConversationBlock::CodeBlock(p) => estimate_wrapped_lines(&p.text, width),
         ConversationBlock::DiffBlock(p) => p.lines.len().saturating_add(2),
         ConversationBlock::Callout(p) => estimate_wrapped_lines(&p.text, width).saturating_add(1),
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
         ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
-        ConversationBlock::ActiveProgress(_) | ConversationBlock::Metadata(_) => 1,
+        ConversationBlock::ActiveProgress(_)
+        | ConversationBlock::Metadata(_)
+        | ConversationBlock::TurnSummary(_) => 1,
         // Measured, not guessed. The card's height depends on the width (how
         // far the question and each option's consequence wrap) and on how many
         // options there are, and under-budgeting it scrolls its own top border
         // — including the title — off the pane.
         ConversationBlock::ApprovalPending(p) => render_approval_card(p, prose_width).len(),
         ConversationBlock::Home(p) => render_home_card(p, prose_width).len(),
-        ConversationBlock::QuestionPending(_) => 8,
+        ConversationBlock::QuestionPending(p) => render_question_card(p, prose_width).len(),
     };
     body.saturating_add(2)
 }
@@ -395,7 +435,8 @@ impl StreamMarkdownCache {
                 .extend(crate::markdown::render_markdown_open(fresh, width));
             self.prefix.push_str(fresh);
         }
-        let tail = crate::markdown::render_markdown_open(&text[cut..], width);
+        let mut tail = crate::markdown::render_markdown_open(&text[cut..], width);
+        crate::markdown::fade_streaming_tail(&mut tail);
         let from_prefix = keep_from_end.saturating_sub(tail.len());
         let skip = self.open_lines.len().saturating_sub(from_prefix);
         crate::markdown::render_markdown_join(&self.open_lines[skip..], tail)
@@ -435,6 +476,13 @@ pub trait ConversationRender {
         keep_from_end: usize,
         stream_cache: Option<&mut StreamMarkdownCache>,
     ) -> Vec<Line<'static>>;
+    /// As [`Self::lines_for_width_from_end`], also reporting where the plan
+    /// card sits so it can be docked once it scrolls away.
+    fn lines_and_plan_dock(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> (Vec<Line<'static>>, Option<PlanDock>);
 }
 
 impl ConversationRender for ConversationModel {
@@ -463,6 +511,16 @@ impl ConversationRender for ConversationModel {
         cache: &mut StreamMarkdownCache,
     ) -> Vec<Line<'static>> {
         self.render_lines(available_width, keep_from_end, Some(cache))
+    }
+
+    fn lines_and_plan_dock(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> (Vec<Line<'static>>, Option<PlanDock>) {
+        let lines = self.render_lines(available_width, keep_from_end, None);
+        let dock = plan_dock_for(self, available_width, keep_from_end, &lines);
+        (lines, dock)
     }
 
     fn render_lines(
@@ -502,7 +560,7 @@ impl ConversationRender for ConversationModel {
                     theme::border_muted(),
                 )));
                 if gap {
-                    lines.extend([Line::from(""), Line::from("")]);
+                    lines.push(Line::from(""));
                 }
             }
             seen_any_block = true;
@@ -540,7 +598,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(Line::from(spans));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
@@ -560,7 +618,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(Line::from(spans).style(theme::assistant_answer_style()));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::ActiveProgress(p) => {
@@ -665,80 +723,13 @@ impl ConversationRender for ConversationModel {
                 ConversationBlock::ApprovalPending(p) => {
                     lines.extend(render_approval_card(&p, prose_width));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::QuestionPending(p) => {
-                    use crate::hints;
-                    let pad = " ".repeat(MESSAGE_PADDING);
-                    let title = if p.question_count > 1 {
-                        format!(
-                            "{} ({}/{})",
-                            p.header,
-                            p.question_index + 1,
-                            p.question_count
-                        )
-                    } else {
-                        p.header.clone()
-                    };
-                    let title_style = if p.focused {
-                        theme::text().add_modifier(Modifier::BOLD)
-                    } else {
-                        theme::text()
-                    };
-                    for wrapped in wrap(&title, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, title_style),
-                        ]));
-                    }
-                    for wrapped in wrap(&p.question, prose_width) {
-                        lines.push(Line::from(vec![
-                            Span::raw(pad.clone()),
-                            Span::styled(wrapped, theme::text()),
-                        ]));
-                    }
-                    for (idx, opt) in p.options.iter().enumerate() {
-                        let selected = idx == p.selected;
-                        let marker = if selected { "›" } else { " " };
-                        let check = if opt.chosen { "● " } else { "" };
-                        let style = if selected {
-                            theme::text().add_modifier(Modifier::BOLD)
-                        } else {
-                            theme::muted()
-                        };
-                        let row = format!("{marker} {check}{}", opt.label);
-                        for wrapped in wrap(&row, prose_width) {
-                            lines.push(Line::from(vec![
-                                Span::raw(pad.clone()),
-                                Span::styled(wrapped, style),
-                            ]));
-                        }
-                        if selected {
-                            if let Some(desc) =
-                                opt.description.as_deref().filter(|desc| !desc.is_empty())
-                            {
-                                for wrapped in wrap(desc, prose_width.saturating_sub(4)) {
-                                    lines.push(Line::from(vec![
-                                        Span::raw(pad.clone()),
-                                        Span::styled(format!("    {wrapped}"), theme::muted()),
-                                    ]));
-                                }
-                            }
-                        }
-                    }
-                    let hint = if p.question_count > 1 {
-                        hints::QUESTION_TABS
-                    } else if p.multi_select {
-                        hints::QUESTION_MULTI
-                    } else {
-                        hints::QUESTION
-                    };
-                    let mut spans = vec![Span::raw(pad.clone())];
-                    spans.extend(hints::hint_spans(hint, prose_width));
-                    lines.push(Line::from(spans));
+                    lines.extend(render_question_card(&p, prose_width));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Callout(p) => {
@@ -752,7 +743,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(Line::from(Span::styled(format!("▸ {l}"), st)));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::CodeBlock(p) => {
@@ -760,7 +751,7 @@ impl ConversationRender for ConversationModel {
                         lines.push(line.style(theme::code_block()));
                     }
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::DiffBlock(p) => {
@@ -783,19 +774,41 @@ impl ConversationRender for ConversationModel {
                     ));
                     lines.push(Line::from(DIFF_BLOCK_END_MARKER));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::PlanChecklist(p) => {
                     lines.extend(render_plan_checklist(&p, width));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Home(p) => {
                     lines.extend(render_home_card(&p, prose_width));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::TurnSummary(p) => {
+                    // A turn used to end by simply stopping: the answer ran
+                    // out and only the footer recorded that anything had
+                    // concluded. This is the bottom edge, and the cost.
+                    let mut spans = vec![
+                        Span::styled("  ✓  ", theme::ok()),
+                        Span::styled(
+                            format!("Answered in {}", format_elapsed_tenths(p.secs)),
+                            theme::text().add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    let mut detail = format!("   ·  {} chars", compact_count(p.chars));
+                    if p.tools > 0 {
+                        let unit = if p.tools == 1 { "tool" } else { "tools" };
+                        detail.push_str(&format!("  ·  {} {unit}", p.tools));
+                    }
+                    spans.push(Span::styled(detail, theme::metadata_style()));
+                    lines.push(Line::from(spans));
+                    if gap {
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Metadata(p) => {
@@ -807,7 +820,24 @@ impl ConversationRender for ConversationModel {
                     let fitted = crate::path_display::elide_path(&p.text, width);
                     lines.push(Line::from(Span::styled(fitted, theme::muted())));
                     if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::Thinking(p) if p.collapsed => {
+                    // Spent reasoning: one line saying it happened and how
+                    // long it took, rather than a dim paragraph the reader has
+                    // already scrolled past.
+                    let indent = INDENT_UNIT.repeat(2);
+                    let label = match p.duration_secs {
+                        Some(secs) => format!("Thought for {}", format_elapsed_tenths(secs)),
+                        None => "Thought".to_string(),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(indent, theme::dim()),
+                        Span::styled(label, theme::dim().add_modifier(Modifier::ITALIC)),
+                    ]));
+                    if gap {
+                        lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::Thinking(p) => {
@@ -832,9 +862,9 @@ impl ConversationRender for ConversationModel {
                         }));
                         lines.push(Line::from(spans));
                     }
-                    if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
-                    }
+                    // Deliberately no trailing blank: the tool call this
+                    // reasoning produced should hug it, and the next major
+                    // block opens with its own separator anyway.
                 }
             }
         }
@@ -850,22 +880,151 @@ pub struct ConversationWidget<'a> {
 pub struct ConversationLinesWidget<'a> {
     pub lines: &'a [Line<'static>],
     pub tail_lines: &'a [Line<'static>],
+    /// Rebuilt every frame and never cached: the live turn line animates, so
+    /// caching it by content length would freeze it.
+    pub status_lines: &'a [Line<'static>],
     pub scroll: u16,
     pub follow: bool,
     pub bottom_padding: u16,
+    /// Hold the transcript against the composer once a conversation has
+    /// started, instead of letting a short one float at the top of the pane
+    /// with the live edge stranded mid-screen.
+    pub anchor_bottom: bool,
+    /// Stands in for the plan card once it has scrolled above the window.
+    pub plan_dock: Option<&'a PlanDock>,
 }
 
-pub(super) fn render_conversation_lines(
+/// The three slices a transcript frame is painted from, in paint order:
+/// settled history, the in-flight preview, and the live turn line.
+#[derive(Clone, Copy)]
+pub(super) struct TranscriptSlices<'a> {
+    pub lines: &'a [Line<'static>],
+    pub tail_lines: &'a [Line<'static>],
+    pub status_lines: &'a [Line<'static>],
+}
+
+/// Locate the plan card inside `lines`, and build the row that stands in
+/// for it.
+///
+/// The card is found by rendering it standalone and matching its first and
+/// last rows against what was produced, rather than by threading an index
+/// out of the block loop — the loop feeds three cached entry points and a
+/// tail window, and an index would have to be kept correct through all of
+/// them. Matching costs a scan of the rendered lines, and only when a plan
+/// exists at all.
+fn plan_dock_for(
+    model: &ConversationModel,
+    available_width: usize,
+    keep_from_end: usize,
     lines: &[Line<'static>],
-    tail_lines: &[Line<'static>],
+) -> Option<PlanDock> {
+    let width = available_width.max(4);
+    let blocks = model.semantic_blocks();
+    let prose_width = width
+        .saturating_sub(MESSAGE_PADDING * 2)
+        .clamp(4, PROSE_MAX_WIDTH);
+    let start = start_block_for_tail(&blocks, width, prose_width, keep_from_end);
+    let (index, plan) = blocks
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, block)| match block {
+            ConversationBlock::PlanChecklist(p) => Some((i, p)),
+            _ => None,
+        })?;
+    // Follow mode renders only a tail window, so a plan far enough back is
+    // not in `lines` at all — which is exactly when it most needs docking.
+    // Treat "not rendered" as "above the window", not as "no plan".
+    let end = if index < start {
+        0
+    } else {
+        let card = render_plan_checklist(plan, width);
+        let located = card.first().zip(card.last()).and_then(|(first, last)| {
+            let (first, last) = (line_plain(first), line_plain(last));
+            let head = lines.iter().rposition(|line| line_plain(line) == first)?;
+            lines[head..]
+                .iter()
+                .position(|line| line_plain(line) == last)
+                .map(|offset| head + offset + 1)
+        });
+        located.unwrap_or(0)
+    };
+
+    let done = plan
+        .steps
+        .iter()
+        .filter(|item| item.status == forge_types::PlanStepStatus::Completed)
+        .count();
+    let total = plan.steps.len();
+    let current = plan
+        .steps
+        .iter()
+        .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
+        .map(|item| item.step.as_str());
+    let mut spans = vec![
+        Span::styled("\u{2191} ", theme::accent_style()),
+        Span::styled("Plan  ", theme::metadata_style()),
+        Span::styled(
+            "\u{2593}".repeat(done) + &"\u{2591}".repeat(total.saturating_sub(done)),
+            theme::accent_style(),
+        ),
+        Span::styled(format!("  {done}/{total}"), theme::muted()),
+    ];
+    if let Some(step) = current {
+        spans.push(Span::styled("  \u{b7}  ", theme::muted()));
+        spans.push(Span::styled(
+            crate::path_display::elide_middle(step, prose_width.saturating_sub(20).max(8)),
+            theme::text(),
+        ));
+    }
+    Some(PlanDock {
+        end,
+        summary: Line::from(spans),
+    })
+}
+
+/// A line's text with styling dropped, for comparing two renderings of the
+/// same content.
+fn line_plain(line: &Line<'static>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+/// A one-row stand-in for the plan card, and where the card it stands for
+/// ends.
+///
+/// The card is worth its height while it is on screen and worth nothing once
+/// it has scrolled past — which measurement showed happens about four seconds
+/// into a turn. When the card is above the window this row takes the top of
+/// the pane instead, so the plan is never simply gone.
+#[derive(Debug, Clone)]
+pub struct PlanDock {
+    /// Index just past the plan card's last line, within the rendered slice.
+    pub(super) end: usize,
+    pub(super) summary: Line<'static>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_conversation_lines(
+    slices: TranscriptSlices<'_>,
     scroll_from_bottom: u16,
     follow: bool,
     bottom_padding: u16,
+    anchor_bottom: bool,
+    dock: Option<&PlanDock>,
     area: Rect,
     buf: &mut Buffer,
 ) {
     theme::fill(area, buf, theme::assistant_message());
-    let content_len = lines.len().saturating_add(tail_lines.len());
+    let TranscriptSlices {
+        lines,
+        tail_lines,
+        status_lines,
+    } = slices;
+    let tail_end = lines.len().saturating_add(tail_lines.len());
+    let content_len = tail_end.saturating_add(status_lines.len());
     let total = content_len.saturating_add(bottom_padding as usize);
     let max_scroll = total.saturating_sub(area.height as usize);
     let scroll = if follow {
@@ -878,17 +1037,43 @@ pub(super) fn render_conversation_lines(
     // reused every frame. Deep-copying each visible one (and every owned string
     // inside its spans) was pure per-frame waste.
     let blank = Line::from("");
-    let visible = (scroll..end)
+    let mut visible = (scroll..end)
         .map(|index| {
             if index < lines.len() {
                 &lines[index]
-            } else if index < content_len {
+            } else if index < tail_end {
                 &tail_lines[index - lines.len()]
+            } else if index < content_len {
+                &status_lines[index - tail_end]
             } else {
                 &blank
             }
         })
         .collect::<Vec<_>>();
+    // The plan card has scrolled above the window: its one-row stand-in takes
+    // the top of the pane. Measured before this existed, the card was on
+    // screen for 8 frames out of 70 and nothing afterwards said a plan
+    // existed, which step was running, or how far in it was.
+    if let Some(dock) = dock.filter(|dock| dock.end <= scroll) {
+        if let Some(first) = visible.first_mut() {
+            *first = &dock.summary;
+        }
+    }
+    // Short transcripts painted from the top left the newest line — the one
+    // being written — floating in the middle of the pane with a screen of
+    // nothing under it. Push them down so the live edge sits where the reader
+    // is already looking: just above the composer.
+    let area = if anchor_bottom && total < area.height as usize {
+        let offset = area.height.saturating_sub(total as u16);
+        Rect::new(
+            area.x,
+            area.y.saturating_add(offset),
+            area.width,
+            total as u16,
+        )
+    } else {
+        area
+    };
     render_visible_conversation_lines(&visible, area, buf);
 }
 
@@ -947,11 +1132,16 @@ pub(super) fn render_visible_conversation_lines(
 impl Widget for ConversationLinesWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         render_conversation_lines(
-            self.lines,
-            self.tail_lines,
+            TranscriptSlices {
+                lines: self.lines,
+                tail_lines: self.tail_lines,
+                status_lines: self.status_lines,
+            },
             self.scroll,
             self.follow,
             self.bottom_padding,
+            self.anchor_bottom,
+            self.plan_dock,
             area,
             buf,
         );
@@ -973,11 +1163,16 @@ impl Widget for ConversationWidget<'_> {
         };
         let lines = self.model.lines_for_width(area.width as usize);
         render_conversation_lines(
-            &lines,
-            &[],
+            TranscriptSlices {
+                lines: &lines,
+                tail_lines: &[],
+                status_lines: &[],
+            },
             self.model.scroll,
             self.model.follow,
             0,
+            false,
+            None,
             area,
             buf,
         );
@@ -1030,6 +1225,21 @@ const APPROVAL_COMPACT_WIDTH: usize = 40;
 /// Fewest columns worth giving an inline consequence. Below this it would be
 /// elided down to noise, so it is dropped instead.
 const APPROVAL_MIN_HELP_COLUMNS: usize = 14;
+
+/// Tool subjects named under one plan step before the rest are counted.
+const PLAN_EVIDENCE_ITEMS: usize = 3;
+
+/// Rows one option's description may spend on the question card.
+const QUESTION_DESCRIPTION_LINES: usize = 2;
+
+/// Rows the category explanation may spend when it is the only thing saying
+/// why the prompt appeared.
+const APPROVAL_REASON_LINES: usize = 3;
+
+/// Rows it may spend once the sandbox's own words are above it. The
+/// explanation is then a footnote to evidence the operator can already read,
+/// and the five-line version was taller than the command it was about.
+const APPROVAL_REASON_LINES_WITH_FAILURE: usize = 1;
 
 /// First sentence of a help string, which is the part that says what happens.
 ///
@@ -1137,6 +1347,150 @@ fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'stati
 /// with less visual weight than the empty composer below it. The presentation
 /// already carried a `focused` flag documented as "accent border vs muted" —
 /// there simply was no border for it to colour.
+/// The questionnaire's card.
+///
+/// Built like the approval card and for the same reason: these are the same
+/// weight of decision — the agent has stopped and cannot go on until the
+/// operator answers — and they should not look like two unrelated things.
+///
+/// Every option shows its description, not only the selected one. Choosing
+/// between three options means comparing them, and a description that appears
+/// only under the cursor makes the reader arrow up and down to do it.
+pub(super) fn render_question_card(
+    p: &QuestionPendingPresentation,
+    prose_width: usize,
+) -> Vec<Line<'static>> {
+    let pad = " ".repeat(MESSAGE_PADDING);
+    let total = prose_width.saturating_sub(MESSAGE_PADDING).max(12);
+    let inner = total.saturating_sub(4);
+    let compact = inner < APPROVAL_COMPACT_WIDTH;
+    let border = if p.focused {
+        theme::waiting_border()
+    } else {
+        theme::border_muted()
+    };
+
+    let title = if p.question_count > 1 {
+        format!(
+            "{} ({}/{})",
+            p.header,
+            p.question_index + 1,
+            p.question_count
+        )
+    } else {
+        p.header.clone()
+    };
+
+    let mut out: Vec<Line<'static>> = vec![{
+        let mut spans = vec![Span::raw(pad.clone())];
+        spans.extend(card_top_border(total, Some(&title), border).spans);
+        Line::from(spans)
+    }];
+    let mut row = |spans: Vec<Span<'static>>| {
+        let mut all = vec![Span::raw(pad.clone())];
+        all.extend(card_content_spans(spans, inner, border, None).spans);
+        out.push(Line::from(all));
+    };
+
+    for wrapped in wrap(&p.question, inner) {
+        row(vec![Span::styled(wrapped, theme::text())]);
+    }
+    row(vec![]);
+
+    for (idx, opt) in p.options.iter().enumerate() {
+        let selected = idx == p.selected;
+        // The marker is its own span. Folding it into the wrapped string let
+        // `wrap` trim the leading space off every unselected row, so the
+        // options sat two columns left of the one under the cursor and the
+        // list did not read as a list.
+        let marker = if selected { "\u{276f} " } else { "  " };
+        let style = if selected {
+            theme::text().add_modifier(Modifier::BOLD)
+        } else {
+            theme::text()
+        };
+        // The digit already answers the question — `handle_question_menu_key`
+        // has accepted 1-9 all along, with nothing on screen to say so.
+        let ordinal = format!("{}. ", idx + 1);
+        let chosen = if opt.chosen { "● " } else { "" };
+        let lead = marker.chars().count() + ordinal.chars().count() + chosen.chars().count();
+        for (n, wrapped) in wrap(&opt.label, inner.saturating_sub(lead))
+            .into_iter()
+            .enumerate()
+        {
+            let mut spans = vec![Span::styled(
+                if n == 0 {
+                    marker.to_string()
+                } else {
+                    " ".repeat(marker.chars().count())
+                },
+                theme::accent_style(),
+            )];
+            spans.push(Span::styled(
+                if n == 0 {
+                    ordinal.clone()
+                } else {
+                    " ".repeat(ordinal.chars().count())
+                },
+                theme::metadata_style().add_modifier(Modifier::BOLD),
+            ));
+            if !chosen.is_empty() {
+                spans.push(Span::styled(
+                    if n == 0 {
+                        chosen.to_string()
+                    } else {
+                        " ".repeat(chosen.chars().count())
+                    },
+                    theme::ok(),
+                ));
+            }
+            spans.push(Span::styled(wrapped, style));
+            row(spans);
+        }
+        if let Some(desc) = opt.description.as_deref().filter(|d| !d.is_empty()) {
+            if !compact {
+                // Capped: with every option explaining itself the card grows
+                // by the number of options, and a long description on each of
+                // five of them pushes the question itself off a short pane.
+                // Two lines is enough to distinguish options; the rest is
+                // prose the operator did not ask for.
+                let wrapped = wrap(desc, inner.saturating_sub(lead));
+                let elided = wrapped.len() > QUESTION_DESCRIPTION_LINES;
+                for (n, text) in wrapped
+                    .into_iter()
+                    .take(QUESTION_DESCRIPTION_LINES)
+                    .enumerate()
+                {
+                    let last = n + 1 == QUESTION_DESCRIPTION_LINES;
+                    row(vec![Span::styled(
+                        format!(
+                            "{}{text}{}",
+                            " ".repeat(lead),
+                            if elided && last { "…" } else { "" }
+                        ),
+                        theme::metadata_style(),
+                    )]);
+                }
+            }
+        }
+    }
+
+    row(vec![]);
+    let hint = if p.question_count > 1 {
+        crate::hints::QUESTION_TABS
+    } else if p.multi_select {
+        crate::hints::QUESTION_MULTI
+    } else {
+        crate::hints::QUESTION
+    };
+    row(crate::hints::hint_spans(hint, inner));
+
+    let mut bottom = vec![Span::raw(pad)];
+    bottom.extend(card_bottom_border(total, border).spans);
+    out.push(Line::from(bottom));
+    out
+}
+
 fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> Vec<Line<'static>> {
     let pad = " ".repeat(MESSAGE_PADDING);
     // A row spends `pad` + `│` + ` ` + inner + `│`, so the card is
@@ -1190,22 +1544,64 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     for wrapped in wrap(question, inner) {
         row(vec![Span::styled(wrapped, theme::text())]);
     }
+    // What the sandbox actually said about this command. The category
+    // explanation below reads identically for every command in that category,
+    // so the evidence for this one leads.
+    if let Some(failure) = p.failure.as_deref().filter(|f| !f.is_empty()) {
+        for (n, failure_line) in failure.lines().enumerate() {
+            let lead = if n == 0 {
+                "The sandbox refused it: "
+            } else {
+                ""
+            };
+            // The lead shares the row, so it has to come out of the width the
+            // text is wrapped to — the reason row below used to leave it out,
+            // which pushed the first line past the border and clipped it.
+            for (m, wrapped) in wrap(failure_line, inner.saturating_sub(lead.len()))
+                .into_iter()
+                .enumerate()
+            {
+                row(vec![
+                    Span::styled(
+                        if m == 0 { lead } else { "" }.to_string(),
+                        theme::metadata_style(),
+                    ),
+                    Span::styled(wrapped, theme::warn()),
+                ]);
+            }
+        }
+    }
     // Why this call was gated. Without it the prompt reads as arbitrary: the
-    // reason was already on the payload and simply never shown.
+    // reason was already on the payload and simply never shown. Capped, and
+    // dropped entirely once the failure above has said the same thing more
+    // specifically — five lines of policy is not worth the height.
+    let reason_lines = if p.failure.is_some() {
+        APPROVAL_REASON_LINES_WITH_FAILURE
+    } else {
+        APPROVAL_REASON_LINES
+    };
     if let Some(reason) = p
         .reason
         .as_deref()
         .filter(|r| !r.is_empty())
         .filter(|_| !compact)
     {
-        for (n, wrapped) in wrap(reason, inner.saturating_sub(2))
-            .into_iter()
-            .enumerate()
-        {
-            let lead = if n == 0 { "Asked because " } else { "" };
+        const LEAD: &str = "Asked because ";
+        let wrapped = wrap(reason, inner.saturating_sub(LEAD.len()));
+        let elided = wrapped.len() > reason_lines;
+        for (n, text) in wrapped.into_iter().take(reason_lines).enumerate() {
+            let lead = if n == 0 { LEAD } else { "" };
+            let last = n + 1 == reason_lines;
             row(vec![
                 Span::styled(lead.to_string(), theme::metadata_style()),
-                Span::styled(wrapped, theme::muted()),
+                Span::styled(
+                    if elided && last {
+                        format!("{text}…")
+                    } else {
+                        text
+                    },
+                    theme::muted(),
+                ),
             ]);
         }
     }
@@ -2530,7 +2926,8 @@ mod tests {
                 &m.items[..],
                 [ChatItem::PlanChecklist {
                     explanation: Some(exp),
-                    steps
+                    steps,
+                    ..
                 }] if exp == "Next steps" && steps.len() == 3
             ),
             "expected plan checklist item, got {:?}",
@@ -2559,6 +2956,75 @@ mod tests {
         ));
     }
 
+    /// Measured before this existed: the plan card was on screen for 8 frames
+    /// out of 70, and after that nothing said a plan existed at all.
+    #[test]
+    fn the_plan_docks_once_its_card_has_scrolled_away() {
+        let mut items = vec![ChatItem::PlanChecklist {
+            explanation: None,
+            steps: vec![
+                forge_types::PlanItem {
+                    step: "Inspect the theme tokens".into(),
+                    status: forge_types::PlanStepStatus::Completed,
+                },
+                forge_types::PlanItem {
+                    step: "Add the dark palette".into(),
+                    status: forge_types::PlanStepStatus::InProgress,
+                },
+            ],
+            evidence: Vec::new(),
+        }];
+        // Enough answer under it to push the card off any reasonable pane.
+        for n in 0..40 {
+            items.push(ChatItem::Assistant {
+                text: format!("line {n}"),
+            });
+        }
+        let model = ConversationModel {
+            items,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let (lines, dock) = model.lines_and_plan_dock(80, usize::MAX);
+        let dock = dock.expect("a plan in the transcript should be dockable");
+
+        // The dock stands for a card that really is up there.
+        assert!(dock.end <= lines.len(), "{} vs {}", dock.end, lines.len());
+        let summary = line_text(&dock.summary);
+        assert!(summary.contains("1/2"), "{summary}");
+        assert!(
+            summary.contains("Add the dark palette"),
+            "the running step should be named: {summary}"
+        );
+
+        // Scrolled past the card, the top row is the summary. Still on it,
+        // the card speaks for itself and the row is left alone.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 10));
+        render_conversation_lines(
+            TranscriptSlices {
+                lines: &lines,
+                tail_lines: &[],
+                status_lines: &[],
+            },
+            0,
+            true,
+            0,
+            false,
+            Some(&dock),
+            Rect::new(0, 0, 80, 10),
+            &mut buf,
+        );
+        let top: String = (0..80)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect::<String>();
+        assert!(
+            top.contains("Plan") && top.contains("1/2"),
+            "docked row missing from the top of the pane: {top:?}"
+        );
+    }
+
     #[test]
     fn plan_checklist_card_is_bordered_with_no_background_fill() {
         let plan = PlanChecklistPresentation {
@@ -2567,6 +3033,7 @@ mod tests {
                 step: "Inspect code".into(),
                 status: forge_types::PlanStepStatus::Completed,
             }],
+            evidence: Vec::new(),
         };
         let lines = render_plan_checklist(&plan, 80);
         // The explanation ("Next steps") renders as an unboxed intro line
@@ -2883,6 +3350,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: None,
+            failure: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -2904,6 +3372,92 @@ mod tests {
         }
     }
 
+    /// The lead shares the row with the text it introduces, so it has to come
+    /// out of the wrap width. It did not, and the reason's first line ran past
+    /// the border and was clipped mid-word — "confined to the wo".
+    #[test]
+    fn a_reason_line_wraps_around_its_lead_instead_of_clipping() {
+        // Long enough that a line wrapped without allowing for the lead runs
+        // past the border, short enough to stay inside the line cap so every
+        // word must survive somewhere.
+        let reason = "writes are confined to the workspace root and the git \
+                      directory is read-only inside it";
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "rm -rf /tmp/cache".into(),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            reason: Some(reason.into()),
+            failure: None,
+            options: Vec::new(),
+            selected: 0,
+            focused: true,
+        };
+
+        let lines = render_approval_card(&p, 72);
+        let rendered: Vec<String> = lines.iter().map(line_text).collect();
+
+        // Every word of the reason has to survive somewhere on the card. A row
+        // clipped at the border drops the tail of the reason silently, which
+        // is exactly what this catches — the card still looks well-formed.
+        let printed = rendered.join(" ");
+        let missing: Vec<&str> = reason
+            .split_whitespace()
+            .filter(|word| !printed.contains(*word))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "the reason was clipped at the border, losing {missing:?}: {rendered:#?}"
+        );
+    }
+
+    /// The category explanation reads identically for every command in that
+    /// category. When the sandbox's own words are available they lead, and the
+    /// explanation shrinks to a footnote rather than five rows of policy.
+    #[test]
+    fn the_real_refusal_leads_and_the_category_is_demoted() {
+        let reason = "blocked by the sandbox: writes are confined to the workspace, \
+                      and .git/.forge are read-only inside it. Paths outside the \
+                      workspace do not exist inside the sandbox, so they report as \
+                      missing rather than forbidden.";
+        let mut p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "rm -rf /tmp/cache".into(),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            reason: Some(reason.into()),
+            failure: None,
+            options: Vec::new(),
+            selected: 0,
+            focused: true,
+        };
+
+        let without = render_approval_card(&p, 72).len();
+        p.failure = Some("rm: /tmp/cache: Operation not permitted".into());
+        let with = render_approval_card(&p, 72);
+        let text: Vec<String> = with.iter().map(line_text).collect();
+
+        assert!(
+            text.iter()
+                .any(|row| row.contains("Operation not permitted")),
+            "the sandbox's own words are missing: {text:#?}"
+        );
+        assert!(
+            text.iter()
+                .any(|row| row.contains("The sandbox refused it")),
+            "the evidence is not introduced: {text:#?}"
+        );
+        assert!(
+            with.len() < without,
+            "the card grew instead of trading policy for evidence: {} -> {}",
+            without,
+            with.len()
+        );
+    }
+
     fn approval_with_help(width: usize) -> Vec<Line<'static>> {
         let p = ApprovalPendingPresentation {
             tool: "bash".into(),
@@ -2912,6 +3466,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: Some("your permissions.toml denies bash(*)".into()),
+            failure: None,
             options: vec![
                 ApprovalMenuRow {
                     label: "Run once".into(),
@@ -2999,6 +3554,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: None,
+            failure: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -3033,6 +3589,7 @@ mod tests {
             env_delta: "inherited".into(),
             question: None,
             reason: None,
+            failure: None,
             options: vec![ApprovalMenuRow {
                 label: "Run once".into(),
                 detail: None,
@@ -3066,6 +3623,7 @@ mod tests {
                 env_delta: "inherited".into(),
                 question: None,
                 reason: None,
+                failure: None,
             },
             vec![
                 ApprovalMenuRow {
@@ -3140,6 +3698,7 @@ mod tests {
                 env_delta: "inherited".into(),
                 question: None,
                 reason: None,
+                failure: None,
             },
             vec![ApprovalMenuRow {
                 label: "Run once".into(),
@@ -3163,7 +3722,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_question_renders_inline_not_as_a_card() {
+    fn pending_question_renders_as_a_numbered_card() {
         const PANE_WIDTH: usize = 100;
         let m = ConversationModel::from_messages(
             &[],
@@ -3181,6 +3740,11 @@ mod tests {
                     chosen: false,
                 },
                 QuestionMenuRow {
+                    label: "SQLite".into(),
+                    description: Some("Embedded, single file.".into()),
+                    chosen: false,
+                },
+                QuestionMenuRow {
                     label: "Other".into(),
                     description: Some("Type a custom answer in the composer.".into()),
                     chosen: false,
@@ -3195,12 +3759,25 @@ mod tests {
         let lines = m.lines_for_width(PANE_WIDTH);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("Which database?"), "{text}");
-        assert!(text.contains("› Postgres (Recommended)"), "{text}");
+        // Numbered, because 1-9 already answer the question, and marked with
+        // the same caret the approval card uses.
+        assert!(
+            text.contains("\u{276f} 1. Postgres (Recommended)"),
+            "{text}"
+        );
         assert!(text.contains("Relational default."), "{text}");
         assert!(text.contains("Other"), "{text}");
+        // Every option explains itself, not only the one under the cursor:
+        // choosing between options means comparing them.
         assert!(
-            lines.iter().all(|line| !line_text(line).starts_with('┌')),
-            "question must not render as a boxed card: {text}"
+            text.contains("Embedded, single file."),
+            "unselected option lost its description: {text}"
+        );
+        // Framed like the approval card. Both are the same thing to the
+        // operator — the agent has stopped and cannot continue without them.
+        assert!(
+            lines.iter().any(|line| line_text(line).contains('┌')),
+            "question should render as a card: {text}"
         );
     }
 
@@ -3424,12 +4001,14 @@ mod tests {
                 ChatItem::PlanChecklist {
                     explanation: Some("Next steps".into()),
                     steps: plan_items(),
+                    evidence: Vec::new(),
                 },
                 // A later plan_update in the same turn re-renders the
                 // checklist but must not open another phase rule.
                 ChatItem::PlanChecklist {
                     explanation: Some("Next steps".into()),
                     steps: plan_items(),
+                    evidence: Vec::new(),
                 },
                 ChatItem::ToolCard {
                     name: "run_shell".into(),
@@ -3727,6 +4306,122 @@ mod tests {
                 "cache diverged from a one-shot render at prefix length {end}"
             );
         }
+    }
+
+    /// A short conversation used to paint from the top of the pane, leaving the
+    /// newest line — the one being written — stranded mid-screen above a
+    /// screenful of nothing.
+    #[test]
+    fn a_short_conversation_hugs_the_composer() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let lines = vec![Line::from("only line")];
+        let area = Rect::new(0, 0, 20, 10);
+        let row_of = |anchor_bottom: bool| {
+            let mut buf = Buffer::empty(area);
+            render_conversation_lines(
+                TranscriptSlices {
+                    lines: &lines,
+                    tail_lines: &[],
+                    status_lines: &[],
+                },
+                0,
+                true,
+                0,
+                anchor_bottom,
+                None,
+                area,
+                &mut buf,
+            );
+            (0..area.height).find(|y| {
+                (0..area.width).any(|x| buf[(x, *y)].symbol().trim() == "only")
+                    || (0..area.width).any(|x| buf[(x, *y)].symbol() != " ")
+            })
+        };
+        assert_eq!(row_of(false), Some(0), "top-anchored content moved");
+        assert_eq!(
+            row_of(true),
+            Some(area.height - 1),
+            "content did not sink to the bottom of the pane"
+        );
+    }
+
+    /// Blocks were separated by a leading blank *and* a trailing pair, so gaps
+    /// doubled and tripled: the transcript read as a list of far-apart items
+    /// rather than a conversation.
+    #[test]
+    fn the_transcript_never_stacks_blank_lines() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "do the thing".into(),
+                },
+                ChatItem::Thinking {
+                    text: "planning".into(),
+                    duration_secs: Some(1.0),
+                },
+                ChatItem::Assistant {
+                    text: "Here you go.\n\n- one\n- two\n".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let lines = model.lines_for_width(80);
+        let mut blanks = 0usize;
+        for line in &lines {
+            if line.width() == 0 || line.spans.iter().all(|s| s.content.trim().is_empty()) {
+                blanks += 1;
+                assert!(
+                    blanks < 2,
+                    "two blank rows in a row:\n{}",
+                    lines_text(&lines)
+                );
+            } else {
+                blanks = 0;
+            }
+        }
+    }
+
+    /// Text that later bytes can still re-render is painted a step down in
+    /// value, so a streaming answer visibly sets. Settled text keeps its own
+    /// colour, and the caret — the live edge — keeps full brightness.
+    #[test]
+    fn the_unsettled_tail_renders_dimmer_than_settled_text() {
+        let mut cache = StreamMarkdownCache::default();
+        // The first paragraph is settled; the second is still being written.
+        let lines = cache.render("Settled paragraph.\n\nIn flight now▌", 60, usize::MAX);
+        let dim = crate::theme::text_dim_color();
+        let fg_of = |needle: &str| {
+            lines
+                .iter()
+                .find_map(|line| {
+                    line.spans
+                        .iter()
+                        .find(|span| span.content.contains(needle))
+                        .map(|span| span.style.fg)
+                })
+                .unwrap_or_else(|| panic!("{needle} rendered"))
+        };
+        assert_eq!(fg_of("flight"), Some(dim), "the tail was not faded");
+        assert_ne!(fg_of("Settled"), Some(dim), "settled text must not fade");
+        assert_ne!(
+            fg_of("▌"),
+            Some(dim),
+            "the caret marks the live edge and keeps its colour"
+        );
+    }
+
+    /// Fading is paint, not content: the characters on screen must not change.
+    #[test]
+    fn fading_the_tail_leaves_the_text_alone() {
+        let mut cache = StreamMarkdownCache::default();
+        let buffer = "Alpha.\n\n- one\n- two▌";
+        let faded = lines_text(&cache.render(buffer, 60, usize::MAX));
+        let plain = lines_text(&crate::markdown::render_markdown(buffer, 60));
+        assert_eq!(faded, plain);
     }
 
     /// A width change must discard the cache: the lines were wrapped to the old

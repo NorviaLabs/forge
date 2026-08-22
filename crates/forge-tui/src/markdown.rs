@@ -202,6 +202,47 @@ pub(crate) fn render_markdown_join(
     trim_trailing_blanks(out)
 }
 
+/// The streaming caret appended to the live preview by `forge-transcript`.
+pub(crate) const STREAM_CARET: char = '▌';
+
+/// Dim the lines of the unsettled tail so a streaming answer visibly *sets*.
+///
+/// `settled_prefix_len` already knows exactly which suffix of the buffer later
+/// bytes can still re-render — an open fence, a list that a further item can
+/// re-space, a half-written paragraph. Painting that region one step down in
+/// value is the only honest signal the transcript can give that the text on
+/// screen is not final yet, and it costs one pass over the tail lines.
+///
+/// The caret keeps its own colour: it marks the live edge, so fading it would
+/// hide the one thing that is definitely alive.
+pub(crate) fn fade_streaming_tail(lines: &mut [Line<'static>]) {
+    let dim = theme::text_dim_color();
+    for line in lines.iter_mut() {
+        for span in &mut line.spans {
+            span.style = span.style.fg(dim);
+        }
+    }
+    // An open render keeps its trailing separator, so the caret is on the last
+    // line that has any width, not necessarily the last line.
+    let Some(last) = lines.iter_mut().rev().find(|line| line.width() > 0) else {
+        return;
+    };
+    let Some(span) = last.spans.last_mut() else {
+        return;
+    };
+    if !span.content.ends_with(STREAM_CARET) {
+        return;
+    }
+    let body = span
+        .content
+        .strip_suffix(STREAM_CARET)
+        .expect("checked above")
+        .to_string();
+    span.content = body.into();
+    last.spans
+        .push(Span::styled(STREAM_CARET.to_string(), theme::text()));
+}
+
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut renderer = MdRenderer::new(width.max(1));
     renderer.feed(Parser::new_ext(text, markdown_options()));
@@ -267,6 +308,32 @@ struct MdRenderer {
     table: Option<TableBuilder>,
     in_html_block: bool,
     html_buf: String,
+    /// Rank of the heading currently open, so `TagEnd::Heading` can decide
+    /// whether to draw the H1 rule.
+    heading_level: Option<u8>,
+}
+
+/// Map `pulldown_cmark`'s heading level onto 1-6.
+fn heading_rank(level: pulldown_cmark::HeadingLevel) -> u8 {
+    use pulldown_cmark::HeadingLevel::*;
+    match level {
+        H1 => 1,
+        H2 => 2,
+        H3 => 3,
+        H4 => 4,
+        H5 => 5,
+        H6 => 6,
+    }
+}
+
+/// Open a block with one blank line of separation, never two, and never a
+/// leading blank at the very top of the answer.
+fn blank_before_block(out: &mut Vec<Line<'static>>) {
+    match out.last() {
+        None => {}
+        Some(last) if last.width() == 0 => {}
+        Some(_) => out.push(Line::from("")),
+    }
 }
 
 impl MdRenderer {
@@ -284,6 +351,7 @@ impl MdRenderer {
             table: None,
             in_html_block: false,
             html_buf: String::new(),
+            heading_level: None,
         }
     }
 
@@ -339,8 +407,20 @@ impl MdRenderer {
     fn on_start(&mut self, tag: Tag<'_>) {
         match tag {
             Tag::Paragraph => {}
-            Tag::Heading { .. } => {
-                self.push_style(Style::default().add_modifier(Modifier::BOLD));
+            Tag::Heading { level, .. } => {
+                // Rank reads by weight and value, never hue (see
+                // `theme::heading`). H1 and H2 stay primary text; H3 and below
+                // step down to secondary, and H1 gets a rule under it. Before
+                // this, every level was the same bold line, so a structured
+                // answer rendered flat.
+                let level = heading_rank(level);
+                self.heading_level = Some(level);
+                blank_before_block(&mut self.out);
+                self.push_style(if level <= 2 {
+                    theme::heading()
+                } else {
+                    theme::text_secondary().add_modifier(Modifier::BOLD)
+                });
             }
             Tag::BlockQuote(_) => {
                 self.flush_para();
@@ -445,6 +525,12 @@ impl MdRenderer {
             TagEnd::Heading(_) => {
                 self.pop_style();
                 self.flush_para();
+                if self.heading_level.take() == Some(1) {
+                    self.out.push(Line::from(Span::styled(
+                        "─".repeat(self.width),
+                        theme::border_muted(),
+                    )));
+                }
             }
             TagEnd::Item => {
                 self.flush_para();
@@ -570,6 +656,21 @@ impl MdRenderer {
     /// One row of a fenced block: indent, gutter rule, content, then padding
     /// out to the prose width so the tint reads as a block rather than as a
     /// ragged highlight behind the text.
+    /// The language label above a fenced block: outside the gutter, on the
+    /// canvas rather than the code tint, right-aligned to the block's edge so
+    /// it caps the block instead of starting it.
+    fn language_chip(&self, language: &str) -> Line<'static> {
+        let label = language.to_string();
+        let pad = self
+            .width
+            .saturating_sub(display_width(&label))
+            .saturating_sub(display_width(CODE_INDENT));
+        Line::from(vec![
+            Span::raw(format!("{CODE_INDENT}{}", " ".repeat(pad))),
+            Span::styled(label, theme::code_punctuation()),
+        ])
+    }
+
     fn code_row(&self, content: Vec<Span<'static>>) -> Line<'static> {
         let mut spans = vec![Span::styled(
             format!("{CODE_INDENT}{CODE_GUTTER}"),
@@ -597,8 +698,11 @@ impl MdRenderer {
     /// stops.
     fn render_code(&mut self, code: CodeBuffer) {
         if code.fenced && !code.language.is_empty() {
-            let chip = Span::styled(code.language.clone(), theme::code_punctuation());
-            self.out.push(self.code_row(vec![chip]));
+            // The chip used to go through `code_row`, which put it inside the
+            // gutter and gave it the code tint — so it read as a line of code
+            // that says "rust". It belongs above the block, outside the rail,
+            // right-aligned to the block's own width.
+            self.out.push(self.language_chip(&code.language));
         }
         let body = code.body.trim_end_matches('\n');
         if body.is_empty() {
@@ -1512,7 +1616,10 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .lines()
             .filter(|l| l.trim_start().starts_with(CODE_GUTTER.trim_end()))
             .count();
-        assert_eq!(gutters, 3, "chip + two code lines:\n{rendered}");
+        assert_eq!(
+            gutters, 2,
+            "two code lines; the chip sits outside the gutter:\n{rendered}"
+        );
     }
 
     /// The block must read as a block: a language chip, a gutter down every
@@ -1530,7 +1637,11 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .iter()
             .filter(|line| line.style.bg == block_bg && block_bg.is_some())
             .collect();
-        assert_eq!(tinted.len(), 2, "chip row + one code row:\n{rendered}");
+        assert_eq!(
+            tinted.len(),
+            1,
+            "one code row; the chip is not part of the tinted block:\n{rendered}"
+        );
         for line in tinted {
             assert_eq!(
                 line.width(),
@@ -1541,6 +1652,86 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         assert!(
             rendered.lines().any(|l| l.trim() == "After."),
             "prose after the block must stay untinted prose:\n{rendered}"
+        );
+    }
+
+    /// Every heading level used to push the same bold style, so an answer with
+    /// real structure rendered flat: H1, H2 and H3 were pixel-identical.
+    #[test]
+    fn heading_levels_are_told_apart() {
+        let lines = render_markdown("# One\n\n## Two\n\n### Three\n", 40);
+        let style_of = |needle: &str| {
+            lines
+                .iter()
+                .find(|line| line.spans.iter().any(|span| span.content.contains(needle)))
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .find(|s| s.content.contains(needle))
+                        .unwrap()
+                        .style
+                })
+                .unwrap_or_else(|| panic!("{needle} rendered"))
+        };
+        let h1 = style_of("One");
+        let h3 = style_of("Three");
+        assert!(
+            h1.add_modifier.contains(Modifier::BOLD),
+            "H1 lost its weight"
+        );
+        assert!(
+            h3.add_modifier.contains(Modifier::BOLD),
+            "H3 lost its weight"
+        );
+        assert_ne!(
+            h1.fg, h3.fg,
+            "H3 must step down in value from H1, or rank is invisible"
+        );
+        // The H1 rule runs the full prose width; H2 and H3 get none.
+        let rules = lines
+            .iter()
+            .filter(|line| {
+                let text = line
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>();
+                !text.is_empty() && text.chars().all(|c| c == '─')
+            })
+            .count();
+        assert_eq!(rules, 1, "exactly the H1 gets a rule");
+    }
+
+    /// A heading opens with one blank line of separation, never two and never
+    /// a leading blank at the top of the answer.
+    #[test]
+    fn a_heading_never_stacks_blank_lines() {
+        let rendered = text(&render_markdown("Intro.\n\n## Section\n\nBody.\n", 40));
+        assert!(!rendered.starts_with('\n'), "leading blank:\n{rendered}");
+        assert!(!rendered.contains("\n\n\n"), "doubled blanks:\n{rendered}");
+    }
+
+    /// The chip names the language; it is not a line of code that says "rust".
+    #[test]
+    fn the_language_chip_sits_outside_the_gutter() {
+        let lines = render_markdown("```rust\nfn main() {}\n```\n", 40);
+        let chip = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.as_ref() == "rust")
+            })
+            .expect("chip rendered");
+        let text: String = chip.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !text.contains(CODE_GUTTER.trim_end()),
+            "the chip is inside the code rail: {text:?}"
+        );
+        assert_eq!(chip.style.bg, None, "the chip must not carry the code tint");
+        assert!(
+            text.trim_end().ends_with("rust"),
+            "the chip caps the block on the right: {text:?}"
         );
     }
 

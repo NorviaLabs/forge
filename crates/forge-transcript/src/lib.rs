@@ -201,13 +201,41 @@ pub enum ChatItem {
     /// approval (not a boxed card).
     QuestionPending(QuestionPendingPresentation),
     /// Structured TODO checklist from the `update_plan` tool.
+    ///
+    /// Only the newest one survives in the transcript: see [`Self::PlanUpdated`].
     PlanChecklist {
         explanation: Option<String>,
         steps: Vec<forge_types::PlanItem>,
+        /// Tool subjects observed while each step was the one in progress.
+        evidence: Vec<Vec<String>>,
+    },
+    /// What a superseded `update_plan` call changed, in one line.
+    ///
+    /// Every call used to print the whole checklist again, so a six-step turn
+    /// left six near-identical lists down the transcript. The list itself is
+    /// state, and state belongs in one place — the card, kept at the live
+    /// edge. What history wants is the event: at this point, the plan moved.
+    PlanUpdated {
+        done: usize,
+        total: usize,
+        /// The step that was in progress at that point, if any.
+        step: Option<String>,
     },
     Banner {
         text: String,
         kind: BannerKind,
+    },
+    /// Closing line of a finished turn: how long it took and what it cost.
+    ///
+    /// Without one, a turn had no visible end — the answer simply stopped and
+    /// only the footer recorded that anything had concluded.
+    TurnSummary {
+        secs: f64,
+        /// Characters of answer text streamed. Characters, not tokens: no
+        /// provider reports token usage mid-stream, and an estimate dressed
+        /// up as a count is worse than an exact number of something else.
+        chars: usize,
+        tools: usize,
     },
 }
 
@@ -234,6 +262,15 @@ pub enum ConversationBlock {
     PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
     Thinking(ThinkingPresentation),
+    TurnSummary(TurnSummaryPresentation),
+}
+
+/// The closing line of a finished turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnSummaryPresentation {
+    pub secs: f64,
+    pub chars: usize,
+    pub tools: usize,
 }
 
 /// Model reasoning. Recedes rather than announces: dim italic, indented past
@@ -243,6 +280,11 @@ pub enum ConversationBlock {
 pub struct ThinkingPresentation {
     pub text: String,
     pub duration_secs: Option<f64>,
+    /// Spent reasoning: every step of it used to stay on screen in full, so a
+    /// multi-tool turn strewed dim orphan paragraphs between its tool rows.
+    /// All but the newest collapse to a single line; `tool_expanded` (Ctrl+O)
+    /// brings them back.
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -332,6 +374,65 @@ pub struct DiffBlockPresentation {
     pub rationale: String,
 }
 
+/// One tool call, as a plan step's evidence: the verb and what it acted on.
+///
+/// Short by construction — this sits under a checklist item, not in the
+/// activity log, and a step that ran nine commands should read as a list of
+/// subjects rather than a transcript of its own.
+fn plan_evidence_subject(name: &str, call: Option<&ToolCall>) -> String {
+    let subject = call.and_then(|call| {
+        call.arguments
+            .get("path")
+            .or_else(|| call.arguments.get("file_path"))
+            .or_else(|| call.arguments.get("command"))
+            .or_else(|| call.arguments.get("cmd"))
+            .and_then(|value| value.as_str())
+    });
+    match subject {
+        Some(subject) => {
+            let short = subject.rsplit('/').next().unwrap_or(subject);
+            let short: String = short
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{name} {short}")
+        }
+        None => name.to_string(),
+    }
+}
+
+/// Replace the newest plan card, if there is one, with a one-line record of
+/// where it had got to.
+///
+/// Called just before a newer card is pushed, so at most one checklist is ever
+/// in the transcript and it is always the current one. The line stays at the
+/// position the superseded card held, which is where that update happened.
+fn supersede_plan_checklist(items: &mut [ChatItem]) {
+    let Some(slot) = items
+        .iter()
+        .rposition(|item| matches!(item, ChatItem::PlanChecklist { .. }))
+    else {
+        return;
+    };
+    let ChatItem::PlanChecklist { steps, .. } = &items[slot] else {
+        return;
+    };
+    let done = steps
+        .iter()
+        .filter(|item| item.status == forge_types::PlanStepStatus::Completed)
+        .count();
+    let step = steps
+        .iter()
+        .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
+        .map(|item| item.step.clone());
+    items[slot] = ChatItem::PlanUpdated {
+        done,
+        total: steps.len(),
+        step,
+    };
+}
+
 /// An approval request reduced to what the transcript displays: the command
 /// line, the directory it would run in, and any environment delta.
 ///
@@ -349,6 +450,10 @@ pub struct ApprovalRequestView {
     /// Why this call was gated, in the operator's words. Shown under the
     /// question so the prompt does not read as arbitrary.
     pub reason: Option<String>,
+    /// What the sandbox actually reported for *this* command. `reason`
+    /// explains the category and reads the same for every command in it;
+    /// this is the evidence, and it leads the card when present.
+    pub failure: Option<String>,
 }
 
 /// The first screen: who you are talking to, where, and a way in.
@@ -384,6 +489,8 @@ pub struct ApprovalPendingPresentation {
     pub question: Option<String>,
     /// Why this call was gated. See [`ApprovalRequestView::reason`].
     pub reason: Option<String>,
+    /// See [`ApprovalRequestView::failure`].
+    pub failure: Option<String>,
     pub options: Vec<ApprovalMenuRow>,
     pub selected: usize,
     /// Whether the approval card itself holds focus (accent border vs muted).
@@ -415,6 +522,12 @@ pub struct QuestionPendingPresentation {
 pub struct PlanChecklistPresentation {
     pub explanation: Option<String>,
     pub steps: Vec<forge_types::PlanItem>,
+    /// What each step actually did, parallel to `steps`.
+    ///
+    /// A plan says what was intended; this says what happened under it, so a
+    /// finished step can be checked rather than taken on trust. Empty for a
+    /// step nothing has run under yet.
+    pub evidence: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -486,6 +599,9 @@ impl ConversationModel {
         let mut repair_pending = false;
         let mut validation_retry_pending = false;
         let mut validation_failures = std::collections::HashMap::<String, usize>::new();
+        // What ran under each plan step, keyed by the step's own text.
+        let mut plan_evidence = std::collections::HashMap::<String, Vec<String>>::new();
+        let mut plan_step_in_progress: Option<String> = None;
         for m in messages {
             match m.role {
                 // System prompts are for the model, not the operator UI.
@@ -546,15 +662,50 @@ impl ConversationModel {
                 // Tool results are not shown as chat messages (keeps the transcript clean).
                 MessageRole::Tool => {
                     let name = m.name.as_deref().unwrap_or("tool");
+                    if name != "update_plan" {
+                        if let Some(step) = plan_step_in_progress.clone() {
+                            let subject = plan_evidence_subject(
+                                name,
+                                m.tool_call_id
+                                    .as_deref()
+                                    .and_then(|id| tool_calls.get(id).copied()),
+                            );
+                            let seen: &mut Vec<String> = plan_evidence.entry(step).or_default();
+                            if !seen.contains(&subject) {
+                                seen.push(subject);
+                            }
+                        }
+                    }
                     if name == "update_plan" {
                         let call = m
                             .tool_call_id
                             .as_deref()
                             .and_then(|id| tool_calls.get(id).copied());
                         if let Some(args) = call.and_then(parse_update_plan_args) {
+                            // The plan is state, not a series of events. An
+                            // earlier card is replaced where it stands by the
+                            // one line that says what changed, and the list
+                            // itself moves to the live edge.
+                            supersede_plan_checklist(&mut items);
+                            // Evidence is keyed by step text, so it survives a
+                            // revision that reorders or completes steps, and
+                            // is dropped with any step the model removed.
+                            let evidence = args
+                                .plan
+                                .iter()
+                                .map(|item| {
+                                    plan_evidence.get(&item.step).cloned().unwrap_or_default()
+                                })
+                                .collect();
+                            plan_step_in_progress = args
+                                .plan
+                                .iter()
+                                .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
+                                .map(|item| item.step.clone());
                             items.push(ChatItem::PlanChecklist {
                                 explanation: args.explanation,
                                 steps: args.plan,
+                                evidence,
                             });
                             continue;
                         }
@@ -795,6 +946,7 @@ impl ConversationModel {
                 env_delta: request.env_delta,
                 question: request.question,
                 reason: request.reason,
+                failure: request.failure,
                 options,
                 selected,
                 focused,
@@ -894,6 +1046,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 blocks.push(ConversationBlock::Thinking(ThinkingPresentation {
                     text: text.clone(),
                     duration_secs: *duration_secs,
+                    collapsed: false,
                 }));
             }
             ChatItem::Assistant { text } => {
@@ -1057,15 +1210,30 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::QuestionPending(presentation.clone()));
             }
-            ChatItem::PlanChecklist { explanation, steps } => {
+            ChatItem::PlanChecklist {
+                explanation,
+                steps,
+                evidence,
+            } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::PlanChecklist(
                     PlanChecklistPresentation {
                         explanation: explanation.clone(),
                         steps: steps.clone(),
+                        evidence: evidence.clone(),
                     },
                 ));
+            }
+            ChatItem::PlanUpdated { done, total, step } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                    text: match step {
+                        Some(step) => format!("Plan updated · {done} of {total} done · {step}"),
+                        None => format!("Plan updated · {done} of {total} done"),
+                    },
+                }));
             }
             ChatItem::System { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -1141,10 +1309,24 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     kind: *kind,
                 }));
             }
+            ChatItem::TurnSummary { secs, chars, tools } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::TurnSummary(TurnSummaryPresentation {
+                    secs: *secs,
+                    chars: *chars,
+                    tools: *tools,
+                }));
+            }
         }
     }
     flush_progress(&mut blocks, &mut progress);
     flush_activity(&mut blocks, &mut activity_group);
+    let blocks = if tool_expanded {
+        blocks
+    } else {
+        collapse_spent_reasoning(blocks)
+    };
     finalize_presentation(blocks)
 }
 
@@ -1152,6 +1334,27 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
 /// terminal-failure banners; do not re-bucket activity above answers.
 fn finalize_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
     collapse_duplicate_turn_failures(collapse_adjacent_streaming_snapshots(blocks))
+}
+
+/// Fold every reasoning block but the newest down to one line.
+///
+/// Reasoning was permanent: a turn that ran three tools left three dim
+/// paragraphs strewn between its tool rows, none of which the reader still
+/// needed. The newest stays open because it is the one describing what is
+/// happening now; `tool_expanded` (Ctrl+O) restores the rest.
+fn collapse_spent_reasoning(mut blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
+    let last = blocks
+        .iter()
+        .rposition(|block| matches!(block, ConversationBlock::Thinking(_)));
+    let Some(last) = last else {
+        return blocks;
+    };
+    for (index, block) in blocks.iter_mut().enumerate() {
+        if let ConversationBlock::Thinking(thinking) = block {
+            thinking.collapsed = index != last;
+        }
+    }
+    blocks
 }
 
 fn is_streaming_answer(block: &ConversationBlock) -> bool {
@@ -1723,7 +1926,9 @@ fn activity_group_detail(item: &ChatItem) -> String {
             ..
         } => format!("{name}: {summary}\n{detail}"),
         ChatItem::DiffCard { path, lines, .. } => format!("diff: {path}\n{}", lines.join("\n")),
-        ChatItem::PlanChecklist { explanation, steps } => {
+        ChatItem::PlanChecklist {
+            explanation, steps, ..
+        } => {
             let mut out = String::from("plan");
             if let Some(explanation) = explanation {
                 out.push_str(": ");
@@ -1984,6 +2189,112 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use forge_types::{PlanItem, PlanStepStatus};
+
+    fn plan_step(step: &str, status: PlanStepStatus) -> PlanItem {
+        PlanItem {
+            step: step.into(),
+            status,
+        }
+    }
+
+    /// A turn that revises its plan four times used to leave four
+    /// near-identical checklists stacked down the transcript. The list is
+    /// state: one card, and one line of history per revision.
+    #[test]
+    fn a_revised_plan_replaces_its_card_and_leaves_a_line() {
+        let mut items = vec![ChatItem::PlanChecklist {
+            explanation: None,
+            steps: vec![
+                plan_step("Inspect the theme tokens", PlanStepStatus::Completed),
+                plan_step("Add the dark palette", PlanStepStatus::InProgress),
+                plan_step("Wire the toggle", PlanStepStatus::Pending),
+            ],
+            evidence: Vec::new(),
+        }];
+
+        supersede_plan_checklist(&mut items);
+        items.push(ChatItem::PlanChecklist {
+            explanation: None,
+            steps: vec![
+                plan_step("Inspect the theme tokens", PlanStepStatus::Completed),
+                plan_step("Add the dark palette", PlanStepStatus::Completed),
+                plan_step("Wire the toggle", PlanStepStatus::InProgress),
+            ],
+            evidence: Vec::new(),
+        });
+
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ChatItem::PlanChecklist { .. }))
+                .count(),
+            1,
+            "only the current plan should remain as a card"
+        );
+        // The record keeps where the superseded card had got to, at the
+        // position it held.
+        assert!(
+            matches!(
+                &items[0],
+                ChatItem::PlanUpdated { done, total, step }
+                    if *done == 1
+                        && *total == 3
+                        && step.as_deref() == Some("Add the dark palette")
+            ),
+            "{:?}",
+            items[0]
+        );
+    }
+
+    /// A step marked done is the model's word for it. The card shows what
+    /// actually ran underneath, so the claim can be checked.
+    #[test]
+    fn a_step_carries_what_ran_under_it() {
+        assert_eq!(
+            plan_evidence_subject(
+                "read_file",
+                Some(&ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "crates/forge-tui/src/theme.rs"}),
+                }),
+            ),
+            "read_file theme.rs",
+            "a path should read as its file, not its whole prefix"
+        );
+        assert_eq!(
+            plan_evidence_subject(
+                "bash",
+                Some(&ToolCall {
+                    id: "2".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "cargo test --workspace --all"}),
+                }),
+            ),
+            "bash cargo test",
+            "a command should read as its first two words"
+        );
+        // Nothing identifying to show: the tool name alone is still evidence
+        // that something ran.
+        assert_eq!(plan_evidence_subject("web_search", None), "web_search");
+    }
+
+    /// Nothing to supersede on the first call: the plan appears as a card and
+    /// no history line is invented for an update that never happened.
+    #[test]
+    fn a_first_plan_leaves_no_history_line() {
+        let mut items = vec![ChatItem::Assistant {
+            text: "here is the plan".into(),
+        }];
+
+        supersede_plan_checklist(&mut items);
+
+        assert!(items
+            .iter()
+            .all(|item| !matches!(item, ChatItem::PlanUpdated { .. })));
+    }
+
     use super::*;
     use forge_types::Message;
 
@@ -2222,6 +2533,7 @@ mod tests {
                         step: "Inspect code".into(),
                         status: forge_types::PlanStepStatus::Completed,
                     }],
+                    evidence: Vec::new(),
                 },
                 ChatItem::Assistant {
                     text: "Ready.".into(),
@@ -3144,5 +3456,77 @@ mod tests {
         m.scroll = 0;
         m.scroll_down(1);
         assert!(m.follow);
+    }
+}
+
+#[cfg(test)]
+mod spent_reasoning_tests {
+    use super::*;
+
+    fn thinking(text: &str, secs: f64) -> ChatItem {
+        ChatItem::Thinking {
+            text: text.into(),
+            duration_secs: Some(secs),
+        }
+    }
+
+    fn model(items: Vec<ChatItem>, tool_expanded: bool) -> ConversationModel {
+        ConversationModel {
+            items,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded,
+                ..ConversationViewOpts::default()
+            },
+        }
+    }
+
+    /// Reasoning used to be permanent: a turn that ran three tools left three
+    /// dim paragraphs behind. Only the newest stays open.
+    #[test]
+    fn only_the_newest_reasoning_stays_open() {
+        let blocks = model(
+            vec![
+                thinking("first pass", 1.0),
+                thinking("second pass", 2.0),
+                thinking("current", 3.0),
+            ],
+            false,
+        )
+        .semantic_blocks();
+        let collapsed: Vec<bool> = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ConversationBlock::Thinking(t) => Some(t.collapsed),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(collapsed, vec![true, true, false]);
+    }
+
+    /// Ctrl+O is the existing "show me everything" affordance, so it has to
+    /// bring the spent reasoning back too.
+    #[test]
+    fn expanding_restores_every_reasoning_block() {
+        let blocks = model(
+            vec![thinking("first pass", 1.0), thinking("current", 3.0)],
+            true,
+        )
+        .semantic_blocks();
+        assert!(blocks.iter().all(|block| !matches!(
+            block,
+            ConversationBlock::Thinking(t) if t.collapsed
+        )));
+    }
+
+    /// A single reasoning block is the newest one, so nothing collapses.
+    #[test]
+    fn a_lone_reasoning_block_is_never_collapsed() {
+        let blocks = model(vec![thinking("only", 1.0)], false).semantic_blocks();
+        assert!(matches!(
+            blocks.first(),
+            Some(ConversationBlock::Thinking(t)) if !t.collapsed
+        ));
     }
 }

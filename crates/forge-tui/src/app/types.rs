@@ -599,6 +599,10 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) events: usize,
     pub(crate) last_event_detail: usize,
     pub(crate) banners: usize,
+    /// The turn summary's own identity. Counting banners is not enough: one
+    /// summary replacing another leaves the count unchanged, so the closing
+    /// line of the previous turn would stay on screen through the next one.
+    pub(crate) turn_summary: Option<(u64, usize, usize)>,
     pub(crate) queue: usize,
     pub(crate) queue_selected: Option<usize>,
     pub(crate) chat_message_start: usize,
@@ -628,6 +632,9 @@ pub(crate) struct ConversationRenderCache {
     /// Shared so the render path can hold the lines without copying them. A
     /// frame clones the handle, not the ~940KB of `Line`/`Span` data behind it.
     pub(crate) lines: Arc<Vec<Line<'static>>>,
+    /// Where the plan card sits in `lines`, and the row that replaces it once
+    /// it has scrolled away. Cached with the lines it indexes into.
+    pub(crate) plan_dock: Option<crate::conversation::PlanDock>,
 }
 
 pub(crate) struct ConversationViewState {
@@ -718,8 +725,18 @@ pub(crate) struct StartupResumeState {
 
 pub(crate) struct TurnTimingState {
     pub(crate) started: Option<Instant>,
+    /// When the *user's* turn began, as opposed to the current model step.
+    /// `started` is reset at every continuation (a tool result, a resumed
+    /// approval), so a turn that ran three tools reported the age of its last
+    /// step as its duration. This one survives step boundaries.
+    pub(crate) turn_started: Option<Instant>,
     pub(crate) thinking_started: Option<Instant>,
     pub(crate) thought_secs: Option<f64>,
+    /// Answer + reasoning characters streamed this turn, accumulated across
+    /// model steps because the live preview is cleared at each tool call.
+    pub(crate) chars: usize,
+    /// Tool calls made this turn.
+    pub(crate) tools: usize,
 }
 
 pub(crate) struct ExternalEditorState {
@@ -778,12 +795,26 @@ impl PendingTurnState {
 
 /// Deferred interactions owned by the event loop.
 ///
+/// How far an approval's grant reaches.
+///
+/// A plain approval covers the one call; a pattern grant covers everything
+/// matching it for the rest of the session; an always grant writes the rule to
+/// the personal permissions file and outlives the session. The card names the
+/// scope in each option's label, so this is what it named.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ApprovalGrant {
+    #[default]
+    Once,
+    Session,
+    Always,
+}
+
 /// A drain consumes its pending flag before doing async work so the same
 /// interaction cannot be re-entered by another loop iteration.
 #[derive(Default)]
 pub(crate) struct PendingInteractionState {
     hitl_decision: Option<HitlDecision>,
-    hitl_remember: bool,
+    hitl_remember: ApprovalGrant,
     question_submit: Option<questions::QuestionSubmit>,
     context_reset: bool,
 }
@@ -793,15 +824,15 @@ impl PendingInteractionState {
         self.hitl_decision.is_some()
     }
 
-    pub(crate) fn request_hitl_decision(&mut self, decision: HitlDecision, remember: bool) {
+    pub(crate) fn request_hitl_decision(&mut self, decision: HitlDecision, grant: ApprovalGrant) {
         self.hitl_decision = Some(decision);
-        self.hitl_remember = remember;
+        self.hitl_remember = grant;
     }
 
-    pub(crate) fn take_hitl_decision(&mut self) -> Option<(HitlDecision, bool)> {
+    pub(crate) fn take_hitl_decision(&mut self) -> Option<(HitlDecision, ApprovalGrant)> {
         self.hitl_decision.take().map(|decision| {
-            let remember = std::mem::take(&mut self.hitl_remember);
-            (decision, remember)
+            let grant = std::mem::take(&mut self.hitl_remember);
+            (decision, grant)
         })
     }
 
@@ -832,7 +863,7 @@ impl PendingInteractionState {
 
     pub(crate) fn clear(&mut self) {
         self.hitl_decision = None;
-        self.hitl_remember = false;
+        self.hitl_remember = ApprovalGrant::default();
         self.question_submit = None;
         self.context_reset = false;
     }
@@ -1114,8 +1145,18 @@ pub(crate) struct StatusMessageState {
     pub(crate) message: String,
 }
 
+#[derive(Default)]
 pub(crate) struct StreamState {
     pub(crate) preview: String,
+    /// Byte offset in `preview` that has actually been revealed on screen.
+    ///
+    /// A provider can hand over a whole paragraph in one event, which used to
+    /// go from nothing to four bullets between two adjacent frames — a
+    /// teleport, not a stream. Deltas are drained at a bounded rate instead.
+    pub(crate) revealed: usize,
+    /// When `revealed` last advanced, so the rate is measured in wall time
+    /// rather than in frames (which arrive irregularly).
+    pub(crate) revealed_at: Option<Instant>,
     pub(crate) thinking: String,
     pub(crate) live_lines: Option<(u16, usize, usize, Arc<Vec<Line<'static>>>)>,
     /// When the preview last rebuilt at a *new width*. Tail-only rebuilds are
@@ -1127,6 +1168,75 @@ pub(crate) struct StreamState {
     /// tail. See `StreamMarkdownCache`.
     pub(crate) markdown: crate::conversation::StreamMarkdownCache,
 }
+impl StreamState {
+    /// Characters per second the preview is allowed to appear at. Above a
+    /// typical provider's output rate, so ordinary streaming is untouched and
+    /// only bursts are spread out.
+    const REVEAL_CHARS_PER_SEC: f64 = 700.0;
+    /// The reveal may never fall further behind than this, however large the
+    /// burst: a long answer that arrived at once still finishes promptly.
+    const MAX_LAG: Duration = Duration::from_millis(1200);
+
+    /// The part of the preview that is on screen.
+    pub(crate) fn revealed_preview(&self) -> &str {
+        &self.preview[..self.revealed.min(self.preview.len())]
+    }
+
+    /// Let more of the preview through. Called from the event loop — never
+    /// from `draw`, which must not mutate state.
+    pub(crate) fn advance_reveal(&mut self, now: Instant) {
+        if self.revealed > self.preview.len() {
+            // The preview was cleared or replaced at a step boundary.
+            self.revealed = 0;
+        }
+        let pending = self.preview.len() - self.revealed;
+        if pending == 0 {
+            self.revealed_at = Some(now);
+            return;
+        }
+        // No clock yet: this is the first delta of a step. Start the clock and
+        // reveal on the next call — treating "unknown" as a full lag budget
+        // let the first burst through whole, which is the case this exists to
+        // smooth.
+        let Some(started) = self.revealed_at else {
+            self.revealed_at = Some(now);
+            return;
+        };
+        let since = now.saturating_duration_since(started);
+        let by_rate = (since.as_secs_f64() * Self::REVEAL_CHARS_PER_SEC) as usize;
+        // Catch-up floor: whatever the rate says, never hold text longer than
+        // MAX_LAG behind the provider.
+        let by_backlog =
+            (pending as f64 * since.as_secs_f64() / Self::MAX_LAG.as_secs_f64()) as usize;
+        let step = by_rate.max(by_backlog);
+        if step == 0 {
+            return;
+        }
+        let mut target = (self.revealed + step).min(self.preview.len());
+        while target < self.preview.len() && !self.preview.is_char_boundary(target) {
+            target += 1;
+        }
+        self.revealed = target;
+        self.revealed_at = Some(now);
+    }
+
+    /// Stand in for the event loop where a test drives `draw` directly.
+    #[doc(hidden)]
+    pub fn reveal_everything_for_tests(&mut self) {
+        self.revealed = self.preview.len();
+        self.revealed_at = None;
+    }
+
+    /// Drop the preview at a step or turn boundary. The settled transcript
+    /// carries the finished text, so nothing is lost by resetting the reveal
+    /// along with it.
+    pub(crate) fn clear_preview(&mut self) {
+        self.preview.clear();
+        self.revealed = 0;
+        self.revealed_at = None;
+    }
+}
+
 /// Composer placeholder on an empty workspace.
 pub(crate) const COMPOSER_OPENER: &str = "What does this project do?";
 
@@ -1286,4 +1396,85 @@ pub(crate) struct CatalogFetchState {
     /// `footer_has_compact_control`) fires at most once per app lifetime —
     /// every later refresh is triggered explicitly by opening a picker.
     pub(crate) warmed: bool,
+}
+
+#[cfg(test)]
+mod stream_reveal_tests {
+    use super::StreamState;
+    use std::time::{Duration, Instant};
+
+    fn state(text: &str) -> StreamState {
+        StreamState {
+            preview: text.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A provider can hand over a paragraph in one event. Revealing it whole
+    /// is a teleport, not a stream.
+    #[test]
+    fn a_burst_is_spread_over_several_frames() {
+        let mut stream = state(&"x".repeat(2_000));
+        let start = Instant::now();
+        stream.advance_reveal(start);
+        let first = stream.revealed_preview().len();
+        assert!(first < 2_000, "the whole burst appeared at once");
+
+        stream.advance_reveal(start + Duration::from_millis(100));
+        assert!(
+            stream.revealed_preview().len() > first,
+            "the reveal did not advance"
+        );
+    }
+
+    /// However large the burst, the text may not lag far behind the provider.
+    #[test]
+    fn the_reveal_catches_up_within_its_lag_budget() {
+        let mut stream = state(&"x".repeat(50_000));
+        let start = Instant::now();
+        stream.advance_reveal(start);
+        stream.advance_reveal(start + StreamState::MAX_LAG);
+        assert_eq!(
+            stream.revealed_preview().len(),
+            50_000,
+            "a large answer was still being dribbled out after the lag budget"
+        );
+    }
+
+    /// Ordinary streaming is under the rate cap, so it is untouched.
+    #[test]
+    fn a_normal_rate_stream_is_never_held_back() {
+        let mut stream = state("");
+        let start = Instant::now();
+        stream.advance_reveal(start);
+        for step in 1..=10 {
+            stream.preview.push_str("about ten characters ");
+            stream.advance_reveal(start + Duration::from_millis(100 * step));
+        }
+        assert_eq!(stream.revealed_preview(), stream.preview);
+    }
+
+    /// Multi-byte text must never be cut mid-character.
+    #[test]
+    fn the_reveal_lands_on_character_boundaries() {
+        let mut stream = state(&"é→🙂".repeat(400));
+        let start = Instant::now();
+        for step in 0..10 {
+            stream.advance_reveal(start + Duration::from_millis(30 * step));
+            // Slicing panics on a bad boundary; this is the assertion.
+            let _ = stream.revealed_preview();
+        }
+    }
+
+    /// A step boundary drops the preview; the reveal has to reset with it or
+    /// the next step starts out "already revealed".
+    #[test]
+    fn clearing_the_preview_resets_the_reveal() {
+        let mut stream = state("some text");
+        stream.advance_reveal(Instant::now());
+        stream.clear_preview();
+        assert_eq!(stream.revealed_preview(), "");
+        stream.preview.push_str("next step");
+        assert_eq!(stream.revealed_preview(), "");
+    }
 }

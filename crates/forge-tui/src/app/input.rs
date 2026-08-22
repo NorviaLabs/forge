@@ -441,6 +441,16 @@ impl TuiApp {
     }
 
     pub(super) async fn submit_composer_message(&mut self) -> Result<(), TuiError> {
+        // A pending approval normally rejects composer input as stale
+        // (`classify_input`). The one exception is a note the operator was
+        // explicitly asked for by picking "Don't run, and say why" — it is an
+        // answer to the prompt, not a new instruction, so it is taken before
+        // the line is classified at all.
+        if self.approval_denial_note_pending() {
+            let note = self.input.take();
+            self.deny_pending_approval_with_note(&note).await?;
+            return Ok(());
+        }
         let suggestions = self.slash_suggestions();
         if self.input.text.starts_with('/')
             && !suggestions.is_empty()

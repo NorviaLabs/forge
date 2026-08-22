@@ -6,7 +6,10 @@ use crate::{ModelClient, ModelError, ModelRequest, StreamEventTx};
 
 enum MockStep {
     Response(ModelResponse),
-    StreamError { deltas: Vec<String>, error: String },
+    StreamError {
+        deltas: Vec<String>,
+        error: ModelError,
+    },
 }
 
 /// Deterministic client for tests and offline demos.
@@ -26,12 +29,31 @@ impl MockModelClient {
         }
     }
 
+    /// Stream `deltas`, then fail with a transport fault — which is
+    /// *retryable*. Use [`Self::stream_error_kind`] when the test needs a
+    /// failure the caller must not retry.
     pub fn stream_error(deltas: Vec<String>, error: impl Into<String>) -> Self {
+        Self::stream_error_kind(deltas, ModelError::Transport(error.into()))
+    }
+
+    /// Stream `deltas`, then fail with exactly `error`, so a test can pin
+    /// behaviour that depends on the failure's kind (retryable or not).
+    pub fn stream_error_kind(deltas: Vec<String>, error: ModelError) -> Self {
         Self {
-            responses: Mutex::new(vec![MockStep::StreamError {
-                deltas,
-                error: error.into(),
-            }]),
+            responses: Mutex::new(vec![MockStep::StreamError { deltas, error }]),
+            last_request: Mutex::new(None),
+        }
+    }
+
+    /// A failing step followed by scripted successes, for exercising retry.
+    pub fn stream_error_then(error: ModelError, responses: Vec<ModelResponse>) -> Self {
+        let mut steps = vec![MockStep::StreamError {
+            deltas: Vec::new(),
+            error,
+        }];
+        steps.extend(responses.into_iter().map(MockStep::Response));
+        Self {
+            responses: Mutex::new(steps),
             last_request: Mutex::new(None),
         }
     }
@@ -57,7 +79,7 @@ impl ModelClient for MockModelClient {
         }
         match g.remove(0) {
             MockStep::Response(response) => Ok(response),
-            MockStep::StreamError { error, .. } => Err(ModelError::Transport(error)),
+            MockStep::StreamError { error, .. } => Err(error),
         }
     }
 
@@ -106,7 +128,7 @@ impl ModelClient for MockModelClient {
                         let _ = tx.send(ModelStreamEvent::TextDelta { text });
                     }
                 }
-                Err(ModelError::Transport(error))
+                Err(error)
             }
         }
     }
