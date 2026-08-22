@@ -1266,3 +1266,45 @@ async fn onboarding_connect_esc_exits_the_process() {
     assert!(app.exit.is_requested());
     assert_eq!(app.exit.code(), crate::ExitCode::Canceled);
 }
+
+#[tokio::test]
+async fn connecting_makes_the_status_card_agree_with_the_toast() {
+    // The first screen after signing in used to contradict itself: a toast
+    // saying "connected" beside a status card still serving the cached
+    // pre-sign-in answer until its TTL lapsed.
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.profile = Some("openai_codex".into());
+    // Prime the cache with the pre-sign-in answer.
+    app.connect.connected = Some((std::time::Instant::now(), false));
+
+    app.apply_default_model_for_profile("openai_codex", "connected");
+
+    assert!(
+        app.connect.connected.is_none(),
+        "the stale answer must be dropped, not served until the TTL lapses"
+    );
+}
+
+#[tokio::test]
+async fn connecting_lands_on_the_profiles_declared_model_not_the_alphabetical_first() {
+    // The picker is sorted for reading, so its first row for a profile is
+    // alphabetical: `gpt-5.4` sorts before `gpt-5.6-*` and used to win.
+    let (_dir, mut app) = focus_test_app().await;
+    let declared = app
+        .connect
+        .registry
+        .get("openai_codex")
+        .and_then(|profile| profile.default_model().map(str::to_string))
+        .expect("the openai-codex profile declares a default");
+
+    app.apply_default_model_for_profile("openai_codex", "connected");
+
+    assert_eq!(
+        app.session.active_model, declared,
+        "connect must land on the declared default"
+    );
+    assert!(
+        !app.session.active_model.ends_with("gpt-5.4"),
+        "and specifically not on the alphabetical first"
+    );
+}

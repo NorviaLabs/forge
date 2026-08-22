@@ -345,7 +345,7 @@ impl TuiApp {
             if let Some(presentation) = self.question_presentation() {
                 conv = conv.with_pending_question(presentation);
             }
-            let width = sidebar_width.saturating_sub(2) as usize;
+            let width = conversation_text_width(sidebar_width);
             let (lines, plan_dock) = conv.lines_and_plan_dock(width, keep_from_end);
             self.render_cache.conversation = Some(ConversationRenderCache {
                 key,
@@ -353,7 +353,7 @@ impl TuiApp {
                 plan_dock,
             });
         }
-        let width = sidebar_width.saturating_sub(2) as usize;
+        let width = conversation_text_width(sidebar_width);
         // Tail-only changes use `StreamMarkdownCache` and must become visible
         // on the frame that received them. Only width changes re-render the
         // settled prefix, so only resize churn is rate-limited.
@@ -641,7 +641,16 @@ impl TuiApp {
                 } else {
                     idx - visible / 2
                 };
-                let h = (visible as u16).saturating_add(3); // borders + selected help
+                // The detail row is only drawn when the selected row had to
+                // truncate its description, so it only costs a row when it
+                // has something to say.
+                let inner_w = input.width.saturating_sub(2) as usize;
+                let selected_row_width =
+                    format!("  {:<14} {}", suggestions[idx].cmd, suggestions[idx].desc)
+                        .chars()
+                        .count();
+                let truncated = selected_row_width > inner_w.saturating_sub(1);
+                let h = (visible as u16).saturating_add(2 + u16::from(truncated));
                 if input.y >= h {
                     let sug_area = ratatui::layout::Rect {
                         x: input.x,
@@ -650,7 +659,6 @@ impl TuiApp {
                         height: h,
                     };
                     // Pad rows so background fill spans the panel width (visible selection).
-                    let inner_w = sug_area.width.saturating_sub(2) as usize;
                     let mut lines: Vec<ratatui::text::Line> = suggestions
                         .iter()
                         .enumerate()
@@ -674,10 +682,24 @@ impl TuiApp {
                             ratatui::text::Line::from(ratatui::text::Span::styled(row, style))
                         })
                         .collect();
-                    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                        format!("  {}", suggestions[idx].desc),
-                        theme::dim(),
-                    )));
+                    // The detail row exists to show a description the selected
+                    // row had to truncate. When nothing was truncated it just
+                    // repeats the line above it — and because it was never
+                    // padded to the panel width, whatever it did not cover
+                    // showed through from the transcript underneath.
+                    if truncated {
+                        let mut detail = format!("  {}", suggestions[idx].desc)
+                            .chars()
+                            .take(inner_w.saturating_sub(1))
+                            .collect::<String>();
+                        while detail.chars().count() < inner_w.saturating_sub(1) {
+                            detail.push(' ');
+                        }
+                        lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                            detail,
+                            theme::dim(),
+                        )));
+                    }
                     let hint = crate::hints::hint_text(crate::hints::COMMANDS);
                     let title = if n > visible {
                         format!(
@@ -1089,6 +1111,16 @@ fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selectio
             cell.set_symbol(&ch.to_string()).set_style(style);
         }
     }
+}
+
+/// Columns available to conversation text inside the sidebar.
+///
+/// The sidebar block takes two columns for its borders and two more for
+/// `Padding::horizontal(1)`. Wrapping to `width - 2` produced lines two
+/// columns wider than the area they were drawn into, so the widget clipped
+/// the tail of every full-width line — losing characters silently.
+pub(crate) fn conversation_text_width(sidebar_width: u16) -> usize {
+    sidebar_width.saturating_sub(4) as usize
 }
 
 #[cfg(test)]

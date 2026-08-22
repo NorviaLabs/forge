@@ -770,3 +770,19 @@ pub(super) fn load_repo_header(cwd: &Path) -> RepoHeaderCache {
         dirty,
     }
 }
+
+impl TuiApp {
+    /// Rows a `PageUp`/`PageDown` moves the conversation.
+    ///
+    /// A page, not a constant. This used to be a hard-coded 5 rows, which on
+    /// wrapped prose is about two sentences — paging back through a long
+    /// transcript took dozens of presses. Two rows of overlap are kept so the
+    /// reader has something to anchor on across the jump.
+    pub(crate) fn conversation_page_rows(&self) -> u16 {
+        const OVERLAP: u16 = 2;
+        const FALLBACK: u16 = 5;
+        self.conversation_area
+            .map(|area| area.height.saturating_sub(OVERLAP).max(1))
+            .unwrap_or(FALLBACK)
+    }
+}
