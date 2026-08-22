@@ -727,6 +727,12 @@ impl MdRenderer {
             let row = self.code_row(render_highlighted_line(line_segments));
             self.out.push(row);
         }
+        // A block opens with air above it and used to close with none, so the
+        // prose that follows started on the row under the last line of code —
+        // touching a tinted slab it has nothing to do with. Unlike a heading,
+        // which belongs to what comes after it, a fenced block belongs to
+        // itself.
+        self.out.push(Line::from(""));
     }
 }
 
@@ -1125,6 +1131,47 @@ fn render_highlighted_line(segments: &[forge_syntax::HighlightedSegment]) -> Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// A fenced block opened with air above it and closed with none, so the
+    /// next paragraph started on the row under the last line of code, against
+    /// a tinted slab it has nothing to do with.
+    #[test]
+    fn a_code_block_closes_with_a_gap() {
+        let md = "Before.\n\n```rust\nfn run() {}\n```\nAfter the block.\n";
+        let lines = render_markdown(md, 60);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+
+        let code = text
+            .iter()
+            .position(|row| row.contains("fn run()"))
+            .expect("code row");
+        let after = text
+            .iter()
+            .position(|row| row.starts_with("After the block."))
+            .expect("prose after the block");
+
+        assert!(
+            text[code + 1..after].iter().any(|row| row.is_empty()),
+            "no gap between the block and the prose under it: {text:?}"
+        );
+        // One gap, not two: a following heading adds its own blank only when
+        // the last line is not already blank.
+        let blanks = text[code + 1..after]
+            .iter()
+            .filter(|r| r.is_empty())
+            .count();
+        assert_eq!(blanks, 1, "{text:?}");
+    }
 
     /// H1 is told apart by its rule. H2 had only bold, which at terminal
     /// sizes reads as body text — a section heading that announces nothing.
