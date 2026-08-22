@@ -13,17 +13,22 @@ pub(crate) const UI_STATE_VERSION: u32 = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceView {
     File(PathBuf),
+    /// `/diff` — change review. Holds no state itself; the pane reads
+    /// `TuiApp::diff_view` so a status refresh can update it in place.
+    Diff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceViewKind {
     File,
+    Diff,
 }
 
 impl WorkspaceView {
     pub(crate) fn kind(&self) -> WorkspaceViewKind {
         match self {
             Self::File(_) => WorkspaceViewKind::File,
+            Self::Diff => WorkspaceViewKind::Diff,
         }
     }
 }
@@ -1309,6 +1314,10 @@ pub struct TuiApp {
     pub(crate) workspace_navigation: WorkspaceNavigation,
     /// Read-only source viewer state for the File workspace view.
     pub(crate) source_viewer: SourceViewer,
+    /// `/diff` state. Lives on the app rather than inside `WorkspaceView` so a
+    /// background git-status refresh can update the file list without the
+    /// pane having to be re-opened.
+    pub(crate) diff_view: crate::diff_view::DiffView,
     /// Editing state staged for the editable workspace editor.
     #[allow(dead_code)] // Consumed when the editor rendering/input migration lands.
     pub(crate) editor_session: Option<EditorSession>,

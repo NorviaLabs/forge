@@ -447,7 +447,12 @@ impl TuiApp {
             }
             SemanticCommand::OpenSelectedEntry | SemanticCommand::ConfirmCurrentInteraction => {
                 if let Some(path) = self.workspace_files.explorer.selected_file_path() {
-                    if path.is_file() || path.is_symlink() {
+                    // In `/diff` the explorer is the changed-file list, so
+                    // Enter points the patch pane at that file instead of
+                    // dropping out of review into the editor.
+                    if self.diff_view_is_open() {
+                        self.select_diff_path(&path);
+                    } else if path.is_file() || path.is_symlink() {
                         self.open_file_in_editor(&path);
                     } else {
                         self.set_feedback(
@@ -763,6 +768,9 @@ impl TuiApp {
                     // opposite of the request. `open_bottom_panel` also focuses
                     // it, which is the point of asking for it.
                     self.open_bottom_panel();
+                }
+                Ok(SlashCommand::Diff { source }) => {
+                    self.open_diff_view(source);
                 }
                 Err(e) => {
                     let msg = e.to_string();

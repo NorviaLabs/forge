@@ -47,6 +47,20 @@ pub struct ChangedFile {
     pub unstaged: Option<GitStatusKind>,
 }
 
+/// Which diff a cached entry holds for a path.
+///
+/// The explorer wants worktree-only changes for its inline badge; `/diff`
+/// wants everything that separates the working tree from `HEAD`, including
+/// staged hunks and untracked files. Both share one request queue so a burst
+/// of file switches still collapses to a single in-flight `git` process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiffKind {
+    /// `git diff` — worktree against the index.
+    Unstaged,
+    /// `git diff HEAD`, with untracked files as a synthetic add diff.
+    CombinedVsHead,
+}
+
 impl GitStatusKind {
     pub fn marker(self) -> &'static str {
         match self {
@@ -85,19 +99,19 @@ pub struct GitStatusCache {
     /// Latest refresh requested while `pending` is still running.
     queued_refresh: Option<PathBuf>,
     revision: u64,
-    diff_cache: HashMap<(u64, PathBuf), Result<String, String>>,
+    diff_cache: HashMap<(u64, DiffKind, PathBuf), Result<String, String>>,
     /// Whether an unstaged diff request is currently in flight.
     pub diff_loading: bool,
     /// Last unstaged diff request error, if any.
     pub diff_error: Option<String>,
     pending_diff: Option<PendingDiff>,
     /// Latest diff requested while another diff is still running.
-    queued_diff: Option<(PathBuf, PathBuf)>,
+    queued_diff: Option<(PathBuf, PathBuf, DiffKind)>,
 }
 
 #[derive(Debug)]
 struct PendingDiff {
-    key: (u64, PathBuf),
+    key: (u64, DiffKind, PathBuf),
     receiver: Receiver<Result<String, String>>,
 }
 
@@ -247,24 +261,42 @@ impl GitStatusCache {
     /// while a worker is running are coalesced to the latest path; call
     /// [`Self::poll_diff`] from the render loop to collect completed work.
     pub fn request_unstaged_diff(&mut self, root: PathBuf, path: PathBuf) {
-        let key = (self.revision, path.clone());
+        self.request_diff(root, path, DiffKind::Unstaged);
+    }
+
+    /// Request the combined worktree-and-index-vs-`HEAD` diff for `path`.
+    ///
+    /// This is what `/diff` renders: it includes staged hunks, and untracked
+    /// files come back as a synthetic all-added patch rather than as nothing.
+    pub fn request_combined_diff(&mut self, root: PathBuf, path: PathBuf) {
+        self.request_diff(root, path, DiffKind::CombinedVsHead);
+    }
+
+    fn request_diff(&mut self, root: PathBuf, path: PathBuf, kind: DiffKind) {
+        let key = (self.revision, kind, path.clone());
         if self.diff_cache.contains_key(&key) {
             return;
         }
         if self.pending_diff.is_some() {
-            self.queued_diff = Some((root, path));
+            self.queued_diff = Some((root, path, kind));
             return;
         }
-        self.spawn_diff(root, path);
+        self.spawn_diff(root, path, kind);
     }
 
-    fn spawn_diff(&mut self, root: PathBuf, path: PathBuf) {
+    fn spawn_diff(&mut self, root: PathBuf, path: PathBuf, kind: DiffKind) {
         self.diff_loading = true;
         self.diff_error = None;
-        let key = (self.revision, path.clone());
+        let key = (self.revision, kind, path.clone());
         let (tx, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(load_unstaged_diff(&root, &path));
+            let result = match kind {
+                DiffKind::Unstaged => load_unstaged_diff(&root, &path),
+                DiffKind::CombinedVsHead => {
+                    crate::git_review::combined_diff_text(&root, &path).map(|(text, _)| text)
+                }
+            };
+            let _ = tx.send(result);
         });
         self.pending_diff = Some(PendingDiff { key, receiver });
     }
@@ -298,8 +330,8 @@ impl GitStatusCache {
         };
 
         if resolved {
-            if let Some((root, path)) = self.queued_diff.take() {
-                self.spawn_diff(root, path);
+            if let Some((root, path, kind)) = self.queued_diff.take() {
+                self.spawn_diff(root, path, kind);
             }
         }
         resolved
@@ -307,8 +339,18 @@ impl GitStatusCache {
 
     /// Return a completed diff for the current status revision, if available.
     pub fn get_unstaged_diff(&self, path: &Path) -> Option<Result<String, String>> {
+        self.get_diff(path, DiffKind::Unstaged)
+    }
+
+    /// Return a completed combined-vs-`HEAD` diff for the current status
+    /// revision, if available.
+    pub fn get_combined_diff(&self, path: &Path) -> Option<Result<String, String>> {
+        self.get_diff(path, DiffKind::CombinedVsHead)
+    }
+
+    fn get_diff(&self, path: &Path, kind: DiffKind) -> Option<Result<String, String>> {
         self.diff_cache
-            .get(&(self.revision, path.to_path_buf()))
+            .get(&(self.revision, kind, path.to_path_buf()))
             .cloned()
     }
 }
@@ -744,7 +786,7 @@ mod tests {
     fn diff_cache_is_keyed_by_revision_and_path() {
         let root = tempfile::tempdir().unwrap();
         let path = PathBuf::from("cached.txt");
-        let key = (0, path.clone());
+        let key = (0, DiffKind::Unstaged, path.clone());
         let mut cache = GitStatusCache::new();
         cache.diff_cache.insert(key, Ok("cached diff".to_string()));
 
@@ -793,13 +835,13 @@ mod tests {
         let mut cache = GitStatusCache::new();
         cache.diff_loading = true;
         cache.pending_diff = Some(PendingDiff {
-            key: (0, first.clone()),
+            key: (0, DiffKind::Unstaged, first.clone()),
             receiver: rx,
         });
 
         cache.request_unstaged_diff(root.path().to_path_buf(), latest.clone());
         assert_eq!(
-            cache.queued_diff.as_ref().map(|(_, path)| path),
+            cache.queued_diff.as_ref().map(|(_, path, _)| path),
             Some(&latest)
         );
         tx.send(Ok("first diff".into())).unwrap();
@@ -822,7 +864,7 @@ mod tests {
         let mut cache = GitStatusCache::new();
         cache.diff_loading = true;
         cache.pending_diff = Some(PendingDiff {
-            key: (0, PathBuf::from("a.txt")),
+            key: (0, DiffKind::Unstaged, PathBuf::from("a.txt")),
             receiver: rx,
         });
 
