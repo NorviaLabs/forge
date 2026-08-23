@@ -1344,12 +1344,20 @@ async fn connecting_repaints_the_home_card_instead_of_leaving_it_stale() {
     // freshly connected session still read "not connected" beside a toast
     // saying otherwise.
     let (_dir, mut app) = focus_test_app().await;
+    // Pin the route explicitly. The fixture's `provider: "mock"` short-circuits
+    // `is_mock_provider` to "always connected", and on a developer machine
+    // `TuiApp::new` may restore a real persisted selection over it — so
+    // leaving either to the fixture makes this test depend on the host.
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai-codex/gpt-5.6-sol".into();
     app.connect.profile = None;
+    app.connect.connected = None;
+
     let before = render_app_text(&mut app, 120, 35);
     assert!(before.contains("not connected"), "{before}");
 
     // Connect, exactly as the reuse path does.
-    app.connect.profile = Some("mock".into());
+    app.connect.profile = Some(forge_connect::OPENAI_CODEX_PROFILE_ID.into());
     app.connect.connected = Some((std::time::Instant::now(), true));
 
     let after = render_app_text(&mut app, 120, 35);
