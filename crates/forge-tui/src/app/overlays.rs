@@ -244,7 +244,13 @@ impl TuiApp {
                     FeedbackSeverity::Info,
                     format!("connect {profile_id}"),
                 );
-                self.finish_connect(&profile_id, None, false);
+                // The row the user pressed Enter on was labelled `reuse …`,
+                // so adopting that session *is* what they asked for. A failed
+                // import falls through to the ordinary flow rather than
+                // stranding them.
+                if !self.try_reuse_login(&profile_id) {
+                    self.finish_connect(&profile_id, None, false);
+                }
                 self.busy_state.set_phase(BusyPhase::Idle);
             }
             OverlayAction::FilePick { path, is_dir } => {

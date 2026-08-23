@@ -4,6 +4,7 @@ mod anthropic;
 mod auth;
 mod catalog;
 mod cost;
+mod import;
 mod oauth_dispatch;
 mod oauth_openai_codex;
 mod oauth_xai;
@@ -35,6 +36,10 @@ pub use catalog::{
     MODELS_DEV_TTL_SECS,
 };
 pub use cost::provider_cost_report;
+pub use import::{
+    discover_logins, discover_logins_in, login_for_profile, xdg_data_home, DiscoveredLogin,
+    DiscoveredSecret,
+};
 pub use oauth_dispatch::OauthError;
 pub use oauth_xai::{
     try_open_browser, XaiOauthClient, XaiOauthError, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,

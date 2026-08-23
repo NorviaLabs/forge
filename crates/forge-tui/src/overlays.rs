@@ -234,6 +234,11 @@ pub struct ProviderRouteRow {
     pub label: String,
     pub connected: bool,
     pub is_current: bool,
+    /// A sign-in another tool already holds for this profile, e.g.
+    /// `reuse Codex sign-in (me@example.com)`. Present only when the route is
+    /// not already connected — the point is to replace a browser round-trip,
+    /// and there is nothing to replace once you are in.
+    pub reuse_offer: Option<String>,
 }
 
 /// One vendor row in the Providers column. Vendors with a single offering
@@ -335,10 +340,14 @@ fn flat_row_item<'a>(groups: &[&'a ModelGroup], row: &ModelFlatRow) -> Option<&'
 /// Build the Providers column from the registry, grouped by vendor. Only the
 /// vendor owning `current_profile_id` starts expanded — the same "expand the
 /// active path, collapse the rest" rule the file tree already uses.
-pub fn build_provider_rows(
+/// Build the Providers column, annotated with sign-ins other tools already
+/// hold so a route can offer to reuse one instead of opening a browser. Pass
+/// an empty `reusable` for no offers.
+pub fn build_provider_rows_with_reuse(
     registry: &forge_connect::ConnectRegistry,
     connected: &std::collections::HashSet<String>,
     current_profile_id: Option<&str>,
+    reusable: &[forge_connect::DiscoveredLogin],
 ) -> Vec<ProviderVendorRow> {
     let mut vendor_order: Vec<(String, String)> = Vec::new();
     let mut routes_by_vendor: std::collections::BTreeMap<String, Vec<ProviderRouteRow>> =
@@ -359,6 +368,10 @@ pub fn build_provider_rows(
                 },
                 connected: connected.contains(&p.id),
                 is_current: current_profile_id == Some(p.id.as_str()),
+                reuse_offer: (!connected.contains(&p.id))
+                    .then(|| forge_connect::login_for_profile(reusable, &p.id))
+                    .flatten()
+                    .map(|login| login.tag_label()),
             });
     }
     vendor_order.sort_by_key(|(_, label)| label.to_ascii_lowercase());
@@ -1979,6 +1992,10 @@ impl Widget for OverlayWidget<'_> {
                                 let tag = match flat_row_profile(providers, row) {
                                     Some(route) if route.is_current => "current",
                                     Some(route) if route.connected => "connected",
+                                    // Signals that Enter here reuses an
+                                    // existing session instead of opening a
+                                    // browser.
+                                    Some(route) => route.reuse_offer.as_deref().unwrap_or(""),
                                     _ => "",
                                 };
                                 let marker = if selected { "▶ " } else { "  " };
@@ -3135,7 +3152,7 @@ mod tests {
     fn build_provider_rows_sorts_vendors_and_groups_multi_offering_ones() {
         let registry = forge_connect::builtin_registry();
         let connected = std::collections::HashSet::new();
-        let rows = build_provider_rows(&registry, &connected, None);
+        let rows = build_provider_rows_with_reuse(&registry, &connected, None, &[]);
 
         let labels: Vec<String> = rows.iter().map(|r| r.label.to_ascii_lowercase()).collect();
         let mut sorted = labels.clone();
@@ -3167,7 +3184,7 @@ mod tests {
     fn providers_column_enter_toggles_expand_for_multi_route_vendor() {
         let registry = forge_connect::builtin_registry();
         let connected = std::collections::HashSet::new();
-        let providers = build_provider_rows(&registry, &connected, None);
+        let providers = build_provider_rows_with_reuse(&registry, &connected, None, &[]);
         let openai_idx = providers
             .iter()
             .position(|p| p.vendor_id == "openai")
@@ -3205,7 +3222,7 @@ mod tests {
     fn providers_column_enter_on_unconnected_route_requests_connect() {
         let registry = forge_connect::builtin_registry();
         let connected = std::collections::HashSet::new();
-        let providers = build_provider_rows(&registry, &connected, None);
+        let providers = build_provider_rows_with_reuse(&registry, &connected, None, &[]);
         let anthropic_idx = providers
             .iter()
             .position(|p| p.vendor_id == "anthropic")
@@ -3245,7 +3262,7 @@ mod tests {
             ["anthropic".to_string(), "ollama".to_string()]
                 .into_iter()
                 .collect();
-        let providers = build_provider_rows(&registry, &connected, Some("ollama"));
+        let providers = build_provider_rows_with_reuse(&registry, &connected, Some("ollama"), &[]);
         let mut overlay = Overlay::connect_model_open(
             providers,
             vec![],
@@ -3273,7 +3290,7 @@ mod tests {
         registry.register(forge_connect::ollama_profile());
         let connected: std::collections::HashSet<String> =
             ["ollama".to_string()].into_iter().collect();
-        let providers = build_provider_rows(&registry, &connected, Some("ollama"));
+        let providers = build_provider_rows_with_reuse(&registry, &connected, Some("ollama"), &[]);
         let mut overlay = Overlay::connect_model_open(
             providers,
             vec![],
@@ -3781,7 +3798,7 @@ mod tests {
         registry.register(forge_connect::xai_grok_profile());
         let connected: std::collections::HashSet<String> =
             ["ollama".to_string()].into_iter().collect();
-        let providers = build_provider_rows(&registry, &connected, Some("ollama"));
+        let providers = build_provider_rows_with_reuse(&registry, &connected, Some("ollama"), &[]);
         let picker = render_text(&Overlay::connect_model_open(
             providers,
             vec![],
