@@ -11,8 +11,10 @@
 //! `forge-connect`, neither of which `forge-core` depends on and neither of
 //! which belongs in it.
 
+pub mod headless;
 mod snapshot;
 
+pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
 pub use snapshot::{SessionSnapshot, TranscriptSnapshot};
 
 use std::sync::Arc;
