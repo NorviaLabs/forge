@@ -108,6 +108,27 @@ per directory (children inherit). Esc during those steps quits without
 claiming setup is done. Later folders only ask for trust. Returning to a
 trusted folder opens the normal TUI.
 
+### Automation and benchmark runs
+
+Forge also has a frontend-independent entry point for automation. Pipe one
+prompt to `forge bench` to use the same session assembly, provider routes,
+credentials, journal, sandbox, governance, and tool loop as the TUI:
+
+```sh
+printf '%s\n' 'Inspect the repository and summarize it.' | \
+  forge bench \
+    --workspace /path/to/repository \
+    --journal /tmp/forge-journal \
+    --model openai-codex/gpt-5.6-luna \
+    --route-id openai-chatgpt \
+    --effort max \
+    --approve-all
+```
+
+The command emits one JSON response on stdout and keeps logs on stderr.
+`--approve-all` is intended only for an isolated evaluation checkout; without
+it, a tool request that needs human approval stops with an error.
+
 ## Providers and models
 
 Forge includes native routes for:

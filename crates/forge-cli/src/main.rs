@@ -1,9 +1,13 @@
 //! Forge CLI — launches the full-screen TUI by default.
 
-use clap::Parser;
+use std::{io::Read, path::PathBuf};
+
+use clap::{Args, Parser, Subcommand};
 
 use forge_config::{is_trusted, Config, ConfigOverrides};
-use forge_session::{open_session, resolve_journal_dir, SessionTarget};
+use forge_session::{
+    open_session, resolve_journal_dir, run_headless, ApprovalPolicy, SessionTarget,
+};
 use forge_tui::{
     decide_launch, resume_session_items, run_setup, run_tui_with_launch, ExitCode, SetupRequest,
     SetupResult, TuiLaunch, TuiRuntimeConfig,
@@ -30,6 +34,43 @@ struct Cli {
     /// Reopen a previous session. Omit the id to pick from a list.
     #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
     resume: Option<Option<SessionId>>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Args, Debug)]
+struct BenchArgs {
+    /// Repository the agent is allowed to modify.
+    #[arg(long, default_value = ".", value_name = "PATH")]
+    workspace: PathBuf,
+
+    /// Directory for the durable Forge session journal.
+    #[arg(long, value_name = "PATH")]
+    journal: Option<PathBuf>,
+
+    /// Canonical model id, including its provider prefix when required.
+    #[arg(long, value_name = "MODEL")]
+    model: String,
+
+    /// Stable provider route. If omitted, infer it from the model prefix.
+    #[arg(long, value_name = "ROUTE")]
+    route_id: Option<String>,
+
+    /// Wire-level reasoning effort sent to the provider.
+    #[arg(long, default_value = "max", value_name = "EFFORT")]
+    effort: String,
+
+    /// Approve every tool request. Use only with an isolated evaluation
+    /// workspace.
+    #[arg(long)]
+    approve_all: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run one prompt through Forge without starting the terminal UI.
+    Bench(BenchArgs),
 }
 
 #[tokio::main]
@@ -101,6 +142,97 @@ async fn resolve_target(
 }
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    match cli.command {
+        Some(Command::Bench(args)) => run_bench(args).await,
+        None => run_tui(cli).await,
+    }
+}
+
+async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
+    let mut prompt = String::new();
+    std::io::stdin().read_to_string(&mut prompt)?;
+    if prompt.trim().is_empty() {
+        anyhow::bail!("forge bench expects a non-empty prompt on stdin");
+    }
+
+    let cfg = Config::load(ConfigOverrides {
+        workspace: Some(args.workspace),
+        journal_path: args.journal.as_ref().map(|path| path.display().to_string()),
+        ..Default::default()
+    })
+    .map_err(|e| anyhow::anyhow!(e))?;
+    let mut cfg = cfg;
+    // Config files intentionally do not select the active model. The bench
+    // command takes that selection explicitly so a run is reproducible.
+    cfg.model.model = args.model.clone();
+    let route_id = resolve_route_id(&args.model, args.route_id.as_deref())?;
+
+    let opened = open_session(&cfg, SessionTarget::New).await?;
+    let notices = opened.notices;
+    let mut session = opened.session;
+    if let Some(route_id) = route_id.as_deref() {
+        session.set_active_route_id(route_id);
+    }
+    session.set_reasoning_effort(Some(args.effort.clone()));
+
+    let response = run_headless(
+        session,
+        &prompt,
+        if args.approve_all {
+            ApprovalPolicy::ApproveAll
+        } else {
+            ApprovalPolicy::Ask
+        },
+    )
+    .await?;
+
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "model": args.model,
+            "route_id": route_id,
+            "effort": args.effort,
+            "response": response,
+            "notices": notices,
+        }))?
+    );
+    Ok(ExitCode::Success)
+}
+
+fn resolve_route_id(model: &str, explicit: Option<&str>) -> anyhow::Result<Option<String>> {
+    let registry = forge_connect::loaded_registry();
+    if let Some(route_id) = explicit {
+        if registry.get_by_route(route_id).is_none() {
+            anyhow::bail!("unknown Forge route id `{route_id}`");
+        }
+        return Ok(Some(route_id.to_string()));
+    }
+
+    let prefix = model
+        .split_once('/')
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(model);
+    let mut matches = registry
+        .profiles()
+        .iter()
+        .filter(|profile| {
+            profile.model_provider_prefix.eq_ignore_ascii_case(prefix)
+                || profile.id.eq_ignore_ascii_case(prefix)
+        })
+        .map(|profile| profile.route_id().to_string())
+        .collect::<Vec<_>>();
+    matches.sort_unstable();
+    matches.dedup();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [route_id] => Ok(Some(route_id.clone())),
+        _ => {
+            anyhow::bail!("model prefix `{prefix}` maps to multiple Forge routes; pass --route-id")
+        }
+    }
+}
+
+async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     let overrides = ConfigOverrides {
         config_path: None,
         workspace: None,
@@ -217,6 +349,43 @@ mod tests {
     fn cli_resume_without_session_id_is_accepted() {
         let cli = Cli::try_parse_from(["forge", "--resume"]).unwrap();
         assert_eq!(cli.resume, Some(None));
+    }
+
+    #[test]
+    fn cli_bench_parses_the_native_headless_options() {
+        let cli = Cli::try_parse_from([
+            "forge",
+            "bench",
+            "--workspace",
+            "/tmp/repo",
+            "--journal",
+            "/tmp/journal",
+            "--model",
+            "openai-codex/gpt-5.6-luna",
+            "--route-id",
+            "openai-chatgpt",
+            "--effort",
+            "max",
+            "--approve-all",
+        ])
+        .unwrap();
+        let Some(Command::Bench(args)) = cli.command else {
+            panic!("expected forge bench subcommand");
+        };
+        assert_eq!(args.workspace, PathBuf::from("/tmp/repo"));
+        assert_eq!(args.journal, Some(PathBuf::from("/tmp/journal")));
+        assert_eq!(args.model, "openai-codex/gpt-5.6-luna");
+        assert_eq!(args.route_id.as_deref(), Some("openai-chatgpt"));
+        assert_eq!(args.effort, "max");
+        assert!(args.approve_all);
+    }
+
+    #[test]
+    fn bench_infers_the_codex_subscription_route_from_the_model_prefix() {
+        assert_eq!(
+            resolve_route_id("openai-codex/gpt-5.6-luna", None).unwrap(),
+            Some("openai-chatgpt".into())
+        );
     }
 
     /// An explicit session id needs no journal lookup, so this maps straight

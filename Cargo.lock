@@ -1226,6 +1226,7 @@ dependencies = [
  "forge-tui",
  "forge-types",
  "predicates",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",
