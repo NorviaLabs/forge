@@ -1336,3 +1336,25 @@ async fn a_truncated_palette_description_gets_a_row_that_covers_what_is_under_it
         );
     }
 }
+
+#[tokio::test]
+async fn connecting_repaints_the_home_card_instead_of_leaving_it_stale() {
+    // The splash bakes connection state into a cached transcript. Without the
+    // card's inputs in the render key it was built once and frozen, so a
+    // freshly connected session still read "not connected" beside a toast
+    // saying otherwise.
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.profile = None;
+    let before = render_app_text(&mut app, 120, 35);
+    assert!(before.contains("not connected"), "{before}");
+
+    // Connect, exactly as the reuse path does.
+    app.connect.profile = Some("mock".into());
+    app.connect.connected = Some((std::time::Instant::now(), true));
+
+    let after = render_app_text(&mut app, 120, 35);
+    assert!(
+        !after.contains("not connected"),
+        "the card must repaint once connected:\n{after}"
+    );
+}
