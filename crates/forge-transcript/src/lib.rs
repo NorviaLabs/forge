@@ -187,6 +187,21 @@ pub enum ChatItem {
         /// to a standalone card.
         outcome: forge_types::ExecutionOutcome,
     },
+    /// A verification command's verdict, rendered inline and always.
+    ///
+    /// Sibling of [`ChatItem::DiffCard`]. Forge already treats *changes made*
+    /// as worth showing unasked; this extends that to *changes checked*, so a
+    /// turn's closing "31 tests passed" arrives with its evidence instead of
+    /// asking to be believed.
+    VerificationCard {
+        /// The command as invoked, e.g. `make test`.
+        command: String,
+        verdict: Verdict,
+        /// The runner's own words — never composed here.
+        evidence: Vec<String>,
+        /// Full output, for expand-on-demand.
+        detail: String,
+    },
     /// Unified-ish diff snippet for write tools.
     DiffCard {
         path: String,
@@ -258,6 +273,7 @@ pub enum ConversationBlock {
     Callout(CalloutPresentation),
     CodeBlock(CodeBlockPresentation),
     DiffBlock(DiffBlockPresentation),
+    VerificationBlock(VerificationBlockPresentation),
     ApprovalPending(ApprovalPendingPresentation),
     Home(HomePresentation),
     QuestionPending(QuestionPendingPresentation),
@@ -394,6 +410,16 @@ pub struct DiffBlockPresentation {
     pub path: String,
     pub lines: Vec<String>,
     pub rationale: String,
+}
+
+/// A verification command's verdict, ready to draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationBlockPresentation {
+    pub command: String,
+    pub verdict: Verdict,
+    pub evidence: Vec<String>,
+    pub expanded: bool,
+    pub detail: String,
 }
 
 /// One tool call, as a plan step's evidence: the verb and what it acted on.
@@ -578,6 +604,314 @@ pub struct ConversationViewOpts {
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
     /// When thinking just finished (answer streaming), show its elapsed time.
     pub stream_thought_secs: Option<f64>,
+}
+
+/// What a verification command concluded, as read from its own output.
+///
+/// `Unparsed` is the load-bearing variant: a zero exit code alone is *not* a
+/// pass. A verification surface that guesses is worse than none, because it
+/// turns an unchecked claim into a checked-looking one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    Passed {
+        headline: String,
+    },
+    Failed {
+        headline: String,
+    },
+    Unparsed {
+        exit_code: Option<i32>,
+        lines: usize,
+    },
+}
+
+impl Verdict {
+    pub fn glyph(&self) -> &'static str {
+        match self {
+            Self::Passed { .. } => "✓",
+            Self::Failed { .. } => "✗",
+            Self::Unparsed { .. } => "?",
+        }
+    }
+
+    /// The right-aligned headline: the runner's count, or an honest shrug.
+    pub fn headline(&self) -> String {
+        match self {
+            Self::Passed { headline } | Self::Failed { headline } => headline.clone(),
+            Self::Unparsed { exit_code, lines } => match exit_code {
+                Some(code) => format!("exit {code} · {lines} lines, no result line"),
+                None => format!("{lines} lines, no result line"),
+            },
+        }
+    }
+}
+
+/// Whether an invocation is a command run to *check* the work.
+///
+/// Matches the invocation, not the output — the same shape as
+/// [`is_diff_tool`]. Anything unmatched stays an ordinary `ToolCard`, so this
+/// can only ever add a card, never remove one.
+pub fn is_verification_command(invocation: &str) -> bool {
+    let cmd = invocation.trim();
+    let cmd = cmd.strip_prefix("$ ").unwrap_or(cmd);
+    // Only the first segment decides; `make test && ./x` is still a test run.
+    let head = cmd
+        .split(['&', '|', ';'])
+        .next()
+        .unwrap_or(cmd)
+        .trim()
+        .to_ascii_lowercase();
+    const EXACT_PREFIXES: &[&str] = &[
+        "make test",
+        "make check",
+        "make lint",
+        "cargo test",
+        "cargo clippy",
+        "cargo fmt --check",
+        "cargo fmt --all -- --check",
+        "cargo bench",
+        "pytest",
+        "python -m pytest",
+        "python3 -m pytest",
+        "python -m unittest",
+        "python3 -m unittest",
+        "go test",
+        "go vet",
+        "npm test",
+        "npm run test",
+        "yarn test",
+        "pnpm test",
+        "bun test",
+        "tsc",
+        "npx tsc",
+        "ruff",
+        "eslint",
+        "npx eslint",
+        "mypy",
+        "rspec",
+        "phpunit",
+    ];
+    EXACT_PREFIXES.iter().any(|p| head.starts_with(p))
+}
+
+/// How far back to look for a runner's verdict. Test logs are long; their
+/// conclusions are always at the end.
+const VERDICT_WINDOW: usize = 40;
+
+/// Read a verification command's own conclusion out of its output.
+///
+/// Returns the verdict plus the evidence lines to show — always the runner's
+/// words, never a sentence composed here.
+pub fn parse_verdict(output: &str, outcome: &ExecutionOutcome) -> (Verdict, Vec<String>) {
+    let all: Vec<&str> = output.lines().collect();
+    let exit_code = match outcome {
+        ExecutionOutcome::Failed { exit_code } => *exit_code,
+        ExecutionOutcome::Success => Some(0),
+        _ => None,
+    };
+    let failed_outcome = !matches!(outcome, ExecutionOutcome::Success);
+    let tail_start = all.len().saturating_sub(VERDICT_WINDOW);
+    let tail = &all[tail_start..];
+
+    // 1. Rust: `test result: ok. 31 passed; 0 failed; …`
+    if let Some(line) = tail.iter().rev().find(|l| l.contains("test result:")) {
+        let text = strip_ansi(line);
+        let ok = text.contains("test result: ok");
+        let headline = counts_from(&text).unwrap_or_else(|| {
+            if ok {
+                "ok".to_string()
+            } else {
+                "FAILED".to_string()
+            }
+        });
+        return if ok && !failed_outcome {
+            (Verdict::Passed { headline }, vec![text])
+        } else {
+            (Verdict::Failed { headline }, failure_evidence(&all, text))
+        };
+    }
+
+    // 2. unittest: a `Ran N tests` line, then `OK` or `FAILED (…)`.
+    if let Some(pos) = tail
+        .iter()
+        .rposition(|l| strip_ansi(l).trim_start().starts_with("Ran "))
+    {
+        let ran = strip_ansi(tail[pos]);
+        let closing = tail[pos..]
+            .iter()
+            .map(|l| strip_ansi(l))
+            .find(|l| l == "OK" || l.starts_with("OK (") || l.starts_with("FAILED"));
+        if let Some(closing) = closing {
+            let passed = closing.starts_with("OK") && !failed_outcome;
+            let headline = ran
+                .split_whitespace()
+                .nth(1)
+                .map(|n| {
+                    if passed {
+                        format!("{n} passed")
+                    } else {
+                        format!("{n} run · {closing}")
+                    }
+                })
+                .unwrap_or_else(|| closing.clone());
+            return if passed {
+                (Verdict::Passed { headline }, vec![ran, closing])
+            } else {
+                (Verdict::Failed { headline }, failure_evidence(&all, ran))
+            };
+        }
+    }
+
+    // 3. pytest: `===== 31 passed in 0.42s =====`
+    if let Some(line) = tail
+        .iter()
+        .rev()
+        .map(|l| strip_ansi(l))
+        .find(|l| l.contains(" passed") || l.contains(" failed") || l.contains(" error"))
+    {
+        let summary = line.trim_matches(['=', ' ']).to_string();
+        if let Some(headline) = counts_from(&summary) {
+            let passed =
+                !summary.contains("failed") && !summary.contains("error") && !failed_outcome;
+            return if passed {
+                (Verdict::Passed { headline }, vec![summary])
+            } else {
+                (
+                    Verdict::Failed { headline },
+                    failure_evidence(&all, summary),
+                )
+            };
+        }
+    }
+
+    // 4. cargo build/clippy: a `Finished` line and no warnings.
+    if let Some(line) = tail
+        .iter()
+        .rev()
+        .map(|l| strip_ansi(l))
+        .find(|l| l.trim_start().starts_with("Finished "))
+    {
+        let warnings = all
+            .iter()
+            .filter(|l| strip_ansi(l).trim_start().starts_with("warning:"))
+            .count();
+        let headline = if warnings == 0 {
+            "clean".to_string()
+        } else {
+            result_count_label(warnings, "warning", "warnings")
+        };
+        return if failed_outcome {
+            (Verdict::Failed { headline }, failure_evidence(&all, line))
+        } else {
+            (
+                Verdict::Passed { headline },
+                vec![line.trim_start().to_string()],
+            )
+        };
+    }
+
+    // 5. Nothing recognised. Say so; do not infer a pass from exit zero.
+    let last = all
+        .iter()
+        .rev()
+        .map(|l| strip_ansi(l))
+        .find(|l| !l.trim().is_empty());
+    let evidence = match last {
+        Some(l) => vec![l],
+        None => Vec::new(),
+    };
+    if failed_outcome {
+        let headline = match exit_code {
+            Some(code) => format!("exit {code}"),
+            None => "did not succeed".to_string(),
+        };
+        return (
+            Verdict::Failed { headline },
+            failure_evidence(&all, String::new()),
+        );
+    }
+    (
+        Verdict::Unparsed {
+            exit_code,
+            lines: all.len(),
+        },
+        evidence,
+    )
+}
+
+/// Up to six lines around the first failure marker — the reason, not the log.
+fn failure_evidence(all: &[&str], summary: String) -> Vec<String> {
+    const MARKERS: &[&str] = &[
+        "FAILED",
+        "failures:",
+        "panicked at",
+        "error:",
+        "error[",
+        "assert",
+        "E   ",
+        "--- FAIL",
+    ];
+    let first = all
+        .iter()
+        .position(|l| {
+            let t = strip_ansi(l);
+            MARKERS.iter().any(|m| t.contains(m))
+        })
+        .unwrap_or(0);
+    let mut out: Vec<String> = all
+        .iter()
+        .skip(first)
+        .take(5)
+        .map(|l| strip_ansi(l))
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    if !summary.trim().is_empty() && !out.contains(&summary) {
+        out.push(summary);
+    }
+    out
+}
+
+/// `31 passed; 0 failed` / `31 passed in 0.4s` -> `31 passed · 0 failed`.
+fn counts_from(text: &str) -> Option<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut parts = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let key = w.trim_matches([',', ';', '.']);
+        if matches!(
+            key,
+            "passed" | "failed" | "ignored" | "error" | "errors" | "skipped"
+        ) {
+            if let Some(n) = words.get(i.wrapping_sub(1)) {
+                let n = n.trim_matches([',', ';', '.']);
+                if n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty() {
+                    // A zero count is noise unless it is the only thing there.
+                    if !(n == "0" && matches!(key, "ignored" | "skipped")) {
+                        parts.push(format!("{n} {key}"));
+                    }
+                }
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// Terminal escapes survive into tool output; a verdict must be matched on the
+/// text, not on whatever colour the runner painted it.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out.trim_end().to_string()
 }
 
 /// Format elapsed time in 0.1s increments through 5s, then whole seconds.
@@ -770,6 +1104,24 @@ impl ConversationModel {
                             .and_then(|id| tool_calls.get(id).copied());
                         let (state, summary, invocation, detail) =
                             classify_tool_content(name, &m.content, call, &m.outcome);
+                        // A command run to *check* the work earns the same
+                        // always-visible treatment a change already gets.
+                        if let Some(command) = invocation
+                            .as_deref()
+                            .filter(|inv| is_verification_command(inv))
+                            // The shell prompt belongs to the capture, not to
+                            // the command the reader is being shown.
+                            .map(|inv| inv.trim().strip_prefix("$ ").unwrap_or(inv).trim())
+                        {
+                            let (verdict, evidence) = parse_verdict(&detail, &m.outcome);
+                            items.push(ChatItem::VerificationCard {
+                                command: command.to_string(),
+                                verdict,
+                                evidence,
+                                detail,
+                            });
+                            continue;
+                        }
                         items.push(ChatItem::ToolCard {
                             name: name.to_string(),
                             summary,
@@ -1024,6 +1376,7 @@ impl ConversationModel {
                 ChatItem::ToolCard { .. }
                     | ChatItem::ActivityGroup { .. }
                     | ChatItem::DiffCard { .. }
+                    | ChatItem::VerificationCard { .. }
                     | ChatItem::PlanChecklist { .. }
             )
         })
@@ -1208,6 +1561,24 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                         items: vec![detail.clone()],
                     },
                 );
+            }
+            ChatItem::VerificationCard {
+                command,
+                verdict,
+                evidence,
+                detail,
+            } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::VerificationBlock(
+                    VerificationBlockPresentation {
+                        command: command.clone(),
+                        verdict: verdict.clone(),
+                        evidence: evidence.clone(),
+                        expanded: tool_expanded,
+                        detail: detail.clone(),
+                    },
+                ));
             }
             ChatItem::DiffCard {
                 path,
@@ -1954,6 +2325,17 @@ fn activity_group_detail(item: &ChatItem) -> String {
             ..
         } => format!("{name}: {summary}\n{detail}"),
         ChatItem::DiffCard { path, lines, .. } => format!("diff: {path}\n{}", lines.join("\n")),
+        ChatItem::VerificationCard {
+            command,
+            verdict,
+            evidence,
+            ..
+        } => format!(
+            "{} {command} · {}\n{}",
+            verdict.glyph(),
+            verdict.headline(),
+            evidence.join("\n")
+        ),
         ChatItem::PlanChecklist {
             explanation, steps, ..
         } => {
@@ -3593,5 +3975,206 @@ mod spent_reasoning_tests {
             blocks.first(),
             Some(ConversationBlock::Thinking(t)) if !t.collapsed
         ));
+    }
+}
+
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+
+    fn ok() -> ExecutionOutcome {
+        ExecutionOutcome::Success
+    }
+    fn failed(code: i32) -> ExecutionOutcome {
+        ExecutionOutcome::Failed {
+            exit_code: Some(code),
+        }
+    }
+
+    #[test]
+    fn recognises_the_commands_people_actually_verify_with() {
+        for cmd in [
+            "make test",
+            "cargo test --workspace",
+            "cargo clippy --all-targets",
+            "cargo fmt --all -- --check",
+            "python3 -m unittest discover -s tests -q",
+            "pytest -q",
+            "npm test",
+            "go test ./...",
+            "npx tsc --noEmit",
+            "make test && python3 -m tracker summarize data/sample.log",
+        ] {
+            assert!(is_verification_command(cmd), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn leaves_ordinary_commands_alone() {
+        // Anything unmatched keeps its ToolCard, so this can only ever add a
+        // card, never remove one.
+        for cmd in [
+            "git status",
+            "ls -la",
+            "cat README.md",
+            "python3 -m tracker summarize data/sample.log",
+            "rg percentile",
+            "make build",
+        ] {
+            assert!(!is_verification_command(cmd), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn reads_rusts_own_result_line() {
+        let out = "running 990 tests\n....\ntest result: ok. 990 passed; 0 failed; 0 ignored";
+        let (verdict, evidence) = parse_verdict(out, &ok());
+        assert_eq!(
+            verdict,
+            Verdict::Passed {
+                headline: "990 passed · 0 failed".into()
+            }
+        );
+        assert_eq!(
+            evidence,
+            vec!["test result: ok. 990 passed; 0 failed; 0 ignored"]
+        );
+    }
+
+    #[test]
+    fn reads_unittests_ran_and_ok_pair() {
+        let out = "....\n----------------------\nRan 31 tests in 0.001s\n\nOK";
+        let (verdict, evidence) = parse_verdict(out, &ok());
+        assert_eq!(
+            verdict,
+            Verdict::Passed {
+                headline: "31 passed".into()
+            }
+        );
+        assert_eq!(evidence, vec!["Ran 31 tests in 0.001s", "OK"]);
+    }
+
+    #[test]
+    fn reads_pytest_summary() {
+        let out = "===== 31 passed in 0.42s =====";
+        let (verdict, _) = parse_verdict(out, &ok());
+        assert_eq!(
+            verdict,
+            Verdict::Passed {
+                headline: "31 passed".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_clean_cargo_build_is_clean_and_a_noisy_one_is_counted() {
+        let (verdict, _) = parse_verdict("   Finished `dev` profile target(s) in 5.7s", &ok());
+        assert_eq!(
+            verdict,
+            Verdict::Passed {
+                headline: "clean".into()
+            }
+        );
+        let noisy = "warning: unused import\nwarning: never used\n   Finished `dev` profile";
+        let (verdict, _) = parse_verdict(noisy, &ok());
+        assert_eq!(
+            verdict,
+            Verdict::Passed {
+                headline: "2 warnings".into()
+            }
+        );
+    }
+
+    #[test]
+    fn exit_zero_with_unrecognised_output_is_unparsed_never_a_tick() {
+        // The rule the whole feature rests on. Guessing here would convert an
+        // unchecked claim into a checked-looking one.
+        let out = "doing things\nmore things\nall done";
+        let (verdict, evidence) = parse_verdict(out, &ok());
+        assert_eq!(
+            verdict,
+            Verdict::Unparsed {
+                exit_code: Some(0),
+                lines: 3
+            }
+        );
+        assert_eq!(verdict.glyph(), "?");
+        assert!(verdict.headline().contains("no result line"), "{verdict:?}");
+        assert_eq!(evidence, vec!["all done"]);
+    }
+
+    #[test]
+    fn a_failing_run_shows_the_reason_not_the_log() {
+        let out = "running 31 tests\n\
+                   ok metrics::a\n\
+                   FAILED tests/test_metrics.py::test_p95_of_five\n\
+                   assert percentile([1,2,3,4,5], 95) == 5.0\n\
+                   E   AssertionError: 4.0 != 5.0\n\
+                   test result: FAILED. 30 passed; 1 failed";
+        let (verdict, evidence) = parse_verdict(out, &failed(1));
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "30 passed · 1 failed".into()
+            }
+        );
+        assert_eq!(verdict.glyph(), "✗");
+        assert!(
+            evidence.iter().any(|l| l.contains("AssertionError")),
+            "{evidence:?}"
+        );
+        assert!(
+            !evidence.iter().any(|l| l.contains("ok metrics::a")),
+            "the passing noise stays out: {evidence:?}"
+        );
+    }
+
+    #[test]
+    fn a_pass_line_with_a_failing_exit_is_not_a_pass() {
+        // Trust the process over the text: a runner that printed `ok` and then
+        // exited non-zero did not pass.
+        let out = "test result: ok. 5 passed; 0 failed";
+        let (verdict, _) = parse_verdict(out, &failed(101));
+        assert!(matches!(verdict, Verdict::Failed { .. }), "{verdict:?}");
+    }
+
+    #[test]
+    fn colour_codes_do_not_hide_the_verdict() {
+        let out = "Ran 31 tests in 0.001s\n\n\u{1b}[32mOK\u{1b}[0m";
+        let (verdict, _) = parse_verdict(out, &ok());
+        assert_eq!(
+            verdict,
+            Verdict::Passed {
+                headline: "31 passed".into()
+            }
+        );
+    }
+
+    #[test]
+    fn only_the_extracted_window_is_kept_from_a_huge_log() {
+        // Render-perf: a 5,000-line log must not become 5,000 rendered lines.
+        let mut out = (0..5000).map(|i| format!("line {i}\n")).collect::<String>();
+        out.push_str("test result: ok. 12 passed; 0 failed");
+        let (verdict, evidence) = parse_verdict(&out, &ok());
+        assert!(matches!(verdict, Verdict::Passed { .. }));
+        assert_eq!(evidence.len(), 1, "{evidence:?}");
+    }
+
+    #[test]
+    fn a_verification_card_is_never_folded_into_an_activity_group() {
+        let card = ChatItem::VerificationCard {
+            command: "make test".into(),
+            verdict: Verdict::Passed {
+                headline: "31 passed".into(),
+            },
+            evidence: vec!["OK".into()],
+            detail: String::new(),
+        };
+        let grouped = group_routine_activity(vec![card.clone()]);
+        assert_eq!(grouped.len(), 1);
+        assert!(
+            matches!(grouped[0], ChatItem::VerificationCard { .. }),
+            "the card must stand alone, like a diff does"
+        );
     }
 }

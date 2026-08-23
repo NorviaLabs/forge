@@ -353,6 +353,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::Thinking(p) => estimate_wrapped_lines(&p.text, prose_width),
         ConversationBlock::CodeBlock(p) => estimate_wrapped_lines(&p.text, width),
         ConversationBlock::DiffBlock(p) => p.lines.len().saturating_add(2),
+        ConversationBlock::VerificationBlock(p) => p.evidence.len().saturating_add(1),
         ConversationBlock::Callout(p) => estimate_wrapped_lines(&p.text, width).saturating_add(1),
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
         ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
@@ -774,6 +775,12 @@ impl ConversationRender for ConversationModel {
                         width.saturating_sub(2),
                     ));
                     lines.push(Line::from(DIFF_BLOCK_END_MARKER));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::VerificationBlock(p) => {
+                    lines.extend(render_verification_card(&p, width));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -4680,6 +4687,183 @@ mod tests {
                     "{name} rendered a blank group summary"
                 );
             }
+        }
+    }
+}
+
+/// A verification command's verdict: the command, what the runner concluded,
+/// and the runner's own words as evidence.
+///
+/// Sibling of [`render_numbered_diff`]. The headline is right-aligned into the
+/// same column the tool cards use, so a column of runs scans vertically.
+pub(super) fn render_verification_card(
+    p: &forge_transcript::VerificationBlockPresentation,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let (glyph_style, headline_style) = match p.verdict {
+        Verdict::Passed { .. } => (theme::ok(), theme::ok()),
+        Verdict::Failed { .. } => (theme::danger(), theme::danger()),
+        // An unparsed result is neither good news nor bad; it is a gap in the
+        // evidence, and it must not borrow the colour of either.
+        Verdict::Unparsed { .. } => (theme::warn(), theme::muted()),
+    };
+    let headline = p.verdict.headline();
+    let mut out = Vec::new();
+
+    let left_w = 2 + 1 + p.command.chars().count();
+    let gap = width
+        .saturating_sub(left_w + headline.chars().count() + 2)
+        .max(1);
+    out.push(Line::from(vec![
+        Span::raw(INDENT_UNIT),
+        Span::styled(p.verdict.glyph().to_string(), glyph_style),
+        Span::raw(" "),
+        Span::styled(
+            p.command.clone(),
+            theme::text().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(headline, headline_style),
+    ]));
+
+    let last = p.evidence.len().saturating_sub(1);
+    for (i, line) in p.evidence.iter().enumerate() {
+        let branch = if i == last { "  └ " } else { "  │ " };
+        let room = width.saturating_sub(branch.chars().count() + 4);
+        let text: String = line.chars().take(room).collect();
+        out.push(Line::from(vec![
+            Span::raw(INDENT_UNIT),
+            Span::styled(branch.to_string(), theme::border_muted()),
+            Span::styled(text, theme::muted()),
+        ]));
+    }
+
+    // Only when there is more to see than what is already shown.
+    if !p.expanded && p.detail.lines().count() > p.evidence.len() {
+        out.push(Line::from(vec![
+            Span::raw(INDENT_UNIT),
+            Span::styled("    Ctrl+O for full output".to_string(), theme::dim()),
+        ]));
+    }
+    out
+}
+
+#[cfg(test)]
+mod verification_card_tests {
+    use super::*;
+    use forge_transcript::{Verdict, VerificationBlockPresentation};
+
+    fn text_of(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn card(verdict: Verdict, evidence: &[&str], detail: &str) -> VerificationBlockPresentation {
+        VerificationBlockPresentation {
+            command: "make test".into(),
+            verdict,
+            evidence: evidence.iter().map(|s| (*s).to_string()).collect(),
+            expanded: false,
+            detail: detail.into(),
+        }
+    }
+
+    #[test]
+    fn a_pass_puts_the_count_and_the_runners_words_on_screen() {
+        let p = card(
+            Verdict::Passed {
+                headline: "31 passed".into(),
+            },
+            &["Ran 31 tests in 0.001s", "OK"],
+            "",
+        );
+        let out = text_of(&render_verification_card(&p, 80));
+        assert!(out.contains("make test"), "{out}");
+        assert!(out.contains("31 passed"), "{out}");
+        assert!(out.contains("Ran 31 tests"), "{out}");
+        assert!(out.contains("OK"), "{out}");
+        assert!(out.starts_with(&format!("{INDENT_UNIT}✓")), "{out:?}");
+    }
+
+    #[test]
+    fn an_unparsed_result_says_so_and_never_shows_a_tick() {
+        let p = card(
+            Verdict::Unparsed {
+                exit_code: Some(0),
+                lines: 84,
+            },
+            &["all done"],
+            "",
+        );
+        let out = text_of(&render_verification_card(&p, 80));
+        assert!(
+            !out.contains('✓'),
+            "an unchecked run must not look checked: {out}"
+        );
+        assert!(out.contains('?'), "{out}");
+        assert!(out.contains("no result line"), "{out}");
+    }
+
+    #[test]
+    fn a_failure_reads_as_a_failure() {
+        let p = card(
+            Verdict::Failed {
+                headline: "30 passed · 1 failed".into(),
+            },
+            &["E   AssertionError: 4.0 != 5.0"],
+            "",
+        );
+        let out = text_of(&render_verification_card(&p, 80));
+        assert!(out.contains('✗'), "{out}");
+        assert!(out.contains("1 failed"), "{out}");
+        assert!(out.contains("AssertionError"), "{out}");
+    }
+
+    #[test]
+    fn the_expand_hint_appears_only_when_there_is_more_to_see() {
+        let shown = card(
+            Verdict::Passed {
+                headline: "31 passed".into(),
+            },
+            &["OK"],
+            "OK",
+        );
+        assert!(
+            !text_of(&render_verification_card(&shown, 80)).contains("Ctrl+O"),
+            "nothing is hidden, so nothing to offer"
+        );
+
+        let more = card(
+            Verdict::Passed {
+                headline: "31 passed".into(),
+            },
+            &["OK"],
+            "line\nline\nline\nOK",
+        );
+        assert!(text_of(&render_verification_card(&more, 80)).contains("Ctrl+O"));
+    }
+
+    #[test]
+    fn a_narrow_pane_truncates_evidence_rather_than_wrapping_past_the_edge() {
+        let long = "E   AssertionError: ".to_string() + &"x".repeat(300);
+        let p = card(
+            Verdict::Failed {
+                headline: "1 failed".into(),
+            },
+            &[&long],
+            "",
+        );
+        for line in render_verification_card(&p, 50) {
+            let w: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert!(w <= 50, "line overflows the pane: {w}");
         }
     }
 }
