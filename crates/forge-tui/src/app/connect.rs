@@ -6,6 +6,7 @@
 //! successful connection. Methods are moved verbatim.
 
 use super::*;
+use crate::overlays::build_provider_rows_with_reuse;
 
 /// Provider connection/auth state: known profiles, stored credentials, the
 /// active profile selection, and in-flight xAI OAuth polling. #19 phase 3 —
@@ -585,10 +586,11 @@ impl TuiApp {
                 .map(|p| p.id)
                 .collect()
         };
-        let providers = build_provider_rows(
+        let providers = build_provider_rows_with_reuse(
             &self.connect.registry,
             &connected,
             self.connect.profile.as_deref(),
+            &self.reusable_logins(),
         );
         // Cache-only: instant open, never blocks on network I/O. A
         // background refresh (`start_catalog_refresh`, triggered by the
@@ -790,10 +792,11 @@ impl TuiApp {
                 .map(|p| p.id)
                 .collect()
         };
-        let providers = build_provider_rows(
+        let providers = build_provider_rows_with_reuse(
             &self.connect.registry,
             &connected,
             self.connect.profile.as_deref(),
+            &self.reusable_logins(),
         );
         let items = self.model_picker_items(false);
         if compact {
@@ -1360,4 +1363,62 @@ fn route_id_for_profile(profile_id: &str) -> String {
         .get(profile_id)
         .map(|spec| spec.route_id.clone())
         .unwrap_or_else(|| profile_id.to_string())
+}
+
+impl TuiApp {
+    /// Sign-ins other CLIs on this machine already hold, that Forge could
+    /// reuse instead of sending the user through a second browser grant.
+    ///
+    /// Read fresh each time the picker opens rather than cached at startup:
+    /// signing in to `codex` in another terminal while Forge is running should
+    /// show up here, and the read is three small files.
+    pub(super) fn reusable_logins(&self) -> Vec<forge_connect::DiscoveredLogin> {
+        let Some(home) = dirs::home_dir() else {
+            return Vec::new();
+        };
+        forge_connect::discover_logins_in(&home, forge_connect::xdg_data_home().as_deref())
+    }
+
+    /// Adopt a discovered login for `profile_id`, if one exists.
+    ///
+    /// Returns whether it was adopted, so the caller can fall through to the
+    /// ordinary browser/API-key flow when it was not. Only ever called for a
+    /// row the user chose while it was labelled `reuse …` — this is not a
+    /// silent import.
+    pub(super) fn try_reuse_login(&mut self, profile_id: &str) -> bool {
+        let Some(login) = forge_connect::login_for_profile(&self.reusable_logins(), profile_id)
+        else {
+            return false;
+        };
+        let stored = match &login.secret {
+            forge_connect::DiscoveredSecret::ApiKey(key) => {
+                self.connect.store.set_api_key(profile_id, key)
+            }
+            forge_connect::DiscoveredSecret::Oauth(tokens) => {
+                self.connect.store.set_oauth(profile_id, (**tokens).clone())
+            }
+        };
+        if let Err(error) = stored {
+            // Fall back to the normal flow rather than stranding the user:
+            // a failed import is an inconvenience, not a dead end.
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("Could not reuse the {} sign-in: {error}", login.source),
+            );
+            return false;
+        }
+        self.connect.profile = Some(profile_id.to_string());
+        self.invalidate_connected();
+        self.refresh_connection_ui();
+        self.status_state.message = format!("Reused the {} sign-in", login.source);
+        self.push_activity(
+            ActivityKind::Connect,
+            FeedbackSeverity::Ok,
+            // `login` redacts its own secret, but say nothing about it here
+            // either — this line reaches the transcript.
+            format!("reuse {} sign-in for {profile_id}", login.source),
+        );
+        self.finish_connect_flow(profile_id);
+        true
+    }
 }

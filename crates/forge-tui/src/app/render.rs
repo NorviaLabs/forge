@@ -274,6 +274,16 @@ impl TuiApp {
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.is_expanded(),
             splash_dismissed: self.conversation_view.splash_dismissed,
+            home_card: (!slash_mode && !self.conversation_view.splash_dismissed).then(|| {
+                (
+                    connected,
+                    self.runtime.model_label.clone(),
+                    vendor_label
+                        .clone()
+                        .unwrap_or_else(|| self.runtime.provider.clone()),
+                    self.session_view.loaded_skills_count,
+                )
+            }),
             slash_mode,
             status: self.session_view.lifecycle,
             theme_id: crate::theme::active(),

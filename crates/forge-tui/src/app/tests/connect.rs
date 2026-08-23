@@ -1308,3 +1308,129 @@ async fn connecting_lands_on_the_profiles_declared_model_not_the_alphabetical_fi
         "and specifically not on the alphabetical first"
     );
 }
+
+fn codex_session(home: &std::path::Path) {
+    let dir = home.join(".codex");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt","account_id":"acct-1"}}"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_reusable_sign_in_is_offered_only_where_it_would_save_a_browser_trip() {
+    use crate::overlays::build_provider_rows_with_reuse;
+    let home = tempfile::tempdir().unwrap();
+    codex_session(home.path());
+    let logins = forge_connect::discover_logins(home.path());
+    assert!(!logins.is_empty(), "fixture discovered");
+
+    let registry = forge_connect::builtin_registry();
+
+    // Not connected: the offer is worth making.
+    let rows = build_provider_rows_with_reuse(&registry, &Default::default(), None, &logins);
+    let offered: Vec<&str> = rows
+        .iter()
+        .flat_map(|vendor| vendor.routes.iter())
+        .filter_map(|route| {
+            route
+                .reuse_offer
+                .as_deref()
+                .map(|_| route.profile_id.as_str())
+        })
+        .collect();
+    assert!(
+        offered.contains(&forge_connect::OPENAI_CODEX_PROFILE_ID),
+        "{offered:?}"
+    );
+
+    // Already connected: there is no browser trip left to save.
+    let connected: std::collections::HashSet<String> =
+        [forge_connect::OPENAI_CODEX_PROFILE_ID.to_string()]
+            .into_iter()
+            .collect();
+    let rows = build_provider_rows_with_reuse(&registry, &connected, None, &logins);
+    assert!(
+        rows.iter()
+            .flat_map(|vendor| vendor.routes.iter())
+            .filter(|route| route.profile_id == forge_connect::OPENAI_CODEX_PROFILE_ID)
+            .all(|route| route.reuse_offer.is_none()),
+        "a connected route must not advertise a reuse"
+    );
+}
+
+#[tokio::test]
+async fn reusing_a_login_connects_without_a_browser() {
+    // `isolated_home_guard` already holds the env lock; taking it again here
+    // deadlocks on a non-reentrant mutex.
+    let (home, _home_guard) = isolated_home_guard();
+    codex_session(home.path());
+
+    let (_dir, mut app) = focus_test_app().await;
+    let store_dir = tempfile::tempdir().unwrap();
+    app.connect.store =
+        forge_connect::CredentialStore::new(store_dir.path().join("credentials.toml"));
+
+    assert!(
+        app.try_reuse_login(forge_connect::OPENAI_CODEX_PROFILE_ID),
+        "the Codex session should have been adopted"
+    );
+
+    let stored = app
+        .connect
+        .store
+        .get_oauth(forge_connect::OPENAI_CODEX_PROFILE_ID)
+        .unwrap()
+        .expect("tokens were adopted");
+    assert_eq!(stored.access_token, "at");
+    assert_eq!(stored.refresh_token.as_deref(), Some("rt"));
+    assert_eq!(
+        app.connect.profile.as_deref(),
+        Some(forge_connect::OPENAI_CODEX_PROFILE_ID)
+    );
+    assert!(
+        app.status_state.message.contains("Codex"),
+        "the user is told whose session was reused: {:?}",
+        app.status_state.message
+    );
+}
+
+#[tokio::test]
+async fn with_nothing_to_reuse_the_connect_path_is_unchanged() {
+    let (_home, _home_guard) = isolated_home_guard();
+    // An isolated home with no credential files from any other tool.
+    let (_dir, mut app) = focus_test_app().await;
+    assert!(
+        !app.try_reuse_login(forge_connect::OPENAI_CODEX_PROFILE_ID),
+        "nothing discovered means fall through to the ordinary flow"
+    );
+}
+
+#[tokio::test]
+async fn a_reused_secret_never_reaches_the_transcript() {
+    // `isolated_home_guard` already holds the env lock; taking it again here
+    // deadlocks on a non-reentrant mutex.
+    let (home, _home_guard) = isolated_home_guard();
+    codex_session(home.path());
+
+    let (_dir, mut app) = focus_test_app().await;
+    let store_dir = tempfile::tempdir().unwrap();
+    app.connect.store =
+        forge_connect::CredentialStore::new(store_dir.path().join("credentials.toml"));
+    app.try_reuse_login(forge_connect::OPENAI_CODEX_PROFILE_ID);
+
+    let rendered = render_app_text(&mut app, 120, 35);
+    for secret in ["at", "rt"] {
+        assert!(
+            !rendered.contains(&format!("access_token{secret}")),
+            "token material on screen:\n{rendered}"
+        );
+    }
+    assert!(
+        !format!("{:?}", app.activity).contains("acct-1")
+            || !format!("{:?}", app.activity).contains("rt"),
+        "activity log must not carry token material"
+    );
+}

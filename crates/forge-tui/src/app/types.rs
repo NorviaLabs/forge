@@ -619,6 +619,13 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) activity_summary: Option<(String, Option<&'static str>, BannerKind)>,
     pub(crate) tool_expanded: bool,
     pub(crate) splash_dismissed: bool,
+    /// What the home splash card renders: whether a provider is connected,
+    /// the model and vendor labels, and the skill count.
+    ///
+    /// Without these in the key, the card is built once and frozen: connect a
+    /// provider and it still reads "not connected" until some unrelated change
+    /// happens to rebuild the transcript. `None` while the splash is hidden.
+    pub(crate) home_card: Option<(bool, String, String, usize)>,
     pub(crate) slash_mode: bool,
     pub(crate) status: forge_types::TaskLifecycle,
     pub(crate) theme_id: String,
