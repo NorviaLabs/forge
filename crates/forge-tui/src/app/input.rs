@@ -493,6 +493,42 @@ impl TuiApp {
             return Ok(());
         }
 
+        if line.starts_with('!') {
+            let command = line.strip_prefix('!').unwrap_or_default();
+            if command.is_empty() {
+                self.open_bottom_panel();
+                if self.interactive_terminal.is_none() {
+                    self.input.set_text(line);
+                } else {
+                    self.record_submitted_line(&line).await;
+                }
+                return Ok(());
+            }
+            self.open_bottom_panel();
+            let Some(terminal) = self.interactive_terminal.as_mut() else {
+                self.input.set_text(line);
+                return Ok(());
+            };
+            match terminal.start_command(command) {
+                Ok(()) => {
+                    self.record_submitted_line(&line).await;
+                    self.slash_suggestions.selected = 0;
+                    self.notice_state.items.clear();
+                    self.input.history_browse = false;
+                }
+                Err(error) => {
+                    self.input.set_text(line);
+                    let severity = if error.kind() == std::io::ErrorKind::WouldBlock {
+                        FeedbackSeverity::Warn
+                    } else {
+                        FeedbackSeverity::Error
+                    };
+                    self.set_feedback(severity, format!("terminal command failed: {error}"));
+                }
+            }
+            return Ok(());
+        }
+
         let route =
             input_route::classify_input(&self.session.active_task, self.overlay.is_some(), &line);
         let consumed = !matches!(route, input_route::InputRoute::RejectStaleResponse);
@@ -1538,5 +1574,64 @@ mod tests {
 
         assert_eq!(app.input.text, "z");
         assert_eq!(app.focus.block(), FocusBlock::Composer);
+    }
+
+    #[tokio::test]
+    async fn bang_submission_opens_terminal_and_records_history() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.input.set_text("!printf bang");
+
+        app.submit_composer_message().await.unwrap();
+
+        assert!(
+            app.interactive_terminal.is_some(),
+            "{}",
+            app.status_state.message
+        );
+        assert!(app.bottom_panel.open);
+        assert_eq!(app.input.text, "");
+        assert_eq!(app.history.entries(), &["!printf bang".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn bang_submission_rejects_a_busy_embedded_terminal() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.input.set_text("!sleep 1");
+        app.submit_composer_message().await.unwrap();
+
+        app.input.set_text("!printf later");
+        app.submit_composer_message().await.unwrap();
+
+        assert_eq!(app.input.text, "!printf later");
+        assert!(app.status_state.message.contains("terminal command failed"));
+        assert_eq!(app.history.entries(), &["!sleep 1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn lone_bang_opens_terminal_without_running_a_command() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.input.set_text("!");
+
+        app.submit_composer_message().await.unwrap();
+
+        assert!(app.bottom_panel.open);
+        assert!(app.interactive_terminal.is_some());
+        assert_eq!(app.input.text, "");
+        assert_eq!(app.history.entries(), &["!".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn whitespace_before_bang_remains_a_chat_message() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.input.set_text(" !printf hi");
+
+        app.submit_composer_message().await.unwrap();
+
+        assert!(app.interactive_terminal.is_none());
+        assert_eq!(app.history.entries(), &["!printf hi".to_string()]);
     }
 }
