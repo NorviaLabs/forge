@@ -15,6 +15,19 @@ const MAX_OUTPUT_CHUNKS_PER_POLL: usize = 64;
 /// want the shell to execute.
 const LINE_KILL: u8 = 0x15;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommandCompletion {
+    pub(crate) command: String,
+    pub(crate) exit_code: Option<i32>,
+}
+
+#[derive(Debug)]
+struct PendingTerminalCommand {
+    command: String,
+    marker: String,
+    output: Vec<u8>,
+}
+
 pub(crate) struct InteractiveTerminal {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -25,12 +38,15 @@ pub(crate) struct InteractiveTerminal {
     size: (u16, u16),
     pub(crate) running: bool,
     pub(crate) shell: String,
-    pending_command: String,
+    input_line: String,
+    pending_command: Option<PendingTerminalCommand>,
+    command_completion: Option<CommandCompletion>,
+    command_sequence: u64,
 }
 
 impl InteractiveTerminal {
     pub(crate) fn spawn(cwd: &Path, cols: u16, rows: u16) -> io::Result<Self> {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
+        let shell = default_shell();
         let pty = native_pty_system()
             .openpty(PtySize {
                 rows: rows.max(2),
@@ -40,7 +56,7 @@ impl InteractiveTerminal {
             })
             .map_err(other)?;
         let mut command = CommandBuilder::new(&shell);
-        for argument in INTERACTIVE_SHELL_ARGS {
+        for argument in shell_args(&shell) {
             command.arg(*argument);
         }
         command.cwd(cwd);
@@ -74,7 +90,10 @@ impl InteractiveTerminal {
             size: (cols.max(20), rows.max(2)),
             running: true,
             shell,
-            pending_command: String::new(),
+            input_line: String::new(),
+            pending_command: None,
+            command_completion: None,
+            command_sequence: 0,
         })
     }
 
@@ -89,7 +108,7 @@ impl InteractiveTerminal {
             let Ok(bytes) = self.output_rx.try_recv() else {
                 break;
             };
-            self.screen.process(&bytes);
+            self.process_output(&bytes);
             changed = true;
         }
         if changed {
@@ -101,6 +120,12 @@ impl InteractiveTerminal {
         };
         if !child_running && self.running {
             self.running = false;
+            if let Some(command) = self.pending_command.take() {
+                self.command_completion = Some(CommandCompletion {
+                    command: command.command,
+                    exit_code: None,
+                });
+            }
             changed = true;
         }
         changed
@@ -114,11 +139,95 @@ impl InteractiveTerminal {
     /// Forward typed or pasted input, but treat a submitted `exit` as a request
     /// to close the panel instead of killing the login shell.
     pub(crate) fn consume_input(&mut self, bytes: &[u8]) -> io::Result<bool> {
-        let (forward, close) = feed_pending_command(&mut self.pending_command, bytes);
+        if self.pending_command.is_some() {
+            self.write(bytes)?;
+            return Ok(false);
+        }
+        let Some(newline) = bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n')) else {
+            let (forward, close) = feed_pending_command(&mut self.input_line, bytes);
+            if !forward.is_empty() {
+                self.write(&forward)?;
+            }
+            return Ok(close);
+        };
+
+        let (forward, close) = feed_pending_command(&mut self.input_line, &bytes[..newline]);
         if !forward.is_empty() {
             self.write(&forward)?;
         }
-        Ok(close)
+        if close {
+            let (forward, close) = feed_pending_command(
+                &mut self.input_line,
+                &bytes[newline..newline.saturating_add(1)],
+            );
+            if !forward.is_empty() {
+                self.write(&forward)?;
+            }
+            return Ok(close);
+        }
+
+        let line = std::mem::take(&mut self.input_line);
+        if line.trim().is_empty() {
+            self.write(&bytes[newline..newline.saturating_add(1)])?;
+            return Ok(false);
+        }
+        if is_panel_close_command(&line) {
+            self.write(&[LINE_KILL])?;
+            return Ok(true);
+        }
+        self.track_submitted_command(&line)?;
+        if newline + 1 < bytes.len() {
+            self.write(&bytes[newline + 1..])?;
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn start_command(&mut self, command: &str) -> io::Result<()> {
+        if !self.running {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "embedded terminal shell has exited",
+            ));
+        }
+        if self.pending_command.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "embedded terminal is busy",
+            ));
+        }
+        self.command_sequence = self.command_sequence.wrapping_add(1);
+        let marker = format!("__FORGE_STATUS_{}__", self.command_sequence);
+        let script = command_script(&self.shell, command, &marker);
+        self.write(script.as_bytes())?;
+        self.pending_command = Some(PendingTerminalCommand {
+            command: command.to_owned(),
+            marker,
+            output: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn track_submitted_command(&mut self, command: &str) -> io::Result<()> {
+        if self.pending_command.is_some() {
+            return Ok(());
+        }
+        self.command_sequence = self.command_sequence.wrapping_add(1);
+        let marker = format!("__FORGE_STATUS_{}__", self.command_sequence);
+        let separator = command_separator(&self.shell);
+        let mut suffix =
+            format!("{separator}{}\r", command_suffix(&self.shell, &marker)).into_bytes();
+        suffix.push(b'\r');
+        self.write(&suffix)?;
+        self.pending_command = Some(PendingTerminalCommand {
+            command: command.to_owned(),
+            marker,
+            output: Vec::new(),
+        });
+        Ok(())
+    }
+
+    pub(crate) fn take_command_completion(&mut self) -> Option<CommandCompletion> {
+        self.command_completion.take()
     }
 
     pub(crate) fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
@@ -149,6 +258,48 @@ impl InteractiveTerminal {
         let (row, column) = self.screen.screen().cursor_position();
         (column, row)
     }
+
+    fn process_output(&mut self, bytes: &[u8]) {
+        let Some(pending) = self.pending_command.as_mut() else {
+            self.screen.process(bytes);
+            return;
+        };
+        pending.output.extend_from_slice(bytes);
+        if let Some((start, end, exit_code)) = find_completion(&pending.output, &pending.marker) {
+            let mut visible = Vec::with_capacity(pending.output.len() - (end - start));
+            visible.extend_from_slice(&pending.output[..start]);
+            visible.extend_from_slice(&pending.output[end..]);
+            let command = pending.command.clone();
+            self.screen.process(&visible);
+            self.pending_command = None;
+            self.command_completion = Some(CommandCompletion { command, exit_code });
+            return;
+        }
+        let keep = pending.marker.len().saturating_add(16);
+        if pending.output.len() > keep {
+            let split_at = pending.output.len() - keep;
+            let visible = pending.output.drain(..split_at).collect::<Vec<_>>();
+            self.screen.process(&visible);
+        }
+    }
+}
+
+fn shell_args(shell: &str) -> &'static [&'static str] {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    if shell_name == "cmd.exe" || shell_name == "cmd" {
+        &["/Q"]
+    } else if matches!(
+        shell_name.as_str(),
+        "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh"
+    ) {
+        &["-NoLogo", "-NoExit"]
+    } else {
+        INTERACTIVE_SHELL_ARGS
+    }
 }
 
 impl Drop for InteractiveTerminal {
@@ -157,8 +308,93 @@ impl Drop for InteractiveTerminal {
     }
 }
 
+fn command_script(shell: &str, command: &str, marker: &str) -> String {
+    format!(
+        "{command}{}{suffix}\n",
+        command_separator(shell),
+        suffix = command_suffix(shell, marker)
+    )
+}
+
+fn command_separator(shell: &str) -> &'static str {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    if shell_name == "cmd.exe" || shell_name == "cmd" {
+        " & "
+    } else if matches!(
+        shell_name.as_str(),
+        "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh"
+    ) {
+        "; $__forge_success = $?; $__forge_exit = $LASTEXITCODE; "
+    } else {
+        "; "
+    }
+}
+
+fn command_suffix(shell: &str, marker: &str) -> String {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    if shell_name == "cmd.exe" || shell_name == "cmd" {
+        return format!("call echo {marker}%%ERRORLEVEL%%\r\n");
+    }
+    if shell_name == "powershell.exe"
+        || shell_name == "powershell"
+        || shell_name == "pwsh.exe"
+        || shell_name == "pwsh"
+    {
+        return format!(
+            "$__forge_status = if ($__forge_success) {{ 0 }} else {{ if ($__forge_exit -ne $null) {{ $__forge_exit }} else {{ 1 }} }}\nWrite-Output \"{marker}$__forge_status\"\n"
+        );
+    }
+    format!("__forge_status=$?\nprintf '\\n{marker}%s\\n' \"$__forge_status\"\n")
+}
+
+fn find_completion(output: &[u8], marker: &str) -> Option<(usize, usize, Option<i32>)> {
+    let marker = marker.as_bytes();
+    let mut offset = 0;
+    while let Some(relative) = output[offset..]
+        .windows(marker.len())
+        .position(|window| window == marker)
+    {
+        let start = offset + relative;
+        let mut cursor = start + marker.len();
+        let digits_start = cursor;
+        while output.get(cursor).is_some_and(u8::is_ascii_digit) {
+            cursor += 1;
+        }
+        if cursor > digits_start && matches!(output.get(cursor), Some(b'\n') | Some(b'\r')) {
+            let digits_end = cursor;
+            if output.get(cursor) == Some(&b'\r') && output.get(cursor + 1) == Some(&b'\n') {
+                cursor += 2;
+            } else {
+                cursor += 1;
+            }
+            let code = std::str::from_utf8(&output[digits_start..digits_end])
+                .ok()
+                .and_then(|value| value.parse().ok());
+            return Some((start, cursor, code));
+        }
+        offset = start + marker.len();
+    }
+    None
+}
+
 fn other(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
+}
+
+fn default_shell() -> String {
+    if cfg!(windows) {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "sh".into())
+    }
 }
 
 fn is_panel_close_command(line: &str) -> bool {
@@ -233,6 +469,7 @@ fn feed_pending_command(line: &mut String, bytes: &[u8]) -> (Vec<u8>, bool) {
             }
         }
     }
+
     (forward, false)
 }
 
@@ -337,5 +574,71 @@ mod tests {
             "shell did not render expected output: {:?}",
             terminal.display_output()
         );
+    }
+
+    #[test]
+    fn bang_command_reports_exit_status_and_keeps_output() {
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
+        terminal
+            .start_command("printf 'bang-output\\n'; false")
+            .unwrap();
+        for _ in 0..100 {
+            terminal.poll();
+            if let Some(completion) = terminal.take_command_completion() {
+                assert_eq!(completion.command, "printf 'bang-output\\n'; false");
+                assert_eq!(completion.exit_code, Some(1));
+                assert!(terminal.display_output().contains("bang-output"));
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("command did not complete: {:?}", terminal.display_output());
+    }
+
+    #[test]
+    fn typed_command_reports_status_without_feeding_marker_to_process() {
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
+        terminal.consume_input(b"printf 'typed-output\\n'").unwrap();
+        terminal.consume_input(b"\r").unwrap();
+        for _ in 0..100 {
+            terminal.poll();
+            if let Some(completion) = terminal.take_command_completion() {
+                assert_eq!(completion.command, "printf 'typed-output\\n'");
+                assert_eq!(completion.exit_code, Some(0));
+                assert!(terminal.display_output().contains("typed-output"));
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "typed command did not complete: {:?}",
+            terminal.display_output()
+        );
+    }
+
+    #[test]
+    fn command_scripts_preserve_shell_specific_syntax() {
+        assert_eq!(
+            super::command_script("/bin/sh", "printf hi", "__FORGE_STATUS_1__"),
+            "printf hi; __forge_status=$?\nprintf '\\n__FORGE_STATUS_1__%s\\n' \"$__forge_status\"\n\n"
+        );
+        assert!(
+            super::command_script("powershell.exe", "Write-Output hi", "m")
+                .contains("Write-Output \"m$__forge_status\"")
+        );
+        assert!(
+            super::command_script("cmd.exe", "echo hi", "m").contains("call echo m%%ERRORLEVEL%%")
+        );
+    }
+
+    #[test]
+    fn completion_marker_requires_digits_and_handles_crlf() {
+        let output = b"echo __FORGE_STATUS_1__%s\r\n__FORGE_STATUS_1__7\r\n";
+        let (start, end, code) = super::find_completion(output, "__FORGE_STATUS_1__").unwrap();
+        assert_eq!(code, Some(7));
+        assert_eq!(&output[start..end], b"__FORGE_STATUS_1__7\r\n");
+        assert!(super::find_completion(b"__FORGE_STATUS_1__%s\n", "__FORGE_STATUS_1__").is_none());
     }
 }
