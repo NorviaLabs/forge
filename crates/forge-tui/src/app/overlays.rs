@@ -90,6 +90,7 @@ impl TuiApp {
             }
             FocusBlock::Composer => {
                 text.push_str("• Enter  Send\n");
+                text.push_str("• !command  Run in the embedded terminal\n");
                 text.push_str("• ⇧Enter  Newline\n");
                 text.push_str("• Tab  Next block (Footer, then Bottom Panel)\n");
                 text.push_str("• Esc  Return to previous block\n");
