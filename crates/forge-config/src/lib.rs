@@ -209,6 +209,16 @@ pub struct McpServerConfig {
     /// default is `exec`; callers must opt into a narrower class explicitly.
     #[serde(default = "default_mcp_side_effect_class")]
     pub side_effect_class: SideEffectClass,
+    /// If set, only these tool names (as the server itself names them, not
+    /// namespaced) are registered — every other tool the server advertises
+    /// is dropped before it ever reaches the model's tool list. `None`
+    /// registers everything, matching pre-existing behavior.
+    #[serde(default)]
+    pub enabled_tools: Option<Vec<String>>,
+    /// Tool names to drop even when `enabled_tools` would otherwise admit
+    /// them (or when it's unset and every tool is admitted by default).
+    #[serde(default)]
+    pub disabled_tools: Option<Vec<String>>,
 }
 
 fn default_mcp_side_effect_class() -> SideEffectClass {
@@ -227,6 +237,8 @@ impl Default for McpServerConfig {
             command: String::new(),
             args: Vec::new(),
             side_effect_class: default_mcp_side_effect_class(),
+            enabled_tools: None,
+            disabled_tools: None,
         }
     }
 }
@@ -1321,6 +1333,46 @@ max_query_chars = 200
         assert!(!ws.require_key);
         assert_eq!(ws.max_query_chars, 200);
         assert_eq!(ws.resolved_api_key_env().as_deref(), Some("MY_TAVILY"));
+    }
+
+    #[test]
+    fn mcp_server_toml_reads_enabled_and_disabled_tools() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        fs::write(
+            &path,
+            r#"
+[[mcp.servers]]
+id = "github"
+command = "github-mcp-server"
+enabled_tools = ["get_file_contents", "list_issues"]
+
+[[mcp.servers]]
+id = "slack"
+command = "slack-mcp-server"
+disabled_tools = ["send_message"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.mcp.servers.len(), 2);
+        let github = &cfg.mcp.servers[0];
+        assert_eq!(
+            github.enabled_tools.as_deref(),
+            Some(["get_file_contents".to_string(), "list_issues".to_string()].as_slice())
+        );
+        assert_eq!(github.disabled_tools, None);
+        let slack = &cfg.mcp.servers[1];
+        assert_eq!(slack.enabled_tools, None);
+        assert_eq!(
+            slack.disabled_tools.as_deref(),
+            Some(["send_message".to_string()].as_slice())
+        );
     }
 
     #[test]

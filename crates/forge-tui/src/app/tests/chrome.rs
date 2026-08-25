@@ -773,6 +773,51 @@ async fn tui09_status_renders_structured_session_card() {
 }
 
 #[tokio::test]
+async fn context_command_renders_the_token_breakdown_by_category() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.10.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    for c in "/context".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    let (title, rows) = match app.overlay.as_ref() {
+        Some(Overlay::StatusReport { title, rows }) => (title, rows),
+        other => panic!("expected context overlay, got {other:?}"),
+    };
+    assert_eq!(title, "Context");
+    let labelled = |want: &str| {
+        rows.iter().any(
+            |row| matches!(row, crate::overlays::StatusRow::Field { label, .. } if label == want),
+        )
+    };
+    // Categories `/status`'s own "Used: X / Y tokens" line doesn't break
+    // out — that's the entire reason `/context` exists as its own command.
+    assert!(labelled("System prompt"), "{rows:?}");
+    assert!(labelled("Tool schemas"), "{rows:?}");
+    assert!(labelled("User messages"), "{rows:?}");
+    assert!(labelled("Assistant replies"), "{rows:?}");
+    assert!(labelled("Tool results"), "{rows:?}");
+    assert!(labelled("Total used"), "{rows:?}");
+}
+
+#[tokio::test]
 async fn tui08_report_error_writes_banner_feedback_and_activity() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -988,6 +1033,7 @@ fn exit_summary_formats_token_usage() {
         assistant_tokens_est: 0,
         tool_tokens_est: 0,
         thinking_in_context_est: 0,
+        tool_schema_tokens_est: 0,
         message_count: 0,
         tool_message_count: 0,
     };
@@ -1018,6 +1064,7 @@ fn footer_usage_formats_with_total_and_commas() {
         assistant_tokens_est: 0,
         tool_tokens_est: 0,
         thinking_in_context_est: 0,
+        tool_schema_tokens_est: 0,
         message_count: 0,
         tool_message_count: 0,
     };
@@ -1048,6 +1095,7 @@ fn footer_usage_includes_cached_cost() {
         assistant_tokens_est: 0,
         tool_tokens_est: 0,
         thinking_in_context_est: 0,
+        tool_schema_tokens_est: 0,
         message_count: 0,
         tool_message_count: 0,
     };

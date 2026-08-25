@@ -75,15 +75,61 @@ impl AgentSession {
         }
     }
 
-    /// Tool list the model sees. Cached on the registry; filtered only when
-    /// governance actually changes the set. `view_image` stays listed even
-    /// when the active model has no image input — execution denies the call.
-    fn tools_for_model(&self) -> Vec<forge_types::ToolDescriptor> {
+    /// Tool list the model sees. Cached on the registry; filtered when
+    /// governance changes the set and again when MCP tool schemas outgrow
+    /// their budget. `view_image` stays listed even when the active model
+    /// has no image input — execution denies the call.
+    pub(crate) fn tools_for_model(&self) -> Vec<forge_types::ToolDescriptor> {
         let descriptors = self.tools.list_descriptors();
-        if !self.enable_gov {
-            return (*descriptors).clone();
+        let visible = if self.enable_gov {
+            self.governance.filter_tools((*descriptors).clone())
+        } else {
+            (*descriptors).clone()
+        };
+        self.defer_mcp_tool_schemas(visible)
+    }
+
+    /// Batteries-included token optimization, no configuration required:
+    /// once the MCP tools in `visible` would cost more than
+    /// `CompactionPolicy::tool_schema_budget` tokens on every single
+    /// request, stop sending the full schema for every MCP tool the model
+    /// hasn't used yet. `search_tools` (registered by `forge-mcp` — see
+    /// `install_search_tools` — whenever any MCP tool exists) is the
+    /// model's way to find one by name; once found, its first call either
+    /// succeeds or fails with a schema-validation error that tells it the
+    /// right shape, and from then on `called` below keeps its full schema
+    /// declared, because a provider requires every tool named in the
+    /// transcript's tool calls to stay declared in `tools`.
+    ///
+    /// Below budget, `search_tools` itself is hidden: with nothing deferred,
+    /// it has nothing to find.
+    fn defer_mcp_tool_schemas(
+        &self,
+        visible: Vec<forge_types::ToolDescriptor>,
+    ) -> Vec<forge_types::ToolDescriptor> {
+        let mcp_tokens: usize = visible
+            .iter()
+            .filter(|t| t.name.starts_with(forge_types::MCP_TOOL_NAME_PREFIX))
+            .map(descriptor_tokens)
+            .sum();
+        if mcp_tokens <= self.compaction_policy.tool_schema_budget() {
+            return visible
+                .into_iter()
+                .filter(|t| t.name != forge_types::SEARCH_TOOLS_TOOL_NAME)
+                .collect();
         }
-        self.governance.filter_tools((*descriptors).clone())
+        let called: std::collections::HashSet<&str> = self
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().map(|c| c.name.as_str()))
+            .collect();
+        visible
+            .into_iter()
+            .filter(|t| {
+                !t.name.starts_with(forge_types::MCP_TOOL_NAME_PREFIX)
+                    || called.contains(t.name.as_str())
+            })
+            .collect()
     }
 
     /// Apply a model response: journal, assistant message, then run tools.

@@ -67,6 +67,16 @@ impl AgentSession {
         self.context_tokens_estimate() as f64 / self.context.config.capacity_tokens.max(1) as f64
     }
 
+    /// Estimated tokens the tool schemas actually sent to the model would
+    /// cost — exactly `tools_for_model`'s output, after governance filtering
+    /// and tool-search deferral, so this reflects the deferral's savings
+    /// rather than the pre-deferral set. This lives outside `self.messages`,
+    /// so nothing else in this report accounts for it, even though it's
+    /// resent on every single completion.
+    fn tool_schema_tokens_estimate(&self) -> usize {
+        self.tools_for_model().iter().map(descriptor_tokens).sum()
+    }
+
     /// Estimated in-context tokens for `self.messages`, memoized across frames.
     ///
     /// Agent turns normally append immutable messages. For that hot path, the
@@ -151,6 +161,7 @@ impl AgentSession {
             assistant_tokens_est,
             tool_tokens_est,
             thinking_in_context_est,
+            tool_schema_tokens_est: self.tool_schema_tokens_estimate(),
             message_count: self.messages.len(),
             tool_message_count,
         }
@@ -178,6 +189,7 @@ impl AgentSession {
                 r.context_tokens_est, r.context_capacity, r.context_pct
             ),
             format!("  system:    {}", r.system_tokens_est),
+            format!("  tool schemas: {}", r.tool_schema_tokens_est),
             format!("  user:      {}", r.user_tokens_est),
             format!("  assistant: {}", r.assistant_tokens_est),
             format!(
