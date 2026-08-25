@@ -75,28 +75,7 @@ impl TuiApp {
     pub(super) fn poll_interactive_terminal(&mut self) -> bool {
         if let Some(terminal) = self.interactive_terminal.as_mut() {
             let changed = terminal.poll();
-            if let Some(completion) = terminal.take_command_completion() {
-                let status = completion
-                    .exit_code
-                    .map_or_else(|| "unknown".to_owned(), |code| code.to_string());
-                let kind = if completion.exit_code == Some(0) {
-                    BannerKind::Ok
-                } else {
-                    BannerKind::Warn
-                };
-                self.banner_state.items.push(ChatItem::Banner {
-                    text: format!("!{} · exit {}", completion.command, status),
-                    kind,
-                });
-                self.push_activity(
-                    ActivityKind::System,
-                    if completion.exit_code == Some(0) {
-                        FeedbackSeverity::Ok
-                    } else {
-                        FeedbackSeverity::Warn
-                    },
-                    format!("!{} · exit {}", completion.command, status),
-                );
+            if terminal.take_command_completion().is_some() {
                 return true;
             }
             changed
