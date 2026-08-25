@@ -581,16 +581,10 @@ impl TuiApp {
             );
         }
         if self.selection.active
-            && matches!(
-                self.selection.pane,
-                Some(
-                    crate::selection::CopyPane::Conversation | crate::selection::CopyPane::Terminal
-                )
-            )
+            && self.selection.pane == Some(crate::selection::CopyPane::Conversation)
         {
             let area = match self.selection.pane {
                 Some(crate::selection::CopyPane::Conversation) => self.conversation_area,
-                Some(crate::selection::CopyPane::Terminal) => self.terminal_area,
                 _ => None,
             };
             if let Some(area) = area {
@@ -603,6 +597,21 @@ impl TuiApp {
             .as_ref()
             .map(|terminal| terminal.display_output());
         let interactive_terminal = self.interactive_terminal.as_ref();
+        if regions.bottom_panel.height > 1 && self.bottom_panel.open {
+            let terminal_area = ratatui::layout::Rect {
+                x: regions.bottom_panel.x,
+                y: regions.bottom_panel.y.saturating_add(1),
+                width: regions.bottom_panel.width,
+                height: regions.bottom_panel.height.saturating_sub(1),
+            };
+            self.terminal_area = Some(terminal_area);
+            self.terminal_rows = terminal_copy_rows(
+                interactive_terminal_output.unwrap_or(""),
+                terminal_area.height,
+                interactive_terminal.is_some_and(|terminal| terminal.running),
+                interactive_terminal.map(|terminal| terminal.shell.as_str()),
+            );
+        }
         frame.render_widget(
             BottomPanel {
                 model: BottomPanelModel {
@@ -618,17 +627,12 @@ impl TuiApp {
             },
             regions.bottom_panel,
         );
-        if regions.bottom_panel.height > 1 && self.bottom_panel.open {
-            self.terminal_area = Some(ratatui::layout::Rect {
-                x: regions.bottom_panel.x,
-                y: regions.bottom_panel.y.saturating_add(1),
-                width: regions.bottom_panel.width,
-                height: regions.bottom_panel.height.saturating_sub(1),
-            });
-            self.terminal_rows = terminal_copy_rows(
-                interactive_terminal_output.unwrap_or(""),
-                self.terminal_area.unwrap().height,
-            );
+        if self.selection.active
+            && self.selection.pane == Some(crate::selection::CopyPane::Terminal)
+        {
+            if let Some(area) = self.terminal_area {
+                paint_rows_selection(frame.buffer_mut(), &self.selection, area);
+            }
         }
 
         // Inline slash autocomplete above the input bar — full list with scroll window
@@ -956,8 +960,31 @@ fn visible_conversation_copy_rows(
         .collect()
 }
 
-fn terminal_copy_rows(content: &str, height: u16) -> Vec<String> {
-    let mut rows: Vec<String> = content.lines().map(str::to_string).collect();
+fn terminal_copy_rows(
+    content: &str,
+    height: u16,
+    running: bool,
+    shell: Option<&str>,
+) -> Vec<String> {
+    let mut rows = vec![format!(
+        "Interactive shell{}",
+        if running { " · running" } else { " · exited" }
+    )];
+    if let Some(shell) = shell {
+        rows.push(format!("$ {shell} -il"));
+    }
+    if !content.is_empty() {
+        rows.extend(
+            content
+                .lines()
+                .rev()
+                .take(20)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(str::to_string),
+        );
+    }
     let visible = height as usize;
     if rows.len() > visible {
         rows = rows.split_off(rows.len() - visible);
@@ -1191,6 +1218,24 @@ mod tests {
         for x in 4..10 {
             assert!(!reversed(x, 2), "col {x} row 2 should not be selected");
         }
+    }
+
+    #[test]
+    fn terminal_copy_rows_matches_panel_headers_and_scroll() {
+        assert_eq!(
+            super::terminal_copy_rows("first\nsecond", 5, true, Some("sh")),
+            vec![
+                "".to_string(),
+                "Interactive shell · running".to_string(),
+                "$ sh -il".to_string(),
+                "first".to_string(),
+                "second".to_string(),
+            ]
+        );
+        assert_eq!(
+            super::terminal_copy_rows("one\ntwo\nthree", 3, false, None),
+            vec!["one".to_string(), "two".to_string(), "three".to_string()]
+        );
     }
 
     #[test]
