@@ -27,7 +27,7 @@ Key crates:
 - Keep changes focused; avoid unrelated refactors, dependency updates, or formatting churn.
 - Prefer small root-cause fixes over call-site patches.
 - Match existing Rust style and crate-local patterns.
-- For any TUI, visual, navigation-hint, focus-presentation, or design-system change, read `docs/forge-design-kit/FORGE-DESIGN.md` first and follow its visual language, focus invariants, palette, terminology, and displayed-binding rules.
+- For any TUI, visual, navigation-hint, focus-presentation, or design-system change, read `FORGE-DESIGN.md` first and follow its visual language, focus invariants, palette, terminology, and displayed-binding rules.
 - Always run relevant tests for the code you change before handoff.
 - Add or update tests for behavior changes, and implement new test cases when changes are significant.
 - Update docs when commands, configuration, provider behavior, architecture, or safety behavior changes.
