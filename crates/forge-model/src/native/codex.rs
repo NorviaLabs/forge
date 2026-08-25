@@ -753,11 +753,14 @@ mod tests {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
         );
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             sse,
             vec![("content-type", "text/event-stream")],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let mut config = Config::default();
         config.model.base_url = Some(base);
         let client = NativeModelClient::from_config(&config).unwrap();
@@ -784,7 +787,10 @@ mod tests {
         use crate::ModelClient;
         use forge_test_support::mock_http;
 
-        let base = mock_http(vec![(401, "unauthorized", vec![])]);
+        let Some(base) = mock_http(vec![(401, "unauthorized", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let mut config = Config::default();
         config.model.base_url = Some(base);
         let client = NativeModelClient::from_config(&config).unwrap();

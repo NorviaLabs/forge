@@ -68,8 +68,15 @@ pub type MockResponse = (u16, &'static str, Vec<(&'static str, &'static str)>);
 /// the client-side HTTP call failing (connection reset / timeout inside the
 /// client's own error handling), not as the whole test process hanging on a
 /// dead thread.
-pub fn mock_http(responses: Vec<MockResponse>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
+pub fn mock_http(responses: Vec<MockResponse>) -> Option<String> {
+    let listener = match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return None;
+        }
+        Err(e) => panic!("bind mock listener: {e}"),
+    };
     let addr = listener.local_addr().expect("mock listener local_addr");
     thread::spawn(move || {
         for (status, body, headers) in responses {
@@ -94,7 +101,7 @@ pub fn mock_http(responses: Vec<MockResponse>) -> String {
             let _ = stream.write_all(response.as_bytes());
         }
     });
-    format!("http://{addr}")
+    Some(format!("http://{addr}"))
 }
 
 /// Read a full HTTP request (headers plus, if present, a `Content-Length`
@@ -154,10 +161,13 @@ mod tests {
 
     #[test]
     fn serves_scripted_responses_in_order() {
-        let base = mock_http(vec![
+        let Some(base) = mock_http(vec![
             (200, "first", vec![]),
             (404, "second", vec![("x-custom", "yes")]),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let mut first = ureq::get(&base).call().unwrap();
         assert_eq!(first.status(), 200);
         assert_eq!(first.body_mut().read_to_string().unwrap(), "first");
@@ -183,7 +193,10 @@ mod tests {
 
     #[test]
     fn reads_a_request_body_larger_than_the_old_fixed_buffer() {
-        let base = mock_http(vec![(200, "ok", vec![])]);
+        let Some(base) = mock_http(vec![(200, "ok", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let big_body = "x".repeat(8_000);
         let response = ureq::post(&base).send(&big_body).unwrap();
         assert_eq!(response.status(), 200);

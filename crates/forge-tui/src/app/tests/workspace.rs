@@ -235,6 +235,7 @@ async fn files_explicit_close_remains_closed_after_resizing() {
 
 #[tokio::test]
 async fn files_visibility_persists_per_repository() {
+    let (_fake_home, _home_guard) = fake_home_guard();
     let (dir, mut app) = focus_test_app().await;
     // Ctrl+E closes only from the explorer; from anywhere else it means "take
     // me to Files". Focus there first so this exercises an explicit close.

@@ -282,14 +282,20 @@ mod tests {
 
     #[test]
     fn post_json_and_form_return_status_and_body_for_success_and_error_status() {
-        let base = mock_http(vec![(200, r#"{"ok":true}"#, vec![])]);
+        let Some(base) = mock_http(vec![(200, r#"{"ok":true}"#, vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let (status, body) =
             OpenAiCodexOauthClient::post_json(&base, serde_json::json!({"client_id": CLIENT_ID}))
                 .unwrap();
         assert_eq!(status, 200);
         assert!(body.contains("ok"));
 
-        let base = mock_http(vec![(400, "bad request", vec![])]);
+        let Some(base) = mock_http(vec![(400, "bad request", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let (status, body) = OpenAiCodexOauthClient::post_form(&base, &[("a", "b")]).unwrap();
         assert_eq!(status, 400);
         assert_eq!(body, "bad request");
@@ -385,11 +391,14 @@ mod tests {
 
     #[test]
     fn start_device_code_success() {
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"device_auth_id":"device-1","user_code":"AB12-CD34","interval":3}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = client.start_device_code().unwrap();
         assert_eq!(pending.profile_id, "openai_codex");
@@ -404,7 +413,7 @@ mod tests {
 
     #[test]
     fn poll_token_once_success_exchanges_authorization_code() {
-        let base = mock_http(vec![
+        let Some(base) = mock_http(vec![
             (
                 200,
                 r#"{"authorization_code":"auth-code","code_verifier":"verifier"}"#,
@@ -415,7 +424,10 @@ mod tests {
                 r#"{"access_token":"access","refresh_token":"refresh","expires_in":3600}"#,
                 vec![],
             ),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = pending_for(&client);
         let tokens = client.poll_token_once(&pending).unwrap();
@@ -436,7 +448,10 @@ mod tests {
             ),
             (500, "upstream", "device authorization failed"),
         ] {
-            let base = mock_http(vec![(status, body, vec![])]);
+            let Some(base) = mock_http(vec![(status, body, vec![])]) else {
+                eprintln!("skipping: this host denies binding a listener");
+                return;
+            };
             let client = mock_client(base);
             let err = client.poll_token_once(&pending_for(&client)).unwrap_err();
             assert!(
@@ -448,17 +463,23 @@ mod tests {
 
     #[test]
     fn refresh_success_and_error_paths() {
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":120}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let tokens = client.refresh("old-refresh").unwrap();
         assert_eq!(tokens.access_token, "new-access");
         assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
 
-        let base = mock_http(vec![(503, "maintenance", vec![])]);
+        let Some(base) = mock_http(vec![(503, "maintenance", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let err = client.refresh("old-refresh").unwrap_err();
         assert!(matches!(err, OpenAiCodexOauthError::Token(msg) if msg.contains("HTTP 503")));

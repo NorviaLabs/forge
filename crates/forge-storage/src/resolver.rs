@@ -527,8 +527,25 @@ mod tests {
         assert_eq!(storage.tracked_migration_conflicts().len(), 1);
     }
 
+    /// Whether the platform application-data directory is writable. Tests
+    /// that exercise the ApplicationData fallback cannot run on hosts where
+    /// it is not.
+    fn application_data_writable() -> bool {
+        let Some(base) = dirs::data_dir() else {
+            return false;
+        };
+        let probe = base.join("forge-storage-write-probe");
+        let ok = std::fs::create_dir_all(&probe).is_ok();
+        let _ = std::fs::remove_dir(&probe);
+        ok
+    }
+
     #[test]
     fn uses_application_data_fallback_for_a_non_git_directory() {
+        if !application_data_writable() {
+            eprintln!("skipping: this host denies writing the application-data directory");
+            return;
+        }
         let dir = TempDir::new().unwrap();
         let storage = LocalRuntimeStorage::new(dir.path());
         let root = storage.root().unwrap();
@@ -540,6 +557,10 @@ mod tests {
 
     #[test]
     fn uses_application_data_fallback_for_a_bare_repository() {
+        if !application_data_writable() {
+            eprintln!("skipping: this host denies writing the application-data directory");
+            return;
+        }
         let dir = TempDir::new().unwrap();
         run(dir.path(), &["init", "--bare", "-q"]);
         let storage = LocalRuntimeStorage::new(dir.path());

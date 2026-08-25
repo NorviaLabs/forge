@@ -131,7 +131,7 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
 mod tests {
     use super::*;
 
-    fn mock_server(statuses: Vec<u16>) -> String {
+    fn mock_server(statuses: Vec<u16>) -> Option<String> {
         crate::test_support::serve(statuses, r#"{"ok":true}"#)
     }
 
@@ -161,30 +161,51 @@ mod tests {
 
     #[test]
     fn verify_models_endpoint_accepts_success_client_error_and_rejects_auth_or_server() {
-        assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![200])).is_ok());
-        assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![400])).is_ok());
+        let Some(base) = mock_server(vec![200]) else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        assert!(verify_api_key("sk-ant-valid-key-for-tests", &base).is_ok());
+        assert!(verify_api_key(
+            "sk-ant-valid-key-for-tests",
+            &mock_server(vec![400]).unwrap()
+        )
+        .is_ok());
 
-        let err = verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![403]))
-            .unwrap_err()
-            .to_string();
+        let err = verify_api_key(
+            "sk-ant-valid-key-for-tests",
+            &mock_server(vec![403]).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("unauthorized"), "{err}");
         assert!(!err.contains("sk-ant-valid"));
 
         // A 500 is now reported as a status failure rather than as
         // "unreachable": the server answered, so the request did reach it.
-        let err = verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![500]))
-            .unwrap_err()
-            .to_string();
+        let err = verify_api_key(
+            "sk-ant-valid-key-for-tests",
+            &mock_server(vec![500]).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("HTTP 500"), "{err}");
     }
 
     #[test]
     fn verify_falls_back_to_messages_endpoint_on_missing_models_route() {
-        assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![404, 400])).is_ok());
+        let Some(base) = mock_server(vec![404, 400]) else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        assert!(verify_api_key("sk-ant-valid-key-for-tests", &base).is_ok());
 
-        let err = verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![404, 401]))
-            .unwrap_err()
-            .to_string();
+        let err = verify_api_key(
+            "sk-ant-valid-key-for-tests",
+            &mock_server(vec![404, 401]).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("unauthorized"), "{err}");
         assert!(!err.contains("sk-ant-valid"));
     }

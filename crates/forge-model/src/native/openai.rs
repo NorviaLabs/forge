@@ -586,7 +586,11 @@ mod tests {
             "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n",
             "data: [DONE]\n\n"
         );
-        let (base_url, request_rx) = serve_once("200 OK", "text/event-stream", sse).await;
+        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
         let mut config = Config::default();
         config.model.base_url = Some(format!("{base_url}/v1"));
         config.model.api_key = Some("secret".into());
@@ -627,8 +631,12 @@ mod tests {
 
     #[tokio::test]
     async fn reports_provider_http_errors() {
-        let (base_url, _) =
-            serve_once("429 Too Many Requests", "application/json", "rate limited").await;
+        let Some((base_url, _)) =
+            serve_once("429 Too Many Requests", "application/json", "rate limited").await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
         let mut config = Config::default();
         config.model.base_url = Some(base_url);
         config.model.api_key = Some("secret".into());

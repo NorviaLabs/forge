@@ -32,6 +32,51 @@ pub(crate) fn isolate_global_skills() {
     std::env::set_var("FORGE_GLOBAL_SKILLS_DIR", dir.path());
 }
 
+/// Points the platform application-data directory (`dirs::data_dir()`, which
+/// derives from `$HOME`) at a throwaway home for one test. Holds the
+/// test-env lock until dropped, so env-sensitive tests serialize, and
+/// restores the previous `$HOME` on drop.
+///
+/// Needed by tests that exercise runtime-storage fallbacks outside a Git
+/// repository (UI state, clipboard attachments): those land in the platform
+/// application-data directory, which is not writable on every host.
+pub(crate) fn fake_home_guard() -> (TempDir, HomeGuard) {
+    let lock = lock_test_env();
+    let home = TempDir::new().unwrap();
+    let saved_home = std::env::var_os("HOME");
+    let saved_userprofile = std::env::var_os("USERPROFILE");
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("USERPROFILE", home.path());
+    (
+        home,
+        HomeGuard {
+            saved_home,
+            saved_userprofile,
+            _lock: lock,
+        },
+    )
+}
+
+/// Restores the pre-test environment when dropped.
+pub(crate) struct HomeGuard {
+    saved_home: Option<std::ffi::OsString>,
+    saved_userprofile: Option<std::ffi::OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        match &self.saved_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        match &self.saved_userprofile {
+            Some(path) => std::env::set_var("USERPROFILE", path),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+    }
+}
+
 pub(crate) fn init_repo(dir: &Path) {
     isolate_global_skills();
     for args in [
