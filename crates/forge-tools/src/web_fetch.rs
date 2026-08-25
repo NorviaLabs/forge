@@ -466,8 +466,15 @@ mod tests {
     /// Minimal single-request HTTP/1.1 server for integration-testing the
     /// tool without a real network dependency. Reads one request line +
     /// headers (discarded) then writes the given raw response bytes.
-    fn spawn_http_server(response: &'static str) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    fn spawn_http_server(response: &'static str) -> Option<String> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("skipping: this host denies binding a loopback listener");
+                return None;
+            }
+            Err(e) => panic!("loopback bind failed: {e}"),
+        };
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
@@ -487,15 +494,17 @@ mod tests {
                 let _ = stream.flush();
             }
         });
-        format!("http://{addr}/")
+        Some(format!("http://{addr}/"))
     }
 
     #[tokio::test]
     async fn fetches_and_converts_html() {
-        let url = spawn_http_server(
+        let Some(url) = spawn_http_server(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n\
              <html><body><h1>Hi</h1><p>there</p></body></html>",
-        );
+        ) else {
+            return;
+        };
         let tool = WebFetchTool::new();
         let out = fetch_and_render(&tool.client, reqwest::Url::parse(&url).unwrap()).await;
         assert!(!out.is_error, "{}", out.content);
@@ -505,9 +514,11 @@ mod tests {
 
     #[tokio::test]
     async fn non_success_status_is_reported_as_error() {
-        let url = spawn_http_server(
+        let Some(url) = spawn_http_server(
             "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nnope",
-        );
+        ) else {
+            return;
+        };
         let tool = WebFetchTool::new();
         let out = fetch_and_render(&tool.client, reqwest::Url::parse(&url).unwrap()).await;
         assert!(out.is_error);
@@ -516,9 +527,11 @@ mod tests {
 
     #[tokio::test]
     async fn binary_content_type_is_refused() {
-        let url = spawn_http_server(
+        let Some(url) = spawn_http_server(
             "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n\x00\x01\x02",
-        );
+        ) else {
+            return;
+        };
         let tool = WebFetchTool::new();
         let out = fetch_and_render(&tool.client, reqwest::Url::parse(&url).unwrap()).await;
         assert!(out.is_error);

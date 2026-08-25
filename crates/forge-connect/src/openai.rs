@@ -89,7 +89,7 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
 mod tests {
     use super::*;
 
-    fn mock_server(status: u16) -> String {
+    fn mock_server(status: u16) -> Option<String> {
         crate::test_support::serve(vec![status], r#"{"data":[]}"#)
     }
 
@@ -119,19 +119,26 @@ mod tests {
 
     #[test]
     fn verifies_success_with_trimmed_base_url() {
-        let base = mock_server(200);
+        let Some(base) = mock_server(200) else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
         assert!(verify_api_key("sk-valid-key-for-tests", &base).is_ok());
     }
 
     #[test]
     fn verify_reports_auth_and_server_statuses_without_secret() {
-        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(401))
+        let Some(base) = mock_server(401) else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let err = verify_api_key("sk-valid-key-for-tests", &base)
             .unwrap_err()
             .to_string();
         assert!(err.contains("HTTP 401"), "{err}");
         assert!(!err.contains("sk-valid"));
 
-        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(500))
+        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(500).unwrap())
             .unwrap_err()
             .to_string();
         assert!(err.contains("HTTP 500"), "{err}");

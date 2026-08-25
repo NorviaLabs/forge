@@ -143,6 +143,7 @@ async fn theme_picker_down_key_emits_preview_action() {
 
 #[tokio::test]
 async fn theme_persists_per_repository() {
+    let (_fake_home, _home_guard) = fake_home_guard();
     let (dir, mut app) = focus_test_app().await;
     app.handle_theme_command(Some("light"));
     assert_eq!(app.runtime.theme_id, forge_config::THEME_SOLARIZED_LIGHT);

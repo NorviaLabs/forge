@@ -95,7 +95,7 @@ Start it with `ollama serve` (default http://localhost:11434)."
 mod tests {
     use super::*;
 
-    fn mock_server(statuses: Vec<u16>) -> String {
+    fn mock_server(statuses: Vec<u16>) -> Option<String> {
         crate::test_support::serve(statuses, r#"{"models":[]}"#)
     }
 
@@ -110,9 +110,13 @@ mod tests {
 
     #[test]
     fn verify_reachable_accepts_tags_and_reports_unhealthy_status() {
-        assert!(verify_reachable(&mock_server(vec![200])).is_ok());
+        let Some(base) = mock_server(vec![200]) else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        assert!(verify_reachable(&base).is_ok());
 
-        let err = verify_reachable(&mock_server(vec![503, 500]))
+        let err = verify_reachable(&mock_server(vec![503, 500]).unwrap())
             .unwrap_err()
             .to_string();
         assert!(err.contains("http status: 500"), "{err}");
@@ -120,9 +124,13 @@ mod tests {
 
     #[test]
     fn verify_reachable_falls_back_to_openai_models_route() {
-        assert!(verify_reachable(&mock_server(vec![404, 200])).is_ok());
+        let Some(base) = mock_server(vec![404, 200]) else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        assert!(verify_reachable(&base).is_ok());
 
-        let err = verify_reachable(&mock_server(vec![404, 500]))
+        let err = verify_reachable(&mock_server(vec![404, 500]).unwrap())
             .unwrap_err()
             .to_string();
         assert!(err.contains("http status: 500"), "{err}");

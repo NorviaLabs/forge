@@ -198,7 +198,7 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_OPENAI_CODEX_OAUTH_ISSUER"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![
+        let Some(base) = mock_http(vec![
             (
                 200,
                 r#"{"device_auth_id":"device-1","user_code":"AB12","interval":1}"#,
@@ -219,7 +219,10 @@ mod tests {
                 r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":120}"#,
                 vec![],
             ),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_OPENAI_CODEX_OAUTH_ISSUER", &base);
 
         let profile = crate::openai_codex::openai_codex_profile();
@@ -242,10 +245,13 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_OPENAI_CODEX_OAUTH_ISSUER"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![
+        let Some(base) = mock_http(vec![
             (403, "", vec![]),
             (400, r#"{"error":"slow_down"}"#, vec![]),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_OPENAI_CODEX_OAUTH_ISSUER", &base);
 
         let pending = OauthPending {
@@ -277,7 +283,7 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![
+        let Some(base) = mock_http(vec![
             (
                 200,
                 r#"{"device_code":"dc","user_code":"AB12","verification_uri":"https://accounts.x.ai/oauth2/device","interval":1,"expires_in":900}"#,
@@ -293,7 +299,10 @@ mod tests {
                 r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":120}"#,
                 vec![],
             ),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
 
         let profile = crate::xai::xai_grok_profile();
@@ -316,10 +325,13 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![
+        let Some(base) = mock_http(vec![
             (400, r#"{"error":"authorization_pending"}"#, vec![]),
             (400, r#"{"error":"slow_down"}"#, vec![]),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
 
         let pending = OauthPending {

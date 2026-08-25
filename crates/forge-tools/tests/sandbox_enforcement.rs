@@ -72,10 +72,15 @@ fn report_sandbox_availability_on_this_host() {
 }
 
 /// macOS ships `sandbox-exec`, so there is no excuse for it being missing.
+/// (Whether a Seatbelt profile can actually be applied is a separate question
+/// — a host already inside another sandbox reports `CannotApply`.)
 #[cfg(target_os = "macos")]
 #[test]
 fn sandbox_is_always_available_on_macos() {
-    assert!(availability().is_ok(), "macOS hosts must have sandbox-exec");
+    assert!(
+        std::path::Path::new("/usr/bin/sandbox-exec").exists(),
+        "macOS hosts must have sandbox-exec"
+    );
 }
 
 #[test]

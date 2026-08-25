@@ -12,15 +12,22 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 /// A stand-in upstream that greets whoever connects.
-async fn upstream() -> (String, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+async fn upstream() -> Option<(String, tokio::task::JoinHandle<()>)> {
+    let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping: this host denies binding a listener");
+            return None;
+        }
+        Err(e) => panic!("bind upstream listener: {e}"),
+    };
     let addr = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
         while let Ok((mut sock, _)) = listener.accept().await {
             let _ = sock.write_all(b"UPSTREAM-OK").await;
         }
     });
-    (format!("127.0.0.1:{}", addr.port()), task)
+    Some((format!("127.0.0.1:{}", addr.port()), task))
 }
 
 async fn connect_through(proxy: &EgressProxy, target: &str) -> String {
@@ -35,12 +42,29 @@ async fn connect_through(proxy: &EgressProxy, target: &str) -> String {
     status
 }
 
+/// Starts the loopback egress proxy, or skips the calling test on hosts that
+/// deny binding a listener (CI sandboxes, agent harnesses).
+async fn started_proxy(policy: EgressPolicy) -> Option<EgressProxy> {
+    match EgressProxy::start(policy).await {
+        Ok(proxy) => Some(proxy),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping: this host denies binding a listener");
+            None
+        }
+        Err(e) => panic!("egress proxy failed to start: {e}"),
+    }
+}
+
 #[tokio::test]
 async fn an_allowed_host_is_tunnelled_end_to_end() {
-    let (addr, _up) = upstream().await;
+    let Some((addr, _up)) = upstream().await else {
+        return;
+    };
     let mut policy = EgressPolicy::new();
     policy.allow("127.0.0.1");
-    let proxy = EgressProxy::start(policy).await.unwrap();
+    let Some(proxy) = started_proxy(policy).await else {
+        return;
+    };
 
     let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
     stream
@@ -66,10 +90,14 @@ async fn an_allowed_host_is_tunnelled_end_to_end() {
 
 #[tokio::test]
 async fn a_host_outside_the_allowlist_is_refused() {
-    let (addr, _up) = upstream().await;
+    let Some((addr, _up)) = upstream().await else {
+        return;
+    };
     let mut policy = EgressPolicy::new();
     policy.allow("crates.io");
-    let proxy = EgressProxy::start(policy).await.unwrap();
+    let Some(proxy) = started_proxy(policy).await else {
+        return;
+    };
 
     let status = connect_through(&proxy, &addr).await;
     assert!(
@@ -81,8 +109,12 @@ async fn a_host_outside_the_allowlist_is_refused() {
 /// Fails closed: a proxy with no rules is not an open relay.
 #[tokio::test]
 async fn an_empty_policy_refuses_everything() {
-    let (addr, _up) = upstream().await;
-    let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+    let Some((addr, _up)) = upstream().await else {
+        return;
+    };
+    let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+        return;
+    };
     assert!(connect_through(&proxy, &addr).await.contains("403"));
 }
 
@@ -90,7 +122,9 @@ async fn an_empty_policy_refuses_everything() {
 /// becomes a general-purpose relay that ignores the allowlist entirely.
 #[tokio::test]
 async fn a_non_connect_request_is_rejected() {
-    let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+    let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+        return;
+    };
     let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
     stream
         .write_all(b"GET http://crates.io/ HTTP/1.1\r\nHost: crates.io\r\n\r\n")
@@ -109,7 +143,9 @@ async fn a_non_connect_request_is_rejected() {
 /// decision cannot depend on the destination being reachable.
 #[tokio::test]
 async fn refusal_does_not_require_the_destination_to_exist() {
-    let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+    let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+        return;
+    };
     let status = connect_through(&proxy, "definitely-not-allowed.invalid:443").await;
     assert!(status.contains("403"), "got: {status}");
 }
@@ -141,13 +177,17 @@ async fn connect_over_uds(path: &std::path::Path, target: &str) -> String {
 
 #[tokio::test]
 async fn the_unix_bridge_tunnels_an_allowed_host() {
-    let (addr, _up) = upstream().await;
+    let Some((addr, _up)) = upstream().await else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("egress.sock");
 
     let mut policy = EgressPolicy::new();
     policy.allow("127.0.0.1");
-    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    let Some(mut proxy) = started_proxy(policy.clone()).await else {
+        return;
+    };
     proxy.serve_on_unix_socket(&sock, policy).await.unwrap();
     assert_eq!(proxy.socket_path(), Some(sock.as_path()));
 
@@ -174,13 +214,17 @@ async fn the_unix_bridge_tunnels_an_allowed_host() {
 /// The bridge must not be a way around the allowlist.
 #[tokio::test]
 async fn the_unix_bridge_enforces_the_same_allowlist() {
-    let (addr, _up) = upstream().await;
+    let Some((addr, _up)) = upstream().await else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("egress.sock");
 
     let mut policy = EgressPolicy::new();
     policy.allow("crates.io");
-    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    let Some(mut proxy) = started_proxy(policy.clone()).await else {
+        return;
+    };
     proxy.serve_on_unix_socket(&sock, policy).await.unwrap();
 
     assert!(
@@ -197,7 +241,9 @@ async fn a_stale_socket_file_does_not_block_binding() {
     let sock = dir.path().join("egress.sock");
     std::fs::write(&sock, b"stale").unwrap();
 
-    let mut proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+    let Some(mut proxy) = started_proxy(EgressPolicy::new()).await else {
+        return;
+    };
     proxy
         .serve_on_unix_socket(&sock, EgressPolicy::new())
         .await

@@ -511,11 +511,14 @@ mod tests {
 
     #[test]
     fn start_device_code_success() {
-        let base = forge_test_support::mock_http(vec![(
+        let Some(base) = forge_test_support::mock_http(vec![(
             200,
             r#"{"device_code":"dc","user_code":"AB12-CD34","verification_uri":"https://accounts.x.ai/oauth2/device","interval":3,"expires_in":900}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = client.start_device_code("xai").unwrap();
         assert_eq!(pending.profile_id, "xai");
@@ -532,14 +535,17 @@ mod tests {
 
     #[test]
     fn start_device_code_falls_back_to_verification_uri_complete_then_default() {
-        let base = forge_test_support::mock_http(vec![
+        let Some(base) = forge_test_support::mock_http(vec![
             (
                 200,
                 r#"{"device_code":"dc","user_code":"u","verification_uri_complete":"https://accounts.x.ai/complete"}"#,
                 vec![],
             ),
             (200, r#"{"device_code":"dc2","user_code":"u2"}"#, vec![]),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
 
         let via_complete = client.start_device_code("xai").unwrap();
@@ -571,7 +577,10 @@ mod tests {
 
     #[test]
     fn start_device_code_http_error_status() {
-        let base = forge_test_support::mock_http(vec![(400, "bad request", vec![])]);
+        let Some(base) = forge_test_support::mock_http(vec![(400, "bad request", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let err = client.start_device_code("xai").unwrap_err();
         assert!(matches!(err, XaiOauthError::DeviceCode(_)));
@@ -580,7 +589,10 @@ mod tests {
 
     #[test]
     fn start_device_code_invalid_json_body() {
-        let base = forge_test_support::mock_http(vec![(200, "not json", vec![])]);
+        let Some(base) = forge_test_support::mock_http(vec![(200, "not json", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let err = client.start_device_code("xai").unwrap_err();
         assert!(matches!(err, XaiOauthError::DeviceCode(msg) if msg.contains("invalid JSON")));
@@ -588,11 +600,14 @@ mod tests {
 
     #[test]
     fn start_device_code_missing_required_fields() {
-        let base = forge_test_support::mock_http(vec![(
+        let Some(base) = forge_test_support::mock_http(vec![(
             200,
             r#"{"device_code":"","user_code":""}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let err = client.start_device_code("xai").unwrap_err();
         assert!(
@@ -602,11 +617,14 @@ mod tests {
 
     #[test]
     fn poll_token_once_success_computes_expiry() {
-        let base = forge_test_support::mock_http(vec![(
+        let Some(base) = forge_test_support::mock_http(vec![(
             200,
             r#"{"access_token":"tok","refresh_token":"rt","expires_in":3600}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = pending_for(&client);
         let tokens = client.poll_token_once(&pending).unwrap();
@@ -617,7 +635,12 @@ mod tests {
 
     #[test]
     fn poll_token_once_empty_access_token_is_an_error() {
-        let base = forge_test_support::mock_http(vec![(200, r#"{"access_token":""}"#, vec![])]);
+        let Some(base) =
+            forge_test_support::mock_http(vec![(200, r#"{"access_token":""}"#, vec![])])
+        else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = pending_for(&client);
         let err = client.poll_token_once(&pending).unwrap_err();
@@ -639,7 +662,10 @@ mod tests {
             (r#"{"error":"expired"}"#, "device code expired"),
             (r#"{"error":"access_denied"}"#, "access denied"),
         ] {
-            let base = forge_test_support::mock_http(vec![(400, body, vec![])]);
+            let Some(base) = forge_test_support::mock_http(vec![(400, body, vec![])]) else {
+                eprintln!("skipping: this host denies binding a listener");
+                return;
+            };
             let client = mock_client(base);
             let pending = pending_for(&client);
             let err = client.poll_token_once(&pending).unwrap_err();
@@ -649,11 +675,14 @@ mod tests {
 
     #[test]
     fn poll_token_once_maps_unrecognized_oauth_error_with_description() {
-        let base = forge_test_support::mock_http(vec![(
+        let Some(base) = forge_test_support::mock_http(vec![(
             400,
             r#"{"error":"invalid_grant","error_description":"device code not found"}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = pending_for(&client);
         let err = client.poll_token_once(&pending).unwrap_err();
@@ -662,7 +691,11 @@ mod tests {
 
     #[test]
     fn poll_token_once_non_oauth_http_error_is_a_token_error() {
-        let base = forge_test_support::mock_http(vec![(500, "upstream on fire", vec![])]);
+        let Some(base) = forge_test_support::mock_http(vec![(500, "upstream on fire", vec![])])
+        else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = pending_for(&client);
         let err = client.poll_token_once(&pending).unwrap_err();
@@ -671,11 +704,14 @@ mod tests {
 
     #[test]
     fn refresh_access_token_success_keeps_old_refresh_token_when_omitted() {
-        let base = forge_test_support::mock_http(vec![(
+        let Some(base) = forge_test_support::mock_http(vec![(
             200,
             r#"{"access_token":"new-access","expires_in":120}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let tokens = client.refresh_access_token("old-refresh").unwrap();
         assert_eq!(tokens.access_token, "new-access");
@@ -685,11 +721,14 @@ mod tests {
 
     #[test]
     fn refresh_access_token_prefers_new_refresh_token_when_present() {
-        let base = forge_test_support::mock_http(vec![(
+        let Some(base) = forge_test_support::mock_http(vec![(
             200,
             r#"{"access_token":"new-access","refresh_token":"new-refresh"}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let tokens = client.refresh_access_token("old-refresh").unwrap();
         assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
@@ -697,11 +736,14 @@ mod tests {
 
     #[test]
     fn refresh_access_token_error_with_oauth_body() {
-        let base = forge_test_support::mock_http(vec![(
+        let Some(base) = forge_test_support::mock_http(vec![(
             400,
             r#"{"error":"invalid_grant","error_description":"refresh token revoked"}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let err = client.refresh_access_token("old-refresh").unwrap_err();
         assert_eq!(err.to_string(), "OAuth error: refresh token revoked");
@@ -709,7 +751,10 @@ mod tests {
 
     #[test]
     fn refresh_access_token_error_without_oauth_body_is_a_token_error() {
-        let base = forge_test_support::mock_http(vec![(503, "maintenance", vec![])]);
+        let Some(base) = forge_test_support::mock_http(vec![(503, "maintenance", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let err = client.refresh_access_token("old-refresh").unwrap_err();
         assert!(matches!(err, XaiOauthError::Token(msg) if msg.contains("HTTP 503")));
@@ -717,7 +762,12 @@ mod tests {
 
     #[test]
     fn refresh_access_token_empty_access_token_is_an_error() {
-        let base = forge_test_support::mock_http(vec![(200, r#"{"access_token":""}"#, vec![])]);
+        let Some(base) =
+            forge_test_support::mock_http(vec![(200, r#"{"access_token":""}"#, vec![])])
+        else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let err = client.refresh_access_token("old-refresh").unwrap_err();
         assert!(
@@ -731,10 +781,13 @@ mod tests {
         // poll_token_once_maps_known_oauth_error_codes; not exercised here too,
         // since poll_until_tokens adds a hardcoded 5s backoff on that leg that
         // would make this test needlessly slow for no extra coverage.
-        let base = forge_test_support::mock_http(vec![
+        let Some(base) = forge_test_support::mock_http(vec![
             (400, r#"{"error":"authorization_pending"}"#, vec![]),
             (200, r#"{"access_token":"tok"}"#, vec![]),
-        ]);
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let client = mock_client(base);
         let pending = pending_for(&client);
         let tokens = client

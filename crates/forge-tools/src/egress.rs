@@ -607,6 +607,19 @@ mod tests {
         p
     }
 
+    /// Starts the loopback egress proxy, or skips the calling test on hosts
+    /// that deny binding a listener (CI sandboxes, agent harnesses).
+    async fn started_proxy(policy: EgressPolicy) -> Option<EgressProxy> {
+        match EgressProxy::start(policy).await {
+            Ok(proxy) => Some(proxy),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("skipping: this host denies binding a listener");
+                None
+            }
+            Err(e) => panic!("egress proxy failed to start: {e}"),
+        }
+    }
+
     #[test]
     fn an_empty_policy_permits_nothing() {
         assert!(!EgressPolicy::new().permits("crates.io"));
@@ -614,7 +627,9 @@ mod tests {
 
     #[tokio::test]
     async fn denied_connect_identifies_the_sandbox() {
-        let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+        let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+            return;
+        };
         let status = connect_status(proxy.addr().port(), "github.com:443").await;
         assert_eq!(status, "HTTP/1.1 403 Forge Sandbox Denied\r\n");
     }
@@ -839,7 +854,9 @@ mod tests {
 
         let mut policy = EgressPolicy::new();
         policy.allow("crates.io");
-        let proxy = EgressProxy::start(policy).await.unwrap();
+        let Some(proxy) = started_proxy(policy).await else {
+            return;
+        };
 
         let status = |line: String| {
             let addr = proxy.addr();
@@ -993,7 +1010,9 @@ mod tests {
 
     #[tokio::test]
     async fn granting_a_host_unblocks_the_next_connect() {
-        let proxy = EgressProxy::start(EgressPolicy::new()).await.unwrap();
+        let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+            return;
+        };
         let status = {
             use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
             let mut stream = TcpStream::connect(("127.0.0.1", proxy.addr().port()))
