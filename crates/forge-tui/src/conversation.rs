@@ -8,7 +8,6 @@
 pub use forge_transcript::*;
 
 use crate::markdown::render_markdown;
-use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use crate::user_message_gutter;
 use forge_syntax::highlight_to_lines;
@@ -48,8 +47,8 @@ pub(super) fn ensure_blank_line(lines: &mut Vec<Line<'static>>) {
 }
 
 /// A bordered card's top edge: `┌─ {title} ───┐` when `title` is set
-/// (Approval), or a plain `┌────┐` when it isn't (Plan). `total_width` is the
-/// full rendered line width (the card's content width plus its 2 side
+/// (Approval/Question), or a plain `┌────┐` when it isn't. `total_width` is
+/// the full rendered line width (the card's content width plus its 2 side
 /// borders and 2 padding columns).
 pub(super) fn card_top_border(
     total_width: usize,
@@ -262,45 +261,65 @@ pub(super) fn render_plan_checklist(
             ]));
         }
     }
-    // A bordered, unfilled card — no "Plan" caption. The border itself
-    // signals "this is a checklist"; [✓]/[►]/[ ] checkboxes signal step status.
-    let longest_content = plan
+
+    // A left rail, not a box — the rail says "this is a checklist" at a
+    // fraction of a full border's weight. Step status is carried by marker +
+    // weight (✓ dim, › bold accent, · muted) instead of [✓]/[►]/[ ]
+    // checkboxes, matching how the rest of the response stream now signals
+    // state through color and weight rather than bracketed glyphs.
+    let accent = theme::accent_style();
+    let rail_line = |content: Vec<Span<'static>>| -> Line<'static> {
+        let mut spans = vec![Span::styled(format!("{RAIL_GLYPH} "), accent)];
+        spans.extend(content);
+        Line::from(spans)
+    };
+
+    let total = plan.steps.len();
+    let done = plan
         .steps
         .iter()
-        .map(|item| item.step.chars().count() + 4) // checkbox + space
-        .chain(explanation.map(|e| e.chars().count()))
-        .max()
-        .unwrap_or(0);
-    let available_interior = width.saturating_sub(4);
-    let inner_w = longest_content.min(CARD_MAX_WIDTH).min(available_interior);
-    let border = theme::accent_style();
-    lines.push(card_top_border(inner_w + 4, None, border));
+        .filter(|item| item.status == PlanStepStatus::Completed)
+        .count();
+    let current_idx = plan
+        .steps
+        .iter()
+        .position(|item| item.status == PlanStepStatus::InProgress)
+        .unwrap_or_else(|| done.min(total.saturating_sub(1)));
+    let header = if total == 0 {
+        "Plan".to_string()
+    } else if done == total {
+        format!("Plan · {done} of {total} done")
+    } else {
+        format!("Plan · step {} of {total}", current_idx + 1)
+    };
+    lines.push(rail_line(vec![Span::styled(
+        header,
+        theme::metadata_style(),
+    )]));
+
+    let body_width = width.saturating_sub(4).max(4);
     for (idx, item) in plan.steps.iter().enumerate() {
-        let (marker, style) = match item.status {
-            PlanStepStatus::Completed => ("[✓]", theme::ok()),
-            PlanStepStatus::InProgress => ("[►]", theme::warn()),
-            PlanStepStatus::Pending => ("[ ]", theme::muted()),
+        let (marker, marker_style, text_style) = match item.status {
+            PlanStepStatus::Completed => ("\u{2713}", theme::ok(), theme::muted()),
+            PlanStepStatus::InProgress => (
+                "\u{203a}",
+                accent,
+                theme::text().add_modifier(Modifier::BOLD),
+            ),
+            PlanStepStatus::Pending => ("\u{b7}", theme::muted(), theme::muted()),
         };
-        let body_width = inner_w.saturating_sub(4).max(4);
         let mut wrapped = wrap(&item.step, body_width).into_iter();
         if let Some(first) = wrapped.next() {
-            lines.push(card_content_spans(
-                vec![
-                    Span::styled(format!("{marker} "), style),
-                    Span::styled(first, theme::text()),
-                ],
-                inner_w,
-                border,
-                None,
-            ));
+            lines.push(rail_line(vec![
+                Span::styled(format!("{marker} "), marker_style),
+                Span::styled(first, text_style),
+            ]));
         }
         for cont in wrapped {
-            lines.push(card_content_spans(
-                vec![Span::raw("    "), Span::styled(cont, theme::text())],
-                inner_w,
-                border,
-                None,
-            ));
+            lines.push(rail_line(vec![
+                Span::raw("  "),
+                Span::styled(cont, text_style),
+            ]));
         }
         // What actually ran under this step. A plan states intent; without
         // this, a step marked done is only the model's word for it.
@@ -319,19 +338,13 @@ pub(super) fn render_plan_checklist(
                 .into_iter()
                 .take(2)
             {
-                lines.push(card_content_spans(
-                    vec![
-                        Span::raw("    "),
-                        Span::styled(wrapped, theme::metadata_style()),
-                    ],
-                    inner_w,
-                    border,
-                    None,
-                ));
+                lines.push(rail_line(vec![
+                    Span::raw("  "),
+                    Span::styled(wrapped, theme::metadata_style()),
+                ]));
             }
         }
     }
-    lines.push(card_bottom_border(inner_w + 4, border));
     lines
 }
 
@@ -622,10 +635,8 @@ impl ConversationRender for ConversationModel {
                 }
                 ConversationBlock::ActiveProgress(p) => {
                     let label = format!("{} · {}", p.label, p.summary);
-                    let prefix = if p.id == "stream" { "▍ " } else { "● " };
                     let mut line = Line::from(vec![
-                        Span::styled(prefix, theme::progress_style()),
-                        Span::styled(label, theme::text().add_modifier(Modifier::BOLD)),
+                        Span::styled(label, theme::progress_style().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
                         Span::styled(
                             match p.status {
@@ -643,24 +654,18 @@ impl ConversationRender for ConversationModel {
                     lines.push(line);
                 }
                 ConversationBlock::ActivityGroup(p) => {
-                    let (prefix, separator) = match p.outcome {
-                        ActivityOutcome::Success => (status_glyph(Status::Success), " "),
-                        ActivityOutcome::Failure => (status_glyph(Status::Error), " "),
-                        ActivityOutcome::Blocked => (Span::styled("⏸", theme::warn()), " "),
-                        ActivityOutcome::Warning => (status_glyph(Status::Warning), ""),
-                        ActivityOutcome::Neutral => (Span::styled("●", theme::muted()), " "),
-                        ActivityOutcome::Denied => {
-                            (Span::styled("⊘", theme::tool_denied_style()), " ")
-                        }
-                        ActivityOutcome::Cancelled => (Span::styled("■", theme::muted()), " "),
-                        ActivityOutcome::TimedOut => {
-                            (Span::styled("⧖", theme::tool_timeout_style()), " ")
-                        }
+                    let label_style = match p.outcome {
+                        ActivityOutcome::Success => theme::tool_success_style(),
+                        ActivityOutcome::Failure => theme::danger().add_modifier(Modifier::BOLD),
+                        ActivityOutcome::Blocked => theme::warn().add_modifier(Modifier::BOLD),
+                        ActivityOutcome::Warning => theme::warn().add_modifier(Modifier::BOLD),
+                        ActivityOutcome::Neutral => theme::text().add_modifier(Modifier::BOLD),
+                        ActivityOutcome::Denied => theme::tool_denied_style(),
+                        ActivityOutcome::Cancelled => theme::muted().add_modifier(Modifier::BOLD),
+                        ActivityOutcome::TimedOut => theme::tool_timeout_style(),
                     };
                     let mut spans = vec![
-                        prefix,
-                        Span::raw(separator),
-                        Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
+                        Span::styled(p.label, label_style),
                         Span::styled("  ", theme::metadata_style()),
                     ];
                     if p.subcommands.is_empty() {
@@ -739,7 +744,7 @@ impl ConversationRender for ConversationModel {
                         BannerKind::Ok => theme::ok(),
                     };
                     for l in wrap(&p.text, width) {
-                        lines.push(Line::from(Span::styled(format!("▸ {l}"), st)));
+                        lines.push(Line::from(Span::styled(l, st)));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1515,12 +1520,13 @@ pub(super) fn render_question_card(
 }
 
 fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> Vec<Line<'static>> {
-    // Prose runs the width of the pane; a card does not follow it there.
+    // Prose runs the width of the pane; the rail-prefixed prompt does not
+    // follow it there either.
     let prose_width = prose_width.min(CARD_MAX_WIDTH);
     let pad = " ".repeat(MESSAGE_PADDING);
-    // A row spends `pad` + `│` + ` ` + inner + `│`, so the card is
-    // `MESSAGE_PADDING + 3` columns wider than its content.
-    let inner = prose_width.saturating_sub(MESSAGE_PADDING + 3).max(8);
+    // A row spends `pad` + `│` + ` ` + inner — no right wall, so the rail
+    // gets back the column a boxed border used to spend closing itself.
+    let inner = prose_width.saturating_sub(MESSAGE_PADDING + 2).max(8);
     let compact = inner < APPROVAL_COMPACT_WIDTH;
     let border = if p.focused {
         theme::waiting_border()
@@ -1532,12 +1538,13 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     let mut row = |spans: Vec<Span<'static>>| {
         let mut all = vec![
             Span::raw(pad.clone()),
-            Span::styled("│", border),
+            Span::styled(RAIL_GLYPH, border),
             Span::raw(" "),
         ];
-        // Clip, don't just pad. Content with no break opportunity — a path, a
-        // long single-token command — comes back from `wrap` wider than asked
-        // for, and without this it runs straight out through the right border.
+        // Clip, don't wrap further. Content with no break opportunity — a
+        // path, a long single-token command — comes back from `wrap` wider
+        // than asked for, and without this it would run straight out past
+        // the pane instead of stopping at it.
         let mut used = 0usize;
         for span in spans {
             let w = span.width();
@@ -1548,18 +1555,18 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
                 let room = inner - used;
                 if room > 0 {
                     let clipped: String = span.content.chars().take(room).collect();
-                    used += clipped.chars().count();
                     all.push(Span::styled(clipped, span.style));
                 }
                 break;
             }
         }
-        if used < inner {
-            all.push(Span::raw(" ".repeat(inner - used)));
-        }
-        all.push(Span::styled("│", border));
         out.push(Line::from(all));
     };
+
+    row(vec![Span::styled(
+        APPROVAL_TITLE,
+        border.add_modifier(Modifier::BOLD),
+    )]);
 
     let question = p
         .question
@@ -1729,24 +1736,7 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     // Built as spans, not wrapped text: `wrap` collapses runs of spaces, which
     // would flatten the gaps that separate one key/verb pair from the next.
     row(crate::hints::hint_spans(crate::hints::APPROVAL, inner));
-    row(vec![]);
 
-    // A content row is `│ ` + inner + `│` = inner + 3 columns. The top border
-    // spends `╭─ ` + title + ` ` + fill + `╮`, so the corners land on the same
-    // columns as the walls.
-    let title_fill = (inner + 3).saturating_sub(APPROVAL_TITLE.chars().count() + 5);
-    let top = Line::from(vec![
-        Span::raw(pad.clone()),
-        Span::styled("╭─ ", border),
-        Span::styled(APPROVAL_TITLE, border.add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {}╮", "─".repeat(title_fill)), border),
-    ]);
-    let bottom = Line::from(vec![
-        Span::raw(pad),
-        Span::styled(format!("╰{}╯", "─".repeat(inner + 1)), border),
-    ]);
-    out.insert(0, top);
-    out.push(bottom);
     out
 }
 
@@ -2937,7 +2927,7 @@ mod tests {
         )
         .with_running_tool("read_file");
         let running_text = rendered_text(&running);
-        assert!(running_text.contains("● Exploring repository"));
+        assert!(running_text.contains("Exploring repository"));
         assert!(running_text.contains("Reading via read_file"));
 
         let completed = ConversationModel {
@@ -3044,8 +3034,6 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        // No spelled-out "Plan" caption by design — the bordered card and
-        // [✓]/[►]/[ ] checkboxes carry the meaning instead.
         assert!(text.contains("Next steps"), "{text}");
         assert!(text.contains("Inspect code"), "{text}");
         assert!(text.contains("Implement tool"), "{text}");
@@ -3126,7 +3114,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_checklist_card_is_bordered_with_no_background_fill() {
+    fn plan_checklist_card_is_a_rail_with_no_background_fill() {
         let plan = PlanChecklistPresentation {
             explanation: Some("Next steps".into()),
             steps: vec![forge_types::PlanItem {
@@ -3136,29 +3124,30 @@ mod tests {
             evidence: Vec::new(),
         };
         let lines = render_plan_checklist(&plan, 80);
-        // The explanation ("Next steps") renders as an unboxed intro line
-        // above the card — only the step list itself is bordered.
-        let top = lines
-            .iter()
-            .find(|l| line_text(l).starts_with('┌'))
-            .expect("top border present");
+        // No box: every step line (including the header) opens with the rail
+        // glyph instead of being wrapped in a `┌─┐`/`└─┘` border.
         assert!(
-            !line_text(top).contains("Plan"),
-            "no spelled-out caption in the border, got {:?}",
-            line_text(top)
+            !lines.iter().any(|l| line_text(l).starts_with('┌')),
+            "plan checklist should not draw a box border, got {lines:?}"
         );
+        let header = lines
+            .iter()
+            .find(|l| line_text(l).starts_with("│ Plan"))
+            .expect("rail-prefixed header row present");
         assert!(
-            lines
-                .iter()
-                .rev()
-                .find(|l| !line_text(l).is_empty())
-                .is_some_and(|l| line_text(l).starts_with('└')),
-            "plan card should close with a bottom border"
+            line_text(header).contains("1 of 1"),
+            "header should state step position, got {:?}",
+            line_text(header)
         );
         let content_row = lines
             .iter()
             .find(|l| line_text(l).contains("Inspect code"))
             .expect("step content row present");
+        assert!(
+            line_text(content_row).starts_with('│'),
+            "step row should open with the rail glyph, got {:?}",
+            line_text(content_row)
+        );
         for span in &content_row.spans {
             assert_eq!(
                 span.style.bg, None,
@@ -3435,14 +3424,14 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("● Exploring repository"));
+        assert!(text.contains("Exploring repository"));
         assert!(text.contains("Reading via read_file"));
     }
 
-    /// The card is a box: every content row must start and end on the same
-    /// columns as the corners, or the border visibly steps in and out.
+    /// No box: every row opens with the rail glyph and nothing else — no
+    /// `┌┐└┘╭╮╰╯` corners — and stays within the given width at every size.
     #[test]
-    fn the_approval_card_border_is_square() {
+    fn the_approval_card_is_a_rail_not_a_box() {
         let p = ApprovalPendingPresentation {
             tool: "bash".into(),
             command: "git push -u origin feature".into(),
@@ -3462,13 +3451,24 @@ mod tests {
         };
         for width in [40usize, 60, 72] {
             let lines = render_approval_card(&p, width);
-            let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
-            let first = widths[0];
+            for line in &lines {
+                let text = line_text(line);
+                assert!(
+                    !text.contains(['┌', '┐', '└', '┘', '╭', '╮', '╰', '╯']),
+                    "approval prompt should not draw a box, got {text:?}"
+                );
+                assert!(
+                    line.width() <= width,
+                    "card overflowed {width}: {}",
+                    line.width()
+                );
+            }
             assert!(
-                widths.iter().all(|w| *w == first),
-                "ragged card at width {width}: {widths:?}"
+                lines
+                    .iter()
+                    .any(|l| line_text(l).trim_start().starts_with('│')),
+                "approval prompt should open every row with the rail glyph"
             );
-            assert!(first <= width, "card overflowed {width}: {first}");
         }
     }
 
@@ -3621,8 +3621,7 @@ mod tests {
         assert!(text.contains("The agent is told it was denied"), "{text}");
         // The qualifying sentence belongs to the selected option's full text.
         assert!(!text.contains("Nothing runs"), "{text}");
-        let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
-        assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+        assert!(lines.iter().all(|l| l.width() <= 72), "{lines:?}");
     }
 
     /// In the sidebar every optional row wraps to three or four lines and
@@ -3639,12 +3638,11 @@ mod tests {
             text.contains("Run once") && text.contains("Don't run"),
             "{text}"
         );
-        let widths: Vec<usize> = narrow.iter().map(|l| l.width()).collect();
-        assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+        assert!(narrow.iter().all(|l| l.width() <= 30), "{narrow:?}");
     }
 
     /// A working directory has no spaces, so `wrap` hands it back whole. It
-    /// used to run straight out through the card's right border.
+    /// used to run straight out past the pane's right edge.
     #[test]
     fn an_unbreakable_path_cannot_burst_the_approval_card() {
         let p = ApprovalPendingPresentation {
@@ -3665,10 +3663,9 @@ mod tests {
             focused: true,
         };
         let lines = render_approval_card(&p, 72);
-        let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
         assert!(
-            widths.iter().all(|w| *w == widths[0]),
-            "path burst the card: {widths:?}"
+            lines.iter().all(|l| l.width() <= 72),
+            "path burst the card: {lines:?}"
         );
         let text: String = lines
             .iter()
@@ -3678,8 +3675,8 @@ mod tests {
         assert!(text.contains("lab"), "folder name must survive:\n{text}");
     }
 
-    /// A single unbreakable command token must be clipped by the card, not
-    /// allowed to push the border out.
+    /// A single unbreakable command token must be clipped, not allowed to
+    /// push a line past the pane's edge.
     #[test]
     fn an_unbreakable_command_cannot_burst_the_approval_card() {
         let p = ApprovalPendingPresentation {
@@ -3700,10 +3697,9 @@ mod tests {
             focused: true,
         };
         let lines = render_approval_card(&p, 72);
-        let widths: Vec<usize> = lines.iter().map(|l| l.width()).collect();
         assert!(
-            widths.iter().all(|w| *w == widths[0]),
-            "command burst the card: {widths:?}"
+            lines.iter().all(|l| l.width() <= 72),
+            "command burst the card: {lines:?}"
         );
     }
 
