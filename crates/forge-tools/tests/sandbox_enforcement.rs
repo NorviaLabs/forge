@@ -705,6 +705,11 @@ fn sandbox_is_available_on_linux_in_ci() {
 // ---------------------------------------------------------------------------
 
 /// Drive `exec_command` to completion and return its result.
+///
+/// WSL2 sandbox spawn can take longer than a single 400ms poll, so a command
+/// that is still running after the first yield is followed up with
+/// `write_stdin` polls until the session finishes or the budget runs out —
+/// same pattern as `polled_exec_command_escalates_sandbox_denial` below.
 async fn exec_command(
     ws: &Path,
     cmd: &str,
@@ -712,16 +717,40 @@ async fn exec_command(
     use forge_tools::{default_builtins, ToolContext};
 
     let ctx = ToolContext::new(ws.to_path_buf());
-    let tool = default_builtins()
-        .into_iter()
+    let tools = default_builtins();
+    let exec = tools
+        .iter()
         .find(|t| t.name() == "exec_command")
         .expect("exec_command must be a builtin");
 
-    tool.call(
-        &ctx,
-        serde_json::json!({ "cmd": cmd, "yield_time_ms": 400 }),
-    )
-    .await
+    let started = exec
+        .call(
+            &ctx,
+            serde_json::json!({ "cmd": cmd, "yield_time_ms": 400 }),
+        )
+        .await?;
+    if started.exit_code.is_some() {
+        return Ok(started);
+    }
+    let body: serde_json::Value = serde_json::from_str(&started.content).unwrap();
+    let session_id = body["session_id"].as_u64().unwrap();
+    let write_stdin = tools
+        .iter()
+        .find(|t| t.name() == "write_stdin")
+        .expect("write_stdin must be a builtin");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let output = write_stdin
+            .call(
+                &ctx,
+                serde_json::json!({ "session_id": session_id, "yield_time_ms": 200 }),
+            )
+            .await?;
+        if output.exit_code.is_some() || std::time::Instant::now() >= deadline {
+            return Ok(output);
+        }
+    }
 }
 
 #[tokio::test]
