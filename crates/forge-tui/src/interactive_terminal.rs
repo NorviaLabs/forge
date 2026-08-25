@@ -41,6 +41,7 @@ pub(crate) struct InteractiveTerminal {
     input_line: String,
     pending_command: Option<PendingTerminalCommand>,
     command_completion: Option<CommandCompletion>,
+    hidden_status_marker: Option<String>,
     command_sequence: u64,
 }
 
@@ -93,6 +94,7 @@ impl InteractiveTerminal {
             input_line: String::new(),
             pending_command: None,
             command_completion: None,
+            hidden_status_marker: None,
             command_sequence: 0,
         })
     }
@@ -113,6 +115,9 @@ impl InteractiveTerminal {
         }
         if changed {
             self.display = self.screen.screen().contents();
+            if let Some(marker) = self.hidden_status_marker.as_deref() {
+                self.display = strip_status_wrapper_display(&self.display, &self.shell, marker);
+            }
         }
         let child_running = match self.child.try_wait() {
             Ok(Some(_)) | Err(_) => false,
@@ -168,7 +173,9 @@ impl InteractiveTerminal {
 
         let line = std::mem::take(&mut self.input_line);
         if line.trim().is_empty() {
-            self.write(&bytes[newline..newline.saturating_add(1)])?;
+            if !line.is_empty() {
+                self.write(&[LINE_KILL])?;
+            }
             return Ok(false);
         }
         if is_panel_close_command(&line) {
@@ -197,6 +204,7 @@ impl InteractiveTerminal {
         }
         self.command_sequence = self.command_sequence.wrapping_add(1);
         let marker = format!("__FORGE_STATUS_{}__", self.command_sequence);
+        self.hidden_status_marker = Some(marker.clone());
         let script = command_script(&self.shell, command, &marker);
         self.write(script.as_bytes())?;
         self.pending_command = Some(PendingTerminalCommand {
@@ -213,6 +221,7 @@ impl InteractiveTerminal {
         }
         self.command_sequence = self.command_sequence.wrapping_add(1);
         let marker = format!("__FORGE_STATUS_{}__", self.command_sequence);
+        self.hidden_status_marker = Some(marker.clone());
         let separator = command_separator(&self.shell);
         let mut suffix =
             format!("{separator}{}\r", command_suffix(&self.shell, &marker)).into_bytes();
@@ -247,6 +256,9 @@ impl InteractiveTerminal {
         self.screen.screen_mut().set_size(rows, cols);
         self.size = (cols, rows);
         self.display = self.screen.screen().contents();
+        if let Some(marker) = self.hidden_status_marker.as_deref() {
+            self.display = strip_status_wrapper_display(&self.display, &self.shell, marker);
+        }
         Ok(())
     }
 
@@ -269,6 +281,7 @@ impl InteractiveTerminal {
             let mut visible = Vec::with_capacity(pending.output.len() - (end - start));
             visible.extend_from_slice(&pending.output[..start]);
             visible.extend_from_slice(&pending.output[end..]);
+            visible = strip_status_wrapper_bytes(visible, &self.shell, &pending.marker);
             let command = pending.command.clone();
             self.screen.process(&visible);
             self.pending_command = None;
@@ -278,7 +291,11 @@ impl InteractiveTerminal {
         let keep = pending.marker.len().saturating_add(16);
         if pending.output.len() > keep {
             let split_at = pending.output.len() - keep;
-            let visible = pending.output.drain(..split_at).collect::<Vec<_>>();
+            let visible = strip_status_wrapper_bytes(
+                pending.output.drain(..split_at).collect(),
+                &self.shell,
+                &pending.marker,
+            );
             self.screen.process(&visible);
         }
     }
@@ -353,6 +370,52 @@ fn command_suffix(shell: &str, marker: &str) -> String {
         );
     }
     format!("__forge_status=$?\nprintf '\\n{marker}%s\\n' \"$__forge_status\"\n")
+}
+
+fn status_wrapper_parts(shell: &str, marker: &str) -> Vec<String> {
+    format!(
+        "{}{}",
+        command_separator(shell),
+        command_suffix(shell, marker)
+    )
+    .split('\n')
+    .map(|part| part.trim_end_matches('\r'))
+    .filter(|part| !part.is_empty())
+    .map(str::to_owned)
+    .collect()
+}
+
+fn strip_status_wrapper_display(display: &str, shell: &str, marker: &str) -> String {
+    status_wrapper_parts(shell, marker)
+        .into_iter()
+        .fold(display.to_owned(), |display, part| {
+            display.replace(&part, "")
+        })
+}
+
+fn strip_status_wrapper_bytes(mut output: Vec<u8>, shell: &str, marker: &str) -> Vec<u8> {
+    for part in status_wrapper_parts(shell, marker) {
+        remove_bytes(&mut output, part.as_bytes());
+    }
+    output
+}
+
+fn remove_bytes(output: &mut Vec<u8>, needle: &[u8]) {
+    if needle.is_empty() {
+        return;
+    }
+    let mut filtered = Vec::with_capacity(output.len());
+    let mut offset = 0;
+    while let Some(relative) = output[offset..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+    {
+        let start = offset + relative;
+        filtered.extend_from_slice(&output[offset..start]);
+        offset = start + needle.len();
+    }
+    filtered.extend_from_slice(&output[offset..]);
+    *output = filtered;
 }
 
 fn find_completion(output: &[u8], marker: &str) -> Option<(usize, usize, Option<i32>)> {
@@ -539,6 +602,18 @@ mod tests {
     }
 
     #[test]
+    fn blank_submission_does_not_create_another_shell_prompt() {
+        let mut line = String::new();
+        let (forward, close) = super::feed_pending_command(&mut line, b"");
+        assert!(forward.is_empty());
+        assert!(!close);
+
+        line.push_str("   ");
+        assert!(line.trim().is_empty());
+        assert!(!line.is_empty());
+    }
+
+    #[test]
     fn vt100_cursor_position_is_row_then_column() {
         let mut terminal = vt100::Parser::new(3, 20, 0);
         terminal.process(b"ab\r\n12345");
@@ -577,6 +652,26 @@ mod tests {
     }
 
     #[test]
+    fn blank_enter_does_not_change_live_shell_output() {
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
+        for _ in 0..50 {
+            terminal.poll();
+            if !terminal.display_output().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let before = terminal.display_output().to_owned();
+        terminal.consume_input(b"\r").unwrap();
+        for _ in 0..10 {
+            terminal.poll();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(terminal.display_output(), before);
+    }
+
+    #[test]
     fn bang_command_reports_exit_status_and_keeps_output() {
         let dir = tempdir().unwrap();
         let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
@@ -608,6 +703,10 @@ mod tests {
                 assert_eq!(completion.command, "printf 'typed-output\\n'");
                 assert_eq!(completion.exit_code, Some(0));
                 assert!(terminal.display_output().contains("typed-output"));
+                assert!(!terminal.display_output().contains("__forge_status"));
+                assert!(!terminal
+                    .display_output()
+                    .contains("printf '\\n__FORGE_STATUS_1__%s\\n' \"$__forge_status\""));
                 return;
             }
             thread::sleep(Duration::from_millis(10));
