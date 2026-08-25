@@ -1528,6 +1528,7 @@ async fn enter_on_status_suggestion_runs_immediately() {
 
 #[tokio::test]
 async fn attaching_clipboard_bytes_uses_application_storage_outside_a_repository() {
+    let (_fake_home, _home_guard) = fake_home_guard();
     let (_dir, mut app) = focus_test_app().await;
     app.attach_image_bytes(&forge_types::sample_png_bytes());
     assert_eq!(app.attachment.image_count(), 1);
@@ -1543,6 +1544,7 @@ async fn attaching_clipboard_bytes_uses_application_storage_outside_a_repository
 
 #[tokio::test]
 async fn send_with_image_is_blocked_when_model_cannot_see() {
+    let (_fake_home, _home_guard) = fake_home_guard();
     let (_dir, mut app) = focus_test_app().await;
     app.runtime.provider = "mock".into();
     app.runtime.model_label = "mock".into();
@@ -1557,6 +1559,7 @@ async fn send_with_image_is_blocked_when_model_cannot_see() {
 
 #[tokio::test]
 async fn send_with_image_is_allowed_when_model_can_see() {
+    let (_fake_home, _home_guard) = fake_home_guard();
     let (_dir, mut app) = focus_test_app().await;
     app.runtime.provider = "mock".into();
     app.runtime.model_label = "mock".into();

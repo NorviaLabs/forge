@@ -36,6 +36,10 @@ pub enum Unavailable {
     UnsupportedPlatform,
     /// The mechanism exists for this platform but is not installed.
     MissingDependency(&'static str),
+    /// The mechanism exists but applying it failed — typically because Forge
+    /// itself already runs inside another confinement layer, and a process
+    /// cannot enter a second sandbox.
+    CannotApply,
 }
 
 pub fn temp_env(policy: &SandboxPolicy) -> Vec<(&'static str, &Path)> {
@@ -53,6 +57,9 @@ impl Unavailable {
                 "no sandbox on this platform — run under WSL2 on Windows".into()
             }
             Self::MissingDependency(what) => format!("sandbox unavailable: {what} not found"),
+            Self::CannotApply => {
+                "sandbox unavailable: this host refused to apply confinement".into()
+            }
         }
     }
 
@@ -81,6 +88,11 @@ impl Unavailable {
             Self::MissingDependency(what) => {
                 format!("{}\nInstall {what} and retry.", self.reason())
             }
+            Self::CannotApply => format!(
+                "{}\nForge is likely running inside another sandbox, and a process \
+                 cannot enter a second one. Run Forge outside that layer.",
+                self.reason()
+            ),
         }
     }
 }
@@ -92,10 +104,12 @@ impl Unavailable {
 /// sandbox cannot run the command unconfined.
 pub fn availability() -> Result<(), Unavailable> {
     if cfg!(target_os = "macos") {
-        return if Path::new("/usr/bin/sandbox-exec").exists() {
+        return if !Path::new("/usr/bin/sandbox-exec").exists() {
+            Err(Unavailable::MissingDependency("sandbox-exec"))
+        } else if seatbelt_applicable() {
             Ok(())
         } else {
-            Err(Unavailable::MissingDependency("sandbox-exec"))
+            Err(Unavailable::CannotApply)
         };
     }
     if cfg!(target_os = "linux") {
@@ -106,6 +120,27 @@ pub fn availability() -> Result<(), Unavailable> {
         };
     }
     Err(Unavailable::UnsupportedPlatform)
+}
+
+/// Whether the kernel actually lets us apply a Seatbelt profile.
+///
+/// `/usr/bin/sandbox-exec` existing says nothing about whether
+/// `sandbox_apply` succeeds: when Forge itself runs inside another
+/// confinement layer (a CI sandbox, an agent harness), entering a second
+/// sandbox fails with `Operation not permitted`. Probed once and cached —
+/// a host does not change its mind mid-process.
+fn seatbelt_applicable() -> bool {
+    static APPLICABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *APPLICABLE.get_or_init(|| {
+        std::process::Command::new("/usr/bin/sandbox-exec")
+            .arg("-p")
+            .arg("(version 1)\n(allow default)\n")
+            .arg("/usr/bin/true")
+            .stdin(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
 }
 
 /// Where `bwrap` lives, if it is installed.
@@ -795,6 +830,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn wrap_shell_command_produces_a_sandbox_exec_invocation() {
+        if availability().is_err() {
+            eprintln!("skipping: this host cannot confine processes");
+            return;
+        }
         let ws = workspace();
         let (program, args) = wrap_shell_command(
             "/bin/bash",

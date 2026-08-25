@@ -1479,7 +1479,11 @@ mod tests {
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         let mut openai = crate::openai::openai_profile();
-        openai.default_base_url = Some(mock_http(vec![(200, r#"{"data":[]}"#, vec![])]));
+        let Some(mock_url) = mock_http(vec![(200, r#"{"data":[]}"#, vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        openai.default_base_url = Some(mock_url);
         reg.register(openai);
         let mut svc = ConnectService {
             registry: &reg,
@@ -1504,7 +1508,11 @@ mod tests {
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         let mut anthropic = crate::anthropic::anthropic_profile();
-        anthropic.default_base_url = Some(mock_http(vec![(401, "bad key", vec![])]));
+        let Some(mock_url) = mock_http(vec![(401, "bad key", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        anthropic.default_base_url = Some(mock_url);
         reg.register(anthropic);
         let mut svc = ConnectService {
             registry: &reg,
@@ -1530,15 +1538,20 @@ mod tests {
         let mut reg = ConnectRegistry::new();
 
         let mut go = crate::opencode_go::opencode_go_profile();
-        go.default_base_url = Some(mock_http(vec![(
-            200,
-            r#"{"data":[{"id":"gpt-4.1-mini"}]}"#,
-            vec![],
-        )]));
+        let Some(mock_url) = mock_http(vec![(200, r#"{"data":[{"id":"gpt-4.1-mini"}]}"#, vec![])])
+        else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        go.default_base_url = Some(mock_url);
         reg.register(go);
 
         let mut ollama = crate::ollama::ollama_profile();
-        ollama.default_base_url = Some(mock_http(vec![(200, r#"{"models":[]}"#, vec![])]));
+        let Some(mock_url) = mock_http(vec![(200, r#"{"models":[]}"#, vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        ollama.default_base_url = Some(mock_url);
         reg.register(ollama);
 
         let mut svc = ConnectService {
@@ -1571,11 +1584,15 @@ mod tests {
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         let mut zen = crate::opencode_zen::opencode_zen_profile();
-        zen.default_base_url = Some(mock_http(vec![(
+        let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"data":[{"id":"claude-sonnet-4"}]}"#,
             vec![],
-        )]));
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        zen.default_base_url = Some(mock_url);
         reg.register(zen);
         let mut svc = ConnectService {
             registry: &reg,
@@ -1684,11 +1701,14 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER", "FORGE_CONNECT_SKIP_VERIFY"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"access_token":"refreshed","refresh_token":"new-rt","expires_in":3600}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
         guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
 
@@ -1727,11 +1747,14 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER", "FORGE_CONNECT_SKIP_VERIFY"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"access_token":"poll-access","refresh_token":"poll-refresh","expires_in":3600}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
         guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
 

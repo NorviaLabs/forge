@@ -1512,11 +1512,15 @@ mod tests {
         cache.put(&profile.id, vec!["xai/grok-3".into()]).unwrap();
         assert!(cache.is_fresh(&profile.id));
 
-        profile.default_base_url = Some(mock_http(vec![(
+        let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"data":[{"id":"grok-3"},{"id":"grok-4.6"}]}"#,
             vec![],
-        )]));
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        profile.default_base_url = Some(mock_url);
 
         let entries = models_for_picker(&[profile], &store, &cache, true);
         assert_eq!(
@@ -1817,55 +1821,69 @@ mod tests {
     #[test]
     fn fetch_remote_models_uses_profile_specific_http_shapes() {
         let mut openai = openai_profile();
-        openai.default_base_url = Some(mock_http(vec![(
+        let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"data":[{"id":"gpt-4.1-mini"},{"id":"text-embedding-3-small"}]}"#,
             vec![],
-        )]));
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        openai.default_base_url = Some(mock_url);
         assert_eq!(
             fetch_remote_models(&openai, Some("sk-test")).unwrap(),
             vec!["openai/gpt-4.1-mini"]
         );
 
         let mut go = crate::opencode_go::opencode_go_profile();
-        go.default_base_url = Some(mock_http(vec![(
-            200,
-            r#"{"data":[{"id":"gpt-4.1-mini"}]}"#,
-            vec![],
-        )]));
+        let Some(mock_url) = mock_http(vec![(200, r#"{"data":[{"id":"gpt-4.1-mini"}]}"#, vec![])])
+        else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        go.default_base_url = Some(mock_url);
         assert_eq!(
             fetch_remote_models(&go, Some("go-test")).unwrap(),
             vec!["opencode-go/gpt-4.1-mini"]
         );
 
         let mut zen = crate::opencode_zen::opencode_zen_profile();
-        zen.default_base_url = Some(mock_http(vec![(
-            200,
-            r#"{"models":["claude-sonnet-4"]}"#,
-            vec![],
-        )]));
+        let Some(mock_url) = mock_http(vec![(200, r#"{"models":["claude-sonnet-4"]}"#, vec![])])
+        else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        zen.default_base_url = Some(mock_url);
         assert_eq!(
             fetch_remote_models(&zen, Some("zen-test")).unwrap(),
             vec!["opencode-zen/claude-sonnet-4"]
         );
 
         let mut xai = crate::xai::xai_grok_profile();
-        xai.default_base_url = Some(mock_http(vec![(
+        let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"data":[{"slug":"grok-code-fast"}]}"#,
             vec![],
-        )]));
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        xai.default_base_url = Some(mock_url);
         assert_eq!(
             fetch_remote_models(&xai, Some("xai-token")).unwrap(),
             vec!["xai/grok-code-fast"]
         );
 
         let mut codex = crate::openai_codex::openai_codex_profile();
-        codex.default_base_url = Some(mock_http(vec![(
+        let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"models":[{"slug":"gpt-5.6-sol"},{"slug":"codex-auto-review"}]}"#,
             vec![],
-        )]));
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        codex.default_base_url = Some(mock_url);
         let token = codex_access_token_for_tests();
         assert_eq!(
             fetch_remote_models(&codex, Some(&token)).unwrap(),
@@ -1887,35 +1905,47 @@ mod tests {
     #[test]
     fn fetch_remote_models_covers_anthropic_and_ollama_fallbacks() {
         let mut anthropic = crate::anthropic::anthropic_profile();
-        anthropic.default_base_url = Some(mock_http(vec![
+        let Some(mock_url) = mock_http(vec![
             (400, "query rejected", vec![]),
             (
                 200,
                 r#"{"data":[{"id":"claude-sonnet-4-20250514"}]}"#,
                 vec![],
             ),
-        ]));
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        anthropic.default_base_url = Some(mock_url);
         assert_eq!(
             fetch_remote_models(&anthropic, Some("sk-ant-test")).unwrap(),
             vec!["anthropic/claude-sonnet-4-20250514"]
         );
 
         let mut ollama = crate::ollama::ollama_profile();
-        ollama.default_base_url = Some(mock_http(vec![(
+        let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"models":[{"name":"qwen2.5-coder:latest"}]}"#,
             vec![],
-        )]));
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        ollama.default_base_url = Some(mock_url);
         assert_eq!(
             fetch_remote_models(&ollama, None).unwrap(),
             vec!["ollama/qwen2.5-coder:latest"]
         );
 
         let mut ollama_fallback = crate::ollama::ollama_profile();
-        ollama_fallback.default_base_url = Some(mock_http(vec![
+        let Some(mock_url) = mock_http(vec![
             (200, r#"{"models":[]}"#, vec![]),
             (200, r#"{"data":[{"id":"llama3.2"}]}"#, vec![]),
-        ]));
+        ]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        ollama_fallback.default_base_url = Some(mock_url);
         assert_eq!(
             fetch_remote_models(&ollama_fallback, None).unwrap(),
             vec!["ollama/llama3.2"]
@@ -1924,23 +1954,32 @@ mod tests {
 
     #[test]
     fn http_get_json_ids_reports_redirect_and_json_errors() {
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             302,
             "",
             vec![("Location", "http://127.0.0.1:9/models")],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let err = http_get_json_ids(&format!("{base}/models"), &[])
             .unwrap_err()
             .to_string();
         assert!(err.contains("catalog GET"), "{err}");
 
-        let base = mock_http(vec![(200, "{not-json", vec![])]);
+        let Some(base) = mock_http(vec![(200, "{not-json", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let err = http_get_json_ids(&format!("{base}/models"), &[])
             .unwrap_err()
             .to_string();
         assert!(err.contains("catalog JSON"), "{err}");
 
-        let base = mock_http(vec![(400, "bad request body", vec![])]);
+        let Some(base) = mock_http(vec![(400, "bad request body", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         let err = http_get_json_ids(&format!("{base}/models"), &[])
             .unwrap_err()
             .to_string();
@@ -2013,11 +2052,14 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_MODELS_DEV_URL"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"limit":{"context":128000,"output":16384},"tool_call":true,"modalities":{"output":["text"]}},"gpt-4o":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"input":["text","image"],"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]},"gpt-5.2":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["none","low","medium","high","xhigh"]}]}}},"xai":{"models":{"grok-4.6":{"cost":{"input":2.0,"output":6.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}]}}}}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_MODELS_DEV_URL", &base);
 
         let dir = tempdir().unwrap();

@@ -410,11 +410,14 @@ mod tests {
             crate::openai_codex::ACCOUNT_ID_ENV,
         ];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"plan_type":"plus","rate_limit":{"limit_reached":false,"primary_window":{"used_percent":10}},"credits":{"balance":5.0}}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set(crate::openai_codex::API_BASE_ENV, &base);
         guard.set(crate::openai_codex::ACCESS_TOKEN_ENV, "access-token");
         guard.set(crate::openai_codex::ACCOUNT_ID_ENV, "account-123");
@@ -454,11 +457,14 @@ mod tests {
             crate::openai_codex::ACCOUNT_ID_ENV,
         ];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"plan_type":"team","rate_limit":{"limit_reached":false,"primary_window":{"used_percent":0}}}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set(crate::openai_codex::API_BASE_ENV, &base);
         guard.set(crate::openai_codex::ACCESS_TOKEN_ENV, "access-token");
         guard.set(crate::openai_codex::ACCOUNT_ID_ENV, "account-123");
@@ -483,11 +489,14 @@ mod tests {
 
         const ENV: &[&str] = &["FORGE_MODELS_DEV_URL"];
         let guard = EnvGuard::new(ENV);
-        let base = mock_http(vec![(
+        let Some(base) = mock_http(vec![(
             200,
             r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0}}}}}"#,
             vec![],
-        )]);
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
         guard.set("FORGE_MODELS_DEV_URL", &base);
 
         let report = provider_cost_report(

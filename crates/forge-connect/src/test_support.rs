@@ -19,8 +19,15 @@ use std::thread;
 ///
 /// The connection is drained of its request and closed gracefully, so the
 /// client never sees a RST mid-response (see module docs).
-pub(crate) fn serve(statuses: Vec<u16>, body: &str) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+pub(crate) fn serve(statuses: Vec<u16>, body: &str) -> Option<String> {
+    let listener = match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return None;
+        }
+        Err(e) => panic!("bind mock listener: {e}"),
+    };
     let address = listener.local_addr().unwrap();
     let body = body.to_string();
     thread::spawn(move || {
@@ -35,7 +42,7 @@ pub(crate) fn serve(statuses: Vec<u16>, body: &str) -> String {
             let _ = stream.shutdown(Shutdown::Write);
         }
     });
-    format!("http://{address}/")
+    Some(format!("http://{address}/"))
 }
 
 /// Drain a single HTTP request so no unread bytes remain in the socket's

@@ -1578,6 +1578,10 @@ mod tests {
 
     #[tokio::test]
     async fn bang_submission_opens_terminal_and_records_history() {
+        if !crate::interactive_terminal::pty_allocation_available() {
+            eprintln!("skipping: this host denies PTY allocation");
+            return;
+        }
         let (_dir, mut app) = app().await;
         focus_composer(&mut app);
         app.input.set_text("!printf bang");
@@ -1596,6 +1600,10 @@ mod tests {
 
     #[tokio::test]
     async fn bang_submission_rejects_a_busy_embedded_terminal() {
+        if !crate::interactive_terminal::pty_allocation_available() {
+            eprintln!("skipping: this host denies PTY allocation");
+            return;
+        }
         let (_dir, mut app) = app().await;
         focus_composer(&mut app);
         app.input.set_text("!sleep 1");
@@ -1611,6 +1619,10 @@ mod tests {
 
     #[tokio::test]
     async fn lone_bang_opens_terminal_without_running_a_command() {
+        if !crate::interactive_terminal::pty_allocation_available() {
+            eprintln!("skipping: this host denies PTY allocation");
+            return;
+        }
         let (_dir, mut app) = app().await;
         focus_composer(&mut app);
         app.input.set_text("!");

@@ -619,7 +619,11 @@ mod tests {
             "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\\\"ls\\\"}\"}}\n\n",
             "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n"
         );
-        let (base_url, request_rx) = serve_once("200 OK", "text/event-stream", sse).await;
+        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
         let mut config = Config::default();
         config.model.base_url = Some(base_url);
         config.model.api_key = Some("anthropic-secret".into());
@@ -698,7 +702,11 @@ mod tests {
             Err(ModelError::MissingApiKey)
         ));
 
-        let (base_url, _) = serve_once("401 Unauthorized", "text/plain", "bad key").await;
+        let Some((base_url, _)) = serve_once("401 Unauthorized", "text/plain", "bad key").await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
         let mut config = Config::default();
         config.model.base_url = Some(format!("{base_url}/v1"));
         config.model.api_key = Some("bad".into());

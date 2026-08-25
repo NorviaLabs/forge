@@ -12,8 +12,15 @@ mod test_support {
         status: &str,
         content_type: &str,
         body: &str,
-    ) -> (String, oneshot::Receiver<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    ) -> Option<(String, oneshot::Receiver<String>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("skipping: this host denies binding a mock listener");
+                return None;
+            }
+            Err(e) => panic!("bind mock listener: {e}"),
+        };
         let address = listener.local_addr().unwrap();
         let status = status.to_string();
         let content_type = content_type.to_string();
@@ -58,7 +65,7 @@ mod test_support {
             socket.write_all(response.as_bytes()).await.unwrap();
             socket.shutdown().await.unwrap();
         });
-        (format!("http://{address}"), request_rx)
+        Some((format!("http://{address}"), request_rx))
     }
 }
 
