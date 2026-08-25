@@ -599,9 +599,9 @@ async fn approval_card_renders_in_every_shipped_theme() {
                 rendered.contains("don't run"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
-            // The card's border must close on every theme and width.
+            // The prompt is a rail, not a box, on every theme and width.
             assert!(
-                rendered.contains("Approval needed") && rendered.contains('\u{256f}'),
+                rendered.contains("Approval needed") && rendered.contains('\u{2502}'),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             for line in rendered.lines() {
