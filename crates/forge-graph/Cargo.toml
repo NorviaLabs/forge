@@ -9,10 +9,6 @@ description = "Repo-wide symbol graph (find_definition/find_references) — synt
 forge-syntax = { workspace = true }
 tree-sitter = "0.26"
 tree-sitter-rust = "0.23"
-tree-sitter-python = "0.25"
-tree-sitter-go = "0.23"
-tree-sitter-typescript = "0.23"
-tree-sitter-javascript = "0.25"
 streaming-iterator = "0.1"
 sqlx = { workspace = true }
 tokio = { workspace = true }

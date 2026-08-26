@@ -7,11 +7,7 @@
 //! than one symbol matches) happens later, in `store.rs`'s second pass, once
 //! every language's symbols are known — see the module doc there.
 
-pub mod go;
-pub mod javascript;
-pub mod python;
 pub mod rust;
-pub mod typescript;
 
 use std::path::Path;
 
