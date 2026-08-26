@@ -7,7 +7,6 @@ mod credentials;
 mod edit;
 pub mod egress;
 mod fast_file_tools;
-pub mod graph;
 mod invocation;
 mod output_filters;
 mod registry;
@@ -21,15 +20,12 @@ pub mod web_search;
 
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
-    default_builtins, default_builtins_with_web_search, default_builtins_with_web_search_and_graph,
-    run_shell_command, run_shell_command_with_egress, run_shell_command_with_egress_and_temp,
-    AskUserQuestionTool, BashTool, GitTool, LsTool, ReadFileTool, UpdatePlanTool, WriteFileTool,
+    default_builtins, default_builtins_with_web_search, run_shell_command,
+    run_shell_command_with_egress, run_shell_command_with_egress_and_temp, AskUserQuestionTool,
+    BashTool, GitTool, LsTool, ReadFileTool, UpdatePlanTool, WriteFileTool,
     PROVIDER_CREDENTIAL_ENV,
 };
 pub use edit::{EditArgs, EditTool};
-pub use graph::{
-    graph_tools, FindDefinitionArgs, FindDefinitionTool, FindReferencesArgs, FindReferencesTool,
-};
 pub use invocation::tool_invocation;
 pub use output_filters::compress_tool_output;
 pub use registry::{

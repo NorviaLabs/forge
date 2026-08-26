@@ -671,10 +671,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Log out and clear credentials".into(),
         },
         PaletteItem {
-            cmd: "/graph".into(),
-            desc: "Toggle the workspace symbol graph on/off".into(),
-        },
-        PaletteItem {
             cmd: "/quit".into(),
             desc: "Exit TUI".into(),
         },

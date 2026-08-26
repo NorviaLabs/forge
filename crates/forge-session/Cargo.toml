@@ -10,7 +10,6 @@ forge-config = { workspace = true }
 forge-connect = { workspace = true }
 forge-core = { workspace = true }
 forge-governance = { workspace = true }
-forge-graph = { workspace = true }
 forge-mcp = { workspace = true }
 forge-model = { workspace = true }
 forge-storage = { workspace = true }
