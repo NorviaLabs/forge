@@ -145,8 +145,6 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
-            graph: None,
-            graph_enabled: true,
         })
     }
 
@@ -248,8 +246,6 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
-            graph: None,
-            graph_enabled: true,
         };
         child.reconcile_incomplete_intents(&incomplete).await?;
         // Deliberately no `mark_interrupted_if_stale()` here — that method

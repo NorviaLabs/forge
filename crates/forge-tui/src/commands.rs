@@ -57,11 +57,6 @@ pub enum SlashCommand {
     Diff {
         source: crate::diff_view::DiffSource,
     },
-    /// Toggle the workspace symbol graph (`find_definition`/`find_references`)
-    /// on or off. `None` reports current status without changing it.
-    Graph {
-        on: Option<bool>,
-    },
 }
 
 impl SlashCommand {
@@ -78,7 +73,6 @@ impl SlashCommand {
                 | Self::Connect
                 | Self::Disconnect { .. }
                 | Self::Edit
-                | Self::Graph { .. }
         )
     }
 }
@@ -144,16 +138,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             Some(_) => Err(CommandError::Usage("/diff [turn]".into())),
         },
         "terminal" | "term" | "shell" => Ok(SlashCommand::Terminal),
-        "graph" => match parts.next() {
-            None => Ok(SlashCommand::Graph { on: None }),
-            Some(arg) if arg.eq_ignore_ascii_case("on") || arg.eq_ignore_ascii_case("enable") => {
-                Ok(SlashCommand::Graph { on: Some(true) })
-            }
-            Some(arg) if arg.eq_ignore_ascii_case("off") || arg.eq_ignore_ascii_case("disable") => {
-                Ok(SlashCommand::Graph { on: Some(false) })
-            }
-            Some(_) => Err(CommandError::Usage("/graph [on|off]".into())),
-        },
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -177,7 +161,6 @@ mod tests {
             SlashCommand::Connect,
             SlashCommand::Disconnect { profile_id: None },
             SlashCommand::Edit,
-            SlashCommand::Graph { on: None },
         ] {
             assert!(!command.available_while_busy(), "{command:?}");
         }
@@ -193,32 +176,6 @@ mod tests {
         ] {
             assert!(command.available_while_busy(), "{command:?}");
         }
-    }
-
-    #[test]
-    fn graph_parses_bare_status_and_on_off_synonyms() {
-        assert_eq!(
-            parse_slash("/graph").unwrap().unwrap(),
-            SlashCommand::Graph { on: None }
-        );
-        for line in ["/graph on", "/graph enable", "/graph ON"] {
-            assert_eq!(
-                parse_slash(line).unwrap().unwrap(),
-                SlashCommand::Graph { on: Some(true) },
-                "{line}"
-            );
-        }
-        for line in ["/graph off", "/graph disable"] {
-            assert_eq!(
-                parse_slash(line).unwrap().unwrap(),
-                SlashCommand::Graph { on: Some(false) },
-                "{line}"
-            );
-        }
-        assert!(matches!(
-            parse_slash("/graph bogus").unwrap(),
-            Err(CommandError::Usage(_))
-        ));
     }
 
     #[test]

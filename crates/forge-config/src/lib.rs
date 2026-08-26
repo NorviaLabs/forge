@@ -444,31 +444,6 @@ impl WebSearchConfig {
 pub struct ToolsConfig {
     #[serde(default)]
     pub web_search: WebSearchConfig,
-    #[serde(default)]
-    pub graph: GraphConfig,
-}
-
-/// `find_definition`/`find_references` — enabled by default, no headless
-/// toggle in v1 (see `crates/forge-graph`'s design notes: the TUI's
-/// `/graph` command flips a runtime flag, but `run_headless` has no
-/// slash-command interception layer to hook the same toggle into, so this
-/// config field is headless's only lever).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GraphConfig {
-    #[serde(default = "default_graph_enabled")]
-    pub enabled: bool,
-}
-
-fn default_graph_enabled() -> bool {
-    true
-}
-
-impl Default for GraphConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_graph_enabled(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -679,12 +654,6 @@ struct ConfigFile {
 #[derive(Debug, Default, Deserialize)]
 struct ToolsConfigFile {
     web_search: Option<WebSearchConfigFile>,
-    graph: Option<GraphConfigFile>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct GraphConfigFile {
-    enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -757,11 +726,6 @@ impl ConfigFile {
         if let Some(tools) = self.tools {
             if let Some(ws) = tools.web_search {
                 apply_web_search_file(&mut cfg.tools.web_search, ws);
-            }
-            if let Some(graph) = tools.graph {
-                if let Some(e) = graph.enabled {
-                    cfg.tools.graph.enabled = e;
-                }
             }
         }
         cfg.refused_project_keys.extend(refused);
@@ -1368,26 +1332,6 @@ max_query_chars = 200
         assert!(!ws.require_key);
         assert_eq!(ws.max_query_chars, 200);
         assert_eq!(ws.resolved_api_key_env().as_deref(), Some("MY_TAVILY"));
-    }
-
-    #[test]
-    fn graph_config_defaults_to_enabled() {
-        let cfg = Config::default();
-        assert!(cfg.tools.graph.enabled);
-    }
-
-    #[test]
-    fn graph_toml_disables_the_knowledge_graph() {
-        let _g = EnvGuard::clear_forge_env();
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("forge.toml");
-        fs::write(&path, "[tools.graph]\nenabled = false\n").unwrap();
-        let cfg = Config::load(ConfigOverrides {
-            config_path: Some(path),
-            ..Default::default()
-        })
-        .unwrap();
-        assert!(!cfg.tools.graph.enabled);
     }
 
     #[test]

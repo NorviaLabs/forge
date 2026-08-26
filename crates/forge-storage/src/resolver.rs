@@ -44,10 +44,6 @@ pub enum RuntimeDataKind {
     /// git-excluded exactly like session/queue state, never a user-visible
     /// project change.
     Worktree,
-    /// Persisted symbol/edge graph for `find_definition`/`find_references`
-    /// — one store per repo/workspace, built once and kept live across
-    /// sessions. See `forge-graph`.
-    Graph,
 }
 
 impl RuntimeDataKind {
@@ -63,7 +59,6 @@ impl RuntimeDataKind {
             Self::Checkpoint => "checkpoints",
             Self::Attachment => "attachments",
             Self::Worktree => "worktrees",
-            Self::Graph => "graph",
         }
     }
 }

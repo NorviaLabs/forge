@@ -91,20 +91,6 @@ pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
     (cfg.journal_dir(), Vec::new())
 }
 
-/// Opens (building if empty) the workspace's persisted symbol graph at
-/// `RuntimeDataKind::Graph`, and starts its live filesystem watcher. The
-/// `/graph` slash command pauses/resumes the watcher via
-/// `AgentSession::set_graph_enabled` — this function only handles the
-/// session-open path, not later toggles.
-async fn open_graph(workspace: &std::path::Path) -> anyhow::Result<forge_graph::GraphHandle> {
-    let storage = LocalRuntimeStorage::new(workspace);
-    let dir = storage.path_for(RuntimeDataKind::Graph)?;
-    let db_path = dir.join("graph.db");
-    forge_graph::GraphHandle::open(workspace, &db_path)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))
-}
-
 /// Collect stored OAuth / API-key material for the native model client.
 ///
 /// Returns the pairs instead of exporting them. `NativeModelClient` reads its
@@ -189,24 +175,6 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
         forge_mcp::install_search_tools(&mut tools);
     }
 
-    let graph_handle = if cfg.tools.graph.enabled {
-        match open_graph(cfg.workspace_root()).await {
-            Ok(handle) => {
-                let handle = Arc::new(handle);
-                for tool in forge_tools::graph_tools(Some(handle.clone())) {
-                    tools.register(tool);
-                }
-                Some(handle)
-            }
-            Err(e) => {
-                notices.push(format!("graph: {e}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     let (journal_dir, storage_notices) = resolve_journal_dir(cfg);
     notices.extend(storage_notices);
     let loop_cfg = LoopConfig {
@@ -227,7 +195,6 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
             .await
             .map_err(|e| anyhow::anyhow!(e))?
     };
-    session.set_graph(graph_handle);
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());
         let cache = forge_connect::ModelCatalogCache::user_default();
@@ -354,77 +321,6 @@ mod tests {
         let opened = open_session(&cfg, SessionTarget::New).await.unwrap();
         assert!(opened.notices.is_empty());
         assert_eq!(opened.session.session_id.to_string().len(), 36);
-    }
-
-    #[tokio::test]
-    async fn open_session_registers_graph_tools_when_enabled() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        let mut cfg = Config::default();
-        cfg.model.provider = forge_config::ModelProviderKind::Mock;
-        cfg.model.model = "mock".into();
-        cfg.resolved_workspace = temp.path().to_path_buf();
-        cfg.workspace_root = Some(temp.path().display().to_string());
-        assert!(cfg.tools.graph.enabled, "graph is enabled by default");
-
-        let opened = open_session(&cfg, SessionTarget::New).await.unwrap();
-        let tools = opened.session.list_tools();
-        assert!(tools.contains(&"find_definition".to_string()));
-        assert!(tools.contains(&"find_references".to_string()));
-    }
-
-    #[tokio::test]
-    async fn open_session_omits_graph_tools_when_disabled() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        let mut cfg = Config::default();
-        cfg.model.provider = forge_config::ModelProviderKind::Mock;
-        cfg.model.model = "mock".into();
-        cfg.resolved_workspace = temp.path().to_path_buf();
-        cfg.workspace_root = Some(temp.path().display().to_string());
-        cfg.tools.graph.enabled = false;
-
-        let opened = open_session(&cfg, SessionTarget::New).await.unwrap();
-        let tools = opened.session.list_tools();
-        assert!(!tools.contains(&"find_definition".to_string()));
-        assert!(!tools.contains(&"find_references".to_string()));
-    }
-
-    #[tokio::test]
-    async fn open_session_attaches_the_graph_handle_so_the_toggle_can_pause_and_resume_it() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        let mut cfg = Config::default();
-        cfg.model.provider = forge_config::ModelProviderKind::Mock;
-        cfg.model.model = "mock".into();
-        cfg.resolved_workspace = temp.path().to_path_buf();
-        cfg.workspace_root = Some(temp.path().display().to_string());
-
-        let mut opened = open_session(&cfg, SessionTarget::New).await.unwrap();
-        assert!(opened.session.has_graph());
-        assert!(opened.session.graph_enabled());
-
-        assert!(opened.session.set_graph_enabled(false).await);
-        assert!(!opened.session.graph_enabled());
-        assert!(opened.session.set_graph_enabled(true).await);
-        assert!(opened.session.graph_enabled());
-    }
-
-    #[tokio::test]
-    async fn open_session_without_a_graph_reports_no_graph_and_ignores_the_toggle() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        let mut cfg = Config::default();
-        cfg.model.provider = forge_config::ModelProviderKind::Mock;
-        cfg.model.model = "mock".into();
-        cfg.resolved_workspace = temp.path().to_path_buf();
-        cfg.workspace_root = Some(temp.path().display().to_string());
-        cfg.tools.graph.enabled = false;
-
-        let mut opened = open_session(&cfg, SessionTarget::New).await.unwrap();
-        assert!(!opened.session.has_graph());
-        assert!(!opened.session.graph_enabled());
-        assert!(!opened.session.set_graph_enabled(true).await);
     }
 
     #[test]
