@@ -211,9 +211,9 @@ impl GraphStore {
             .collect())
     }
 
-    /// Deletes every row (symbols, their outgoing/incoming edges, and the
-    /// `files` bookkeeping row) for one file — the unit of work incremental
-    /// re-extraction (the watcher) replaces.
+    /// Deletes every row (symbols + their outgoing/incoming edges) for one
+    /// file — the unit of work an incremental re-extraction (PR3's watcher)
+    /// replaces. Exposed now so PR3 doesn't need a store-layer change.
     pub async fn clear_file(&self, file: &str) -> Result<(), GraphError> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -228,54 +228,8 @@ impl GraphStore {
             .bind(file)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM files WHERE path = ?")
-            .bind(file)
-            .execute(&mut *tx)
-            .await?;
         tx.commit().await?;
         Ok(())
-    }
-
-    /// Records (or updates) `file`'s language and content hash — the
-    /// watcher's basis for skipping a re-extraction when a save didn't
-    /// actually change the bytes (an editor touching mtime, a no-op
-    /// checkout).
-    pub async fn upsert_file(
-        &self,
-        file: &str,
-        lang: &str,
-        content_hash: &str,
-    ) -> Result<(), GraphError> {
-        sqlx::query(
-            "INSERT INTO files (path, lang, content_hash) VALUES (?, ?, ?) \
-             ON CONFLICT(path) DO UPDATE SET lang = excluded.lang, content_hash = excluded.content_hash",
-        )
-        .bind(file)
-        .bind(lang)
-        .bind(content_hash)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// The content hash `file` was last indexed at, if it's ever been
-    /// indexed. Used by the pause/resume catch-up sweep: unchanged hash
-    /// means nothing to redo.
-    pub async fn file_content_hash(&self, file: &str) -> Result<Option<String>, GraphError> {
-        let row = sqlx::query("SELECT content_hash FROM files WHERE path = ?")
-            .bind(file)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row.map(|r| r.get::<String, _>(0)))
-    }
-
-    /// Every file path currently indexed — the catch-up sweep's starting
-    /// set (compared against what's actually on disk after a pause).
-    pub async fn tracked_files(&self) -> Result<Vec<String>, GraphError> {
-        let rows = sqlx::query("SELECT path FROM files")
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().map(|r| r.get(0)).collect())
     }
 }
 
@@ -443,44 +397,5 @@ mod tests {
         store.clear_file("b.rs").await.unwrap();
         assert!(store.find_definition("callee").await.unwrap().is_empty());
         assert!(store.find_references("callee").await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn upsert_file_round_trips_and_updates_in_place() {
-        let store = GraphStore::open_in_memory().await.unwrap();
-        store.upsert_file("a.rs", "rust", "hash1").await.unwrap();
-        assert_eq!(
-            store.file_content_hash("a.rs").await.unwrap().as_deref(),
-            Some("hash1")
-        );
-        store.upsert_file("a.rs", "rust", "hash2").await.unwrap();
-        assert_eq!(
-            store.file_content_hash("a.rs").await.unwrap().as_deref(),
-            Some("hash2"),
-            "a second upsert must replace, not duplicate, the row"
-        );
-        assert_eq!(
-            store.tracked_files().await.unwrap(),
-            vec!["a.rs".to_string()]
-        );
-    }
-
-    #[tokio::test]
-    async fn file_content_hash_is_none_for_an_untracked_file() {
-        let store = GraphStore::open_in_memory().await.unwrap();
-        assert!(store
-            .file_content_hash("never-seen.rs")
-            .await
-            .unwrap()
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn clear_file_removes_its_files_bookkeeping_row_too() {
-        let store = GraphStore::open_in_memory().await.unwrap();
-        store.upsert_file("a.rs", "rust", "hash1").await.unwrap();
-        store.clear_file("a.rs").await.unwrap();
-        assert!(store.file_content_hash("a.rs").await.unwrap().is_none());
-        assert!(store.tracked_files().await.unwrap().is_empty());
     }
 }

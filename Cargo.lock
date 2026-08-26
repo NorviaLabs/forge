@@ -1287,7 +1287,6 @@ dependencies = [
  "forge-context",
  "forge-durable",
  "forge-governance",
- "forge-graph",
  "forge-model",
  "forge-storage",
  "forge-tools",
@@ -1331,7 +1330,6 @@ name = "forge-graph"
 version = "0.1.0-beta.6"
 dependencies = [
  "forge-syntax",
- "notify 8.2.0",
  "sqlx",
  "streaming-iterator",
  "tempfile",
