@@ -19,6 +19,21 @@ pub(crate) fn descriptor_tokens(t: &forge_types::ToolDescriptor) -> usize {
         .saturating_add(estimate_tokens(&t.input_schema.to_string()))
 }
 
+/// Command-aware compression for a recognized shell/git invocation — see
+/// `forge_tools::compress_tool_output`. Runs before the generic
+/// size-threshold offload so a well-known output shape (a passing test run,
+/// a diff's own bookkeeping headers) loses only the parts a human would
+/// also skip past. A no-op for anything it doesn't recognize.
+pub(crate) fn compress_recognized_command_output(
+    call: &forge_types::ToolCall,
+    content: String,
+) -> String {
+    match forge_tools::compress_tool_output(&call.name, &call.arguments, &content) {
+        Some(compressed) => compressed,
+        None => content,
+    }
+}
+
 /// Discovery stage of progressive disclosure (issue #226): a skill with
 /// frontmatter contributes only its `name` + `description` here — its full
 /// `SKILL.md` body is fetched on demand via the `load_skill` tool once the
