@@ -4,7 +4,10 @@ use forge_durable::ToolResultPayload;
 use forge_tools::{ToolError, ValidationBudget};
 use forge_types::{ExecutionOutcome, Message, MessageRole, ToolCall, ToolOutput};
 
-use crate::{tool_validation_failed_content, AgentSession, LoopError, TurnEvent};
+use crate::{
+    compress_recognized_command_output, tool_validation_failed_content, AgentSession, LoopError,
+    TurnEvent,
+};
 
 const INTERRUPTED_TOOL_MSG: &str =
     "Tool execution was interrupted before a result was recorded. Forge did not re-run this tool because it is not marked idempotent.";
@@ -135,6 +138,7 @@ impl AgentSession {
                 self.push_success_evidence(call, pre_edit, pre_git, &output)
                     .await;
                 if self.enable_context {
+                    output.content = compress_recognized_command_output(call, output.content);
                     output.content = self.context.maybe_offload_tool_content(output.content)?;
                 }
                 self.freeze_tool_output(&mut output);

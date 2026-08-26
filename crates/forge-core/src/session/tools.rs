@@ -648,6 +648,7 @@ impl AgentSession {
                     self.push_success_evidence(&call, pre_edit, pre_git, &output)
                         .await;
                     if self.enable_context {
+                        output.content = compress_recognized_command_output(&call, output.content);
                         output.content = self.context.maybe_offload_tool_content(output.content)?;
                     }
                     self.freeze_tool_output(&mut output);
@@ -817,6 +818,7 @@ impl AgentSession {
                 self.push_success_evidence(&call, pre_edit, pre_git, &output)
                     .await;
                 if self.enable_context {
+                    output.content = compress_recognized_command_output(&call, output.content);
                     output.content = self.context.maybe_offload_tool_content(output.content)?;
                 }
                 self.freeze_tool_output(&mut output);
