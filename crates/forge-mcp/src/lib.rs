@@ -7,7 +7,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use forge_config::McpServerConfig;
 use forge_tools::{Tool, ToolContext, ToolError, ToolRegistry};
-use forge_types::{SideEffectClass, ToolOutput};
+use forge_types::{
+    SideEffectClass, ToolDescriptor, ToolOutput, MCP_TOOL_NAME_PREFIX, SEARCH_TOOLS_TOOL_NAME,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -68,11 +70,11 @@ impl Tool for StaticMcpTool {
 
 /// Namespaced MCP tool name: `mcp:<server_id>:<tool>`
 pub fn mcp_tool_name(server_id: &str, tool: &str) -> String {
-    format!("mcp:{server_id}:{tool}")
+    format!("{MCP_TOOL_NAME_PREFIX}{server_id}:{tool}")
 }
 
 pub fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
-    let rest = name.strip_prefix("mcp:")?;
+    let rest = name.strip_prefix(MCP_TOOL_NAME_PREFIX)?;
     let (sid, tool) = rest.split_once(':')?;
     Some((sid, tool))
 }
@@ -344,9 +346,44 @@ impl Tool for RemoteMcpTool {
     }
 }
 
+/// A server's `enabled_tools`/`disabled_tools` config, resolved once at
+/// connect time so `register_into` doesn't need the original config list.
+#[derive(Debug, Clone, Default)]
+struct ToolFilter {
+    enabled: Option<Vec<String>>,
+    disabled: Option<Vec<String>>,
+}
+
+impl ToolFilter {
+    fn from_config(cfg: &McpServerConfig) -> Self {
+        Self {
+            enabled: cfg.enabled_tools.clone(),
+            disabled: cfg.disabled_tools.clone(),
+        }
+    }
+
+    /// Applied to the server's own (unnamespaced) tool name — what a config
+    /// author writes is what the MCP server itself calls the tool, not
+    /// forge's `mcp:<server>:<tool>` wire name.
+    fn allows(&self, name: &str) -> bool {
+        if let Some(allow) = &self.enabled {
+            if !allow.iter().any(|n| n == name) {
+                return false;
+            }
+        }
+        if let Some(deny) = &self.disabled {
+            if deny.iter().any(|n| n == name) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 pub struct McpManager {
     clients: HashMap<String, Arc<McpStdioClient>>,
     side_effect_classes: HashMap<String, SideEffectClass>,
+    tool_filters: HashMap<String, ToolFilter>,
 }
 
 impl McpManager {
@@ -354,6 +391,7 @@ impl McpManager {
         Self {
             clients: HashMap::new(),
             side_effect_classes: HashMap::new(),
+            tool_filters: HashMap::new(),
         }
     }
 
@@ -365,6 +403,8 @@ impl McpManager {
                     self.clients.insert(s.id.clone(), Arc::new(c));
                     self.side_effect_classes
                         .insert(s.id.clone(), s.side_effect_class);
+                    self.tool_filters
+                        .insert(s.id.clone(), ToolFilter::from_config(s));
                 }
                 Err(e) => errors.push(format!("{}: {e}", s.id)),
             }
@@ -375,7 +415,14 @@ impl McpManager {
     pub async fn register_into(&self, registry: &mut ToolRegistry) -> Result<(), McpError> {
         for (sid, client) in &self.clients {
             let tools = client.list_tools().await?;
+            let filter = self.tool_filters.get(sid);
+            let admitted = tools.len();
+            let mut registered = 0usize;
             for info in tools {
+                if filter.is_some_and(|f| !f.allows(&info.name)) {
+                    continue;
+                }
+                registered += 1;
                 let full = mcp_tool_name(sid, &info.name);
                 let remote_name = info.name.clone();
                 registry.register(Arc::new(RemoteMcpTool {
@@ -390,6 +437,13 @@ impl McpManager {
                     remote_name,
                 }));
             }
+            // `enabled_tools` naming a tool the server doesn't actually
+            // expose reads as "nothing registered" with no other signal —
+            // this is the one case worth surfacing since it's almost always
+            // a typo, not an intentional empty allowlist.
+            if registered == 0 && admitted > 0 && filter.is_some_and(|f| f.enabled.is_some()) {
+                warn!(server = %sid, "enabled_tools matched none of this server's tools");
+            }
         }
         Ok(())
     }
@@ -399,6 +453,99 @@ impl Default for McpManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// `search_tools` — the meta-tool `forge-core` promotes into the model's
+/// tool list once MCP schema tokens cross its deferral budget (see
+/// `CompactionPolicy::tool_schema_budget`). It lets the model discover a
+/// deferred MCP tool by name and description without paying for every
+/// deferred tool's full JSON schema on every request.
+///
+/// The catalog is a one-time snapshot taken right after MCP registration,
+/// not a live registry lookup: forge only connects MCP servers once, at
+/// session start, so nothing in the catalog can go stale mid-session.
+pub struct SearchToolsTool {
+    catalog: Vec<ToolDescriptor>,
+}
+
+#[async_trait]
+impl Tool for SearchToolsTool {
+    fn name(&self) -> &str {
+        SEARCH_TOOLS_TOOL_NAME
+    }
+    fn description(&self) -> &str {
+        "Find a connected MCP tool by keyword. Most MCP tools are hidden from your tool list \
+         by default to save context — call this with a keyword describing what you need (a \
+         server name, an action, a capability) to see matching tool names and descriptions, \
+         then call the matching tool directly by the name this returns. If your first call to \
+         a newly found tool gets the arguments wrong, the resulting error describes the \
+         correct shape — the tool becomes fully visible, schema included, from then on."
+    }
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "keyword to match against tool names and descriptions"
+                }
+            },
+            "required": ["query"]
+        })
+    }
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Read
+    }
+    async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let matches: Vec<Value> = self
+            .catalog
+            .iter()
+            .filter(|t| {
+                query.is_empty()
+                    || t.name.to_lowercase().contains(&query)
+                    || t.description.to_lowercase().contains(&query)
+            })
+            .take(20)
+            .map(|t| json!({"name": t.name, "description": t.description}))
+            .collect();
+        let content = if matches.is_empty() {
+            format!(
+                "No tools matched \"{query}\" out of {} tools across connected MCP servers.",
+                self.catalog.len()
+            )
+        } else {
+            serde_json::to_string_pretty(&matches).unwrap_or_default()
+        };
+        Ok(ToolOutput {
+            outcome: Default::default(),
+            content,
+            is_error: false,
+            exit_code: None,
+            attachments: Vec::new(),
+        })
+    }
+}
+
+/// Registers `search_tools` against every MCP tool already in `registry` —
+/// call once, after every configured MCP server has finished registering.
+/// A registry with no MCP tools gets no `search_tools` entry: there would
+/// be nothing for it to find.
+pub fn install_search_tools(registry: &mut ToolRegistry) {
+    let catalog: Vec<ToolDescriptor> = registry
+        .list_descriptors()
+        .iter()
+        .filter(|t| t.name.starts_with(MCP_TOOL_NAME_PREFIX))
+        .cloned()
+        .collect();
+    if catalog.is_empty() {
+        return;
+    }
+    registry.register(Arc::new(SearchToolsTool { catalog }));
 }
 
 #[cfg(test)]
@@ -442,6 +589,187 @@ done
         permissions.set_mode(0o755);
         std::fs::set_permissions(script, permissions).unwrap();
         directory
+    }
+
+    #[cfg(unix)]
+    fn fixture_server_two_tools() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}},{"name":"ping","description":"Ping","inputSchema":{"type":"object"}}]}}'
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    fn fixture_cfg(directory: &tempfile::TempDir) -> McpServerConfig {
+        McpServerConfig {
+            id: "fixture".into(),
+            transport: "stdio".into(),
+            command: directory
+                .path()
+                .join("mcp-server.sh")
+                .to_string_lossy()
+                .into_owned(),
+            args: Vec::new(),
+            side_effect_class: SideEffectClass::Exec,
+            enabled_tools: None,
+            disabled_tools: None,
+        }
+    }
+
+    #[test]
+    fn tool_filter_enabled_admits_only_the_named_tools() {
+        let filter = ToolFilter {
+            enabled: Some(vec!["echo".into()]),
+            disabled: None,
+        };
+        assert!(filter.allows("echo"));
+        assert!(!filter.allows("ping"));
+    }
+
+    #[test]
+    fn tool_filter_disabled_drops_the_named_tools_and_admits_the_rest() {
+        let filter = ToolFilter {
+            enabled: None,
+            disabled: Some(vec!["ping".into()]),
+        };
+        assert!(filter.allows("echo"));
+        assert!(!filter.allows("ping"));
+    }
+
+    #[test]
+    fn tool_filter_disabled_wins_over_enabled_for_the_same_name() {
+        let filter = ToolFilter {
+            enabled: Some(vec!["echo".into(), "ping".into()]),
+            disabled: Some(vec!["ping".into()]),
+        };
+        assert!(filter.allows("echo"));
+        assert!(!filter.allows("ping"));
+    }
+
+    #[test]
+    fn tool_filter_default_admits_everything() {
+        assert!(ToolFilter::default().allows("anything"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn enabled_tools_narrows_what_register_into_registers() {
+        let directory = fixture_server_two_tools();
+        let mut cfg = fixture_cfg(&directory);
+        cfg.enabled_tools = Some(vec!["echo".into()]);
+
+        let mut manager = McpManager::new();
+        assert!(manager.connect_all(&[cfg]).await.is_empty());
+
+        let mut registry = ToolRegistry::new();
+        manager.register_into(&mut registry).await.unwrap();
+        let names = registry.names();
+        assert!(names.contains(&"mcp:fixture:echo".to_string()));
+        assert!(
+            !names.contains(&"mcp:fixture:ping".to_string()),
+            "ping should have been filtered out by enabled_tools: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn disabled_tools_drops_only_the_named_tool() {
+        let directory = fixture_server_two_tools();
+        let mut cfg = fixture_cfg(&directory);
+        cfg.disabled_tools = Some(vec!["ping".into()]);
+
+        let mut manager = McpManager::new();
+        assert!(manager.connect_all(&[cfg]).await.is_empty());
+
+        let mut registry = ToolRegistry::new();
+        manager.register_into(&mut registry).await.unwrap();
+        let names = registry.names();
+        assert!(names.contains(&"mcp:fixture:echo".to_string()));
+        assert!(!names.contains(&"mcp:fixture:ping".to_string()));
+    }
+
+    #[test]
+    fn install_search_tools_registers_nothing_when_there_are_no_mcp_tools() {
+        let mut reg = ToolRegistry::new();
+        install_search_tools(&mut reg);
+        assert!(reg.get(SEARCH_TOOLS_TOOL_NAME).is_none());
+    }
+
+    #[test]
+    fn install_search_tools_registers_once_an_mcp_tool_exists() {
+        let mut reg = ToolRegistry::new();
+        register_static_mcp(
+            &mut reg,
+            "demo",
+            vec![StaticMcpTool {
+                server_id: "demo".into(),
+                tool_name: "alpha".into(),
+                description: "does alpha things".into(),
+                schema: json!({"type": "object"}),
+                side_effect_class: SideEffectClass::Exec,
+                handler: Box::new(|_| ToolOutput {
+                    outcome: Default::default(),
+                    content: "ok".into(),
+                    is_error: false,
+                    exit_code: None,
+                    attachments: Vec::new(),
+                }),
+            }],
+        );
+        install_search_tools(&mut reg);
+        assert!(reg.get(SEARCH_TOOLS_TOOL_NAME).is_some());
+    }
+
+    #[tokio::test]
+    async fn search_tools_matches_by_name_or_description_and_ignores_case() {
+        let tool = SearchToolsTool {
+            catalog: vec![
+                ToolDescriptor {
+                    name: "mcp:demo:alpha".into(),
+                    description: "does alpha things".into(),
+                    input_schema: json!({"type": "object"}),
+                    side_effect_class: SideEffectClass::Exec,
+                    idempotent: false,
+                },
+                ToolDescriptor {
+                    name: "mcp:demo:beta".into(),
+                    description: "unrelated capability".into(),
+                    input_schema: json!({"type": "object"}),
+                    side_effect_class: SideEffectClass::Exec,
+                    idempotent: false,
+                },
+            ],
+        };
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+
+        let out = tool.call(&ctx, json!({"query": "ALPHA"})).await.unwrap();
+        assert!(out.content.contains("mcp:demo:alpha"), "{}", out.content);
+        assert!(!out.content.contains("mcp:demo:beta"), "{}", out.content);
+
+        let out = tool
+            .call(&ctx, json!({"query": "nothing matches this"}))
+            .await
+            .unwrap();
+        assert!(out.content.contains("No tools matched"), "{}", out.content);
     }
 
     #[test]
@@ -545,6 +873,8 @@ done
                 .into_owned(),
             args: Vec::new(),
             side_effect_class: SideEffectClass::Exec,
+            enabled_tools: None,
+            disabled_tools: None,
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
 
@@ -575,6 +905,8 @@ done
                 .into_owned(),
             args: Vec::new(),
             side_effect_class: SideEffectClass::Exec,
+            enabled_tools: None,
+            disabled_tools: None,
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
         let (first, second) = tokio::join!(
@@ -593,6 +925,8 @@ done
             command: "true".into(),
             args: Vec::new(),
             side_effect_class: SideEffectClass::Exec,
+            enabled_tools: None,
+            disabled_tools: None,
         };
         match McpStdioClient::spawn(&cfg).await {
             Err(McpError::Protocol(message)) => {
@@ -617,6 +951,8 @@ done
                 .into_owned(),
             args: Vec::new(),
             side_effect_class: SideEffectClass::Exec,
+            enabled_tools: None,
+            disabled_tools: None,
         };
 
         let mut manager = McpManager::new();
@@ -651,6 +987,8 @@ done
                 command: "/no/such/mcp-server".into(),
                 args: Vec::new(),
                 side_effect_class: SideEffectClass::Exec,
+                enabled_tools: None,
+                disabled_tools: None,
             }])
             .await;
         assert_eq!(errors.len(), 1);

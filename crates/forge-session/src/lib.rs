@@ -172,6 +172,7 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
             notices.push(format!("mcp: {e}"));
         }
         let _ = mgr.register_into(&mut tools).await;
+        forge_mcp::install_search_tools(&mut tools);
     }
 
     let (journal_dir, storage_notices) = resolve_journal_dir(cfg);

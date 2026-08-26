@@ -124,6 +124,11 @@ pub struct TokenUsageReport {
     pub assistant_tokens_est: usize,
     pub tool_tokens_est: usize,
     pub thinking_in_context_est: usize,
+    /// Estimated wire cost of the tool schemas sent with every request
+    /// (name + description + JSON input schema, post-governance filtering).
+    /// Not part of `context_tokens_est`: it isn't a transcript message, it's
+    /// the `tools` field resent on every completion.
+    pub tool_schema_tokens_est: usize,
     pub message_count: usize,
     pub tool_message_count: usize,
 }

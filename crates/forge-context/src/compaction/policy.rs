@@ -34,6 +34,15 @@ pub const DEFAULT_SAFETY_RESERVE: usize = 8_192;
 /// not after it fails.
 pub const DEFAULT_EXPECTED_TURN_TOKENS: usize = 8_192;
 
+/// Fraction of the usable window MCP tool schemas may occupy before the
+/// caller defers them behind a search tool instead of sending every one on
+/// every request. Not a compaction trigger — nothing about the transcript
+/// changes — but it's the same shape of decision (a fixed share of the
+/// window one category of content may spend before it's cheaper to make it
+/// on-demand), so it lives on the same policy rather than inventing a
+/// parallel one.
+pub const TOOL_SCHEMA_DEFERRAL_FRACTION: f64 = 0.10;
+
 /// Why compaction ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,6 +125,13 @@ impl CompactionPolicy {
     pub fn utilization(&self, tokens: usize) -> f64 {
         tokens as f64 / self.context_window.max(1) as f64
     }
+
+    /// Tokens MCP tool schemas may occupy — `usable_context() * 0.10` —
+    /// before the caller should stop sending every deferrable tool's full
+    /// schema on every request and switch to search-on-demand instead.
+    pub fn tool_schema_budget(&self) -> usize {
+        (self.usable_context() as f64 * TOOL_SCHEMA_DEFERRAL_FRACTION) as usize
+    }
 }
 
 impl Default for CompactionPolicy {
@@ -177,5 +193,19 @@ mod tests {
         let policy = CompactionPolicy::for_window(200_000, None);
         assert_eq!(policy.runway_limit(), 80_000);
         assert!(policy.runway_limit() < policy.trigger_threshold() / 2 + 1);
+    }
+
+    #[test]
+    fn tool_schema_budget_is_a_tenth_of_the_usable_window() {
+        // 200K window: usable = 200K - 8192 - 8192 = 183_616; 10% = 18_361.
+        let policy = CompactionPolicy::for_window(200_000, None);
+        assert_eq!(policy.tool_schema_budget(), 18_361);
+    }
+
+    #[test]
+    fn tool_schema_budget_shrinks_with_a_smaller_usable_window() {
+        let generous = CompactionPolicy::for_window(200_000, None);
+        let tight = CompactionPolicy::for_window(200_000, Some(64_000));
+        assert!(tight.tool_schema_budget() < generous.tool_schema_budget());
     }
 }

@@ -433,6 +433,18 @@ pub struct ToolDescriptor {
     pub idempotent: bool,
 }
 
+/// Namespace prefix `forge-mcp` gives every tool it registers
+/// (`mcp:<server_id>:<tool>`). Shared here — rather than only in
+/// `forge-mcp` — so `forge-core`'s tool-schema deferral policy can
+/// recognize an MCP tool by name without depending on `forge-mcp`, which
+/// sits a layer above it in the crate graph.
+pub const MCP_TOOL_NAME_PREFIX: &str = "mcp:";
+
+/// Name of the meta-tool `forge-mcp` registers once any MCP tool schemas are
+/// deferred from the model's tool list. `forge-core` needs the exact name to
+/// keep it visible through the deferral filter that hides everything else.
+pub const SEARCH_TOOLS_TOOL_NAME: &str = "search_tools";
+
 /// Progress handoff artifact (CTX-02). Default path: `.forge/progress.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProgressDocument {

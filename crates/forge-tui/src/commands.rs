@@ -44,6 +44,9 @@ pub enum SlashCommand {
     },
     /// Show session status overlay.
     Status,
+    /// Show the token-budget breakdown by category (system prompt, tool
+    /// schemas, messages) — the detail `/status` deliberately omits.
+    Context,
     /// Open (and focus) the terminal panel. The `Ctrl+\`` chord is the fast
     /// path, but it is an unusual key to guess and appears only in the help
     /// overlay — without a palette entry the terminal is unreachable for
@@ -124,6 +127,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             name: parts.next().map(|s| s.to_string()),
         }),
         "status" => Ok(SlashCommand::Status),
+        "context" | "ctx" => Ok(SlashCommand::Context),
         "diff" | "d" => match parts.next() {
             None => Ok(SlashCommand::Diff {
                 source: crate::diff_view::DiffSource::WorkingTree,
@@ -216,7 +220,6 @@ mod tests {
     fn parses_phase2_commands() {
         assert_eq!(parse_slash("/clear").unwrap().unwrap(), SlashCommand::Clear);
         assert!(parse_slash("/reset").unwrap().is_err());
-        assert!(parse_slash("/context").unwrap().is_err());
         assert!(parse_slash("/worktree merge").unwrap().is_err());
         assert_eq!(
             parse_slash("/disconnect").unwrap().unwrap(),
@@ -330,6 +333,15 @@ mod tests {
             parse_slash("/status").unwrap().unwrap(),
             SlashCommand::Status
         );
+    }
+
+    #[test]
+    fn parses_context() {
+        assert_eq!(
+            parse_slash("/context").unwrap().unwrap(),
+            SlashCommand::Context
+        );
+        assert_eq!(parse_slash("/ctx").unwrap().unwrap(), SlashCommand::Context);
     }
 
     #[test]

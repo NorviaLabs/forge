@@ -43,7 +43,7 @@ pub use facts::{
 pub use policy::{
     CompactionPolicy, CompactionTrigger, DEFAULT_EXPECTED_TURN_TOKENS, DEFAULT_OUTPUT_RESERVE,
     DEFAULT_SAFETY_RESERVE, POST_COMPACTION_TARGET, TAIL_FRACTION, TAIL_MAX_TOKENS,
-    TAIL_MIN_TOKENS, TRIGGER_UTILIZATION,
+    TAIL_MIN_TOKENS, TOOL_SCHEMA_DEFERRAL_FRACTION, TRIGGER_UTILIZATION,
 };
 pub use prompt::{checkpoint_message, compaction_instruction, compaction_message};
 pub use tail::{

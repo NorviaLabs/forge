@@ -109,6 +109,38 @@ impl forge_tools::Tool for NetworkDeniedOnceTool {
     }
 }
 
+/// Stand-in for a real MCP or `search_tools` registration in tests, without
+/// pulling in `forge-mcp` (which sits above this crate in the dependency
+/// graph). `padding` inflates the JSON schema so a single tool's estimated
+/// tokens can be pushed past a small `tool_schema_budget` deterministically.
+struct FakeMcpTool {
+    name: String,
+    padding: usize,
+}
+
+#[async_trait]
+impl forge_tools::Tool for FakeMcpTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        "a fake mcp tool registered directly for deferral tests"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "padding": "x".repeat(self.padding)})
+    }
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::success("ok"))
+    }
+}
+
 #[tokio::test]
 async fn sandbox_denial_pauses_for_hitl_instead_of_recording_failure() {
     let dir = tempdir().unwrap();
@@ -2703,6 +2735,131 @@ async fn token_usage_report_buckets_tool_messages_separately() {
     assert!(
         report.thinking_in_context_est > 0,
         "assistant thinking should be counted in the context estimate"
+    );
+    assert!(
+        report.tool_schema_tokens_est > 0,
+        "the registered builtin tools' schemas should size to something"
+    );
+}
+
+#[tokio::test]
+async fn tool_schema_tokens_est_matches_a_direct_sum_over_visible_descriptors() {
+    let dir = tempdir().unwrap();
+    let s = idle_session(dir.path()).await;
+
+    let descriptors = s.tools.list_descriptors();
+    let visible = if s.enable_gov {
+        s.governance.filter_tools((*descriptors).clone())
+    } else {
+        (*descriptors).clone()
+    };
+    let expected: usize = visible
+        .iter()
+        .map(|t| {
+            estimate_tokens(&t.name)
+                + estimate_tokens(&t.description)
+                + estimate_tokens(&t.input_schema.to_string())
+        })
+        .sum();
+
+    assert_eq!(s.token_usage_report().tool_schema_tokens_est, expected);
+}
+
+#[tokio::test]
+async fn mcp_tool_schemas_stay_visible_below_the_deferral_budget() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FakeMcpTool {
+        name: "mcp:demo:alpha".into(),
+        padding: 16,
+    }));
+    tools.register(Arc::new(FakeMcpTool {
+        name: "search_tools".into(),
+        padding: 16,
+    }));
+    let session = AgentSession::create(base_cfg(dir.path()), script(vec![]), tools)
+        .await
+        .unwrap();
+
+    // Default window (500K) leaves a budget far larger than one small tool.
+    let names: Vec<String> = session
+        .tools_for_model()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(names.contains(&"mcp:demo:alpha".to_string()), "{names:?}");
+    assert!(
+        !names.contains(&"search_tools".to_string()),
+        "search_tools has nothing to find while nothing is deferred: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_schemas_defer_and_promote_search_tools_once_budget_exceeded() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FakeMcpTool {
+        name: "mcp:demo:alpha".into(),
+        padding: 4_000,
+    }));
+    tools.register(Arc::new(FakeMcpTool {
+        name: "mcp:demo:beta".into(),
+        padding: 4_000,
+    }));
+    tools.register(Arc::new(FakeMcpTool {
+        name: "search_tools".into(),
+        padding: 16,
+    }));
+    tools.register(Arc::new(FakeMcpTool {
+        name: "local_tool".into(),
+        padding: 16,
+    }));
+    let mut session = AgentSession::create(base_cfg(dir.path()), script(vec![]), tools)
+        .await
+        .unwrap();
+    // Small window -> small budget: the padded MCP schemas alone exceed it.
+    session.set_context_window(20_000, Some(1_000));
+    assert!(session.compaction_policy().tool_schema_budget() < 2_000);
+
+    let names: Vec<String> = session
+        .tools_for_model()
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
+    assert!(
+        !names.contains(&"mcp:demo:alpha".to_string()),
+        "uncalled deferred tool should be hidden: {names:?}"
+    );
+    assert!(
+        !names.contains(&"mcp:demo:beta".to_string()),
+        "uncalled deferred tool should be hidden: {names:?}"
+    );
+    assert!(
+        names.contains(&"search_tools".to_string()),
+        "search_tools should be promoted once deferring: {names:?}"
+    );
+    assert!(
+        names.contains(&"local_tool".to_string()),
+        "non-mcp tools are never deferred: {names:?}"
+    );
+
+    // Once the model has actually called a deferred tool, a provider
+    // requires it to stay declared for the rest of the session.
+    session
+        .messages
+        .push(assistant_with_tool_call("mcp:demo:beta"));
+    let names_after_call: Vec<String> = session
+        .tools_for_model()
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
+    assert!(
+        names_after_call.contains(&"mcp:demo:beta".to_string()),
+        "a called tool must stay declared: {names_after_call:?}"
+    );
+    assert!(
+        !names_after_call.contains(&"mcp:demo:alpha".to_string()),
+        "an unrelated deferred tool stays hidden: {names_after_call:?}"
     );
 }
 

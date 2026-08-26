@@ -9,6 +9,16 @@ pub(crate) use forge_types::strip_protocol_markers;
 
 pub(crate) const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
+/// Estimated wire cost of one tool's declaration — name + description +
+/// JSON input schema, the parts every provider actually serializes into the
+/// request. Shared by `token_usage_report`'s "tool schemas" line and the
+/// tool-search deferral trigger so both agree on what a schema costs.
+pub(crate) fn descriptor_tokens(t: &forge_types::ToolDescriptor) -> usize {
+    estimate_tokens(&t.name)
+        .saturating_add(estimate_tokens(&t.description))
+        .saturating_add(estimate_tokens(&t.input_schema.to_string()))
+}
+
 /// Discovery stage of progressive disclosure (issue #226): a skill with
 /// frontmatter contributes only its `name` + `description` here — its full
 /// `SKILL.md` body is fetched on demand via the `load_skill` tool once the
