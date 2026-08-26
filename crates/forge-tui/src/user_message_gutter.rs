@@ -32,7 +32,7 @@ pub fn render_user_message_lines(
 mod tests {
     use super::*;
     use crate::conversation::ConversationRender;
-    use forge_config::{THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
+    use forge_config::{THEME_FORGE_DARK, THEME_FORGE_LIGHT};
     use forge_types::{Message, MessageRole, TaskLifecycle};
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn theme_matrix_keeps_request_text_unshaded() {
-        for theme in [THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT] {
+        for theme in [THEME_FORGE_DARK, THEME_FORGE_LIGHT] {
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
             assert!(
@@ -378,7 +378,7 @@ mod tests {
         let lines = render_user_message_lines(
             "hello",
             40,
-            THEME_SOLARIZED_DARK,
+            THEME_FORGE_DARK,
             false,
             crate::conversation::wrap,
         );
@@ -390,7 +390,7 @@ mod tests {
         let lines = render_user_message_lines(
             "hello",
             40,
-            THEME_SOLARIZED_DARK,
+            THEME_FORGE_DARK,
             true,
             crate::conversation::wrap,
         );

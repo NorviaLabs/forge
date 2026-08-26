@@ -25,7 +25,7 @@ pub use permissions::{
 pub use theme::{
     is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
     Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, ACCENT_STATUS_MIN_HUE_DISTANCE,
-    DEFAULT_THEME_ID, THEME_FORGE_DARK, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM,
+    DEFAULT_THEME_ID, THEME_FORGE_DARK, THEME_FORGE_LIGHT, THEME_SYSTEM,
 };
 pub use trust::{
     grant_trust, is_trusted, persist_committed_theme, persist_committed_theme_at,
@@ -1032,7 +1032,7 @@ theme = "light"
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
-        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_LIGHT);
+        assert_eq!(cfg.tui.theme, THEME_FORGE_LIGHT);
     }
 
     /// The hostile-repo payload: a checked-in `forge.toml` that redirects the
@@ -1271,9 +1271,8 @@ model = "from-file"
     #[test]
     fn theme_id_normalization_maps_legacy_aliases() {
         assert_eq!(normalize_theme_id("dark"), THEME_FORGE_DARK);
-        assert_eq!(normalize_theme_id("light"), THEME_SOLARIZED_LIGHT);
+        assert_eq!(normalize_theme_id("light"), THEME_FORGE_LIGHT);
         assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
-        assert_eq!(normalize_theme_id("solarized-light"), THEME_SOLARIZED_LIGHT);
     }
 
     #[test]
@@ -1281,7 +1280,7 @@ model = "from-file"
         assert!(parse_theme_preference("bogus").is_none());
         assert_eq!(
             parse_theme_preference("light").as_deref(),
-            Some(THEME_SOLARIZED_LIGHT)
+            Some(THEME_FORGE_LIGHT)
         );
     }
 
@@ -1545,7 +1544,7 @@ max_query_chars = 0
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_LIGHT);
+        assert_eq!(cfg.tui.theme, THEME_FORGE_LIGHT);
     }
 
     #[test]
@@ -1755,13 +1754,14 @@ model = "from-user-config"
             fs::create_dir_all(&forge_dir).unwrap();
             fs::write(
                 forge_dir.join("config.toml"),
-                format!("[tui]\ntheme = \"{THEME_SOLARIZED_DARK}\"\n"),
+                format!("[tui]\ntheme = \"{THEME_FORGE_LIGHT}\"\n"),
             )
             .unwrap();
             let cfg = Config::load(ConfigOverrides::default()).unwrap();
             assert_eq!(
-                cfg.tui.theme, THEME_SOLARIZED_DARK,
-                "a seeded user config must be merged, or this test proves nothing"
+                cfg.tui.theme, THEME_FORGE_LIGHT,
+                "a seeded user config must be merged, or this test proves nothing \
+                 — deliberately not the default theme, so a no-op merge would fail this"
             );
         }
 

@@ -568,13 +568,7 @@ async fn approval_card_wraps_long_command() {
 #[tokio::test]
 async fn approval_card_renders_in_every_shipped_theme() {
     let registry = crate::theme_registry::ThemeRegistry::load(None);
-    for theme_id in [
-        "catppuccin-mocha",
-        "gruvbox-dark",
-        "kanagawa-wave",
-        "solarized-dark",
-        "solarized-light",
-    ] {
+    for theme_id in ["forge-dark", "forge-light"] {
         assert!(
             registry.get(theme_id).is_some(),
             "built-in theme {theme_id} not registered"

@@ -2453,7 +2453,7 @@ impl Widget for OverlayWidget<'_> {
 mod tests {
     use super::*;
     use crate::commands::{parse_slash, SlashCommand};
-    use forge_config::THEME_SOLARIZED_LIGHT;
+    use forge_config::THEME_FORGE_LIGHT;
     use ratatui::widgets::Widget;
     use serde_json::json;
 
@@ -3546,14 +3546,14 @@ mod tests {
     fn theme_picker_selects_choice() {
         crate::theme::install(
             crate::theme_registry::ThemeRegistry::load(None),
-            forge_config::THEME_SOLARIZED_DARK,
+            forge_config::THEME_FORGE_DARK,
         );
-        let mut overlay = Overlay::theme_open(forge_config::THEME_SOLARIZED_DARK);
+        let mut overlay = Overlay::theme_open(forge_config::THEME_FORGE_DARK);
         let light_index = match &overlay {
             Overlay::Theme { items, .. } => items
                 .iter()
-                .position(|(id, _)| id == THEME_SOLARIZED_LIGHT)
-                .expect("solarized-light in picker"),
+                .position(|(id, _)| id == THEME_FORGE_LIGHT)
+                .expect("forge-light in picker"),
             _ => panic!("expected theme overlay"),
         };
         if let Overlay::Theme { selected, .. } = &mut overlay {
@@ -3561,7 +3561,7 @@ mod tests {
         }
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::SelectTheme(THEME_SOLARIZED_LIGHT.to_string())
+            OverlayAction::SelectTheme(THEME_FORGE_LIGHT.to_string())
         );
     }
 
@@ -3569,9 +3569,9 @@ mod tests {
     fn theme_picker_arrow_keys_preview_highlighted_theme() {
         crate::theme::install(
             crate::theme_registry::ThemeRegistry::load(None),
-            forge_config::THEME_SOLARIZED_DARK,
+            forge_config::THEME_FORGE_DARK,
         );
-        let mut overlay = Overlay::theme_open(forge_config::THEME_SOLARIZED_DARK);
+        let mut overlay = Overlay::theme_open(forge_config::THEME_FORGE_DARK);
         let Overlay::Theme {
             selected, items, ..
         } = &overlay
@@ -3592,9 +3592,9 @@ mod tests {
     fn theme_dock_renders_at_bottom_without_blanking_title_chrome() {
         crate::theme::install(
             crate::theme_registry::ThemeRegistry::load(None),
-            forge_config::THEME_SOLARIZED_DARK,
+            forge_config::THEME_FORGE_DARK,
         );
-        let overlay = Overlay::theme_open(forge_config::THEME_SOLARIZED_DARK);
+        let overlay = Overlay::theme_open(forge_config::THEME_FORGE_DARK);
         let text = render_text(&overlay);
         assert!(
             text.contains("Theme · ↑↓ preview · Enter apply · Esc cancel"),
