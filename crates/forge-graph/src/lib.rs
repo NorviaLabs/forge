@@ -4,17 +4,27 @@
 //! candidate is returned rather than a guess (see `schema.rs`, `store.rs`).
 //!
 //! Covers the 5 languages `forge-syntax` already tree-sitter-parses for
-//! highlighting: Rust, Python, Go, TypeScript, JavaScript (PR2). Still one
-//! synchronous full-repo build at `open()`, no live watcher yet (that's
-//! PR3 — see the plan). `GraphHandle::open` is still the entry point later
-//! work builds on: PR3 adds a background initial build plus a `notify`
-//! watcher without changing this API shape.
+//! highlighting: Rust, Python, Go, TypeScript, JavaScript.
+//!
+//! `GraphHandle::open` still synchronously awaits the initial build (a
+//! deliberate PR3 simplification, not an oversight — see its doc comment),
+//! but that build is now hash-aware: a file whose content hasn't changed
+//! since it was last indexed is skipped entirely, so re-opening an
+//! already-built repo is fast. After that, a `notify` watcher
+//! (`watcher.rs`) keeps the graph live for the rest of the process:
+//! changes are debounced and re-indexed one file at a time, accepting the
+//! staleness window documented there rather than blocking on it.
 
 mod extract;
 pub mod schema;
 mod store;
+mod watcher;
 
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub use extract::{EdgeFact, ExtractedFacts, Extractor, SymbolFact};
 pub use store::{GraphError, GraphStore, ReferenceMatch, SymbolMatch};
@@ -34,7 +44,7 @@ pub use store::{GraphError, GraphStore, ReferenceMatch, SymbolMatch};
 /// ambiguity. A future revision should walk via the same gitignore-aware
 /// crate `fff_search` already uses instead of maintaining this list by
 /// hand as new cases turn up.
-const SKIP_DIRS: &[&str] = &[
+pub(crate) const SKIP_DIRS: &[&str] = &[
     ".git",
     ".forge",
     ".claude",
@@ -48,38 +58,47 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 pub struct GraphHandle {
-    store: GraphStore,
+    store: Arc<GraphStore>,
+    workspace: PathBuf,
+    watcher: Mutex<Option<watcher::WatcherGuard>>,
 }
 
 impl GraphHandle {
-    /// Opens (or creates) the persisted store for `workspace` and runs a
-    /// full synchronous build. `db_path` is passed in rather than resolved
-    /// here: `forge-graph` doesn't depend on `forge-storage`'s
-    /// `RuntimeDataKind` directly, to keep this crate storage-location-
-    /// agnostic — the caller (`forge-session`) resolves the path via
-    /// `RuntimeDataKind::Graph`.
+    /// Opens (or creates) the persisted store for `workspace`, runs the
+    /// (hash-aware, so a re-open of an unchanged repo is fast) initial
+    /// build, then starts the live watcher. `db_path` is passed in rather
+    /// than resolved here: `forge-graph` doesn't depend on
+    /// `forge-storage`'s `RuntimeDataKind` directly, to keep this crate
+    /// storage-location-agnostic — the caller (`forge-session`) resolves
+    /// the path via `RuntimeDataKind::Graph`.
     ///
-    /// PR1 rebuilds every call rather than checking "is this already
-    /// built" — there's no live watcher yet to keep a skipped build from
-    /// going stale, and re-running `build_full` on an already-populated
-    /// store just duplicates rows (no correctness issue, since every query
-    /// still returns real facts, just wasted work). PR3's `files`
-    /// bookkeeping (content-hash comparison) replaces this with a real
-    /// "build once, then watch" lifecycle — see `store.rs::clear_file`,
-    /// already in place for it to build on.
+    /// Deliberately still synchronous on the *initial* build, not spawned
+    /// in the background: doing that safely means every query has to
+    /// account for "the graph isn't built yet" as a third answer alongside
+    /// "found" and "not found" — real complexity for a case the hash-skip
+    /// optimization already makes cheap after the first real build. The
+    /// "no synchronous block" requirement from the design review was about
+    /// re-indexing *after* an edit mid-session, which the watcher below
+    /// satisfies — not about the very first build.
     pub async fn open(workspace: &Path, db_path: &Path) -> Result<Self, GraphError> {
-        let store = GraphStore::open(db_path).await?;
-        let handle = Self { store };
-        handle.build_full(workspace).await?;
-        Ok(handle)
+        let store = Arc::new(GraphStore::open(db_path).await?);
+        Self::from_store(workspace, store).await
     }
 
     /// In-memory store, immediately built from `workspace` — for tests.
     pub async fn open_in_memory(workspace: &Path) -> Result<Self, GraphError> {
-        let store = GraphStore::open_in_memory().await?;
-        let handle = Self { store };
-        handle.build_full(workspace).await?;
-        Ok(handle)
+        let store = Arc::new(GraphStore::open_in_memory().await?);
+        Self::from_store(workspace, store).await
+    }
+
+    async fn from_store(workspace: &Path, store: Arc<GraphStore>) -> Result<Self, GraphError> {
+        build_full(&store, workspace).await?;
+        let watcher = watcher::start(workspace.to_path_buf(), store.clone()).ok();
+        Ok(Self {
+            store,
+            workspace: workspace.to_path_buf(),
+            watcher: Mutex::new(watcher),
+        })
     }
 
     pub fn store(&self) -> &GraphStore {
@@ -94,30 +113,144 @@ impl GraphHandle {
         self.store.find_references(name).await
     }
 
-    /// Two-pass full-repo build (see `store.rs`'s module doc): every
-    /// recognized file's symbols first, grouped by language, then every
-    /// file's edges — across all 5 languages together — resolved against
-    /// the complete symbol table.
-    async fn build_full(&self, workspace: &Path) -> Result<(), GraphError> {
-        let mut symbols_by_lang: std::collections::HashMap<&'static str, Vec<SymbolFact>> =
-            std::collections::HashMap::new();
-        let mut all_edges = Vec::new();
-        for path in walk_files(workspace) {
-            let Some((lang, facts)) = extract_file(&path, workspace) else {
-                continue;
-            };
-            symbols_by_lang
-                .entry(lang)
-                .or_default()
-                .extend(facts.symbols);
-            all_edges.extend(facts.edges);
+    /// Stops the live watcher without touching the persisted store — the
+    /// `/graph disable` case. A no-op if already paused.
+    pub async fn pause_watcher(&self) {
+        *self.watcher.lock().await = None;
+    }
+
+    /// Restarts the watcher after `pause_watcher`, first running a cheap
+    /// catch-up sweep: every previously-indexed file whose on-disk content
+    /// hash no longer matches what's recorded gets re-indexed, so edits
+    /// made while paused aren't silently missed. Cheaper than a full
+    /// rebuild — unchanged files are skipped, exactly like `open`'s
+    /// initial build. A no-op if already watching.
+    pub async fn resume_watcher(&self) -> Result<(), GraphError> {
+        let mut guard = self.watcher.lock().await;
+        if guard.is_some() {
+            return Ok(());
         }
-        for (lang, symbols) in &symbols_by_lang {
-            self.store.insert_symbols(lang, symbols).await?;
-        }
-        self.store.resolve_and_insert_edges(&all_edges).await?;
+        catch_up(&self.store, &self.workspace).await?;
+        *guard = watcher::start(self.workspace.clone(), self.store.clone()).ok();
         Ok(())
     }
+
+    pub fn is_watching(&self) -> bool {
+        // `try_lock` rather than blocking: this is a status read, and the
+        // watcher lock is only ever held briefly during pause/resume.
+        self.watcher.try_lock().map(|g| g.is_some()).unwrap_or(true)
+    }
+}
+
+/// Re-indexes every file whose recorded content hash no longer matches
+/// disk — used both by the initial build (via `build_full`, where nothing
+/// is recorded yet so everything "changes") and by `resume_watcher`'s
+/// catch-up sweep.
+async fn build_full(store: &GraphStore, workspace: &Path) -> Result<(), GraphError> {
+    let mut symbols_by_lang: HashMap<&'static str, Vec<SymbolFact>> = HashMap::new();
+    let mut all_edges = Vec::new();
+    let mut to_record: Vec<(String, &'static str, String)> = Vec::new();
+
+    for path in walk_files(workspace) {
+        let Some((lang, facts, hash)) = extract_file(&path, workspace) else {
+            continue;
+        };
+        let rel = rel_path(&path, workspace);
+        if store.file_content_hash(&rel).await? == Some(hash.clone()) {
+            continue; // byte-identical since last index — nothing to redo
+        }
+        store.clear_file(&rel).await?;
+        symbols_by_lang
+            .entry(lang)
+            .or_default()
+            .extend(facts.symbols);
+        all_edges.extend(facts.edges);
+        to_record.push((rel, lang, hash));
+    }
+
+    for (lang, symbols) in &symbols_by_lang {
+        store.insert_symbols(lang, symbols).await?;
+    }
+    store.resolve_and_insert_edges(&all_edges).await?;
+    for (rel, lang, hash) in &to_record {
+        store.upsert_file(rel, lang, hash).await?;
+    }
+    Ok(())
+}
+
+/// Same hash-skip logic as `build_full`, exposed under the name the
+/// `resume_watcher` catch-up sweep call site reads more naturally under.
+async fn catch_up(store: &GraphStore, workspace: &Path) -> Result<(), GraphError> {
+    build_full(store, workspace).await
+}
+
+/// The watcher's unit of work: re-index exactly one changed file,
+/// immediately, against whatever the rest of the graph currently holds.
+/// This is *not* how the initial build (`build_full`) works — that batches
+/// every changed file's symbols before resolving any edges, so a
+/// same-build cross-file reference resolves correctly. Here, on an
+/// already-built graph, immediate single-file resolution is the documented
+/// v1 trade-off: this file's own outgoing edges are current the instant
+/// this returns, but another file's *existing* edge into a symbol this
+/// file just changed stays stale until that other file is itself
+/// re-indexed. `clear_file` still keeps that stale edge honest rather than
+/// wrong — deleting a symbol deletes every edge that pointed at it, so a
+/// stale reference reads as "not found," never as a phantom hit.
+pub(crate) async fn reindex_one_file(
+    store: &GraphStore,
+    workspace: &Path,
+    path: &Path,
+) -> Result<(), GraphError> {
+    let rel = rel_path(path, workspace);
+    store.clear_file(&rel).await?;
+    if !path.exists() {
+        return Ok(()); // deletion: clearing its rows is the whole job
+    }
+    let Some((lang, facts, hash)) = extract_file(path, workspace) else {
+        return Ok(()); // unrecognized/unreadable — nothing further to record
+    };
+    store.insert_symbols(lang, &facts.symbols).await?;
+    store.resolve_and_insert_edges(&facts.edges).await?;
+    store.upsert_file(&rel, lang, &hash).await?;
+    Ok(())
+}
+
+/// Relative path used as the `symbols`/`edges`/`files` key. Both sides are
+/// canonicalized first: on macOS, `notify` (via FSEvents) reports paths
+/// through `/private/var/...`, while a caller's `workspace` root — e.g. a
+/// `tempdir()` in tests, or `/var/...`-style paths generally — resolves
+/// through a symlink to the same place. Without canonicalizing,
+/// `strip_prefix` silently fails, the watcher records edits under the
+/// absolute path instead of the file's real relative one, and the initial
+/// build's rows for that file are never matched (so never cleared) again.
+pub(crate) fn rel_path(path: &Path, workspace: &Path) -> String {
+    let canon_workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    // `path` may already be gone (a deletion event) — canonicalize can't
+    // resolve a symlink component in a path that no longer exists, so fall
+    // back to canonicalizing its still-present parent and reattaching the
+    // file name, which is enough to normalize the same symlink prefix.
+    let canon_path =
+        path.canonicalize()
+            .unwrap_or_else(|_| match (path.parent(), path.file_name()) {
+                (Some(parent), Some(name)) => parent
+                    .canonicalize()
+                    .map(|p| p.join(name))
+                    .unwrap_or_else(|_| path.to_path_buf()),
+                _ => path.to_path_buf(),
+            });
+    canon_path
+        .strip_prefix(&canon_workspace)
+        .unwrap_or(&canon_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn content_hash(source: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Reads and extracts one file, if its extension maps to a supported
@@ -125,27 +258,41 @@ impl GraphHandle {
 /// unrecognized extensions, binaries, and unreadable files are silently
 /// skipped, not errors: most of a real repo isn't source code in one of
 /// these 5 languages.
-fn extract_file(path: &Path, workspace: &Path) -> Option<(&'static str, ExtractedFacts)> {
+fn extract_file(path: &Path, workspace: &Path) -> Option<(&'static str, ExtractedFacts, String)> {
     let ext = path.extension()?.to_str()?;
     let source = std::fs::read_to_string(path).ok()?;
-    let rel = path.strip_prefix(workspace).unwrap_or(path);
-    match ext {
-        "rs" => Some(("rust", extract::rust::RustExtractor.extract(&source, rel))),
-        "py" | "pyi" => Some((
+    let rel_string = rel_path(path, workspace);
+    let rel = Path::new(&rel_string);
+    let (lang, facts) = match ext {
+        "rs" => ("rust", extract::rust::RustExtractor.extract(&source, rel)),
+        "py" | "pyi" => (
             "python",
             extract::python::PythonExtractor.extract(&source, rel),
-        )),
-        "go" => Some(("go", extract::go::GoExtractor.extract(&source, rel))),
-        "ts" | "tsx" => Some((
+        ),
+        "go" => ("go", extract::go::GoExtractor.extract(&source, rel)),
+        "ts" | "tsx" => (
             "typescript",
             extract::typescript::TypeScriptExtractor.extract(&source, rel),
-        )),
-        "js" | "jsx" | "mjs" | "cjs" => Some((
+        ),
+        "js" | "jsx" | "mjs" | "cjs" => (
             "javascript",
             extract::javascript::JavaScriptExtractor.extract(&source, rel),
-        )),
-        _ => None,
-    }
+        ),
+        _ => return None,
+    };
+    Some((lang, facts, content_hash(&source)))
+}
+
+/// True if any component of `path` names a skipped directory — the
+/// watcher's per-event version of the check `walk_dir` applies while
+/// descending. Checks every component, not just the immediate parent,
+/// since a `notify` event's path is absolute and may be several directories
+/// below the workspace root.
+pub(crate) fn is_skipped_path(path: &Path) -> bool {
+    path.components().any(|c| match c.as_os_str().to_str() {
+        Some(name) => SKIP_DIRS.contains(&name),
+        None => false,
+    })
 }
 
 fn walk_files(root: &Path) -> Vec<PathBuf> {
@@ -277,6 +424,88 @@ mod tests {
             handle.find_definition("real_one").await.unwrap().len(),
             1,
             "a scratch worktree copy must not be indexed as a second real definition"
+        );
+    }
+
+    /// The one test exercising `watcher.rs` for real: edit a fixture file on
+    /// disk after the initial build, poll (never `sleep`-and-hope) past the
+    /// debounce window, and confirm the store picked up the change without
+    /// any caller-driven re-index call.
+    #[tokio::test]
+    async fn watcher_picks_up_an_on_disk_edit_without_a_manual_reindex() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        let file = dir.path().join("src/lib.rs");
+        fs::write(&file, "pub fn before_edit() {}\n").unwrap();
+
+        let handle = GraphHandle::open_in_memory(dir.path()).await.unwrap();
+        assert_eq!(
+            handle.find_definition("before_edit").await.unwrap().len(),
+            1
+        );
+
+        fs::write(&file, "pub fn after_edit() {}\n").unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if !handle
+                .find_definition("after_edit")
+                .await
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watcher did not pick up the edit within 5s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            handle
+                .find_definition("before_edit")
+                .await
+                .unwrap()
+                .is_empty(),
+            "the old symbol should be gone once the file was re-indexed"
+        );
+    }
+
+    /// `pause_watcher`/`resume_watcher` — the `/graph off` then `/graph on`
+    /// path. An edit made while paused is missed live, but the catch-up
+    /// sweep on resume picks it up without a full rebuild.
+    #[tokio::test]
+    async fn pause_then_resume_catches_up_on_edits_made_while_paused() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        let file = dir.path().join("src/lib.rs");
+        fs::write(&file, "pub fn before_pause() {}\n").unwrap();
+
+        let handle = GraphHandle::open_in_memory(dir.path()).await.unwrap();
+        assert!(handle.is_watching());
+
+        handle.pause_watcher().await;
+        assert!(!handle.is_watching());
+
+        fs::write(&file, "pub fn while_paused() {}\n").unwrap();
+        // Give a real watcher every chance to (wrongly) fire while paused.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(
+            handle
+                .find_definition("while_paused")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a paused watcher must not react to filesystem events"
+        );
+
+        handle.resume_watcher().await.unwrap();
+        assert!(handle.is_watching());
+        assert_eq!(
+            handle.find_definition("while_paused").await.unwrap().len(),
+            1,
+            "resume's catch-up sweep should index edits made while paused"
         );
     }
 }
