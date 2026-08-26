@@ -4271,11 +4271,8 @@ mod tests {
         let registry = crate::theme_registry::ThemeRegistry::load(None);
         let mut baseline: Option<(usize, usize)> = None;
         for id in [
-            "gruvbox-dark",
-            "kanagawa-wave",
-            "catppuccin-mocha",
-            "solarized-dark",
-            "solarized-light",
+            forge_config::THEME_FORGE_DARK,
+            forge_config::THEME_FORGE_LIGHT,
         ] {
             crate::theme::install(registry.clone(), id);
             let lines = model.lines_for_width(80);

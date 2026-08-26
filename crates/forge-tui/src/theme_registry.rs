@@ -187,18 +187,14 @@ fn merge_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::{Rgb, THEME_FORGE_DARK, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
+    use forge_config::{Rgb, THEME_FORGE_DARK, THEME_FORGE_LIGHT};
 
     #[test]
     fn builtins_include_all_shipped_themes() {
         let registry = ThemeRegistry::load(None);
         let expected = [
             (THEME_FORGE_DARK, "Forge Dark", Rgb(11, 15, 13)),
-            ("catppuccin-mocha", "Catppuccin Mocha", Rgb(30, 30, 46)),
-            ("gruvbox-dark", "Gruvbox Dark", Rgb(40, 40, 40)),
-            ("kanagawa-wave", "Kanagawa Wave", Rgb(31, 31, 40)),
-            (THEME_SOLARIZED_DARK, "Solarized Dark", Rgb(0, 43, 54)),
-            (THEME_SOLARIZED_LIGHT, "Solarized Light", Rgb(245, 240, 222)),
+            (THEME_FORGE_LIGHT, "Forge Light", Rgb(242, 245, 239)),
         ];
         for (id, name, background) in expected {
             let theme = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
@@ -214,17 +210,15 @@ mod tests {
         let themes = dir.path().join(".forge").join("themes");
         fs::create_dir_all(&themes).unwrap();
         fs::write(
-            themes.join("solarized-dark.toml"),
-            include_str!("../themes/solarized-dark.toml").replace(
-                "name = \"Solarized Dark\"",
-                "name = \"Solarized Dark (Custom)\"",
-            ),
+            themes.join("forge-dark.toml"),
+            include_str!("../themes/forge-dark.toml")
+                .replace("name = \"Forge Dark\"", "name = \"Forge Dark (Custom)\""),
         )
         .unwrap();
         let registry = ThemeRegistry::load(Some(dir.path()));
         assert_eq!(
-            registry.get(THEME_SOLARIZED_DARK).unwrap().name,
-            "Solarized Dark (Custom)"
+            registry.get(THEME_FORGE_DARK).unwrap().name,
+            "Forge Dark (Custom)"
         );
     }
 
@@ -235,10 +229,10 @@ mod tests {
         fs::create_dir_all(&themes).unwrap();
         fs::write(
             themes.join("broken.toml"),
-            include_str!("../themes/solarized-dark.toml")
-                .replace("id = \"solarized-dark\"", "id = \"broken\"")
+            include_str!("../themes/forge-dark.toml")
+                .replace("id = \"forge-dark\"", "id = \"broken\"")
                 // Truncated hex value: 5 digits instead of 6.
-                .replace("cursor = \"#EEE8D5\"", "cursor = \"#EEE8D\""),
+                .replace("cursor = \"#AEC0EA\"", "cursor = \"#AEC0E\""),
         )
         .unwrap();
         let (registry, diagnostics) = ThemeRegistry::load_with_diagnostics(Some(dir.path()));
@@ -258,10 +252,10 @@ mod tests {
         fs::create_dir_all(&themes).unwrap();
         fs::write(
             themes.join("collides.toml"),
-            include_str!("../themes/solarized-dark.toml")
-                .replace("id = \"solarized-dark\"", "id = \"collides\"")
+            include_str!("../themes/forge-dark.toml")
+                .replace("id = \"forge-dark\"", "id = \"collides\"")
                 // Point the accent straight at `success`.
-                .replace("accent = \"#268BD2\"", "accent = \"#859900\""),
+                .replace("accent = \"#8FA4D6\"", "accent = \"#9BD39A\""),
         )
         .unwrap();
 
@@ -286,8 +280,8 @@ mod tests {
         fs::create_dir_all(&themes).unwrap();
         fs::write(
             themes.join("fine.toml"),
-            include_str!("../themes/solarized-dark.toml")
-                .replace("id = \"solarized-dark\"", "id = \"fine\""),
+            include_str!("../themes/forge-dark.toml")
+                .replace("id = \"forge-dark\"", "id = \"fine\""),
         )
         .unwrap();
 
@@ -308,8 +302,8 @@ mod tests {
             DEFAULT_THEME_ID
         );
         assert_eq!(
-            registry.resolve_startup_id(THEME_SOLARIZED_LIGHT),
-            THEME_SOLARIZED_LIGHT
+            registry.resolve_startup_id(THEME_FORGE_LIGHT),
+            THEME_FORGE_LIGHT
         );
     }
 

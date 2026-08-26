@@ -53,7 +53,7 @@ pub fn set_active(theme_id: impl Into<String>) {
     ACTIVE_THEME_ID.with(|active| *active.borrow_mut() = id);
 }
 
-/// Active theme id (`forge-dark`, `solarized-dark`, `solarized-light`, `system`, or a custom id).
+/// Active theme id (`forge-dark`, `forge-light`, `system`, or a custom id).
 pub fn active() -> String {
     ACTIVE_THEME_ID.with(|active| active.borrow().clone())
 }
@@ -100,7 +100,7 @@ fn resolved_palette(theme_id: &str) -> ThemePalette {
             .palette(theme_id)
             .or_else(|| registry.palette(DEFAULT_THEME_ID))
             .copied()
-            .expect("built-in solarized-dark theme")
+            .expect("built-in default theme")
     })
 }
 
@@ -165,7 +165,7 @@ fn system_theme_id_from_os() -> Option<&'static str> {
         if output.status.success() {
             system_theme_id_from_os_output(&String::from_utf8_lossy(&output.stdout))
         } else {
-            Some(forge_config::THEME_SOLARIZED_LIGHT)
+            Some(forge_config::THEME_FORGE_LIGHT)
         }
     }
     #[cfg(target_os = "windows")]
@@ -191,7 +191,7 @@ fn system_theme_id_from_os_output(output: &str) -> Option<&'static str> {
         || output.contains("appleinterfacestyle") && output.contains("light")
         || output.ends_with("0x1")
     {
-        Some(forge_config::THEME_SOLARIZED_LIGHT)
+        Some(forge_config::THEME_FORGE_LIGHT)
     } else if output.contains("prefer-dark") || output.contains("dark") || output.ends_with("0x0") {
         Some(DEFAULT_THEME_ID)
     } else {
@@ -206,7 +206,7 @@ fn system_theme_id_from_colorfgbg(colorfgbg: &str) -> Option<&'static str> {
         .and_then(|background| background.parse::<u8>().ok())
         .map(|background| {
             if background >= 8 {
-                forge_config::THEME_SOLARIZED_LIGHT
+                forge_config::THEME_FORGE_LIGHT
             } else {
                 DEFAULT_THEME_ID
             }
@@ -400,10 +400,10 @@ pub fn text_primary_color() -> Color {
 }
 
 /// Secondary body text — readable but a step down from primary prose (e.g.
-/// inline code in a sentence). Solarized Dark's `tag` token already carries
-/// base1 (#93A1A1), the exact tone Solarized reserves for this role, so this
-/// reuses it rather than adding a new required theme-file field; `dim()`
-/// remains the right choice for fully de-emphasized metadata.
+/// inline code in a sentence). Reuses each theme's `tag` token rather than
+/// adding a new required theme-file field, since `tag` is already defined as
+/// a neutral, low-emphasis text step in every built-in; `dim()` remains the
+/// right choice for fully de-emphasized metadata.
 pub fn text_secondary_color() -> Color {
     active_palette().tag
 }
@@ -818,9 +818,7 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
 mod tests {
     use super::*;
     use crate::theme_registry::ThemeRegistry;
-    use forge_config::{
-        ACCENT_STATUS_MIN_HUE_DISTANCE, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT,
-    };
+    use forge_config::{ACCENT_STATUS_MIN_HUE_DISTANCE, THEME_FORGE_DARK, THEME_FORGE_LIGHT};
 
     #[test]
     fn system_theme_uses_terminal_background_hint() {
@@ -830,7 +828,7 @@ mod tests {
         );
         assert_eq!(
             system_theme_id_from_colorfgbg("0;15"),
-            Some(THEME_SOLARIZED_LIGHT)
+            Some(THEME_FORGE_LIGHT)
         );
         assert_eq!(system_theme_id_from_colorfgbg("invalid"), None);
     }
@@ -839,7 +837,7 @@ mod tests {
     fn system_theme_parses_platform_preferences() {
         assert_eq!(
             system_theme_id_from_os_output("'prefer-light'"),
-            Some(THEME_SOLARIZED_LIGHT)
+            Some(THEME_FORGE_LIGHT)
         );
         assert_eq!(
             system_theme_id_from_os_output("'prefer-dark'"),
@@ -847,27 +845,27 @@ mod tests {
         );
         assert_eq!(
             system_theme_id_from_os_output("AppsUseLightTheme REG_DWORD 0x1"),
-            Some(THEME_SOLARIZED_LIGHT)
+            Some(THEME_FORGE_LIGHT)
         );
         assert_eq!(system_theme_id_from_os_output("unavailable"), None);
     }
 
     fn dark_palette() -> ThemePalette {
         ThemeRegistry::load(None)
-            .get(THEME_SOLARIZED_DARK)
-            .expect("solarized-dark")
+            .get(THEME_FORGE_DARK)
+            .expect("forge-dark")
             .palette
     }
 
     fn light_palette() -> ThemePalette {
         ThemeRegistry::load(None)
-            .get(THEME_SOLARIZED_LIGHT)
-            .expect("solarized-light")
+            .get(THEME_FORGE_LIGHT)
+            .expect("forge-light")
             .palette
     }
 
     fn install_defaults() {
-        install(ThemeRegistry::load(None), THEME_SOLARIZED_DARK);
+        install(ThemeRegistry::load(None), THEME_FORGE_DARK);
     }
 
     #[test]
@@ -877,7 +875,7 @@ mod tests {
         assert_eq!(surface_hover().bg, Some(to_color(dark.surface_hover)));
         assert_eq!(
             registry()
-                .get(THEME_SOLARIZED_DARK)
+                .get(THEME_FORGE_DARK)
                 .unwrap()
                 .palette
                 .surface_hover,
@@ -965,18 +963,18 @@ mod tests {
     #[test]
     fn tokens_are_distinct() {
         install_defaults();
-        let p = palette(THEME_SOLARIZED_DARK);
+        let p = palette(THEME_FORGE_DARK);
         assert_ne!(p.accent, p.ok);
         assert_ne!(p.warn, p.danger);
         assert_ne!(brand().fg, Some(p.muted));
     }
 
     #[test]
-    fn text_secondary_is_solarized_base1_and_distinct_from_interactive_colors() {
+    fn text_secondary_is_forge_dark_tag_and_distinct_from_interactive_colors() {
         install_defaults();
-        // Exact Solarized Dark base1 tone — the intended higher-contrast
-        // secondary-body-text color, not the interactive accent/info hues.
-        assert_eq!(text_secondary_color(), Color::Rgb(0x93, 0xA1, 0xA1));
+        // Exact Forge Dark `tag` tone — `text_secondary_color` reuses the
+        // `tag` token (see its doc comment) rather than `text_secondary`.
+        assert_eq!(text_secondary_color(), Color::Rgb(0xB2, 0xBD, 0xB6));
         assert_ne!(text_secondary_color(), accent_color());
         assert_ne!(text_secondary_color(), info_color());
         assert_eq!(text_secondary().fg, Some(text_secondary_color()));
@@ -1026,13 +1024,13 @@ mod tests {
         install_defaults();
         let dark = dark_palette();
         let light = light_palette();
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
         assert_eq!(user_message().bg, None);
         assert_eq!(assistant_message().bg, Some(to_color(dark.background)));
-        set_active(THEME_SOLARIZED_LIGHT);
+        set_active(THEME_FORGE_LIGHT);
         assert_eq!(user_message().bg, None);
         assert_eq!(assistant_message().bg, Some(to_color(light.background)));
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
     }
 
     #[test]
@@ -1040,13 +1038,13 @@ mod tests {
         install_defaults();
         let dark = dark_palette();
         let light = light_palette();
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
         assert_eq!(border().fg, Some(to_color(dark.border)));
         assert_eq!(border_muted().fg, Some(to_color(dark.border_muted)));
-        set_active(THEME_SOLARIZED_LIGHT);
+        set_active(THEME_FORGE_LIGHT);
         assert_eq!(border().fg, Some(to_color(light.border)));
         assert_eq!(border_muted().fg, Some(to_color(light.border_muted)));
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
     }
 
     #[test]
@@ -1054,9 +1052,9 @@ mod tests {
         install_defaults();
         let dark = dark_palette();
         let light = light_palette();
-        set_active(THEME_SOLARIZED_LIGHT);
+        set_active(THEME_FORGE_LIGHT);
         assert_eq!(canvas().bg, Some(to_color(light.background)));
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
         assert_eq!(canvas().bg, Some(to_color(dark.background)));
     }
 
@@ -1080,7 +1078,7 @@ mod tests {
     #[test]
     fn light_palette_snapshot() {
         install_defaults();
-        let p = palette(THEME_SOLARIZED_LIGHT);
+        let p = palette(THEME_FORGE_LIGHT);
         let light = light_palette();
         assert_eq!(p.text, to_color(light.text_primary));
         assert_eq!(p.canvas, to_color(light.background));
@@ -1091,22 +1089,22 @@ mod tests {
 
     #[test]
     fn light_syntax_theme_uses_readable_editor_roles() {
-        install(ThemeRegistry::load(None), THEME_SOLARIZED_LIGHT);
+        install(ThemeRegistry::load(None), THEME_FORGE_LIGHT);
         let syntax = syntax_theme();
 
-        assert_eq!(syntax.default, (0x58, 0x6E, 0x75));
-        assert_eq!(syntax.comment, (0x65, 0x7B, 0x83));
-        assert_eq!(syntax.keyword, (0x6C, 0x7A, 0x00));
-        assert_eq!(syntax.string, (0x2A, 0x7F, 0x78));
-        assert_eq!(syntax.number, (0x2A, 0x7F, 0x78));
-        assert_eq!(syntax.function, (0x1D, 0x6F, 0xA5));
-        assert_eq!(syntax.type_, (0x8B, 0x65, 0x00));
-        assert_eq!(syntax.variable, (0x1D, 0x6F, 0xA5));
-        assert_eq!(syntax.operator, (0x6C, 0x7A, 0x00));
-        assert_eq!(syntax.punctuation, (0x65, 0x7B, 0x83));
-        assert_eq!(syntax.property, (0x1D, 0x6F, 0xA5));
-        assert_eq!(syntax.tag, (0xB5, 0x2B, 0x29));
-        assert_eq!(syntax.attribute, (0xA3, 0x3E, 0x12));
+        assert_eq!(syntax.default, (0x1E, 0x2A, 0x1E));
+        assert_eq!(syntax.comment, (0x6C, 0x7A, 0x6C));
+        assert_eq!(syntax.keyword, (0x6D, 0x4F, 0x97));
+        assert_eq!(syntax.string, (0x19, 0x6B, 0x3E));
+        assert_eq!(syntax.number, (0x8C, 0x60, 0x18));
+        assert_eq!(syntax.function, (0x25, 0x7E, 0x4D));
+        assert_eq!(syntax.type_, (0x26, 0x58, 0x6D));
+        assert_eq!(syntax.variable, (0x1E, 0x2A, 0x1E));
+        assert_eq!(syntax.operator, (0x55, 0x63, 0x55));
+        assert_eq!(syntax.punctuation, (0x55, 0x63, 0x55));
+        assert_eq!(syntax.property, (0x26, 0x58, 0x6D));
+        assert_eq!(syntax.tag, (0x26, 0x58, 0x6D));
+        assert_eq!(syntax.attribute, (0x8C, 0x60, 0x18));
 
         install_defaults();
     }
@@ -1114,7 +1112,7 @@ mod tests {
     #[test]
     fn light_diff_snapshot() {
         install_defaults();
-        let p = palette(THEME_SOLARIZED_LIGHT);
+        let p = palette(THEME_FORGE_LIGHT);
         let light = light_palette();
         assert_eq!(p.diff_add, to_color(light.diff_add));
         assert_eq!(p.diff_remove, to_color(light.diff_remove));
@@ -1127,7 +1125,7 @@ mod tests {
 
         install_defaults();
         let light = light_palette();
-        set_active(THEME_SOLARIZED_LIGHT);
+        set_active(THEME_FORGE_LIGHT);
         let area = Rect::new(0, 0, 4, 2);
         let mut buf = Buffer::empty(area);
         fill(area, &mut buf, canvas());
@@ -1136,7 +1134,7 @@ mod tests {
                 assert_eq!(buf[(x, y)].style().bg, Some(to_color(light.background)));
             }
         }
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
     }
 
     #[test]
@@ -1144,9 +1142,9 @@ mod tests {
         install_defaults();
         let dark = dark_palette();
         let light = light_palette();
-        set_active(THEME_SOLARIZED_LIGHT);
+        set_active(THEME_FORGE_LIGHT);
         assert_eq!(text().fg, Some(to_color(light.text_primary)));
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
         assert_eq!(text().fg, Some(to_color(dark.text_primary)));
     }
 
@@ -1155,35 +1153,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".forge").join("themes");
         std::fs::create_dir_all(&themes).unwrap();
-        let mut content = include_str!("../themes/solarized-dark.toml").to_string();
-        content = content.replace("accent = \"#268BD2\"", "accent = \"#FF0000\"");
-        std::fs::write(themes.join("solarized-dark.toml"), content).unwrap();
-        install(ThemeRegistry::load(Some(dir.path())), THEME_SOLARIZED_DARK);
-        assert_eq!(palette(THEME_SOLARIZED_DARK).accent, Color::Rgb(255, 0, 0));
+        let mut content = include_str!("../themes/forge-dark.toml").to_string();
+        content = content.replace("accent = \"#8FA4D6\"", "accent = \"#FF0000\"");
+        std::fs::write(themes.join("forge-dark.toml"), content).unwrap();
+        install(ThemeRegistry::load(Some(dir.path())), THEME_FORGE_DARK);
+        assert_eq!(palette(THEME_FORGE_DARK).accent, Color::Rgb(255, 0, 0));
         install_defaults();
     }
 
     /// Installing a registry that redefines the *active* theme takes effect.
     ///
     /// The active palette is memoized under its theme id, and this swaps the
-    /// palette while the id stays `solarized-dark` — so the id alone cannot
+    /// palette while the id stays `forge-dark` — so the id alone cannot
     /// tell the cached entry is stale. Reading the accent first is what makes
     /// this a real test: it populates the cache before the second install.
     #[test]
     fn installing_a_registry_refreshes_the_memoized_active_palette() {
         install_defaults();
-        set_active(THEME_SOLARIZED_DARK);
+        set_active(THEME_FORGE_DARK);
         let before = accent_color();
         assert_ne!(before, Color::Rgb(255, 0, 0));
 
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".forge").join("themes");
         std::fs::create_dir_all(&themes).unwrap();
-        let content = include_str!("../themes/solarized-dark.toml")
+        let content = include_str!("../themes/forge-dark.toml")
             .to_string()
-            .replace("accent = \"#268BD2\"", "accent = \"#FF0000\"");
-        std::fs::write(themes.join("solarized-dark.toml"), content).unwrap();
-        install(ThemeRegistry::load(Some(dir.path())), THEME_SOLARIZED_DARK);
+            .replace("accent = \"#8FA4D6\"", "accent = \"#FF0000\"");
+        std::fs::write(themes.join("forge-dark.toml"), content).unwrap();
+        install(ThemeRegistry::load(Some(dir.path())), THEME_FORGE_DARK);
 
         assert_eq!(
             accent_color(),
@@ -1242,11 +1240,10 @@ mod tests {
     /// to the status set. They still have to be told apart from it, by hue
     /// or by saturation/lightness.
     ///
-    /// The floors are pinned to Solarized, whose `info` sits 29° from its
-    /// accent and separates on saturation alone (11 points). As with the
-    /// contrast tests below, the project keeps the authentic Solarized hex
-    /// values rather than deviating from the published palette, so the
-    /// tightest shipped pair sets the floor.
+    /// 40° of hue, 10 points of saturation, or 8 points of lightness: loose
+    /// enough that a theme author has real room to place `info`/`agent` near
+    /// the accent family, tight enough that "near" never slides into
+    /// "indistinguishable".
     fn separable_from_accent(accent: ConfigRgb, other: ConfigRgb) -> bool {
         let (_, accent_s, accent_l) = accent.to_hsl();
         let (_, other_s, other_l) = other.to_hsl();
@@ -1310,81 +1307,67 @@ mod tests {
         assert_contrast(role, fg, bg_label, bg, 4.5);
     }
 
-    // Canonical Solarized (https://ethanschoonover.com/solarized/) hues are
-    // tuned against Ethan Schoonover's own contrast metric, not the WCAG
-    // relative-luminance formula this test uses, and several accent/body
-    // tones fall short of strict 4.5:1 once measured that way — especially
-    // against the elevated `panel`/`panel_alt` surfaces, which Solarized
-    // doesn't define at all (this app blends them from the same base tones).
-    // The project chose to keep the authentic Solarized hex values rather
-    // than deviate from the published palette, so these tests pin the real,
-    // currently-achieved ratio per role/background pair as a regression
-    // floor instead of enforcing WCAG AA uniformly. Pairs that do clear
-    // 4.5:1 still use `assert_aa` so a future edit can't silently regress
-    // them below the standard.
+    // Forge Dark and Forge Light were both designed to clear WCAG AA
+    // (4.5:1) for every interactive/body role against every surface it
+    // actually appears on — `assert_aa` covers those. `dim` is the one
+    // deliberate exception: it marks fully de-emphasized metadata, so it
+    // pins its real, currently-achieved ratio as a regression floor instead
+    // of AA, the same way a future palette edit that broke contrast
+    // elsewhere would be expected to fail these tests rather than a
+    // screenshot.
     #[test]
     fn dark_text_roles_meet_wcag_aa() {
-        let p = palette(THEME_SOLARIZED_DARK);
+        let p = palette(THEME_FORGE_DARK);
         assert_aa("text", p.text, "canvas", p.canvas);
-        assert_contrast("muted", p.muted, "canvas", p.canvas, 3.3);
-        assert_contrast("accent", p.accent, "canvas", p.canvas, 4.0);
+        assert_aa("muted", p.muted, "canvas", p.canvas);
+        assert_aa("accent", p.accent, "canvas", p.canvas);
         assert_aa("ok", p.ok, "canvas", p.canvas);
-        assert_contrast("danger", p.danger, "canvas", p.canvas, 3.2);
+        assert_aa("danger", p.danger, "canvas", p.canvas);
         assert_aa("info", p.info, "canvas", p.canvas);
         assert_aa("tag", p.tag, "canvas", p.canvas);
 
-        assert_contrast("text", p.text, "panel", p.panel, 4.1);
-        assert_contrast("muted", p.muted, "panel", p.panel, 2.9);
-        assert_contrast("accent", p.accent, "panel", p.panel, 3.5);
-        assert_contrast("ok", p.ok, "panel", p.panel, 4.0);
-        assert_contrast("danger", p.danger, "panel", p.panel, 2.8);
-        assert_contrast("info", p.info, "panel", p.panel, 4.1);
+        assert_aa("text", p.text, "panel", p.panel);
+        assert_aa("muted", p.muted, "panel", p.panel);
+        assert_aa("accent", p.accent, "panel", p.panel);
+        assert_aa("ok", p.ok, "panel", p.panel);
+        assert_aa("danger", p.danger, "panel", p.panel);
+        assert_aa("info", p.info, "panel", p.panel);
         assert_aa("tag", p.tag, "panel", p.panel);
 
-        assert_contrast("text", p.text, "panel_alt", p.panel_alt, 3.7);
-        assert_contrast("muted", p.muted, "panel_alt", p.panel_alt, 2.6);
-        assert_contrast("accent", p.accent, "panel_alt", p.panel_alt, 3.1);
-        assert_contrast("ok", p.ok, "panel_alt", p.panel_alt, 3.6);
-        assert_contrast("danger", p.danger, "panel_alt", p.panel_alt, 2.5);
-        assert_contrast("info", p.info, "panel_alt", p.panel_alt, 3.7);
-        assert_contrast("tag", p.tag, "panel_alt", p.panel_alt, 4.3);
+        assert_aa("text", p.text, "panel_alt", p.panel_alt);
+        assert_aa("muted", p.muted, "panel_alt", p.panel_alt);
+        assert_aa("accent", p.accent, "panel_alt", p.panel_alt);
+        assert_aa("ok", p.ok, "panel_alt", p.panel_alt);
+        assert_aa("danger", p.danger, "panel_alt", p.panel_alt);
+        assert_aa("info", p.info, "panel_alt", p.panel_alt);
+        assert_aa("tag", p.tag, "panel_alt", p.panel_alt);
 
         // dim is used for low-priority labels on raised surfaces.
-        assert_contrast("dim", p.dim, "panel_alt", p.panel_alt, 2.1);
-        assert_contrast(
-            "selection_fg",
-            p.selection_fg,
-            "selection",
-            p.selection,
-            4.3,
-        );
+        assert_contrast("dim", p.dim, "panel_alt", p.panel_alt, 3.1);
+        assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
         assert_aa("tag on selection", p.tag, "selection", p.selection);
     }
 
     #[test]
     fn light_text_roles_meet_wcag_aa() {
-        let p = palette(THEME_SOLARIZED_LIGHT);
-        assert_contrast("text", p.text, "canvas", p.canvas, 4.1);
-        assert_contrast("muted", p.muted, "canvas", p.canvas, 2.4);
-        assert_contrast("tag", p.tag, "canvas", p.canvas, 2.4);
-        assert_contrast("accent", p.accent, "canvas", p.canvas, 3.2);
-        assert_contrast("ok", p.ok, "canvas", p.canvas, 2.8);
-        assert_contrast("danger", p.danger, "canvas", p.canvas, 4.0);
-        assert_contrast("info", p.info, "canvas", p.canvas, 2.7);
+        let p = palette(THEME_FORGE_LIGHT);
+        assert_aa("text", p.text, "canvas", p.canvas);
+        assert_aa("muted", p.muted, "canvas", p.canvas);
+        assert_aa("tag", p.tag, "canvas", p.canvas);
+        assert_aa("accent", p.accent, "canvas", p.canvas);
+        assert_aa("ok", p.ok, "canvas", p.canvas);
+        assert_aa("danger", p.danger, "canvas", p.canvas);
+        assert_aa("info", p.info, "canvas", p.canvas);
 
-        assert_contrast("text", p.text, "panel_alt", p.panel_alt, 3.3);
-        assert_contrast("muted", p.muted, "panel_alt", p.panel_alt, 2.0);
-        assert_contrast("tag", p.tag, "panel_alt", p.panel_alt, 2.0);
-        assert_contrast("dim", p.dim, "panel_alt", p.panel_alt, 1.3);
-        assert_contrast("danger", p.danger, "panel_alt", p.panel_alt, 3.4);
+        assert_aa("text", p.text, "panel_alt", p.panel_alt);
+        assert_aa("muted", p.muted, "panel_alt", p.panel_alt);
+        assert_aa("tag", p.tag, "panel_alt", p.panel_alt);
+        // dim is used for low-priority labels on raised surfaces — just
+        // clears AA on Forge Light's brightest surface, unlike Forge Dark.
+        assert_contrast("dim", p.dim, "panel_alt", p.panel_alt, 4.5);
+        assert_aa("danger", p.danger, "panel_alt", p.panel_alt);
 
-        assert_contrast(
-            "selection_fg",
-            p.selection_fg,
-            "selection",
-            p.selection,
-            3.8,
-        );
-        assert_contrast("tag on selection", p.tag, "selection", p.selection, 2.3);
+        assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
+        assert_aa("tag on selection", p.tag, "selection", p.selection);
     }
 }
