@@ -266,7 +266,7 @@ fn put(buf: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
 mod tests {
     use super::*;
     use crate::theme_registry::ThemeRegistry;
-    use forge_config::{THEME_FORGE_DARK, THEME_SOLARIZED_LIGHT};
+    use forge_config::{THEME_FORGE_DARK, THEME_FORGE_LIGHT};
     use ratatui::layout::Rect;
 
     fn buffer_text(buf: &Buffer, area: Rect) -> String {
@@ -303,7 +303,7 @@ mod tests {
         let mut dark = Buffer::empty(area);
         let mut light = Buffer::empty(area);
         render_theme_preview(THEME_FORGE_DARK, area, &mut dark);
-        render_theme_preview(THEME_SOLARIZED_LIGHT, area, &mut light);
+        render_theme_preview(THEME_FORGE_LIGHT, area, &mut light);
         let dark_bg = dark[(2, 1)].bg;
         let light_bg = light[(2, 1)].bg;
         assert_ne!(

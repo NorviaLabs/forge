@@ -135,7 +135,7 @@ async fn embedded_editor_uses_forge_language_and_theme() {
     assert_eq!(editor.syntax_language(), Some("rust"));
     assert_eq!(editor.syntax_theme(), crate::theme::syntax_theme());
 
-    app.set_theme_active("solarized-light");
+    app.set_theme_active("forge-light");
     assert_eq!(
         app.editor_session.as_ref().unwrap().syntax_theme(),
         crate::theme::syntax_theme()

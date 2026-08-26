@@ -61,7 +61,7 @@ navigation:
     - i
   leave-interaction: Esc
 themes:
-  builtin: [forge-dark, solarized-dark, solarized-light, catppuccin-mocha, gruvbox-dark, kanagawa-wave]
+  builtin: [forge-dark, forge-light]
   special: [system]
   user-drop-in-dirs: ["~/.config/forge/themes", ".forge/themes"]
 minimum-terminal: 80x18
@@ -539,11 +539,7 @@ Built-in themes ship as TOML in `crates/forge-tui/themes/` and compile into the 
 | id | Name |
 |---|---|
 | `forge-dark` | Forge Dark (default) |
-| `solarized-dark` | Solarized Dark |
-| `solarized-light` | Solarized Light |
-| `catppuccin-mocha` | Catppuccin Mocha |
-| `gruvbox-dark` | Gruvbox Dark |
-| `kanagawa-wave` | Kanagawa Wave |
+| `forge-light` | Forge Light |
 
 Plus the pseudo-theme `system`, which follows the terminal's light/dark preference and re-resolves on OS appearance changes.
 

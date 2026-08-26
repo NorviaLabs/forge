@@ -260,11 +260,7 @@ confirms, Esc restores the previous theme. `/theme <id>` applies immediately.
 | Theme id | Name |
 | --- | --- |
 | `forge-dark` | Forge Dark (default) |
-| `solarized-dark` | Solarized Dark |
-| `solarized-light` | Solarized Light |
-| `catppuccin-mocha` | Catppuccin Mocha |
-| `gruvbox-dark` | Gruvbox Dark |
-| `kanagawa-wave` | Kanagawa Wave |
+| `forge-light` | Forge Light |
 | `system` | Follow terminal light/dark preference |
 
 Drop custom `.toml` theme files into `.forge/themes/` in your workspace or

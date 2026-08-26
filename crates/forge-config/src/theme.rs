@@ -5,12 +5,10 @@ use std::fmt;
 
 /// Legacy theme id retained for configuration compatibility.
 pub const THEME_SYSTEM: &str = "system";
-/// Built-in Solarized Dark theme id.
-pub const THEME_SOLARIZED_DARK: &str = "solarized-dark";
 /// Built-in Forge Dark theme id.
 pub const THEME_FORGE_DARK: &str = "forge-dark";
-/// Built-in Solarized Light theme id.
-pub const THEME_SOLARIZED_LIGHT: &str = "solarized-light";
+/// Built-in Forge Light theme id.
+pub const THEME_FORGE_LIGHT: &str = "forge-light";
 /// Default when no preference is stored.
 pub const DEFAULT_THEME_ID: &str = THEME_FORGE_DARK;
 
@@ -91,7 +89,7 @@ pub fn normalize_theme_id(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" => DEFAULT_THEME_ID.to_string(),
         "dark" => THEME_FORGE_DARK.to_string(),
-        "light" => THEME_SOLARIZED_LIGHT.to_string(),
+        "light" => THEME_FORGE_LIGHT.to_string(),
         "system" => THEME_SYSTEM.to_string(),
         other => other.to_string(),
     }
@@ -108,8 +106,7 @@ pub fn is_system_theme(id: &str) -> bool {
 pub fn parse_theme_preference(raw: &str) -> Option<String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "dark" | "forge-dark" => Some(THEME_FORGE_DARK.to_string()),
-        "solarized-dark" => Some(THEME_SOLARIZED_DARK.to_string()),
-        "light" | "solarized-light" => Some(THEME_SOLARIZED_LIGHT.to_string()),
+        "light" | "forge-light" => Some(THEME_FORGE_LIGHT.to_string()),
         "system" => Some(THEME_SYSTEM.to_string()),
         _ => None,
     }
@@ -390,7 +387,7 @@ default = "#E6EDF3"
     #[test]
     fn normalize_theme_id_maps_legacy_aliases() {
         assert_eq!(normalize_theme_id("dark"), THEME_FORGE_DARK);
-        assert_eq!(normalize_theme_id("light"), THEME_SOLARIZED_LIGHT);
+        assert_eq!(normalize_theme_id("light"), THEME_FORGE_LIGHT);
         assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
         assert_eq!(normalize_theme_id("custom"), "custom");
     }
@@ -403,8 +400,8 @@ default = "#E6EDF3"
             Some(THEME_FORGE_DARK.to_string())
         );
         assert_eq!(
-            parse_theme_preference("solarized-dark"),
-            Some(THEME_SOLARIZED_DARK.to_string())
+            parse_theme_preference("forge-light"),
+            Some(THEME_FORGE_LIGHT.to_string())
         );
     }
 

@@ -15,10 +15,10 @@ async fn theme_change_updates_active_palette_immediately() {
     );
 
     app.handle_theme_command(Some("light"));
-    assert_eq!(crate::theme::active(), forge_config::THEME_SOLARIZED_LIGHT);
+    assert_eq!(crate::theme::active(), forge_config::THEME_FORGE_LIGHT);
     assert_eq!(
         crate::theme::text().fg,
-        Some(crate::theme::palette(forge_config::THEME_SOLARIZED_LIGHT).text)
+        Some(crate::theme::palette(forge_config::THEME_FORGE_LIGHT).text)
     );
     assert!(app.render_cache.conversation.is_none());
 }
@@ -32,7 +32,7 @@ async fn theme_picker_previews_on_navigate_confirms_on_enter_restores_on_esc() {
     app.handle_theme_command(None);
     assert!(matches!(app.overlay, Some(Overlay::Theme { .. })));
 
-    let light = forge_config::THEME_SOLARIZED_LIGHT.to_string();
+    let light = forge_config::THEME_FORGE_LIGHT.to_string();
     app.apply_overlay_action(OverlayAction::PreviewTheme(light.clone()))
         .await
         .unwrap();
@@ -146,8 +146,8 @@ async fn theme_persists_per_repository() {
     let (_fake_home, _home_guard) = fake_home_guard();
     let (dir, mut app) = focus_test_app().await;
     app.handle_theme_command(Some("light"));
-    assert_eq!(app.runtime.theme_id, forge_config::THEME_SOLARIZED_LIGHT);
-    assert_eq!(crate::theme::active(), forge_config::THEME_SOLARIZED_LIGHT);
+    assert_eq!(app.runtime.theme_id, forge_config::THEME_FORGE_LIGHT);
+    assert_eq!(crate::theme::active(), forge_config::THEME_FORGE_LIGHT);
 
     let session = session_for_workspace(dir.path()).await;
     let restored = TuiApp::new(
@@ -162,11 +162,8 @@ async fn theme_persists_per_repository() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert_eq!(
-        restored.runtime.theme_id,
-        forge_config::THEME_SOLARIZED_LIGHT
-    );
-    assert_eq!(crate::theme::active(), forge_config::THEME_SOLARIZED_LIGHT);
+    assert_eq!(restored.runtime.theme_id, forge_config::THEME_FORGE_LIGHT);
+    assert_eq!(crate::theme::active(), forge_config::THEME_FORGE_LIGHT);
 }
 
 #[tokio::test]
@@ -183,7 +180,7 @@ async fn light_theme_paints_root_canvas_on_draw() {
     let corner = term.backend().buffer()[(0, 0)].style().bg;
     assert_eq!(
         corner,
-        Some(crate::theme::palette(forge_config::THEME_SOLARIZED_LIGHT).canvas)
+        Some(crate::theme::palette(forge_config::THEME_FORGE_LIGHT).canvas)
     );
 }
 
@@ -259,7 +256,7 @@ async fn light_theme_representative_layout_snapshot() {
     let buf = term.backend().buffer();
     let mut saw_user_message_background = false;
     let mut saw_selection = false;
-    let light = crate::theme::palette(forge_config::THEME_SOLARIZED_LIGHT);
+    let light = crate::theme::palette(forge_config::THEME_FORGE_LIGHT);
     for y in 0..buf.area().height {
         for x in 0..buf.area().width {
             if buf[(x, y)].style().bg == Some(light.accent_soft) {
@@ -324,16 +321,16 @@ async fn old_or_malformed_ui_state_migrates_safely_to_default() {
 async fn theme_switch_recomputes_highlights() {
     let (_dir, mut app) = app_with_code("theme").await;
     let _guard = lock_highlight_cache();
-    crate::theme::set_active(forge_config::THEME_SOLARIZED_DARK);
+    crate::theme::set_active(forge_config::THEME_FORGE_DARK);
     draw_app(&mut app, 100, 30);
     let before = forge_syntax::highlight_cache_stats();
 
-    crate::theme::set_active(forge_config::THEME_SOLARIZED_LIGHT);
+    crate::theme::set_active(forge_config::THEME_FORGE_LIGHT);
     draw_app(&mut app, 100, 30);
     let after = forge_syntax::highlight_cache_stats();
 
     // Restore before asserting so a failure cannot leak a palette into others.
-    crate::theme::set_active(forge_config::THEME_SOLARIZED_DARK);
+    crate::theme::set_active(forge_config::THEME_FORGE_DARK);
 
     assert!(
         after.misses >= before.misses + CACHED_BLOCKS as u64,

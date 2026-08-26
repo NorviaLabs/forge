@@ -188,7 +188,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
         fs::write(&path, "[model]\nmodel = \"keep-me\"\n").unwrap();
-        persist_committed_theme_at(&path, "solarized-light").unwrap();
+        persist_committed_theme_at(&path, "forge-light").unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("keep-me"));
         assert!(text.contains("theme_committed"));
@@ -333,7 +333,7 @@ mod tests {
     fn persist_theme_overwrites_and_keeps_sibling_tui_keys() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[tui]\ntheme = \"solarized-light\"\nmouse = true\n").unwrap();
+        fs::write(&path, "[tui]\ntheme = \"forge-light\"\nmouse = true\n").unwrap();
         persist_committed_theme_at(&path, "forge-dark").unwrap();
         let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["tui"]["theme"].as_str(), Some("forge-dark"));
