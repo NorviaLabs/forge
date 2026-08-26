@@ -575,6 +575,72 @@ impl TuiApp {
         }
         rows
     }
+
+    /// `/context` — where the token budget actually goes, broken out by
+    /// category. `/status`'s "Used: X / Y tokens" answers "how full am I";
+    /// this answers "full of what" for the person debugging a session that
+    /// compacted sooner than expected or feels heavier than it should.
+    /// Deliberately not folded into the footer or `/status`: it's detail
+    /// most turns never need, and inlining it there would cost the row that
+    /// is supposed to be scannable at a glance.
+    pub(super) fn context_report_rows(&self) -> Vec<StatusRow> {
+        use crate::overlays::thousands;
+
+        let usage = self.session.token_usage_report();
+        let capacity = usage.context_capacity.max(1) as f64;
+        let pct = |n: usize| (n as f64 / capacity) * 100.0;
+
+        let mut rows = vec![
+            StatusRow::Heading("Context breakdown".into()),
+            StatusRow::field_with_note(
+                "System prompt",
+                format!("{} tokens", thousands(usage.system_tokens_est as u64)),
+                format!("{:.1}%", pct(usage.system_tokens_est)),
+            ),
+            StatusRow::field_with_note(
+                "Tool schemas",
+                format!("{} tokens", thousands(usage.tool_schema_tokens_est as u64)),
+                format!("{:.1}%", pct(usage.tool_schema_tokens_est)),
+            ),
+            StatusRow::field_with_note(
+                "User messages",
+                format!("{} tokens", thousands(usage.user_tokens_est as u64)),
+                format!("{:.1}%", pct(usage.user_tokens_est)),
+            ),
+            StatusRow::field_with_note(
+                "Assistant replies",
+                format!("{} tokens", thousands(usage.assistant_tokens_est as u64)),
+                format!("{:.1}%", pct(usage.assistant_tokens_est)),
+            ),
+            StatusRow::field_with_note(
+                "Tool results",
+                format!(
+                    "{} tokens ({} msgs)",
+                    thousands(usage.tool_tokens_est as u64),
+                    usage.tool_message_count
+                ),
+                format!("{:.1}%", pct(usage.tool_tokens_est)),
+            ),
+        ];
+        if usage.thinking_in_context_est > 0 {
+            rows.push(StatusRow::field_with_note(
+                "Thinking",
+                format!("{} tokens", thousands(usage.thinking_in_context_est as u64)),
+                format!("{:.1}%", pct(usage.thinking_in_context_est)),
+            ));
+        }
+        rows.push(StatusRow::Gap);
+        rows.push(StatusRow::field_with_note(
+            "Total used",
+            format!(
+                "{} / {} tokens",
+                thousands(usage.context_tokens_est as u64),
+                thousands(usage.context_capacity as u64)
+            ),
+            format!("{:.1}% of window", usage.context_pct),
+        ));
+        rows
+    }
 }
 
 // Free functions moved from `app/mod.rs` per #19.

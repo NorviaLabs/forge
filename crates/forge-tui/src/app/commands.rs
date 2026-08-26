@@ -762,6 +762,12 @@ impl TuiApp {
                         rows: self.status_report_rows(),
                     });
                 }
+                Ok(SlashCommand::Context) => {
+                    self.overlay = Some(Overlay::StatusReport {
+                        title: "Context".into(),
+                        rows: self.context_report_rows(),
+                    });
+                }
                 Ok(SlashCommand::Terminal) => {
                     // Open rather than toggle: the user asked for the terminal
                     // by name, so closing an already-open one would be the
