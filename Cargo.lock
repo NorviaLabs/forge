@@ -1326,6 +1326,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-graph"
+version = "0.1.0-beta.6"
+dependencies = [
+ "forge-syntax",
+ "sqlx",
+ "streaming-iterator",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-rust",
+]
+
+[[package]]
 name = "forge-mcp"
 version = "0.1.0-beta.6"
 dependencies = [
@@ -1381,6 +1395,7 @@ dependencies = [
  "forge-connect",
  "forge-core",
  "forge-governance",
+ "forge-graph",
  "forge-mcp",
  "forge-model",
  "forge-storage",
@@ -1435,6 +1450,7 @@ dependencies = [
  "async-trait",
  "forge-config",
  "forge-context",
+ "forge-graph",
  "forge-search",
  "forge-types",
  "futures",

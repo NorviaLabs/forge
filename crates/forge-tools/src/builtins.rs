@@ -1539,6 +1539,21 @@ pub fn default_builtins_with_web_search(
     tools
 }
 
+/// [`default_builtins_with_web_search`] plus `find_definition`/
+/// `find_references` when a graph handle is available. Kept as its own
+/// composition (rather than folding into `default_builtins_with_web_search`
+/// directly) so each optional addition stays independently testable and
+/// callable — `forge-session::open_session` is the only real caller, but
+/// nothing here assumes that.
+pub fn default_builtins_with_web_search_and_graph(
+    web_search: &forge_config::WebSearchConfig,
+    graph: Option<std::sync::Arc<forge_graph::GraphHandle>>,
+) -> Vec<std::sync::Arc<dyn Tool>> {
+    let mut tools = default_builtins_with_web_search(web_search);
+    tools.extend(crate::graph::graph_tools(graph));
+    tools
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
