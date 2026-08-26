@@ -3,10 +3,12 @@
 //! name can't be structurally narrowed to one definition, every real
 //! candidate is returned rather than a guess (see `schema.rs`, `store.rs`).
 //!
-//! PR1 scope: Rust only, one synchronous full-repo build at `open()`, no
-//! live watcher yet (that's PR3 — see the plan). `GraphHandle::open` is
-//! still the entry point later work builds on: PR3 adds a background
-//! initial build plus a `notify` watcher without changing this API shape.
+//! Covers the 5 languages `forge-syntax` already tree-sitter-parses for
+//! highlighting: Rust, Python, Go, TypeScript, JavaScript (PR2). Still one
+//! synchronous full-repo build at `open()`, no live watcher yet (that's
+//! PR3 — see the plan). `GraphHandle::open` is still the entry point later
+//! work builds on: PR3 adds a background initial build plus a `notify`
+//! watcher without changing this API shape.
 
 mod extract;
 pub mod schema;
@@ -92,28 +94,61 @@ impl GraphHandle {
         self.store.find_references(name).await
     }
 
-    /// Two-pass full-repo build (see `store.rs`'s module doc): every `.rs`
-    /// file's symbols first, then every file's edges resolved against the
-    /// complete symbol table.
+    /// Two-pass full-repo build (see `store.rs`'s module doc): every
+    /// recognized file's symbols first, grouped by language, then every
+    /// file's edges — across all 5 languages together — resolved against
+    /// the complete symbol table.
     async fn build_full(&self, workspace: &Path) -> Result<(), GraphError> {
-        let mut all_symbols = Vec::new();
+        let mut symbols_by_lang: std::collections::HashMap<&'static str, Vec<SymbolFact>> =
+            std::collections::HashMap::new();
         let mut all_edges = Vec::new();
-        for path in walk_rust_files(workspace) {
-            let Ok(source) = std::fs::read_to_string(&path) else {
+        for path in walk_files(workspace) {
+            let Some((lang, facts)) = extract_file(&path, workspace) else {
                 continue;
             };
-            let rel = path.strip_prefix(workspace).unwrap_or(&path);
-            let facts = extract::rust::RustExtractor.extract(&source, rel);
-            all_symbols.extend(facts.symbols);
+            symbols_by_lang
+                .entry(lang)
+                .or_default()
+                .extend(facts.symbols);
             all_edges.extend(facts.edges);
         }
-        self.store.insert_symbols("rust", &all_symbols).await?;
+        for (lang, symbols) in &symbols_by_lang {
+            self.store.insert_symbols(lang, symbols).await?;
+        }
         self.store.resolve_and_insert_edges(&all_edges).await?;
         Ok(())
     }
 }
 
-fn walk_rust_files(root: &Path) -> Vec<PathBuf> {
+/// Reads and extracts one file, if its extension maps to a supported
+/// language and it decodes as UTF-8 text. `None` for anything else —
+/// unrecognized extensions, binaries, and unreadable files are silently
+/// skipped, not errors: most of a real repo isn't source code in one of
+/// these 5 languages.
+fn extract_file(path: &Path, workspace: &Path) -> Option<(&'static str, ExtractedFacts)> {
+    let ext = path.extension()?.to_str()?;
+    let source = std::fs::read_to_string(path).ok()?;
+    let rel = path.strip_prefix(workspace).unwrap_or(path);
+    match ext {
+        "rs" => Some(("rust", extract::rust::RustExtractor.extract(&source, rel))),
+        "py" | "pyi" => Some((
+            "python",
+            extract::python::PythonExtractor.extract(&source, rel),
+        )),
+        "go" => Some(("go", extract::go::GoExtractor.extract(&source, rel))),
+        "ts" | "tsx" => Some((
+            "typescript",
+            extract::typescript::TypeScriptExtractor.extract(&source, rel),
+        )),
+        "js" | "jsx" | "mjs" | "cjs" => Some((
+            "javascript",
+            extract::javascript::JavaScriptExtractor.extract(&source, rel),
+        )),
+        _ => None,
+    }
+}
+
+fn walk_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk_dir(root, &mut out);
     out
@@ -132,7 +167,7 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
                 continue;
             }
             walk_dir(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+        } else {
             out.push(path);
         }
     }
@@ -163,6 +198,41 @@ mod tests {
         let refs = handle.find_references("helper").await.unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].from_line, 4);
+    }
+
+    /// A polyglot repo — the real shape a build has to handle once it's not
+    /// Rust-only: each language's file is parsed by its own grammar, all
+    /// five land in one shared graph, and a name unique to one language
+    /// resolves without leaking into or colliding with the others.
+    #[tokio::test]
+    async fn builds_across_all_five_languages_in_one_repo() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("main.rs"), "pub fn rust_only() {}\n").unwrap();
+        fs::write(dir.path().join("main.py"), "def python_only():\n    pass\n").unwrap();
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc GoOnly() {}\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("main.ts"), "function typescriptOnly() {}\n").unwrap();
+        fs::write(dir.path().join("main.js"), "function javascriptOnly() {}\n").unwrap();
+
+        let handle = GraphHandle::open_in_memory(dir.path()).await.unwrap();
+
+        for name in [
+            "rust_only",
+            "python_only",
+            "GoOnly",
+            "typescriptOnly",
+            "javascriptOnly",
+        ] {
+            let def = handle.find_definition(name).await.unwrap();
+            assert_eq!(
+                def.len(),
+                1,
+                "{name} should resolve to exactly one definition"
+            );
+        }
     }
 
     #[tokio::test]
