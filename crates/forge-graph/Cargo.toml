@@ -17,6 +17,7 @@ streaming-iterator = "0.1"
 sqlx = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -564,6 +564,35 @@ impl TuiApp {
         self.status_state.message = "pick a theme".into();
     }
 
+    async fn handle_graph_command(&mut self, on: Option<bool>) {
+        if !self.session.has_graph() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "no symbol graph for this workspace (disabled, or it failed to open at startup)",
+            );
+            return;
+        }
+        let Some(on) = on else {
+            let state = if self.session.graph_enabled() {
+                "on"
+            } else {
+                "off"
+            };
+            self.status_state.message = format!("graph: {state}");
+            return;
+        };
+        self.session.set_graph_enabled(on).await;
+        self.status_state.message = format!("graph: {}", if on { "on" } else { "off" });
+        self.set_feedback(
+            FeedbackSeverity::Ok,
+            format!(
+                "symbol graph {} — find_definition/find_references {}",
+                if on { "enabled" } else { "disabled" },
+                if on { "visible to the model" } else { "hidden" }
+            ),
+        );
+    }
+
     async fn handle_model_command(&mut self) {
         self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
         self.status_state.message = "pick a model (live catalog when connected)".into();
@@ -777,6 +806,9 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Diff { source }) => {
                     self.open_diff_view(source);
+                }
+                Ok(SlashCommand::Graph { on }) => {
+                    self.handle_graph_command(on).await;
                 }
                 Err(e) => {
                     let msg = e.to_string();

@@ -86,7 +86,25 @@ impl AgentSession {
         } else {
             (*descriptors).clone()
         };
-        self.defer_mcp_tool_schemas(visible)
+        let visible = self.defer_mcp_tool_schemas(visible);
+        self.filter_graph_tools(visible)
+    }
+
+    /// Third filter stage: hide `find_definition`/`find_references` when the
+    /// `/graph` toggle is off. Mirrors `defer_mcp_tool_schemas`'s layering —
+    /// a name-based filter over whatever governance/deferral left visible,
+    /// not a change to what's registered on the `ToolRegistry`.
+    fn filter_graph_tools(
+        &self,
+        visible: Vec<forge_types::ToolDescriptor>,
+    ) -> Vec<forge_types::ToolDescriptor> {
+        if self.graph_enabled() {
+            return visible;
+        }
+        visible
+            .into_iter()
+            .filter(|t| t.name != "find_definition" && t.name != "find_references")
+            .collect()
     }
 
     /// Batteries-included token optimization, no configuration required:

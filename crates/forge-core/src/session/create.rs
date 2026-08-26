@@ -172,6 +172,8 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
+            graph: None,
+            graph_enabled: true,
         })
     }
 
@@ -248,6 +250,8 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
+            graph: None,
+            graph_enabled: true,
         };
         session.restore_protected_facts(&state.user_messages);
         session.restore_context_state(state.context_state.as_ref());
@@ -280,6 +284,44 @@ impl AgentSession {
 
     pub fn set_governance(&mut self, g: Governance) {
         self.governance = g;
+    }
+
+    /// Attach the workspace's symbol graph, opened by session assembly
+    /// (`forge-session::open_session`) before the session itself exists.
+    /// Starts enabled — matches the graph tools being registered on the same
+    /// `ToolRegistry` at open time.
+    pub fn set_graph(&mut self, graph: Option<Arc<forge_graph::GraphHandle>>) {
+        self.graph = graph;
+    }
+
+    /// Whether `find_definition`/`find_references` are currently visible to
+    /// the model. Always `false` when no graph was opened for this session.
+    pub fn graph_enabled(&self) -> bool {
+        self.graph.is_some() && self.graph_enabled
+    }
+
+    /// Whether this session has a graph at all (regardless of the toggle) —
+    /// the `/graph` command uses this to explain a no-op toggle attempt.
+    pub fn has_graph(&self) -> bool {
+        self.graph.is_some()
+    }
+
+    /// Toggle model visibility of the graph tools, pausing/resuming the
+    /// live filesystem watcher to match. A no-op, returning `false`, when
+    /// this session has no graph. Resuming after a pause runs a catch-up
+    /// sweep for any changes missed while paused before the watcher
+    /// restarts — see `GraphHandle::resume_watcher`.
+    pub async fn set_graph_enabled(&mut self, enabled: bool) -> bool {
+        let Some(graph) = self.graph.clone() else {
+            return false;
+        };
+        self.graph_enabled = enabled;
+        if enabled {
+            let _ = graph.resume_watcher().await;
+        } else {
+            graph.pause_watcher().await;
+        }
+        true
     }
 
     /// Replace the session proxy with one that enforces `policy`.

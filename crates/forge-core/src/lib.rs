@@ -160,6 +160,15 @@ pub struct AgentSession {
     /// by this ordinal, which compaction cannot disturb because it only
     /// rewrites the projection.
     canonical_user_turns: usize,
+    /// The workspace's persisted symbol graph, when `open_session` could
+    /// build/open one. `None` means no graph tools were ever registered —
+    /// distinct from `graph_enabled == false`, which means the tools are
+    /// registered but hidden from the model and the watcher is paused.
+    graph: Option<Arc<forge_graph::GraphHandle>>,
+    /// Whether `find_definition`/`find_references` are visible to the model
+    /// right now. Toggled by the TUI's `/graph` command; has no effect when
+    /// `graph` is `None`.
+    graph_enabled: bool,
 }
 
 #[derive(Debug)]
