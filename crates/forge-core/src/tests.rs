@@ -141,6 +141,91 @@ impl forge_tools::Tool for FakeMcpTool {
     }
 }
 
+/// Stands in for the real `BashTool` (`forge-tools`) so the compression
+/// wiring can be exercised without a real shell — returns fixed, cargo-test
+/// shaped output regardless of the command it's given.
+struct FakeBashTool {
+    output: &'static str,
+}
+
+#[async_trait]
+impl forge_tools::Tool for FakeBashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+    fn description(&self) -> &str {
+        "fake bash for compression wiring tests"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "properties": {"command": {"type": "string"}}})
+    }
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::success(self.output))
+    }
+}
+
+#[tokio::test]
+async fn a_recognized_command_is_compressed_before_it_reaches_the_transcript() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FakeBashTool {
+        output: "test a ... ok\ntest b ... FAILED\ntest result: FAILED. 1 passed; 1 failed",
+    }));
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), script(vec![]), tools)
+        .await
+        .unwrap();
+    session.append_user_message("run the tests").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-bash".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "cargo test"}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+
+    let result = session
+        .messages
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("call-bash"))
+        .expect("bash tool result should be recorded");
+    assert!(
+        !result.content.contains("test a ... ok"),
+        "passing line should be collapsed: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("test b ... FAILED"),
+        "failing line must survive: {}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("test result: FAILED. 1 passed; 1 failed"),
+        "summary footer must survive: {}",
+        result.content
+    );
+}
+
 #[tokio::test]
 async fn sandbox_denial_pauses_for_hitl_instead_of_recording_failure() {
     let dir = tempdir().unwrap();
