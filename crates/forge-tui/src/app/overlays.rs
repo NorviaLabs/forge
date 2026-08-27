@@ -271,22 +271,23 @@ impl TuiApp {
         if self.startup_resume.picker {
             self.exit.request_with_code(ExitCode::Canceled);
         }
-        if self.onboarding_connect
-            && matches!(
-                self.overlay,
-                Some(
-                    Overlay::ConnectModel { .. }
-                        | Overlay::ConnectApiKey { .. }
-                        | Overlay::ConnectOauth { .. }
-                )
-            )
-        {
+        // Esc pops exactly one interaction level (FORGE-DESIGN §8.1). The
+        // API-key screen is one level *below* the provider list, so Esc
+        // returns to that list — matching its own footer's "Esc back" —
+        // rather than jumping out two levels at once. Only the provider list
+        // itself (the top of the picker) is the intentional quit point during
+        // first-run onboarding.
+        if matches!(self.overlay, Some(Overlay::ConnectApiKey { .. })) {
+            self.open_connect_picker();
+            return;
+        }
+        if self.onboarding_connect && matches!(self.overlay, Some(Overlay::ConnectModel { .. })) {
             self.exit.request_with_code(ExitCode::Canceled);
         }
-        // An in-flight device-code OAuth poll must not be able to
-        // complete a connection the user just cancelled — `poll_oauth_tick`
-        // runs unconditionally every event-loop tick regardless of
-        // which overlay (if any) is open.
+        // An in-flight device-code OAuth poll must not be able to complete a
+        // connection the user just cancelled — `poll_oauth_tick` runs
+        // unconditionally every event-loop tick regardless of which overlay
+        // (if any) is open.
         if matches!(self.overlay, Some(Overlay::ConnectOauth { .. })) {
             self.connect.oauth_pending = None;
             self.connect.oauth_last_poll = None;
