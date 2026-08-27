@@ -394,7 +394,7 @@ impl FooterBar<'_> {
 /// Last footer segment: session total + cache hit rate.
 ///
 /// `0 tokens` until any prompt tokens are reported (including "the model ran
-/// but the provider sent no usage"). After that: `12.4k tokens · 81% cache`.
+/// but the provider sent no usage"). After that: `12.4k tokens · 81.35% cache`.
 pub(crate) fn format_footer_usage_slot(
     prompt_tokens: u64,
     completion_tokens: u64,
@@ -402,7 +402,7 @@ pub(crate) fn format_footer_usage_slot(
     labeled: bool,
 ) -> String {
     // `labeled` spells out the unit: a bare "0" (and even a populated
-    // "125k · 35% cache") tells a first-time reader nothing about what is being
+    // "125k · 35.42% cache") tells a first-time reader nothing about what is being
     // counted, and the idle state — the very first thing they see — carried no
     // clue at all. The caller drops the label only when the row is too narrow
     // to afford it (see `MIN_MODEL_CHARS`).
@@ -415,10 +415,8 @@ pub(crate) fn format_footer_usage_slot(
         return format!("0{unit}");
     }
     let total = prompt_tokens.saturating_add(completion_tokens);
-    let rate = ((cache_reads as f64 / prompt_tokens as f64) * 100.0)
-        .clamp(0.0, 100.0)
-        .round() as u32;
-    format!("{}{unit} · {rate}% cache", compact_token_count(total))
+    let rate = ((cache_reads as f64 / prompt_tokens as f64) * 100.0).clamp(0.0, 100.0);
+    format!("{}{unit} · {rate:.2}% cache", compact_token_count(total))
 }
 
 /// Compact count for the footer: `999`, `1.2k`, `12k`, `1.2M`.
@@ -778,7 +776,7 @@ mod tests {
         m.completion_tokens = 36;
         m.prompt_cache_reads = 5_504;
         let out = rendered(&m, 90);
-        assert!(out.contains("6.1k tokens · 90% cache"), "{out:?}");
+        assert!(out.contains("6.1k tokens · 90.32% cache"), "{out:?}");
         assert!(!out.contains("2 changes"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
     }
@@ -804,15 +802,15 @@ mod tests {
         assert_eq!(format_footer_usage_slot(0, 500, 0, true), "0 tokens");
         assert_eq!(
             format_footer_usage_slot(100, 0, 0, true),
-            "100 tokens · 0% cache"
+            "100 tokens · 0.00% cache"
         );
         assert_eq!(
             format_footer_usage_slot(6_094, 36, 5_504, true),
-            "6.1k tokens · 90% cache"
+            "6.1k tokens · 90.32% cache"
         );
         assert_eq!(
             format_footer_usage_slot(100, 0, 200, true),
-            "100 tokens · 100% cache"
+            "100 tokens · 100.00% cache"
         );
     }
 
