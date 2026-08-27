@@ -309,8 +309,17 @@ struct MdRenderer {
     in_html_block: bool,
     html_buf: String,
     /// Rank of the heading currently open, so `TagEnd::Heading` can decide
-    /// whether to draw the H1 rule.
+    /// whether to draw the rank rule.
     heading_level: Option<u8>,
+    /// Style for the run-of-lines prefix (list markers, quote rails): bullets
+    /// read as answer structure and take the structure hue; every other
+    /// prefix stays muted.
+    marker_style: Style,
+    /// Out-line index where the outermost open list began, while a top-level
+    /// list block is open — closed lists get the scan-band ground painted
+    /// across their whole line range (`band_depth` nests).
+    band_start: Option<usize>,
+    band_depth: usize,
 }
 
 /// Map `pulldown_cmark`'s heading level onto 1-6.
@@ -328,9 +337,6 @@ fn heading_rank(level: pulldown_cmark::HeadingLevel) -> u8 {
 
 /// Open a block with one blank line of separation, never two, and never a
 /// leading blank at the very top of the answer.
-/// Marks an H2 in the margin, where H1 has a rule under it instead.
-const HEADING_BAR: &str = "▌ ";
-
 fn blank_before_block(out: &mut Vec<Line<'static>>) {
     match out.last() {
         None => {}
@@ -355,6 +361,9 @@ impl MdRenderer {
             in_html_block: false,
             html_buf: String::new(),
             heading_level: None,
+            marker_style: theme::muted(),
+            band_start: None,
+            band_depth: 0,
         }
     }
 
@@ -411,25 +420,18 @@ impl MdRenderer {
         match tag {
             Tag::Paragraph => {}
             Tag::Heading { level, .. } => {
-                // Rank reads by weight and value, never hue (see
-                // `theme::heading`). H1 and H2 stay primary text; H3 and below
-                // step down to secondary, and H1 gets a rule under it. Before
-                // this, every level was the same bold line, so a structured
-                // answer rendered flat.
+                // The editorial treatment: H1 and H2 are section *labels* —
+                // structure hue at bold weight, a hairline rule under each,
+                // label text uppercased so the spine of the answer reads at
+                // a glance (§6 allows uppercase for structural labels). H3
+                // and below stay secondary bold text. Before any of this,
+                // every level was the same bold line, so a structured answer
+                // rendered flat.
                 let level = heading_rank(level);
                 self.heading_level = Some(level);
                 blank_before_block(&mut self.out);
-                // H1 is told apart by the rule under it. H2 had only bold,
-                // which in a monospace face at terminal sizes is nearly no
-                // signal against body text — a section heading read as another
-                // paragraph. A bar in the margin is ornament rather than more
-                // weight, so rank still reads without spending hue.
-                if level == 2 {
-                    self.prefix = HEADING_BAR.into();
-                    self.cont_prefix = " ".repeat(display_width(HEADING_BAR));
-                }
                 self.push_style(if level <= 2 {
-                    theme::heading()
+                    theme::response_heading()
                 } else {
                     theme::text_secondary().add_modifier(Modifier::BOLD)
                 });
@@ -459,9 +461,20 @@ impl MdRenderer {
                     saved_cont: self.cont_prefix.clone(),
                 };
                 self.list_stack.push(frame);
+                self.band_depth += 1;
+                // Only an outermost, non-quoted list opens a band: bands are
+                // answer-level furniture, and a list inside a quote already
+                // carries the quote rail.
+                if self.band_depth == 1 && self.quote_depth == 0 {
+                    self.band_start = Some(self.out.len());
+                }
             }
             Tag::Item => {
                 self.flush_para();
+                // The marker (and its continuation column) is answer
+                // structure, so it takes the structure hue for the lifetime
+                // of the item; prose inside stays neutral.
+                self.marker_style = theme::response_marker();
                 if let Some(frame) = self.list_stack.last_mut() {
                     let marker = if frame.ordered {
                         let marker = format!("{}. ", frame.index);
@@ -539,7 +552,7 @@ impl MdRenderer {
                 self.flush_para();
                 self.prefix.clear();
                 self.cont_prefix.clear();
-                if self.heading_level.take() == Some(1) {
+                if self.heading_level.take().is_some_and(|rank| rank <= 2) {
                     self.out.push(Line::from(Span::styled(
                         "─".repeat(self.width),
                         theme::border_muted(),
@@ -550,10 +563,23 @@ impl MdRenderer {
                 self.flush_para();
                 self.prefix.clear();
                 self.cont_prefix.clear();
+                self.marker_style = theme::muted();
             }
             TagEnd::List(_) => {
                 if let Some(frame) = self.list_stack.pop() {
                     self.cont_prefix = frame.saved_cont;
+                }
+                if self.band_depth > 0 {
+                    self.band_depth -= 1;
+                }
+                if self.band_depth == 0 {
+                    // Reversal of insert order matters: band_start taken
+                    // before slicing so paint can't see its own None state.
+                    if let Some(start) = self.band_start.take() {
+                        if self.quote_depth == 0 {
+                            paint_scan_band(&mut self.out[start..], self.width);
+                        }
+                    }
                 }
             }
             TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition => {
@@ -598,6 +624,7 @@ impl MdRenderer {
                         self.width,
                         "",
                         "",
+                        theme::muted(),
                     ) {
                         self.out.push(line);
                     }
@@ -629,6 +656,11 @@ impl MdRenderer {
     fn on_text(&mut self, t: String) {
         if let Some(code) = &mut self.code {
             code.body.push_str(&t);
+        } else if self.heading_level.is_some_and(|rank| rank <= 2) {
+            // Section labels are uppercased for scanability (§6 allows
+            // uppercase for structural labels). Per-char, so streaming
+            // chunks each transform independently and land identical.
+            self.push_span(t.to_uppercase());
         } else {
             self.push_span(t);
         }
@@ -661,7 +693,7 @@ impl MdRenderer {
         let quote = "│ ".repeat(self.quote_depth);
         let prefix = format!("{quote}{}", self.prefix);
         let cont = format!("{quote}{}", self.cont_prefix);
-        for line in wrap_spans(&self.inline, self.width, &prefix, &cont) {
+        for line in wrap_spans(&self.inline, self.width, &prefix, &cont, self.marker_style) {
             self.out.push(line);
         }
         self.inline.clear();
@@ -740,6 +772,37 @@ const CODE_INDENT: &str = "  ";
 /// Rule drawn down the left edge of every row of a fenced block.
 const CODE_GUTTER: &str = "▌ ";
 
+/// Paint the scan-band ground across a whole list block's lines.
+///
+/// Runs once, when the outermost list closes. Every span keeps its own
+/// foreground and modifiers; only a span with *no* background picks up the
+/// band, so inline-code chips and nested tables keep their own grounds.
+/// Rows are padded out to the full prose width on the right so the band
+/// reads as one slab, not a halo behind glyphs; the prefix column already
+/// starts at the left edge, so its own cells carry the band once filled.
+fn paint_scan_band(lines: &mut [Line<'static>], width: usize) {
+    let band = theme::scan_band_bg();
+    let fill = |span: &mut Span<'static>| {
+        if span.style.bg.is_none() {
+            span.style = span.style.patch(band);
+        }
+    };
+    for line in lines.iter_mut() {
+        if line.spans.is_empty() {
+            line.spans.push(Span::styled(" ".repeat(width), band));
+            continue;
+        }
+        let used: usize = line.spans.iter().map(|s| s.width()).sum();
+        if used < width {
+            line.spans
+                .push(Span::styled(" ".repeat(width - used), band));
+        }
+        for span in &mut line.spans {
+            fill(span);
+        }
+    }
+}
+
 fn display_width(s: &str) -> usize {
     Span::raw(s).width()
 }
@@ -769,17 +832,20 @@ fn split_at_width(s: &str, max: usize) -> (&str, &str) {
 /// and continuation lines with `cont`. Styles travel with the words, so inline
 /// code and emphasis stay styled across wraps. Words that still do not fit a
 /// fresh line are hard-broken so a table cell cannot blow the pane width.
+/// `marker_style` paints the prefix/continuation gutter itself — list markers
+/// take the structure hue, everything else stays muted.
 fn wrap_spans(
     spans: &[Span<'static>],
     width: usize,
     prefix: &str,
     cont: &str,
+    marker_style: Style,
 ) -> Vec<Line<'static>> {
     if spans.is_empty() {
         return Vec::new();
     }
-    let prefix_span = Span::styled(prefix.to_string(), theme::muted());
-    let cont_span = Span::styled(cont.to_string(), theme::muted());
+    let prefix_span = Span::styled(prefix.to_string(), marker_style);
+    let cont_span = Span::styled(cont.to_string(), marker_style);
     let prefix_w = display_width(prefix);
     let cont_w = display_width(cont);
     let mut out: Vec<Line<'static>> = Vec::new();
@@ -986,6 +1052,7 @@ fn render_table(
 
     let mut out = Vec::new();
     let mut emitted = 0usize;
+    let mut body_index = 0usize;
     let mut take_prefix = || {
         let prefix = if emitted == 0 {
             first_prefix
@@ -1004,11 +1071,18 @@ fn render_table(
             out.push(frame_line(&take_prefix(), &widths, '├', '┼', '┤'));
             saw_body = true;
         }
+        // Zebra parity counts body rows only, so the header never shifts the
+        // stripes and the first body row stays untinted.
+        let zebra = !header && body_index % 2 == 1;
+        if !header {
+            body_index += 1;
+        }
         out.extend(render_boxed_row(
             &mut take_prefix,
             cells,
             &widths,
             &alignments,
+            zebra,
         ));
     }
     if !saw_body {
@@ -1023,6 +1097,7 @@ fn render_boxed_row(
     cells: &[Vec<Span<'static>>],
     widths: &[usize],
     alignments: &[Alignment],
+    zebra: bool,
 ) -> Vec<Line<'static>> {
     let wrapped: Vec<Vec<Line<'static>>> = cells
         .iter()
@@ -1031,7 +1106,7 @@ fn render_boxed_row(
             if *w == 0 {
                 return vec![Line::from("")];
             }
-            let lines = wrap_spans(cell, *w, "", "");
+            let lines = wrap_spans(cell, *w, "", "", theme::muted());
             if lines.is_empty() {
                 vec![Line::from("")]
             } else {
@@ -1041,6 +1116,14 @@ fn render_boxed_row(
         .collect();
     let height = wrapped.iter().map(|lines| lines.len()).max().unwrap_or(1);
     let border = theme::border_muted();
+    let stripe = zebra.then(theme::zebra_row_bg);
+    let tint = |span: &mut Span<'static>| {
+        if let Some(stripe) = stripe {
+            if span.style.bg.is_none() {
+                span.style = span.style.patch(stripe);
+            }
+        }
+    };
     let mut out = Vec::new();
     for row_line in 0..height {
         let mut spans = vec![
@@ -1058,6 +1141,15 @@ fn render_boxed_row(
             spans.push(Span::raw(" ".repeat(CELL_PAD)));
         }
         spans.push(Span::styled("│".to_string(), border));
+        if stripe.is_some() {
+            // A stripe carries across the full row — gutter, walls and cell
+            // padding included — so the band reads as one bar, not patches.
+            // Spans that already own a background (inline-code chips) keep
+            // it.
+            for span in &mut spans {
+                tint(span);
+            }
+        }
         out.push(Line::from(spans));
     }
     out
@@ -1173,43 +1265,128 @@ mod tests {
         assert_eq!(blanks, 1, "{text:?}");
     }
 
-    /// H1 is told apart by its rule. H2 had only bold, which at terminal
-    /// sizes reads as body text — a section heading that announces nothing.
+    /// The editorial section label: H1 and H2 are structure-hued, uppercased
+    /// bold lines, each closed by a hairline rule — rank reads by the rule
+    /// count, and body text inherits neither.
     #[test]
-    fn a_second_level_heading_is_marked_in_the_margin() {
+    fn section_labels_get_rules_and_uppercase() {
         let lines = render_markdown("# Title\n\n## Section\n\nbody text\n", 60);
-        let text: Vec<String> = lines
+        let rows: Vec<(String, Option<ratatui::style::Color>)> = lines
             .iter()
             .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
+                (
+                    line.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>(),
+                    line.spans.first().and_then(|s| s.style.bg),
+                )
             })
             .collect();
 
+        let label_style = |needle: &str| {
+            lines
+                .iter()
+                .find(|line| line.spans.iter().any(|s| s.content.contains(needle)))
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .find(|s| s.content.contains(needle))
+                        .unwrap()
+                        .style
+                })
+                .unwrap_or_else(|| panic!("{needle} rendered"))
+        };
+        for label in ["TITLE", "SECTION"] {
+            let style = label_style(label);
+            assert!(
+                style.add_modifier.contains(Modifier::BOLD),
+                "{label} lost its weight"
+            );
+            assert_eq!(
+                style.fg,
+                Some(theme::palette(DEFAULT_THEME_ID).structure),
+                "{label} must take the structure hue"
+            );
+        }
         assert!(
-            text.iter().any(|row| row.starts_with("▌ Section")),
-            "H2 should carry a bar: {text:?}"
+            !rows.iter().any(|(text, _)| text.starts_with('▌')),
+            "the old margin bar must not come back: {rows:?}"
         );
-        // H1 keeps the rule and does not also get a bar — two markers for one
-        // level would read as two levels.
+        let rules = rows
+            .iter()
+            .filter(|(text, _)| !text.is_empty() && text.chars().all(|c| c == '─'))
+            .count();
+        assert_eq!(rules, 2, "both section labels get a rule: {rows:?}");
         assert!(
-            text.iter().any(|row| row.starts_with("Title")),
-            "H1 should stay unmarked: {text:?}"
-        );
-        assert!(
-            text.iter().any(|row| row.starts_with("───")),
-            "H1 should keep its rule: {text:?}"
-        );
-        // The bar belongs to the heading, not to what follows it.
-        assert!(
-            text.iter().any(|row| row.starts_with("body text")),
-            "body should not inherit the bar: {text:?}"
+            rows.iter().any(|(text, _)| text == "body text"),
+            "body must stay sentence case and unruled: {rows:?}"
         );
     }
 
+    /// A list block carries the scan-band ground: every span of every line in
+    /// the block — leading gutter, blank separators, trailing pad — sits on
+    /// the band, while an inline-code chip inside the list keeps its own
+    /// raised ground on top of it.
+    #[test]
+    fn a_list_block_renders_on_a_scan_band() {
+        let palette = theme::palette(DEFAULT_THEME_ID);
+        let (band, chip) = (palette.scan_band, palette.panel_alt);
+        let lines = render_markdown("- keeps a `chip` term\n- plain item\n", 40);
+        assert!(!lines.is_empty(), "list rendered");
+        for line in &lines {
+            for span in &line.spans {
+                let expected = if span.content.contains("chip") {
+                    chip
+                } else {
+                    band
+                };
+                assert_eq!(
+                    span.style.bg,
+                    Some(expected),
+                    "span {:?} has the wrong ground: {line:?}",
+                    span.content
+                );
+            }
+            assert_eq!(line.width(), 40, "band rows fill the width: {line:?}");
+        }
+    }
+
+    /// Table body rows zebra-stripe: odd body rows carry the zebra tint
+    /// across the whole row, the first body row stays on the canvas, and the
+    /// header is never striped.
+    #[test]
+    fn table_body_rows_zebra_stripe() {
+        let zebra = theme::palette(DEFAULT_THEME_ID).zebra_row;
+        let md = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+        let lines = render_markdown(md, 40);
+        let body_rows: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|line| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                text.starts_with('│')
+            })
+            .collect();
+        // Header + two body rows.
+        assert_eq!(body_rows.len(), 3, "{lines:?}");
+        let bg_at = |line: &Line<'static>| line.spans[1].style.bg;
+        assert_eq!(bg_at(body_rows[0]), None, "header must not stripe");
+        assert_eq!(bg_at(body_rows[1]), None, "first body row stays plain");
+        assert_eq!(bg_at(body_rows[2]), Some(zebra), "second body row stripes");
+        // The stripe runs the full row: every non-border span of the striped
+        // row carries it (walls included).
+        for span in &body_rows[2].spans {
+            assert_eq!(
+                span.style.bg,
+                Some(zebra),
+                "stripe must reach {:?}: {span:?}",
+                span.content
+            );
+        }
+    }
+
     use super::*;
+    use forge_config::DEFAULT_THEME_ID;
 
     fn text(rendered: &[Line<'static>]) -> String {
         rendered
@@ -1247,7 +1424,7 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         assert!(!rendered.contains("**"), "{rendered}");
         assert!(!rendered.contains("~"), "{rendered}");
         assert!(!rendered.contains("|"), "{rendered}");
-        assert!(rendered.contains("Title"), "{rendered}");
+        assert!(rendered.contains("TITLE"), "{rendered}");
         assert!(rendered.contains("bold"), "{rendered}");
         assert!(rendered.contains("• item one"), "{rendered}");
         assert!(rendered.contains("1. first"), "{rendered}");
@@ -1773,7 +1950,7 @@ Some **bold** and *italic* and ~struck~ and `code` text.
                 })
                 .unwrap_or_else(|| panic!("{needle} rendered"))
         };
-        let h1 = style_of("One");
+        let h1 = style_of("ONE");
         let h3 = style_of("Three");
         assert!(
             h1.add_modifier.contains(Modifier::BOLD),
@@ -1787,7 +1964,7 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             h1.fg, h3.fg,
             "H3 must step down in value from H1, or rank is invisible"
         );
-        // The H1 rule runs the full prose width; H2 and H3 get none.
+        // H1 and H2 each get a full-width rule; H3 gets none.
         let rules = lines
             .iter()
             .filter(|line| {
@@ -1799,7 +1976,7 @@ Some **bold** and *italic* and ~struck~ and `code` text.
                 !text.is_empty() && text.chars().all(|c| c == '─')
             })
             .count();
-        assert_eq!(rules, 1, "exactly the H1 gets a rule");
+        assert_eq!(rules, 2, "H1 and H2 each get a rule, H3 none");
     }
 
     /// A heading opens with one blank line of separation, never two and never

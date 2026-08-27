@@ -333,6 +333,37 @@ pub fn heading() -> Style {
     text().add_modifier(Modifier::BOLD)
 }
 
+/// Structural hue inside a model response — section labels and list markers
+/// (`structure` token).
+///
+/// The editorial treatment tints the answer's *skeleton* so a long reply can
+/// be skimmed by shape before it is read; prose itself stays neutral. The
+/// hue comes from `info`'s family (neutral information, §5.2), never from
+/// `accent`, which stays reserved for focus — content emphasis must not
+/// borrow focus colour any more than it borrows bold-for-code.
+/// A section label inside an answer: structure hue at bold weight.
+pub fn response_heading() -> Style {
+    Style::default()
+        .fg(active_palette().structure)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// A list marker (bullet / ordered index) inside an answer: structure hue,
+/// regular weight — furniture, not emphasis.
+pub fn response_marker() -> Style {
+    Style::default().fg(active_palette().structure)
+}
+
+/// Ground behind a whole list block in an answer ("scan band").
+pub fn scan_band_bg() -> Style {
+    Style::default().bg(active_palette().scan_band)
+}
+
+/// Even-row tint zebra-striping a rendered table's body rows.
+pub fn zebra_row_bg() -> Style {
+    Style::default().bg(active_palette().zebra_row)
+}
+
 pub fn muted() -> Style {
     Style::default().fg(active_palette().muted)
 }
@@ -773,6 +804,13 @@ pub struct Palette {
     pub tag: Color,
     /// Editor/input cursor color (see [`caret`]).
     pub cursor: Color,
+    /// Structural hue inside model responses — section labels, list markers
+    /// (see `ThemePalette::structure`).
+    pub structure: Color,
+    /// Ground behind a banded list block (see `ThemePalette::scan_band`).
+    pub scan_band: Color,
+    /// Even-row table tint (see `ThemePalette::zebra_row`).
+    pub zebra_row: Color,
 }
 
 /// Palette for a specific theme id. Used by the theme picker preview so the
@@ -811,6 +849,9 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         selection_fg: to_color(src.text_primary),
         tag: to_color(src.tag),
         cursor: to_color(src.cursor),
+        structure: to_color(src.structure),
+        scan_band: to_color(src.scan_band),
+        zebra_row: to_color(src.zebra_row),
     }
 }
 

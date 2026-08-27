@@ -84,6 +84,15 @@ pub fn parse_hex_color(s: &str) -> Result<Rgb, String> {
     Ok(Rgb(r, g, b))
 }
 
+/// 50/50 mix of two colours, rounded to even so a mid-tint derived from two
+/// theme tokens is stable regardless of operand order.
+fn blend(a: Rgb, b: Rgb) -> Rgb {
+    fn mix(x: u8, y: u8) -> u8 {
+        ((x as u16 + y as u16) / 2) as u8
+    }
+    Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
 /// Normalize user/config theme ids and accept legacy `dark` / `light` aliases.
 pub fn normalize_theme_id(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -158,6 +167,17 @@ pub struct ThemePalette {
     pub search_match: Rgb,
     /// Border for the composer while an approval is pending ("paused" look).
     pub waiting_border: Rgb,
+    /// Hue of structural landmarks inside a model response — section labels
+    /// and list markers. Editorial treatment (see FORGE-DESIGN §5): the
+    /// answer's skeleton is tinted so it can be skimmed by colour before
+    /// reading, while prose itself stays neutral.
+    pub structure: Rgb,
+    /// Background lifted behind whole list blocks in a model response ("scan
+    /// band"). Sits between `background` and code chip tints so inline chips
+    /// stay visible inside a banded list.
+    pub scan_band: Rgb,
+    /// Even-row tint zebra-striping a rendered table's body rows.
+    pub zebra_row: Rgb,
     pub syntax: SyntaxPalette,
 }
 
@@ -237,6 +257,17 @@ struct ThemeFile {
     /// user theme drops without this key keep parsing.
     #[serde(default)]
     waiting_border: Option<Rgb>,
+    /// Optional response-structure hue; falls back to `info` (§5.2 already
+    /// casts `info` as neutral information, which is what a section label is).
+    #[serde(default)]
+    structure: Option<Rgb>,
+    /// Optional scan-band background; falls back to `surface`.
+    #[serde(default)]
+    scan_band: Option<Rgb>,
+    /// Optional zebra tint; falls back to a 50/50 blend of `background` and
+    /// `surface`, derived from the theme rather than hardcoded.
+    #[serde(default)]
+    zebra_row: Option<Rgb>,
     syntax: ThemeFileSyntax,
 }
 
@@ -288,6 +319,11 @@ impl From<ThemeFile> for ThemeDefinition {
                 tag: file.tag,
                 search_match: file.search_match,
                 waiting_border: file.waiting_border.unwrap_or(file.warning),
+                structure: file.structure.unwrap_or(file.info),
+                scan_band: file.scan_band.unwrap_or(file.surface),
+                zebra_row: file
+                    .zebra_row
+                    .unwrap_or(blend(file.background, file.surface)),
                 syntax: SyntaxPalette {
                     comment: file.syntax.comment,
                     keyword: file.syntax.keyword,
@@ -411,6 +447,42 @@ default = "#E6EDF3"
         assert_eq!(theme.id, "sample");
         assert_eq!(theme.name, "Sample");
         assert_eq!(theme.palette.accent, Rgb(104, 168, 255));
+    }
+
+    /// Theme drops written before the response-structure tokens existed keep
+    /// parsing, and their fallbacks derive from the file's own tokens:
+    /// `structure` from `info`, `scan_band` from `surface`, `zebra_row` from
+    /// a 50/50 background/surface blend.
+    #[test]
+    fn response_structure_tokens_fall_back_for_older_theme_files() {
+        let theme = parse_theme_toml(SAMPLE_THEME).unwrap();
+        let p = &theme.palette;
+        assert_eq!(p.structure, p.info);
+        assert_eq!(p.scan_band, p.surface);
+        assert_eq!(
+            p.zebra_row,
+            Rgb(
+                (p.background.0 + p.surface.0) / 2,
+                (p.background.1 + p.surface.1) / 2,
+                (p.background.2 + p.surface.2) / 2,
+            )
+        );
+    }
+
+    /// The built-in templates state all three explicitly — a theme author
+    /// copying one gets real values, not silent fallbacks.
+    #[test]
+    fn builtin_templates_declare_response_structure_tokens() {
+        for content in [
+            include_str!("../../forge-tui/themes/forge-dark.toml"),
+            include_str!("../../forge-tui/themes/forge-light.toml"),
+        ] {
+            let theme = parse_theme_toml(content).unwrap();
+            let p = &theme.palette;
+            assert_ne!(p.structure, Rgb(0, 0, 0), "{} structure", theme.id);
+            assert_ne!(p.scan_band, Rgb(0, 0, 0), "{} scan_band", theme.id);
+            assert_ne!(p.zebra_row, Rgb(0, 0, 0), "{} zebra_row", theme.id);
+        }
     }
 
     /// `user_gutter_active` and `approval_accent` were retired: the first
