@@ -124,7 +124,8 @@ impl Governance {
             .hitl_tools
             .iter()
             .any(|t| t == &call.name || glob_match(t, &call.name))
-            || self.hitl_classes.contains(&class);
+            || self.hitl_classes.contains(&class)
+            || is_destructive_git_call(call);
         if !hitl_gated {
             return PolicyDecision::Allow;
         }
@@ -191,6 +192,55 @@ impl Governance {
     pub fn record_audit(&self, event: AuditEvent) {
         self.audit.push(event);
     }
+}
+
+/// Whether a `git` tool call is an explicitly destructive form that must not
+/// run without human approval.
+///
+/// `git reset --hard` discards working-tree and index changes; `git clean -f`
+/// (equivalently `--force`, or a short cluster carrying `f` such as `-fd`)
+/// deletes untracked files. A silent hard block of these leaves the model no
+/// path to the user's actual request and invites a fabricated "nothing to do"
+/// summary, so they are gated on approval instead: the destructive
+/// consequence is shown and consented to (or visibly denied) before anything
+/// runs.
+fn is_destructive_git_call(call: &ToolCall) -> bool {
+    if call.name != "git" {
+        return false;
+    }
+    let Some(subcommand) = call
+        .arguments
+        .get("subcommand")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    let args: Vec<&str> = call
+        .arguments
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    match subcommand {
+        "reset" => args.contains(&"--hard"),
+        "clean" => args
+            .iter()
+            .any(|a| *a == "--force" || is_clean_force_cluster(a)),
+        _ => false,
+    }
+}
+
+/// True for a `git clean` short-flag cluster that carries force, e.g. `-f`,
+/// `-fd`, `-df`, `-fdx`. The force flag may sit anywhere in the cluster
+/// (`git clean -df` is the same as `git clean -f -d`). Without `-f`, git
+/// refuses to delete (clean.requireForce).
+fn is_clean_force_cluster(token: &str) -> bool {
+    token.starts_with('-')
+        && !token.starts_with("--")
+        && token.len() > 1
+        && token[1..].contains('f')
 }
 
 fn redact_value(v: &serde_json::Value) -> serde_json::Value {
@@ -402,6 +452,63 @@ mod tests {
             ),
             PolicyDecision::Allow
         );
+    }
+
+    /// Explicitly destructive `git` forms — `reset --hard` and `clean -f`
+    /// (or `--force` / a force cluster) — must be gated on approval even
+    /// though the `git` tool is not in `hitl_tools` by default. Without this,
+    /// the model's destructive request is either hard-blocked with no path to
+    /// the user's intent or, once `reset`/`clean` are allowlisted, runs
+    /// without consent (see #449).
+    #[test]
+    fn destructive_git_calls_require_approval() {
+        let g = Governance::default();
+        let gated = [
+            ("reset", json!(["--hard"])),
+            ("reset", json!(["--hard", "HEAD"])),
+            ("clean", json!(["-f"])),
+            ("clean", json!(["-fd"])),
+            ("clean", json!(["-df"])),
+            ("clean", json!(["-fdx"])),
+            ("clean", json!(["--force"])),
+        ];
+        for (subcommand, args) in gated {
+            assert_eq!(
+                g.authorize(
+                    &call("git", json!({"subcommand": subcommand, "args": args})),
+                    SideEffectClass::Write
+                ),
+                PolicyDecision::Hitl,
+                "{subcommand} {args} must go through approval"
+            );
+        }
+    }
+
+    /// Non-destructive git forms keep running without a prompt: read-only and
+    /// ordinary write subcommands, `reset` without `--hard` (index only), and
+    /// `clean` dry-run without force.
+    #[test]
+    fn non_destructive_git_calls_are_not_prompted() {
+        let g = Governance::default();
+        let allowed = [
+            ("status", json!(["--short"])),
+            ("branch", json!(["-a"])),
+            ("commit", json!(["-m", "msg"])),
+            ("reset", json!(["HEAD~1"])),
+            ("reset", json!(["--soft", "HEAD~1"])),
+            ("clean", json!(["-n"])),
+            ("clean", json!(["--dry-run"])),
+        ];
+        for (subcommand, args) in allowed {
+            assert_eq!(
+                g.authorize(
+                    &call("git", json!({"subcommand": subcommand, "args": args})),
+                    SideEffectClass::Write
+                ),
+                PolicyDecision::Allow,
+                "{subcommand} {args} must not prompt"
+            );
+        }
     }
 
     /// Opting a class in makes every tool of that class prompt, which is the
