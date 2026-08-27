@@ -651,6 +651,8 @@ const GIT_ALLOWED_SUBCOMMANDS: &[&str] = &[
     "checkout",
     "switch",
     "restore",
+    "reset",
+    "clean",
     "stash",
     "rev-parse",
     "ls-files",
@@ -1013,6 +1015,28 @@ fn git_policy(subcommand: &str) -> Option<GitPolicy> {
                 "--no-overlay",
             ],
             valued: &["-s", "--source"],
+            operands: GitOperands::Free,
+        },
+        "clean" => GitPolicy {
+            flags: &[
+                "-f",
+                "--force",
+                "-d",
+                "-x",
+                "-X",
+                "-n",
+                "--dry-run",
+                "-q",
+                "--quiet",
+            ],
+            valued: &["-e", "--exclude"],
+            operands: GitOperands::Free,
+        },
+        "reset" => GitPolicy {
+            flags: &[
+                "--hard", "--soft", "--mixed", "--merge", "--keep", "-q", "--quiet",
+            ],
+            valued: &[],
             operands: GitOperands::Free,
         },
         "stash" => GitPolicy {
@@ -2385,8 +2409,29 @@ itself, never to git hooks)."
             ("cherry-pick", vec!["-x", "abc1234"]),
             ("tag", vec!["-a", "v1.0.0", "-m", "release"]),
             ("blame", vec!["-L", "10,20", "src/main.rs"]),
+            ("reset", vec!["--hard", "HEAD"]),
+            ("reset", vec!["--soft", "HEAD~1"]),
+            ("reset", vec!["HEAD"]),
+            ("clean", vec!["-f", "-d"]),
+            ("clean", vec!["-f", "-d", "-x"]),
+            ("clean", vec!["-n", "-d"]),
+            ("clean", vec!["--dry-run"]),
         ] {
             accept(subcommand, &args);
+        }
+    }
+
+    /// The interactive options the per-subcommand policies deliberately omit
+    /// stay refused for the newly allowlisted subcommands too: they would wait
+    /// on a terminal that is not attached and hang the turn.
+    #[test]
+    fn git_rejects_interactive_options_for_reset_and_clean() {
+        for (subcommand, args) in [("clean", vec!["-i"]), ("clean", vec!["--interactive"])] {
+            let message = reject(subcommand, &args);
+            assert!(
+                message.contains("not allowed"),
+                "{subcommand} {args:?}: {message}"
+            );
         }
     }
 
