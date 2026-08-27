@@ -918,7 +918,7 @@ mod observed_failure_tests {
     /// same paragraph twice, once as evidence and once as explanation.
     #[test]
     fn the_appended_reason_is_not_repeated_as_evidence() {
-        let reason = "blocked by the sandbox: writes are confined to the workspace";
+        let reason = "blocked by the sandbox: filesystem access is confined to the workspace";
         let content = format!("touch: /tmp/x: Operation not permitted\n{reason}");
 
         assert_eq!(
@@ -943,7 +943,7 @@ mod observed_failure_tests {
     /// actual error inside the card's cap.
     #[test]
     fn the_exit_status_footer_is_not_evidence() {
-        let reason = "blocked by the sandbox: writes are confined to the workspace";
+        let reason = "blocked by the sandbox: filesystem access is confined to the workspace";
         let content = "touch: /etc/x: Operation not permitted\n[process exited with code 1]";
 
         assert_eq!(
@@ -956,7 +956,7 @@ mod observed_failure_tests {
     /// tall. A command that failed forty times over gets its first few lines.
     #[test]
     fn long_output_is_capped() {
-        let reason = "blocked by the sandbox: writes are confined to the workspace";
+        let reason = "blocked by the sandbox: filesystem access is confined to the workspace";
         let content = (1..=10)
             .map(|n| format!("line {n}"))
             .collect::<Vec<_>>()

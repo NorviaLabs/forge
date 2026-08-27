@@ -315,8 +315,12 @@ it matter.
 
 Inside the sandbox a command can:
 
-- **read** broadly, so toolchains and system libraries work;
-- **write** only inside your workspace and a per-session temp directory;
+- **read** inside your workspace, the per-session temp directory, and the
+  OS-owned paths a process needs to start (system binaries, libraries,
+  frameworks, and standard configuration). Everything user-writable —
+  `~/.ssh` and `~/.aws` included — is outside that boundary, exactly as it is
+  for `read_file`/`write_file`;
+- **write** only inside your workspace and the per-session temp directory;
 - **reach the network** only through the egress proxy described below;
 - **hand a file to a host app** with macOS `open` (Launch Services). That app
   is not confined. The same Apple Event right also lets a command drive other
@@ -325,17 +329,25 @@ Inside the sandbox a command can:
 `.git` and `.forge` are read-only: the agent can inspect history but cannot
 rewrite it, and cannot edit the permission rules that govern it.
 
-Reading broadly has one known cost, and it is worth stating plainly. On Linux
-the sandbox exposes the host filesystem read-only, and a read-only *mount* does
-not stop a process connecting to a Unix socket — that check looks at the inode,
-not the mount flag. Forge masks `/run` and `/tmp`, which covers the sockets
-with the worst blast radius: `docker.sock` (root on the host), systemd, D-Bus,
-and `$XDG_RUNTIME_DIR`, where ssh-agent and gpg-agent live. A pathname socket
-somewhere else — `~/.docker` is the realistic example — is still reachable from
-inside the sandbox. A confined command already runs as you, so this widens what
-it can touch rather than crossing a privilege boundary. Closing it needs
-Landlock's `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, which is newer than the kernels
-forge runs on today; seccomp cannot express it. Tracked in issue #392.
+What a command needs from outside that boundary — a toolchain in `$HOME`, an
+SSH key, an installed SDK — is refused by the OS and escalated to you: forge
+asks before replaying the command unconfined rather than letting a confined
+process reach it. Reads that used to be available unconditionally
+(`~/.gitconfig`, `~/.cargo`) now go through that same ask.
+
+There is one residual socket gap worth stating plainly. On Linux the sandbox
+still exposes the rest of the host filesystem read-only rather than hiding
+it, and a read-only *mount* does not stop a process connecting to a Unix
+socket — that check looks at the inode, not the mount flag. Forge masks
+`/run`, `/tmp`, and the home trees (`/home`, `/root`), which covers the
+sockets with the worst blast radius: `docker.sock` (root on the host),
+systemd, D-Bus, `$XDG_RUNTIME_DIR` (where ssh-agent and gpg-agent live), and
+`~/.docker`. A pathname socket somewhere else — under `/var` or `/opt` — is
+still reachable from inside the sandbox. A confined command already runs as
+you, so this widens what it can touch rather than crossing a privilege
+boundary. Closing it needs Landlock's `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`,
+which is newer than the kernels forge runs on today; seccomp cannot express
+it. Tracked in issue #392.
 
 If the OS cannot confine — bubblewrap missing, an unsupported platform — forge
 does not start. It prints why on stderr and exits. There is no combination of
