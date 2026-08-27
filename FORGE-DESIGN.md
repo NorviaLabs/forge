@@ -191,6 +191,9 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `tag` | Dedicated low-emphasis label step (neutral, never saturated) |
 | `search_match` | Search match highlights |
 | `waiting_border` | Composer border while an approval is pending |
+| `structure` | Structural landmarks inside a model response — section labels, list markers |
+| `scan_band` | Ground behind a whole list block in a model response |
+| `zebra_row` | Even-row tint zebra-striping a rendered table |
 | `syntax.*` | Code highlighting palette |
 
 Do not use shadows. Ratatui depth comes from border weight, contrast and placement.
@@ -482,6 +485,14 @@ Rules:
 - Keep genuine failures visible.
 - Do not render a permanent progress narration stream.
 - Do not surround every message with a full-width box.
+
+Response-structure treatment (editorial): inside an answer, the *skeleton*
+is tinted so a long reply can be skimmed by shape before it is read — H1/H2
+section labels render uppercased in `structure` over a hairline
+`border_muted` rule, list markers take `structure`, and whole list blocks sit
+on the `scan_band` ground while rendered tables zebra-stripe body rows with
+`zebra_row`. Prose itself stays `text_primary`; `accent` never appears in an
+answer, and outcome colours stay reserved for result state.
 
 Implementation: `crates/forge-tui/src/conversation.rs`.
 

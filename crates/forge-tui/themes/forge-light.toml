@@ -47,6 +47,18 @@ cursor = "#2E5C8C"
 tag = "#556355"
 search_match = "#F3DE9A"
 waiting_border = "#8C6018"
+# Response structure (editorial treatment): the model answer's skeleton —
+# section labels, list markers, heading rules' hue family — is tinted so a
+# long reply can be skimmed by shape before it is read. `info`'s hue, same
+# reasoning as Forge Dark's comment above.
+structure = "#26586D"
+# Scan band: the raised ground behind a whole list block. Sits between the
+# paper canvas (#F2F5EF) and the inline-code chip tint `surface_raised`
+# (#FFFFFF) so chips stay visible inside a banded list.
+scan_band = "#F7FAF3"
+# Zebra tint for even body rows of a rendered table; ≈50/50 of background
+# and surface, stated explicitly so theme authors can tune or disable it.
+zebra_row = "#F6F9F4"
 
 [syntax]
 comment = "#6C7A6C"
