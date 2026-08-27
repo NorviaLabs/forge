@@ -1246,6 +1246,66 @@ async fn mock_provider_allows_chat_without_connect() {
 }
 
 #[tokio::test]
+async fn esc_on_api_key_screen_returns_to_provider_list() {
+    // Issue #451: the footer on this screen reads "Esc back", but Esc used
+    // to close the overlay outright (or, during onboarding, quit the whole
+    // TUI) — jumping past the provider list it claims to return to.
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.overlay = Some(Overlay::connect_api_key("openai", "OpenAI", None, None));
+
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Esc);
+    assert_eq!(action, OverlayAction::Close);
+    app.apply_overlay_action(action).await.unwrap();
+
+    assert!(!app.exit.is_requested());
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+}
+
+#[tokio::test]
+async fn esc_on_api_key_screen_during_onboarding_returns_to_provider_list_not_exit() {
+    // Same screen, but reached through first-run onboarding — quitting is
+    // still the intentional behavior from the *provider list* itself, but
+    // not from a screen one level below it.
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.onboarding_connect = true;
+    app.overlay = Some(Overlay::connect_api_key("openai", "OpenAI", None, None));
+
+    app.handle_key(press(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    ))
+    .await
+    .unwrap();
+
+    assert!(!app.exit.is_requested());
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+}
+
+#[tokio::test]
 async fn onboarding_connect_esc_exits_the_process() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
