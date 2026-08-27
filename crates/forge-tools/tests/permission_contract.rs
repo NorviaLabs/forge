@@ -135,10 +135,11 @@ const CONTRACT: &[Case] = &[
     },
     Case {
         name: "read outside the workspace",
-        command: "head -c 1 /etc/hosts > read.txt",
-        expect: Expect::Allowed,
-        why: "reads are broad by design — toolchains need ~/.gitconfig and ~/.cargo. A secret \
-              can be read; the network denial is what stops it leaving",
+        command: "cat {outside}/credentials.txt",
+        expect: Expect::Denied,
+        why: "reads are confined to the workspace + session temp, exactly as read_file and \
+              write_file confine them. The path is unreachable: masked on Linux, refused \
+              by Seatbelt on macOS. ~/.ssh and ~/.aws live in a directory like {outside}",
     },
     // ---- the recovery mechanism protects itself -------------------------
     Case {
@@ -166,7 +167,8 @@ const CONTRACT: &[Case] = &[
         name: "network egress without a grant",
         command: "curl -sS -m 5 https://example.com",
         expect: Expect::Denied,
-        why: "no grant means no route out; this is what makes broad reads acceptable",
+        why: "no grant means no route out; the filesystem boundary and the network denial \
+              are independent, and both default to closed",
     },
 ];
 

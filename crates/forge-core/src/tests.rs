@@ -66,7 +66,7 @@ impl forge_tools::Tool for SandboxDeniedTool {
         }
         Err(ToolError::SandboxDenied {
             content: "Operation not permitted\nblocked by the sandbox".into(),
-            reason: "blocked by the sandbox: writes are confined to the workspace".into(),
+            reason: "blocked by the sandbox: filesystem access is confined to the workspace".into(),
             denied_host: None,
         })
     }

@@ -3595,10 +3595,11 @@ mod tests {
     /// explanation shrinks to a footnote rather than five rows of policy.
     #[test]
     fn the_real_refusal_leads_and_the_category_is_demoted() {
-        let reason = "blocked by the sandbox: writes are confined to the workspace, \
-                      and .git/.forge are read-only inside it. Paths outside the \
-                      workspace do not exist inside the sandbox, so they report as \
-                      missing rather than forbidden.";
+        let reason = "blocked by the sandbox: filesystem access is confined to the workspace \
+                      and the session temp directory, and .git/.forge are read-only inside \
+                      the workspace. On Linux a path outside the boundary does not exist \
+                      inside the sandbox, so it reports as missing rather than forbidden; \
+                      on macOS it reports as denied.";
         let mut p = ApprovalPendingPresentation {
             tool: "bash".into(),
             command: "rm -rf /tmp/cache".into(),
