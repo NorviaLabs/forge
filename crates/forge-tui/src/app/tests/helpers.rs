@@ -372,19 +372,23 @@ pub(crate) fn lock_highlight_cache() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Assistant turns each carrying a distinct fenced Rust block, so a full
-/// re-highlight costs `CACHED_BLOCKS` misses and a fully cached render costs
-/// `CACHED_BLOCKS` hits.
+/// `CACHED_BLOCKS` distinct fenced Rust blocks, each its own assistant
+/// message, so a full re-highlight costs `CACHED_BLOCKS` misses and a fully
+/// cached render costs `CACHED_BLOCKS` hits.
 ///
-/// Each answer needs its own preceding user message so highlight-cache
-/// measurements treat the fenced blocks as separate turns rather than one
-/// long assistant message.
+/// All `CACHED_BLOCKS` answers share a single preceding user message (one
+/// turn, not `CACHED_BLOCKS` of them): a completed historical turn compacts
+/// to one summary line and stops rendering its content at all, which would
+/// silently drop these measurements to 1 block if each answer were its own
+/// turn. Separate assistant messages (not one letting them share a single
+/// long message) still keep the fenced blocks as distinct highlight-cache
+/// measurements.
 pub(crate) fn push_code_transcript(app: &mut TuiApp, marker: &str) {
+    app.session.messages.push(forge_types::Message::new(
+        forge_types::MessageRole::User,
+        format!("Please do all {CACHED_BLOCKS} steps of {marker}."),
+    ));
     for i in 0..CACHED_BLOCKS {
-        app.session.messages.push(forge_types::Message::new(
-            forge_types::MessageRole::User,
-            format!("Please do step {i} of {marker}."),
-        ));
         app.session.messages.push(forge_types::Message::new(
             forge_types::MessageRole::Assistant,
             format!(

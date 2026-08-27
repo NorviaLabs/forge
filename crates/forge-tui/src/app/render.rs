@@ -178,31 +178,44 @@ impl TuiApp {
                 files,
             );
         }
-        let stream_wait = if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
-            let elapsed = if !self.stream.thinking.is_empty() {
-                // Thinking timer runs from first thinking token
-                self.timing
-                    .thinking_started
-                    .or(self.timing.started)
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0)
+        // How long a turn must have been running before the pinned status
+        // line (`Waiting for the model…` / `Thinking…` / `Running {tool}…`)
+        // appears — long enough that a near-instant response never flashes
+        // it. Gated on `turn_started` (survives step boundaries), not
+        // `started` (resets per step), so the line doesn't flicker
+        // off-and-back-on at each tool call within one turn. Hiding is
+        // never debounced — only entrance.
+        const BUSY_STATUS_DEBOUNCE: Duration = Duration::from_millis(150);
+        let busy_long_enough = self
+            .timing
+            .turn_started
+            .is_some_and(|t| t.elapsed() >= BUSY_STATUS_DEBOUNCE);
+        let stream_wait =
+            if self.busy_state.is_active() && !self.pending_turn.has_prompt() && busy_long_enough {
+                let elapsed = if !self.stream.thinking.is_empty() {
+                    // Thinking timer runs from first thinking token
+                    self.timing
+                        .thinking_started
+                        .or(self.timing.started)
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0)
+                } else {
+                    self.timing
+                        .started
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0)
+                };
+                // After answer tokens start, drop the wait/think status line.
+                if !self.stream.preview.is_empty() {
+                    None
+                } else if !self.stream.thinking.is_empty() {
+                    Some((StreamWaitPhase::Thinking, elapsed))
+                } else {
+                    Some((StreamWaitPhase::Waiting, elapsed))
+                }
             } else {
-                self.timing
-                    .started
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0)
-            };
-            // After answer tokens start, drop the wait/think status line.
-            if !self.stream.preview.is_empty() {
                 None
-            } else if !self.stream.thinking.is_empty() {
-                Some((StreamWaitPhase::Thinking, elapsed))
-            } else {
-                Some((StreamWaitPhase::Waiting, elapsed))
-            }
-        } else {
-            None
-        };
+            };
         let opts = ConversationViewOpts {
             busy: self.busy_state.is_active(),
             // Don't force-expand finished thinking just because busy (answer may be streaming)
@@ -210,6 +223,8 @@ impl TuiApp {
             compact: false,
             stream_wait,
             stream_thought_secs: self.timing.thought_secs,
+            expanded_turn: self.turn_expansion.get(),
+            turn_stats: self.turn_stats.clone(),
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
         let all_messages = self.transcript_view.messages();
@@ -273,6 +288,8 @@ impl TuiApp {
             keep_from_end,
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.is_expanded(),
+            expanded_turn: self.turn_expansion.get(),
+            turn_stats_len: self.turn_stats.len(),
             splash_dismissed: self.conversation_view.splash_dismissed,
             home_card: (!slash_mode && !self.conversation_view.splash_dismissed).then(|| {
                 (
@@ -432,7 +449,7 @@ impl TuiApp {
         // caches above (both keyed by content length) would freeze it — and
         // cheap enough to be: one line, no markdown, no wrapping.
         let status_lines: Vec<Line<'static>> =
-            if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
+            if self.busy_state.is_active() && !self.pending_turn.has_prompt() && busy_long_enough {
                 // The whole turn's age, not the current step's: `started` is reset
                 // at every continuation, so a turn that ran three tools kept
                 // restarting its clock.

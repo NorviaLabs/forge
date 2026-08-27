@@ -407,6 +407,8 @@ pub(crate) enum SemanticCommand {
     ToggleCurrentFileAttachment,
     PasteClipboardImage,
     ToggleToolDetails,
+    /// Expand/collapse the most recently compacted historical turn.
+    ToggleLastTurnExpanded,
     /// Step reasoning effort one level (`Alt+,` back, `Alt+.` forward)
     /// within the current model's valid options — see
     /// [`crate::effort::ReasoningEffort::step`].
@@ -618,6 +620,12 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) keep_from_end: usize,
     pub(crate) activity_summary: Option<(String, Option<&'static str>, BannerKind)>,
     pub(crate) tool_expanded: bool,
+    /// Which historical turn (if any) is manually expanded — must be in the
+    /// key or a toggle wouldn't invalidate the cached lines.
+    pub(crate) expanded_turn: Option<usize>,
+    /// Each ordinal is archived exactly once and never mutated afterward, so
+    /// the count alone is enough to invalidate the cache when a new one lands.
+    pub(crate) turn_stats_len: usize,
     pub(crate) splash_dismissed: bool,
     /// What the home splash card renders: whether a provider is connected,
     /// the model and vendor labels, and the skill count.
@@ -1025,6 +1033,38 @@ impl ToolDetailState {
     }
 }
 
+/// Which historical (compacted) turn, if any, the user has manually
+/// expanded back to full detail — identified by its `ChatItem::User` index
+/// (see `ConversationModel::turn_boundaries`), not a display position, so it
+/// stays correct as the transcript window scrolls.
+#[derive(Default)]
+pub(crate) struct TurnExpansionState {
+    expanded: Option<usize>,
+}
+
+impl TurnExpansionState {
+    pub(crate) fn get(&self) -> Option<usize> {
+        self.expanded
+    }
+
+    /// Toggle expansion of the most recently compacted (i.e. second-to-last)
+    /// turn boundary. A no-op if there's no historical turn to expand.
+    pub(crate) fn toggle_last(&mut self, boundaries: &[usize]) {
+        let Some(&last_historical) = boundaries.iter().rev().nth(1) else {
+            return;
+        };
+        self.expanded = if self.expanded == Some(last_historical) {
+            None
+        } else {
+            Some(last_historical)
+        };
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.expanded = None;
+    }
+}
+
 pub(crate) struct SearchStatusState {
     pub(crate) label: Option<String>,
 }
@@ -1317,6 +1357,12 @@ pub struct TuiApp {
     /// When `Some`, composer chip bar is focused at this index.
     pub(crate) composer_chip_focus: Option<usize>,
     pub(crate) tool_detail: ToolDetailState,
+    pub(crate) turn_expansion: TurnExpansionState,
+    /// Real per-turn stats archived on clean completion, keyed by turn
+    /// ordinal — see `record_turn_summary` and `ux-proposal` P2's per-turn
+    /// timing persistence plan. Reset in lockstep with `banner_state` on
+    /// `/clear` and `/resume`.
+    pub(crate) turn_stats: std::collections::HashMap<usize, forge_transcript::TurnStats>,
     /// V3.1 contextual workspace navigation.
     pub(crate) workspace_navigation: WorkspaceNavigation,
     /// Read-only source viewer state for the File workspace view.

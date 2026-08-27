@@ -167,12 +167,41 @@ impl TuiApp {
             .api
             .completion_tokens
             .saturating_sub(self.timing.completion_tokens_at_start);
+        let secs = started.elapsed().as_secs_f64();
+        let chars = self.timing.chars;
+        let tools = self.timing.tools;
+        let output_tokens = (produced > 0).then_some(produced);
         self.banner_state.items.push(ChatItem::TurnSummary {
-            secs: started.elapsed().as_secs_f64(),
-            chars: self.timing.chars,
-            tools: self.timing.tools,
-            output_tokens: (produced > 0).then_some(produced),
+            secs,
+            chars,
+            tools,
+            output_tokens,
         });
+        // Archive by turn ordinal (not list position — a cancelled or still-
+        // paused turn never reaches this function, so position would desync
+        // against `turn_boundaries()`). The ordinal is exactly "how many
+        // real turns are visible right now," since this turn's own User
+        // message is already in the transcript by the time it completes.
+        let all_messages = self.transcript_view.messages();
+        let visible_messages =
+            &all_messages[self.conversation_view.message_start.min(all_messages.len())..];
+        let turn_count = visible_messages
+            .iter()
+            .filter(|m| {
+                m.role == forge_types::MessageRole::User && !m.content.starts_with("[REPAIR TASK")
+            })
+            .count();
+        if let Some(ordinal) = turn_count.checked_sub(1) {
+            self.turn_stats.insert(
+                ordinal,
+                forge_transcript::TurnStats {
+                    secs,
+                    chars,
+                    tools,
+                    output_tokens,
+                },
+            );
+        }
     }
 
     /// How many times one model step may be re-issued after a transient
