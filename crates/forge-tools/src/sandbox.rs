@@ -17,15 +17,19 @@
 //!
 //! Scope (matching Codex's `workspace-write`):
 //!
-//! * writes — workspace root and the system temp dir only
+//! * reads — the workspace, a granted session scratch directory, and the
+//!   OS-owned paths a process needs merely to start (system binaries,
+//!   libraries, frameworks, configuration, device nodes). Everything
+//!   user-writable is outside that boundary — `~/.ssh`, `~/.aws`, per-user
+//!   temp, mounted volumes — exactly as it is for `read_file`/`write_file`.
+//!   macOS expresses the deny as a refused read; Linux masks the tree so the
+//!   path does not exist.
+//! * writes — workspace root and the granted session scratch directory only
 //! * `.git` / `.forge` — read-only even inside the workspace, because git is
 //!   the recovery mechanism and `.forge/permissions.toml` would otherwise let
 //!   a confined process widen its own permissions on the next load
-//! * network — denied
-//! * reads — **allowed broadly**. Toolchains need `~/.gitconfig`, `~/.cargo`
-//!   and friends. Reading a secret is therefore possible; exfiltrating it is
-//!   not, because network egress is denied. Narrowing reads is a separate
-//!   decision, not an oversight.
+//! * network — denied. Egress exists only via the in-sandbox proxy, and only
+//!   when a host grant created it.
 
 use std::path::{Path, PathBuf};
 
@@ -320,12 +324,14 @@ impl SandboxPolicy {
     /// vacuously.
     ///
     /// **Not covered.** `--ro-bind / /` exposes every other host path, and a
-    /// read-only *mount* does not stop `connect()` — that checks the inode, not
-    /// `MNT_READONLY`. A pathname socket outside the masked directories,
-    /// `$HOME` most realistically (Docker Desktop keeps one under `~/.docker`),
-    /// is reachable from inside the sandbox. Reproduced by the `#[ignore]`d
-    /// `a_confined_command_can_still_reach_a_socket_under_home`, and tracked in
-    /// #390.
+    /// read-only *mount* does not stop `connect()` — that checks the inode,
+    /// not `MNT_READONLY`. A pathname socket outside the masked directories —
+    /// under `/var` or `/opt` most realistically, after `/home` was masked —
+    /// is reachable from inside the sandbox. The old worst case under `$HOME`
+    /// (`~/.docker`, Docker Desktop) is closed by the home-tree tmpfs above.
+    /// Reproduced by the `#[ignore]`d
+    /// `a_confined_command_can_still_reach_a_socket_under_home`, and tracked
+    /// in #390.
     ///
     /// Closing it needs a path-aware mechanism the mount namespace lacks.
     /// seccomp-bpf cannot: it sees scalar registers and cannot dereference the
@@ -431,7 +437,6 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
          (allow appleevent-send)\n\
          (allow user-preference-read)\n\
          (allow signal (target same-sandbox))\n\
-         (allow file-read*)\n\
          (allow file-write-data \
            (literal \"/dev/null\") \
            (literal \"/dev/zero\") \
@@ -440,6 +445,62 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
            (literal \"/dev/tty\") \
            (literal \"/dev/dtracehelper\"))\n\
          (allow file-ioctl (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))\n",
+    );
+
+    // Reads. `(deny default)` closed the filesystem above; this block is the
+    // complete list of what a confined process may read, and it is the same
+    // boundary `read_file`/`write_file` enforce path by path: the workspace
+    // and the granted session scratch directory, plus the OS-owned paths a
+    // process needs merely to start.
+    //
+    // The system paths below are deliberately a list of *system-owned* trees,
+    // not a sampling of convenient ones: binaries and dylibs (/bin, /sbin,
+    // /usr, Launch Services' frameworks), standard configuration and
+    // user-lookup databases (/private/etc, /Library/Preferences, the
+    // DarwinDirectory record store and timezone data), the root cert store
+    // needed to speak TLS through an egress grant (/Library/Keychains — user
+    // keychains live under $HOME and stay denied), and the standard device
+    // nodes. None of these are user-writable, so none of them can hold a
+    // user secret.
+    //
+    // Everything user-writable is outside: $HOME (/Users/...), per-user temp
+    // (/private/var/folders/... — only the granted scratch dir below reaches
+    // it), mounted volumes, /Network, and /opt except the root-owned
+    // Apple-Silicon toolchain prefix. A path omitted here is denied by the
+    // default; the failure mode is a broken command, not a silent hole.
+    profile.push_str(&format!(
+        "(allow file-read* file-test-existence\n  (subpath \"{root}\")"
+    ));
+    if let Some(tmp) = &policy.session_tmp {
+        let tmp = sbpl_literal(&tmp.canonicalize().ok()?)?;
+        profile.push_str(&format!("\n  (subpath \"{tmp}\")"));
+    }
+    profile.push_str(
+        "\n  (literal \"/\")\n\
+         \n  (subpath \"/System\")\n\
+         \n  (subpath \"/usr\")\n\
+         \n  (subpath \"/bin\")\n\
+         \n  (subpath \"/sbin\")\n\
+         \n  (subpath \"/Library/Apple\")\n\
+         \n  (subpath \"/Library/Keychains\")\n\
+         \n  (subpath \"/Library/Preferences\")\n\
+         \n  (subpath \"/private/etc\")\n\
+         \n  (subpath \"/etc\")\n\
+         \n  (subpath \"/opt/homebrew\")\n\
+         \n  (subpath \"/private/var/db/timezone\")\n\
+         \n  (subpath \"/private/var/db/DarwinDirectory/local/recordStore.data\"))\n\
+         \n\
+         (allow file-map-executable\n  (subpath \"/System\")\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\"))\n\
+         \n\
+         (allow file-read-metadata (subpath \"/var\") (subpath \"/private/var\"))\n\
+         \n\
+         (allow file-read* file-test-existence\n\
+         (literal \"/dev/null\") (literal \"/dev/zero\")\n\
+         (literal \"/dev/random\") (literal \"/dev/urandom\")\n\
+         (literal \"/dev/tty\") (literal \"/dev/ptmx\")\n\
+         (literal \"/dev/dtracehelper\")\n\
+         (literal \"/dev/stdin\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n\
+         (allow file-read-metadata (literal \"/dev\"))\n",
     );
 
     // Network. `deny network*` first so anything not named below is denied,
@@ -509,11 +570,12 @@ pub fn wrap_shell_command(
 /// ordering hazard. The sequence is deliberate:
 ///
 /// 1. `--ro-bind / /` — everything visible and readable, nothing writable.
-///    Matches the macOS policy: toolchains need `~/.gitconfig` and `~/.cargo`,
-///    so reads stay broad and the network denial is what stops a secret
-///    leaving.
-/// 2. `--bind <workspace>` — carve the workspace back out as writable.
-/// 3. `--ro-bind-try <workspace>/.git`, `.forge` — carve those back to
+///    System paths and toolchains work; the network denial plus the masked
+///    user trees are what stop a secret leaving.
+/// 2. `--tmpfs /run /tmp /home /root` — user and socket trees vanish, which
+///    is the read boundary on Linux: `~/.ssh` and `~/.aws` do not exist here.
+/// 3. `--bind <workspace>` — carve the workspace back out as writable.
+/// 4. `--ro-bind-try <workspace>/.git`, `.forge` — carve those back to
 ///    read-only. Emitted last or they would be writable. `-try` because a
 ///    workspace need not have either directory yet, and bwrap fails on a
 ///    missing bind source.
@@ -534,15 +596,16 @@ fn bubblewrap_invocation(
     // sequence with the last one winning. The sequence below is not arbitrary:
     //
     //   1. read-only root      everything visible, nothing writable
-    //   2. mask socket dirs    hide /run and /tmp, where host sockets live
+    //   2. mask user + socket dirs  hide /run, /tmp, /home, /root
     //   3. bind the workspace  the one writable place, re-exposed over the mask
     //   4. bind the egress socket, if granted
     //   5. carve .git/.forge back to read-only
     //
     // Steps 2 and 3 are in this order because a workspace can itself live
-    // under /tmp — a temp dir, or a checkout someone made there. Masking after
-    // binding hides the workspace, and bwrap then fails with "Can't chdir to
-    // /tmp/...". Masking first and re-binding over it keeps both properties.
+    // under one of the masked trees — a temp dir, or a checkout someone made
+    // under $HOME. Masking after binding hides the workspace, and bwrap then
+    // fails with "Can't chdir to /home/...". Masking first and re-binding
+    // over it keeps both properties.
     let mut args = vec![
         "--ro-bind".into(),
         "/".into(),
@@ -554,20 +617,37 @@ fn bubblewrap_invocation(
         "--unshare-net".into(),
     ];
 
-    // Mask the directories where Unix sockets live. `--ro-bind / /` puts every
-    // host socket into view — /var/run/docker.sock among them, which is root on
-    // the host — and a read-only *mount* does not reliably stop `connect()`,
-    // because that checks the inode rather than MNT_READONLY.
+    // Mask the directories where user data and Unix sockets live.
+    // `--ro-bind / /` puts every host path into view — /var/run/docker.sock
+    // (root on the host) among them — and a read-only *mount* does not
+    // reliably stop `connect()`, because that checks the inode rather than
+    // MNT_READONLY.
+    //
+    // A tmpfs over a directory makes every path under it vanish: reads
+    // report ENOENT rather than EPERM. That is the Linux half of the read
+    // boundary — the macOS Seatbelt profile expresses the same deny as a
+    // file-read refusal — and it covers the two places secrets live per-user:
+    // $HOME and the sockets under it (~/.docker, ssh-agent, gpg-agent), and
+    // /run+/tmp where the rest of the host sockets sit (docker.sock, systemd,
+    // D-Bus, $XDG_RUNTIME_DIR).
     //
     // `/var/run` is deliberately absent: on modern Linux it is a symlink to
     // `/run`, and bwrap cannot mount a tmpfs onto a symlink — it fails with
     // "Can't mount tmpfs on /newroot/var/run" and takes the whole invocation
     // with it. Masking `/run` covers both, because the symlink resolves there.
+    //
+    // The home masks come before the workspace bind below: a workspace that
+    // lives under /home or /root must be re-exposed by that bind, exactly as
+    // a workspace under /tmp is.
     args.extend([
         "--tmpfs".into(),
         "/run".into(),
         "--tmpfs".into(),
         "/tmp".into(),
+        "--tmpfs".into(),
+        "/home".into(),
+        "--tmpfs".into(),
+        "/root".into(),
     ]);
 
     // The one writable place, re-exposed over the mask above.
@@ -585,7 +665,6 @@ fn bubblewrap_invocation(
         // and takes its socket file with it, while the grant is still attached
         // to the next command. Binding a source that no longer exists makes
         // bwrap refuse to start, and the caller then sees the generic
-        // "blocked by the sandbox: writes are confined to the workspace"
         // message — which points at the wrong thing entirely. Drop the dead
         // grant instead and run with no route out, which is what a dead proxy
         // means; still fail closed, just legibly.
@@ -902,7 +981,7 @@ mod bubblewrap_tests {
     }
 
     #[test]
-    fn network_is_unshared_and_reads_stay_broad() {
+    fn network_is_unshared_and_user_homes_are_masked() {
         let ws = workspace();
         let Some((_, args)) =
             bubblewrap_invocation("sh", "echo hi", &SandboxPolicy::for_workspace(ws.path()))
@@ -916,10 +995,79 @@ mod bubblewrap_tests {
         let ro_root = args
             .windows(3)
             .any(|w| w[0] == "--ro-bind" && w[1] == "/" && w[2] == "/");
+        assert!(ro_root, "system paths stay readable but not writable");
+
+        // The trees where user data and credentials live are masked with a
+        // private tmpfs, so `cat ~/.ssh/...` sees an empty directory rather
+        // than a secret. Masked *before* the workspace bind, so a workspace
+        // under /home or /root is re-exposed — the same ordering rule as a
+        // workspace under /tmp.
+        let workspace_bind = args.iter().position(|a| a == "--bind").unwrap();
+        for home in ["/home", "/root"] {
+            let mask = args
+                .windows(2)
+                .position(|w| w[0] == "--tmpfs" && w[1] == home)
+                .expect("the home tree must be masked");
+            assert!(
+                mask < workspace_bind,
+                "the {home} mask must precede the workspace bind, or a \
+                 workspace inside {home} would be hidden"
+            );
+        }
+    }
+
+    /// The read boundary, pinned at the profile level (the kernel-level
+    /// counterpart lives in `tests/sandbox_enforcement.rs`). The old blanket
+    /// `(allow file-read*)` granted every path on the host — the exact hole
+    /// that let `cat ~/.ssh/...` beat the `read_file` boundary. Reads must now
+    /// be the workspace/session-temp boundary plus OS-owned runtime paths.
+    #[test]
+    fn reads_are_confined_to_workspace_session_temp_and_system_paths() {
+        let ws = workspace();
+        let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
+
         assert!(
-            ro_root,
-            "the whole filesystem stays readable but not writable"
+            !profile.contains("(allow file-read*)\n"),
+            "a blanket file-read rule would re-open ~/.ssh and ~/.aws"
         );
+
+        let canonical = ws.path().canonicalize().unwrap();
+        let canonical = canonical.to_str().unwrap();
+        assert!(
+            profile.contains(&format!("(subpath \"{canonical}\")")),
+            "the workspace must be readable"
+        );
+
+        // User-writable trees are not in the read allowlist, in any spelling.
+        for tree in [
+            "\"/Users\"",
+            "\"/private/var/folders\"",
+            "\"/Volumes\"",
+            "\"/Network\"",
+            "\"/home\"",
+            "\"/root\"",
+        ] {
+            assert!(
+                !profile.contains(&format!("(subpath {tree})")),
+                "the read allowlist must not include {tree}"
+            );
+        }
+
+        // The runtime paths a process needs to start stay readable.
+        for runtime in [
+            "(subpath \"/System\")",
+            "(subpath \"/usr\")",
+            "(subpath \"/bin\")",
+            "(subpath \"/sbin\")",
+            "(subpath \"/private/etc\")",
+            "(literal \"/dev/null\")",
+            "(literal \"/dev/urandom\")",
+        ] {
+            assert!(
+                profile.contains(runtime),
+                "a process needs to read {runtime}"
+            );
+        }
     }
 
     /// `bwrap` is resolved by absolute path, never through `PATH`: this call
@@ -954,7 +1102,7 @@ mod bubblewrap_tests {
     /// object survives that.
     /// A grant can outlive the proxy that backs it. Binding a source that no
     /// longer exists makes bwrap refuse to start, so the command never runs and
-    /// the caller is told "writes are confined to the workspace" — an
+    /// the caller is told "blocked by the sandbox" — an
     /// explanation that has nothing to do with a dead egress proxy.
     #[test]
     fn a_grant_whose_socket_has_vanished_is_dropped_rather_than_bound() {
@@ -1081,10 +1229,11 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
 }
 
 const FILESYSTEM_EXPLANATION: &str =
-    "blocked by the sandbox: writes are confined to the workspace, and \
-     .git/.forge are read-only inside it. Paths outside the workspace do not \
-     exist inside the sandbox, so they report as missing rather than \
-     forbidden. This is not a file-permission problem on disk.";
+    "blocked by the sandbox: filesystem access is confined to the workspace \
+     and the session temp directory, and .git/.forge are read-only inside the \
+     workspace. On Linux a path outside the boundary does not exist inside \
+     the sandbox, so it reports as missing rather than forbidden; on macOS it \
+     reports as denied. This is not a file-permission problem on disk.";
 
 const CREDENTIAL_EXPLANATION: &str =
     "blocked by the sandbox: credentials live in the host secret store, \
@@ -1168,7 +1317,7 @@ mod denial_tests {
         let ws = ws();
         let out = "bash: line 1: /tmp/.tmpABCDEF/nope.txt: No such file or directory";
         let explained = explain_denial(out, ws.path()).expect("must be recognised");
-        assert!(explained.contains("do not exist inside the sandbox"));
+        assert!(explained.contains("does not exist inside the sandbox"));
     }
 
     /// dash, the default `sh` on Debian/Ubuntu and therefore `exec_command`'s
@@ -1179,7 +1328,7 @@ mod denial_tests {
         let ws = ws();
         let out = "sh: 1: cannot create /tmp/.tmpABCDEF/nope.txt: Directory nonexistent";
         let explained = explain_denial(out, ws.path()).expect("must be recognised");
-        assert!(explained.contains("do not exist inside the sandbox"));
+        assert!(explained.contains("does not exist inside the sandbox"));
     }
 
     /// ...but a missing file *inside* the workspace is an ordinary mistake and
