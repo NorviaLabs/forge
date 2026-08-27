@@ -71,6 +71,20 @@ impl ActivityCategory {
             (Self::Waiting, false) => "Waited",
         }
     }
+
+    /// Fixed per category, independent of running/done state — state is
+    /// communicated separately via `ActivityOutcome`'s glyph/color, so this
+    /// glyph never changes for a given category.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Exploring => "⌕",
+            Self::Implementing => "✎",
+            Self::Validating => "✓▤",
+            Self::Reviewing => "▤",
+            Self::Recovering => "↺",
+            Self::Waiting => "⚠",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,6 +200,10 @@ pub enum ChatItem {
         /// failing validation command stay grouped instead of falling out
         /// to a standalone card.
         outcome: forge_types::ExecutionOutcome,
+        /// Count of prior failed attempts superseded by this group's final
+        /// outcome — 0 for a single-attempt group, the input to the "N
+        /// retries" badge once the group has recovered to `Success`.
+        retries: usize,
     },
     /// A verification command's verdict, rendered inline and always.
     ///
@@ -281,6 +299,42 @@ pub enum ConversationBlock {
     Metadata(MetadataPresentation),
     Thinking(ThinkingPresentation),
     TurnSummary(TurnSummaryPresentation),
+    CompactTurn(CompactTurnPresentation),
+}
+
+/// A historical (non-latest) turn collapsed to one line. Derived from that
+/// turn's own items — not exact timing/token stats, which today are only
+/// ever kept for the single most recent turn (see `record_turn_summary`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactTurnPresentation {
+    pub request: String,
+    pub outcome: String,
+    pub has_error: bool,
+    pub tool_count: usize,
+    /// Real duration/chars/tokens/tools for this turn, when it completed
+    /// cleanly and its stats were archived (see `ConversationViewOpts::turn_stats`).
+    /// `None` for a turn that never cleanly completed (cancelled, still
+    /// paused) — the derived `outcome`/`tool_count` above are the fallback.
+    pub real_stats: Option<TurnStats>,
+}
+
+/// Real per-turn timing/cost stats, archived on clean completion and handed
+/// back in for a compacted historical turn to display instead of a derived
+/// placeholder. Keyed externally by turn ordinal — see
+/// `ConversationViewOpts::turn_stats`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TurnStats {
+    pub secs: f64,
+    pub chars: usize,
+    pub tools: usize,
+    pub output_tokens: Option<u64>,
+}
+
+impl TurnStats {
+    pub fn tokens_per_second(&self) -> Option<f64> {
+        let tokens = self.output_tokens?;
+        (self.secs >= 1.0 && tokens > 0).then(|| tokens as f64 / self.secs)
+    }
 }
 
 /// The closing line of a finished turn.
@@ -357,7 +411,13 @@ pub struct ActivityGroupPresentation {
     pub id: String,
     pub label: String,
     pub count_label: String,
+    /// `None` for a tool that never matched a routine category (falls out of
+    /// grouping into its own standalone card) — see `activity_entry_from_tool`.
+    pub category: Option<ActivityCategory>,
     pub outcome: ActivityOutcome,
+    /// Count of failed attempts superseded by `outcome` — the "N retries"
+    /// badge shows this when `outcome` is `Success` and it's non-zero.
+    pub retries: usize,
     pub expanded: bool,
     /// Always-visible invocation lines under the label (0-1 per tool call
     /// today; a grouped routine call may later fan out to several).
@@ -391,6 +451,36 @@ impl From<&ExecutionOutcome> for ActivityOutcome {
             // build doesn't recognise must never read as `Success`.
             _ => ActivityOutcome::Failure,
         }
+    }
+}
+
+/// Single source of truth for how a tool's raw state becomes the
+/// `ActivityOutcome` a card/group renders. Running is always neutral;
+/// routine exploration success (or a zero-result search) stays neutral
+/// rather than reading as an accomplishment; everything else defers to
+/// the real `ExecutionOutcome`. Replaces three call sites that had each
+/// reimplemented a slightly different version of this match.
+fn derive_activity_outcome(
+    state: ToolCardState,
+    category: Option<ActivityCategory>,
+    execution_outcome: &ExecutionOutcome,
+    zero_result: bool,
+) -> ActivityOutcome {
+    match state {
+        ToolCardState::Running => ActivityOutcome::Neutral,
+        // `Done` means the tool finished, not that it succeeded: a command
+        // that exits non-zero completes normally. Routine exploration is
+        // evidence, not a green "success" banner, so it (and a zero-result
+        // search) stays neutral instead.
+        ToolCardState::Done if category == Some(ActivityCategory::Exploring) || zero_result => {
+            ActivityOutcome::Neutral
+        }
+        ToolCardState::Done => ActivityOutcome::from(execution_outcome),
+        ToolCardState::Blocked => ActivityOutcome::Blocked,
+        // Precise variant (Denied/Cancelled/TimedOut/plain failure) rather
+        // than a blanket `Failure`, so a denied/cancelled/timed-out
+        // validation command gets its own amber icon, not red.
+        ToolCardState::Error => ActivityOutcome::from(execution_outcome),
     }
 }
 
@@ -604,6 +694,15 @@ pub struct ConversationViewOpts {
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
     /// When thinking just finished (answer streaming), show its elapsed time.
     pub stream_thought_secs: Option<f64>,
+    /// The historical turn (identified by its `ChatItem::User` index) the
+    /// user has manually expanded back to full detail, if any. The latest
+    /// turn is never compacted regardless of this field.
+    pub expanded_turn: Option<usize>,
+    /// Real stats for turns that completed cleanly, keyed by turn ordinal
+    /// (0-indexed position among `ConversationModel::turn_boundaries`).
+    /// Turns with no entry (cancelled, still paused) get a derived summary
+    /// instead when compacted.
+    pub turn_stats: std::collections::HashMap<usize, TurnStats>,
 }
 
 /// What a verification command concluded, as read from its own output.
@@ -935,7 +1034,27 @@ pub struct ConversationModel {
 
 impl ConversationModel {
     pub fn semantic_blocks(&self) -> Vec<ConversationBlock> {
-        semantic_blocks_from_items(&self.items, self.opts.tool_expanded)
+        semantic_blocks_from_items(
+            &self.items,
+            self.opts.tool_expanded,
+            self.opts.expanded_turn,
+            &self.opts.turn_stats,
+        )
+    }
+
+    /// Indices into `items` where each turn starts (each `ChatItem::User`).
+    /// Purely derived from `items` — turn identity isn't stored anywhere,
+    /// consistent with `Message` carrying no id/timestamp of its own.
+    pub fn turn_boundaries(&self) -> Vec<usize> {
+        user_message_boundaries(&self.items)
+    }
+
+    /// True if `item_index` belongs to the most recently started turn.
+    pub fn is_in_latest_turn(&self, item_index: usize) -> bool {
+        match self.turn_boundaries().last() {
+            Some(&start) => item_index >= start,
+            None => true, // no turns yet (e.g. only Home/Brand items)
+        }
     }
 
     pub fn from_messages(
@@ -1282,6 +1401,7 @@ impl ConversationModel {
                 detail: format!("{name}: tool_intent committed · awaiting result"),
                 state: ToolCardState::Running,
                 outcome: ExecutionOutcome::Success,
+                retries: 0,
             });
             return self;
         }
@@ -1383,7 +1503,88 @@ impl ConversationModel {
     }
 }
 
-fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<ConversationBlock> {
+/// Indices into `items` where each turn starts (each `ChatItem::User`).
+/// Shared by `ConversationModel::turn_boundaries` and the block reduction
+/// below — turn identity isn't stored anywhere, just derived positionally.
+fn user_message_boundaries(items: &[ChatItem]) -> Vec<usize> {
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| matches!(item, ChatItem::User { .. }))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Derives a historical turn's one-line compact summary from its raw items.
+fn compact_turn_presentation(
+    turn_items: &[ChatItem],
+    real_stats: Option<TurnStats>,
+) -> CompactTurnPresentation {
+    let request = turn_items
+        .iter()
+        .find_map(|item| match item {
+            ChatItem::User { text } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let outcome = turn_items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            ChatItem::Assistant { text } | ChatItem::StreamingAssistant { text } => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "no response".to_string());
+    let has_error = turn_items.iter().any(|item| {
+        matches!(
+            item,
+            ChatItem::ToolCard { outcome, .. } | ChatItem::ActivityGroup { outcome, .. }
+                if !outcome.is_success()
+        ) || matches!(item, ChatItem::ValidationFailure { .. })
+    });
+    let tool_count = turn_items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ChatItem::ToolCard { .. } | ChatItem::ActivityGroup { .. }
+            )
+        })
+        .count();
+    CompactTurnPresentation {
+        request,
+        outcome,
+        has_error,
+        // Prefer the archived real tool count when this turn cleanly
+        // completed — the structural count still backs turns that didn't.
+        tool_count: real_stats.map_or(tool_count, |s| s.tools),
+        real_stats,
+    }
+}
+
+fn semantic_blocks_from_items(
+    items: &[ChatItem],
+    tool_expanded: bool,
+    expanded_turn: Option<usize>,
+    turn_stats: &std::collections::HashMap<usize, TurnStats>,
+) -> Vec<ConversationBlock> {
+    let boundaries = user_message_boundaries(items);
+    let latest_start = boundaries.last().copied();
+    // Precompute which turns compact away (everything but the latest and any
+    // explicitly-expanded turn), and where each one ends (plus its ordinal,
+    // to look up its archived real stats), before the main per-item loop
+    // runs — a compacted turn's items never reach that loop.
+    let compact_end_by_start: std::collections::HashMap<usize, (usize, usize)> = boundaries
+        .iter()
+        .enumerate()
+        .map(|(ordinal, &start)| {
+            let end = boundaries.get(ordinal + 1).copied().unwrap_or(items.len());
+            (start, (ordinal, end))
+        })
+        .filter(|&(start, _)| Some(start) != latest_start && Some(start) != expanded_turn)
+        .collect();
     let mut blocks = Vec::new();
     let mut progress: Option<ActiveProgressPresentation> = None;
     let mut activity_group: Option<ActivityGroupPresentation> = None;
@@ -1403,7 +1604,19 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
         }
     };
 
-    for item in items {
+    let mut i = 0usize;
+    while i < items.len() {
+        if let Some(&(ordinal, end)) = compact_end_by_start.get(&i) {
+            flush_progress(&mut blocks, &mut progress);
+            flush_activity(&mut blocks, &mut activity_group);
+            blocks.push(ConversationBlock::CompactTurn(compact_turn_presentation(
+                &items[i..end],
+                turn_stats.get(&ordinal).copied(),
+            )));
+            i = end;
+            continue;
+        }
+        let item = &items[i];
         match item {
             ChatItem::User { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -1506,17 +1719,9 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             id: format!("tool:{name}:{summary}"),
                             label: name.clone(),
                             count_label: "1 item".into(),
-                            outcome: match state {
-                                ToolCardState::Running => ActivityOutcome::Neutral,
-                                // `Done` means the tool finished, not that it
-                                // succeeded: a command that exits non-zero
-                                // completes normally. Reading `Done` as success
-                                // drew a green check over `curl: (56) CONNECT
-                                // tunnel failed`.
-                                ToolCardState::Done => ActivityOutcome::from(outcome),
-                                ToolCardState::Blocked => ActivityOutcome::Blocked,
-                                ToolCardState::Error => ActivityOutcome::from(outcome),
-                            },
+                            category: None,
+                            outcome: derive_activity_outcome(*state, None, outcome, false),
+                            retries: 0,
                             expanded: tool_expanded,
                             subcommands: subcommand_line(subcommand.as_deref(), summary),
                             // Just the detail. The collapsed row already shows
@@ -1534,18 +1739,11 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 detail,
                 state,
                 outcome,
+                retries,
             } => {
                 flush_progress(&mut blocks, &mut progress);
-                let activity_outcome = match state {
-                    ToolCardState::Running => ActivityOutcome::Neutral,
-                    // Routine exploration is evidence, not a green "success" banner.
-                    ToolCardState::Done if matches!(category, ActivityCategory::Exploring) => {
-                        ActivityOutcome::Neutral
-                    }
-                    ToolCardState::Done => ActivityOutcome::from(outcome),
-                    ToolCardState::Blocked => ActivityOutcome::Blocked,
-                    ToolCardState::Error => ActivityOutcome::from(outcome),
-                };
+                let activity_outcome =
+                    derive_activity_outcome(*state, Some(*category), outcome, false);
                 append_activity_entry(
                     &mut blocks,
                     &mut activity_group,
@@ -1555,7 +1753,9 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             .label(matches!(state, ToolCardState::Running))
                             .to_string(),
                         count_label: summary.clone(),
+                        category: Some(*category),
                         outcome: activity_outcome,
+                        retries: *retries,
                         expanded: tool_expanded,
                         subcommands: Vec::new(),
                         items: vec![detail.clone()],
@@ -1718,6 +1918,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 }));
             }
         }
+        i += 1;
     }
     flush_progress(&mut blocks, &mut progress);
     flush_activity(&mut blocks, &mut activity_group);
@@ -1843,6 +2044,14 @@ fn append_activity_entry(
         if group.id == next.id {
             group.count_label =
                 result_count_label(group.items.len() + next.items.len(), "item", "items");
+            // A group that was failing and is now being merged with newer
+            // activity counts as one more recovered attempt, on top of
+            // whatever retries each side already carried.
+            let was_failing = !matches!(
+                group.outcome,
+                ActivityOutcome::Success | ActivityOutcome::Neutral
+            );
+            group.retries += next.retries + usize::from(was_failing);
             group.outcome = merge_activity_outcomes(group.outcome, next.outcome);
             group.expanded |= next.expanded;
             group.items.extend(next.items);
@@ -1855,15 +2064,13 @@ fn append_activity_entry(
     *pending = Some(next);
 }
 
-fn merge_activity_outcomes(left: ActivityOutcome, right: ActivityOutcome) -> ActivityOutcome {
-    use ActivityOutcome::*;
-    match (left, right) {
-        (Failure, _) | (_, Failure) => Failure,
-        (Blocked, _) | (_, Blocked) => Blocked,
-        (Warning, _) | (_, Warning) => Warning,
-        (Success, _) | (_, Success) => Success,
-        _ => Neutral,
-    }
+/// The group's outcome always reflects its most recent activity, not the
+/// worst thing that ever happened in it — a later success supersedes an
+/// earlier failure in the same group, so recovery isn't stuck behind a
+/// stale red state. `right` is always the more recently arrived side (see
+/// `append_activity_entry`, the sole caller).
+fn merge_activity_outcomes(_left: ActivityOutcome, right: ActivityOutcome) -> ActivityOutcome {
+    right
 }
 
 fn activity_entry_from_tool(
@@ -1877,19 +2084,7 @@ fn activity_entry_from_tool(
     let category = routine_tool_category(name, summary, None)?;
     let lower = detail.to_ascii_lowercase();
     let zero_result = lower.contains("no matches found") || lower.contains("no results");
-    let outcome = match state {
-        ToolCardState::Running => ActivityOutcome::Neutral,
-        // Routine exploration success (including zero-result search) stays neutral.
-        ToolCardState::Done if matches!(category, ActivityCategory::Exploring) || zero_result => {
-            ActivityOutcome::Neutral
-        }
-        ToolCardState::Done => ActivityOutcome::Success,
-        ToolCardState::Blocked => ActivityOutcome::Blocked,
-        // Precise variant (Denied/Cancelled/TimedOut/plain failure) rather
-        // than a blanket `Failure`, so a denied/cancelled/timed-out
-        // validation command gets its own amber icon, not red.
-        ToolCardState::Error => ActivityOutcome::from(execution_outcome),
-    };
+    let outcome = derive_activity_outcome(state, Some(category), execution_outcome, zero_result);
     let label = match state {
         ToolCardState::Running => category.label(true).to_string(),
         _ => category.label(false).to_string(),
@@ -1910,6 +2105,7 @@ fn activity_entry_from_tool(
     Some(ActivityGroupPresentation {
         id: format!("activity:{category:?}"),
         label,
+        category: Some(category),
         count_label: if matches!(state, ToolCardState::Running) {
             running_activity_summary(category, name)
         } else if category == ActivityCategory::Validating {
@@ -1925,6 +2121,7 @@ fn activity_entry_from_tool(
             result_count_label(1, "item", "items")
         },
         outcome,
+        retries: 0,
         expanded: matches!(state, ToolCardState::Error),
         subcommands,
         items: vec![format!("{name}: {summary}\n{detail}")],
@@ -2116,6 +2313,10 @@ pub fn group_routine_activity(items: Vec<ChatItem>) -> Vec<ChatItem> {
                 flush_activity_group(&mut grouped, &mut pending);
                 pending.push(item);
             }
+        } else if matches!(item, ChatItem::Thinking { .. }) && !pending.is_empty() {
+            // Narration mid-exploration doesn't fragment the group; it
+            // becomes evidence folded into the group's detail on flush.
+            pending.push(item);
         } else {
             flush_activity_group(&mut grouped, &mut pending);
             grouped.push(item);
@@ -2129,16 +2330,20 @@ pub fn group_routine_activity(items: Vec<ChatItem>) -> Vec<ChatItem> {
 /// outcome found, else `Success`. Drives the group's own state/color so a
 /// failing validation command turns the whole "Validating" group
 /// Failure-colored instead of silently reading as green.
+/// The group's outcome is whatever its most recent tool/activity item's
+/// outcome was — a trailing success means the group recovered, not that
+/// nothing ever went wrong. Reverse iteration so a later success supersedes
+/// an earlier failure instead of an earlier failure sticking forever.
 fn aggregate_outcome(items: &[ChatItem]) -> ExecutionOutcome {
     items
         .iter()
-        .filter_map(|item| match item {
+        .rev()
+        .find_map(|item| match item {
             ChatItem::ToolCard { outcome, .. } | ChatItem::ActivityGroup { outcome, .. } => {
                 Some(outcome.clone())
             }
             _ => None,
         })
-        .find(|o| !o.is_success())
         .unwrap_or(ExecutionOutcome::Success)
 }
 
@@ -2162,12 +2367,25 @@ fn flush_activity_group(grouped: &mut Vec<ChatItem>, pending: &mut Vec<ChatItem>
         .join("\n---\n");
     let outcome = aggregate_outcome(pending);
     let state = ToolCardState::from(&outcome);
+    // How many attempts in this streak didn't succeed — a trailing success
+    // means the group recovered; this is what the "N retries" badge shows.
+    let retries = pending
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ChatItem::ToolCard { outcome, .. } | ChatItem::ActivityGroup { outcome, .. }
+                    if !outcome.is_success()
+            )
+        })
+        .count();
     grouped.push(ChatItem::ActivityGroup {
         category,
         summary,
         detail,
         state,
         outcome,
+        retries,
     });
     pending.clear();
 }
@@ -2218,6 +2436,20 @@ fn routine_tool_category(
             Some(ActivityCategory::Implementing)
         }
         "bash" if is_validation_command(summary.trim_start_matches("$ ")) => {
+            Some(ActivityCategory::Validating)
+        }
+        // `exec_command`/`write_stdin` summaries are formatted by
+        // `classify_tool_content` as "$ {command} · session #{id} · {label}"
+        // — extract the command the same way and apply the same check, so a
+        // validation command run through the exec-session tool groups the
+        // same way one run through `bash` does.
+        "exec_command" | "write_stdin"
+            if summary
+                .trim_start_matches("$ ")
+                .split(" · ")
+                .next()
+                .is_some_and(is_validation_command) =>
+        {
             Some(ActivityCategory::Validating)
         }
         _ => None,
@@ -2324,6 +2556,7 @@ fn activity_group_detail(item: &ChatItem) -> String {
             detail,
             ..
         } => format!("{name}: {summary}\n{detail}"),
+        ChatItem::Thinking { text, .. } => format!("note: {text}"),
         ChatItem::DiffCard { path, lines, .. } => format!("diff: {path}\n{}", lines.join("\n")),
         ChatItem::VerificationCard {
             command,
@@ -2747,6 +2980,401 @@ mod tests {
         ));
     }
 
+    /// Regression test for a live-observed bug: `cargo check` invoked via
+    /// the `exec_command` tool (rather than `bash`) fell out of
+    /// `routine_tool_category` entirely and rendered as a bare, ungrouped
+    /// tool card instead of joining a `Validating` activity group.
+    #[test]
+    fn exec_command_validation_summaries_group_as_validating() {
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "exec_command".into(),
+                summary: "$ cargo check -p forge-tui · session #1 · exited".into(),
+                detail: "Checking forge-tui v0.1.0-beta.6\n    Finished".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: Some("$ cargo check -p forge-tui · session #1 · exited".into()),
+                outcome: forge_types::ExecutionOutcome::Success,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ConversationBlock::ActivityGroup(group)
+                if group.category == Some(ActivityCategory::Validating)
+        ));
+    }
+
+    #[test]
+    fn turn_boundaries_finds_each_user_message() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "first".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply one".into(),
+                },
+                ChatItem::User {
+                    text: "second".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply two".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        assert_eq!(model.turn_boundaries(), vec![0, 2]);
+    }
+
+    fn two_turn_items(second_tool_outcome: forge_types::ExecutionOutcome) -> Vec<ChatItem> {
+        vec![
+            ChatItem::User {
+                text: "first request".into(),
+            },
+            ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: "a.rs · 1 line".into(),
+                detail: "a".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            },
+            ChatItem::Assistant {
+                text: "first answer".into(),
+            },
+            ChatItem::User {
+                text: "second request".into(),
+            },
+            ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: "$ cargo test · result".into(),
+                detail: "output".into(),
+                state: ToolCardState::from(&second_tool_outcome),
+                duration: None,
+                subcommand: None,
+                outcome: second_tool_outcome,
+            },
+            ChatItem::Assistant {
+                text: "second answer".into(),
+            },
+        ]
+    }
+
+    fn two_turn_model(
+        second_tool_outcome: forge_types::ExecutionOutcome,
+        expanded_turn: Option<usize>,
+    ) -> ConversationModel {
+        ConversationModel {
+            items: two_turn_items(second_tool_outcome),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                expanded_turn,
+                ..ConversationViewOpts::default()
+            },
+        }
+    }
+
+    #[test]
+    fn compact_turn_uses_real_stats_when_available() {
+        let mut model = two_turn_model(forge_types::ExecutionOutcome::Success, None);
+        let stats = TurnStats {
+            secs: 12.5,
+            chars: 340,
+            tools: 2,
+            output_tokens: Some(50),
+        };
+        model.opts.turn_stats.insert(0, stats);
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.first(),
+                Some(ConversationBlock::CompactTurn(p)) if p.real_stats == Some(stats)
+            ),
+            "expected the compacted first turn to carry its archived real stats"
+        );
+    }
+
+    #[test]
+    fn compact_turn_falls_back_without_real_stats() {
+        let model = two_turn_model(forge_types::ExecutionOutcome::Success, None);
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.first(),
+                Some(ConversationBlock::CompactTurn(p)) if p.real_stats.is_none()
+            ),
+            "no archived stats for this turn — should fall back to the derived summary"
+        );
+    }
+
+    #[test]
+    fn a_historical_turn_compacts_to_one_block() {
+        let model = two_turn_model(forge_types::ExecutionOutcome::Success, None);
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.first(),
+                Some(ConversationBlock::CompactTurn(p)) if p.request == "first request"
+            ),
+            "expected the first (historical) turn compacted, got {blocks:?}"
+        );
+        // The latest turn is untouched: its own UserMessage/ActivityGroup/
+        // AssistantAnswer blocks are all still present.
+        assert!(blocks
+            .iter()
+            .any(|b| matches!(b, ConversationBlock::UserMessage(p) if p.text == "second request")));
+        assert!(blocks
+            .iter()
+            .any(|b| matches!(b, ConversationBlock::ActivityGroup(_))));
+    }
+
+    #[test]
+    fn an_explicitly_expanded_historical_turn_renders_in_full() {
+        let model = two_turn_model(forge_types::ExecutionOutcome::Success, Some(0));
+        let blocks = model.semantic_blocks();
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, ConversationBlock::CompactTurn(_))),
+            "an explicitly expanded turn should not compact, got {blocks:?}"
+        );
+        assert!(blocks
+            .iter()
+            .any(|b| matches!(b, ConversationBlock::UserMessage(p) if p.text == "first request")));
+    }
+
+    #[test]
+    fn compact_turn_reports_the_right_outcome_and_error_state() {
+        let clean = two_turn_model(forge_types::ExecutionOutcome::Success, None);
+        let clean_blocks = clean.semantic_blocks();
+        assert!(matches!(
+            clean_blocks.first(),
+            Some(ConversationBlock::CompactTurn(p))
+                if p.outcome == "first answer" && !p.has_error
+        ));
+
+        // Make the FIRST turn's tool fail instead, so its compacted summary
+        // (not the still-latest second turn) reflects the error.
+        let mut items = two_turn_items(forge_types::ExecutionOutcome::Success);
+        items[1] = ChatItem::ToolCard {
+            name: "read_file".into(),
+            summary: "a.rs · failed".into(),
+            detail: "not found".into(),
+            state: ToolCardState::Error,
+            duration: None,
+            subcommand: None,
+            outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
+        };
+        let failing = ConversationModel {
+            items,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let failing_blocks = failing.semantic_blocks();
+        assert!(matches!(
+            failing_blocks.first(),
+            Some(ConversationBlock::CompactTurn(p)) if p.has_error
+        ));
+    }
+
+    #[test]
+    fn the_latest_turn_is_never_compacted_even_with_no_expanded_turn_set() {
+        let single = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "only turn".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        assert!(!single
+            .semantic_blocks()
+            .iter()
+            .any(|b| matches!(b, ConversationBlock::CompactTurn(_))));
+
+        let two = two_turn_model(forge_types::ExecutionOutcome::Success, None);
+        let blocks = two.semantic_blocks();
+        assert!(blocks
+            .iter()
+            .any(|b| matches!(b, ConversationBlock::UserMessage(p) if p.text == "second request")));
+        assert!(blocks.iter().any(
+            |b| matches!(b, ConversationBlock::AssistantAnswer(p) if p.text == "second answer")
+        ));
+    }
+
+    #[test]
+    fn turn_boundaries_single_turn() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "only turn".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        assert_eq!(model.turn_boundaries(), vec![0]);
+    }
+
+    #[test]
+    fn turn_boundaries_empty_before_any_user_message() {
+        let model = ConversationModel {
+            items: vec![ChatItem::Brand {
+                version: "0.1.0-beta.6".into(),
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        assert!(model.turn_boundaries().is_empty());
+        // Nothing to exclude yet — the only item present is in "the latest turn".
+        assert!(model.is_in_latest_turn(0));
+    }
+
+    #[test]
+    fn is_in_latest_turn_respects_the_last_boundary() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "first".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply one".into(),
+                },
+                ChatItem::User {
+                    text: "second".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply two".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        // Index 1 (the first turn's reply) belongs to the first turn, not the latest.
+        assert!(!model.is_in_latest_turn(1));
+        // Index 2 is the latest turn's own boundary.
+        assert!(model.is_in_latest_turn(2));
+        // Index 3 (the latest turn's reply) is in the latest turn.
+        assert!(model.is_in_latest_turn(3));
+    }
+
+    /// End-to-end coverage (the tests above construct `items` directly):
+    /// a real multi-turn `Message` sequence run through `from_messages`
+    /// produces `ChatItem::User` entries that `turn_boundaries` finds
+    /// correctly, including a turn with tool activity in between.
+    #[test]
+    fn turn_boundaries_from_a_real_message_sequence() {
+        let messages = vec![
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::User,
+                content: "Summarize this repository.".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::Assistant,
+                content: "Forge is a Rust workspace.".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::User,
+                content: "Now add a doc comment to status_glyph.rs.".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::Tool,
+                content: "src/status_glyph.rs".into(),
+                tool_call_id: Some("1".into()),
+                name: Some("read_file".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::Assistant,
+                content: "Done.".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+        ];
+
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[],
+            forge_types::TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        );
+
+        let boundaries = model.turn_boundaries();
+        assert_eq!(boundaries.len(), 2, "expected two turns: {boundaries:?}");
+        for &index in &boundaries {
+            assert!(matches!(model.items[index], ChatItem::User { .. }));
+        }
+        // The tool activity between the second User and its answer still
+        // belongs to the latest (second) turn. `from_messages` already
+        // pre-groups routine tool calls via `group_routine_activity`, so
+        // `read_file` shows up as an `ActivityGroup`, not a bare `ToolCard`.
+        let tool_index = model
+            .items
+            .iter()
+            .position(|item| matches!(item, ChatItem::ActivityGroup { .. }))
+            .expect("read_file should render as a grouped activity");
+        assert!(model.is_in_latest_turn(tool_index));
+        // The first turn's own reply does not.
+        assert!(!model.is_in_latest_turn(boundaries[0] + 1));
+    }
+
     #[test]
     fn semantic_blocks_replace_streaming_answer_updates() {
         let model = ConversationModel {
@@ -3012,6 +3640,152 @@ mod tests {
                 ]
             ),
             "assistant must break the routine-activity streak, got {blocks:?}"
+        );
+    }
+
+    /// Contrast with `routine_reads_do_not_merge_across_assistant_narration`
+    /// above: `Thinking` (internal reasoning) does not break the streak,
+    /// unlike `Assistant` (finished, user-facing narration).
+    #[test]
+    fn routine_reads_merge_across_thinking_narration() {
+        let model = ConversationModel {
+            items: group_routine_activity(vec![
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "a.rs · 1 line".into(),
+                    detail: "a.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+                ChatItem::Thinking {
+                    text: "looking further".into(),
+                    duration_secs: None,
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "b.rs · 1 line".into(),
+                    detail: "b.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+            ]),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(blocks.as_slice(), [ConversationBlock::ActivityGroup(_)]),
+            "thinking must not break the routine-activity streak, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn group_routine_activity_folds_thinking_into_the_streak() {
+        let grouped = group_routine_activity(vec![
+            ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: "a.rs · 1 line".into(),
+                detail: "a.rs".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            },
+            ChatItem::Thinking {
+                text: "looking further".into(),
+                duration_secs: None,
+            },
+            ChatItem::ToolCard {
+                name: "glob".into(),
+                summary: "needle · 1 file".into(),
+                detail: "b.rs".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            },
+        ]);
+
+        assert_eq!(grouped.len(), 1);
+        assert!(matches!(
+            &grouped[0],
+            ChatItem::ActivityGroup { detail, .. } if detail.contains("note: looking further")
+        ));
+    }
+
+    #[test]
+    fn group_routine_activity_leaves_thinking_alone_outside_a_streak() {
+        let grouped = group_routine_activity(vec![
+            ChatItem::Thinking {
+                text: "hi".into(),
+                duration_secs: None,
+            },
+            ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: "a.rs · 1 line".into(),
+                detail: "a.rs".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            },
+        ]);
+
+        assert_eq!(grouped.len(), 2);
+        assert!(matches!(&grouped[0], ChatItem::Thinking { text, .. } if text == "hi"));
+        assert!(matches!(&grouped[1], ChatItem::ActivityGroup { .. }));
+    }
+
+    /// End-to-end regression for the live-observed bug: a single
+    /// exploration pass rendered as six separate "Explored repository"
+    /// cards because narration between tool calls fragmented the group.
+    #[test]
+    fn a_thinking_interrupted_exploration_pass_stays_one_group() {
+        fn read(path: &str) -> ChatItem {
+            ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: format!("{path} · 1 line"),
+                detail: path.into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            }
+        }
+        fn thinking(text: &str) -> ChatItem {
+            ChatItem::Thinking {
+                text: text.into(),
+                duration_secs: None,
+            }
+        }
+
+        let model = ConversationModel {
+            items: group_routine_activity(vec![
+                read("README.md"),
+                thinking("I'll explore the repo structure and key files."),
+                read("Cargo.toml"),
+                read("crates/forge-tui/Cargo.toml"),
+                thinking("I see the README points me to crates/."),
+                read("crates/forge-transcript/Cargo.toml"),
+                read("crates/forge-core/Cargo.toml"),
+                thinking("I have a good picture now."),
+                read("docs/architecture.md"),
+            ]),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(blocks.as_slice(), [ConversationBlock::ActivityGroup(_)]),
+            "expected one merged group, got {blocks:?}"
         );
     }
 
@@ -3466,6 +4240,228 @@ mod tests {
                 ..
             }) if name == "read_file"
         ));
+    }
+
+    #[test]
+    fn aggregate_outcome_reflects_the_most_recent_attempt() {
+        let failed = ChatItem::ToolCard {
+            name: "bash".into(),
+            summary: "$ cargo test · failed".into(),
+            detail: "status 101".into(),
+            state: ToolCardState::Error,
+            duration: None,
+            subcommand: None,
+            outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
+        };
+        let succeeded = ChatItem::ToolCard {
+            name: "bash".into(),
+            summary: "$ cargo test · passed".into(),
+            detail: "ok".into(),
+            state: ToolCardState::Done,
+            duration: None,
+            subcommand: None,
+            outcome: forge_types::ExecutionOutcome::Success,
+        };
+
+        assert_eq!(
+            aggregate_outcome(&[failed.clone(), succeeded.clone()]),
+            forge_types::ExecutionOutcome::Success,
+            "a later success should recover the group"
+        );
+        assert!(matches!(
+            aggregate_outcome(&[succeeded, failed]),
+            forge_types::ExecutionOutcome::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn merge_activity_outcomes_prefers_the_more_recent_side() {
+        assert_eq!(
+            merge_activity_outcomes(ActivityOutcome::Failure, ActivityOutcome::Success),
+            ActivityOutcome::Success
+        );
+        assert_eq!(
+            merge_activity_outcomes(ActivityOutcome::Success, ActivityOutcome::Failure),
+            ActivityOutcome::Failure
+        );
+    }
+
+    /// Regression test for audit problem #8: a failed validation command
+    /// that later succeeds must recover the group's displayed outcome, not
+    /// stay stuck red forever.
+    #[test]
+    fn a_failed_validation_that_later_succeeds_recovers_the_group() {
+        let model = ConversationModel {
+            items: group_routine_activity(vec![
+                ChatItem::ToolCard {
+                    name: "bash".into(),
+                    summary: "$ cargo test · failed".into(),
+                    detail: "status 101".into(),
+                    state: ToolCardState::Error,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
+                },
+                ChatItem::ToolCard {
+                    name: "bash".into(),
+                    summary: "$ cargo test · passed".into(),
+                    detail: "ok".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+            ]),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [ConversationBlock::ActivityGroup(group)]
+                    if group.outcome == ActivityOutcome::Success
+            ),
+            "expected one recovered (Success) group, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn flush_activity_group_counts_failed_attempts() {
+        let grouped = group_routine_activity(vec![
+            ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: "$ cargo test · failed".into(),
+                detail: "status 101".into(),
+                state: ToolCardState::Error,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
+            },
+            ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: "$ cargo test · passed".into(),
+                detail: "ok".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            },
+        ]);
+
+        assert_eq!(grouped.len(), 1);
+        assert!(matches!(
+            &grouped[0],
+            ChatItem::ActivityGroup { retries: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn flush_activity_group_counts_every_failed_attempt_not_just_one() {
+        fn failed() -> ChatItem {
+            ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: "$ cargo test · failed".into(),
+                detail: "status 101".into(),
+                state: ToolCardState::Error,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
+            }
+        }
+        let succeeded = ChatItem::ToolCard {
+            name: "bash".into(),
+            summary: "$ cargo test · passed".into(),
+            detail: "ok".into(),
+            state: ToolCardState::Done,
+            duration: None,
+            subcommand: None,
+            outcome: forge_types::ExecutionOutcome::Success,
+        };
+
+        let grouped = group_routine_activity(vec![failed(), failed(), failed(), succeeded]);
+
+        assert_eq!(grouped.len(), 1);
+        assert!(matches!(
+            &grouped[0],
+            ChatItem::ActivityGroup { retries: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn a_recovered_group_reports_its_retry_count() {
+        let model = ConversationModel {
+            items: group_routine_activity(vec![
+                ChatItem::ToolCard {
+                    name: "bash".into(),
+                    summary: "$ cargo test · failed".into(),
+                    detail: "status 101".into(),
+                    state: ToolCardState::Error,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
+                },
+                ChatItem::ToolCard {
+                    name: "bash".into(),
+                    summary: "$ cargo test · passed".into(),
+                    detail: "ok".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+            ]),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [ConversationBlock::ActivityGroup(group)]
+                    if group.outcome == ActivityOutcome::Success && group.retries == 1
+            ),
+            "expected one recovered group reporting 1 retry, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn append_activity_entry_accumulates_retries_across_merges() {
+        let mut blocks = Vec::new();
+        let mut pending = None;
+
+        let first = ActivityGroupPresentation {
+            id: "activity:Validating".into(),
+            label: "Validation".into(),
+            count_label: "cargo test · failed".into(),
+            category: Some(ActivityCategory::Validating),
+            outcome: ActivityOutcome::Failure,
+            retries: 0,
+            expanded: true,
+            subcommands: Vec::new(),
+            items: vec!["attempt 1".into()],
+        };
+        let second = ActivityGroupPresentation {
+            id: "activity:Validating".into(),
+            label: "Validation".into(),
+            count_label: "cargo test · passed".into(),
+            category: Some(ActivityCategory::Validating),
+            outcome: ActivityOutcome::Success,
+            retries: 0,
+            expanded: false,
+            subcommands: Vec::new(),
+            items: vec!["attempt 2".into()],
+        };
+
+        append_activity_entry(&mut blocks, &mut pending, first);
+        append_activity_entry(&mut blocks, &mut pending, second);
+
+        assert!(blocks.is_empty(), "still pending, nothing flushed yet");
+        assert_eq!(pending.unwrap().retries, 1);
     }
 
     #[test]
