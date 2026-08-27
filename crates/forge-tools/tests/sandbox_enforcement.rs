@@ -268,16 +268,44 @@ fn network_egress_is_denied() {
     assert!(!ok, "network egress must be denied");
 }
 
-/// Reads outside the workspace are permitted — toolchains need `~/.gitconfig`
-/// and `~/.cargo`. Pinned so the choice is visible rather than assumed: a
-/// secret can be read, but the network denial is what stops it leaving.
+/// Reads are confined to the workspace + session temp, plus the OS-owned
+/// paths a process needs to start. The user-writable trees where credentials
+/// live — $HOME, per-user temp — are outside the boundary, exactly as they
+/// are for `read_file`/`write_file`. This is the read side of issue #447:
+/// `read_file` refused `~/.ssh`, and `exec_command` must too.
 #[test]
-fn reads_outside_the_workspace_are_permitted_by_design() {
+fn reads_outside_the_workspace_are_refused() {
     require_sandbox!();
     let ws = workspace();
-    let (ok, out) = run_confined(ws.path(), "head -c 5 /etc/hosts > read.txt && echo READ");
-    assert!(ok, "broad reads are intentional: {out}");
-    assert!(ws.path().join("read.txt").exists());
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("aws-credentials");
+    std::fs::write(&secret, "AKIA-BYPASS-KEY\n").unwrap();
+
+    let (ok, out) = run_confined(ws.path(), &format!("cat {}", secret.to_str().unwrap()));
+    assert!(
+        !ok,
+        "reading a file outside the workspace must be refused: {out}"
+    );
+    assert!(
+        !out.contains("AKIA-BYPASS-KEY"),
+        "the secret must not reach the command: {out}"
+    );
+}
+
+/// The counterpart of the denial above: a process still has to *start*, which
+/// means reading its own binary, the system libraries, and standard
+/// configuration. Pinned so tightening the runtime allowlist cannot silently
+/// break spawn.
+#[test]
+fn system_paths_needed_to_start_a_process_stay_readable() {
+    require_sandbox!();
+    let ws = workspace();
+    let (ok, out) = run_confined(
+        ws.path(),
+        "head -c 5 /etc/hosts > system-read.txt && cat system-read.txt",
+    );
+    assert!(ok, "system reads must stay readable: {out}");
+    assert!(ws.path().join("system-read.txt").exists());
 }
 
 /// The shapes `readonly.rs` used to gate by parsing. None of them are
@@ -386,7 +414,7 @@ async fn a_denied_command_explains_which_boundary_stopped_it() {
         panic!("expected a structured sandbox denial");
     };
     assert!(content.contains("blocked by the sandbox"), "{content}");
-    assert!(reason.contains("writes are confined"), "{reason}");
+    assert!(reason.contains("confined to the workspace"), "{reason}");
 }
 
 /// And an ordinary failure must not be dressed up as a sandbox problem.
@@ -714,9 +742,17 @@ async fn exec_command(
     ws: &Path,
     cmd: &str,
 ) -> Result<forge_types::ToolOutput, forge_tools::ToolError> {
-    use forge_tools::{default_builtins, ToolContext};
+    exec_command_with_ctx(forge_tools::ToolContext::new(ws.to_path_buf()), cmd).await
+}
 
-    let ctx = ToolContext::new(ws.to_path_buf());
+/// Drive `exec_command` to completion with an explicit context (for granting a
+/// session temp dir), returning its result.
+async fn exec_command_with_ctx(
+    ctx: forge_tools::ToolContext,
+    cmd: &str,
+) -> Result<forge_types::ToolOutput, forge_tools::ToolError> {
+    use forge_tools::default_builtins;
+
     let tools = default_builtins();
     let exec = tools
         .iter()
@@ -774,6 +810,84 @@ async fn exec_command_cannot_write_outside_the_workspace() {
     assert!(
         matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
         "exec_command must escalate sandbox denials: {error}"
+    );
+}
+
+/// The read side of the same boundary, through the same persistent-session
+/// path: a credential outside the workspace must not be readable by
+/// `exec_command` either. This is the exact escape in #447 — `cat` on a
+/// credential after `read_file` refused the same path.
+#[tokio::test]
+async fn exec_command_cannot_read_outside_the_workspace() {
+    require_sandbox!();
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("ssh-key");
+    std::fs::write(&secret, "PRIVATE-KEY-BYPASS\n").unwrap();
+
+    let error = exec_command(ws.path(), &format!("cat {}", secret.to_str().unwrap()))
+        .await
+        .expect_err("reading outside the workspace must be denied");
+
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "exec_command must escalate read sandbox denials: {error}"
+    );
+    if let forge_tools::ToolError::SandboxDenied { content, .. } = &error {
+        assert!(
+            !content.contains("PRIVATE-KEY-BYPASS"),
+            "the credential must not leak into tool output: {content}"
+        );
+    }
+}
+
+/// The positive control for the same boundary: `read_file` may read the
+/// workspace and session temp, and `exec_command` must be able to as well.
+#[tokio::test]
+async fn exec_command_reads_workspace_and_session_temp() {
+    require_sandbox!();
+    let ws = workspace();
+    let session_tmp = forge_tools::SessionTempDir::create("exec-read-boundary").unwrap();
+    std::fs::write(ws.path().join("in-ws.txt"), "workspace-secret\n").unwrap();
+    std::fs::write(
+        session_tmp.path().join("in-tmp.txt"),
+        "session-temp-secret\n",
+    )
+    .unwrap();
+
+    let ctx = forge_tools::ToolContext::new(ws.path().to_path_buf())
+        .with_session_tmp(session_tmp.clone());
+    let out = exec_command_with_ctx(ctx, "cat in-ws.txt \"$TMPDIR/in-tmp.txt\"")
+        .await
+        .expect("workspace and session-temp reads should succeed");
+    assert!(
+        out.content.contains("workspace-secret"),
+        "workspace read failed: {}",
+        out.content
+    );
+    assert!(
+        out.content.contains("session-temp-secret"),
+        "session-temp read failed: {}",
+        out.content
+    );
+}
+
+/// The second spawn path — the `bash` tool's `run_shell_command` — shares the
+/// read boundary and must escalate a denied read as `SandboxDenied` too.
+#[tokio::test]
+async fn bash_tool_cannot_read_outside_the_workspace() {
+    require_sandbox!();
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("credentials");
+    std::fs::write(&secret, "GH-TOKEN-BYPASS\n").unwrap();
+
+    let error = run_shell_command(&format!("cat {}", secret.to_str().unwrap()), ws.path())
+        .await
+        .expect_err("reading outside the workspace must be denied");
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "the bash path must escalate read sandbox denials: {error}"
     );
 }
 
@@ -976,10 +1090,12 @@ fn masked_probe_dir() -> std::path::PathBuf {
     fallback
 }
 
-/// A socket under `$HOME`, which the sandbox does *not* mask.
+/// A socket under `$HOME`, masked since the home trees became part of the
+/// sandbox's read boundary.
 ///
-/// See `a_confined_command_can_still_reach_a_socket_under_home` for why this
-/// is a known gap rather than an assertion.
+/// The `#[ignore]`d socket test below documents the residual gap — sockets in
+/// trees the sandbox still exposes read-only — and uses this only as a probe
+/// location; the home trees themselves are now masked like `/run` and `/tmp`.
 #[cfg(target_os = "linux")]
 fn unmasked_probe_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").expect("HOME must be set");
@@ -1045,9 +1161,15 @@ fn a_confined_command_reaches_workspace_sockets_but_not_masked_host_sockets() {
 ///
 /// `--ro-bind / /` exposes every host path read-only, and a read-only *mount*
 /// does not stop `connect()`: that checks the inode, not `MNT_READONLY`. The
-/// sandbox masks `/run` and `/tmp`, so the sockets with the worst blast radius
-/// are covered — but a socket anywhere else, `$HOME` most realistically, is
-/// still reachable from inside the sandbox.
+/// sandbox masks `/run`, `/tmp`, and the home trees (`/home`, `/root`), so
+/// docker.sock, `$XDG_RUNTIME_DIR`, ssh/gpg-agent, and `~/.docker` are
+/// covered — but a pathname socket anywhere else, `/var` or `/opt` most
+/// realistically, is still reachable from inside the sandbox.
+///
+/// Home is masked now, so this probe (under `$HOME`) currently reports
+/// NOT-CONNECTED: the executable record of the gap is the *residual* one, in
+/// an unmasked tree. Update the probe directory if you want to re-assert the
+/// current residual, or when Landlock lands, promote it back to an assertion.
 ///
 /// Closing this needs a mechanism the mount namespace does not have:
 ///
@@ -1067,7 +1189,7 @@ fn a_confined_command_reaches_workspace_sockets_but_not_masked_host_sockets() {
 /// assertion. Tracked in #390.
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "known gap: sockets outside /run and /tmp are reachable; see #390"]
+#[ignore = "known gap: sockets outside the masked trees are reachable; see #390"]
 fn a_confined_command_can_still_reach_a_socket_under_home() {
     require_sandbox!();
 

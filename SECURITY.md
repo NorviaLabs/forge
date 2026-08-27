@@ -39,11 +39,11 @@ shell.**
 
 **The security boundary is the OS sandbox, not the agent's judgement and not
 the approval prompt.** Every shell command is confined at spawn — Seatbelt on
-macOS, bubblewrap on Linux and WSL2 — to writes inside your workspace and a
-per-session temp directory, with network access only through a host-filtering
-egress proxy. Forge does not attempt to classify a command as safe or
-dangerous before running it; that judgement is the thing we are trying not to
-depend on.
+macOS, bubblewrap on Linux and WSL2 — to filesystem access inside your
+workspace, the per-session temp directory, and the OS paths a process needs
+to start, with network access only through a host-filtering egress proxy.
+Forge does not attempt to classify a command as safe or dangerous before
+running it; that judgement is the thing we are trying not to depend on.
 
 The approval prompt is a second, weaker layer that sits on top. It does not
 appear for shell commands at all, because the confinement is what makes
@@ -53,9 +53,9 @@ and exits, rather than running unconfined.
 
 What the sandbox does **not** protect: anything a command can legitimately do
 inside your workspace, and anything it can send to a host you have allowed.
-A confined command can still corrupt your working tree or exfiltrate what it
-can read through a permitted destination. Hosts start denied; only a personal
-`host(...)` allow (or `host(*)`) opens one.
+A confined command can still corrupt your working tree, or exfiltrate
+workspace files it can read through a permitted destination. Hosts start
+denied; only a personal `host(...)` allow (or `host(*)`) opens one.
 
 Three consequences worth being explicit about:
 
