@@ -3786,6 +3786,7 @@ mod tests {
         assert!(api_text.contains("OpenCode Go"));
         assert!(api_text.contains("9 chars"));
         assert!(api_text.contains("[e] Use OPENCODE_API_KEY"));
+        assert!(api_text.contains("Enter connect · Esc back"));
         assert!(!api_text.contains("sk-secret"));
 
         let oauth = render_text(&Overlay::connect_oauth(
