@@ -417,7 +417,7 @@ impl forge_tools::Tool for GatedTool {
 
 #[test]
 fn system_prompt_uses_forge_policy() {
-    let prompt = assemble_system_prompt("", &[]);
+    let prompt = assemble_system_prompt("", &[], std::path::Path::new("/tmp/forge-test-scratch"));
     assert!(prompt.starts_with("You are a coding agent running in the Forge"));
     assert!(prompt.contains("Forge is an open source project led by NorviaLabs."));
     assert!(!prompt.contains("# Project Instructions"));
@@ -431,8 +431,15 @@ fn system_prompt_uses_forge_policy() {
 }
 
 #[test]
+fn system_prompt_embeds_the_scratch_directory_path() {
+    let prompt = assemble_system_prompt("", &[], std::path::Path::new("/tmp/forge-abc123"));
+    assert!(prompt.contains("/tmp/forge-abc123"));
+    assert!(!prompt.contains("{{SCRATCH_DIR}}"));
+}
+
+#[test]
 fn default_system_prompt_stays_under_the_token_budget() {
-    let prompt = assemble_system_prompt("", &[]);
+    let prompt = assemble_system_prompt("", &[], std::path::Path::new("/tmp/forge-test-scratch"));
     let tokens = forge_context::estimate_tokens(&prompt);
     assert!(
         tokens < 6_500,
@@ -505,7 +512,11 @@ async fn model_response_application_releases_session_while_tool_runs() {
 
 #[test]
 fn system_prompt_appends_project_instructions() {
-    let prompt = assemble_system_prompt("Run cargo test", &[]);
+    let prompt = assemble_system_prompt(
+        "Run cargo test",
+        &[],
+        std::path::Path::new("/tmp/forge-test-scratch"),
+    );
     assert!(prompt.starts_with("You are a coding agent running in the Forge"));
     assert!(prompt.ends_with("AGENTS.md:\nRun cargo test"));
 }
@@ -542,7 +553,8 @@ fn manifest_skill(name: &str, description: &str, body: &str) -> forge_context::S
 #[test]
 fn system_prompt_appends_skills_without_frontmatter_eagerly() {
     let skills = vec![legacy_skill("ponytail", "# Ponytail\nUse less code.")];
-    let prompt = assemble_system_prompt("", &skills);
+    let prompt =
+        assemble_system_prompt("", &skills, std::path::Path::new("/tmp/forge-test-scratch"));
     assert!(prompt.contains("# Skills"));
     assert!(prompt.contains("## ponytail"));
     assert!(prompt.ends_with("# Ponytail\nUse less code."));
@@ -558,7 +570,8 @@ fn system_prompt_shows_only_name_and_description_for_skills_with_frontmatter() {
         "Reviews pull requests for style issues.",
         "# Reviewer\n\nFull instructions that should stay out of the prompt.",
     )];
-    let prompt = assemble_system_prompt("", &skills);
+    let prompt =
+        assemble_system_prompt("", &skills, std::path::Path::new("/tmp/forge-test-scratch"));
     assert!(prompt.contains("# Skills"));
     assert!(prompt.contains("## reviewer"));
     assert!(prompt.contains("Reviews pull requests for style issues."));
