@@ -30,8 +30,7 @@ use forge_core::{AgentSession, LoopConfig};
 use forge_model::MockModelClient;
 use forge_tools::ToolRegistry;
 use forge_tui::{
-    ChatItem, ConversationModel, ConversationRender, ConversationViewOpts, TuiApp,
-    TuiRuntimeConfig,
+    ChatItem, ConversationModel, ConversationRender, ConversationViewOpts, TuiApp, TuiRuntimeConfig,
 };
 use forge_types::{Message, MessageRole, ModelResponse, TaskLifecycle, Usage};
 use ratatui::backend::TestBackend;
@@ -54,15 +53,8 @@ fn write_text(dir: &Path, name: &str, text: &str) {
 }
 
 /// Dump one full `TestBackend` frame (the real app chrome + conversation).
-fn dump_app_frame(
-    terminal: &mut Terminal<TestBackend>,
-    app: &mut TuiApp,
-    dir: &Path,
-    name: &str,
-) {
-    terminal
-        .draw(|frame| app.draw(frame))
-        .expect("draw frame");
+fn dump_app_frame(terminal: &mut Terminal<TestBackend>, app: &mut TuiApp, dir: &Path, name: &str) {
+    terminal.draw(|frame| app.draw(frame)).expect("draw frame");
     let buf = terminal.backend().buffer();
     let (w, h) = (buf.area.width as usize, buf.area.height as usize);
     let mut out = String::new();
@@ -79,11 +71,10 @@ fn dump_app_frame(
         out.push('\n');
     }
     // Blank-line census: rows whose visible cells are all blank.
-    let blank_rows = out
-        .lines()
-        .filter(|l| l.trim().is_empty())
-        .count();
-    out.push_str(&format!("-- frame {name}: {w}x{h}, blank rows: {blank_rows}\n"));
+    let blank_rows = out.lines().filter(|l| l.trim().is_empty()).count();
+    out.push_str(&format!(
+        "-- frame {name}: {w}x{h}, blank rows: {blank_rows}\n"
+    ));
     write_text(dir, &format!("{name}.txt"), &out);
 }
 
@@ -314,8 +305,7 @@ fn stream_prefixes() -> Vec<&'static str> {
         let cut = STREAM_TEXT
             .char_indices()
             .map(|(i, _)| i)
-            .filter(|&i| i <= c)
-            .last()
+            .rfind(|&i| i <= c)
             .unwrap_or(c);
         out.push(&STREAM_TEXT[prev..cut]);
         prev = cut;
@@ -337,7 +327,7 @@ async fn app_with_messages(messages: Vec<Message>) -> (TempDir, TuiApp) {
         }),
         thinking: None,
     }]));
-    let session = AgentSession::create(
+    let mut session = AgentSession::create(
         LoopConfig {
             max_turns: 4,
             workspace: dir.path().to_path_buf(),
@@ -378,25 +368,37 @@ async fn streaming_then_done_layout_transition() {
     dump_app_frame(&mut terminal, &mut app, &dir, "F0-idle-home");
 
     // Submit a prompt (queues the pending turn; the event loop would drain it).
-    app.dispatch_line("Walk me through the renderer spacing.").await.unwrap();
+    app.dispatch_line("Walk me through the renderer spacing.")
+        .await
+        .unwrap();
     dump_app_frame(&mut terminal, &mut app, &dir, "F1-submitted");
 
     // Simulate live streaming: prefixes of the final answer, exactly as the
     // real draw path paints them (StreamMarkdownCache + streaming caret).
     for (i, prefix) in stream_prefixes().into_iter().enumerate() {
         app.stream_preview_for_tests(prefix);
-        dump_app_frame(&mut terminal, &mut app, &dir, &format!("F{}-streaming-{}", i + 2, i));
+        dump_app_frame(
+            &mut terminal,
+            &mut app,
+            &dir,
+            &format!("F{}-streaming-{}", i + 2, i),
+        );
     }
 
     // Run the turn to completion: same text, usage, and the turn-summary
     // banner that lands when streaming ends.
-    app.drain_pending_prompt(None).await.expect("turn completes");
+    app.drain_pending_prompt(None)
+        .await
+        .expect("turn completes");
     dump_app_frame(&mut terminal, &mut app, &dir, "F6-done");
     dump_app_frame(&mut terminal, &mut app, &dir, "F7-done-settle");
 
     // Transcript-only comparison for the same content: static answer vs
     // static answer + TurnSummary banner (what the final frame adds).
-    let msgs = vec![user("Walk me through the renderer spacing."), assistant(STREAM_TEXT)];
+    let msgs = vec![
+        user("Walk me through the renderer spacing."),
+        assistant(STREAM_TEXT),
+    ];
     dump_transcript(
         &dir,
         "T-static-answer",
@@ -443,9 +445,7 @@ fn dump_raw_transcripts() {
     rt.block_on(async {
         let (_, mut app) = app_with_messages(vec![
             user("Build me the thing."),
-            assistant(
-                "## Plan\n\n- step one\n- step two\n\n```rust\nfn main() {}\n```\n\nDone.",
-            ),
+            assistant("## Plan\n\n- step one\n- step two\n\n```rust\nfn main() {}\n```\n\nDone."),
         ])
         .await;
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("backend");

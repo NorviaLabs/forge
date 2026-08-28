@@ -1330,7 +1330,12 @@ mod tests {
         );
         let text: Vec<String> = preview
             .iter()
-            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect();
         assert_eq!(text, vec!["".to_string(), "planning the fix".to_string()]);
     }
@@ -1345,7 +1350,12 @@ mod tests {
         );
         let text: Vec<String> = preview
             .iter()
-            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect();
         assert_eq!(text, vec!["planning the fix".to_string()]);
     }
@@ -1360,7 +1370,12 @@ mod tests {
         );
         let text: Vec<String> = preview
             .iter()
-            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect();
         assert_eq!(text, vec!["partial answer".to_string()]);
     }

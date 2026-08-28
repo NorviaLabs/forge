@@ -189,7 +189,9 @@ async fn streamed_thinking_is_separated_from_the_settled_tool_trail() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
     app.pending_turn.clear();
-    app.session.messages.push(Message::new(MessageRole::User, "fix the failing test"));
+    app.session
+        .messages
+        .push(Message::new(MessageRole::User, "fix the failing test"));
     app.session.messages.push(Message {
         outcome: forge_types::ExecutionOutcome::Success,
         role: MessageRole::Tool,
