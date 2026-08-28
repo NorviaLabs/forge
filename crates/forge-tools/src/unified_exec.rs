@@ -229,7 +229,11 @@ async fn start(
     // commands unconfined for as long as it lives.
     let shell = args.shell.as_deref().unwrap_or("sh");
     let mut policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root)
+        .with_command_access(&args.cmd)
         .with_egress(ctx.egress.as_deref());
+    if crate::credentials::needs_git_writes(&args.cmd) {
+        policy = policy.with_git_writable();
+    }
     if let Some(session_tmp) = &ctx.session_tmp {
         policy = policy.with_session_tmp(session_tmp.path());
     }
@@ -256,7 +260,27 @@ async fn start(
         command.env(name, value);
     }
     if confined {
+        for name in crate::credentials::HOST_CREDENTIAL_ENV {
+            command.env_remove(name);
+        }
         for (name, value) in crate::sandbox::egress_env(&policy) {
+            command.env(name, value);
+        }
+        let identity_dir = ctx
+            .session_tmp
+            .as_ref()
+            .map(|dir| dir.path().join("host-identity"))
+            .unwrap_or_else(|| ctx.workspace_root.join(".forge-host-identity"));
+        let _ = std::fs::create_dir_all(&identity_dir);
+        for (name, value) in crate::credentials::isolated_config_env(&identity_dir) {
+            command.env(name, value);
+        }
+        for (name, value) in
+            crate::credentials::host_identity_env(ctx.egress.as_deref(), &identity_dir)
+        {
+            command.env(name, value);
+        }
+        for (name, value) in policy.toolchain_env() {
             command.env(name, value);
         }
     }

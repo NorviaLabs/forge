@@ -317,10 +317,16 @@ Inside the sandbox a command can:
 
 - **read** inside your workspace, the per-session temp directory, and the
   OS-owned paths a process needs to start (system binaries, libraries,
-  frameworks, and standard configuration). Everything user-writable —
-  `~/.ssh` and `~/.aws` included — is outside that boundary, exactly as it is
-  for `read_file`/`write_file`;
+  frameworks, and standard configuration), plus the read-only runtime paths
+  selected from the command's resolved executable and configured toolchain
+  homes. Everything else user-writable — `~/.ssh`, `~/.aws`, and other home
+  configuration included — is outside that boundary, exactly as it is for
+  `read_file`/`write_file`;
 - **write** only inside your workspace and the per-session temp directory;
+- **use** installed command-line tools without exposing host caches or
+  credentials: Cargo's mutable state is redirected into the per-session temp
+  directory, and XDG-aware clients get session-local config, cache, and state
+  directories;
 - **reach the network** only through the egress proxy described below;
 - **hand a file to a host app** with macOS `open` (Launch Services). That app
   is not confined. The same Apple Event right also lets a command drive other
@@ -329,11 +335,12 @@ Inside the sandbox a command can:
 `.git` and `.forge` are read-only: the agent can inspect history but cannot
 rewrite it, and cannot edit the permission rules that govern it.
 
-What a command needs from outside that boundary — a toolchain in `$HOME`, an
-SSH key, an installed SDK — is refused by the OS and escalated to you: forge
-asks before replaying the command unconfined rather than letting a confined
-process reach it. Reads that used to be available unconditionally
-(`~/.gitconfig`, `~/.cargo`) now go through that same ask.
+What a command needs from outside that boundary — an SSH key, an installed SDK,
+or unrelated home data — is refused by the OS and escalated to you: forge asks
+before replaying the command unconfined rather than letting a confined process
+reach it. Selected command runtimes remain read-only; their network access
+still requires an explicit personal `host(...)` grant, and `.git` remains
+read-only unless the command is an explicitly approved git operation.
 
 There is one residual socket gap worth stating plainly. On Linux the sandbox
 still exposes the rest of the host filesystem read-only rather than hiding

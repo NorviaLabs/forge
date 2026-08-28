@@ -24,6 +24,9 @@
 //!   temp, mounted volumes — exactly as it is for `read_file`/`write_file`.
 //!   macOS expresses the deny as a refused read; Linux masks the tree so the
 //!   path does not exist.
+//!   A shell spawn additionally gets the selected host runtime paths it needs
+//!   for the command (for example, a Rustup installation or a user-installed
+//!   CLI), all read-only.
 //! * writes — workspace root and the granted session scratch directory only
 //! * `.git` / `.forge` — read-only even inside the workspace, because git is
 //!   the recovery mechanism and `.forge/permissions.toml` would otherwise let
@@ -31,6 +34,8 @@
 //! * network — denied. Egress exists only via the in-sandbox proxy, and only
 //!   when a host grant created it.
 
+use std::env;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Why a host cannot confine a process.
@@ -51,6 +56,189 @@ pub fn temp_env(policy: &SandboxPolicy) -> Vec<(&'static str, &Path)> {
         Some(path) => vec![("TMPDIR", path), ("TMP", path), ("TEMP", path)],
         None => Vec::new(),
     }
+}
+
+/// The small, read-only part of a user's toolchain that a shell command may
+/// need. The rest of the home directory remains outside the sandbox.
+#[derive(Debug, Default)]
+struct HostRuntimeAccess {
+    read_paths: Vec<PathBuf>,
+    executable_paths: Vec<PathBuf>,
+    rustup_home: Option<PathBuf>,
+}
+
+fn configured_home(name: &str, default: Option<PathBuf>) -> Option<PathBuf> {
+    env::var_os(name)
+        .map(PathBuf::from)
+        .or(default)
+        .filter(|path| path.is_absolute())
+}
+
+fn is_unscoped_runtime_root(path: &Path) -> bool {
+    ["/", "/home", "/root", "/Users"]
+        .iter()
+        .any(|root| path == Path::new(root))
+}
+
+fn add_existing_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !path.is_absolute()
+        || is_unscoped_runtime_root(&path)
+        || !path.exists()
+        || paths.iter().any(|existing| existing == &path)
+    {
+        return;
+    }
+    paths.push(path.clone());
+    if let Ok(canonical) = path.canonicalize() {
+        if !paths.iter().any(|existing| existing == &canonical) {
+            paths.push(canonical);
+        }
+    }
+}
+
+fn add_existing_executable(access: &mut HostRuntimeAccess, path: PathBuf) {
+    add_existing_path(&mut access.executable_paths, path);
+}
+
+fn path_is_under(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+fn add_rustup_shims(access: &mut HostRuntimeAccess, cargo_bin: &Path) {
+    let rustup = cargo_bin.join("rustup");
+    let Ok(rustup_target) = rustup.canonicalize() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(cargo_bin) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink()
+            && path
+                .canonicalize()
+                .is_ok_and(|target| target == rustup_target)
+        {
+            add_existing_executable(access, path);
+        }
+    }
+}
+
+fn find_executable(name: &str, workspace_root: Option<&Path>) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    find_executable_in_path(name, path.as_os_str(), workspace_root)
+}
+
+fn find_executable_in_path(
+    name: &str,
+    path: &OsStr,
+    workspace_root: Option<&Path>,
+) -> Option<PathBuf> {
+    let (candidate, relative) = env::split_paths(path)
+        .filter_map(|directory| {
+            let relative = directory.is_relative();
+            if directory.is_absolute() {
+                Some((directory.join(name), relative))
+            } else {
+                workspace_root.map(|root| (root.join(directory).join(name), relative))
+            }
+        })
+        .find(|(candidate, _)| candidate.is_file())?;
+    let canonical = candidate.canonicalize().ok()?;
+    if relative && !workspace_root.is_some_and(|root| path_is_under(&canonical, root)) {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn command_segments(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split([';', '\n', '|', '&', '(', ')'])
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+}
+
+fn leading_executable(command: &str) -> Option<&str> {
+    command
+        .split_whitespace()
+        .find(|token| !token.contains('='))
+}
+
+fn discover_command_executables(command: &str, workspace_root: &Path) -> Vec<PathBuf> {
+    let workspace_root = workspace_root.canonicalize().ok();
+    let mut paths = Vec::new();
+    for segment in command_segments(command) {
+        let Some(token) = leading_executable(segment) else {
+            continue;
+        };
+        let candidate = Path::new(token);
+        let path = if candidate.is_absolute() {
+            candidate.is_file().then(|| candidate.to_path_buf())
+        } else if candidate.components().count() > 1 {
+            // A path containing a separator is resolved by the shell relative
+            // to the working directory, not through PATH. A path that leaves
+            // the workspace is intentionally not added here: commands may
+            // use relative paths for in-workspace scripts, but this helper
+            // must not turn `../outside/tool` into a host-runtime exception.
+            workspace_root.as_ref().and_then(|workspace_root| {
+                workspace_root
+                    .join(candidate)
+                    .canonicalize()
+                    .ok()
+                    .filter(|path| path_is_under(path, workspace_root))
+            })
+        } else {
+            find_executable(token, workspace_root.as_deref())
+        };
+        if let Some(path) = path {
+            add_existing_path(&mut paths, path);
+        }
+    }
+    paths
+}
+
+fn discover_host_runtime_access(command: &str, workspace_root: &Path) -> HostRuntimeAccess {
+    let mut access = HostRuntimeAccess::default();
+    let home = env::var_os("HOME").map(PathBuf::from);
+    let cargo_home = configured_home("CARGO_HOME", home.clone().map(|path| path.join(".cargo")));
+    let rustup_home = configured_home("RUSTUP_HOME", home.map(|path| path.join(".rustup")));
+
+    // Resolve only the executable at the start of each shell command segment.
+    // This keeps a user-writable PATH directory from becoming a general
+    // read/exec allowlist while supporting any installed CLI, not just the
+    // commands used by the regression tests.
+    let command_paths = discover_command_executables(command, workspace_root);
+    for path in &command_paths {
+        add_existing_executable(&mut access, path.clone());
+    }
+
+    // Rustup installs a family of symlink shims in Cargo's bin directory. A
+    // cargo build can invoke rustc/rustdoc through those shims even when the
+    // original command named only cargo. Select the shims by their common
+    // Rustup target rather than by a fixed command-name list; unrelated files
+    // in the same directory remain outside the profile.
+    let cargo_bin = cargo_home.as_deref().map(|home| home.join("bin"));
+    let uses_rustup = command_paths.iter().any(|path| {
+        cargo_bin
+            .as_deref()
+            .is_some_and(|bin| path_is_under(path, bin))
+            || rustup_home
+                .as_deref()
+                .is_some_and(|home| path_is_under(path, home))
+    });
+    if uses_rustup {
+        if let Some(rustup_home) = rustup_home.filter(|home| home.exists()) {
+            add_existing_path(&mut access.read_paths, rustup_home.clone());
+            if let Some(cargo_bin) = cargo_bin.as_deref() {
+                add_rustup_shims(&mut access, cargo_bin);
+            }
+            access.rustup_home = Some(rustup_home);
+        }
+    }
+    access
 }
 
 impl Unavailable {
@@ -248,6 +436,17 @@ pub struct SandboxPolicy {
     /// git frontend opt in — a host grant alone must not lift the carve-out
     /// for every command in the session.
     git_writable: bool,
+    /// Read-only user runtime directories needed by the selected command.
+    /// This is opt-in on the policy so low-level callers that build a stricter
+    /// profile keep the old boundary; shell spawns opt in through
+    /// [`Self::with_command_access`].
+    toolchain_read_paths: Vec<PathBuf>,
+    /// Individual executables (not whole PATH directories) that are selected
+    /// by a shell command and live outside the system runtime paths.
+    toolchain_executable_paths: Vec<PathBuf>,
+    /// The host Rustup state needed by a selected Rust toolchain. It is never
+    /// made writable by the sandbox.
+    rustup_home: Option<PathBuf>,
 }
 
 impl SandboxPolicy {
@@ -259,7 +458,46 @@ impl SandboxPolicy {
             egress_proxy_port: None,
             egress_socket: None,
             git_writable: false,
+            toolchain_read_paths: Vec::new(),
+            toolchain_executable_paths: Vec::new(),
+            rustup_home: None,
         }
+    }
+
+    /// Add the read-only runtime paths selected from the host environment and
+    /// the exact executables named by this shell command. Resolving the
+    /// command from the host `PATH` avoids a fixed binary list: any installed
+    /// tool can work without exposing unrelated home directories.
+    pub fn with_command_access(self, command: &str) -> Self {
+        let access = discover_host_runtime_access(command, &self.workspace_root);
+        Self {
+            toolchain_read_paths: access.read_paths,
+            toolchain_executable_paths: access.executable_paths,
+            rustup_home: access.rustup_home,
+            ..self
+        }
+    }
+
+    /// Set child environment for mutable tool state without exposing the
+    /// host's Cargo home. No environment is changed for an unconfined retry,
+    /// which should use the user's normal configuration.
+    pub fn toolchain_env(&self) -> Vec<(String, String)> {
+        let Some(session_tmp) = &self.session_tmp else {
+            return Vec::new();
+        };
+        let cargo_home = session_tmp.join("cargo-home");
+        let _ = std::fs::create_dir_all(&cargo_home);
+        let mut env = vec![(
+            "CARGO_HOME".to_string(),
+            cargo_home.to_string_lossy().into_owned(),
+        )];
+        if let Some(rustup_home) = &self.rustup_home {
+            env.push((
+                "RUSTUP_HOME".to_string(),
+                rustup_home.to_string_lossy().into_owned(),
+            ));
+        }
+        env
     }
 
     /// Permit writes under `.git` for this spawn only. `.git/hooks` stays
@@ -455,7 +693,7 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     //
     // The system paths below are deliberately a list of *system-owned* trees,
     // not a sampling of convenient ones: binaries and dylibs (/bin, /sbin,
-    // /usr, Launch Services' frameworks), standard configuration and
+    // /usr, Launch Services' frameworks, the macOS SDK), standard configuration and
     // user-lookup databases (/private/etc, /Library/Preferences, the
     // DarwinDirectory record store and timezone data), the root cert store
     // needed to speak TLS through an egress grant (/Library/Keychains — user
@@ -466,14 +704,23 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     // Everything user-writable is outside: $HOME (/Users/...), per-user temp
     // (/private/var/folders/... — only the granted scratch dir below reaches
     // it), mounted volumes, /Network, and /opt except the root-owned
-    // Apple-Silicon toolchain prefix. A path omitted here is denied by the
-    // default; the failure mode is a broken command, not a silent hole.
+    // Apple-Silicon toolchain prefix. The selected user runtime paths and
+    // resolved executables are added below; a path omitted here is denied by
+    // the default.
     profile.push_str(&format!(
         "(allow file-read* file-test-existence\n  (subpath \"{root}\")"
     ));
     if let Some(tmp) = &policy.session_tmp {
         let tmp = sbpl_literal(&tmp.canonicalize().ok()?)?;
         profile.push_str(&format!("\n  (subpath \"{tmp}\")"));
+    }
+    for path in &policy.toolchain_read_paths {
+        let path = sbpl_literal(&path.canonicalize().ok()?)?;
+        profile.push_str(&format!("\n  (subpath \"{path}\")"));
+    }
+    for path in &policy.toolchain_executable_paths {
+        let path = sbpl_literal(&path.canonicalize().ok()?)?;
+        profile.push_str(&format!("\n  (literal \"{path}\")"));
     }
     profile.push_str(
         "\n  (literal \"/\")\n\
@@ -482,6 +729,7 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
          \n  (subpath \"/bin\")\n\
          \n  (subpath \"/sbin\")\n\
          \n  (subpath \"/Library/Apple\")\n\
+         \n  (subpath \"/Library/Developer\")\n\
          \n  (subpath \"/Library/Keychains\")\n\
          \n  (subpath \"/Library/Preferences\")\n\
          \n  (subpath \"/private/etc\")\n\
@@ -502,6 +750,67 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
          (literal \"/dev/stdin\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n\
          (allow file-read-metadata (literal \"/dev\"))\n",
     );
+
+    // Some runtimes canonicalize their output and cache paths before opening
+    // them. Allow metadata on the parent chain needed to walk to each scoped
+    // root, without allowing file contents in any additional directory.
+    let mut metadata_paths = Vec::new();
+    for path in std::iter::once(canonical_root.as_path())
+        .chain(policy.session_tmp.iter().map(|path| path.as_path()))
+        .chain(
+            policy
+                .toolchain_read_paths
+                .iter()
+                .map(|path| path.as_path()),
+        )
+        .chain(
+            policy
+                .toolchain_executable_paths
+                .iter()
+                .map(|path| path.as_path()),
+        )
+    {
+        let mut parent = path.parent();
+        while let Some(path) = parent {
+            if metadata_paths.iter().any(|existing| existing == path) {
+                break;
+            }
+            metadata_paths.push(path.to_path_buf());
+            parent = path.parent();
+        }
+    }
+    profile.push_str("(allow file-read-metadata");
+    for path in metadata_paths {
+        let path = sbpl_literal(&path)?;
+        profile.push_str(&format!("\n  (subpath \"{path}\")"));
+    }
+    profile.push_str(")\n");
+
+    // Executables in a read allowlist still need to be mapped with execute
+    // permission. The parent metadata rule lets the shell traverse a
+    // user-writable PATH directory without making sibling binaries readable.
+    if !policy.toolchain_read_paths.is_empty() || !policy.toolchain_executable_paths.is_empty() {
+        profile.push_str("(allow file-map-executable");
+        for path in &policy.toolchain_read_paths {
+            let path = sbpl_literal(&path.canonicalize().ok()?)?;
+            profile.push_str(&format!("\n  (subpath \"{path}\")"));
+        }
+        for path in &policy.toolchain_executable_paths {
+            let path = sbpl_literal(&path.canonicalize().ok()?)?;
+            profile.push_str(&format!("\n  (literal \"{path}\")"));
+        }
+        profile.push_str(")\n");
+    }
+
+    if !policy.toolchain_executable_paths.is_empty() {
+        profile.push_str("(allow file-read-metadata");
+        for path in &policy.toolchain_executable_paths {
+            let parent = path.parent()?.canonicalize().ok()?;
+            let parent = sbpl_literal(&parent)?;
+            profile.push_str(&format!("\n  (subpath \"{parent}\")"));
+        }
+        profile.push_str(")\n");
+    }
 
     // Network. `deny network*` first so anything not named below is denied,
     // then — only when an egress proxy exists — one hole to its loopback port.
@@ -534,6 +843,14 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     }
 
     Some(profile)
+}
+
+#[cfg(test)]
+fn primary_file_read_rule(profile: &str) -> &str {
+    let (_, rule) = profile
+        .split_once("(allow file-read* file-test-existence")
+        .expect("profile must contain a primary file-read rule");
+    rule.split_once("))").map_or(rule, |(rule, _)| rule)
 }
 
 /// Rewrite a shell invocation so it runs confined.
@@ -574,8 +891,10 @@ pub fn wrap_shell_command(
 ///    user trees are what stop a secret leaving.
 /// 2. `--tmpfs /run /tmp /home /root` — user and socket trees vanish, which
 ///    is the read boundary on Linux: `~/.ssh` and `~/.aws` do not exist here.
-/// 3. `--bind <workspace>` — carve the workspace back out as writable.
-/// 4. `--ro-bind-try <workspace>/.git`, `.forge` — carve those back to
+/// 3. `--ro-bind-try <runtime path>` — re-expose only the selected user
+///    runtime and executable paths needed by the command.
+/// 4. `--bind <workspace>` — carve the workspace back out as writable.
+/// 5. `--ro-bind-try <workspace>/.git`, `.forge` — carve those back to
 ///    read-only. Emitted last or they would be writable. `-try` because a
 ///    workspace need not have either directory yet, and bwrap fails on a
 ///    missing bind source.
@@ -597,9 +916,10 @@ fn bubblewrap_invocation(
     //
     //   1. read-only root      everything visible, nothing writable
     //   2. mask user + socket dirs  hide /run, /tmp, /home, /root
-    //   3. bind the workspace  the one writable place, re-exposed over the mask
-    //   4. bind the egress socket, if granted
-    //   5. carve .git/.forge back to read-only
+    //   3. re-expose the selected toolchain paths
+    //   4. bind the workspace  the one writable place, re-exposed over the mask
+    //   5. bind the egress socket, if granted
+    //   6. carve .git/.forge back to read-only
     //
     // Steps 2 and 3 are in this order because a workspace can itself live
     // under one of the masked trees — a temp dir, or a checkout someone made
@@ -649,6 +969,41 @@ fn bubblewrap_invocation(
         "--tmpfs".into(),
         "/root".into(),
     ]);
+
+    // Re-expose only the runtime paths selected from the host environment.
+    // A `--dir` is needed for each missing parent below a masked home tree;
+    // it does not grant read access by itself. Binding the original path (not
+    // its canonical spelling) keeps PATH entries that are symlinks usable.
+    for path in policy
+        .toolchain_read_paths
+        .iter()
+        .chain(policy.toolchain_executable_paths.iter())
+    {
+        let path = path.to_str()?.to_string();
+        let path_ref = Path::new(&path);
+        if let Some(mask) = masked_home_root(path_ref) {
+            let destination = if path_ref.is_dir() {
+                path_ref
+            } else {
+                path_ref.parent()?
+            };
+            let relative = destination.strip_prefix(mask).ok()?;
+            let mut parent = mask.to_path_buf();
+            for component in relative.components() {
+                if let std::path::Component::Normal(component) = component {
+                    parent.push(component);
+                    let parent = parent.to_str()?.to_string();
+                    if !args
+                        .windows(2)
+                        .any(|window| window[0] == "--dir" && window[1] == parent)
+                    {
+                        args.extend(["--dir".into(), parent]);
+                    }
+                }
+            }
+        }
+        args.extend(["--ro-bind-try".into(), path.clone(), path]);
+    }
 
     // The one writable place, re-exposed over the mask above.
     args.extend(["--bind".into(), root.clone(), root.clone()]);
@@ -723,6 +1078,16 @@ fn bubblewrap_invocation(
     Some((bwrap.to_string(), args))
 }
 
+fn masked_home_root(path: &Path) -> Option<&'static Path> {
+    if path.starts_with("/home") {
+        Some(Path::new("/home"))
+    } else if path.starts_with("/root") {
+        Some(Path::new("/root"))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +1119,144 @@ mod tests {
         let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
         assert!(profile.starts_with("(version 1)\n(deny default)"));
         assert!(profile.contains("(deny network*)"));
+    }
+
+    #[test]
+    fn toolchain_allowlist_exposes_cargo_rustup_and_only_the_resolved_gh() {
+        let ws = workspace();
+        let toolchain = workspace();
+        let cargo_bin = toolchain.path().join(".cargo/bin");
+        let rustup_home = toolchain.path().join(".rustup");
+        let gh = toolchain.path().join(".local/bin/gh");
+        let unrelated = toolchain.path().join(".local/bin/unrelated");
+        std::fs::create_dir_all(&cargo_bin).unwrap();
+        std::fs::create_dir_all(&rustup_home).unwrap();
+        std::fs::create_dir_all(gh.parent().unwrap()).unwrap();
+        std::fs::write(cargo_bin.join("cargo"), b"").unwrap();
+        std::fs::write(&gh, b"").unwrap();
+        std::fs::write(&unrelated, b"").unwrap();
+
+        let mut policy = SandboxPolicy::for_workspace(ws.path());
+        policy.toolchain_read_paths = vec![cargo_bin.clone(), rustup_home.clone()];
+        policy.toolchain_executable_paths = vec![gh.clone()];
+        let profile = seatbelt_profile(&policy).unwrap();
+        let read_rule = primary_file_read_rule(&profile);
+
+        for path in [&cargo_bin, &rustup_home] {
+            let path = path.canonicalize().unwrap();
+            assert!(
+                profile.contains(&format!("(subpath \"{}\")", path.display())),
+                "toolchain path must be readable: {}",
+                path.display()
+            );
+        }
+        let gh = gh.canonicalize().unwrap();
+        assert!(
+            profile.contains(&format!("(literal \"{}\")", gh.display())),
+            "gh must be allowed as an exact executable"
+        );
+        assert!(
+            !profile.contains(&format!("(literal \"{}\")", unrelated.display())),
+            "an unrelated binary must not be added to the executable allowlist"
+        );
+        assert!(
+            !read_rule.contains(&format!("(subpath \"{}\")", toolchain.path().display())),
+            "the user's home/toolchain parent must not be allowed wholesale"
+        );
+    }
+
+    #[test]
+    fn command_access_resolves_an_arbitrary_named_executable() {
+        let ws = workspace();
+        let commands = workspace();
+        let selected = commands.path().join("custom-cli");
+        let unrelated = commands.path().join("unrelated-cli");
+        std::fs::write(&selected, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&unrelated, b"#!/bin/sh\n").unwrap();
+
+        let policy = SandboxPolicy::for_workspace(ws.path())
+            .with_command_access(&format!("{} --version", selected.display()));
+        let profile = seatbelt_profile(&policy).unwrap();
+        let selected = selected.canonicalize().unwrap();
+        assert!(
+            profile.contains(&format!("(literal \"{}\")", selected.display())),
+            "the executable named by the command must be reachable"
+        );
+        assert!(
+            !profile.contains(&format!("(literal \"{}\")", unrelated.display())),
+            "an unrelated executable in the same directory must stay outside"
+        );
+    }
+
+    #[test]
+    fn relative_command_paths_cannot_escape_the_workspace_allowlist() {
+        let ws = workspace();
+        let outside = workspace();
+        let selected = outside.path().join("outside-cli");
+        std::fs::write(&selected, b"#!/bin/sh\n").unwrap();
+
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_command_access(&format!(
+            "../{}/outside-cli",
+            outside.path().file_name().unwrap().to_string_lossy()
+        ));
+        let profile = seatbelt_profile(&policy).unwrap();
+        assert!(
+            !profile.contains(&format!("(literal \"{}\")", selected.display())),
+            "a relative path outside the workspace must not become a runtime exception"
+        );
+    }
+
+    #[test]
+    fn relative_path_entries_cannot_escape_the_workspace_allowlist() {
+        let ws = workspace();
+        let outside = workspace();
+        let selected = outside.path().join("outside-cli");
+        std::fs::write(&selected, b"#!/bin/sh\n").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let path = std::ffi::OsString::from(format!(
+            "../{}",
+            outside.path().file_name().unwrap().to_string_lossy()
+        ));
+
+        assert!(
+            find_executable_in_path("outside-cli", path.as_os_str(), Some(&root)).is_none(),
+            "a relative PATH entry outside the workspace must not become a runtime exception"
+        );
+    }
+
+    #[test]
+    fn runtime_access_never_reopens_a_filesystem_root() {
+        let mut paths = Vec::new();
+        add_existing_path(&mut paths, PathBuf::from("/"));
+        assert!(
+            paths.is_empty(),
+            "runtime discovery must not allow `/` wholesale"
+        );
+    }
+
+    #[test]
+    fn cargo_home_is_session_local_and_rustup_home_is_read_only_host_state() {
+        let ws = workspace();
+        let scratch = workspace();
+        let rustup_home = workspace();
+        let mut policy = SandboxPolicy::for_workspace(ws.path()).with_session_tmp(scratch.path());
+        policy.rustup_home = Some(rustup_home.path().to_path_buf());
+        let cargo_home = scratch.path().join("cargo-home");
+
+        let env = policy.toolchain_env();
+        assert_eq!(
+            env.iter()
+                .find(|(name, _)| name == "CARGO_HOME")
+                .map(|(_, value)| value.as_str()),
+            cargo_home.to_str()
+        );
+        assert_eq!(
+            env.iter()
+                .find(|(name, _)| name == "RUSTUP_HOME")
+                .map(|(_, value)| value.as_str()),
+            rustup_home.path().to_str()
+        );
+        assert!(cargo_home.is_dir());
     }
 
     /// `open <path>` talks to Launch Services, not the filesystem. Without
@@ -828,8 +1331,8 @@ mod tests {
     fn no_temp_directory_is_writable_unless_granted() {
         let ws = workspace();
         let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
-        assert!(!profile.contains("/private/var/folders\""));
-        assert!(!profile.contains("(subpath \"/private/tmp\")"));
+        assert!(!profile.contains("(allow file-write* (subpath \"/private/var/folders\")"));
+        assert!(!profile.contains("(allow file-write* (subpath \"/private/tmp\")"));
 
         let scratch = workspace();
         let granted = seatbelt_profile(
@@ -1016,6 +1519,40 @@ mod bubblewrap_tests {
         }
     }
 
+    #[test]
+    fn masked_home_reexposes_only_selected_toolchain_paths() {
+        let ws = workspace();
+        let mut policy = SandboxPolicy::for_workspace(ws.path());
+        policy.toolchain_read_paths = vec![
+            PathBuf::from("/home/forge-user/.cargo/bin"),
+            PathBuf::from("/home/forge-user/.rustup"),
+        ];
+        policy.toolchain_executable_paths = vec![PathBuf::from("/home/forge-user/.local/bin/gh")];
+        let Some((_, args)) = bubblewrap_invocation("sh", "cargo build", &policy) else {
+            return;
+        };
+
+        for path in [
+            "/home/forge-user/.cargo/bin",
+            "/home/forge-user/.rustup",
+            "/home/forge-user/.local/bin/gh",
+        ] {
+            assert!(
+                args.windows(3)
+                    .any(|window| window[0] == "--ro-bind-try" && window[1] == path),
+                "selected toolchain path must be rebound: {path}"
+            );
+        }
+        assert!(
+            args.iter().any(|arg| arg == "/home/forge-user/.cargo"),
+            "masked home parents must be recreated before the bind"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "/home/forge-user/.config"),
+            "unrelated home configuration must remain masked"
+        );
+    }
+
     /// The read boundary, pinned at the profile level (the kernel-level
     /// counterpart lives in `tests/sandbox_enforcement.rs`). The old blanket
     /// `(allow file-read*)` granted every path on the host — the exact hole
@@ -1025,6 +1562,7 @@ mod bubblewrap_tests {
     fn reads_are_confined_to_workspace_session_temp_and_system_paths() {
         let ws = workspace();
         let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
+        let read_rule = primary_file_read_rule(&profile);
 
         assert!(
             !profile.contains("(allow file-read*)\n"),
@@ -1048,7 +1586,7 @@ mod bubblewrap_tests {
             "\"/root\"",
         ] {
             assert!(
-                !profile.contains(&format!("(subpath {tree})")),
+                !read_rule.contains(&format!("(subpath {tree})")),
                 "the read allowlist must not include {tree}"
             );
         }

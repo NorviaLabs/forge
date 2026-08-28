@@ -40,8 +40,11 @@ shell.**
 **The security boundary is the OS sandbox, not the agent's judgement and not
 the approval prompt.** Every shell command is confined at spawn — Seatbelt on
 macOS, bubblewrap on Linux and WSL2 — to filesystem access inside your
-workspace, the per-session temp directory, and the OS paths a process needs
-to start, with network access only through a host-filtering egress proxy.
+workspace, the per-session temp directory, a read-only Rust toolchain runtime,
+and only the command's resolved user-installed executables, with network
+access only through a host-filtering egress proxy. Cargo state and XDG client
+configuration are session-local; other home data remains outside the
+boundary.
 Forge does not attempt to classify a command as safe or dangerous before
 running it; that judgement is the thing we are trying not to depend on.
 
