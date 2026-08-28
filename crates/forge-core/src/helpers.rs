@@ -43,8 +43,11 @@ pub(crate) fn compress_recognized_command_output(
 pub(crate) fn assemble_system_prompt(
     agents_md: &str,
     skills: &[forge_context::SkillManifest],
+    scratch_dir: &Path,
 ) -> String {
-    let mut prompt = SYSTEM_PROMPT.trim_end().to_owned();
+    let mut prompt = SYSTEM_PROMPT
+        .trim_end()
+        .replace("{{SCRATCH_DIR}}", &scratch_dir.display().to_string());
 
     if !agents_md.trim().is_empty() {
         prompt.push_str("\n\n# Project Instructions\n\nAGENTS.md:\n");

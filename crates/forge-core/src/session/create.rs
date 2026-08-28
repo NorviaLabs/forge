@@ -43,10 +43,15 @@ impl AgentSession {
         let state = journal.replay(session_id).await?;
         let mut context = ContextEngine::new(self.context.workspace.clone(), session_id);
         context.config = self.context.config.clone();
+        let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut messages = state.messages;
         restore_system_message(
             &mut messages,
-            assemble_system_prompt(&context.load_agents_md(), context.load_skills().as_slice()),
+            assemble_system_prompt(
+                &context.load_agents_md(),
+                context.load_skills().as_slice(),
+                session_tmp.path(),
+            ),
         );
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume");
@@ -80,7 +85,6 @@ impl AgentSession {
             detail: format!("seq={}", state.last_seq),
         }];
         self.journal = SessionPersistence::new(journal);
-        let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         self.tool_ctx = ToolContext::new(active_root).with_session_tmp(session_tmp);
         self.tool_ctx.egress = self.egress.as_ref().map(|runtime| runtime.grant());
         self.context = context;
@@ -114,7 +118,8 @@ impl AgentSession {
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let agents = context.load_agents_md();
         let skills = context.load_skills();
-        let system = assemble_system_prompt(&agents, skills.as_slice());
+        let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
+        let system = assemble_system_prompt(&agents, skills.as_slice(), session_tmp.path());
 
         // Start the session's egress proxy. `None` leaves the network off,
         // which is the safe direction: a command that needs it then fails with
@@ -124,7 +129,6 @@ impl AgentSession {
         let egress =
             crate::permission::start_egress(session_id, forge_tools::egress::EgressPolicy::new())
                 .await;
-        let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut tool_ctx = ToolContext::new(active_root).with_session_tmp(session_tmp);
         tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
 
@@ -185,10 +189,15 @@ impl AgentSession {
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         let state = journal.replay(session_id).await?;
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
+        let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut messages = state.messages.clone();
         restore_system_message(
             &mut messages,
-            assemble_system_prompt(&context.load_agents_md(), context.load_skills().as_slice()),
+            assemble_system_prompt(
+                &context.load_agents_md(),
+                context.load_skills().as_slice(),
+                session_tmp.path(),
+            ),
         );
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume");
@@ -208,7 +217,6 @@ impl AgentSession {
         let egress =
             crate::permission::start_egress(session_id, forge_tools::egress::EgressPolicy::new())
                 .await;
-        let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut tool_ctx = ToolContext::new(active_root).with_session_tmp(session_tmp);
         tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
 
