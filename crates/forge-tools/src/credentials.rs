@@ -11,10 +11,11 @@
 //! A host grant therefore **projects** HTTPS identity for that host into the
 //! spawn: credentials filled on the host via `git credential`, a spawn-local
 //! gitconfig that rewrites SSH remotes to HTTPS, a credential helper that
-//! answers for those hosts, and `{first-label}_TOKEN` plus XDG dirs so
-//! HTTPS CLIs that do not speak git-credential still authenticate without
-//! falling through to the host secret store. The same grant is what
-//! authorized talking to the host in the first place.
+//! answers for those hosts, and `{first-label}_TOKEN` so HTTPS CLIs that do
+//! not speak git-credential still authenticate without falling through to the
+//! host secret store. Callers isolate XDG dirs for every confined spawn, not
+//! just commands using a credential. The same grant is what authorized
+//! talking to the host in the first place.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -25,6 +26,20 @@ use std::sync::Mutex;
 use crate::sandbox::EgressGrant;
 
 static CREDENTIAL_CACHE: Mutex<Option<HashMap<String, Option<HostCredential>>>> = Mutex::new(None);
+
+/// Well-known credential variables used by external host clients. They are
+/// stripped separately from Forge provider credentials so the public provider
+/// list remains a contract with `forge-connect`; a confined command only gets
+/// a host credential back through `host_identity_env` after a matching grant.
+pub(crate) const HOST_CREDENTIAL_ENV: &[&str] = &[
+    "GH_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "CARGO_REGISTRY_TOKEN",
+    "CARGO_REGISTRIES_CRATES_IO_TOKEN",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostCredential {
@@ -44,6 +59,22 @@ pub fn host_identity_env(grant: Option<&EgressGrant>, config_dir: &Path) -> Vec<
         return Vec::new();
     }
     project_identity(&credentials, config_dir)
+}
+
+/// Environment that keeps XDG-aware command-line clients out of the host's
+/// mutable config, cache, and state trees. The caller applies this to every
+/// confined spawn, rather than maintaining a list of supported CLIs.
+pub fn isolated_config_env(config_dir: &Path) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    for (var, dir) in [
+        ("XDG_CONFIG_HOME", config_dir.join("xdg-config")),
+        ("XDG_CACHE_HOME", config_dir.join("xdg-cache")),
+        ("XDG_STATE_HOME", config_dir.join("xdg-state")),
+    ] {
+        let _ = std::fs::create_dir_all(&dir);
+        env.push((var.into(), dir.to_string_lossy().into_owned()));
+    }
+    env
 }
 
 /// `.git` is read-only by default so a confined spawn cannot rewrite
@@ -201,17 +232,6 @@ fn project_identity(credentials: &[HostCredential], config_dir: &Path) -> Vec<(S
             env.push((name, cred.password.clone()));
         }
     }
-    // Isolate XDG state inside the spawn-local dir so HTTPS CLIs do not
-    // fall through to the host config / secret store (blocked in-sandbox,
-    // and a mixed "env token ok, keychain failed" status).
-    for (var, dir) in [
-        ("XDG_CONFIG_HOME", config_dir.join("xdg-config")),
-        ("XDG_CACHE_HOME", config_dir.join("xdg-cache")),
-        ("XDG_STATE_HOME", config_dir.join("xdg-state")),
-    ] {
-        let _ = std::fs::create_dir_all(&dir);
-        env.push((var.into(), dir.to_string_lossy().into_owned()));
-    }
     env
 }
 
@@ -337,6 +357,47 @@ mod tests {
         assert!(!needs_git_writes("curl -I https://example.com"));
     }
 
+    #[test]
+    fn isolated_config_is_not_tied_to_a_product_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = isolated_config_env(dir.path());
+        for name in ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"] {
+            let value = env
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, value)| value)
+                .expect("all XDG trees must be isolated");
+            assert!(value.starts_with(dir.path().to_str().unwrap()));
+        }
+        assert!(dir.path().join("xdg-config").is_dir());
+    }
+
+    #[test]
+    fn github_credentials_use_the_generic_host_projection() {
+        assert_eq!(token_env_name("github.com"), Some("GITHUB_TOKEN".into()));
+        assert_eq!(token_env_name("crates.io"), Some("CRATES_TOKEN".into()));
+        let dir = tempfile::tempdir().unwrap();
+        let env = project_identity(
+            &[HostCredential {
+                host: "github.com".into(),
+                username: "oauth2".into(),
+                password: "token".into(),
+            }],
+            dir.path(),
+        );
+        assert!(env
+            .iter()
+            .any(|(name, value)| name == "GITHUB_TOKEN" && value == "token"));
+        assert!(!env.iter().any(|(name, _)| name == "GH_TOKEN"));
+    }
+
+    #[test]
+    fn host_client_credentials_are_separate_from_provider_credentials() {
+        assert!(HOST_CREDENTIAL_ENV.contains(&"GH_TOKEN"));
+        assert!(HOST_CREDENTIAL_ENV.contains(&"CARGO_REGISTRY_TOKEN"));
+        assert!(!HOST_CREDENTIAL_ENV.contains(&"OPENAI_API_KEY"));
+    }
+
     /// A git write can sit in any segment of a compound command. Checking
     /// only the leading executable denied all of these.
     #[test]
@@ -398,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_env_uses_host_label_tokens_and_xdg_not_a_product_table() {
+    fn projected_env_uses_host_label_tokens_not_a_product_table() {
         let dir = tempfile::tempdir().unwrap();
         let env = project_identity(
             &[HostCredential {
@@ -411,9 +472,6 @@ mod tests {
         assert!(env
             .iter()
             .any(|(k, v)| k == "EXAMPLE_TOKEN" && v == "s3cret"));
-        assert!(env.iter().any(|(k, _)| k == "XDG_CONFIG_HOME"));
-        assert!(env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"));
-        assert!(env.iter().any(|(k, _)| k == "XDG_STATE_HOME"));
         assert_eq!(env.iter().filter(|(k, _)| k.ends_with("_TOKEN")).count(), 1);
     }
 

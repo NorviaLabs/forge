@@ -269,7 +269,7 @@ pub struct BashTool;
 /// Mirrors the `api_key_env` names on `forge_connect`'s built-in profiles plus
 /// the tokens exported for OAuth providers. `forge-tools` does not depend on
 /// `forge-connect`, so `credential_env_names_cover_every_connect_profile` in
-/// `forge-cli` — which sees both crates — asserts this list stays complete.
+/// `forge-session` — which sees both crates — asserts this list stays complete.
 pub const PROVIDER_CREDENTIAL_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -324,8 +324,9 @@ async fn run_shell_command_inner(
     // Confinement is applied here, at spawn, because that is the only moment
     // it can be: a process that starts unconfined stays unconfined for its
     // whole life. The supported CLI never starts when the host cannot confine.
-    let mut policy =
-        crate::sandbox::SandboxPolicy::for_workspace(workspace_root).with_egress(egress);
+    let mut policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root)
+        .with_command_access(command)
+        .with_egress(egress);
     if crate::credentials::needs_git_writes(command) {
         policy = policy.with_git_writable();
     }
@@ -377,6 +378,9 @@ async fn run_shell_command_inner(
     // the real network — HTTPS clients fail if we leave them talking to a
     // proxy that is either not listening or still deny-all.
     if confined_run {
+        for name in crate::credentials::HOST_CREDENTIAL_ENV {
+            shell.env_remove(name);
+        }
         for (name, value) in crate::sandbox::egress_env(&policy) {
             shell.env(name, value);
         }
@@ -384,7 +388,13 @@ async fn run_shell_command_inner(
             .map(|dir| dir.join("host-identity"))
             .unwrap_or_else(|| workspace_root.join(".forge-host-identity"));
         let _ = std::fs::create_dir_all(&identity_dir);
+        for (name, value) in crate::credentials::isolated_config_env(&identity_dir) {
+            shell.env(name, value);
+        }
         for (name, value) in crate::credentials::host_identity_env(egress, &identity_dir) {
+            shell.env(name, value);
+        }
+        for (name, value) in policy.toolchain_env() {
             shell.env(name, value);
         }
     }
