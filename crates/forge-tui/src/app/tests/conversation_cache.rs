@@ -178,3 +178,53 @@ async fn busy_phase_reuses_cached_transcript_lines() {
         "a busy-phase change must not rebuild historical transcript lines"
     );
 }
+
+/// Streamed reasoning is painted directly below the settled transcript, which
+/// is a separate line list the preview never sees — the boundary blank every
+/// other major block gets was missing at the seam, so thoughts hugged the row
+/// above (usually the last railed tool row). The preview must open with a
+/// blank line instead.
+#[tokio::test]
+async fn streamed_thinking_is_separated_from_the_settled_tool_trail() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.pending_turn.clear();
+    app.session.messages.push(Message::new(MessageRole::User, "fix the failing test"));
+    app.session.messages.push(Message {
+        outcome: forge_types::ExecutionOutcome::Success,
+        role: MessageRole::Tool,
+        content: "src/lib.rs".into(),
+        tool_call_id: Some("call_1".into()),
+        name: Some("read_file".into()),
+        thinking: None,
+        thinking_duration_secs: None,
+        tool_calls: vec![],
+        attachments: Vec::new(),
+    });
+    app.busy_state.activate();
+    app.busy_state.set_phase(crate::widgets::BusyPhase::Model);
+    app.stream.thinking = "planning the fix".into();
+    app.stream.reveal_everything_for_tests();
+    let rendered = render_app_text(&mut app, 160, 50);
+
+    let rows: Vec<&str> = rendered.lines().collect();
+    let thinking_row = rows
+        .iter()
+        .position(|row| row.contains("planning the fix"))
+        .expect("streamed thinking must be visible");
+    assert!(
+        thinking_row >= 2,
+        "thinking should sit below a settled tool row, got {thinking_row}"
+    );
+    assert!(
+        rows[thinking_row - 2].contains("Explored repository"),
+        "the settled tool trail should be right above the seam:\n{}",
+        rows[thinking_row - 2]
+    );
+    assert!(
+        rows[thinking_row - 1].trim().is_empty(),
+        "a blank line must separate the tool trail from streamed thinking:\n{}\n---\n{}",
+        rows[thinking_row - 1],
+        rows[thinking_row]
+    );
+}
