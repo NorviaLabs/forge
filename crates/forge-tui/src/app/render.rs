@@ -416,26 +416,33 @@ impl TuiApp {
                     .map(|(.., lines)| Arc::clone(lines))
                     .unwrap_or_else(|| Arc::new(Vec::new()))
             } else {
-                let lines = Arc::new(
-                    ConversationModel::from_messages(
-                        &[],
-                        &[],
-                        self.session_view.lifecycle,
-                        ConversationViewOpts { busy: true, ..opts },
-                    )
-                    .with_streaming_preview(
-                        self.stream.thinking.clone(),
-                        self.stream.revealed_preview().to_string(),
-                    )
-                    // The preview is a single block, so block-level tailing
-                    // cannot trim it; the cache windows lines instead. Pass the
-                    // transcript's window so both agree on what is on screen.
-                    .lines_for_width_from_end_cached(
-                        width,
-                        keep_from_end,
-                        &mut self.stream.markdown,
-                    ),
+                let mut lines = ConversationModel::from_messages(
+                    &[],
+                    &[],
+                    self.session_view.lifecycle,
+                    ConversationViewOpts { busy: true, ..opts },
+                )
+                .with_streaming_preview(
+                    self.stream.thinking.clone(),
+                    self.stream.revealed_preview().to_string(),
+                )
+                // The preview is a single block, so block-level tailing
+                // cannot trim it; the cache windows lines instead. Pass the
+                // transcript's window so both agree on what is on screen.
+                .lines_for_width_from_end_cached(
+                    width,
+                    keep_from_end,
+                    &mut self.stream.markdown,
                 );
+                open_preview_above_streamed_thinking(
+                    &mut lines,
+                    &self.stream.thinking,
+                    self.render_cache
+                        .conversation
+                        .as_ref()
+                        .and_then(|cache| cache.lines.last()),
+                );
+                let lines = Arc::new(lines);
                 self.stream.live_lines = Some((key.0, key.1, key.2, Arc::clone(&lines)));
                 if width_changed || self.stream.last_preview_render.is_none() {
                     self.stream.last_preview_render = Some(Instant::now());
@@ -1177,11 +1184,35 @@ pub(crate) fn conversation_text_width(sidebar_width: u16) -> usize {
     sidebar_width.saturating_sub(4) as usize
 }
 
+/// The live preview is painted directly below the settled transcript, but it
+/// renders as an isolated model and never sees the line above it. The
+/// "major block boundary" blank that separates the other blocks is therefore
+/// never applied at its leading edge: streamed reasoning used to hug the row
+/// above — usually the last railed tool row. Mirror `ensure_blank_line` at
+/// the seam: open the preview with a blank line unless the settled line above
+/// (or the preview itself) is already blank.
+fn open_preview_above_streamed_thinking(
+    preview: &mut Vec<Line<'static>>,
+    streaming_thoughts: &str,
+    line_above: Option<&Line<'static>>,
+) {
+    if streaming_thoughts.trim().is_empty() {
+        return;
+    }
+    let is_blank = |line: &Line<'static>| line.spans.iter().all(|span| span.content.is_empty());
+    let above_blank = line_above.is_none_or(is_blank);
+    let preview_blank = preview.first().is_none_or(is_blank);
+    if !above_blank && !preview_blank {
+        preview.insert(0, Line::from(""));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::composer_input_height;
     use crate::widgets::InputModel;
     use ratatui::layout::Rect;
+    use ratatui::text::{Line, Span};
 
     #[test]
     fn wrapped_composer_grows_before_the_second_visual_line_is_clipped() {
@@ -1287,5 +1318,65 @@ mod tests {
             "bottom border must render:\n{}",
             rendered.join("\n")
         );
+    }
+
+    #[test]
+    fn streamed_thinking_opens_with_a_blank_above_a_settled_row() {
+        let mut preview = vec![Line::from("planning the fix")];
+        super::open_preview_above_streamed_thinking(
+            &mut preview,
+            "planning the fix",
+            Some(&Line::from(Span::raw("│ Explored repository"))),
+        );
+        let text: Vec<String> = preview
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert_eq!(text, vec!["".to_string(), "planning the fix".to_string()]);
+    }
+
+    #[test]
+    fn no_blank_when_the_settled_line_above_is_already_blank() {
+        let mut preview = vec![Line::from("planning the fix")];
+        super::open_preview_above_streamed_thinking(
+            &mut preview,
+            "planning the fix",
+            Some(&Line::from("")),
+        );
+        let text: Vec<String> = preview
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert_eq!(text, vec!["planning the fix".to_string()]);
+    }
+
+    #[test]
+    fn no_blank_without_streaming_thoughts() {
+        let mut preview = vec![Line::from("partial answer")];
+        super::open_preview_above_streamed_thinking(
+            &mut preview,
+            "   ",
+            Some(&Line::from(Span::raw("│ Explored repository"))),
+        );
+        let text: Vec<String> = preview
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert_eq!(text, vec!["partial answer".to_string()]);
     }
 }

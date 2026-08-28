@@ -966,9 +966,13 @@ impl ConversationRender for ConversationModel {
                         }));
                         lines.push(Line::from(spans));
                     }
-                    // Deliberately no trailing blank: the tool call this
-                    // reasoning produced should hug it, and the next major
-                    // block opens with its own separator anyway.
+                    // A blank closes the reasoning block, the same as every
+                    // other major block: the tool/activity rows this reasoning
+                    // produced are rail rows and get no separator of their
+                    // own, so without one here they would hug the thoughts.
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                 }
             }
         }
@@ -4350,6 +4354,47 @@ mod tests {
                 .iter()
                 .all(|s| s.content.is_empty()),
             "the answer is separated from the rail trail by a blank line"
+        );
+    }
+
+    #[test]
+    fn streamed_thinking_is_separated_from_the_tool_trail() {
+        // The expanded Thinking block closes with a blank, the same as every
+        // other major block; railed activity rows get no separator of their
+        // own, so without it the first row after streamed reasoning would hug
+        // the thoughts (regression: "Explored repository" printed directly
+        // under the last thinking line).
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::Thinking {
+                    text: "ponder the failing test".into(),
+                    duration_secs: None,
+                },
+                ChatItem::ActivityGroup {
+                    category: ActivityCategory::Exploring,
+                    summary: "3 items".into(),
+                    detail: "src/lib.rs".into(),
+                    state: ToolCardState::Done,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                    retries: 0,
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let lines = model.lines_for_width(80);
+        let explored = lines
+            .iter()
+            .position(|l| line_text(l).contains("Explored repository"))
+            .expect("activity row present");
+        assert!(
+            lines[explored - 1]
+                .spans
+                .iter()
+                .all(|s| s.content.is_empty()),
+            "the first tool row must not hug the streamed thinking; \
+             the line before it should be blank"
         );
     }
 
