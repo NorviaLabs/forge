@@ -423,18 +423,36 @@ async fn a_nested_shell_cannot_start_an_unselected_user_binary() {
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    let error = forge_tools::run_shell_command_with_egress_and_temp(
+    let result = forge_tools::run_shell_command_with_egress_and_temp(
         &format!("sh -c {}", shell_quote(binary.to_str().unwrap())),
         ws.path(),
         None,
         Some(scratch.path()),
     )
-    .await
-    .expect_err("a nested shell must not turn an arbitrary path into an executable allowlist");
-    assert!(
-        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
-        "unselected user binaries must stay behind the sandbox: {error}"
-    );
+    .await;
+    match result {
+        Err(error @ forge_tools::ToolError::SandboxDenied { .. }) => {
+            assert!(
+                !error.to_string().contains("escaped"),
+                "the unselected binary must not run: {error}"
+            );
+        }
+        Ok(output) => {
+            // Seatbelt reports a denied read as a typed sandbox error, while
+            // bubblewrap masks /tmp and the nested shell reports ENOENT as
+            // `command not found`. Both are confinement, not success.
+            assert!(
+                output.is_error,
+                "an unselected user binary must not run: {output:?}"
+            );
+            assert_ne!(output.exit_code, Some(0));
+            assert!(
+                !output.content.contains("escaped"),
+                "the unselected binary must not run: {output:?}"
+            );
+        }
+        Err(error) => panic!("unexpected tool failure while checking confinement: {error}"),
+    }
 }
 
 fn shell_quote(value: &str) -> String {
