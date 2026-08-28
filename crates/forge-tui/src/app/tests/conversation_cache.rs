@@ -208,23 +208,34 @@ async fn streamed_thinking_is_separated_from_the_settled_tool_trail() {
     app.stream.thinking = "planning the fix".into();
     app.stream.reveal_everything_for_tests();
     let rendered = render_app_text(&mut app, 160, 50);
+    let conversation_area = app.conversation_area.expect("conversation was drawn");
 
+    // The full terminal row also carries the file explorer pane, whose own
+    // border column always leaves a `│` in the middle of an otherwise blank
+    // row — slice out just the conversation pane's columns before checking
+    // for blankness, or that border character trips the check on every row.
     let rows: Vec<&str> = rendered.lines().collect();
+    let pane_slice = |row: &str| -> String {
+        row.chars()
+            .skip(conversation_area.x as usize)
+            .take(conversation_area.width as usize)
+            .collect()
+    };
     let thinking_row = rows
         .iter()
-        .position(|row| row.contains("planning the fix"))
+        .position(|row| pane_slice(row).contains("planning the fix"))
         .expect("streamed thinking must be visible");
     assert!(
         thinking_row >= 2,
         "thinking should sit below a settled tool row, got {thinking_row}"
     );
     assert!(
-        rows[thinking_row - 2].contains("Explored repository"),
+        pane_slice(rows[thinking_row - 2]).contains("Explored repository"),
         "the settled tool trail should be right above the seam:\n{}",
         rows[thinking_row - 2]
     );
     assert!(
-        rows[thinking_row - 1].trim().is_empty(),
+        pane_slice(rows[thinking_row - 1]).trim().is_empty(),
         "a blank line must separate the tool trail from streamed thinking:\n{}\n---\n{}",
         rows[thinking_row - 1],
         rows[thinking_row]
