@@ -262,6 +262,11 @@ impl TuiApp {
     }
 
     fn record_interrupted_stream(&mut self, error: &str) {
+        // Trailing/interleaved thinking that arrives after visible text never
+        // reaches the TextDelta branch that normally closes the clock, so a
+        // cancellation here would otherwise persist a thinking body with no
+        // duration and the collapsed block would render a bare "Thought".
+        self.close_thinking_timer();
         let text = self.stream.preview.trim_end().to_string();
         if !text.is_empty() {
             self.session.messages.push(Message {
@@ -982,6 +987,44 @@ mod responsiveness_tests {
 
     struct BlockingTool;
     struct BlockingModel;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interrupted_stream_with_unclosed_thinking_still_records_a_duration() {
+        crate::app::tests::helpers::isolate_global_skills();
+        let workspace = tempfile::tempdir().unwrap();
+        let session = AgentSession::create(
+            LoopConfig {
+                workspace: workspace.path().to_path_buf(),
+                journal_dir: workspace.path().join("j"),
+                ..Default::default()
+            },
+            Arc::new(MockModelClient::script(Vec::new())),
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let mut app = TuiApp::new(session, crate::app::tests::helpers::test_runtime_config());
+
+        // Reproduce trailing/interleaved thinking that arrives after visible
+        // text: the TextDelta branch that normally closes the clock never
+        // ran for it, so `thought_secs` is still unset when cancellation hits.
+        app.stream.preview = "partial answer".into();
+        app.stream.thinking = "late reasoning".into();
+        app.timing.thinking_started = Some(Instant::now() - Duration::from_millis(50));
+        assert!(app.timing.thought_secs.is_none());
+
+        app.record_interrupted_stream("cancelled");
+
+        let last = app
+            .session
+            .messages
+            .last()
+            .expect("interrupted message pushed");
+        assert!(
+            last.thinking_duration_secs.is_some(),
+            "expected a real duration instead of the bare \"Thought\" fallback"
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn queued_key_burst_is_not_rate_limited_by_the_animation_tick() {
