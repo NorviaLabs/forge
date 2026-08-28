@@ -308,6 +308,139 @@ fn system_paths_needed_to_start_a_process_stay_readable() {
     assert!(ws.path().join("system-read.txt").exists());
 }
 
+/// Regression coverage for #447: installed command-line tools may live under
+/// the user's home, but only the selected runtime paths are re-exposed. Keep
+/// this host-dependent test useful on minimal CI images by skipping a tool
+/// that is not installed.
+#[tokio::test]
+async fn installed_cargo_and_gh_can_start_without_opening_the_home_tree() {
+    require_sandbox!();
+    let ws = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let has = |name: &str| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .any(|candidate| candidate.is_file())
+    };
+
+    for (name, command) in [("cargo", "cargo --version"), ("gh", "gh --version")] {
+        if !has(name) {
+            continue;
+        }
+        let out = forge_tools::run_shell_command_with_egress_and_temp(
+            command,
+            ws.path(),
+            None,
+            Some(scratch.path()),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{name} must start inside the confined toolchain surface: {error}")
+        });
+        assert!(
+            !out.is_error,
+            "{name} failed inside the toolchain surface: {out:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn installed_cargo_can_use_the_session_toolchain_surface() {
+    require_sandbox!();
+    let ws = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let cargo = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("cargo"))
+                .any(|candidate| candidate.is_file())
+        })
+        .unwrap_or(false);
+    if !cargo {
+        return;
+    }
+
+    std::fs::create_dir_all(ws.path().join("src")).unwrap();
+    std::fs::write(
+        ws.path().join("Cargo.toml"),
+        "[package]\nname = \"forge-sandbox-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(ws.path().join("src/lib.rs"), "pub fn fixture() {}\n").unwrap();
+    let dependency = ws.path().join("dependency");
+    std::fs::create_dir_all(dependency.join("src")).unwrap();
+    std::fs::write(
+        dependency.join("Cargo.toml"),
+        "[package]\nname = \"forge-sandbox-dependency\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(dependency.join("src/lib.rs"), "pub fn dependency() {}\n").unwrap();
+
+    for command in [
+        "cargo build --offline",
+        "cargo test --offline",
+        "cargo package --offline",
+        "cargo add --help",
+    ] {
+        let out = forge_tools::run_shell_command_with_egress_and_temp(
+            command,
+            ws.path(),
+            None,
+            Some(scratch.path()),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{command} must start in the sandbox: {error}"));
+        assert!(!out.is_error, "{command} failed in the sandbox: {out:?}");
+    }
+
+    let command = format!("cargo add --path {} --offline", dependency.display());
+    let out = forge_tools::run_shell_command_with_egress_and_temp(
+        &command,
+        ws.path(),
+        None,
+        Some(scratch.path()),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{command} must start in the sandbox: {error}"));
+    assert!(!out.is_error, "cargo add failed in the sandbox: {out:?}");
+    assert!(std::fs::read_to_string(ws.path().join("Cargo.toml"))
+        .unwrap()
+        .contains("forge-sandbox-dependency"));
+}
+
+#[tokio::test]
+async fn a_nested_shell_cannot_start_an_unselected_user_binary() {
+    require_sandbox!();
+    let ws = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let binary = outside.path().join("unselected-cli");
+    std::fs::write(&binary, b"#!/bin/sh\necho escaped\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let error = forge_tools::run_shell_command_with_egress_and_temp(
+        &format!("sh -c {}", shell_quote(binary.to_str().unwrap())),
+        ws.path(),
+        None,
+        Some(scratch.path()),
+    )
+    .await
+    .expect_err("a nested shell must not turn an arbitrary path into an executable allowlist");
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "unselected user binaries must stay behind the sandbox: {error}"
+    );
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// The shapes `readonly.rs` used to gate by parsing. None of them are
 /// recognised here — they simply cannot reach anything.
 #[test]
