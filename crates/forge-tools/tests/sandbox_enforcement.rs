@@ -515,6 +515,47 @@ async fn bash_tool_is_confined() {
     );
 }
 
+/// Bash reports the status of the final pipeline stage unless `pipefail` is
+/// enabled. The sandbox still refuses the write, but `cat` exits zero, so the
+/// aggregate process status cannot be the only signal used to decide whether
+/// HITL is needed.
+#[tokio::test]
+async fn a_pipeline_cannot_hide_a_sandbox_denial_behind_exit_zero() {
+    require_sandbox!();
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("pipeline-escape.txt");
+
+    let error = run_shell_command(
+        &format!("printf escaped > {} | cat", target.display()),
+        ws.path(),
+    )
+    .await
+    .expect_err("the denied write must win over the pipeline's zero exit status");
+
+    assert!(
+        matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
+        "the pipeline must report the sandbox denial: {error}"
+    );
+    assert!(!target.exists(), "the pipeline escaped the sandbox");
+}
+
+/// A successful command may legitimately print text that resembles a denial.
+/// Exit-zero classification inspects stderr so ordinary stdout is not turned
+/// into a false approval prompt.
+#[tokio::test]
+async fn denial_words_on_successful_stdout_are_not_a_sandbox_denial() {
+    require_sandbox!();
+    let ws = workspace();
+
+    let out = run_shell_command("printf 'Operation not permitted'", ws.path())
+        .await
+        .expect("stdout text alone must not create a denial");
+
+    assert!(!out.is_error, "the command exited successfully: {out:?}");
+    assert_eq!(out.content, "Operation not permitted");
+}
+
 #[tokio::test]
 async fn bash_tool_still_works_inside_the_workspace() {
     require_sandbox!();
@@ -763,6 +804,55 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
         ),
         Err(error) => panic!("direct connection failed for the wrong reason: {error}"),
     }
+}
+
+/// A client can deliberately swallow a proxy refusal (`|| true` is common in
+/// probes). The proxy observed the denied CONNECT even though Bash exits zero,
+/// so that invocation must still request the host grant. Its denied host must
+/// also be consumed by that invocation rather than poisoning the next failure.
+#[tokio::test]
+async fn a_masked_proxy_refusal_stays_with_the_invocation_that_caused_it() {
+    require_sandbox!();
+    use forge_tools::egress::{EgressPolicy, EgressProxy};
+    use forge_tools::run_shell_command_with_egress;
+    use forge_tools::sandbox::EgressGrant;
+
+    let ws = workspace();
+    let sockdir = tempfile::tempdir().unwrap();
+    let policy = EgressPolicy::new();
+    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    let socket_path = sockdir.path().join("egress.sock");
+    proxy
+        .serve_on_unix_socket(&socket_path, policy)
+        .await
+        .unwrap();
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path,
+        control: Some(proxy.shared().clone()),
+    };
+
+    let denied_connect = [
+        r#"addr="${HTTP_PROXY#http://}"; addr="${addr%/}";"#,
+        r#"h="${addr%%:*}"; p="${addr##*:}";"#,
+        r#"exec 3<>/dev/tcp/"$h"/"$p";"#,
+        r#"printf 'CONNECT blocked.example:443 HTTP/1.1\r\n\r\n' >&3;"#,
+        r#"IFS= read -r response <&3 || true; true"#,
+    ]
+    .join(" ");
+    let error = run_shell_command_with_egress(&denied_connect, ws.path(), Some(&grant))
+        .await
+        .expect_err("the proxy denial must win over the shell's zero exit status");
+    let forge_tools::ToolError::SandboxDenied { denied_host, .. } = error else {
+        panic!("expected a structured sandbox denial, got {error}");
+    };
+    assert_eq!(denied_host.as_deref(), Some("blocked.example"));
+
+    let ordinary_failure = run_shell_command_with_egress("false", ws.path(), Some(&grant))
+        .await
+        .expect("the previous host denial must not leak into this command");
+    assert!(ordinary_failure.is_error);
+    assert_eq!(ordinary_failure.exit_code, Some(1));
 }
 
 /// Probe a real git remote through Forge's sandbox + egress proxy.

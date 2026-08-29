@@ -250,9 +250,7 @@ impl AgentSession {
             let call = completed.execution.call.clone();
             pending.budget = completed.execution.budget;
             self.turn.restore_validation_budget(pending.budget);
-            let denied_host = denied_host
-                .clone()
-                .or_else(|| self.take_denied_egress_host());
+            let denied_host = denied_host.clone();
             let failure = observed_failure(content, reason);
             return self
                 .enter_sandbox_hitl(call, reason.clone(), failure, denied_host)
