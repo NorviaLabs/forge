@@ -35,14 +35,23 @@ pub struct ExecCommandArgs {
 fn sandbox_denial(
     confined: bool,
     success: bool,
-    output: &str,
+    content: &str,
+    stderr: &str,
+    shell: &str,
     workspace_root: &std::path::Path,
-    grant: Option<&crate::sandbox::EgressGrant>,
+    denied_host: Option<String>,
 ) -> Option<ToolError> {
-    if !confined || success {
+    if !confined {
         return None;
     }
-    crate::egress::denial_for_failed_confined_command(output, workspace_root, grant)
+    crate::egress::denial_for_confined_command(
+        content,
+        stderr,
+        success,
+        shell,
+        workspace_root,
+        denied_host,
+    )
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -65,15 +74,17 @@ fn default_stdin_yield() -> u64 {
 
 struct Session {
     command: String,
+    shell: String,
     confined: bool,
     workspace_root: PathBuf,
-    egress: Option<Arc<crate::sandbox::EgressGrant>>,
+    egress_invocation: Option<crate::egress::EgressInvocation>,
     _session_tmp: Option<Arc<crate::SessionTempDir>>,
     child: Child,
     stdin: Option<ChildStdin>,
     stdout: ChildStdout,
     stderr: ChildStderr,
     output: String,
+    stderr_output: String,
     output_truncated: bool,
     started: Instant,
 }
@@ -93,6 +104,18 @@ fn append_output(session: &mut Session, bytes: &[u8]) {
     if end < text.len() {
         session.output_truncated = true;
     }
+}
+
+fn append_stderr(session: &mut Session, bytes: &[u8]) {
+    append_output(session, bytes);
+    if session.stderr_output.len() >= MAX_SESSION_OUTPUT {
+        return;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let remaining = MAX_SESSION_OUTPUT - session.stderr_output.len();
+    let end = text.len().min(remaining);
+    let end = text.floor_char_boundary(end);
+    session.stderr_output.push_str(&text[..end]);
 }
 
 fn session_finished(result: &Result<ToolOutput, ToolError>) -> bool {
@@ -160,13 +183,19 @@ async fn collect(
             append_output(session, &tail);
             let mut tail = Vec::new();
             session.stderr.read_to_end(&mut tail).await?;
-            append_output(session, &tail);
+            append_stderr(session, &tail);
+            let denied_host = session
+                .egress_invocation
+                .as_ref()
+                .and_then(crate::egress::EgressInvocation::take_denied_host);
             if let Some(error) = sandbox_denial(
                 session.confined,
                 status.success(),
                 &session.output,
+                &session.stderr_output,
+                &session.shell,
                 &session.workspace_root,
-                session.egress.as_deref(),
+                denied_host,
             ) {
                 return Err(error);
             }
@@ -190,7 +219,7 @@ async fn collect(
             }
             result = session.stderr.read(&mut stderr_buffer) => {
                 let count = result?;
-                if count > 0 { append_output(session, &stderr_buffer[..count]); }
+                if count > 0 { append_stderr(session, &stderr_buffer[..count]); }
             }
             _ = tokio::time::sleep(remaining.min(Duration::from_millis(20))) => {}
         }
@@ -228,16 +257,30 @@ async fn start(
     // itself gated — a session that starts unconfined accepts arbitrary
     // commands unconfined for as long as it lives.
     let shell = args.shell.as_deref().unwrap_or("sh");
+    let requested_confined = !ctx.unconfined_shell;
+    let egress_invocation = if requested_confined {
+        crate::egress::EgressInvocation::start(ctx.egress.as_deref())
+            .await
+            .map_err(|error| {
+                ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
+            })?
+    } else {
+        None
+    };
+    let command_egress = egress_invocation
+        .as_ref()
+        .map(crate::egress::EgressInvocation::grant)
+        .or(ctx.egress.as_deref());
     let mut policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root)
         .with_command_access(&args.cmd)
-        .with_egress(ctx.egress.as_deref());
+        .with_egress(command_egress);
     if crate::credentials::needs_git_writes(&args.cmd) {
         policy = policy.with_git_writable();
     }
     if let Some(session_tmp) = &ctx.session_tmp {
         policy = policy.with_session_tmp(session_tmp.path());
     }
-    let wrapped = (!ctx.unconfined_shell)
+    let wrapped = requested_confined
         .then(|| crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy))
         .flatten();
     let confined = wrapped.is_some();
@@ -275,9 +318,7 @@ async fn start(
         for (name, value) in crate::credentials::isolated_config_env(&identity_dir) {
             command.env(name, value);
         }
-        for (name, value) in
-            crate::credentials::host_identity_env(ctx.egress.as_deref(), &identity_dir)
-        {
+        for (name, value) in crate::credentials::host_identity_env(command_egress, &identity_dir) {
             command.env(name, value);
         }
         for (name, value) in policy.toolchain_env() {
@@ -293,9 +334,10 @@ async fn start(
         .spawn()?;
     let session = Session {
         command: args.cmd.clone(),
+        shell: shell.to_string(),
         confined,
         workspace_root: ctx.workspace_root.clone(),
-        egress: ctx.egress.clone(),
+        egress_invocation,
         _session_tmp: ctx.session_tmp.clone(),
         stdin: Some(
             child
@@ -313,6 +355,7 @@ async fn start(
             .ok_or_else(|| ToolError::Execution("failed to open stderr".into()))?,
         child,
         output: String::new(),
+        stderr_output: String::new(),
         output_truncated: false,
         started: Instant::now(),
     };
@@ -436,7 +479,7 @@ mod tests {
     fn failed_confined_network_command_is_a_sandbox_denial() {
         let dir = tempdir().unwrap();
         let output = "curl: (6) Could not resolve host: api.github.com";
-        let error = sandbox_denial(true, false, output, dir.path(), None)
+        let error = sandbox_denial(true, false, output, "", "sh", dir.path(), None)
             .expect("a confined network failure must be escalated");
 
         assert!(matches!(error, ToolError::SandboxDenied { .. }));
@@ -447,7 +490,60 @@ mod tests {
         let dir = tempdir().unwrap();
         let output = "curl: (6) Could not resolve host: api.github.com";
 
-        assert!(sandbox_denial(false, false, output, dir.path(), None).is_none());
+        assert!(sandbox_denial(false, false, output, "", "sh", dir.path(), None).is_none());
+    }
+
+    #[test]
+    fn successful_stderr_can_still_report_a_sandbox_denial() {
+        let dir = tempdir().unwrap();
+        let output = "sh: /outside/file: Operation not permitted";
+
+        assert!(matches!(
+            sandbox_denial(true, true, output, output, "sh", dir.path(), None),
+            Some(ToolError::SandboxDenied { .. })
+        ));
+    }
+
+    #[test]
+    fn successful_stdout_does_not_invent_a_sandbox_denial() {
+        let dir = tempdir().unwrap();
+        let output = "Operation not permitted";
+
+        assert!(sandbox_denial(true, true, output, "", "sh", dir.path(), None).is_none());
+    }
+
+    #[test]
+    fn successful_child_warning_does_not_invent_a_sandbox_denial() {
+        let dir = tempdir().unwrap();
+        let output = "git: error: couldn't create cache file '/tmp/x': Operation not permitted";
+
+        assert!(sandbox_denial(true, true, output, output, "sh", dir.path(), None).is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_command_pipeline_cannot_hide_a_sandbox_denial() {
+        if crate::sandbox::availability().is_err() {
+            return;
+        }
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("pipeline-escape.txt");
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+        let (exec_command, _) = unified_exec_tools();
+
+        let error = exec_command
+            .call(
+                &ctx,
+                json!({
+                    "cmd": format!("printf escaped > {} | cat", target.display()),
+                    "yield_time_ms": 1_000
+                }),
+            )
+            .await
+            .expect_err("the pipeline's zero status must not hide the denied write");
+
+        assert!(matches!(error, ToolError::SandboxDenied { .. }));
+        assert!(!target.exists(), "exec_command escaped the sandbox");
     }
 
     #[tokio::test]
