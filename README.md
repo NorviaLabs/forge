@@ -342,6 +342,14 @@ reach it. Selected command runtimes remain read-only; their network access
 still requires an explicit personal `host(...)` grant, and `.git` remains
 read-only unless the command is an explicitly approved git operation.
 
+Forge reports a shell-redirection refusal even when a later pipeline stage
+makes the shell exit zero. Network refusals are attributed to the exact command
+that reached the proxy, so a swallowed error cannot trigger a misleading
+approval on the next command. A command that deliberately discards every
+filesystem diagnostic and returns zero is not observable from the portable
+process interface; the write is still blocked, but Forge cannot infer that an
+unconfined retry was intended.
+
 There is one residual socket gap worth stating plainly. On Linux the sandbox
 still exposes the rest of the host filesystem read-only rather than hiding
 it, and a read-only *mount* does not stop a process connecting to a Unix

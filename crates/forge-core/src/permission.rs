@@ -32,10 +32,6 @@ impl EgressRuntime {
     pub fn grant_host(&self, pattern: &str) {
         self.shared.grant_host(pattern);
     }
-
-    pub fn take_denied_host(&self) -> Option<String> {
-        self.shared.take_denied_host()
-    }
 }
 
 /// Hosts this workspace may reach, taken from the merged permission files.
