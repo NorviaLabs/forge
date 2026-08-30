@@ -286,7 +286,17 @@ impl AgentSession {
         self.egress.as_ref().map(|runtime| runtime.grant())
     }
 
-    pub fn set_governance(&mut self, g: Governance) {
+    /// Replace the policy (ACL and pattern-rule files) while keeping the
+    /// grants the operator made at a prompt this session.
+    ///
+    /// Those grants live in the governance object but did not come from a
+    /// file, so a reload that simply overwrote it would silently revoke every
+    /// "allow for this session" the operator had given — and the next matching
+    /// call would prompt again with no indication why.
+    /// `retain_session_patterns_from` existed for this and was never wired to
+    /// anything; this is the call site its doc comment describes.
+    pub fn set_governance(&mut self, mut g: Governance) {
+        g.retain_session_patterns_from(&self.governance);
         self.governance = g;
     }
 
@@ -311,7 +321,12 @@ impl AgentSession {
     }
 
     /// Remember the suggested pattern for `call` for the rest of this session.
-    pub fn allow_suggested_pattern_for_session(&mut self, call: &forge_types::ToolCall) -> String {
+    /// `None` when the call has no pattern that could ever match it again, in
+    /// which case nothing was remembered.
+    pub fn allow_suggested_pattern_for_session(
+        &mut self,
+        call: &forge_types::ToolCall,
+    ) -> Option<String> {
         self.governance.allow_suggested_pattern_for_session(call)
     }
 
@@ -325,5 +340,14 @@ impl AgentSession {
 
     pub fn session_pattern_allows(&self, call: &forge_types::ToolCall) -> bool {
         self.governance.session_pattern_allows(call)
+    }
+
+    /// Whether the operator has already consented to this call's shape and
+    /// has not carved it back out with a `deny` rule. This is the question
+    /// every gate outside `authorize` should ask;
+    /// [`Self::session_pattern_allows`] sees only this session's grants and
+    /// will miss an "always allow" rule.
+    pub fn grant_covers(&self, call: &forge_types::ToolCall) -> bool {
+        self.governance.grant_covers(call)
     }
 }

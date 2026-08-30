@@ -601,7 +601,20 @@ impl ApprovalOverlayState {
             .filter(|value| !value.is_empty());
         let environment_delta = approval_environment_delta(&payload.args_redacted);
         let redacted = contains_redacted_value(&payload.args_redacted);
-        let pattern_allow_eligible = !redacted && environment_delta != "[REDACTED]";
+        // A call is only eligible to be remembered if a rule exists that
+        // would match it again. `suggest_pattern` returns `None` for a shell
+        // command carrying unquoted control syntax (`cargo test | tail`,
+        // `a && b`), which can never be pattern-matched — offering the row
+        // anyway wrote a grant that silently never fired, and the operator
+        // was re-prompted for the same command they had just allowed.
+        let pattern_allow_eligible = !redacted
+            && environment_delta != "[REDACTED]"
+            && forge_governance::suggest_pattern(&forge_types::ToolCall {
+                id: payload.call_id.clone(),
+                name: payload.tool.clone(),
+                arguments: payload.args_redacted.clone(),
+            })
+            .is_some();
 
         Self {
             mode,

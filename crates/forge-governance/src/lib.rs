@@ -142,6 +142,24 @@ impl Governance {
         self.session_pattern_allows(call)
     }
 
+    /// Whether the operator has already consented to this call's shape and
+    /// has not carved it back out — an `allow` rule from their permissions
+    /// file or from this session's grants, with no matching `deny`.
+    ///
+    /// This is the question a gate *outside* [`Self::authorize`] must ask
+    /// before skipping a prompt, and it deliberately mirrors the order
+    /// `authorize` uses: deny wins. Asking about allow rules alone lets a
+    /// persisted `allow` override the `deny` the operator wrote precisely to
+    /// carve an exception out of it. Asking
+    /// [`Self::session_pattern_allows`] instead sees only the runtime half
+    /// and misses an "always allow" rule entirely.
+    pub fn grant_covers(&self, call: &ToolCall) -> bool {
+        if self.pattern_deny.iter().any(|rule| rule.matches(call)) {
+            return false;
+        }
+        self.allows_pattern(call)
+    }
+
     /// Keep this instance's session pattern grants when replacing the rest of
     /// the policy (`set_governance` reloads ACL / pattern files).
     pub fn retain_session_patterns_from(&mut self, other: &Self) {
@@ -149,13 +167,15 @@ impl Governance {
     }
 
     /// Remember the suggested pattern for `call` for the rest of this process
-    /// session. Does not persist. Returns the pattern string shown in the menu.
-    pub fn allow_suggested_pattern_for_session(&mut self, call: &ToolCall) -> String {
-        let raw = suggest_pattern(call);
-        if let Some(rule) = PatternRule::parse(&raw) {
-            self.allow_pattern_for_session(rule);
-        }
-        raw
+    /// session. Does not persist. Returns the pattern string shown in the menu,
+    /// or `None` when the call has no pattern that could match it again (see
+    /// [`suggest_pattern`]) — in which case nothing is remembered, rather than
+    /// a rule being recorded that will never fire.
+    pub fn allow_suggested_pattern_for_session(&mut self, call: &ToolCall) -> Option<String> {
+        let raw = suggest_pattern(call)?;
+        let rule = PatternRule::parse(&raw)?;
+        self.allow_pattern_for_session(rule);
+        Some(raw)
     }
 
     pub fn allow_pattern_for_session(&mut self, rule: PatternRule) {
@@ -692,8 +712,8 @@ mod tests {
         let mut g = Governance::default().require_hitl_for_tool("bash");
         let first = call("bash", json!({"command": "git push -u origin main"}));
         assert_eq!(
-            g.allow_suggested_pattern_for_session(&first),
-            "bash(git push *)"
+            g.allow_suggested_pattern_for_session(&first).as_deref(),
+            Some("bash(git push *)")
         );
         assert!(g.session_pattern_allows(&first));
         assert!(

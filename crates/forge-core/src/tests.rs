@@ -4,7 +4,7 @@
 
 use super::*;
 use async_trait::async_trait;
-use forge_governance::{AclPolicy, Governance};
+use forge_governance::{parse_pattern_rules, AclPolicy, Governance};
 use forge_model::MockModelClient;
 use forge_types::{Message, MessageRole, SideEffectClass, ToolCall, ToolOutput, Usage};
 use serde_json::json;
@@ -18,6 +18,11 @@ struct GatedTool {
 }
 
 struct SandboxDeniedTool;
+
+/// Reports a sandbox denial even when run unconfined, which a real sandbox
+/// cannot do — the point is that the auto-retry must terminate anyway rather
+/// than trust that invariant.
+struct AlwaysSandboxDeniedTool;
 
 struct NetworkDeniedOnceTool {
     calls: std::sync::atomic::AtomicU32,
@@ -66,6 +71,37 @@ impl forge_tools::Tool for SandboxDeniedTool {
         }
         Err(ToolError::SandboxDenied {
             content: "Operation not permitted\nblocked by the sandbox".into(),
+            reason: "blocked by the sandbox: filesystem access is confined to the workspace".into(),
+            denied_host: None,
+        })
+    }
+}
+
+#[async_trait]
+impl forge_tools::Tool for AlwaysSandboxDeniedTool {
+    fn name(&self) -> &str {
+        "always_denied"
+    }
+
+    fn description(&self) -> &str {
+        "Simulate a command the sandbox refuses even unconfined"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "additionalProperties": false})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::SandboxDenied {
+            content: "Operation not permitted".into(),
             reason: "blocked by the sandbox: filesystem access is confined to the workspace".into(),
             denied_host: None,
         })
@@ -289,6 +325,319 @@ async fn sandbox_denial_pauses_for_hitl_instead_of_recording_failure() {
         .find(|message| message.tool_call_id.as_deref() == Some("call-sandbox-denied"))
         .expect("approved retry should record a tool result");
     assert_eq!(result.content, "approved retry ran unconfined");
+}
+
+/// Drive one `sandbox_denied` call through the application state machine and
+/// report what came out. Shared by the two grant-shaped tests below, which
+/// differ only in the governance they start from.
+async fn run_sandbox_denied_call(session: &mut AgentSession) -> ModelResponseApplication {
+    session.append_user_message("run it").await.unwrap();
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-sandbox-denied".into(),
+                name: "sandbox_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap()
+}
+
+async fn sandbox_denied_session(dir: &std::path::Path) -> AgentSession {
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SandboxDeniedTool));
+    AgentSession::create(base_cfg(dir), model, tools)
+        .await
+        .unwrap()
+}
+
+/// A sandbox denial never reaches `authorize`, so this path has to consult
+/// the operator's allow rules itself. It did not: an `allow` line written by
+/// "always allow" went into `permissions.toml` and was read by nothing on
+/// the re-prompt path, so the very next matching command asked again — the
+/// grant looked like it had no effect at all.
+#[tokio::test]
+async fn a_persisted_allow_rule_reruns_a_sandbox_denial_without_prompting() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    session.set_governance(
+        Governance::default().with_pattern_rules(parse_pattern_rules(&["sandbox_denied"]), vec![]),
+    );
+
+    let application = run_sandbox_denied_call(&mut session).await;
+
+    let ModelResponseApplication::Execute(retry) = application else {
+        panic!("an already-allowed call must re-run, not prompt");
+    };
+    assert!(
+        session.pending_hitl().is_none(),
+        "no approval should have been raised"
+    );
+    let completed = retry.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-sandbox-denied"))
+        .expect("the retry should record a tool result");
+    assert_eq!(
+        result.content, "approved retry ran unconfined",
+        "the retry must run outside the sandbox, as the prompt's approval would have"
+    );
+}
+
+/// The same for a grant made at a prompt earlier in this session, which is
+/// the half that did work — via a TUI-only auto-approve — and must keep
+/// working now that the core decides.
+#[tokio::test]
+async fn a_session_grant_reruns_a_sandbox_denial_without_prompting() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    assert_eq!(
+        session
+            .allow_suggested_pattern_for_session(&ToolCall {
+                id: "grant".into(),
+                name: "sandbox_denied".into(),
+                arguments: json!({}),
+            })
+            .as_deref(),
+        Some("sandbox_denied")
+    );
+
+    let application = run_sandbox_denied_call(&mut session).await;
+
+    assert!(
+        matches!(application, ModelResponseApplication::Execute(_)),
+        "a session grant must re-run the call rather than prompt again"
+    );
+    assert!(session.pending_hitl().is_none());
+}
+
+/// Without any grant the prompt still happens — the fix must not turn a
+/// sandbox denial into a silent unconfined run.
+#[tokio::test]
+async fn a_sandbox_denial_without_a_grant_still_prompts() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+
+    let application = run_sandbox_denied_call(&mut session).await;
+
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    assert!(session.pending_hitl().is_some());
+}
+
+/// A host denial is not a property of the command shape, so a command-shaped
+/// allow rule must not silently open a network destination.
+#[tokio::test]
+async fn an_allow_rule_does_not_auto_open_a_denied_host() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.set_governance(
+        Governance::default().with_pattern_rules(parse_pattern_rules(&["network_denied"]), vec![]),
+    );
+    session.append_user_message("open a pr").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-host".into(),
+                name: "network_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    let application = session.finish_tool_application(completed).await.unwrap();
+
+    assert!(
+        matches!(
+            application,
+            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+        ),
+        "a denied host must still ask, even for an allowed command shape"
+    );
+    assert_eq!(
+        session
+            .pending_hitl()
+            .and_then(|payload| payload.denied_host.clone())
+            .as_deref(),
+        Some("api.github.com")
+    );
+}
+
+/// A `deny` rule exists to carve an exception out of a broader `allow`, so
+/// every gate must honour it in `authorize`'s order. Asking only "is it
+/// allowed?" let a personal `allow` rule silently override the workspace
+/// `deny` written against it — caught driving the real TUI, where a denied
+/// command was auto-approved and ran.
+///
+/// A deny rule prompts before the tool runs at all, so the sandbox-denial
+/// path is never even reached for one; this pins that the call does not
+/// execute.
+#[tokio::test]
+async fn a_deny_rule_prompts_before_execution_even_with_a_matching_allow_rule() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    session.set_governance(Governance::default().with_pattern_rules(
+        parse_pattern_rules(&["sandbox_denied"]),
+        parse_pattern_rules(&["sandbox_denied"]),
+    ));
+    session.append_user_message("run it").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-denied-shape".into(),
+                name: "sandbox_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            application,
+            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+        ),
+        "a denied shape must ask, however broad the allow rule is"
+    );
+    assert!(session.pending_hitl().is_some());
+}
+
+/// The same ordering, asserted directly on the predicate every out-of-band
+/// gate calls.
+#[tokio::test]
+async fn grant_covers_honours_a_deny_carve_out() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    let call = ToolCall {
+        id: "c".into(),
+        name: "sandbox_denied".into(),
+        arguments: json!({}),
+    };
+
+    session.set_governance(
+        Governance::default().with_pattern_rules(parse_pattern_rules(&["sandbox_denied"]), vec![]),
+    );
+    assert!(session.grant_covers(&call));
+
+    session.set_governance(Governance::default().with_pattern_rules(
+        parse_pattern_rules(&["sandbox_denied"]),
+        parse_pattern_rules(&["sandbox_denied"]),
+    ));
+    assert!(
+        !session.grant_covers(&call),
+        "deny wins, matching `authorize`'s own ordering"
+    );
+
+    // A grant made at a prompt this session must not beat a deny rule either.
+    session.allow_suggested_pattern_for_session(&call).unwrap();
+    assert!(!session.grant_covers(&call));
+}
+
+/// The allow rule that authorises the first unconfined retry still
+/// authorises the next one, so a tool that reports a denial even unconfined
+/// would be re-run forever. One retry per call, then it prompts.
+#[tokio::test]
+async fn an_auto_unconfined_retry_happens_at_most_once_per_call() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(AlwaysSandboxDeniedTool));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.set_governance(
+        Governance::default().with_pattern_rules(parse_pattern_rules(&["always_denied"]), vec![]),
+    );
+    session.append_user_message("run it").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-always-denied".into(),
+                name: "always_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+
+    let application = session.finish_tool_application(completed).await.unwrap();
+    let ModelResponseApplication::Execute(retry) = application else {
+        panic!("the grant should buy one unconfined retry");
+    };
+    let completed = retry.execute().await;
+
+    let application = session.finish_tool_application(completed).await.unwrap();
+    assert!(
+        matches!(
+            application,
+            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+        ),
+        "a second denial for the same call must prompt, not retry again"
+    );
+    assert!(session.pending_hitl().is_some());
+}
+
+/// Reloading the policy must not revoke grants the operator made at a prompt
+/// this session: they live in the governance object but did not come from a
+/// file, and overwriting it silently dropped them.
+#[tokio::test]
+async fn set_governance_keeps_grants_made_this_session() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    let call = ToolCall {
+        id: "grant".into(),
+        name: "sandbox_denied".into(),
+        arguments: json!({}),
+    };
+    session.allow_suggested_pattern_for_session(&call).unwrap();
+    assert!(session.session_pattern_allows(&call));
+
+    session.set_governance(Governance::default());
+
+    assert!(
+        session.session_pattern_allows(&call),
+        "a policy reload must not silently revoke this session's grants"
+    );
 }
 
 #[tokio::test]
@@ -2325,8 +2674,9 @@ async fn session_pattern_allow_skips_hitl_for_the_command_family() {
             id: "remember".into(),
             name: "bash".into(),
             arguments: first,
-        }),
-        "bash(git push *)"
+        })
+        .as_deref(),
+        Some("bash(git push *)")
     );
     s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
     let _ = s.run_agent_turns(None).await.unwrap();
