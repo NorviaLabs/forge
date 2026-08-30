@@ -14,6 +14,9 @@ pub(crate) struct TurnState {
     calls: Vec<ToolCall>,
     evidence: ExecutionEvidence,
     consecutive_hitl_denials: u32,
+    /// Calls that have already taken their one automatic unconfined retry
+    /// after a sandbox denial (see `claim_auto_unconfined_retry`).
+    auto_unconfined_retries: std::collections::HashSet<String>,
 }
 
 impl TurnState {
@@ -23,6 +26,7 @@ impl TurnState {
             calls: Vec::new(),
             evidence: ExecutionEvidence::new(),
             consecutive_hitl_denials: 0,
+            auto_unconfined_retries: std::collections::HashSet::new(),
         }
     }
 
@@ -31,6 +35,20 @@ impl TurnState {
         self.calls.clear();
         self.evidence = ExecutionEvidence::new();
         self.consecutive_hitl_denials = 0;
+        self.auto_unconfined_retries.clear();
+    }
+
+    /// Whether `call_id` may take an automatic unconfined retry, recording
+    /// that it has. Returns `false` on every later ask for the same call.
+    ///
+    /// A retry outside the sandbox should not be able to raise the sandbox
+    /// denial that triggered it, but "should not" is not a termination
+    /// argument: without this, a tool that reports `SandboxDenied`
+    /// unconditionally would be re-run forever, since the allow rule that
+    /// authorised the first retry still authorises the next. One retry, then
+    /// the denial is reported like any other tool failure.
+    pub(crate) fn claim_auto_unconfined_retry(&mut self, call_id: &str) -> bool {
+        self.auto_unconfined_retries.insert(call_id.to_owned())
     }
 
     pub(crate) fn calls(&self) -> &[ToolCall] {

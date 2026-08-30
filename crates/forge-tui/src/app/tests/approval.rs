@@ -722,3 +722,227 @@ async fn a_denied_host_offers_a_persistent_grant_not_an_unconfined_run() {
         "{rendered}"
     );
 }
+
+fn denied_host_payload(call_id: &str) -> HitlPayload {
+    HitlPayload {
+        call_id: call_id.into(),
+        tool: "bash".into(),
+        args_redacted: json!({"command": "curl -I https://api.github.com"}),
+        reason: "blocked by the sandbox: the destination host is not allowed".into(),
+        failure: None,
+        sandbox_escalation: false,
+        denied_host: Some("api.github.com".into()),
+    }
+}
+
+/// The network branch used to key only on `denied_host` and sit ahead of any
+/// look at the decision, so refusing a network prompt granted the host for
+/// the session and ran the command — while the status line said "Action
+/// denied". A refusal must refuse.
+#[tokio::test]
+async fn denying_a_network_prompt_refuses_instead_of_granting_the_host() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(&mut app, denied_host_payload("call-host-deny"));
+
+    app.resolve_hitl_overlay(HitlDecision::Deny, ApprovalGrant::Once)
+        .await
+        .unwrap();
+
+    assert_eq!(app.status_state.message, "denied");
+    assert!(
+        app.pending_approved_tool.is_none(),
+        "a refused call must not start executing"
+    );
+    assert!(
+        app.session.pending_hitl().is_none(),
+        "the refusal must resolve the pending approval"
+    );
+}
+
+/// Esc is a refusal too, and reaches the same code by a different route.
+#[tokio::test]
+async fn escaping_a_network_prompt_refuses_instead_of_granting_the_host() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(&mut app, denied_host_payload("call-host-esc"));
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.drain_pending_hitl(None).await.unwrap();
+
+    assert_eq!(app.status_state.message, "Action denied");
+    assert!(app.pending_approved_tool.is_none());
+    assert!(app.session.pending_hitl().is_none());
+}
+
+/// Approving a network prompt still grants and runs — the refusal guard must
+/// not have broken the path it sits in front of.
+#[tokio::test]
+async fn approving_a_network_prompt_still_grants_the_host() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(&mut app, denied_host_payload("call-host-allow"));
+
+    app.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Session)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.status_state.message,
+        "allowed **.github.com for the session"
+    );
+}
+
+/// A command carrying unquoted shell syntax has no pattern that could match
+/// it again, so the rows offering to remember it must not appear. Offering
+/// them recorded a grant that never fired, and the operator was asked again
+/// for the very command they had just allowed for the session.
+#[tokio::test]
+async fn a_compound_command_offers_no_session_or_always_rows() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(
+        &mut app,
+        bash_hitl_payload("call-piped", "cargo test --workspace 2>&1 | tail -20"),
+    );
+
+    let shortcuts = app.approval_menu_shortcuts();
+    assert!(
+        !shortcuts.iter().any(|key| key == "a" || key == "A"),
+        "no remember rows for a compound command, got {shortcuts:?}"
+    );
+
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(rendered.contains("Run once"), "{rendered}");
+    assert!(!rendered.contains("this session"), "{rendered}");
+}
+
+/// The same command without the pipe is still rememberable, and the pattern
+/// it offers is one that matches it — the property that silently did not
+/// hold before.
+#[tokio::test]
+async fn a_simple_command_still_offers_a_pattern_that_matches_itself() {
+    let (_dir, mut app) = focus_test_app().await;
+    let payload = bash_hitl_payload("call-simple", "cargo test --workspace");
+    set_pending_approval(&mut app, payload.clone());
+
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(
+        rendered.contains("Allow bash(cargo test *) this session"),
+        "{rendered}"
+    );
+
+    press_down_to_session_pattern(&mut app).await;
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    flush_queued_hitl(&mut app).await;
+
+    assert!(
+        app.is_approval_pattern_remembered(&payload),
+        "the granted pattern must match the call it was granted for"
+    );
+}
+
+/// The help line under a remember row describes what the rule covers, so it
+/// has to narrow with the rule. `git(status --short)` kept the subcommand
+/// while the help still promised "similar git calls".
+#[tokio::test]
+async fn a_git_remember_row_describes_the_subcommand_it_grants() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(
+        &mut app,
+        HitlPayload {
+            call_id: "call-git".into(),
+            tool: "git".into(),
+            args_redacted: json!({"subcommand": "status", "args": ["--short"]}),
+            reason: "policy requires human approval".into(),
+            failure: None,
+            sandbox_escalation: false,
+            denied_host: None,
+        },
+    );
+
+    let rows = app.approval_menu_rows();
+    let session_row = rows
+        .iter()
+        .find(|row| row.key.as_deref() == Some("a"))
+        .expect("a git call is rememberable");
+    assert_eq!(session_row.label, "Allow git(status --short) this session");
+    let help = session_row.help.as_deref().unwrap_or_default();
+    assert!(help.contains("git status"), "{help}");
+    assert!(
+        !help.contains("similar git calls"),
+        "the help must not promise more than the rule grants: {help}"
+    );
+}
+
+/// The auto-approve gate reads the operator's persisted rules, so it has to
+/// read their `deny` rules too. Asking only "is it allowed?" made a personal
+/// `allow = ["bash(cargo test *)"]` override a workspace
+/// `deny = ["bash"]` — the prompt appeared and was auto-approved a tick
+/// later, and the command ran. Caught driving the real TUI.
+#[tokio::test]
+async fn a_deny_rule_stops_the_auto_approve_that_an_allow_rule_would_permit() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session
+        .set_governance(forge_governance::Governance::default().with_pattern_rules(
+            forge_governance::parse_pattern_rules(&["bash(cargo test *)"]),
+            forge_governance::parse_pattern_rules(&["bash"]),
+        ));
+    set_pending_hitl(
+        &mut app,
+        bash_hitl_payload("call-denied", "cargo test --workspace"),
+    );
+
+    app.drain_auto_hitl().await.unwrap();
+
+    assert!(
+        app.session.pending_hitl().is_some(),
+        "a deny carve-out must survive a broader allow rule"
+    );
+    assert!(
+        !app.pending_interaction.has_hitl_decision(),
+        "nothing should have been queued for approval"
+    );
+}
+
+/// Without the deny rule the same allow rule does auto-approve — the guard
+/// must not have disabled the feature it protects.
+#[tokio::test]
+async fn a_persisted_allow_rule_auto_approves_without_a_deny_rule() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session
+        .set_governance(forge_governance::Governance::default().with_pattern_rules(
+            forge_governance::parse_pattern_rules(&["bash(cargo test *)"]),
+            vec![],
+        ));
+    set_pending_hitl(
+        &mut app,
+        bash_hitl_payload("call-allowed", "cargo test --workspace"),
+    );
+
+    app.drain_auto_hitl().await.unwrap();
+    flush_queued_hitl(&mut app).await;
+
+    assert!(
+        app.session.pending_hitl().is_none(),
+        "an always-allow rule must clear the prompt without asking"
+    );
+}
+
+/// A leading env assignment is stripped when matching, so the suggested rule
+/// has to be stripped too — `bash(RUST_LOG=debug cargo *)` matched nothing,
+/// including the call it came from.
+#[tokio::test]
+async fn an_env_prefixed_command_offers_the_normalized_pattern() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(
+        &mut app,
+        bash_hitl_payload("call-env", "RUST_LOG=debug cargo test --workspace"),
+    );
+
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(
+        rendered.contains("Allow bash(cargo test *) this session"),
+        "{rendered}"
+    );
+}
