@@ -146,6 +146,16 @@ fn readable_remember_subject(call: &forge_types::ToolCall) -> String {
         } else {
             format!("{command} …")
         }
+    } else if let Some(subcommand) = call
+        .arguments
+        .get("subcommand")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|subcommand| !subcommand.is_empty())
+    {
+        // The rule keeps the subcommand, so "similar git calls" would promise
+        // something much broader than what is actually granted.
+        format!("{} {subcommand} …", call.name)
     } else if let Some(path) = call.arguments.get("path").and_then(|value| value.as_str()) {
         match path.rsplit_once('/') {
             Some((dir, _)) if !dir.is_empty() => format!("files under {dir}/"),
@@ -291,7 +301,11 @@ impl TuiApp {
                 .collect();
         }
         let call = tool_call_for_payload(payload);
-        let remembered = forge_governance::suggest_pattern(&call);
+        // `approval_menu_kinds` only offers the pattern rows when the call is
+        // pattern-eligible, which requires a suggestion; the fallback string
+        // is unreachable from those rows and never labels one.
+        let remembered =
+            forge_governance::suggest_pattern(&call).unwrap_or_else(|| call.name.clone());
         self.approval_menu_kinds()
             .into_iter()
             .map(|kind| match kind {
@@ -602,6 +616,22 @@ impl TuiApp {
             return Ok(());
         };
 
+        // Refusal is settled before anything else looks at the payload.
+        //
+        // The network branch below used to sit first and key only on
+        // `denied_host`, never reading `decision` — so "Don't run" and Esc on
+        // a network prompt granted the host for the session and ran the
+        // command, while the status line said "Action denied". `HitlDecision`
+        // is `#[non_exhaustive]`; anything that is not an explicit approval
+        // refuses, so an unrecognised variant can never reach a grant.
+        if !matches!(decision, HitlDecision::Approve) {
+            self.session.resolve_hitl(decision, "tui").await?;
+            self.push_toast("denied");
+            self.resume_turn_after_hitl();
+            self.enter_chat_composer();
+            return Ok(());
+        }
+
         if let Some(host) = payload.denied_host.clone() {
             let pattern = forge_tools::egress::suggest_host_pattern(&host);
             if grant == ApprovalGrant::Always {
@@ -632,7 +662,17 @@ impl TuiApp {
                 );
                 return Ok(());
             };
-            let pattern = self.session.allow_suggested_pattern_for_session(&call);
+            // `session_pattern_call_for_payload` already established the call
+            // is pattern-eligible, which now includes "a pattern exists that
+            // would match it again", so this is `Some`. Refuse rather than
+            // record an unusable grant if that ever stops holding.
+            let Some(pattern) = self.session.allow_suggested_pattern_for_session(&call) else {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "this call has no session pattern to remember; use Run once or Don't run",
+                );
+                return Ok(());
+            };
             // The session grant is applied either way: a rule written to the
             // permissions file is not reloaded mid-session, so without it an
             // "always" grant would still prompt again for the next matching
@@ -655,25 +695,9 @@ impl TuiApp {
             });
             return Ok(());
         }
-        match decision {
-            HitlDecision::Approve => {
-                self.apply_approved_hitl(terminal).await?;
-                self.push_toast("approved once");
-            }
-            HitlDecision::Deny => {
-                self.session.resolve_hitl(decision, "tui").await?;
-                self.push_toast("denied");
-                self.resume_turn_after_hitl();
-                self.enter_chat_composer();
-            }
-            // `HitlDecision` is `#[non_exhaustive]`; an unrecognised decision is denied.
-            _ => {
-                self.session.resolve_hitl(decision, "tui").await?;
-                self.push_toast("denied");
-                self.resume_turn_after_hitl();
-                self.enter_chat_composer();
-            }
-        }
+        // Every refusal returned above, so this is an approval for one call.
+        self.apply_approved_hitl(terminal).await?;
+        self.push_toast("approved once");
         Ok(())
     }
 
@@ -773,9 +797,15 @@ impl TuiApp {
             return Ok(());
         };
         let identity = self.approval_identity_for_payload(&payload);
+        // `grant_covers`, not `session_pattern_allows`: an "always allow"
+        // rule in the operator's permissions file is the same consent as a
+        // session grant, and reading only the session half is what made an
+        // "always" grant stop working the moment the session restarted.
+        // `grant_covers` also honours a `deny` carve-out, so a broad allow
+        // rule cannot auto-approve the exception the operator wrote.
         let identity_allowed = self
             .session_pattern_call_for_payload(&payload)
-            .is_some_and(|call| self.session.session_pattern_allows(&call));
+            .is_some_and(|call| self.session.grant_covers(&call));
         if !identity_allowed {
             return Ok(());
         }

@@ -249,8 +249,31 @@ impl AgentSession {
         {
             let call = completed.execution.call.clone();
             pending.budget = completed.execution.budget;
-            self.turn.restore_validation_budget(pending.budget);
             let denied_host = denied_host.clone();
+            // A sandbox denial never reaches `authorize`, so nothing on this
+            // path used to consult the operator's allow rules at all: a grant
+            // made at the last prompt — "allow for this session", or an
+            // `allow` line in their permissions file — was written somewhere
+            // this code did not read, and the very next matching command
+            // asked again. Re-running unconfined is exactly the consent the
+            // prompt would collect, so when a rule already covers the call,
+            // take it and skip the prompt.
+            //
+            // Only escalation is auto-resolved. A denied *host* is not a
+            // property of the command shape, so a command-shaped rule must
+            // not silently open a network destination; that still asks.
+            //
+            // The budget travels with the retry rather than being handed
+            // back to the turn, so the restore below belongs to the prompt
+            // path only.
+            if denied_host.is_none()
+                && self.enable_gov
+                && self.governance.grant_covers(&call)
+                && self.turn.claim_auto_unconfined_retry(&call.id)
+            {
+                return self.retry_unconfined(call, pending).await;
+            }
+            self.turn.restore_validation_budget(pending.budget);
             let failure = observed_failure(content, reason);
             return self
                 .enter_sandbox_hitl(call, reason.clone(), failure, denied_host)
@@ -851,6 +874,35 @@ impl AgentSession {
             }
         }
         Ok(())
+    }
+
+    /// Re-run a sandbox-denied call outside the sandbox, without a prompt,
+    /// because an allow rule the operator already granted covers it.
+    ///
+    /// Mirrors what `resolve_hitl`'s approve path does with the same call —
+    /// unconfined, and without a second `tool_intent` journal entry, since
+    /// the intent for this call was appended before its confined attempt.
+    async fn retry_unconfined(
+        &mut self,
+        call: ToolCall,
+        mut pending: PendingToolApplications,
+    ) -> Result<ModelResponseApplication, LoopError> {
+        let mut budget = std::mem::take(&mut pending.budget);
+        let started = self
+            .begin_hitl_execution_with_options(&call, &mut budget, true, false)
+            .await?;
+        pending.budget = budget;
+        match started {
+            Some(PendingHitlExecution { execution }) => Ok(ModelResponseApplication::Execute(
+                Box::new(PendingToolApplication {
+                    execution,
+                    remaining: pending,
+                }),
+            )),
+            // `background_run` / `ask_user_question` dispatch themselves and
+            // leave nothing to execute; carry on with the rest of the batch.
+            None => self.next_tool_application(pending).await,
+        }
     }
 
     async fn enter_sandbox_hitl(

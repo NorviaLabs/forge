@@ -90,53 +90,89 @@ pub fn parse_pattern_rules<S: AsRef<str>>(raw: &[S]) -> Vec<PatternRule> {
 }
 
 /// Suggest a pattern-rule string for "allow this pattern going forward",
-/// generalizing the call's command prefix / path directory / host so the
-/// rule reasonably covers similar future invocations rather than only the
-/// exact one just approved. Falls back to the bare tool name when the call
-/// carries no subject this module knows how to generalize — the caller
-/// should show this string for confirmation before applying it, exactly as
-/// returned.
+/// generalizing the call's command prefix / subcommand / path directory /
+/// host so the rule reasonably covers similar future invocations rather than
+/// only the exact one just approved. Falls back to the bare tool name when
+/// the call carries no subject this module knows how to generalize — the
+/// caller should show this string for confirmation before applying it,
+/// exactly as returned.
 ///
-/// The result always matches `call`: `PatternRule::parse(&suggest_pattern(call))
-/// .unwrap().matches(call)` holds for every call, which is the property a
+/// Returns `None` when this call cannot be generalized into a rule that would
+/// match it again: a shell command carrying unquoted control or expansion
+/// syntax (`cargo test | tail`, `a && b`) has no permission subject at all,
+/// because [`PatternRule::matches`] deliberately refuses to let a compound
+/// program inherit a prefix's permission. A caller must not offer a
+/// "remember this" affordance for such a call — the rule it would write is
+/// one that can never fire.
+///
+/// The result always matches `call`:
+/// `PatternRule::parse(&suggest_pattern(call)?).unwrap().matches(call)` holds
+/// for every call this returns `Some` for, which is the property a
 /// confirmation UI is implicitly promising ("approving this widens future
-/// calls like this one").
-pub fn suggest_pattern(call: &ToolCall) -> String {
+/// calls like this one"). Asserted by
+/// `every_suggested_pattern_matches_the_call_it_came_from`.
+pub fn suggest_pattern(call: &ToolCall) -> Option<String> {
     let Some(subject) = subject_for(&call.name, &call.arguments) else {
-        return call.name.clone();
+        return Some(call.name.clone());
     };
     if is_shell_tool(&call.name) {
         // Canonical form is always `bash(...)` so one allow rule covers every
         // shell-equivalent tool name (background_run, exec_command, …).
-        let mut words = subject.split_whitespace();
-        let prefix: Vec<&str> = words.by_ref().take(2).collect();
-        if prefix.is_empty() {
-            return "bash(*)".into();
-        }
-        // Only append a wildcard when there's more command left after the
-        // prefix — otherwise `"ls *"` (with the trailing space baked in)
-        // would never match the literal subject `"ls"` it was suggested for.
-        return if words.next().is_some() {
-            format!("bash({} *)", prefix.join(" "))
-        } else {
-            format!("bash({})", prefix.join(" "))
-        };
+        //
+        // The prefix is taken from the *normalized* subject, the same string
+        // `matches` will test a later call against. Reading it off the raw
+        // command instead is how `RUST_LOG=debug cargo test` used to suggest
+        // `bash(RUST_LOG=debug cargo *)` — a rule that never matched anything,
+        // including the call it was offered for, because the match side
+        // strips leading env assignments and the suggest side did not.
+        let normalized = permission_subject(&subject)?;
+        return Some(prefix_pattern("bash", &normalized));
+    }
+    if is_git_tool(&call.name) {
+        // `git` is gated on the destructive *form* (`reset --hard`,
+        // `clean -f`), so the rule has to keep the subcommand and its flags.
+        // Falling through to the bare tool name — which is what happened
+        // before this branch existed — turned "allow this `git reset --hard`"
+        // into "allow every git call", `git clean -fd` included.
+        return Some(prefix_pattern(&call.name, &subject));
     }
     if is_file_tool(&call.name) {
-        return match subject.rsplit_once('/') {
+        return Some(match subject.rsplit_once('/') {
             Some((dir, _)) if !dir.is_empty() => format!("{}({dir}/**)", call.name),
             _ => format!("{}(**)", call.name),
-        };
+        });
     }
     if is_fetch_tool(&call.name) {
-        return format!("{}({subject})", call.name);
+        return Some(format!("{}({subject})", call.name));
     }
-    call.name.clone()
+    Some(call.name.clone())
+}
+
+/// `tool(first-two-words *)`, or `tool(subject)` when the subject is already
+/// two words or fewer.
+///
+/// The wildcard is only appended when there is more subject left after the
+/// prefix — otherwise `"ls *"` (with the trailing space baked in) would never
+/// match the literal subject `"ls"` it was suggested for.
+fn prefix_pattern(tool: &str, subject: &str) -> String {
+    let mut words = subject.split_whitespace();
+    let prefix: Vec<&str> = words.by_ref().take(2).collect();
+    if prefix.is_empty() {
+        return format!("{tool}(*)");
+    }
+    if words.next().is_some() {
+        format!("{tool}({} *)", prefix.join(" "))
+    } else {
+        format!("{tool}({})", prefix.join(" "))
+    }
 }
 
 fn subject_for(tool: &str, args: &serde_json::Value) -> Option<String> {
     if is_shell_tool(tool) {
         return command_argument(args);
+    }
+    if is_git_tool(tool) {
+        return git_subject(args);
     }
     if is_file_tool(tool) {
         return args
@@ -151,6 +187,36 @@ fn subject_for(tool: &str, args: &serde_json::Value) -> Option<String> {
             .and_then(extract_host);
     }
     None
+}
+
+/// The structured `git` tool: `{"subcommand": "reset", "args": ["--hard"]}`.
+///
+/// Its arguments carry no shell string, so there is no control syntax to
+/// refuse — the argv is already split, and nothing in it can chain a second
+/// command the way a shell line can.
+fn git_subject(args: &serde_json::Value) -> Option<String> {
+    let subcommand = args.get("subcommand")?.as_str()?.trim();
+    if subcommand.is_empty() {
+        return None;
+    }
+    let rest = args
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|argument| !argument.is_empty());
+    Some(
+        std::iter::once(subcommand)
+            .chain(rest)
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn is_git_tool(tool: &str) -> bool {
+    tool == "git"
 }
 
 /// Tools that run an arbitrary shell command string (HITL + unified patterns).
@@ -465,9 +531,9 @@ mod tests {
             "background_run",
             json!({"command": "cargo test --all --release"}),
         );
-        assert_eq!(suggest_pattern(&c), "bash(cargo test *)");
+        assert_eq!(suggest_pattern(&c).as_deref(), Some("bash(cargo test *)"));
         let c = call("exec_command", json!({"cmd": "ls -la /tmp"}));
-        assert_eq!(suggest_pattern(&c), "bash(ls -la *)");
+        assert_eq!(suggest_pattern(&c).as_deref(), Some("bash(ls -la *)"));
     }
 
     #[test]
@@ -522,44 +588,154 @@ mod tests {
     #[test]
     fn suggest_pattern_generalizes_shell_command_to_a_two_word_prefix() {
         let c = call("bash", json!({"command": "cargo test --all --release"}));
-        assert_eq!(suggest_pattern(&c), "bash(cargo test *)");
+        assert_eq!(suggest_pattern(&c).as_deref(), Some("bash(cargo test *)"));
     }
 
     #[test]
     fn suggest_pattern_generalizes_file_path_to_its_directory() {
         let c = call("write_file", json!({"path": "src/app/render.rs"}));
-        assert_eq!(suggest_pattern(&c), "write_file(src/app/**)");
+        assert_eq!(
+            suggest_pattern(&c).as_deref(),
+            Some("write_file(src/app/**)")
+        );
     }
 
     #[test]
     fn suggest_pattern_generalizes_fetch_url_to_its_host() {
         let c = call("fetch", json!({"url": "https://docs.example.com/page?x=1"}));
-        assert_eq!(suggest_pattern(&c), "fetch(docs.example.com)");
+        assert_eq!(
+            suggest_pattern(&c).as_deref(),
+            Some("fetch(docs.example.com)")
+        );
     }
 
     #[test]
     fn suggest_pattern_falls_back_to_bare_tool_name_for_unrecognized_shapes() {
         let c = call("deploy", json!({"target": "prod"}));
-        assert_eq!(suggest_pattern(&c), "deploy");
+        assert_eq!(suggest_pattern(&c).as_deref(), Some("deploy"));
     }
 
-    /// The property a confirmation UI relies on: the suggested pattern must
-    /// always match the call it was suggested for, across every subject
-    /// kind (shell, file, fetch, unrecognized) and edge case (empty/missing
-    /// arguments, single-word command, root-level path).
+    /// A leading env assignment is stripped on the match side, so it must be
+    /// stripped on the suggest side too. Reading the prefix off the raw
+    /// command produced `bash(RUST_LOG=debug cargo *)` — a rule that matched
+    /// nothing at all, including the call it was offered for.
     #[test]
-    fn suggest_pattern_always_matches_the_originating_call() {
+    fn suggest_pattern_normalizes_before_taking_the_prefix() {
+        let c = call(
+            "bash",
+            json!({"command": "RUST_LOG=debug cargo test --workspace"}),
+        );
+        assert_eq!(suggest_pattern(&c).as_deref(), Some("bash(cargo test *)"));
+        let rule = PatternRule::parse(&suggest_pattern(&c).unwrap()).unwrap();
+        assert!(rule.matches(&c));
+        assert!(rule.matches(&call(
+            "bash",
+            json!({"command": "RUST_LOG=trace cargo test -p forge-core"})
+        )));
+    }
+
+    /// A compound command has no permission subject — `matches` refuses to
+    /// let `cargo test; rm -rf /` inherit a `cargo test *` grant — so there
+    /// is no rule to suggest either. Offering one anyway recorded a grant
+    /// that could never fire, and the operator was asked again for the exact
+    /// command they had just allowed for the session.
+    #[test]
+    fn no_pattern_is_suggested_for_a_command_with_shell_syntax() {
+        for command in [
+            "cargo test --workspace 2>&1 | tail -20",
+            "git status && git diff",
+            "echo $HOME",
+            "grep -rn foo crates/ | head",
+            "ls > out.txt",
+            "curl example.com; rm -rf /tmp/x",
+        ] {
+            let c = call("bash", json!({ "command": command }));
+            assert_eq!(
+                suggest_pattern(&c),
+                None,
+                "{command:?} has no matchable pattern and must not suggest one"
+            );
+        }
+    }
+
+    /// The `git` tool is gated on the destructive *form*, so the rule has to
+    /// keep the subcommand. Falling back to the bare tool name turned
+    /// "allow this `git reset --hard`" into "allow every git call".
+    #[test]
+    fn git_pattern_keeps_the_subcommand_and_does_not_grant_every_git_call() {
+        let reset = call(
+            "git",
+            json!({"subcommand": "reset", "args": ["--hard", "HEAD~1"]}),
+        );
+        assert_eq!(
+            suggest_pattern(&reset).as_deref(),
+            Some("git(reset --hard *)")
+        );
+
+        let rule = PatternRule::parse(&suggest_pattern(&reset).unwrap()).unwrap();
+        assert!(rule.matches(&reset));
+        assert!(rule.matches(&call(
+            "git",
+            json!({"subcommand": "reset", "args": ["--hard", "origin/main"]})
+        )));
+        assert!(
+            !rule.matches(&call(
+                "git",
+                json!({"subcommand": "clean", "args": ["-fd"]})
+            )),
+            "a reset grant must not also permit `git clean -fd`"
+        );
+        assert!(!rule.matches(&call(
+            "git",
+            json!({"subcommand": "reset", "args": ["--soft", "HEAD~1"]})
+        )));
+    }
+
+    #[test]
+    fn git_pattern_without_arguments_names_only_the_subcommand() {
+        let c = call("git", json!({"subcommand": "status", "args": []}));
+        assert_eq!(suggest_pattern(&c).as_deref(), Some("git(status)"));
+        let rule = PatternRule::parse("git(status)").unwrap();
+        assert!(rule.matches(&c));
+        assert!(!rule.matches(&call("git", json!({"subcommand": "push", "args": []}))));
+    }
+
+    /// The property a confirmation UI relies on: whenever a pattern is
+    /// suggested at all, it must match the call it was suggested for —
+    /// across every subject kind (shell, git, file, fetch, unrecognized) and
+    /// edge case (empty/missing arguments, single-word command, root-level
+    /// path, leading env assignments, git global options).
+    ///
+    /// The earlier version of this test listed only commands free of shell
+    /// syntax, which is exactly the class the suggest/match asymmetry did not
+    /// affect — so it passed while `cargo test … | tail` silently produced a
+    /// grant that never fired.
+    #[test]
+    fn every_suggested_pattern_matches_the_call_it_came_from() {
         let calls = [
             call("bash", json!({"command": "cargo test --all"})),
             call("bash", json!({"command": "ls"})),
+            call("bash", json!({"command": "ls -la"})),
+            call("bash", json!({"command": ["cargo", "build", "--release"]})),
+            call("bash", json!({"command": "RUST_LOG=debug cargo run"})),
+            call("bash", json!({"command": "git -C /tmp status --short"})),
+            call("bash", json!({"command": "rg \"Auto|Manual\" crates"})),
             call("bash", json!({})),
+            call("background_run", json!({"command": "npm run build"})),
+            call("exec_command", json!({"cmd": "pytest -q tests"})),
+            call("git", json!({"subcommand": "reset", "args": ["--hard"]})),
+            call("git", json!({"subcommand": "clean", "args": ["-fd"]})),
+            call("git", json!({"subcommand": "status", "args": []})),
+            call("git", json!({"subcommand": "commit"})),
             call("write_file", json!({"path": "src/lib.rs"})),
             call("write_file", json!({"path": "Cargo.toml"})),
             call("fetch", json!({"url": "https://example.com"})),
             call("deploy", json!({"target": "prod"})),
         ];
         for c in calls {
-            let suggested = suggest_pattern(&c);
+            let Some(suggested) = suggest_pattern(&c) else {
+                panic!("expected a pattern for {c:?}");
+            };
             let rule = PatternRule::parse(&suggested)
                 .unwrap_or_else(|| panic!("suggested pattern must parse: {suggested}"));
             assert!(
