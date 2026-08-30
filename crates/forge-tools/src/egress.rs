@@ -33,6 +33,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use std::path::{Path, PathBuf};
@@ -65,40 +66,70 @@ pub const HOST_DENIED_EXPLANATION: &str =
     "blocked by the sandbox: the destination host is not allowed by \
      the personal host(...) network permissions.";
 
-/// After a confined process exits non-zero, decide whether the sandbox
-/// (filesystem or egress) is why.
+/// Decide whether a confined process encountered a sandbox denial.
 ///
-/// The proxy log is the source of truth for network. Client output is only
-/// used when `explain_denial` recognises a boundary string. A host taken
-/// from the grant is never inferred from a URL in the output alone — that
-/// would turn a real 403 from an already-allowed host into a grant prompt.
-pub fn denial_for_failed_confined_command(
-    output: &str,
+/// Successful shell commands inspect only shell-generated stderr denials, so
+/// ordinary output and non-fatal child-process warnings cannot create an
+/// approval prompt. The invocation proxy is the source of truth for network.
+/// A host is never inferred from a URL alone — that would turn a real 403 from
+/// an already-allowed host into a grant prompt.
+pub fn denial_for_confined_command(
+    content: &str,
+    stderr: &str,
+    command_succeeded: bool,
+    shell: &str,
     workspace_root: &std::path::Path,
-    grant: Option<&crate::sandbox::EgressGrant>,
+    denied_host: Option<String>,
 ) -> Option<crate::ToolError> {
-    let from_proxy = grant.and_then(crate::sandbox::EgressGrant::take_denied_host);
-    let (reason, denied_host) =
-        if let Some(explanation) = crate::sandbox::explain_denial(output, workspace_root) {
-            (
-                explanation.to_string(),
-                from_proxy.or_else(|| extract_denied_host(output)),
-            )
-        } else {
-            let host = from_proxy?;
-            (HOST_DENIED_EXPLANATION.to_string(), Some(host))
-        };
-    let mut content = output.to_string();
-    if !content.contains(&reason) {
-        if !content.is_empty() {
-            content.push('\n');
+    let explanation = if command_succeeded {
+        explain_shell_denial(stderr, shell, workspace_root)
+    } else {
+        crate::sandbox::explain_denial(content, workspace_root)
+    };
+    let (reason, denied_host) = if let Some(explanation) = explanation {
+        (
+            explanation.to_string(),
+            denied_host.or_else(|| extract_denied_host(content)),
+        )
+    } else {
+        let host = denied_host?;
+        (HOST_DENIED_EXPLANATION.to_string(), Some(host))
+    };
+    let mut reported = content.to_string();
+    if !reported.contains(&reason) {
+        if !reported.is_empty() {
+            reported.push('\n');
         }
-        content.push_str(&reason);
+        reported.push_str(&reason);
     }
     Some(crate::ToolError::SandboxDenied {
-        content,
+        content: reported,
         reason,
         denied_host,
+    })
+}
+
+/// A zero aggregate shell status is ambiguous: a pipeline can hide a failed
+/// redirection, but successful tools also emit non-fatal sandbox warnings (for
+/// example, macOS `git` may fail to write an `xcrun` cache and continue).
+/// Restrict output-based detection to diagnostics emitted by the shell itself;
+/// proxy refusals do not rely on this heuristic.
+fn explain_shell_denial(
+    stderr: &str,
+    expected_shell: &str,
+    workspace_root: &std::path::Path,
+) -> Option<&'static str> {
+    let expected_shell = std::path::Path::new(expected_shell)
+        .file_name()
+        .and_then(|name| name.to_str())?;
+    stderr.lines().find_map(|line| {
+        let prefix = line.split_once(':')?.0;
+        let shell = std::path::Path::new(prefix)
+            .file_name()
+            .and_then(|name| name.to_str())?;
+        (shell == expected_shell)
+            .then(|| crate::sandbox::explain_denial(line, workspace_root))
+            .flatten()
     })
 }
 
@@ -204,6 +235,16 @@ impl EgressShared {
         }
     }
 
+    /// Share live policy updates while keeping refusal attribution local to
+    /// one command. Session-global refusal storage lets a swallowed denial
+    /// poison whichever unrelated command happens to fail next.
+    fn for_invocation(&self) -> Self {
+        Self {
+            policy: Arc::clone(&self.policy),
+            denied: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     /// Permit `pattern` for the rest of this proxy's life.
     pub fn grant_host(&self, pattern: &str) {
         self.policy
@@ -275,9 +316,12 @@ impl Drop for EgressProxy {
 impl EgressProxy {
     /// Bind to an ephemeral port on loopback and start serving.
     pub async fn start(policy: EgressPolicy) -> io::Result<Self> {
+        Self::start_with_shared(EgressShared::new(policy)).await
+    }
+
+    async fn start_with_shared(shared: EgressShared) -> io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let addr = listener.local_addr()?;
-        let shared = EgressShared::new(policy);
 
         let accept = shared.clone();
         let task = tokio::spawn(async move {
@@ -329,6 +373,10 @@ impl EgressProxy {
         path: impl AsRef<Path>,
         _policy: EgressPolicy,
     ) -> io::Result<()> {
+        self.serve_on_unix_socket_inner(path).await
+    }
+
+    async fn serve_on_unix_socket_inner(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
         let path = path.as_ref().to_path_buf();
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
@@ -367,6 +415,54 @@ impl EgressProxy {
     ///   must not be described as one.
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+}
+
+static NEXT_INVOCATION_SOCKET: AtomicU64 = AtomicU64::new(1);
+
+/// A proxy endpoint and refusal queue owned by one confined shell invocation.
+///
+/// The session policy remains shared, so a session-only HITL grant applies to
+/// the retry. The listener and denied-host queue do not: concurrent commands
+/// cannot steal each other's refusal, and a command that masks its own exit
+/// status cannot leave a host behind for the next failure.
+pub struct EgressInvocation {
+    _proxy: EgressProxy,
+    grant: crate::sandbox::EgressGrant,
+}
+
+impl EgressInvocation {
+    /// Create an invocation-local endpoint from a session grant. Grants built
+    /// without live proxy control are test doubles and retain their original
+    /// endpoint.
+    pub async fn start(template: Option<&crate::sandbox::EgressGrant>) -> io::Result<Option<Self>> {
+        let Some(shared) = template.and_then(|grant| grant.control.as_ref()) else {
+            return Ok(None);
+        };
+        let mut proxy = EgressProxy::start_with_shared(shared.for_invocation()).await?;
+        let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
+        let socket_path = std::env::temp_dir().join(format!(
+            "forge-egress-{}-{sequence}.sock",
+            std::process::id()
+        ));
+        proxy.serve_on_unix_socket_inner(&socket_path).await?;
+        let grant = crate::sandbox::EgressGrant {
+            proxy_port: proxy.addr().port(),
+            socket_path,
+            control: Some(proxy.shared().clone()),
+        };
+        Ok(Some(Self {
+            _proxy: proxy,
+            grant,
+        }))
+    }
+
+    pub fn grant(&self) -> &crate::sandbox::EgressGrant {
+        &self.grant
+    }
+
+    pub fn take_denied_host(&self) -> Option<String> {
+        self.grant.take_denied_host()
     }
 }
 
@@ -969,17 +1065,14 @@ mod tests {
     #[test]
     fn a_proxy_refusal_is_a_sandbox_denial_even_when_the_client_prints_something_else() {
         let dir = tempfile::tempdir().unwrap();
-        let shared = EgressShared::new(EgressPolicy::new());
-        shared.record_denied("example.com".into());
-        let grant = crate::sandbox::EgressGrant {
-            proxy_port: 1,
-            socket_path: dir.path().join("e.sock"),
-            control: Some(shared),
-        };
-        let error = denial_for_failed_confined_command(
-            "HTTP 403: unexpected status from the remote API",
+        let output = "HTTP 403: unexpected status from the remote API";
+        let error = denial_for_confined_command(
+            output,
+            output,
+            false,
+            "sh",
             dir.path(),
-            Some(&grant),
+            Some("example.com".into()),
         )
         .expect("a proxy refusal must be a sandbox denial");
         let crate::ToolError::SandboxDenied {
@@ -998,8 +1091,11 @@ mod tests {
     fn a_failed_command_is_not_a_sandbox_denial_without_a_proxy_refusal() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
-            denial_for_failed_confined_command(
+            denial_for_confined_command(
                 "HTTP 403: unexpected status from the remote API\nhttps://example.com/v1",
+                "HTTP 403: unexpected status from the remote API\nhttps://example.com/v1",
+                false,
+                "sh",
                 dir.path(),
                 None,
             )
@@ -1049,6 +1145,47 @@ mod tests {
         assert!(
             !status.contains("403"),
             "a granted family must not 403, got {status:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn denied_hosts_are_isolated_between_invocations() {
+        let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let template = crate::sandbox::EgressGrant {
+            proxy_port: proxy.addr().port(),
+            socket_path: dir.path().join("session.sock"),
+            control: Some(proxy.shared().clone()),
+        };
+        let first = EgressInvocation::start(Some(&template))
+            .await
+            .unwrap()
+            .unwrap();
+        let second = EgressInvocation::start(Some(&template))
+            .await
+            .unwrap()
+            .unwrap();
+        let first_socket = first.grant().socket_path.clone();
+
+        let status = connect_status(first.grant().proxy_port, "blocked.example:443").await;
+        assert!(
+            status.contains("403"),
+            "the host should be refused: {status}"
+        );
+        assert_eq!(first.take_denied_host().as_deref(), Some("blocked.example"));
+        assert_eq!(second.take_denied_host(), None);
+        assert_eq!(template.take_denied_host(), None);
+
+        template.control.as_ref().unwrap().grant_host("**.example");
+        assert!(first.grant().permits_host("blocked.example"));
+        assert!(second.grant().permits_host("blocked.example"));
+
+        drop(first);
+        assert!(
+            !first_socket.exists(),
+            "an invocation must remove its socket when the command ends"
         );
     }
 }

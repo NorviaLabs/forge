@@ -324,9 +324,22 @@ async fn run_shell_command_inner(
     // Confinement is applied here, at spawn, because that is the only moment
     // it can be: a process that starts unconfined stays unconfined for its
     // whole life. The supported CLI never starts when the host cannot confine.
+    let egress_invocation = if confined {
+        crate::egress::EgressInvocation::start(egress)
+            .await
+            .map_err(|error| {
+                ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
+            })?
+    } else {
+        None
+    };
+    let command_egress = egress_invocation
+        .as_ref()
+        .map(crate::egress::EgressInvocation::grant)
+        .or(egress);
     let mut policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root)
         .with_command_access(command)
-        .with_egress(egress);
+        .with_egress(command_egress);
     if crate::credentials::needs_git_writes(command) {
         policy = policy.with_git_writable();
     }
@@ -391,7 +404,7 @@ async fn run_shell_command_inner(
         for (name, value) in crate::credentials::isolated_config_env(&identity_dir) {
             shell.env(name, value);
         }
-        for (name, value) in crate::credentials::host_identity_env(egress, &identity_dir) {
+        for (name, value) in crate::credentials::host_identity_env(command_egress, &identity_dir) {
             shell.env(name, value);
         }
         for (name, value) in policy.toolchain_env() {
@@ -420,10 +433,22 @@ async fn run_shell_command_inner(
     // as "Operation not permitted", which reads as a file-permission problem
     // on disk. Neither is true, and a model that believes them retries or
     // chases the wrong fix. Say which boundary stopped it.
-    if confined_run && !status.success() {
-        if let Some(error) =
-            crate::egress::denial_for_failed_confined_command(&content, workspace_root, egress)
-        {
+    // The shell's aggregate status is not sufficient: a later pipeline stage
+    // or `|| true` can exit zero after an earlier operation was denied. On a
+    // successful aggregate status, inspect stderr only to avoid treating
+    // denial-like prose on ordinary stdout as a real sandbox event.
+    if confined_run {
+        let denied_host = egress_invocation
+            .as_ref()
+            .and_then(crate::egress::EgressInvocation::take_denied_host);
+        if let Some(error) = crate::egress::denial_for_confined_command(
+            &content,
+            err.as_ref(),
+            status.success(),
+            "bash",
+            workspace_root,
+            denied_host,
+        ) {
             return Err(error);
         }
     }
