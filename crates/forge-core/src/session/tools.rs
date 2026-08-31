@@ -36,12 +36,12 @@ pub enum ModelResponseApplication {
 }
 
 pub struct PendingToolApplication {
-    execution: PendingToolExecution,
+    executions: Vec<PendingToolExecution>,
     remaining: PendingToolApplications,
 }
 
 pub struct CompletedToolApplication {
-    execution: CompletedToolExecution,
+    executions: Vec<CompletedToolExecution>,
     remaining: PendingToolApplications,
 }
 
@@ -91,7 +91,12 @@ impl PendingToolExecution {
 impl PendingToolApplication {
     pub async fn execute(self) -> CompletedToolApplication {
         CompletedToolApplication {
-            execution: self.execution.execute().await,
+            executions: futures::future::join_all(
+                self.executions
+                    .into_iter()
+                    .map(PendingToolExecution::execute),
+            )
+            .await,
             remaining: self.remaining,
         }
     }
@@ -202,11 +207,69 @@ async fn git_pre_state(tool_ctx: &ToolContext, call: &ToolCall) -> Option<GitPre
 }
 
 impl AgentSession {
+    fn can_parallelize_tool_call(&self, call: &ToolCall) -> bool {
+        if self.journaled_tool_results.contains_key(&call.id) {
+            return false;
+        }
+        let call = forge_tools::canonicalize_tool_call(call.clone());
+        let Some(tool) = self.tools.get(&call.name) else {
+            return false;
+        };
+        if tool.side_effect_class() != SideEffectClass::Read
+            || !tool.idempotent()
+            || !tool.parallel_safe()
+            || self
+                .tools
+                .validate_call(&call.name, &call.arguments)
+                .is_err()
+        {
+            return false;
+        }
+        !self.enable_gov
+            || self.governance.authorize(&call, SideEffectClass::Read) == PolicyDecision::Allow
+    }
+
     pub(crate) async fn next_tool_application(
         &mut self,
         mut pending: PendingToolApplications,
     ) -> Result<ModelResponseApplication, LoopError> {
+        const MAX_PARALLEL_READS: usize = 8;
         while let Some(call) = pending.calls.next() {
+            if self.can_parallelize_tool_call(&call) {
+                let mut calls = vec![call];
+                while calls.len() < MAX_PARALLEL_READS
+                    && pending
+                        .calls
+                        .as_slice()
+                        .first()
+                        .is_some_and(|call| self.can_parallelize_tool_call(call))
+                {
+                    calls.push(pending.calls.next().expect("peeked tool call"));
+                }
+                let mut executions = Vec::with_capacity(calls.len());
+                for call in calls {
+                    let mut budget = pending.budget.clone();
+                    match self.start_tool_call(&call, &mut budget).await? {
+                        ToolExecutionStart::Execute(execution) => executions.push(execution),
+                        ToolExecutionStart::Finished(None) => {}
+                        ToolExecutionStart::Finished(Some(pause)) => {
+                            self.turn.restore_validation_budget(pending.budget);
+                            return Ok(ModelResponseApplication::Finished(ApplyOutcome::Hitl(
+                                pause,
+                            )));
+                        }
+                    }
+                }
+                if !executions.is_empty() {
+                    return Ok(ModelResponseApplication::Execute(Box::new(
+                        PendingToolApplication {
+                            executions,
+                            remaining: pending,
+                        },
+                    )));
+                }
+                continue;
+            }
             match self.start_tool_call(&call, &mut pending.budget).await? {
                 ToolExecutionStart::Finished(Some(pause)) => {
                     self.turn.restore_validation_budget(pending.budget);
@@ -225,7 +288,7 @@ impl AgentSession {
                 ToolExecutionStart::Execute(execution) => {
                     return Ok(ModelResponseApplication::Execute(Box::new(
                         PendingToolApplication {
-                            execution,
+                            executions: vec![execution],
                             remaining: pending,
                         },
                     )));
@@ -241,56 +304,63 @@ impl AgentSession {
         completed: CompletedToolApplication,
     ) -> Result<ModelResponseApplication, LoopError> {
         let mut pending = completed.remaining;
-        if let Err(ToolError::SandboxDenied {
-            content,
-            reason,
-            denied_host,
-        }) = &completed.execution.result
-        {
-            let call = completed.execution.call.clone();
-            pending.budget = completed.execution.budget;
-            let denied_host = denied_host.clone();
-            // A sandbox denial never reaches `authorize`, so nothing on this
-            // path used to consult the operator's allow rules at all: a grant
-            // made at the last prompt — "allow for this session", or an
-            // `allow` line in their permissions file — was written somewhere
-            // this code did not read, and the very next matching command
-            // asked again. Re-running unconfined is exactly the consent the
-            // prompt would collect, so when a rule already covers the call,
-            // take it and skip the prompt.
-            //
-            // Only escalation is auto-resolved. A denied *host* is not a
-            // property of the command shape, so a command-shaped rule must
-            // not silently open a network destination; that still asks.
-            //
-            // The budget travels with the retry rather than being handed
-            // back to the turn, so the restore below belongs to the prompt
-            // path only.
-            if denied_host.is_none()
-                && self.enable_gov
-                && self.governance.grant_covers(&call)
-                && self.turn.claim_auto_unconfined_retry(&call.id)
+        let parallel = completed.executions.len() > 1;
+        for execution in completed.executions {
+            if let Err(ToolError::SandboxDenied {
+                content,
+                reason,
+                denied_host,
+            }) = &execution.result
             {
-                return self.retry_unconfined(call, pending).await;
+                let call = execution.call.clone();
+                if !parallel {
+                    pending.budget = execution.budget;
+                }
+                let denied_host = denied_host.clone();
+                // A sandbox denial never reaches `authorize`, so nothing on this
+                // path used to consult the operator's allow rules at all: a grant
+                // made at the last prompt — "allow for this session", or an
+                // `allow` line in their permissions file — was written somewhere
+                // this code did not read, and the very next matching command
+                // asked again. Re-running unconfined is exactly the consent the
+                // prompt would collect, so when a rule already covers the call,
+                // take it and skip the prompt.
+                //
+                // Only escalation is auto-resolved. A denied *host* is not a
+                // property of the command shape, so a command-shaped rule must
+                // not silently open a network destination; that still asks.
+                //
+                // The budget travels with the retry rather than being handed
+                // back to the turn, so the restore below belongs to the prompt
+                // path only.
+                if denied_host.is_none()
+                    && self.enable_gov
+                    && self.governance.grant_covers(&call)
+                    && self.turn.claim_auto_unconfined_retry(&call.id)
+                {
+                    return self.retry_unconfined(call, pending).await;
+                }
+                self.turn.restore_validation_budget(pending.budget);
+                let failure = observed_failure(content, reason);
+                return self
+                    .enter_sandbox_hitl(call, reason.clone(), failure, denied_host)
+                    .await
+                    .map(ModelResponseApplication::Finished);
             }
-            self.turn.restore_validation_budget(pending.budget);
-            let failure = observed_failure(content, reason);
-            return self
-                .enter_sandbox_hitl(call, reason.clone(), failure, denied_host)
-                .await
-                .map(ModelResponseApplication::Finished);
-        }
-        let (budget, result) = self.finish_tool_call(completed.execution).await;
-        pending.budget = budget;
-        if let Err(error) = result {
-            self.turn.restore_validation_budget(pending.budget);
-            return Err(error);
-        }
-        if self.active_task.lifecycle == TaskLifecycle::Failed {
-            self.turn.restore_validation_budget(pending.budget);
-            return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(
-                pending.response,
-            )));
+            let (budget, result) = self.finish_tool_call(execution).await;
+            if !parallel {
+                pending.budget = budget;
+            }
+            if let Err(error) = result {
+                self.turn.restore_validation_budget(pending.budget);
+                return Err(error);
+            }
+            if self.active_task.lifecycle == TaskLifecycle::Failed {
+                self.turn.restore_validation_budget(pending.budget);
+                return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(
+                    pending.response,
+                )));
+            }
         }
         self.next_tool_application(pending).await
     }
@@ -895,7 +965,7 @@ impl AgentSession {
         match started {
             Some(PendingHitlExecution { execution }) => Ok(ModelResponseApplication::Execute(
                 Box::new(PendingToolApplication {
-                    execution,
+                    executions: vec![execution],
                     remaining: pending,
                 }),
             )),

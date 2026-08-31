@@ -44,6 +44,9 @@ impl Tool for ViewImageTool {
     fn idempotent(&self) -> bool {
         true
     }
+    fn parallel_safe(&self) -> bool {
+        true
+    }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         if !ctx.image_input {

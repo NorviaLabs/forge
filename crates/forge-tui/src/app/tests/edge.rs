@@ -7,10 +7,14 @@ use super::prelude::*;
 #[tokio::test]
 async fn edge_network_stream_interruption_preserves_partial_response() {
     let dir = TempDir::new().unwrap();
+    // Larger than the relay buffer: completion must drain before joining the
+    // blocked relay, preserving every delta in order.
+    let deltas = (0..128).map(|i| format!("{i},")).collect::<Vec<_>>();
+    let expected = deltas.concat();
     let session = session_for_workspace_with_model(
         dir.path(),
         Arc::new(MockModelClient::stream_error(
-            vec!["partial ".into(), "answer".into()],
+            deltas,
             "network connection lost",
         )),
     )
@@ -49,7 +53,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
     assert!(app.feedback.text.contains("Retry or Continue"));
     assert!(app.session.messages.iter().any(|message| {
         message.role == MessageRole::Assistant
-            && message.content.contains("partial answer")
+            && message.content.contains(&expected)
             && message.content.contains("Interrupted")
     }));
     // Regression: a provider/stream error must move the session lifecycle

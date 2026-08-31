@@ -629,6 +629,18 @@ impl AgentSession {
             self.begin_cache_epoch("transport");
         }
 
+        // Prefix snapshots are debug diagnostics. Building one projects the
+        // complete provider body before the provider builds that same body for
+        // the request, so keep it off the production hot path unless its logs
+        // can actually be emitted. Tests retain snapshots to cover prefix
+        // stability and compaction boundaries.
+        if !cfg!(test) && !tracing::enabled!(tracing::Level::DEBUG) {
+            self.last_prompt_wire = None;
+            self.last_prompt_hash = None;
+            self.last_cache_transport = Some(transport);
+            return;
+        }
+
         let wire = self.model.prompt_wire(request);
         let snapshot = forge_model::snapshot_prompt(&wire);
         if let Some(previous) = self.last_prompt_wire.as_deref() {

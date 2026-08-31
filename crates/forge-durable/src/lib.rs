@@ -16,6 +16,8 @@ use sqlx::{Row, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
+const REPLAY_CHECKPOINT_INTERVAL: u64 = 256;
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum JournalError {
@@ -133,10 +135,112 @@ pub struct ReplayState {
     pub compaction_count: u64,
 }
 
+impl ReplayState {
+    fn empty(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            status: TaskLifecycle::Working,
+            last_seq: 0,
+            tool_results: HashMap::new(),
+            incomplete_intents: Vec::new(),
+            user_messages: Vec::new(),
+            composer_lines: Vec::new(),
+            messages: Vec::new(),
+            model_responses: Vec::new(),
+            events: Vec::new(),
+            pending_hitl: None,
+            queue_items: Vec::new(),
+            background_tasks: Vec::new(),
+            subagent_workspaces: HashMap::new(),
+            last_prompt_hash: None,
+            last_prompt_bytes: None,
+            cache_epoch: 0,
+            last_cache_transport: None,
+            context_state: None,
+            compaction_count: 0,
+        }
+    }
+}
+
+/// Durable replay state without raw event history. Raw events after this
+/// sequence are replayed on top, keeping resume work bounded while preserving
+/// every state field needed by callers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReplayCheckpoint {
+    last_seq: u64,
+    status: TaskLifecycle,
+    tool_results: HashMap<String, ToolResultPayload>,
+    incomplete_intents: Vec<String>,
+    user_messages: Vec<String>,
+    composer_lines: Vec<String>,
+    messages: Vec<Message>,
+    model_responses: Vec<ModelResponse>,
+    pending_hitl: Option<Value>,
+    queue_items: Vec<RestoredQueueItem>,
+    background_tasks: Vec<RestoredBackgroundTask>,
+    subagent_workspaces: HashMap<u64, PathBuf>,
+    last_prompt_hash: Option<String>,
+    last_prompt_bytes: Option<u64>,
+    cache_epoch: u64,
+    last_cache_transport: Option<String>,
+    context_state: Option<Value>,
+    compaction_count: u64,
+}
+
+impl ReplayCheckpoint {
+    fn from_state(state: &ReplayState) -> Self {
+        Self {
+            last_seq: state.last_seq,
+            status: state.status,
+            tool_results: state.tool_results.clone(),
+            incomplete_intents: state.incomplete_intents.clone(),
+            user_messages: state.user_messages.clone(),
+            composer_lines: state.composer_lines.clone(),
+            messages: state.messages.clone(),
+            model_responses: state.model_responses.clone(),
+            pending_hitl: state.pending_hitl.clone(),
+            queue_items: state.queue_items.clone(),
+            background_tasks: state.background_tasks.clone(),
+            subagent_workspaces: state.subagent_workspaces.clone(),
+            last_prompt_hash: state.last_prompt_hash.clone(),
+            last_prompt_bytes: state.last_prompt_bytes,
+            cache_epoch: state.cache_epoch,
+            last_cache_transport: state.last_cache_transport.clone(),
+            context_state: state.context_state.clone(),
+            compaction_count: state.compaction_count,
+        }
+    }
+
+    fn into_state(self, session_id: SessionId) -> ReplayState {
+        ReplayState {
+            session_id,
+            status: self.status,
+            last_seq: self.last_seq,
+            tool_results: self.tool_results,
+            incomplete_intents: self.incomplete_intents,
+            user_messages: self.user_messages,
+            composer_lines: self.composer_lines,
+            messages: self.messages,
+            model_responses: self.model_responses,
+            events: Vec::new(),
+            pending_hitl: self.pending_hitl,
+            queue_items: self.queue_items,
+            background_tasks: self.background_tasks,
+            subagent_workspaces: self.subagent_workspaces,
+            last_prompt_hash: self.last_prompt_hash,
+            last_prompt_bytes: self.last_prompt_bytes,
+            cache_epoch: self.cache_epoch,
+            last_cache_transport: self.last_cache_transport,
+            context_state: self.context_state,
+            compaction_count: self.compaction_count,
+        }
+    }
+}
+
 /// One queue item as reconstructed from the journal — a lightweight mirror
 /// of forge-core's `QueuedTask` that doesn't require forge-durable to depend
 /// on forge-core (dependency direction is the other way around).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoredQueueItem {
     pub id: QueueItemId,
     pub text: String,
@@ -147,7 +251,7 @@ pub struct RestoredQueueItem {
 /// One background task as reconstructed from the journal — a lightweight
 /// mirror of forge-core's `BackgroundTaskHandle` (no `CancellationToken`,
 /// which isn't durable and doesn't need to be).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoredBackgroundTask {
     pub id: BackgroundTaskId,
     /// `"shell"` or `"subagent"`, from `BackgroundTaskKind::tag()`.
@@ -181,7 +285,7 @@ impl Journal {
             .connect_with(opts)
             .await?;
         let j = Self { pool, db_path };
-        j.migrate().await?;
+        Box::pin(j.migrate()).await?;
         Ok(j)
     }
 
@@ -196,6 +300,17 @@ impl Journal {
                 schema_version INTEGER NOT NULL,
                 payload TEXT NOT NULL,
                 trace_id TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS replay_checkpoints (
+                session_id TEXT PRIMARY KEY,
+                seq INTEGER NOT NULL,
+                payload TEXT NOT NULL
             )
             "#,
         )
@@ -236,7 +351,14 @@ impl Journal {
         .bind(&payload_s)
         .execute(&self.pool)
         .await?;
-        Ok(res.last_insert_rowid() as u64)
+        let seq = res.last_insert_rowid() as u64;
+        // Checkpoints are an optional replay accelerator. Never turn a
+        // successful journal append into a failed user operation if snapshot
+        // maintenance cannot complete.
+        if seq.is_multiple_of(REPLAY_CHECKPOINT_INTERVAL) {
+            let _ = Box::pin(self.write_replay_checkpoint(session_id)).await;
+        }
+        Ok(seq)
     }
 
     pub async fn append_session_created(&self, session_id: SessionId) -> Result<u64, JournalError> {
@@ -566,40 +688,39 @@ impl Journal {
 
     pub async fn replay(&self, session_id: SessionId) -> Result<ReplayState, JournalError> {
         let sid = session_id.to_string();
+        let checkpoint =
+            sqlx::query("SELECT seq, payload FROM replay_checkpoints WHERE session_id = ?")
+                .bind(&sid)
+                .fetch_optional(&self.pool)
+                .await?;
+        let (mut state, checkpoint_seq) = checkpoint
+            .and_then(|row| {
+                let seq = row.get::<i64, _>("seq");
+                if seq < 0 {
+                    return None;
+                }
+                let payload = row.get::<String, _>("payload");
+                serde_json::from_str::<ReplayCheckpoint>(&payload)
+                    .ok()
+                    .filter(|checkpoint| checkpoint.last_seq == seq as u64)
+                    .map(|checkpoint| (checkpoint.into_state(session_id), seq as u64))
+            })
+            .unwrap_or_else(|| (ReplayState::empty(session_id), 0));
         let rows = sqlx::query(
             r#"
             SELECT seq, session_id, ts, event_type, schema_version, payload, trace_id
-            FROM events WHERE session_id = ? ORDER BY seq ASC
+            FROM events WHERE session_id = ? AND seq > ? ORDER BY seq ASC
             "#,
         )
         .bind(&sid)
+        .bind(checkpoint_seq as i64)
         .fetch_all(&self.pool)
         .await?;
-
-        let mut state = ReplayState {
-            session_id,
-            status: TaskLifecycle::Working,
-            last_seq: 0,
-            tool_results: HashMap::new(),
-            incomplete_intents: Vec::new(),
-            user_messages: Vec::new(),
-            composer_lines: Vec::new(),
-            messages: Vec::new(),
-            model_responses: Vec::new(),
-            events: Vec::new(),
-            pending_hitl: None,
-            queue_items: Vec::new(),
-            background_tasks: Vec::new(),
-            subagent_workspaces: HashMap::new(),
-            last_prompt_hash: None,
-            last_prompt_bytes: None,
-            cache_epoch: 0,
-            last_cache_transport: None,
-            context_state: None,
-            compaction_count: 0,
-        };
-
-        let mut open_intents: HashMap<String, String> = HashMap::new();
+        let mut open_intents: HashMap<String, String> = state
+            .incomplete_intents
+            .iter()
+            .map(|id| (id.clone(), id.clone()))
+            .collect();
         // Tracks a promotion currently "in flight" per the event stream: set
         // on `QueuePromoting`, cleared on the matching `QueuePromoted`/
         // `QueueRemoved`. If a `UserMessage` event lands while a promotion is
@@ -608,7 +729,11 @@ impl Journal {
         // the item (that would create a second task from the same
         // instruction). Only an item with no `UserMessage` following its
         // `QueuePromoting` is safe to revert to `Queued`.
-        let mut promoting_item: Option<u64> = None;
+        let mut promoting_item: Option<u64> = state
+            .queue_items
+            .iter()
+            .find(|item| item.status == QueueItemStatus::Promoting)
+            .map(|item| item.id.0);
         let mut promoted_without_confirmation: std::collections::HashSet<u64> =
             std::collections::HashSet::new();
 
@@ -926,6 +1051,29 @@ impl Journal {
         Ok(state)
     }
 
+    async fn write_replay_checkpoint(&self, session_id: SessionId) -> Result<(), JournalError> {
+        let state = self.replay(session_id).await?;
+        let seq = state.last_seq;
+        if seq == 0 {
+            return Ok(());
+        }
+        let payload = serde_json::to_string(&ReplayCheckpoint::from_state(&state))?;
+        sqlx::query(
+            r#"
+            INSERT INTO replay_checkpoints (session_id, seq, payload)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET seq = excluded.seq, payload = excluded.payload
+                WHERE excluded.seq > replay_checkpoints.seq
+            "#,
+        )
+        .bind(session_id.to_string())
+        .bind(seq as i64)
+        .bind(payload)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Cached result if tool already completed (DUR-02).
     pub fn cached_tool_result<'a>(
         state: &'a ReplayState,
@@ -1103,6 +1251,87 @@ mod tests {
         let b = j.append_user_message(sid, "2").await.unwrap();
         assert!(b > a);
         assert_eq!(j.last_seq().await.unwrap(), b);
+    }
+
+    #[tokio::test]
+    async fn replay_uses_checkpoint_and_preserves_suffix_state() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        for index in 0..255 {
+            journal
+                .append_user_message(sid, &format!("message {index}"))
+                .await
+                .unwrap();
+        }
+
+        // SessionCreated + 255 messages reaches the automatic checkpoint at
+        // seq 256. The next event must replay on top of that snapshot.
+        journal.append_user_message(sid, "tail").await.unwrap();
+
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.user_messages.len(), 256);
+        assert_eq!(state.user_messages.last().map(String::as_str), Some("tail"));
+        assert_eq!(
+            state.events.len(),
+            1,
+            "only post-checkpoint events are materialized"
+        );
+        assert_eq!(state.last_seq, 257);
+    }
+
+    #[tokio::test]
+    async fn corrupt_checkpoint_falls_back_to_full_replay() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        for index in 0..255 {
+            journal
+                .append_user_message(sid, &format!("message {index}"))
+                .await
+                .unwrap();
+        }
+
+        sqlx::query("UPDATE replay_checkpoints SET payload = ? WHERE session_id = ?")
+            .bind("not json")
+            .bind(sid.to_string())
+            .execute(&journal.pool)
+            .await
+            .unwrap();
+
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.user_messages.len(), 255);
+        assert_eq!(state.events.len(), 256);
+        assert_eq!(state.last_seq, 256);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_appends_do_not_duplicate_checkpointed_events() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        let mut tasks = Vec::new();
+        for index in 0..257 {
+            let journal = journal.clone();
+            tasks.push(tokio::spawn(async move {
+                journal
+                    .append_user_message(sid, &format!("message {index}"))
+                    .await
+                    .unwrap();
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.user_messages.len(), 257);
+        let mut messages = state.user_messages;
+        messages.sort_unstable();
+        messages.dedup();
+        assert_eq!(messages.len(), 257);
     }
 
     /// `directory()` must return the directory the journal's db file lives in,

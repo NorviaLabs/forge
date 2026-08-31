@@ -360,19 +360,7 @@ impl ToolRegistry {
             .get(name)
             .ok_or_else(|| ToolError::Unknown(name.to_string()))?;
 
-        let validator = match self.validators(name) {
-            Ok(v) => v,
-            Err(compile_error) => {
-                return Err(ToolError::Validation(ToolValidationError {
-                    tool: name.to_string(),
-                    path: "$".into(),
-                    message: format!("invalid tool schema: {compile_error}"),
-                    schema_hint: None,
-                }))
-            }
-        };
-
-        if let Err(ve) = validate_args_with(name, &self.schemas[name], &validator, &args) {
+        if let Err(ve) = self.validate_call(name, &args) {
             let signature =
                 crate::validation::validation_error_signature(name, &ve.path, &ve.message);
             budget
@@ -382,6 +370,20 @@ impl ToolRegistry {
         }
 
         tool.call(ctx, args).await
+    }
+
+    /// Validate without executing or consuming retry budget.
+    pub fn validate_call(&self, name: &str, args: &Value) -> Result<(), ToolValidationError> {
+        let name = canonical_tool_name(name);
+        let validator = self
+            .validators(name)
+            .map_err(|compile_error| ToolValidationError {
+                tool: name.to_string(),
+                path: "$".into(),
+                message: format!("invalid tool schema: {compile_error}"),
+                schema_hint: None,
+            })?;
+        validate_args_with(name, &self.schemas[name], &validator, args)
     }
 
     fn validators(&self, name: &str) -> Result<Arc<Validator>, String> {
