@@ -10,7 +10,7 @@ use forge_types::{Message, MessageRole, SideEffectClass, ToolCall, ToolOutput, U
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::tempdir;
-use tokio::sync::Notify;
+use tokio::sync::{Barrier, Notify};
 
 struct GatedTool {
     started: Arc<AtomicBool>,
@@ -26,6 +26,47 @@ struct AlwaysSandboxDeniedTool;
 
 struct NetworkDeniedOnceTool {
     calls: std::sync::atomic::AtomicU32,
+}
+
+struct ParallelReadTool {
+    name: &'static str,
+    barrier: Arc<Barrier>,
+}
+
+#[async_trait]
+impl forge_tools::Tool for ParallelReadTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Wait for another read call"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "additionalProperties": false})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Read
+    }
+
+    fn idempotent(&self) -> bool {
+        true
+    }
+
+    fn parallel_safe(&self) -> bool {
+        true
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        self.barrier.wait().await;
+        Ok(ToolOutput::success(self.name))
+    }
 }
 
 impl NetworkDeniedOnceTool {
@@ -2809,6 +2850,63 @@ async fn a_model_step_applies_multiple_tool_calls_in_order() {
         .map(|message| message.content.as_str())
         .collect();
     assert_eq!(tool_contents, ["aaa", "bbb"]);
+}
+
+#[tokio::test]
+async fn independent_read_calls_execute_concurrently_and_apply_in_order() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "parallel_read_a".into(),
+                    arguments: json!({}),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "parallel_read_b".into(),
+                    arguments: json!({}),
+                },
+            ],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let barrier = Arc::new(Barrier::new(2));
+    let mut tools = ToolRegistry::new();
+    for name in ["parallel_read_a", "parallel_read_b"] {
+        tools.register(Arc::new(ParallelReadTool {
+            name,
+            barrier: Arc::clone(&barrier),
+        }));
+    }
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        session.run_user_message("read both"),
+    )
+    .await
+    .expect("read calls should reach the barrier together")
+    .unwrap();
+
+    let tool_contents: Vec<_> = session
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::Tool)
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(tool_contents, ["parallel_read_a", "parallel_read_b"]);
 }
 
 #[tokio::test]

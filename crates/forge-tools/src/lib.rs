@@ -94,6 +94,10 @@ pub trait Tool: Send + Sync {
     fn idempotent(&self) -> bool {
         false
     }
+    /// Safe to execute concurrently with other read-only tool calls.
+    fn parallel_safe(&self) -> bool {
+        false
+    }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError>;
 

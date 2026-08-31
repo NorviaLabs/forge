@@ -412,6 +412,7 @@ async fn cancelling_at_the_effort_column_leaves_active_selection_untouched() {
 
 #[tokio::test]
 async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
+    let (_home, _env) = isolated_home_guard();
     let cred_dir = tempfile::tempdir().unwrap();
     let mut app = model_switch_test_app(&cred_dir).await;
 
@@ -1076,6 +1077,9 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
 
     app.open_connect_picker();
     assert!(app.catalog_fetch.refresh_rx.is_some());
+    app.session
+        .set_active_model("missing-test-provider/missing-test-model");
+    app.session.set_image_input_supported(true);
 
     // The real worker thread does credential-less (and, in a sandboxed test
     // environment, possibly unreachable) network I/O, so its completion time
@@ -1091,6 +1095,10 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
 
     assert!(app.catalog_fetch.refresh_rx.is_none());
     assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+    assert!(
+        !app.session.image_input_supported(),
+        "completed refresh must reapply active-model capabilities from cache"
+    );
 }
 
 #[tokio::test]

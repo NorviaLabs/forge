@@ -1035,9 +1035,10 @@ pub fn models_for_picker(
 ) -> Vec<CatalogEntry> {
     let mut out = Vec::new();
 
-    if refresh_stale && !cache.registry_is_fresh() {
+    if refresh_stale && (!cache.registry_is_fresh() || !cache.image_input_ready()) {
         // Registry availability must never prevent opening the picker. The existing
-        // cache and built-ins below remain usable offline.
+        // cache and built-ins below remain usable offline. A fresh pre-feature
+        // cache still needs one refresh to ingest image-input metadata.
         let _ = refresh_models_dev_registry(profiles, cache);
     }
 
@@ -2045,7 +2046,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_models_dev_registry_uses_override_url() {
+    fn picker_refreshes_fresh_registry_missing_image_metadata() {
         use crate::test_env::EnvGuard;
         use forge_test_support::mock_http;
         use tempfile::tempdir;
@@ -2065,13 +2066,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let profiles = vec![openai_profile(), crate::xai::xai_grok_profile()];
-        let count = refresh_models_dev_registry(&profiles, &cache).unwrap();
-        assert_eq!(count, 4);
+        cache
+            .save(&CatalogFile {
+                registry_fetched_at: Some(ModelCatalogCache::now_secs()),
+                ..CatalogFile::default()
+            })
+            .unwrap();
+        assert!(cache.registry_is_fresh());
+        assert!(!cache.image_input_ready());
         let entries = models_for_picker(
             &profiles,
             &CredentialStore::new(dir.path().join("k.toml")),
             &cache,
-            false,
+            true,
         );
         assert!(entries
             .iter()

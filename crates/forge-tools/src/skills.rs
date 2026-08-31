@@ -56,6 +56,9 @@ skill's description matches the current task, before following its instructions.
     fn idempotent(&self) -> bool {
         true
     }
+    fn parallel_safe(&self) -> bool {
+        true
+    }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: LoadSkillArgs = serde_json::from_value(args).map_err(|e| {

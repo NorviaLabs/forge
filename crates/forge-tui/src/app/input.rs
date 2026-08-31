@@ -946,7 +946,7 @@ impl TuiApp {
 
     async fn handle_sidebar_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         if let Some(command) = self.semantic_command_for_sidebar_key(key) {
-            self.execute_semantic_command(command).await
+            Box::pin(self.execute_semantic_command(command)).await
         } else {
             Ok(false)
         }
@@ -975,7 +975,7 @@ impl TuiApp {
             }
         }
         if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
-            self.execute_semantic_command(command).await
+            Box::pin(self.execute_semantic_command(command)).await
         } else {
             Ok(false)
         }
@@ -1064,7 +1064,7 @@ impl TuiApp {
         let Some(command) = self.semantic_command_for_file_key(key) else {
             return Ok(false);
         };
-        self.execute_semantic_command(command).await
+        Box::pin(self.execute_semantic_command(command)).await
     }
 
     async fn handle_workspace_navigation_key(
@@ -1075,11 +1075,11 @@ impl TuiApp {
             return Ok(self.handle_diff_key(key));
         }
         if let Some(command) = self.semantic_command_for_workspace_key(key) {
-            return self.execute_semantic_command(command).await;
+            return Box::pin(self.execute_semantic_command(command)).await;
         }
         if self.current_workspace_is_file() {
             if let Some(command) = self.semantic_command_for_global_key(key) {
-                return self.execute_semantic_command(command).await;
+                return Box::pin(self.execute_semantic_command(command)).await;
             }
             return Ok(self.handle_editor_key(key));
         }
@@ -1105,7 +1105,7 @@ impl TuiApp {
         let Some(command) = self.semantic_command_for_global_key(key) else {
             return Ok(false);
         };
-        self.execute_semantic_command(command).await
+        Box::pin(self.execute_semantic_command(command)).await
     }
 
     fn printable_chat_char(key: event::KeyEvent) -> Option<char> {
@@ -1143,8 +1143,7 @@ impl TuiApp {
         let Some(c) = Self::printable_chat_char(key) else {
             return Ok(false);
         };
-        self.execute_semantic_command(SemanticCommand::FocusComposer)
-            .await?;
+        Box::pin(self.execute_semantic_command(SemanticCommand::FocusComposer)).await?;
         self.input.history_browse = false;
         self.input.insert(c);
         self.clamp_slash_suggest();
@@ -1183,7 +1182,7 @@ impl TuiApp {
     async fn handle_chat_composer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         let input_was_empty = self.input.text.is_empty();
         if let Some(command) = self.semantic_command_for_composer_key(key) {
-            let consumed = self.execute_semantic_command(command).await?;
+            let consumed = Box::pin(self.execute_semantic_command(command)).await?;
             if input_was_empty && !self.input.text.is_empty() {
                 self.conversation_view.splash_dismissed = true;
             }
@@ -1307,7 +1306,7 @@ impl TuiApp {
                 Ok(true)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
-                self.execute_semantic_command(SemanticCommand::CancelCurrentInteraction)
+                Box::pin(self.execute_semantic_command(SemanticCommand::CancelCurrentInteraction))
                     .await
             }
             _ => Ok(false),
@@ -1321,18 +1320,22 @@ impl TuiApp {
             // otherwise jumps straight to picking a model.
             FooterFocus::Llm => {
                 if self.is_provider_connected() {
-                    self.execute_semantic_command(SemanticCommand::OpenModelControl(
-                        ConnectModelColumn::Models,
-                    ))
+                    Box::pin(
+                        self.execute_semantic_command(SemanticCommand::OpenModelControl(
+                            ConnectModelColumn::Models,
+                        )),
+                    )
                     .await?;
                 } else {
                     self.open_connect_picker();
                 }
             }
             FooterFocus::Effort => {
-                self.execute_semantic_command(SemanticCommand::OpenModelControl(
-                    ConnectModelColumn::Effort,
-                ))
+                Box::pin(
+                    self.execute_semantic_command(SemanticCommand::OpenModelControl(
+                        ConnectModelColumn::Effort,
+                    )),
+                )
                 .await?;
             }
         }
@@ -1437,9 +1440,9 @@ impl TuiApp {
                     return Ok(());
                 }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-                    self.execute_semantic_command(SemanticCommand::CycleFocus {
+                    Box::pin(self.execute_semantic_command(SemanticCommand::CycleFocus {
                         forward: !matches!(key.code, KeyCode::BackTab),
-                    })
+                    }))
                     .await?;
                     return Ok(());
                 }
@@ -1453,15 +1456,19 @@ impl TuiApp {
                     return Ok(());
                 }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-                    self.execute_semantic_command(SemanticCommand::CycleFocus {
+                    Box::pin(self.execute_semantic_command(SemanticCommand::CycleFocus {
                         forward: !matches!(key.code, KeyCode::BackTab),
-                    })
+                    }))
                     .await?;
                     return Ok(());
                 }
                 if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.execute_semantic_command(SemanticCommand::CycleFocus { forward: false })
-                        .await?;
+                    Box::pin(
+                        self.execute_semantic_command(SemanticCommand::CycleFocus {
+                            forward: false,
+                        }),
+                    )
+                    .await?;
                     return Ok(());
                 }
                 if self.handle_active_block_key(key).await? {

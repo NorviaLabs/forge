@@ -49,6 +49,9 @@ impl Tool for ReadFileTool {
     fn idempotent(&self) -> bool {
         true
     }
+    fn parallel_safe(&self) -> bool {
+        true
+    }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: ReadFileArgs = serde_json::from_value(args).map_err(|e| {
@@ -143,6 +146,9 @@ impl Tool for LsTool {
         SideEffectClass::Read
     }
     fn idempotent(&self) -> bool {
+        true
+    }
+    fn parallel_safe(&self) -> bool {
         true
     }
 

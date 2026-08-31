@@ -475,20 +475,11 @@ impl TuiApp {
                     .map(|(.., lines)| Arc::clone(lines))
                     .unwrap_or_else(|| Arc::new(Vec::new()))
             } else {
-                let mut lines = ConversationModel::from_messages(
-                    &[],
-                    &[],
-                    self.session_view.lifecycle,
-                    ConversationViewOpts { busy: true, ..opts },
-                )
-                .with_streaming_preview(
-                    self.stream.thinking.clone(),
-                    self.stream.revealed_preview().to_string(),
-                )
-                // The preview is a single block, so block-level tailing
-                // cannot trim it; the cache windows lines instead. Pass the
-                // transcript's window so both agree on what is on screen.
-                .lines_for_width_from_end_cached(
+                let revealed = self.stream.revealed.min(self.stream.preview.len());
+                let mut lines = crate::conversation::render_streaming_preview(
+                    &self.stream.thinking,
+                    &self.stream.preview[..revealed],
+                    opts.stream_thought_secs,
                     width,
                     keep_from_end,
                     &mut self.stream.markdown,

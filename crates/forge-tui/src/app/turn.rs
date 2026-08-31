@@ -15,6 +15,9 @@ use super::shell::{
     next_foreground_wake, paint_foreground_frame, render_foreground_wake, tick_foreground_frame,
 };
 
+const STREAM_EVENT_BUFFER_CAPACITY: usize = 64;
+const MAX_STREAM_EVENTS_PER_TICK: usize = 256;
+
 impl TuiApp {
     async fn execute_tool_application<B: ratatui::backend::Backend>(
         &mut self,
@@ -627,10 +630,10 @@ impl TuiApp {
 
             let model = self.session.model_client();
             let (tx, provider_rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
-            let (stream_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let (stream_tx, mut rx) = tokio::sync::mpsc::channel(STREAM_EVENT_BUFFER_CAPACITY);
             let relay = tokio::task::spawn_blocking(move || {
                 while let Ok(event) = provider_rx.recv() {
-                    if stream_tx.send(event).is_err() {
+                    if stream_tx.blocking_send(event).is_err() {
                         break;
                     }
                 }
@@ -645,7 +648,6 @@ impl TuiApp {
             // processing so a large burst cannot starve input, cancellation,
             // or the next paint; the completion path below still drains every
             // remaining event before the final response is applied.
-            const MAX_STREAM_EVENTS_PER_TICK: usize = 256;
             let mut stream_open = true;
             // Pump stream events + redraw until the model call finishes
             loop {
@@ -702,16 +704,18 @@ impl TuiApp {
                 }
 
                 if handle.is_finished() {
-                    relay
-                        .await
-                        .map_err(|error| TuiError::Other(format!("stream relay join: {error}")))?;
-                    // Drain remaining events
-                    while let Ok(ev) = rx.try_recv() {
+                    // The relay may be blocked on a full bounded channel. Drain
+                    // until it closes before joining, preserving every provider
+                    // event without deadlocking a fast completed model.
+                    while let Some(ev) = rx.recv().await {
                         if let Some(message) = self.handle_stream_event(&ev, &mut step_acc) {
                             outcome_err = Some(message);
                             break 'turns;
                         }
                     }
+                    relay
+                        .await
+                        .map_err(|error| TuiError::Other(format!("stream relay join: {error}")))?;
                     // Thinking-only or late thinking dump: close the clock now
                     self.close_thinking_timer();
                     if let Some(term) = terminal.as_deref_mut() {

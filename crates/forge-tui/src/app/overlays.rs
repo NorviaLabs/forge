@@ -323,10 +323,12 @@ impl TuiApp {
             OverlayAction::RunCommand(cmd) => {
                 self.startup_resume.picker = false;
                 self.overlay = None;
-                self.execute_semantic_command(SemanticCommand::DispatchSlash {
-                    origin: SlashCommandOrigin::GlobalPalette,
-                    line: cmd,
-                })
+                Box::pin(
+                    self.execute_semantic_command(SemanticCommand::DispatchSlash {
+                        origin: SlashCommandOrigin::GlobalPalette,
+                        line: cmd,
+                    }),
+                )
                 .await?;
             }
             OverlayAction::SelectModel {

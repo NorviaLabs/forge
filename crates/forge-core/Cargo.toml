@@ -15,6 +15,7 @@ forge-durable = { workspace = true }
 forge-governance = { workspace = true }
 forge-context = { workspace = true }
 forge-storage = { workspace = true }
+futures = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

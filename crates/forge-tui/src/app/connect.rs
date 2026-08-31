@@ -448,9 +448,9 @@ impl TuiApp {
         self.session.set_reasoning_effort(value);
     }
 
-    /// Re-read the active model's metadata from the models.dev registry
-    /// cache: whether it accepts image input, and the context/output token
-    /// limits compaction sizes itself from. Called after every model change.
+    /// Re-read the active model's cached models.dev metadata: whether it
+    /// accepts image input, and the context/output token limits compaction
+    /// sizes itself from. Network refreshes run through `start_catalog_refresh`.
     ///
     /// The single place `runtime.provider`, `runtime.model_label`,
     /// `session.active_model`, and `connect.profile` are set together (effort
@@ -460,15 +460,6 @@ impl TuiApp {
     /// a discarded selection produce a mismatched model id.
     pub(super) fn sync_model_capabilities(&mut self) {
         let cache = forge_connect::ModelCatalogCache::user_default();
-        // Pre-feature catalog files can be "fresh" on TTL but have never
-        // ingested `modalities.input`. Refresh once so Codex/API twins
-        // (openai-codex/gpt-5.6-sol ↔ openai/gpt-5.6-sol) get a real flag.
-        if !cfg!(test) && !cache.image_input_ready() {
-            let _ = forge_connect::refresh_models_dev_registry(
-                forge_connect::loaded_registry().profiles(),
-                &cache,
-            );
-        }
         let supported = cache.model_accepts_image_input(&self.session.active_model);
         self.session.set_image_input_supported(supported);
         // Use one fixed context budget across providers. Keep the catalog's
@@ -1307,6 +1298,7 @@ impl TuiApp {
         };
         match rx.try_recv() {
             Ok(_) => {
+                self.sync_model_capabilities();
                 self.refresh_open_picker_items();
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {

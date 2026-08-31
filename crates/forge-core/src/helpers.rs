@@ -149,9 +149,22 @@ pub(crate) fn search_result_count(content: &str) -> usize {
 /// (or isn't readable) — the convention `EvidenceEntry` documents.
 pub(crate) async fn hash_file(path: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
-    let bytes = tokio::fs::read(path).await.ok()?;
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let length = usize::try_from(file.metadata().await.ok()?.len()).ok()?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
+    // Preserve the old slice-hash format: `Hash for [u8]` writes length before
+    // contents, so snapshots from older and newer runs remain comparable.
+    length.hash(&mut hasher);
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await.ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.write(&buffer[..read]);
+    }
     Some(hasher.finish())
 }
 
@@ -478,5 +491,24 @@ pub async fn session_title_hint(
         None
     } else {
         Some(title)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hash_file;
+    use std::hash::{Hash, Hasher};
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn hash_file_preserves_slice_hash_for_chunked_reads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("large.bin");
+        let bytes = vec![0x5a; (64 * 1024) + 1];
+        tokio::fs::write(&path, &bytes).await.unwrap();
+
+        let mut expected = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut expected);
+        assert_eq!(hash_file(&path).await, Some(expected.finish()));
     }
 }
