@@ -7,7 +7,7 @@
 
 pub use forge_transcript::*;
 
-use crate::markdown::render_markdown;
+use crate::markdown::{render_markdown, STREAM_CARET};
 use crate::theme;
 use crate::user_message_gutter;
 use forge_syntax::highlight_to_lines;
@@ -461,30 +461,165 @@ impl StreamMarkdownCache {
     /// built — the same windowing `lines_for_width_from_end` already applies to
     /// the transcript, moved inside a single block.
     fn render(&mut self, text: &str, width: usize, keep_from_end: usize) -> Vec<Line<'static>> {
-        let cut = crate::markdown::settled_prefix_len(text);
-        let settled = &text[..cut];
+        self.render_inner(text, width, keep_from_end, false)
+    }
+
+    fn render_live(
+        &mut self,
+        text: &str,
+        width: usize,
+        keep_from_end: usize,
+    ) -> Vec<Line<'static>> {
+        self.render_inner(text, width, keep_from_end, true)
+    }
+
+    fn render_inner(
+        &mut self,
+        text: &str,
+        width: usize,
+        keep_from_end: usize,
+        append_caret: bool,
+    ) -> Vec<Line<'static>> {
         // Grow the cache rather than rebuild it. Re-rendering the whole settled
         // prefix on every boundary advance is O(n) per advance, which is the
         // quadratic this cache exists to remove. Appending is sound for the
         // same reason the split is: each advance lands on a top-level block
         // boundary, where the renderer's state is its initial state.
-        if self.width != width || !settled.starts_with(&self.prefix) {
+        if self.width != width || !text.starts_with(&self.prefix) {
             self.width = width;
             self.prefix.clear();
             self.open_lines.clear();
         }
-        if settled.len() > self.prefix.len() {
-            let fresh = &settled[self.prefix.len()..];
+        // `prefix` already ends at a proven top-level boundary. Scanning it
+        // again on every delta made boundary detection quadratic even though
+        // parsing and highlighting were cached. Only new bytes can advance the
+        // boundary now.
+        let cut =
+            self.prefix.len() + crate::markdown::settled_prefix_len(&text[self.prefix.len()..]);
+        if cut > self.prefix.len() {
+            let fresh = &text[self.prefix.len()..cut];
             self.open_lines
                 .extend(crate::markdown::render_markdown_open(fresh, width));
             self.prefix.push_str(fresh);
         }
-        let mut tail = crate::markdown::render_markdown_open(&text[cut..], width);
+        let raw_tail = &text[cut..];
+        let caret_tail;
+        let tail_text = if append_caret && !raw_tail.ends_with(STREAM_CARET) {
+            caret_tail = format!("{raw_tail}{STREAM_CARET}");
+            &caret_tail
+        } else {
+            raw_tail
+        };
+        let mut tail = crate::markdown::render_markdown_open(tail_text, width);
         crate::markdown::fade_streaming_tail(&mut tail);
         let from_prefix = keep_from_end.saturating_sub(tail.len());
         let skip = self.open_lines.len().saturating_sub(from_prefix);
         crate::markdown::render_markdown_join(&self.open_lines[skip..], tail)
     }
+}
+
+fn render_assistant_answer(
+    text: &str,
+    streaming: bool,
+    width: usize,
+    prose_width: usize,
+    keep_from_end: usize,
+    stream_cache: Option<&mut StreamMarkdownCache>,
+    append_stream_caret: bool,
+) -> Vec<Line<'static>> {
+    let parts = match stream_cache {
+        Some(cache) if streaming && append_stream_caret => {
+            cache.render_live(text, prose_width, keep_from_end)
+        }
+        Some(cache) if streaming => cache.render(text, prose_width, keep_from_end),
+        _ => render_markdown(text, prose_width),
+    };
+    parts
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::raw(" ".repeat(MESSAGE_PADDING))];
+            spans.extend(line.spans);
+            let used = spans.iter().map(Span::width).sum::<usize>();
+            if used < width {
+                spans.push(Span::raw(" ".repeat(width - used)));
+            }
+            Line::from(spans).style(theme::assistant_answer_style())
+        })
+        .collect()
+}
+
+fn render_thinking(text: &str, duration_secs: Option<f64>, width: usize) -> Vec<Line<'static>> {
+    let indent = INDENT_UNIT.repeat(2);
+    let content_width = width.saturating_sub(indent.chars().count());
+    let full_text = match duration_secs {
+        Some(secs) => format!("{text} · {}", format_elapsed_tenths(secs)),
+        None => text.to_string(),
+    };
+    render_markdown(&full_text, content_width)
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(
+                indent.clone(),
+                theme::dim().add_modifier(Modifier::ITALIC),
+            )];
+            spans.extend(line.spans.into_iter().map(|mut span| {
+                span.style.fg = theme::dim().fg;
+                span.style = span.style.add_modifier(Modifier::ITALIC);
+                span
+            }));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Render live reasoning and answer text without cloning them through the
+/// owned transcript presentation model on every token batch.
+pub(crate) fn render_streaming_preview(
+    thinking: &str,
+    text: &str,
+    thought_secs: Option<f64>,
+    available_width: usize,
+    keep_from_end: usize,
+    cache: &mut StreamMarkdownCache,
+) -> Vec<Line<'static>> {
+    let width = available_width.max(4);
+    let prose_width = prose_width_for(width);
+    let mut lines = Vec::new();
+    if !thinking.trim().is_empty() {
+        lines.extend(render_thinking(thinking, thought_secs, width));
+        lines.push(Line::from(""));
+    }
+    if !text.is_empty() {
+        if text.contains("\\confidence{") {
+            let mut raw = String::with_capacity(text.len() + STREAM_CARET.len_utf8());
+            raw.push_str(text);
+            if !raw.ends_with(STREAM_CARET) {
+                raw.push(STREAM_CARET);
+            }
+            let body = sanitize_final_answer_text(&raw);
+            lines.extend(render_assistant_answer(
+                &body,
+                true,
+                width,
+                prose_width,
+                keep_from_end,
+                Some(cache),
+                false,
+            ));
+        } else {
+            lines.extend(render_assistant_answer(
+                text.trim_start(),
+                true,
+                width,
+                prose_width,
+                keep_from_end,
+                Some(cache),
+                true,
+            ));
+        }
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
 /// Drawing a [`ConversationModel`].
@@ -644,21 +779,15 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
-                    let parts = match stream_cache.as_deref_mut() {
-                        Some(cache) if p.streaming => {
-                            cache.render(&p.text, prose_width, keep_from_end)
-                        }
-                        _ => render_markdown(&p.text, prose_width),
-                    };
-                    for line in parts {
-                        let mut spans = vec![Span::raw(" ".repeat(MESSAGE_PADDING))];
-                        spans.extend(line.spans);
-                        let used = spans.iter().map(Span::width).sum::<usize>();
-                        if used < width {
-                            spans.push(Span::raw(" ".repeat(width - used)));
-                        }
-                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
-                    }
+                    lines.extend(render_assistant_answer(
+                        &p.text,
+                        p.streaming,
+                        width,
+                        prose_width,
+                        keep_from_end,
+                        stream_cache.as_deref_mut(),
+                        false,
+                    ));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -948,24 +1077,7 @@ impl ConversationRender for ConversationModel {
                     // Recedes rather than announces: no glyph, no bold label,
                     // no status word — deeper-indented and dim so it reads as
                     // background reasoning, not another activity item.
-                    let indent = INDENT_UNIT.repeat(2);
-                    let content_width = width.saturating_sub(indent.chars().count());
-                    let full_text = match p.duration_secs {
-                        Some(secs) => format!("{} · {}", p.text, format_elapsed_tenths(secs)),
-                        None => p.text.clone(),
-                    };
-                    for line in render_markdown(&full_text, content_width) {
-                        let mut spans = vec![Span::styled(
-                            indent.clone(),
-                            theme::dim().add_modifier(Modifier::ITALIC),
-                        )];
-                        spans.extend(line.spans.into_iter().map(|mut span| {
-                            span.style.fg = theme::dim().fg;
-                            span.style = span.style.add_modifier(Modifier::ITALIC);
-                            span
-                        }));
-                        lines.push(Line::from(spans));
-                    }
+                    lines.extend(render_thinking(&p.text, p.duration_secs, width));
                     // A blank closes the reasoning block, the same as every
                     // other major block: the tool/activity rows this reasoning
                     // produced are rail rows and get no separator of their
@@ -4571,6 +4683,44 @@ mod tests {
                 incremental, one_shot,
                 "cache diverged from a one-shot render at prefix length {end}"
             );
+        }
+    }
+
+    #[test]
+    fn direct_stream_preview_matches_transcript_projection() {
+        let opts = ConversationViewOpts {
+            busy: true,
+            stream_thought_secs: Some(2.4),
+            ..ConversationViewOpts::default()
+        };
+        let thinking = "**Checking** the boundary";
+        for answer in [
+            "  Result ready.\n\n- one\n- two ",
+            "  Result ready.\\confidence{80}\n\n- one\n- two ",
+            "Paragraph finished.\n\n**unfinished",
+            "Paragraph finished.\n\n",
+        ] {
+            let model = ConversationModel {
+                items: Vec::new(),
+                scroll: 0,
+                follow: true,
+                opts: opts.clone(),
+            }
+            .with_streaming_preview(thinking, answer);
+            let mut projected_cache = StreamMarkdownCache::default();
+            let projected =
+                model.lines_for_width_from_end_cached(72, usize::MAX, &mut projected_cache);
+            let mut direct_cache = StreamMarkdownCache::default();
+            let direct = render_streaming_preview(
+                thinking,
+                answer,
+                Some(2.4),
+                72,
+                usize::MAX,
+                &mut direct_cache,
+            );
+
+            assert_eq!(direct, projected, "answer: {answer:?}");
         }
     }
 

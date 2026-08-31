@@ -2018,7 +2018,7 @@ fn collapse_duplicate_turn_failures(blocks: Vec<ConversationBlock>) -> Vec<Conve
 
 /// Strip internal protocol control markers from final-answer text before render.
 /// Not phrase filtering: only known structural envelopes (e.g. confidence tags).
-fn sanitize_final_answer_text(text: &str) -> String {
+pub fn sanitize_final_answer_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("\\confidence{") {
