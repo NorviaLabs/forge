@@ -189,4 +189,87 @@ mod tests {
             assert!(p.is_allowed(&pr, "read_file", class));
         }
     }
+
+    /// A deny-only policy must not turn into an allow-list for everything it
+    /// does not mention. The absence of an allow rule is still fail-closed.
+    #[test]
+    fn deny_only_policy_denies_every_unmatched_tool() {
+        let mut p = AclPolicy::new();
+        p.deny("bash".into());
+        let pr = Principal::local_dev();
+
+        assert!(!p.is_allowed(&pr, "bash", SideEffectClass::Exec));
+        for tool in ["read_file", "mcp:github:create_issue", "", "BASH"] {
+            assert!(
+                !p.is_allowed(&pr, tool, SideEffectClass::Meta),
+                "deny-only policy must not allow unmatched tool {tool:?}"
+            );
+        }
+    }
+
+    /// Prefix rules are deliberately simple name prefixes. They must not
+    /// become substring, case-folded, or boundary-aware matching by accident.
+    #[test]
+    fn prefix_allowlist_rejects_lookalike_tool_names() {
+        let mut p = AclPolicy::new();
+        p.allow("mcp:*".into());
+        let pr = Principal::local_dev();
+
+        for tool in ["mcp:", "mcp:github:create_issue", "mcp:server/tool"] {
+            assert!(p.is_allowed(&pr, tool, SideEffectClass::Write));
+        }
+        for tool in [
+            "mcp",
+            "mcpx:github:create_issue",
+            "not_mcp:github:create_issue",
+            "MCP:github:create_issue",
+            "m\u{441}p:github:create_issue",
+        ] {
+            assert!(
+                !p.is_allowed(&pr, tool, SideEffectClass::Write),
+                "prefix rule must not allow lookalike tool {tool:?}"
+            );
+        }
+    }
+
+    /// A later broad rule can reopen a denied name, while a later exact rule
+    /// can carve one name back out. This pins ordering across wildcard forms,
+    /// not only two identical exact rules.
+    #[test]
+    fn overlapping_rules_follow_insertion_order() {
+        let pr = Principal::local_dev();
+        let mut p = AclPolicy::new();
+        p.allow("*".into());
+        p.deny("mcp:*".into());
+        p.allow("mcp:trusted".into());
+
+        assert!(p.is_allowed(&pr, "read_file", SideEffectClass::Read));
+        assert!(!p.is_allowed(&pr, "mcp:github", SideEffectClass::Write));
+        assert!(p.is_allowed(&pr, "mcp:trusted", SideEffectClass::Write));
+        // `mcp:*` is a prefix rule, so the name without its prefix remains
+        // governed by the earlier match-everything rule.
+        assert!(p.is_allowed(&pr, "mcp", SideEffectClass::Write));
+
+        let mut deny_last = AclPolicy::new();
+        deny_last.allow("mcp:trusted".into());
+        deny_last.deny("mcp:*".into());
+        assert!(!deny_last.is_allowed(&pr, "mcp:trusted", SideEffectClass::Write));
+    }
+
+    /// Tool names are identifiers supplied by the registry, not free-form
+    /// user text. ACL matching therefore must not trim or case-fold them.
+    #[test]
+    fn exact_rules_do_not_normalize_tool_names() {
+        let mut p = AclPolicy::new();
+        p.allow("bash".into());
+        let pr = Principal::local_dev();
+
+        assert!(p.is_allowed(&pr, "bash", SideEffectClass::Exec));
+        for lookalike in ["BASH", " bash", "bash ", "bash\n"] {
+            assert!(
+                !p.is_allowed(&pr, lookalike, SideEffectClass::Exec),
+                "exact ACL rule must not normalize tool name {lookalike:?}"
+            );
+        }
+    }
 }
