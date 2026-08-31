@@ -99,6 +99,7 @@ impl TuiApp {
                 .map(|skill| PaletteItem {
                     cmd: format!("/{}", skill.name),
                     desc: truncate_skill_description(&skill.description),
+                    is_skill: true,
                 })
                 .filter(|item| {
                     let filter = filter.to_ascii_lowercase();
@@ -1465,6 +1466,18 @@ mod tests {
         app.input.set_text(with_args.clone());
         app.complete_slash_suggestion();
         assert_eq!(app.input.text, with_args);
+    }
+
+    #[test]
+    fn skill_palette_label_is_display_only() {
+        let item = PaletteItem {
+            cmd: "/launch-it".into(),
+            desc: "Plan a developer launch".into(),
+            is_skill: true,
+        };
+
+        assert_eq!(item.display_cmd(), "skill:launch-it");
+        assert_eq!(item.cmd, "/launch-it");
     }
 
     #[tokio::test]
