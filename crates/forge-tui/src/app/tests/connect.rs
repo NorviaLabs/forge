@@ -412,6 +412,7 @@ async fn cancelling_at_the_effort_column_leaves_active_selection_untouched() {
 
 #[tokio::test]
 async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
+    let (_home, _env) = isolated_home_guard();
     let cred_dir = tempfile::tempdir().unwrap();
     let mut app = model_switch_test_app(&cred_dir).await;
 
