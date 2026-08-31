@@ -742,10 +742,13 @@ impl TuiApp {
                 // truncate its description, so it only costs a row when it
                 // has something to say.
                 let inner_w = input.width.saturating_sub(2) as usize;
-                let selected_row_width =
-                    format!("  {:<14} {}", suggestions[idx].cmd, suggestions[idx].desc)
-                        .chars()
-                        .count();
+                let selected_row_width = format!(
+                    "  {:<14} {}",
+                    suggestions[idx].display_cmd(),
+                    suggestions[idx].desc
+                )
+                .chars()
+                .count();
                 let truncated = selected_row_width > inner_w.saturating_sub(1);
                 let h = (visible as u16).saturating_add(2 + u16::from(truncated));
                 if input.y >= h {
@@ -763,7 +766,7 @@ impl TuiApp {
                         .take(visible)
                         .map(|(i, it)| {
                             let marker = if i == idx { "▶ " } else { "  " };
-                            let raw = format!("{marker}{:<14} {}", it.cmd, it.desc);
+                            let raw = format!("{marker}{:<14} {}", it.display_cmd(), it.desc);
                             let mut row = raw
                                 .chars()
                                 .take(inner_w.saturating_sub(1))
