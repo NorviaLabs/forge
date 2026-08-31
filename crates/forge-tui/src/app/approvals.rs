@@ -767,7 +767,7 @@ impl TuiApp {
                 handle.abort();
             }
             if !self.exit.is_requested() {
-                self.session.mark_cancelled().await?;
+                Box::pin(self.session.mark_cancelled()).await?;
                 self.busy_state.stop();
                 self.enter_chat_composer();
             }
@@ -789,7 +789,7 @@ impl TuiApp {
         let Some(completed) = completed else {
             return Ok(());
         };
-        self.session.finish_hitl_execution(completed).await?;
+        Box::pin(self.session.finish_hitl_execution(completed)).await?;
         self.resume_turn_after_hitl();
         self.enter_chat_composer();
         Ok(())
