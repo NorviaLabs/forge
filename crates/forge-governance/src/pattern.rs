@@ -451,6 +451,67 @@ mod tests {
     }
 
     #[test]
+    fn parse_trims_rule_and_argument_whitespace() {
+        let rule = PatternRule::parse("  bash( cargo test * )  ").unwrap();
+        assert_eq!(rule.raw, "bash( cargo test * )");
+        assert_eq!(rule.tool, "bash");
+        assert_eq!(rule.argument_pattern.as_deref(), Some("cargo test *"));
+
+        let bare = PatternRule::parse("  git  ").unwrap();
+        assert_eq!(bare.raw, "git");
+        assert_eq!(bare.tool, "git");
+        assert_eq!(bare.argument_pattern, None);
+    }
+
+    #[test]
+    fn parse_rejects_empty_and_malformed_rule_shapes() {
+        for raw in [
+            "",
+            "   ",
+            "(cargo test)",
+            ")",
+            "bash(",
+            "bash(cargo test",
+            "bash(cargo test)tail",
+        ] {
+            assert!(
+                PatternRule::parse(raw).is_none(),
+                "malformed pattern {raw:?} must be ignored"
+            );
+        }
+    }
+
+    /// The lite glob is anchored at both ends. A wildcard may consume nothing,
+    /// but it must not turn an exact prefix/suffix into a substring match.
+    #[test]
+    fn glob_matching_stays_within_its_declared_shapes() {
+        let cases = [
+            ("exact", "exact", true),
+            ("exact", "exact-extra", false),
+            ("cargo test *", "cargo test --workspace", true),
+            ("cargo test *", "cargo testing --workspace", false),
+            ("*.example.com", "api.example.com", true),
+            ("*.example.com", "example.com", false),
+            ("*example.com", "example.com", true),
+            // Consecutive stars collapse, so this has the same label-boundary
+            // behavior as `*.example.com`, not egress's special `**` form.
+            ("**.example.com", "example.com", false),
+            ("prefix*suffix", "prefix-middle-suffix", true),
+            ("prefix*suffix", "prefixsuffix", true),
+            ("prefix*suffix", "prefix-middle-other", false),
+            ("prefix*suffix", "other-prefix-middle-suffix", false),
+            ("*", "", true),
+        ];
+        for (pattern, subject, expected) in cases {
+            assert_eq!(
+                glob_match_anywhere(pattern, subject),
+                expected,
+                "pattern {pattern:?} against subject {subject:?}"
+            );
+        }
+    }
+
+    #[test]
     fn shell_tool_pattern_matches_command_prefix() {
         let rule = PatternRule::parse("bash(cargo test *)").unwrap();
         assert!(rule.matches(&call("bash", json!({"command": "cargo test --all"}))));
@@ -495,6 +556,30 @@ mod tests {
     }
 
     #[test]
+    fn every_shell_equivalent_tool_uses_the_same_command_subject() {
+        let rule = PatternRule::parse("bash(cargo test *)").unwrap();
+        for tool in [
+            "bash",
+            "sh",
+            "shell",
+            "cmd",
+            "powershell",
+            "exec",
+            "background_run",
+            "exec_command",
+        ] {
+            assert!(
+                rule.matches(&call(tool, json!({"command": "cargo test --workspace"}))),
+                "shell-equivalent tool {tool:?} must share bash's subject"
+            );
+        }
+        assert!(!rule.matches(&call(
+            "run_command",
+            json!({"command": "cargo test --workspace"})
+        )));
+    }
+
+    #[test]
     fn quoted_rg_alternation_is_safe_and_unquoted_pipe_is_not() {
         let rule = PatternRule::parse("bash(rg *)").unwrap();
         assert!(rule.matches(&call(
@@ -503,6 +588,25 @@ mod tests {
         )));
         assert!(rule.matches(&call("bash", json!({"command": "rg -n 'foo|bar' src"}))));
         assert!(!rule.matches(&call("bash", json!({"command": "rg -n Auto | head"}))));
+    }
+
+    #[test]
+    fn shell_patterns_fail_closed_for_unclosed_quotes_and_expansions() {
+        let rule = PatternRule::parse("bash(echo *)").unwrap();
+        assert!(rule.matches(&call("bash", json!({"command": "echo '$HOME'"}))));
+
+        for command in [
+            "echo 'unterminated",
+            "echo \"unterminated",
+            r#"echo "$(id)""#,
+            r#"echo "`id`""#,
+            "echo ${HOME}",
+        ] {
+            assert!(
+                !rule.matches(&call("bash", json!({"command": command}))),
+                "unsafe shell command {command:?} must not inherit a pattern grant"
+            );
+        }
     }
 
     #[test]
@@ -551,6 +655,45 @@ mod tests {
     }
 
     #[test]
+    fn file_patterns_normalize_safe_paths_but_reject_missing_or_escaping_paths() {
+        let rule = PatternRule::parse("write_file(src/**)").unwrap();
+        for path in ["./src/lib.rs", "src/./lib.rs", "src/tools/../lib.rs"] {
+            assert!(
+                rule.matches(&call("write_file", json!({"path": path}))),
+                "normalized path {path:?} should remain inside src"
+            );
+        }
+
+        let invalid = [
+            json!({}),
+            json!({"path": 42}),
+            json!({"path": null}),
+            json!({"path": "../src/lib.rs"}),
+            json!({"path": "src/../../etc/passwd"}),
+            json!({"path": "/src/lib.rs"}),
+        ];
+        for args in invalid {
+            assert!(
+                !rule.matches(&call("write_file", args.clone())),
+                "file rule must fail closed for arguments {args}"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_patch_is_scoped_by_file_path_patterns_too() {
+        let rule = PatternRule::parse("apply_patch(src/**)").unwrap();
+        assert!(rule.matches(&call(
+            "apply_patch",
+            json!({"path": "src/lib.rs", "patch": "..."})
+        )));
+        assert!(!rule.matches(&call(
+            "apply_patch",
+            json!({"path": "README.md", "patch": "..."})
+        )));
+    }
+
+    #[test]
     fn fetch_tool_pattern_matches_host_with_subdomain_wildcard() {
         let rule = PatternRule::parse("fetch(*.example.com)").unwrap();
         assert!(rule.matches(&call(
@@ -571,6 +714,30 @@ mod tests {
             "fetch",
             json!({"url": "https://user:pass@example.com:8443/x"})
         )));
+    }
+
+    #[test]
+    fn fetch_patterns_canonicalize_hosts_and_reject_malformed_urls() {
+        let rule = PatternRule::parse("fetch(example.com)").unwrap();
+        for url in ["https://EXAMPLE.COM:8443/path", "example.com/path"] {
+            assert!(
+                rule.matches(&call("fetch", json!({"url": url}))),
+                "host form {url:?} should match example.com"
+            );
+        }
+        for args in [
+            json!({}),
+            json!({"url": 42}),
+            json!({"url": "https:///path"}),
+            json!({"url": "//example.com/path"}),
+            json!({"url": "https://api.example.com/path"}),
+            json!({"url": "https://example.com.evil/path"}),
+        ] {
+            assert!(
+                !rule.matches(&call("fetch", args.clone())),
+                "host rule must fail closed for arguments {args}"
+            );
+        }
     }
 
     #[test]
@@ -613,6 +780,35 @@ mod tests {
     fn suggest_pattern_falls_back_to_bare_tool_name_for_unrecognized_shapes() {
         let c = call("deploy", json!({"target": "prod"}));
         assert_eq!(suggest_pattern(&c).as_deref(), Some("deploy"));
+    }
+
+    /// A suggested grant may generalize the approved subject, but must not
+    /// silently cross into a neighboring command, path, or host.
+    #[test]
+    fn suggested_patterns_stay_scoped_to_the_approved_subject() {
+        let shell = call("bash", json!({"command": "cargo test --all"}));
+        let shell_rule = PatternRule::parse(&suggest_pattern(&shell).unwrap()).unwrap();
+        assert!(shell_rule.matches(&call(
+            "background_run",
+            json!({"command": "cargo test --workspace"})
+        )));
+        assert!(!shell_rule.matches(&call("bash", json!({"command": "cargo build --workspace"}))));
+
+        let file = call("write_file", json!({"path": "src/app/render.rs"}));
+        let file_rule = PatternRule::parse(&suggest_pattern(&file).unwrap()).unwrap();
+        assert!(file_rule.matches(&call("write_file", json!({"path": "src/app/theme.rs"}))));
+        assert!(!file_rule.matches(&call("write_file", json!({"path": "src/other.rs"}))));
+
+        let fetch = call("fetch", json!({"url": "https://docs.example.com/page"}));
+        let fetch_rule = PatternRule::parse(&suggest_pattern(&fetch).unwrap()).unwrap();
+        assert!(fetch_rule.matches(&call(
+            "fetch",
+            json!({"url": "https://docs.example.com/other"})
+        )));
+        assert!(!fetch_rule.matches(&call(
+            "fetch",
+            json!({"url": "https://docs.example.com.evil/page"})
+        )));
     }
 
     /// A leading env assignment is stripped on the match side, so it must be
