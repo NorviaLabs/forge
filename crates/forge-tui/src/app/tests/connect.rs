@@ -1076,6 +1076,9 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
 
     app.open_connect_picker();
     assert!(app.catalog_fetch.refresh_rx.is_some());
+    app.session
+        .set_active_model("missing-test-provider/missing-test-model");
+    app.session.set_image_input_supported(true);
 
     // The real worker thread does credential-less (and, in a sandboxed test
     // environment, possibly unreachable) network I/O, so its completion time
@@ -1091,6 +1094,10 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
 
     assert!(app.catalog_fetch.refresh_rx.is_none());
     assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+    assert!(
+        !app.session.image_input_supported(),
+        "completed refresh must reapply active-model capabilities from cache"
+    );
 }
 
 #[tokio::test]
