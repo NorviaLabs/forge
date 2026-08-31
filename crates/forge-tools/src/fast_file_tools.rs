@@ -203,6 +203,9 @@ impl Tool for FffFindTool {
     fn idempotent(&self) -> bool {
         true
     }
+    fn parallel_safe(&self) -> bool {
+        true
+    }
 
     fn warm_workspace(&self, root: &Path) {
         self.state.warm(root);
@@ -290,6 +293,9 @@ impl Tool for FffGrepTool {
         SideEffectClass::Read
     }
     fn idempotent(&self) -> bool {
+        true
+    }
+    fn parallel_safe(&self) -> bool {
         true
     }
 
