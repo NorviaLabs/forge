@@ -59,6 +59,16 @@ impl TuiApp {
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
         match self.focus.block() {
+            FocusBlock::TaskStrip => {
+                text.push_str("• ←/→  Select task slot\n");
+                text.push_str("• Enter  Switch task\n");
+                // Ctrl+T stays last-turn expansion; the switcher takes the
+                // shifted form so an existing binding is not repurposed.
+                text.push_str("• Ctrl+Shift+T or /tasks  Open task switcher\n");
+                text.push_str("• s / c  Stop / continue the selected task\n");
+                text.push_str("• p  Pin  ·  x  Archive\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
             FocusBlock::Workspace => {
                 text.push_str("• Alt+←  Back\n");
                 text.push_str("• Type  Start chat in composer\n");
@@ -145,6 +155,156 @@ impl TuiApp {
             OverlayAction::Close => {
                 self.dismiss_overlay();
             }
+            OverlayAction::SelectTask(id) => {
+                let Ok(session_id) = id.parse::<uuid::Uuid>() else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+                    return Ok(());
+                };
+                let Some(index) = self
+                    .task_chrome
+                    .iter()
+                    .position(|task| task.session_id == session_id)
+                else {
+                    self.set_feedback(FeedbackSeverity::Warn, "task is no longer available");
+                    return Ok(());
+                };
+                self.task_strip_selection = index;
+                self.overlay = None;
+                self.focus_block(FocusBlock::TaskStrip);
+                self.handle_task_strip_key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Enter,
+                    crossterm::event::KeyModifiers::NONE,
+                ))
+                .await?;
+            }
+            OverlayAction::Toast(message) => {
+                self.set_feedback(FeedbackSeverity::Warn, message);
+            }
+            OverlayAction::OpenTaskInput(mode) => {
+                self.overlay = Some(Overlay::task_input(mode));
+            }
+            OverlayAction::OpenTaskRename { session_id, label } => {
+                self.overlay = Some(Overlay::TaskRename {
+                    session_id,
+                    label,
+                    error: None,
+                });
+            }
+            OverlayAction::OpenTaskConfirm {
+                kind,
+                session_id,
+                label,
+                detail,
+            } => {
+                self.overlay = Some(Overlay::TaskConfirm {
+                    kind,
+                    session_id,
+                    label,
+                    detail,
+                });
+            }
+            OverlayAction::RenameTask { session_id, label } => {
+                let Some(session_id) = parse_task_session_id(&session_id) else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+                    return Ok(());
+                };
+                if self
+                    .send_task_command(forge_session::SupervisorCommand::RenameTask {
+                        session_id,
+                        label: label.clone(),
+                    })
+                    .await
+                {
+                    self.set_feedback(FeedbackSeverity::Ok, format!("renamed to `{label}`"));
+                }
+                self.overlay = None;
+            }
+            OverlayAction::ArchiveTask { session_id } => {
+                let Some(session_id) = parse_task_session_id(&session_id) else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+                    return Ok(());
+                };
+                if self
+                    .send_task_command(forge_session::SupervisorCommand::ArchiveTask { session_id })
+                    .await
+                {
+                    self.set_feedback(FeedbackSeverity::Ok, "task archived");
+                }
+                self.overlay = None;
+            }
+            OverlayAction::CleanupTaskWorktree { session_id } => {
+                let Some(session_id) = parse_task_session_id(&session_id) else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+                    return Ok(());
+                };
+                if self
+                    .send_task_command(forge_session::SupervisorCommand::RemoveManagedWorktree {
+                        session_id,
+                    })
+                    .await
+                {
+                    self.set_feedback(FeedbackSeverity::Ok, "worktree removed · branch kept");
+                }
+                self.overlay = None;
+            }
+            OverlayAction::CreateTask {
+                label,
+                first_prompt,
+            } => {
+                if self
+                    .send_task_command(forge_session::SupervisorCommand::CreateTask {
+                        label,
+                        first_prompt,
+                    })
+                    .await
+                {
+                    self.overlay = None;
+                    self.set_feedback(FeedbackSeverity::Info, "creating task worktree…");
+                }
+            }
+            OverlayAction::AttachTask {
+                workspace,
+                label,
+                branch,
+            } => {
+                // The overlay validates shape; the path is resolved here,
+                // where the launch directory is known, and its membership in
+                // the repository is settled by the supervisor.
+                let workspace = Overlay::normalize_workspace_path(&workspace, &self.runtime.cwd);
+                if self
+                    .send_task_command(forge_session::SupervisorCommand::AttachWorktree {
+                        workspace,
+                        label,
+                        branch,
+                    })
+                    .await
+                {
+                    self.overlay = None;
+                    self.set_feedback(FeedbackSeverity::Info, "attaching worktree…");
+                }
+            }
+            OverlayAction::FinalizeTaskCreation { operation_id } => {
+                if self
+                    .send_task_command(forge_session::SupervisorCommand::FinalizeCreation {
+                        operation_id,
+                    })
+                    .await
+                {
+                    self.set_feedback(FeedbackSeverity::Ok, "task worktree trusted");
+                }
+                // The overlay closes either way: on failure the supervisor has
+                // already rolled the creation back, so there is nothing left
+                // to trust.
+                self.overlay = None;
+            }
+            OverlayAction::CancelTaskCreation { operation_id } => {
+                self.send_task_command(forge_session::SupervisorCommand::CancelCreation {
+                    operation_id,
+                })
+                .await;
+                self.overlay = None;
+                self.set_feedback(FeedbackSeverity::Info, "task creation cancelled");
+            }
             OverlayAction::BeginOnboarding => {
                 self.open_connect_picker();
                 self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
@@ -177,6 +337,32 @@ impl TuiApp {
                 // Models is a standalone view (no chained Effort step) —
                 // apply the pick, fall back to a safe effort default for
                 // the new model if the previous one doesn't fit, and close.
+                //
+                // Model choice is per-task, so a pick made while a sibling is
+                // selected must reach that actor, not the primary session.
+                // Provider authentication stays global and is unaffected.
+                if let SelectedRuntime::Sibling(session_id) = self.selected_runtime() {
+                    let route_id = profile_id
+                        .as_deref()
+                        .map(super::connect::route_id_for_profile)
+                        .unwrap_or_default();
+                    if self
+                        .send_task_command(forge_session::SupervisorCommand::SetModel {
+                            session_id,
+                            model_id: model.clone(),
+                            route_id,
+                            reasoning_effort: Some(self.reasoning_effort.value.to_string()),
+                        })
+                        .await
+                    {
+                        self.set_feedback(
+                            FeedbackSeverity::Ok,
+                            format!("{} · model {model}", self.selected_task_label()),
+                        );
+                    }
+                    self.overlay = None;
+                    return Ok(());
+                }
                 self.apply_model_selection(&provider, &model, profile_id.as_deref());
                 self.resolve_effort_for_model(&model);
                 self.overlay = None;
@@ -321,4 +507,10 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Ok, format!("theme · {label}"));
         }
     }
+}
+
+/// Parse a switcher row's session id. The overlay carries it as a string so
+/// the overlay module stays free of a `uuid` dependency.
+fn parse_task_session_id(value: &str) -> Option<uuid::Uuid> {
+    value.parse::<uuid::Uuid>().ok()
 }

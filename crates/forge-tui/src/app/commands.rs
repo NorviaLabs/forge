@@ -18,6 +18,71 @@ fn truncate_skill_description(desc: &str) -> String {
 }
 
 impl TuiApp {
+    pub(super) fn open_task_switcher(&mut self) {
+        if let Some(supervisor) = self.supervisor.as_ref() {
+            let selected_task_id = self.selected_task_id;
+            let items = supervisor
+                .snapshots
+                .values()
+                .map(|snapshot| {
+                    use forge_session::{SessionLifecycle, SupervisorTurnState};
+                    // "Needs you" is a turn that stopped for a reason the
+                    // operator has to answer; a task the operator is already
+                    // looking at is never in it.
+                    let attention = snapshot.task.session_id != selected_task_id
+                        && matches!(
+                            snapshot.task.turn_state,
+                            SupervisorTurnState::Waiting | SupervisorTurnState::Failed
+                        );
+                    let group = match snapshot.task.lifecycle {
+                        SessionLifecycle::Archived => TaskSwitcherGroup::Archived,
+                        SessionLifecycle::Unavailable => TaskSwitcherGroup::Unavailable,
+                        SessionLifecycle::Active if attention => TaskSwitcherGroup::Attention,
+                        SessionLifecycle::Active => TaskSwitcherGroup::Active,
+                    };
+                    TaskSwitcherItem {
+                        session_id: snapshot.task.session_id.to_string(),
+                        label: snapshot.task.label.clone(),
+                        branch: snapshot.task.branch.clone(),
+                        workspace: snapshot.task.workspace.display().to_string(),
+                        state: snapshot.task.turn_state.label().into(),
+                        attention,
+                        group,
+                        managed: snapshot.task.ownership
+                            == forge_session::WorktreeOwnership::Managed,
+                    }
+                })
+                .collect();
+            self.overlay = Some(Overlay::task_switcher(items));
+            self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
+            return;
+        }
+        let sessions =
+            match recent_resume_sessions(self.session.journal_dir(), self.session.session_id, 32) {
+                Ok(sessions) => sessions,
+                Err(error) => {
+                    self.report_error(&format!("Could not list tasks: {error}"));
+                    return;
+                }
+            };
+        let current = ResumeSessionItem {
+            id: self.session.session_id.to_string(),
+            modified: "current".into(),
+            title: Some("Active task · current worktree".into()),
+        };
+        let mut items = vec![current];
+        for session in sessions {
+            let timestamp: chrono::DateTime<chrono::Local> = session.modified.into();
+            items.push(ResumeSessionItem {
+                id: session.id.to_string(),
+                modified: timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                title: None,
+            });
+        }
+        self.overlay = Some(Overlay::resume_picker(items));
+        self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
+    }
+
     /// Filtered slash suggestions for the current textbox (empty if not in slash mode).
     pub fn slash_suggestions(&self) -> Vec<PaletteItem> {
         let t = self.input.text.trim();
@@ -118,6 +183,12 @@ impl TuiApp {
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleToolDetails)
+            }
+            KeyCode::Char('t')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                Some(SemanticCommand::OpenTaskSwitcher)
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleLastTurnExpanded)
@@ -509,6 +580,7 @@ impl TuiApp {
                 self.paste_clipboard_image();
             }
             SemanticCommand::ToggleToolDetails => self.tool_detail.toggle(),
+            SemanticCommand::OpenTaskSwitcher => self.open_task_switcher(),
             SemanticCommand::ToggleLastTurnExpanded => {
                 let all_messages = self.transcript_view.messages();
                 let visible_messages =
@@ -537,14 +609,30 @@ impl TuiApp {
                 }
             }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
-            SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
+            // The sidebar lists the primary session's own queue and
+            // background tasks. A sibling's are held by its supervisor actor
+            // and are not reachable from here yet, so refuse rather than act
+            // on the primary's list under a sibling's name.
+            SemanticCommand::CancelSelectedQueueMessage => {
+                if self.require_primary_task("cancelling a queued message") {
+                    self.cancel_selected_queue().await
+                }
+            }
             SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
-            SemanticCommand::CancelSelectedBackgroundTask => self.cancel_selected_task().await,
+            SemanticCommand::CancelSelectedBackgroundTask => {
+                if self.require_primary_task("cancelling a background task") {
+                    self.cancel_selected_task().await
+                }
+            }
             SemanticCommand::ApproveSelectedBackgroundTask => {
-                self.resolve_selected_task_hitl(HitlDecision::Approve)
+                if self.require_primary_task("approving a background task") {
+                    self.resolve_selected_task_hitl(HitlDecision::Approve)
+                }
             }
             SemanticCommand::DenySelectedBackgroundTask => {
-                self.resolve_selected_task_hitl(HitlDecision::Deny)
+                if self.require_primary_task("denying a background task") {
+                    self.resolve_selected_task_hitl(HitlDecision::Deny)
+                }
             }
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy_state.is_active() {
@@ -678,7 +766,16 @@ impl TuiApp {
                         }
                     }
                 }
+                Ok(SlashCommand::Tasks) => {
+                    self.open_task_switcher();
+                }
                 Ok(SlashCommand::Resume { session_id }) => {
+                    // Resume rebinds the session this app owns. A task's
+                    // session/worktree binding is immutable, so this can only
+                    // ever mean the primary — never the selected sibling.
+                    if !self.require_primary_task("/resume") {
+                        return Ok(());
+                    }
                     match self.session.resume_session(session_id).await {
                         Ok(report) => {
                             self.history.load_resumed(report.composer_lines);
@@ -739,6 +836,12 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Clear) => {
+                    // The clear marks index into the primary session's own
+                    // message/event vectors; applying them while a sibling is
+                    // shown would hide the wrong transcript.
+                    if !self.require_primary_task("/clear") {
+                        return Ok(());
+                    }
                     // Hide everything currently in the transcript without deleting session
                     // context, so subsequent model turns still see the full conversation.
                     self.conversation_view.message_start = self.session.messages.len();

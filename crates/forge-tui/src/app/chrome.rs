@@ -23,6 +23,169 @@ use super::util::relative_display;
 use super::*;
 
 impl TuiApp {
+    pub(super) fn poll_supervisor_events(&mut self) {
+        let Some(supervisor) = self.supervisor.as_mut() else {
+            return;
+        };
+        let mut events = Vec::new();
+        let mut closed = false;
+        loop {
+            let event = match supervisor.events.try_recv() {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    closed = true;
+                    break;
+                }
+            };
+            events.push(event);
+        }
+        let _ = supervisor;
+        if closed {
+            self.supervisor = None;
+        }
+        for event in events {
+            match event {
+                forge_session::SupervisorEvent::Roster(roster) => {
+                    if let Some(supervisor) = self.supervisor.as_mut() {
+                        supervisor.snapshots = roster
+                            .iter()
+                            .map(|snapshot| (snapshot.task.session_id, snapshot.clone()))
+                            .collect();
+                    }
+                    let primary = self
+                        .task_chrome
+                        .iter()
+                        .find(|task| task.session_id == self.session.session_id)
+                        .cloned();
+                    self.task_chrome = roster
+                        .into_iter()
+                        .map(|snapshot| TaskChromeItem {
+                            session_id: snapshot.task.session_id,
+                            slot: snapshot.task.slot,
+                            label: snapshot.task.label,
+                            branch: snapshot.task.branch,
+                            lifecycle: snapshot.session.lifecycle,
+                            selected: snapshot.task.session_id == self.selected_task_id,
+                            secondary: Some(snapshot.task.turn_state.label().into()),
+                            attention: false,
+                        })
+                        .collect();
+                    if let Some(primary) = primary {
+                        if !self
+                            .task_chrome
+                            .iter()
+                            .any(|task| task.session_id == primary.session_id)
+                        {
+                            self.task_chrome.insert(0, primary);
+                        }
+                    }
+                    self.task_strip_selection = self
+                        .task_chrome
+                        .iter()
+                        .position(|task| task.session_id == self.selected_task_id)
+                        .unwrap_or(0);
+                }
+                forge_session::SupervisorEvent::TaskUpdated(snapshot) => {
+                    let snapshot = *snapshot;
+                    let lifecycle = snapshot.session.lifecycle;
+                    if let Some(supervisor) = self.supervisor.as_mut() {
+                        supervisor
+                            .snapshots
+                            .insert(snapshot.task.session_id, snapshot.clone());
+                    }
+                    if snapshot.task.session_id == self.session.session_id {
+                        self.session_view = snapshot.session.clone();
+                        self.transcript_view = snapshot.transcript;
+                    }
+                    if let Some(task) = self
+                        .task_chrome
+                        .iter_mut()
+                        .find(|task| task.session_id == snapshot.task.session_id)
+                    {
+                        task.lifecycle = lifecycle;
+                        task.secondary = Some(snapshot.task.turn_state.label().into());
+                    }
+                }
+                forge_session::SupervisorEvent::Attention {
+                    session_id,
+                    message,
+                    ..
+                } => {
+                    if let Some(task) = self
+                        .task_chrome
+                        .iter_mut()
+                        .find(|task| task.session_id == session_id)
+                    {
+                        task.attention = true;
+                    }
+                    if session_id != self.session.session_id {
+                        self.push_toast(message);
+                    }
+                }
+                forge_session::SupervisorEvent::Stream { session_id, event }
+                    if session_id == self.session.session_id =>
+                {
+                    self.apply_supervisor_stream_event(&event);
+                }
+                forge_session::SupervisorEvent::Selected(Some(session_id)) => {
+                    self.task_strip_selection = self
+                        .task_chrome
+                        .iter()
+                        .position(|task| task.session_id == session_id)
+                        .unwrap_or(self.task_strip_selection);
+                }
+                forge_session::SupervisorEvent::Error {
+                    session_id,
+                    message,
+                } => {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        format!(
+                            "task {}: {message}",
+                            session_id.map_or_else(|| "unknown".into(), |id| id.to_string())
+                        ),
+                    );
+                }
+                forge_session::SupervisorEvent::TrustRequired {
+                    operation_id,
+                    label,
+                    workspace,
+                } => {
+                    self.overlay = Some(Overlay::TrustTask {
+                        operation_id,
+                        label,
+                        workspace: workspace.display().to_string(),
+                    });
+                    self.set_feedback(FeedbackSeverity::Warn, "trust required before task can run");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn apply_supervisor_stream_event(&mut self, event: &forge_types::ModelStreamEvent) {
+        match event {
+            forge_types::ModelStreamEvent::TextDelta { text } => {
+                self.stream.preview.push_str(text);
+                self.busy_state.start(crate::widgets::BusyPhase::Model);
+            }
+            forge_types::ModelStreamEvent::ThinkingDelta { text } => {
+                self.stream.thinking.push_str(text);
+                self.busy_state.start(crate::widgets::BusyPhase::Model);
+            }
+            forge_types::ModelStreamEvent::ToolCallStart { name, .. } => {
+                self.busy_state
+                    .set_phase(crate::widgets::BusyPhase::Tool { name: name.clone() });
+            }
+            forge_types::ModelStreamEvent::Error { message } => {
+                self.set_feedback(FeedbackSeverity::Error, message.clone());
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn push_notice(&mut self, lines: Vec<String>) {
         self.push_notice_with_severity(lines, FeedbackSeverity::Info);
     }

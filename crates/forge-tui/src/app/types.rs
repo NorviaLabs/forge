@@ -8,6 +8,122 @@ use super::*;
 pub(crate) const WORKSPACE_HISTORY_LIMIT: usize = 32;
 pub(crate) const UI_STATE_VERSION: u32 = 2;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskChromeItem {
+    pub(crate) session_id: uuid::Uuid,
+    pub(crate) slot: Option<u8>,
+    pub(crate) label: String,
+    pub(crate) branch: String,
+    pub(crate) lifecycle: forge_types::TaskLifecycle,
+    pub(crate) selected: bool,
+    pub(crate) secondary: Option<String>,
+    pub(crate) attention: bool,
+}
+
+/// Everything the operator's view of one task carries with it across a switch.
+///
+/// Saved and restored by *moving*, not cloning: several of these hold buffers
+/// or live handles that are expensive or impossible to duplicate, and a task
+/// only ever has one live copy of its own view state anyway.
+///
+/// Deliberately excluded, and why:
+/// - the interactive terminal and bottom panel — the terminal is independent
+///   of the selected task by design;
+/// - provider credentials and the connect model — authentication is global,
+///   only the *model choice* is per-task;
+/// - the explorer tree and its dialogs — those are rooted at a workspace path,
+///   and file paths still resolve against the primary workspace, so carrying
+///   them per task would show one task's tree against another's files.
+pub(crate) struct TaskLocalViewState {
+    pub(crate) input: InputModel,
+    pub(crate) workspace_navigation: WorkspaceNavigation,
+    pub(crate) source_viewer: SourceViewer,
+    pub(crate) conversation_view: ConversationViewState,
+    pub(crate) focus: FocusState,
+    pub(crate) overlay: Option<Overlay>,
+    pub(crate) attachment: AttachmentState,
+    pub(crate) editor_session: Option<EditorSession>,
+    pub(crate) editor_command: Option<String>,
+    pub(crate) editor_message: Option<String>,
+    pub(crate) editor_viewport: EditorViewportState,
+    pub(crate) diff_view: crate::diff_view::DiffView,
+    pub(crate) stream: StreamState,
+    pub(crate) activity: ActivityFeed,
+    pub(crate) banner_state: BannerState,
+    pub(crate) turn_stats: std::collections::HashMap<usize, forge_transcript::TurnStats>,
+    pub(crate) tool_detail: ToolDetailState,
+    pub(crate) turn_expansion: TurnExpansionState,
+    pub(crate) composer_chip_focus: Option<usize>,
+    pub(crate) approval_session: super::approvals::ApprovalSessionState,
+    pub(crate) question_session: super::questions::QuestionSessionState,
+    pub(crate) busy_state: BusyState,
+    pub(crate) status_state: StatusMessageState,
+    pub(crate) search_status: SearchStatusState,
+    pub(crate) pending_turn: PendingTurnState,
+    pub(crate) pending_interaction: PendingInteractionState,
+    pub(crate) task_selection: TaskSelectionState,
+    pub(crate) timing: TurnTimingState,
+    /// Model settings are per-task; the provider route that authenticates them
+    /// is not, and stays on `connect`.
+    pub(crate) reasoning_effort: ReasoningEffortState,
+    pub(crate) model_label: String,
+    pub(crate) provider: String,
+}
+
+impl Default for TaskLocalViewState {
+    fn default() -> Self {
+        Self {
+            input: InputModel::default(),
+            workspace_navigation: WorkspaceNavigation::default(),
+            source_viewer: SourceViewer::new(),
+            conversation_view: ConversationViewState {
+                message_start: 0,
+                event_start: 0,
+                scroll: 0,
+                follow: true,
+                context_reset_snapshot: None,
+                splash_dismissed: false,
+            },
+            focus: FocusState::default(),
+            overlay: None,
+            attachment: AttachmentState::default(),
+            editor_session: None,
+            editor_command: None,
+            editor_message: None,
+            editor_viewport: EditorViewportState { height: 24 },
+            diff_view: crate::diff_view::DiffView::default(),
+            stream: StreamState::default(),
+            activity: ActivityFeed::default(),
+            banner_state: BannerState::default(),
+            turn_stats: std::collections::HashMap::new(),
+            tool_detail: ToolDetailState::default(),
+            turn_expansion: TurnExpansionState::default(),
+            composer_chip_focus: None,
+            approval_session: super::approvals::ApprovalSessionState::default(),
+            question_session: super::questions::QuestionSessionState::default(),
+            busy_state: BusyState::default(),
+            status_state: StatusMessageState::default(),
+            search_status: SearchStatusState::default(),
+            pending_turn: PendingTurnState::default(),
+            pending_interaction: PendingInteractionState::default(),
+            task_selection: TaskSelectionState::default(),
+            timing: TurnTimingState::default(),
+            reasoning_effort: ReasoningEffortState::default(),
+            model_label: String::new(),
+            provider: String::new(),
+        }
+    }
+}
+
+pub(crate) struct SupervisorUiState {
+    #[allow(dead_code)]
+    pub(crate) handle: forge_session::SupervisorHandle,
+    pub(crate) events: tokio::sync::broadcast::Receiver<forge_session::SupervisorEvent>,
+    #[allow(dead_code)]
+    pub(crate) current_session_id: uuid::Uuid,
+    pub(crate) snapshots: std::collections::HashMap<uuid::Uuid, forge_session::TaskRuntimeSnapshot>,
+}
+
 /// Center-pane content. Conversation isn't a variant here — it's always
 /// shown in the persistent sidebar instead (see [[project_ide_layout_design_round2]]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +351,7 @@ impl FileWatchState {
 /// component-specific selection state remains with the component itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FocusBlock {
+    TaskStrip,
     /// The explorer's search row. Nested visually inside the same bordered
     /// box as `Files` (no standalone layout region), but a real Tab stop of
     /// its own so Tab has one consistent meaning everywhere instead of
@@ -258,6 +375,7 @@ pub(crate) enum FocusBlock {
 impl FocusBlock {
     pub(crate) fn label(self) -> &'static str {
         match self {
+            Self::TaskStrip => "TASKS",
             Self::Search => "SEARCH",
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
@@ -277,7 +395,8 @@ impl FocusBlock {
     // its own composer next. The approval card is reachable in the cycle
     // while a decision is pending. Footer follows Composer — the natural
     // next stop after typing is the row of dials right below it.
-    pub(crate) const ORDER: [Self; 8] = [
+    pub(crate) const ORDER: [Self; 9] = [
+        Self::TaskStrip,
         Self::Search,
         Self::Files,
         Self::Workspace,
@@ -409,6 +528,7 @@ pub(crate) enum SemanticCommand {
     ToggleToolDetails,
     /// Expand/collapse the most recently compacted historical turn.
     ToggleLastTurnExpanded,
+    OpenTaskSwitcher,
     /// Step reasoning effort one level (`Alt+,` back, `Alt+.` forward)
     /// within the current model's valid options — see
     /// [`crate::effort::ReasoningEffort::step`].
@@ -522,6 +642,7 @@ impl Default for FocusState {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FocusAvailability {
+    pub(crate) task_strip: bool,
     pub(crate) search: bool,
     pub(crate) files: bool,
     pub(crate) sidebar: bool,
@@ -532,6 +653,7 @@ pub(crate) struct FocusAvailability {
 impl FocusAvailability {
     pub(crate) fn contains(self, block: FocusBlock) -> bool {
         match block {
+            FocusBlock::TaskStrip => self.task_strip,
             FocusBlock::Search => self.search,
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => true,
@@ -657,6 +779,7 @@ pub(crate) struct ConversationRenderCache {
     pub(crate) plan_dock: Option<crate::conversation::PlanDock>,
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct ConversationViewState {
     pub(crate) message_start: usize,
     pub(crate) event_start: usize,
@@ -743,6 +866,7 @@ pub(crate) struct StartupResumeState {
     pub(crate) session_id: Option<uuid::Uuid>,
 }
 
+#[derive(Default)]
 pub(crate) struct TurnTimingState {
     pub(crate) started: Option<Instant>,
     /// When the *user's* turn began, as opposed to the current model step.
@@ -896,7 +1020,7 @@ impl PendingInteractionState {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct AttachmentState {
     pending: Option<forge_workspace::file_context::FileAttachment>,
     pending_images: Vec<forge_types::ImageRef>,
@@ -1065,10 +1189,12 @@ impl TurnExpansionState {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct SearchStatusState {
     pub(crate) label: Option<String>,
 }
 
+#[derive(Default)]
 pub(crate) struct ReasoningEffortState {
     pub(crate) value: ReasoningEffort,
 }
@@ -1150,6 +1276,7 @@ pub(crate) struct NoticeState {
     pub(crate) until: Option<Instant>,
 }
 
+#[derive(Default)]
 pub(crate) struct BannerState {
     pub(crate) items: Vec<ChatItem>,
 }
@@ -1200,6 +1327,7 @@ impl BusyState {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct StatusMessageState {
     pub(crate) message: String,
 }
@@ -1304,6 +1432,13 @@ pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";
 
 pub struct TuiApp {
     pub(crate) session: AgentSession,
+    /// Repository task chrome. The current session is represented here first;
+    /// supervisor roster events can add siblings without changing render code.
+    pub(crate) task_chrome: Vec<TaskChromeItem>,
+    pub(crate) task_strip_selection: usize,
+    pub(crate) selected_task_id: uuid::Uuid,
+    pub(crate) task_view_states: std::collections::HashMap<uuid::Uuid, TaskLocalViewState>,
+    pub(crate) supervisor: Option<SupervisorUiState>,
     /// Per-frame view of `session`, refreshed at the top of `draw`. Render
     /// paths read this instead of the live session, so what they need stops
     /// depending on who owns it.

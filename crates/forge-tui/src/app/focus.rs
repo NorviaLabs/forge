@@ -9,6 +9,7 @@ use super::*;
 impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
         FocusAvailability {
+            task_strip: true,
             search: self.workspace_files.visible,
             files: self.workspace_files.visible,
             // No standalone preference flag — the sidebar only ever hides

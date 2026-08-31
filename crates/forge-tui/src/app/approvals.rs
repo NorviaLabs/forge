@@ -612,6 +612,39 @@ impl TuiApp {
         grant: ApprovalGrant,
         terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
+        // A sibling's approval belongs to the supervisor's actor, not to the
+        // session this app owns. Resolving it here would answer the primary's
+        // prompt instead — so hand the decision back the way it arrived.
+        if let SelectedRuntime::Sibling(session_id) = self.selected_runtime() {
+            if self
+                .selected_snapshot()
+                .is_some_and(|snapshot| snapshot.session.pending_hitl.is_some())
+            {
+                if grant != ApprovalGrant::Once {
+                    // Remembered grants are written against the primary
+                    // session's permission state; there is no per-actor
+                    // equivalent yet, so say so rather than mis-scope it.
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "remembered approvals are not available for another task yet — use Run once or Don't run",
+                    );
+                    return Ok(());
+                }
+                let approved = matches!(decision, HitlDecision::Approve);
+                if self
+                    .send_task_command(forge_session::SupervisorCommand::ResolveApproval {
+                        session_id,
+                        decision,
+                        actor: "tui".into(),
+                    })
+                    .await
+                {
+                    self.push_toast(if approved { "approved once" } else { "denied" });
+                }
+                return Ok(());
+            }
+        }
+
         let Some(payload) = self.session.pending_hitl().cloned() else {
             return Ok(());
         };
