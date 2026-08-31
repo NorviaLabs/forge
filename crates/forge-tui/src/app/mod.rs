@@ -53,11 +53,14 @@ use crate::file_explorer::{FileExplorer, FileExplorerWidget};
 use crate::history::InputHistory;
 use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
-use crate::layout::{split_areas_with_chrome, split_areas_with_expanded_conversation};
+use crate::layout::{
+    split_areas_with_chrome, split_areas_with_expanded_conversation, split_areas_with_task_strip,
+    split_areas_with_task_strip_expanded_conversation,
+};
 use crate::overlays::{
     centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalOverlayState,
     ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction,
-    OverlayWidget, PaletteItem, ResumeSessionItem,
+    OverlayWidget, PaletteItem, ResumeSessionItem, TaskSwitcherGroup, TaskSwitcherItem,
 };
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
@@ -66,7 +69,7 @@ use crate::widgets::{
     classify_operator_error, composer_cursor_position, composer_text_area_width,
     footer_short_model_id, BottomPanel, BottomPanelModel, BottomPanelState, BusyPhase, FeedbackBar,
     FeedbackModel, FeedbackSeverity, FooterBar, FooterFocus, FooterModel, InputBar, InputModel,
-    StatusBar, StatusModel,
+    StatusBar, StatusModel, TaskStrip, TaskStripItem,
 };
 use forge_config::FileIconMode;
 use forge_workspace::file_ops::{
@@ -94,6 +97,8 @@ mod questions;
 /// for a type across several modules of the same crate, so this is a file split
 /// only — `TuiApp`'s fields and every signature are unchanged.
 mod render;
+mod selection;
+pub(crate) use selection::SelectedRuntime;
 mod shell;
 mod turn;
 mod types;

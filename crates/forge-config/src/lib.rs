@@ -28,8 +28,8 @@ pub use theme::{
     DEFAULT_THEME_ID, THEME_FORGE_DARK, THEME_FORGE_LIGHT, THEME_SYSTEM,
 };
 pub use trust::{
-    grant_trust, is_trusted, persist_committed_theme, persist_committed_theme_at,
-    trust_display_path, trust_file_path, TrustError, HOME_PROJECTS_DIR,
+    grant_trust, grant_trust_at, is_trusted, is_trusted_at, persist_committed_theme,
+    persist_committed_theme_at, trust_display_path, trust_file_path, TrustError, HOME_PROJECTS_DIR,
 };
 
 #[derive(Debug, Error)]

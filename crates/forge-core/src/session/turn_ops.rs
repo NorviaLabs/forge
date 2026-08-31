@@ -571,6 +571,7 @@ impl AgentSession {
 
     /// Run until no tool calls, max turns, or HITL pause.
     pub async fn run_user_message(&mut self, text: &str) -> Result<ModelResponse, LoopError> {
+        self.reset_turn_cancel();
         self.append_user_message(text).await?;
         self.run_agent_turns(None).await
     }
@@ -706,6 +707,7 @@ impl AgentSession {
         &mut self,
         stream_tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, LoopError> {
+        self.reset_turn_cancel();
         TurnCoordinator::run(self, stream_tx).await
     }
 

@@ -128,6 +128,269 @@ impl TuiApp {
         Ok(true)
     }
 
+    pub(super) async fn handle_task_strip_key(
+        &mut self,
+        key: event::KeyEvent,
+    ) -> Result<bool, TuiError> {
+        let count = self.task_chrome.len();
+        if count == 0 {
+            return Ok(false);
+        }
+        match key.code {
+            KeyCode::Left if key.modifiers.is_empty() => {
+                self.task_strip_selection = self.task_strip_selection.saturating_sub(1);
+                Ok(true)
+            }
+            KeyCode::Right if key.modifiers.is_empty() => {
+                self.task_strip_selection = (self.task_strip_selection + 1).min(count - 1);
+                Ok(true)
+            }
+            KeyCode::Home if key.modifiers.is_empty() => {
+                self.task_strip_selection = 0;
+                Ok(true)
+            }
+            KeyCode::End if key.modifiers.is_empty() => {
+                self.task_strip_selection = count - 1;
+                Ok(true)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                let item = self.task_chrome[self.task_strip_selection].clone();
+                if item.session_id != self.session.session_id {
+                    if self.supervisor.is_some() {
+                        if !self
+                            .send_task_command(forge_session::SupervisorCommand::SelectTask {
+                                session_id: Some(item.session_id),
+                            })
+                            .await
+                        {
+                            return Ok(true);
+                        }
+                        if let Some(snapshot) = self
+                            .supervisor
+                            .as_ref()
+                            .and_then(|supervisor| supervisor.snapshots.get(&item.session_id))
+                            .cloned()
+                        {
+                            self.save_task_view_state(self.selected_task_id);
+                            self.restore_task_view_state(item.session_id);
+                            self.selected_task_id = item.session_id;
+                            for task in &mut self.task_chrome {
+                                task.selected = task.session_id == item.session_id;
+                            }
+                            self.session_view = snapshot.session.clone();
+                            self.transcript_view = snapshot.transcript.clone();
+                        }
+                        self.set_feedback(
+                            FeedbackSeverity::Info,
+                            format!("task selected · {}", item.label),
+                        );
+                    }
+                } else {
+                    self.save_task_view_state(self.selected_task_id);
+                    self.restore_task_view_state(item.session_id);
+                    self.selected_task_id = item.session_id;
+                    self.set_feedback(FeedbackSeverity::Info, "primary task selected");
+                }
+                Ok(true)
+            }
+            KeyCode::Char('s') if key.modifiers.is_empty() => {
+                let session_id = self.task_chrome[self.task_strip_selection].session_id;
+                if session_id == self.session.session_id {
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        "use Esc or Ctrl+C to stop the primary task",
+                    );
+                    return Ok(true);
+                }
+                self.send_task_command(forge_session::SupervisorCommand::StopTurn { session_id })
+                    .await;
+                Ok(true)
+            }
+            KeyCode::Char('c') if key.modifiers.is_empty() => {
+                let session_id = self.task_chrome[self.task_strip_selection].session_id;
+                if session_id == self.session.session_id {
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        "primary task is controlled by the composer",
+                    );
+                    return Ok(true);
+                }
+                self.send_task_command(forge_session::SupervisorCommand::ContinueTurn {
+                    session_id,
+                })
+                .await;
+                Ok(true)
+            }
+            KeyCode::Char('p') if key.modifiers.is_empty() => {
+                let task = self.task_chrome[self.task_strip_selection].clone();
+                self.send_task_command(forge_session::SupervisorCommand::PinTask {
+                    session_id: task.session_id,
+                    slot: task.slot.or(Some(1)),
+                    swap: true,
+                })
+                .await;
+                Ok(true)
+            }
+            KeyCode::Char('x') if key.modifiers.is_empty() => {
+                let session_id = self.task_chrome[self.task_strip_selection].session_id;
+                if session_id == self.session.session_id {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "the primary task cannot be archived",
+                    );
+                    return Ok(true);
+                }
+                self.send_task_command(forge_session::SupervisorCommand::ArchiveTask {
+                    session_id,
+                })
+                .await;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Move the current view out of the app, leaving a blank one behind.
+    ///
+    /// Moving rather than cloning keeps this correct for the state that holds
+    /// buffers (an open editor, a rendered stream preview) and guarantees the
+    /// two tasks never share a live copy of anything.
+    fn take_task_view_state(&mut self) -> TaskLocalViewState {
+        let blank = TaskLocalViewState::default();
+        TaskLocalViewState {
+            input: std::mem::replace(&mut self.input, blank.input),
+            workspace_navigation: std::mem::take(&mut self.workspace_navigation),
+            source_viewer: std::mem::replace(&mut self.source_viewer, blank.source_viewer),
+            conversation_view: std::mem::replace(
+                &mut self.conversation_view,
+                blank.conversation_view,
+            ),
+            focus: std::mem::replace(&mut self.focus, blank.focus),
+            overlay: self.overlay.take(),
+            attachment: std::mem::take(&mut self.attachment),
+            editor_session: self.editor_session.take(),
+            editor_command: self.editor_command.take(),
+            editor_message: self.editor_message.take(),
+            editor_viewport: std::mem::replace(&mut self.editor_viewport, blank.editor_viewport),
+            diff_view: std::mem::take(&mut self.diff_view),
+            stream: std::mem::take(&mut self.stream),
+            activity: std::mem::take(&mut self.activity),
+            banner_state: std::mem::take(&mut self.banner_state),
+            turn_stats: std::mem::take(&mut self.turn_stats),
+            tool_detail: std::mem::take(&mut self.tool_detail),
+            turn_expansion: std::mem::take(&mut self.turn_expansion),
+            composer_chip_focus: self.composer_chip_focus.take(),
+            approval_session: std::mem::take(&mut self.approval_session),
+            question_session: std::mem::take(&mut self.question_session),
+            busy_state: std::mem::take(&mut self.busy_state),
+            status_state: std::mem::take(&mut self.status_state),
+            search_status: std::mem::take(&mut self.search_status),
+            pending_turn: std::mem::take(&mut self.pending_turn),
+            pending_interaction: std::mem::take(&mut self.pending_interaction),
+            task_selection: std::mem::take(&mut self.task_selection),
+            timing: std::mem::take(&mut self.timing),
+            reasoning_effort: std::mem::take(&mut self.reasoning_effort),
+            // Copied, not moved: the incoming task may have no model recorded
+            // yet, and a blank footer between the save and the restore would
+            // be a visible flicker on every switch.
+            model_label: self.runtime.model_label.clone(),
+            provider: self.runtime.provider.clone(),
+        }
+    }
+
+    fn install_task_view_state(&mut self, state: TaskLocalViewState) {
+        self.input = state.input;
+        self.workspace_navigation = state.workspace_navigation;
+        self.source_viewer = state.source_viewer;
+        self.conversation_view = state.conversation_view;
+        self.focus = state.focus;
+        self.overlay = state.overlay;
+        self.attachment = state.attachment;
+        self.editor_session = state.editor_session;
+        self.editor_command = state.editor_command;
+        self.editor_message = state.editor_message;
+        self.editor_viewport = state.editor_viewport;
+        self.diff_view = state.diff_view;
+        self.stream = state.stream;
+        self.activity = state.activity;
+        self.banner_state = state.banner_state;
+        self.turn_stats = state.turn_stats;
+        self.tool_detail = state.tool_detail;
+        self.turn_expansion = state.turn_expansion;
+        self.composer_chip_focus = state.composer_chip_focus;
+        self.approval_session = state.approval_session;
+        self.question_session = state.question_session;
+        self.busy_state = state.busy_state;
+        self.status_state = state.status_state;
+        self.search_status = state.search_status;
+        self.pending_turn = state.pending_turn;
+        self.pending_interaction = state.pending_interaction;
+        self.task_selection = state.task_selection;
+        self.timing = state.timing;
+        self.reasoning_effort = state.reasoning_effort;
+        // A task that has never been shown has no model of its own recorded
+        // yet; keep whatever is on screen rather than blanking the footer.
+        if !state.model_label.is_empty() {
+            self.runtime.model_label = state.model_label;
+        }
+        if !state.provider.is_empty() {
+            self.runtime.provider = state.provider;
+        }
+        // Rendered conversation lines belong to the transcript that produced
+        // them, so drop the cache rather than paint one task's rows over
+        // another's.
+        self.render_cache.conversation = None;
+        self.normalize_focus();
+    }
+
+    pub(super) fn save_task_view_state(&mut self, session_id: uuid::Uuid) {
+        let state = self.take_task_view_state();
+        self.task_view_states.insert(session_id, state);
+    }
+
+    pub(super) fn restore_task_view_state(&mut self, session_id: uuid::Uuid) {
+        let state = self
+            .task_view_states
+            .remove(&session_id)
+            .unwrap_or_else(|| {
+                // First visit: a blank view, but seeded with the model that is
+                // already showing so the footer does not flicker to empty.
+                TaskLocalViewState {
+                    model_label: self.runtime.model_label.clone(),
+                    provider: self.runtime.provider.clone(),
+                    ..Default::default()
+                }
+            });
+        self.install_task_view_state(state);
+    }
+
+    /// Send a supervisor command and report the outcome in the feedback strip.
+    ///
+    /// A rejected command — an attach that names the wrong branch, an archive
+    /// of a running task — is operator error, not a TUI failure. Returning it
+    /// as `TuiError` would tear the session down over a typo, so failures
+    /// surface as feedback and the caller learns only whether it worked.
+    pub(super) async fn send_task_command(
+        &mut self,
+        command: forge_session::SupervisorCommand,
+    ) -> bool {
+        let Some(handle) = self
+            .supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.handle.clone())
+        else {
+            self.set_feedback(FeedbackSeverity::Warn, "multi-task mode is unavailable");
+            return false;
+        };
+        match handle.command(command).await {
+            Ok(()) => true,
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Error, error.to_string());
+                false
+            }
+        }
+    }
+
     fn handle_explorer_dialog_key(&mut self, key: event::KeyEvent) -> bool {
         let Some(dialog) = self.explorer_dialog.take() else {
             return false;
@@ -529,6 +792,26 @@ impl TuiApp {
             return Ok(());
         }
 
+        if self.selected_task_id != self.session.session_id {
+            if let Some(handle) = self
+                .supervisor
+                .as_ref()
+                .map(|supervisor| supervisor.handle.clone())
+            {
+                self.record_submitted_line(&line).await;
+                handle
+                    .command(forge_session::SupervisorCommand::SubmitPrompt {
+                        session_id: self.selected_task_id,
+                        text: line,
+                    })
+                    .await
+                    .map_err(|error| TuiError::Other(error.to_string()))?;
+                self.set_feedback(FeedbackSeverity::Info, "prompt queued for selected task");
+                self.push_toast("sent to selected task");
+                return Ok(());
+            }
+        }
+
         let route =
             input_route::classify_input(&self.session.active_task, self.overlay.is_some(), &line);
         let consumed = !matches!(route, input_route::InputRoute::RejectStaleResponse);
@@ -805,6 +1088,7 @@ impl TuiApp {
 
     async fn handle_active_block_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         match self.focus.block() {
+            FocusBlock::TaskStrip => self.handle_task_strip_key(key).await,
             FocusBlock::Search | FocusBlock::Files => self.handle_file_explorer_key(key).await,
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
             FocusBlock::Sidebar => self.handle_sidebar_key(key).await,

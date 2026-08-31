@@ -3,6 +3,7 @@ pub mod feedback;
 pub mod footer;
 pub mod input;
 pub mod status;
+pub mod task_strip;
 pub mod turn_line;
 
 pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState};
@@ -10,4 +11,5 @@ pub use feedback::{classify_operator_error, FeedbackBar, FeedbackModel, Feedback
 pub use footer::{footer_short_model_id, FooterBar, FooterFocus, FooterModel};
 pub use input::{composer_cursor_position, composer_text_area_width, InputBar, InputModel};
 pub use status::{session_chrome_rows, BusyPhase, StatusBar, StatusModel, TurnLifecycle};
+pub use task_strip::{TaskStrip, TaskStripItem};
 pub use turn_line::{phase_verb, turn_line, TurnLineModel};

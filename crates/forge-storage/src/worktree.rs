@@ -28,8 +28,22 @@ pub enum WorktreeError {
     RemoveFailed(String),
     #[error("git worktree list failed: {0}")]
     ListFailed(String),
+    #[error("worktree is dirty: {0}")]
+    Dirty(String),
+    #[error("worktree has no branch checked out")]
+    DetachedHead,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// One worktree registered with Git, including the branch identity Forge uses
+/// to validate an immutable task/worktree binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeRecord {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub prunable: bool,
 }
 
 /// One subagent's isolated worktree.
@@ -37,6 +51,45 @@ pub enum WorktreeError {
 pub struct SubagentWorktree {
     pub path: PathBuf,
     pub branch: String,
+}
+
+/// Resolve the main worktree for the repository containing `workspace`.
+/// `git worktree list` guarantees the main worktree is first; linked
+/// worktrees follow it.
+pub fn main_worktree(workspace: &Path) -> Result<PathBuf, WorktreeError> {
+    list_worktree_records(workspace)?
+        .into_iter()
+        .next()
+        .map(|record| record.path)
+        .ok_or_else(|| WorktreeError::ListFailed("git returned no worktrees".into()))
+}
+
+/// Create a user-visible managed task worktree and branch from
+/// `source_worktree`'s committed `HEAD`.
+pub fn create_task_worktree(
+    source_worktree: &Path,
+    base_dir: &Path,
+    id: u64,
+    label: &str,
+) -> Result<SubagentWorktree, WorktreeError> {
+    std::fs::create_dir_all(base_dir)?;
+    let slug = sanitize_label(label);
+    let name = format!("task-{id}-{slug}");
+    let branch = format!("forge/{slug}-{id}");
+    let path = base_dir.join(&name);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(source_worktree)
+        .args(["worktree", "add", "-q"])
+        .arg(&path)
+        .args(["-b", &branch, "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::AddFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(SubagentWorktree { path, branch })
 }
 
 /// Reduce arbitrary (possibly model-authored) text to a safe path component
@@ -62,6 +115,38 @@ fn sanitize_label(label: &str) -> String {
     } else {
         truncated
     }
+}
+
+/// Remove a clean worktree without deleting its branch. Unlike the subagent
+/// cleanup helper above, this never passes `--force`; user-task cleanup must
+/// refuse uncommitted work rather than discarding it.
+pub fn remove_clean_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), WorktreeError> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["status", "--porcelain=v1", "--untracked-files=all"])
+        .output()?;
+    if !status.status.success() {
+        return Err(WorktreeError::RemoveFailed(
+            String::from_utf8_lossy(&status.stderr).into_owned(),
+        ));
+    }
+    let dirty = String::from_utf8_lossy(&status.stdout);
+    if !dirty.trim().is_empty() {
+        return Err(WorktreeError::Dirty(dirty.into_owned()));
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["worktree", "remove"])
+        .arg(worktree_path)
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::RemoveFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Create a new worktree for a subagent, on a fresh branch off `repo_root`'s
@@ -115,6 +200,13 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), Wor
 /// List every worktree path currently registered for `repo_root` (including
 /// the main worktree itself), via `git worktree list --porcelain`.
 pub fn list_worktrees(repo_root: &Path) -> Result<Vec<PathBuf>, WorktreeError> {
+    Ok(list_worktree_records(repo_root)?
+        .into_iter()
+        .map(|record| record.path)
+        .collect())
+}
+
+pub fn list_worktree_records(repo_root: &Path) -> Result<Vec<WorktreeRecord>, WorktreeError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -126,11 +218,52 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<PathBuf>, WorktreeError> {
         ));
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .map(PathBuf::from)
-        .collect())
+    let mut records = Vec::new();
+    let mut path = None;
+    let mut branch = None;
+    let mut head = None;
+    let mut prunable = false;
+    let finish = |records: &mut Vec<WorktreeRecord>,
+                  path: &mut Option<PathBuf>,
+                  branch: &mut Option<String>,
+                  head: &mut Option<String>,
+                  prunable: &mut bool| {
+        if let Some(path) = path.take() {
+            records.push(WorktreeRecord {
+                path,
+                branch: branch.take(),
+                head: head.take(),
+                prunable: std::mem::take(prunable),
+            });
+        }
+    };
+    for line in text.lines() {
+        if line.is_empty() {
+            finish(
+                &mut records,
+                &mut path,
+                &mut branch,
+                &mut head,
+                &mut prunable,
+            );
+        } else if let Some(value) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(value));
+        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
+            branch = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("HEAD ") {
+            head = Some(value.to_string());
+        } else if line.starts_with("prunable") {
+            prunable = true;
+        }
+    }
+    finish(
+        &mut records,
+        &mut path,
+        &mut branch,
+        &mut head,
+        &mut prunable,
+    );
+    Ok(records)
 }
 
 #[cfg(test)]
@@ -227,5 +360,59 @@ mod tests {
         assert!(listed.iter().any(|p| canon(p) == canon(repo.path())));
         assert!(listed.iter().any(|p| canon(p) == canon(&a.path)));
         assert!(listed.iter().any(|p| canon(p) == canon(&b.path)));
+    }
+
+    #[test]
+    fn repository_main_worktree_is_stable_from_a_linked_worktree() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+        let linked = create_task_worktree(repo.path(), base.path(), 4, "linked").unwrap();
+
+        assert_eq!(
+            main_worktree(&linked.path).unwrap().canonicalize().unwrap(),
+            repo.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn task_worktree_uses_the_initiating_head_and_user_facing_names() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+
+        let worktree =
+            create_task_worktree(repo.path(), base.path(), 13, "Scheduler fairness").unwrap();
+        assert_eq!(worktree.branch, "forge/Scheduler-fairness-13");
+        assert_eq!(
+            worktree.path,
+            base.path().join("task-13-Scheduler-fairness")
+        );
+    }
+
+    #[test]
+    fn clean_only_removal_refuses_uncommitted_work_and_keeps_branch() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+        let worktree = create_task_worktree(repo.path(), base.path(), 5, "dirty").unwrap();
+        std::fs::write(worktree.path.join("uncommitted.txt"), "keep me").unwrap();
+
+        assert!(matches!(
+            remove_clean_worktree(repo.path(), &worktree.path),
+            Err(WorktreeError::Dirty(_))
+        ));
+        assert!(worktree.path.exists());
+
+        std::fs::remove_file(worktree.path.join("uncommitted.txt")).unwrap();
+        remove_clean_worktree(repo.path(), &worktree.path).unwrap();
+        assert!(!worktree.path.exists());
+        let output = StdCommand::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["branch", "--list", &worktree.branch])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&worktree.branch));
     }
 }

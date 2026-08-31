@@ -1358,7 +1358,7 @@ impl ConnectionModel {
     }
 }
 
-fn route_id_for_profile(profile_id: &str) -> String {
+pub(super) fn route_id_for_profile(profile_id: &str) -> String {
     forge_connect::loaded_registry()
         .get(profile_id)
         .map(|spec| spec.route_id.clone())

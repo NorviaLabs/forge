@@ -1377,6 +1377,7 @@ name = "forge-session"
 version = "0.1.0-beta.8"
 dependencies = [
  "anyhow",
+ "chrono",
  "forge-config",
  "forge-connect",
  "forge-core",
@@ -1387,9 +1388,13 @@ dependencies = [
  "forge-test-support",
  "forge-tools",
  "forge-types",
+ "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -220,6 +220,26 @@ impl AgentSession {
         &self.tool_ctx.workspace_root
     }
 
+    /// Cancel the currently running root turn. The token is replaced when a
+    /// later turn starts, so cancellation is scoped to one execution episode
+    /// rather than poisoning the session permanently.
+    pub fn request_turn_cancel(&self) {
+        self.turn_cancel_token.cancel();
+    }
+
+    pub(crate) fn reset_turn_cancel(&mut self) {
+        if self.turn_cancel_token.is_cancelled() {
+            self.turn_cancel_token = tokio_util::sync::CancellationToken::new();
+        }
+    }
+
+    /// Begin one cancellable root-turn scope and return the handle a session
+    /// actor may retain while the session itself is owned by the running task.
+    pub fn begin_turn_cancellation_scope(&mut self) -> tokio_util::sync::CancellationToken {
+        self.reset_turn_cancel();
+        self.turn_cancel_token.clone()
+    }
+
     /// Use this provider/model id on subsequent completions (e.g. after `/connect`).
     pub fn set_active_model(&mut self, model: impl Into<String>) {
         self.active_model = model.into();
