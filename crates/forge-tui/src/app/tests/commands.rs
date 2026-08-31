@@ -1497,6 +1497,12 @@ async fn bare_slash_lists_all_palette_commands() {
             "missing {cmd} in suggestions"
         );
     }
+    if let Some(first_skill) = suggestions.iter().position(|item| item.is_skill) {
+        assert!(
+            suggestions[first_skill..].iter().all(|item| item.is_skill),
+            "skills should be listed after builtin commands"
+        );
+    }
 }
 
 #[tokio::test]

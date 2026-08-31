@@ -108,13 +108,14 @@ impl TuiApp {
                 }),
         );
         items.sort_by_key(|item| {
+            let skill_offset = if item.is_skill { 1 } else { 0 };
             let command = item.cmd.trim_start_matches('/').to_ascii_lowercase();
             if command.starts_with(&filter.to_ascii_lowercase()) {
-                0
+                (skill_offset, 0)
             } else if command.contains(&filter.to_ascii_lowercase()) {
-                1
+                (skill_offset, 1)
             } else {
-                2
+                (skill_offset, 2)
             }
         });
         items
