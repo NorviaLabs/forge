@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, List, ListItem, Padding, Paragraph, Row, Table, Widget,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One row of the `/status` report.
 ///
@@ -181,6 +181,11 @@ pub enum Overlay {
         /// Validation/authentication error shown inside the modal.
         error: Option<String>,
     },
+    TrustTask {
+        operation_id: u64,
+        label: String,
+        workspace: String,
+    },
     /// Phase 6.1 — xAI Grok OAuth progress
     ConnectOauth {
         profile_id: String,
@@ -190,6 +195,32 @@ pub enum Overlay {
     ResumePicker {
         selected: usize,
         items: Vec<ResumeSessionItem>,
+    },
+    TaskSwitcher {
+        selected: usize,
+        filter: String,
+        items: Vec<TaskSwitcherItem>,
+    },
+    TaskRename {
+        session_id: String,
+        label: String,
+        error: Option<String>,
+    },
+    TaskConfirm {
+        kind: TaskConfirmKind,
+        session_id: String,
+        label: String,
+        detail: String,
+    },
+    TaskInput {
+        mode: TaskInputMode,
+        field: usize,
+        label: String,
+        branch: String,
+        workspace: String,
+        /// New-task only: the prompt to run once the worktree is trusted.
+        first_prompt: String,
+        error: Option<String>,
     },
     Theme {
         selected: usize,
@@ -207,6 +238,68 @@ pub enum Overlay {
         lines: Vec<String>,
         scroll: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskInputMode {
+    New,
+    Attach,
+}
+
+impl TaskInputMode {
+    /// Field labels in tab order. The two modes ask for different things, so
+    /// the count, the captions and the cursor all derive from one list rather
+    /// than from scattered `if mode == Attach` arithmetic.
+    pub(crate) fn fields(self) -> &'static [&'static str] {
+        match self {
+            Self::New => &["Label", "First prompt (optional)"],
+            Self::Attach => &["Label", "Branch", "Workspace"],
+        }
+    }
+}
+
+/// How the switcher groups a task. Ordering matters: the operator's eye
+/// should land on what is waiting on them before anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TaskSwitcherGroup {
+    Attention,
+    Active,
+    Unavailable,
+    Archived,
+}
+
+impl TaskSwitcherGroup {
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::Attention => "Needs you",
+            Self::Active => "Active",
+            Self::Unavailable => "Unavailable",
+            Self::Archived => "Archived",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskSwitcherItem {
+    pub session_id: String,
+    pub label: String,
+    pub branch: String,
+    pub workspace: String,
+    pub state: String,
+    pub attention: bool,
+    pub group: TaskSwitcherGroup,
+    /// Only a Forge-created worktree may be removed on cleanup; an attached
+    /// one is never deleted by Forge.
+    pub managed: bool,
+}
+
+/// A destructive task action awaiting confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskConfirmKind {
+    /// Final: an archived task cannot be reopened.
+    Archive,
+    /// Removes a clean managed worktree; the branch is kept.
+    Cleanup,
 }
 
 #[derive(Debug, Clone)]
@@ -716,6 +809,124 @@ impl Overlay {
         Self::Help
     }
 
+    fn task_switcher_indices(items: &[TaskSwitcherItem], filter: &str) -> Vec<usize> {
+        let filter = filter.to_ascii_lowercase();
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                filter.is_empty()
+                    || item.label.to_ascii_lowercase().contains(&filter)
+                    || item.branch.to_ascii_lowercase().contains(&filter)
+                    || item.workspace.to_ascii_lowercase().contains(&filter)
+                    || item.session_id.to_ascii_lowercase().contains(&filter)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn task_input(mode: TaskInputMode) -> Self {
+        Self::TaskInput {
+            mode,
+            field: 0,
+            label: String::new(),
+            branch: String::new(),
+            workspace: String::new(),
+            first_prompt: String::new(),
+            error: None,
+        }
+    }
+
+    /// The field the cursor is on, as a mutable target for typing, pasting and
+    /// backspace. Returns `None` for an out-of-range index.
+    fn task_input_field<'a>(
+        mode: TaskInputMode,
+        field: usize,
+        label: &'a mut String,
+        branch: &'a mut String,
+        workspace: &'a mut String,
+        first_prompt: &'a mut String,
+    ) -> Option<&'a mut String> {
+        match (mode, field) {
+            (_, 0) => Some(label),
+            (TaskInputMode::New, 1) => Some(first_prompt),
+            (TaskInputMode::Attach, 1) => Some(branch),
+            (TaskInputMode::Attach, 2) => Some(workspace),
+            _ => None,
+        }
+    }
+
+    /// Turn a typed path into one the supervisor can check: `~` expanded,
+    /// surrounding quotes and whitespace stripped, relative paths resolved
+    /// against `cwd`. Containment in the repository is not decided here — the
+    /// supervisor owns that, since only it knows Git's worktree list.
+    pub(crate) fn normalize_workspace_path(raw: &str, cwd: &Path) -> PathBuf {
+        let trimmed = raw.trim().trim_matches('"').trim_matches('\'').trim();
+        let expanded = match trimmed.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir()
+                .map(|home| home.join(rest))
+                .unwrap_or_else(|| PathBuf::from(trimmed)),
+            None if trimmed == "~" => dirs::home_dir().unwrap_or_else(|| PathBuf::from(trimmed)),
+            None => PathBuf::from(trimmed),
+        };
+        if expanded.is_absolute() {
+            expanded
+        } else {
+            cwd.join(expanded)
+        }
+    }
+
+    /// Validate the New/Attach form and turn it into an action, or into the
+    /// message the overlay should show. Enter used to silently do nothing on
+    /// invalid input, which read as a broken key.
+    ///
+    /// Only format is decided here. Whether a path is a worktree of *this*
+    /// repository is the supervisor's call — it is the one holding Git's
+    /// worktree list and the live task roster.
+    fn task_input_action(
+        mode: TaskInputMode,
+        label: &str,
+        branch: &str,
+        workspace: &str,
+        first_prompt: &str,
+    ) -> Result<OverlayAction, String> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("Label is required.".into());
+        }
+        if label.chars().count() > 80 {
+            return Err("Label must be 80 characters or fewer.".into());
+        }
+        if label.contains('/') {
+            return Err("Label cannot contain `/`.".into());
+        }
+        match mode {
+            TaskInputMode::New => Ok(OverlayAction::CreateTask {
+                label: label.into(),
+                first_prompt: Some(first_prompt.trim())
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string),
+            }),
+            TaskInputMode::Attach => {
+                let branch = branch.trim();
+                if branch.is_empty() {
+                    return Err(
+                        "Branch is required — it must match what the worktree has checked out."
+                            .into(),
+                    );
+                }
+                if workspace.trim().is_empty() {
+                    return Err("Workspace path is required.".into());
+                }
+                Ok(OverlayAction::AttachTask {
+                    workspace: workspace.trim().into(),
+                    label: label.into(),
+                    branch: branch.into(),
+                })
+            }
+        }
+    }
+
     /// Replace a `ConnectModel` overlay's catalog items in place (e.g. once a
     /// background catalog refresh lands), re-scoping `groups` to whatever
     /// route was already selected. No-op for any other overlay variant.
@@ -963,6 +1174,32 @@ impl Overlay {
         Self::ResumePicker { selected: 0, items }
     }
 
+    /// Build the switcher with rows already in group order, so navigation,
+    /// filtering and rendering all agree on one sequence.
+    pub fn task_switcher(mut items: Vec<TaskSwitcherItem>) -> Self {
+        items.sort_by(|left, right| {
+            left.group
+                .cmp(&right.group)
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        Self::TaskSwitcher {
+            selected: 0,
+            filter: String::new(),
+            items,
+        }
+    }
+
+    /// The switcher row under the cursor, if any survives the filter.
+    fn task_switcher_selection(&self) -> Option<&TaskSwitcherItem> {
+        let Self::TaskSwitcher {
+            selected, items, ..
+        } = self
+        else {
+            return None;
+        };
+        items.get(*selected)
+    }
+
     pub fn theme_open(current: &str) -> Self {
         let items = theme_registry::picker_entries(&theme::registry());
         let selected = items.iter().position(|(id, _)| id == current).unwrap_or(0);
@@ -1035,6 +1272,22 @@ impl Overlay {
                 }
                 let n = items.len() as i32;
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
+            Self::TaskSwitcher {
+                selected,
+                filter,
+                items,
+            } => {
+                let indices = Self::task_switcher_indices(items, filter);
+                if indices.is_empty() {
+                    return;
+                }
+                let current = indices
+                    .iter()
+                    .position(|index| index == selected)
+                    .unwrap_or(0);
+                let next = (current as i32 + delta).rem_euclid(indices.len() as i32) as usize;
+                *selected = indices[next];
             }
             Self::Theme {
                 selected, items, ..
@@ -1112,6 +1365,45 @@ pub fn filter_palette(filter: &str) -> Vec<PaletteItem> {
 pub enum OverlayAction {
     None,
     Close,
+    SelectTask(String),
+    CreateTask {
+        label: String,
+        first_prompt: Option<String>,
+    },
+    /// Explain, without leaving the overlay, why a key did nothing here.
+    Toast(String),
+    OpenTaskInput(TaskInputMode),
+    OpenTaskRename {
+        session_id: String,
+        label: String,
+    },
+    OpenTaskConfirm {
+        kind: TaskConfirmKind,
+        session_id: String,
+        label: String,
+        detail: String,
+    },
+    RenameTask {
+        session_id: String,
+        label: String,
+    },
+    ArchiveTask {
+        session_id: String,
+    },
+    CleanupTaskWorktree {
+        session_id: String,
+    },
+    FinalizeTaskCreation {
+        operation_id: u64,
+    },
+    CancelTaskCreation {
+        operation_id: u64,
+    },
+    AttachTask {
+        workspace: String,
+        label: String,
+        branch: String,
+    },
     BeginOnboarding,
     ContinueTurns,
     StopTurns,
@@ -1179,10 +1471,69 @@ fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
         Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
+        Key::Esc if matches!(overlay, Overlay::TrustTask { .. }) => {
+            if let Overlay::TrustTask { operation_id, .. } = overlay {
+                OverlayAction::CancelTaskCreation {
+                    operation_id: *operation_id,
+                }
+            } else {
+                OverlayAction::Close
+            }
+        }
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
             theme_preview_action(overlay)
+        }
+        // Switcher actions are checked before the filter's catch-all `Char`
+        // arm below, so they cannot be typed into the search box.
+        Key::Char('n') if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
+            OverlayAction::OpenTaskInput(TaskInputMode::New)
+        }
+        Key::Char('a') if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
+            OverlayAction::OpenTaskInput(TaskInputMode::Attach)
+        }
+        Key::Char('r') if matches!(overlay, Overlay::TaskSwitcher { .. }) => overlay
+            .task_switcher_selection()
+            .map(|item| OverlayAction::OpenTaskRename {
+                session_id: item.session_id.clone(),
+                label: item.label.clone(),
+            })
+            .unwrap_or(OverlayAction::None),
+        Key::Char('x') if matches!(overlay, Overlay::TaskSwitcher { .. }) => overlay
+            .task_switcher_selection()
+            .map(|item| OverlayAction::OpenTaskConfirm {
+                kind: TaskConfirmKind::Archive,
+                session_id: item.session_id.clone(),
+                label: item.label.clone(),
+                detail: format!(
+                    "Archiving is final — `{}` cannot be reopened.\nIts branch and worktree are kept.",
+                    item.branch
+                ),
+            })
+            .unwrap_or(OverlayAction::None),
+        Key::Char('d') if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
+            match overlay.task_switcher_selection() {
+                Some(item) if item.managed && item.group == TaskSwitcherGroup::Archived => {
+                    OverlayAction::OpenTaskConfirm {
+                        kind: TaskConfirmKind::Cleanup,
+                        session_id: item.session_id.clone(),
+                        label: item.label.clone(),
+                        detail: format!(
+                            "Removes the worktree at\n{}\nThe branch `{}` is kept. Uncommitted work blocks removal.",
+                            item.workspace, item.branch
+                        ),
+                    }
+                }
+                // Attached worktrees are never deleted by Forge, and a live
+                // task still needs its checkout — say which rule applies
+                // instead of offering a key that does nothing.
+                Some(item) if !item.managed => OverlayAction::Toast(
+                    "attached worktrees are never removed by Forge".into(),
+                ),
+                Some(_) => OverlayAction::Toast("archive the task before cleaning it up".into()),
+                None => OverlayAction::None,
+            }
         }
         Key::Down => {
             overlay.move_sel(1);
@@ -1199,6 +1550,147 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Right => OverlayAction::None,
+        Key::Char(c)
+            if matches!(overlay, Overlay::TaskSwitcher { .. })
+                && !c.is_control()
+                && !c.is_whitespace() =>
+        {
+            if let Overlay::TaskSwitcher {
+                selected, filter, ..
+            } = overlay
+            {
+                filter.push(c);
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
+            if let Overlay::TaskSwitcher {
+                selected, filter, ..
+            } = overlay
+            {
+                filter.extend(
+                    data.chars()
+                        .filter(|c| !c.is_control() && !c.is_whitespace()),
+                );
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
+            if let Overlay::TaskSwitcher {
+                selected, filter, ..
+            } = overlay
+            {
+                filter.pop();
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::TaskRename { .. }) => {
+            if let Overlay::TaskRename { label, error, .. } = overlay {
+                if !c.is_control() && c != '\n' {
+                    label.push(c);
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::TaskRename { .. }) => {
+            if let Overlay::TaskRename { label, error, .. } = overlay {
+                label.extend(data.chars().filter(|c| !c.is_control()));
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::TaskRename { .. }) => {
+            if let Overlay::TaskRename { label, error, .. } = overlay {
+                label.pop();
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::TaskInput { .. }) => {
+            if let Overlay::TaskInput {
+                mode,
+                field,
+                label,
+                branch,
+                workspace,
+                first_prompt,
+                error,
+            } = overlay
+            {
+                if let Some(target) =
+                    Overlay::task_input_field(*mode, *field, label, branch, workspace, first_prompt)
+                {
+                    if !c.is_control() && c != '\n' {
+                        target.push(c);
+                        // Typing is the operator answering the complaint;
+                        // keeping a stale error under the cursor reads as a
+                        // field that stays broken no matter what you enter.
+                        *error = None;
+                    }
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::TaskInput { .. }) => {
+            if let Overlay::TaskInput {
+                mode,
+                field,
+                label,
+                branch,
+                workspace,
+                first_prompt,
+                error,
+            } = overlay
+            {
+                if let Some(target) =
+                    Overlay::task_input_field(*mode, *field, label, branch, workspace, first_prompt)
+                {
+                    // A pasted path or prompt often carries a trailing
+                    // newline; treat every control character as a space so a
+                    // multi-line paste lands as one legible line.
+                    target.extend(data.chars().map(|c| if c.is_control() { ' ' } else { c }));
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::TaskInput { .. }) => {
+            if let Overlay::TaskInput {
+                mode,
+                field,
+                label,
+                branch,
+                workspace,
+                first_prompt,
+                error,
+            } = overlay
+            {
+                if let Some(target) =
+                    Overlay::task_input_field(*mode, *field, label, branch, workspace, first_prompt)
+                {
+                    target.pop();
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Tab if matches!(overlay, Overlay::TaskInput { .. }) => {
+            if let Overlay::TaskInput { mode, field, .. } = overlay {
+                *field = (*field + 1) % mode.fields().len();
+            }
+            OverlayAction::None
+        }
+        Key::BackTab if matches!(overlay, Overlay::TaskInput { .. }) => {
+            if let Overlay::TaskInput { mode, field, .. } = overlay {
+                let count = mode.fields().len();
+                *field = (*field + count - 1) % count;
+            }
+            OverlayAction::None
+        }
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
@@ -1331,6 +1823,70 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::None
                 }
             }
+            Overlay::TaskSwitcher {
+                selected, items, ..
+            } => items
+                .get(*selected)
+                .map(|item| OverlayAction::SelectTask(item.session_id.clone()))
+                .unwrap_or(OverlayAction::None),
+            Overlay::TaskInput {
+                mode,
+                field,
+                label,
+                branch,
+                workspace,
+                first_prompt,
+                error,
+            } => {
+                match Overlay::task_input_action(*mode, label, branch, workspace, first_prompt) {
+                    Ok(action) => action,
+                    Err(message) => {
+                        // Put the cursor on the field being complained about
+                        // so Enter never leaves the operator hunting for it.
+                        *field = mode
+                            .fields()
+                            .iter()
+                            .position(|name| {
+                                message.starts_with(name.split_whitespace().next().unwrap_or(name))
+                            })
+                            .unwrap_or(*field);
+                        *error = Some(message);
+                        OverlayAction::None
+                    }
+                }
+            }
+            Overlay::TaskRename {
+                session_id,
+                label,
+                error,
+            } => {
+                let trimmed = label.trim();
+                if trimmed.is_empty() {
+                    *error = Some("Label is required.".into());
+                    OverlayAction::None
+                } else if trimmed.contains('/') || trimmed.chars().count() > 80 {
+                    *error = Some("Label cannot contain `/` and must be 80 characters or fewer.".into());
+                    OverlayAction::None
+                } else {
+                    OverlayAction::RenameTask {
+                        session_id: session_id.clone(),
+                        label: trimmed.into(),
+                    }
+                }
+            }
+            Overlay::TaskConfirm {
+                kind, session_id, ..
+            } => match kind {
+                TaskConfirmKind::Archive => OverlayAction::ArchiveTask {
+                    session_id: session_id.clone(),
+                },
+                TaskConfirmKind::Cleanup => OverlayAction::CleanupTaskWorktree {
+                    session_id: session_id.clone(),
+                },
+            },
+            Overlay::TrustTask { operation_id, .. } => OverlayAction::FinalizeTaskCreation {
+                operation_id: *operation_id,
+            },
             Overlay::Theme {
                 selected, items, ..
             } => items
@@ -2350,6 +2906,191 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
+            Overlay::TaskSwitcher {
+                selected,
+                items,
+                filter,
+            } => {
+                let r = centered_rect(78, 64, area);
+                let visible = r.height.saturating_sub(4).max(1) as usize;
+                let indices = Overlay::task_switcher_indices(items, filter);
+                let selected_position = indices
+                    .iter()
+                    .position(|index| index == selected)
+                    .unwrap_or(0);
+                let start = selected_position
+                    .saturating_add(1)
+                    .saturating_sub(visible)
+                    .min(indices.len().saturating_sub(visible));
+                // Rows are pre-sorted by group, so the heading only has to
+                // appear when it changes — no separate header rows, which a
+                // filtered list would leave stranded above nothing.
+                let mut previous_group = None;
+                let rows: Vec<Row> = items
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| indices.contains(index))
+                    .skip(start)
+                    .take(visible)
+                    .map(|(index, item)| {
+                        let heading = if previous_group == Some(item.group) {
+                            String::new()
+                        } else {
+                            previous_group = Some(item.group);
+                            item.group.heading().to_string()
+                        };
+                        let style = if index == *selected {
+                            theme::selected_row()
+                        } else {
+                            theme::text()
+                        };
+                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let attention = if item.attention { " !" } else { "" };
+                        Row::new(vec![
+                            Cell::from(Span::styled(heading, theme::muted())),
+                            Cell::from(Span::styled(
+                                format!("{marker}{}{attention}", item.label),
+                                style,
+                            )),
+                            Cell::from(Span::styled(item.state.clone(), style)),
+                            Cell::from(Span::styled(item.branch.clone(), style)),
+                        ])
+                    })
+                    .collect();
+                Table::new(
+                    rows,
+                    [
+                        Constraint::Length(12),
+                        Constraint::Min(18),
+                        Constraint::Length(11),
+                        Constraint::Min(14),
+                    ],
+                )
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .title(Span::styled(
+                            " Tasks · Enter switch · n new · a attach · r rename · x archive · d cleanup ",
+                            theme::brand(),
+                        )),
+                )
+                .render(r, buf);
+            }
+            Overlay::TaskRename { label, error, .. } => {
+                let r = centered_rect(64, 30, area);
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                Paragraph::new(format!(
+                    "Label: {label}█{error}\n\nEnter rename · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .title(Span::styled(" Rename task ", theme::brand())),
+                )
+                .render(r, buf);
+            }
+            Overlay::TaskConfirm {
+                kind,
+                label,
+                detail,
+                ..
+            } => {
+                let r = centered_rect(68, 36, area);
+                let (title, question) = match kind {
+                    TaskConfirmKind::Archive => (" Archive task ", "Archive"),
+                    TaskConfirmKind::Cleanup => (" Remove worktree ", "Remove the worktree for"),
+                };
+                Paragraph::new(format!(
+                    "{question} `{label}`?\n\n{detail}\n\nEnter confirm · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .title(Span::styled(title, theme::brand())),
+                )
+                .render(r, buf);
+            }
+            Overlay::TaskInput {
+                mode,
+                field,
+                label,
+                branch,
+                workspace,
+                first_prompt,
+                error,
+            } => {
+                let r = centered_rect(72, 42, area);
+                let (title, hint) = match mode {
+                    TaskInputMode::New => (
+                        " New managed task ",
+                        "Branches from this worktree's committed HEAD.",
+                    ),
+                    TaskInputMode::Attach => (
+                        " Attach worktree ",
+                        "Must be an existing worktree of this repository.",
+                    ),
+                };
+                let values = match mode {
+                    TaskInputMode::New => vec![label.as_str(), first_prompt.as_str()],
+                    TaskInputMode::Attach => {
+                        vec![label.as_str(), branch.as_str(), workspace.as_str()]
+                    }
+                };
+                let fields = mode
+                    .fields()
+                    .iter()
+                    .zip(values)
+                    .enumerate()
+                    .map(|(index, (name, value))| {
+                        format!("{name}: {value}{}", if index == *field { "█" } else { "" })
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                Paragraph::new(format!(
+                    "{fields}{error}\n\n{hint}\n\nTab next field · Enter submit · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .title(Span::styled(title, theme::brand())),
+                )
+                .render(r, buf);
+            }
+            Overlay::TrustTask {
+                operation_id: _,
+                label,
+                workspace,
+            } => {
+                let r = centered_rect(72, 36, area);
+                Paragraph::new(format!(
+                    "Forge created a managed worktree for `{label}`.\n\nWorkspace:\n{}\n\nTrust this directory before running the task?\n\nEnter trust · Esc roll back",
+                    workspace
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .title(Span::styled(" Trust task worktree ", theme::brand())),
+                )
+                .render(r, buf);
+            }
+
             Overlay::Theme {
                 selected,
                 current,
@@ -2506,6 +3247,217 @@ mod tests {
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Esc),
             OverlayAction::Close
+        );
+    }
+
+    #[test]
+    fn task_input_submits_new_task_label() {
+        let mut overlay = Overlay::task_input(TaskInputMode::New);
+        handle_overlay_key(&mut overlay, Key::Char('f'));
+        handle_overlay_key(&mut overlay, Key::Char('i'));
+        handle_overlay_key(&mut overlay, Key::Char('x'));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::CreateTask {
+                label: "fix".into(),
+                first_prompt: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_new_task_carries_its_first_prompt() {
+        let mut overlay = Overlay::task_input(TaskInputMode::New);
+        for c in "fix".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        handle_overlay_key(&mut overlay, Key::Tab);
+        handle_overlay_key(&mut overlay, Key::Paste("rewrite the lexer\n".into()));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::CreateTask {
+                label: "fix".into(),
+                first_prompt: Some("rewrite the lexer".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn an_invalid_task_form_explains_itself_instead_of_doing_nothing() {
+        let mut overlay = Overlay::task_input(TaskInputMode::New);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
+        );
+        let Overlay::TaskInput { error, .. } = &overlay else {
+            panic!("expected the task input overlay");
+        };
+        assert_eq!(error.as_deref(), Some("Label is required."));
+
+        // Typing an answer clears the complaint.
+        handle_overlay_key(&mut overlay, Key::Char('a'));
+        let Overlay::TaskInput { error, .. } = &overlay else {
+            panic!("expected the task input overlay");
+        };
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn attach_requires_a_branch_and_a_workspace() {
+        let mut overlay = Overlay::task_input(TaskInputMode::Attach);
+        for c in "linked".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
+        );
+        let Overlay::TaskInput { error, field, .. } = &overlay else {
+            panic!("expected the task input overlay");
+        };
+        assert!(error.as_ref().unwrap().starts_with("Branch"));
+        assert_eq!(*field, 1, "cursor should move to the offending field");
+
+        handle_overlay_key(&mut overlay, Key::Paste("feature/x".into()));
+        handle_overlay_key(&mut overlay, Key::Tab);
+        handle_overlay_key(&mut overlay, Key::Paste("  ../linked  ".into()));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::AttachTask {
+                workspace: "../linked".into(),
+                label: "linked".into(),
+                branch: "feature/x".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_relative_attach_path_resolves_against_the_launch_directory() {
+        let resolved =
+            Overlay::normalize_workspace_path(" \"../linked\" ", Path::new("/repo/main"));
+        assert_eq!(resolved, PathBuf::from("/repo/main/../linked"));
+        assert_eq!(
+            Overlay::normalize_workspace_path("/abs/path", Path::new("/repo/main")),
+            PathBuf::from("/abs/path")
+        );
+    }
+
+    fn switcher_item(label: &str, group: TaskSwitcherGroup, managed: bool) -> TaskSwitcherItem {
+        TaskSwitcherItem {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            label: label.into(),
+            branch: format!("forge/{label}"),
+            workspace: format!("/repo/{label}"),
+            state: "idle".into(),
+            attention: group == TaskSwitcherGroup::Attention,
+            group,
+            managed,
+        }
+    }
+
+    #[test]
+    fn the_switcher_puts_waiting_tasks_first_and_archived_last() {
+        let overlay = Overlay::task_switcher(vec![
+            switcher_item("zeta", TaskSwitcherGroup::Archived, true),
+            switcher_item("beta", TaskSwitcherGroup::Active, true),
+            switcher_item("alpha", TaskSwitcherGroup::Attention, true),
+            switcher_item("gamma", TaskSwitcherGroup::Unavailable, false),
+        ]);
+        let Overlay::TaskSwitcher { items, .. } = &overlay else {
+            panic!("expected the task switcher");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta", "gamma", "zeta"]
+        );
+    }
+
+    #[test]
+    fn archiving_from_the_switcher_asks_first() {
+        let mut overlay = Overlay::task_switcher(vec![switcher_item(
+            "parser",
+            TaskSwitcherGroup::Active,
+            true,
+        )]);
+        let action = handle_overlay_key(&mut overlay, Key::Char('x'));
+        let OverlayAction::OpenTaskConfirm { kind, label, .. } = action else {
+            panic!("archive should open a confirmation, got {action:?}");
+        };
+        assert_eq!(kind, TaskConfirmKind::Archive);
+        assert_eq!(label, "parser");
+    }
+
+    #[test]
+    fn cleanup_is_offered_only_for_an_archived_managed_worktree() {
+        let mut live = Overlay::task_switcher(vec![switcher_item(
+            "parser",
+            TaskSwitcherGroup::Active,
+            true,
+        )]);
+        assert!(matches!(
+            handle_overlay_key(&mut live, Key::Char('d')),
+            OverlayAction::Toast(_)
+        ));
+
+        let mut attached = Overlay::task_switcher(vec![switcher_item(
+            "linked",
+            TaskSwitcherGroup::Archived,
+            false,
+        )]);
+        assert!(matches!(
+            handle_overlay_key(&mut attached, Key::Char('d')),
+            OverlayAction::Toast(_)
+        ));
+
+        let mut managed = Overlay::task_switcher(vec![switcher_item(
+            "parser",
+            TaskSwitcherGroup::Archived,
+            true,
+        )]);
+        assert!(matches!(
+            handle_overlay_key(&mut managed, Key::Char('d')),
+            OverlayAction::OpenTaskConfirm {
+                kind: TaskConfirmKind::Cleanup,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn renaming_a_task_rejects_an_empty_label_and_accepts_a_trimmed_one() {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut overlay = Overlay::TaskRename {
+            session_id: session_id.clone(),
+            label: String::new(),
+            error: None,
+        };
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
+        );
+        handle_overlay_key(&mut overlay, Key::Paste(" parser rewrite ".into()));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RenameTask {
+                session_id,
+                label: "parser rewrite".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn task_trust_escape_rolls_back_creation() {
+        let mut overlay = Overlay::TrustTask {
+            operation_id: 7,
+            label: "parser".into(),
+            workspace: "/tmp/parser".into(),
+        };
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::CancelTaskCreation { operation_id: 7 }
         );
     }
 

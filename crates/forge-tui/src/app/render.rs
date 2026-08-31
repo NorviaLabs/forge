@@ -47,11 +47,20 @@ impl TuiApp {
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        // One read of the session per frame. Everything below renders from
-        // this, so a frame is internally consistent and the ~40 scattered
-        // `self.session.*` reads it replaces cost one capture instead.
-        self.session_view = SessionSnapshot::capture(&self.session);
-        self.transcript_view.refresh(&self.session);
+        // One read of the active session per frame. Sibling sessions are
+        // immutable supervisor snapshots; selecting one must not be undone by
+        // the primary-session refresh that happens on every draw.
+        if self.selected_task_id == self.session.session_id {
+            self.session_view = SessionSnapshot::capture(&self.session);
+            self.transcript_view.refresh(&self.session);
+        } else if let Some(snapshot) = self
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.snapshots.get(&self.selected_task_id))
+        {
+            self.session_view = snapshot.session.clone();
+            self.transcript_view = snapshot.transcript.clone();
+        }
         let area = frame.area();
         self.last_frame_width = area.width;
         if is_too_small(area) {
@@ -104,7 +113,32 @@ impl TuiApp {
             self.workspace_navigation.current(),
             Some(WorkspaceView::File(_) | WorkspaceView::Diff)
         );
-        let regions = if expand_conversation {
+        let task_mode = self.supervisor.is_some();
+        let regions = if expand_conversation && task_mode {
+            split_areas_with_task_strip_expanded_conversation(
+                area,
+                fb_h,
+                input_h,
+                self.workspace_files.visible,
+                0,
+                panel_h,
+                hint_h,
+                true,
+                0,
+            )
+        } else if task_mode {
+            split_areas_with_task_strip(
+                area,
+                fb_h,
+                input_h,
+                self.workspace_files.visible,
+                0,
+                panel_h,
+                hint_h,
+                true,
+                0,
+            )
+        } else if expand_conversation {
             split_areas_with_expanded_conversation(
                 area,
                 fb_h,
@@ -146,6 +180,7 @@ impl TuiApp {
         // prompt as HITL); omitting them here kicks focus off the menu on the
         // first frame, so ↑↓ never move the selection.
         let available = FocusAvailability {
+            task_strip: true,
             search: regions.files.is_some(),
             files: regions.files.is_some(),
             sidebar: regions.sidebar.is_some(),
@@ -168,6 +203,30 @@ impl TuiApp {
         self.normalize_focus();
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
+        if regions.task_strip.height > 0 {
+            let strip_items: Vec<TaskStripItem> = self
+                .task_chrome
+                .iter()
+                .enumerate()
+                .map(|(index, task)| TaskStripItem {
+                    slot: task.slot,
+                    label: task.label.clone(),
+                    state: task.lifecycle.into(),
+                    secondary: task.secondary.clone(),
+                    selected: task.selected,
+                    focused: self.task_strip_selection == index,
+                    attention: task.attention,
+                })
+                .collect();
+            frame.render_widget(
+                TaskStrip {
+                    items: &strip_items,
+                    overflow: 0,
+                    focused: self.focus.block() == FocusBlock::TaskStrip,
+                },
+                regions.task_strip,
+            );
+        }
         if let Some(files) = regions.files {
             frame.render_widget(
                 FileExplorerWidget {

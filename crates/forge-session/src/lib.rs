@@ -11,11 +11,24 @@
 //! `forge-connect`, neither of which `forge-core` depends on and neither of
 //! which belongs in it.
 
+mod control;
 pub mod headless;
 mod snapshot;
+mod supervisor;
 
+pub use forge_storage::RepositoryRuntimeStorage;
+
+pub use control::{
+    CompletedCreation, LeaseOwner, NewRepositoryTask, PendingCreation, RepositoryControl,
+    RepositoryLease, RepositoryTask, RepositoryTaskError, SessionLifecycle, StaleCreation,
+    SupervisorTurnState, WorktreeOwnership,
+};
 pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
 pub use snapshot::{SessionSnapshot, TranscriptSnapshot};
+pub use supervisor::{
+    RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError, SupervisorCommand,
+    SupervisorEvent, SupervisorHandle, TaskRuntimeSnapshot,
+};
 
 use std::sync::Arc;
 
@@ -24,7 +37,7 @@ use forge_core::{AgentSession, LoopConfig};
 use forge_governance::{parse_pattern_rules, Governance};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
-use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
+use forge_storage::{RuntimeDataKind, RuntimeStorage};
 use forge_tools::ToolRegistry;
 use forge_types::{SessionId, SideEffectClass};
 use serde_json::json;
@@ -67,28 +80,26 @@ pub struct OpenedSession {
 /// found already tracked by Git (never silently migrated or altered).
 pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
     if cfg.journal.path == forge_config::default_journal_path() {
-        let storage = LocalRuntimeStorage::new(cfg.workspace_root());
-        if let Ok(dir) = storage.path_for(RuntimeDataKind::Session) {
+        let storage = RepositoryRuntimeStorage::new(cfg.workspace_root());
+        if let Ok(storage) = storage {
+            let Ok(dir) = storage.path_for(RuntimeDataKind::Session) else {
+                return (cfg.journal_dir(), Vec::new());
+            };
             let mut notices = Vec::new();
             if let Some(reason) = storage.fallback_reason() {
                 notices.push(reason);
             }
-            let tracked = storage.tracked_migration_conflicts();
-            if !tracked.is_empty() {
-                let paths = tracked
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                notices.push(format!(
-                    "Some Forge runtime files are already tracked by Git ({paths}). \
-                     Forge did not modify the Git index; review the tracked files before migration."
-                ));
-            }
             return (dir, notices);
         }
     }
-    (cfg.journal_dir(), Vec::new())
+    let configured = std::path::PathBuf::from(&cfg.journal.path);
+    if configured.is_absolute() {
+        return (configured, Vec::new());
+    }
+    match forge_storage::main_worktree(cfg.workspace_root()) {
+        Ok(main) => (main.join(configured), Vec::new()),
+        Err(_) => (cfg.journal_dir(), Vec::new()),
+    }
 }
 
 /// Collect stored OAuth / API-key material for the native model client.
@@ -136,6 +147,14 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
     // than at build time.
     model.apply_provider_env(&connect_credentials());
 
+    open_session_with_model(cfg, target, model).await
+}
+
+async fn open_session_with_model(
+    cfg: &Config,
+    target: SessionTarget,
+    model: Arc<dyn ModelClient>,
+) -> anyhow::Result<OpenedSession> {
     let mut tools = ToolRegistry::new();
     register_static_mcp(
         &mut tools,
@@ -361,12 +380,15 @@ mod tests {
         };
 
         let (dir, notices) = resolve_journal_dir(&cfg);
-        assert_eq!(dir, temp.path().join("custom/journal"));
+        assert_eq!(
+            dir,
+            temp.path().canonicalize().unwrap().join("custom/journal")
+        );
         assert!(notices.is_empty());
     }
 
     #[test]
-    fn resolve_journal_dir_reports_tracked_legacy_files_as_a_notice() {
+    fn resolve_journal_dir_does_not_import_or_report_legacy_files() {
         let temp = TempDir::new().unwrap();
         init_repo(temp.path());
         std::fs::create_dir_all(temp.path().join(".forge")).unwrap();
@@ -385,8 +407,9 @@ mod tests {
             ..Default::default()
         };
 
-        let (_dir, notices) = resolve_journal_dir(&cfg);
-        assert_eq!(notices.len(), 1);
-        assert!(notices[0].contains("already tracked by Git"));
+        let (dir, notices) = resolve_journal_dir(&cfg);
+        assert!(notices.is_empty());
+        assert!(dir.ends_with(".forge/local/sessions"));
+        assert!(temp.path().join(".forge/ui-state.json").exists());
     }
 }

@@ -18,6 +18,7 @@ pub(crate) mod helpers;
 mod highlight;
 mod motion_timing;
 mod mouse;
+mod multi_task;
 mod prelude;
 mod questions;
 mod tasks;

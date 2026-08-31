@@ -199,6 +199,7 @@ pub(super) async fn next_foreground_wake(
 /// file watcher, background tasks, approvals, connection state and transient
 /// chrome. Rendering and terminal input stay with the single Ratatui owner.
 pub(super) async fn tick_application(app: &mut TuiApp) -> Result<(), TuiError> {
+    app.poll_supervisor_events();
     app.poll_file_changes();
     app.poll_interactive_terminal();
     app.tick_render_state();
@@ -279,11 +280,12 @@ async fn wait_for_idle_event(
 }
 
 /// Extra launch flags for first-install / new-project / returning.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct TuiLaunch {
     pub startup_items: Option<Vec<ResumeSessionItem>>,
     pub onboarding_connect: bool,
     pub ready_placeholder: bool,
+    pub supervisor: Option<forge_session::SupervisorHandle>,
 }
 
 /// Run the full-screen TUI until quit.
@@ -348,6 +350,23 @@ async fn run_tui_inner(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = TuiApp::new_with_startup_resume_picker(session, runtime, launch.startup_items);
+    if let Some(handle) = launch.supervisor {
+        let refresh = handle.clone();
+        app.supervisor = Some(SupervisorUiState {
+            current_session_id: app.session.session_id,
+            events: handle.subscribe(),
+            handle,
+            snapshots: std::collections::HashMap::new(),
+        });
+        refresh
+            .command(forge_session::SupervisorCommand::Refresh)
+            .await
+            .map_err(|error| TuiError::Other(error.to_string()))?;
+        app.set_feedback(
+            FeedbackSeverity::Info,
+            "Multi-task mode · Ctrl+Shift+T or /tasks",
+        );
+    }
     app.terminal_events = Some(TerminalEventSource::spawn());
     app.onboarding_connect = launch.onboarding_connect;
     if launch.ready_placeholder {

@@ -168,6 +168,7 @@ impl AgentSession {
 
         let mut acc = ModelStepAccumulator::default();
         let cancel_token = self.cancel_token.clone();
+        let turn_cancel_token = self.turn_cancel_token.clone();
         let mut stream_open = true;
         let response = loop {
             if handle.is_finished() {
@@ -204,6 +205,10 @@ impl AgentSession {
                         std::future::pending::<()>().await;
                     }
                 } => {
+                    handle.abort();
+                    return Err(LoopError::Cancelled);
+                }
+                _ = turn_cancel_token.cancelled() => {
                     handle.abort();
                     return Err(LoopError::Cancelled);
                 }
