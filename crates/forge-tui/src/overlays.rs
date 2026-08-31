@@ -542,6 +542,17 @@ pub struct ResumeSessionItem {
 pub struct PaletteItem {
     pub cmd: String,
     pub desc: String,
+    pub is_skill: bool,
+}
+
+impl PaletteItem {
+    pub fn display_cmd(&self) -> String {
+        if self.is_skill {
+            format!("skill:{}", self.cmd.trim_start_matches('/'))
+        } else {
+            self.cmd.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -730,55 +741,68 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/help".into(),
             desc: "Show help and keyboard shortcuts".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/connect".into(),
             desc: "Connect provider (xAI, OpenCode Go/Zen, OpenAI, Anthropic, Ollama)".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/model".into(),
             desc: "Switch model for future turns".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/theme".into(),
             desc: "Switch presentation theme".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/status".into(),
             desc: "Show session status and diagnostics".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/context".into(),
             desc: "Show the token budget broken down by category".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/compact".into(),
             desc: "Continue in a fresh context".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/resume".into(),
             desc: "Restore a previous session".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/terminal".into(),
             desc: "Open the terminal panel (Ctrl+`)".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/clear".into(),
             desc: "Clear the TUI screen".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/diff".into(),
             desc: "Review changed files in the workspace pane (/diff turn for the last turn)"
                 .into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/disconnect".into(),
             desc: "Log out and clear credentials".into(),
+            is_skill: false,
         },
         PaletteItem {
             cmd: "/quit".into(),
             desc: "Exit TUI".into(),
+            is_skill: false,
         },
     ]
 }
