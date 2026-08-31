@@ -14,6 +14,9 @@ pub const THEME_DOCK_H: u16 = 12;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
     pub status: Rect,
+    /// Persistent task/session strip. Zero-height for legacy layout callers
+    /// that have not opted into repository task mode.
+    pub task_strip: Rect,
     /// Center pane: File/Diff/Run content, or an empty-state placeholder.
     pub chat: Rect,
     pub files: Option<Rect>,
@@ -35,6 +38,34 @@ pub struct LayoutRegions {
     /// Composer. Scoped to `sidebar`'s width, docked at its bottom.
     pub input: Rect,
     pub footer: Rect,
+}
+
+/// Task-mode layout when the conversation expands into the center pane.
+#[allow(clippy::too_many_arguments)]
+pub fn split_areas_with_task_strip_expanded_conversation(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_files: bool,
+    queue_h: u16,
+    bottom_panel_h: u16,
+    footer_h: u16,
+    show_sidebar: bool,
+    background_h: u16,
+) -> LayoutRegions {
+    split_areas_with_chrome_mode(
+        area,
+        feedback_h,
+        input_h,
+        show_files,
+        queue_h,
+        bottom_panel_h,
+        footer_h,
+        show_sidebar,
+        background_h,
+        true,
+        true,
+    )
 }
 
 /// Width threshold below which the file explorer hides. Higher than
@@ -164,10 +195,42 @@ pub fn split_areas_with_chrome(
         show_sidebar,
         background_h,
         false,
+        false,
+    )
+}
+
+/// Layout variant for repository task mode. The task strip is a dedicated
+/// navigation row between repository identity and the active workspace; it
+/// never wraps and collapses before the editor/conversation panes do.
+#[allow(clippy::too_many_arguments)]
+pub fn split_areas_with_task_strip(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_files: bool,
+    queue_h: u16,
+    bottom_panel_h: u16,
+    footer_h: u16,
+    show_sidebar: bool,
+    background_h: u16,
+) -> LayoutRegions {
+    split_areas_with_chrome_mode(
+        area,
+        feedback_h,
+        input_h,
+        show_files,
+        queue_h,
+        bottom_panel_h,
+        footer_h,
+        show_sidebar,
+        background_h,
+        false,
+        true,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn split_areas_with_expanded_conversation(
     area: Rect,
     feedback_h: u16,
@@ -190,6 +253,7 @@ pub fn split_areas_with_expanded_conversation(
         show_sidebar,
         background_h,
         true,
+        false,
     )
 }
 
@@ -205,6 +269,7 @@ fn split_areas_with_chrome_mode(
     show_sidebar: bool,
     background_h: u16,
     expand_conversation: bool,
+    show_task_strip: bool,
 ) -> LayoutRegions {
     let content_width = content_width(area);
     let content_area = Rect {
@@ -235,14 +300,16 @@ fn split_areas_with_chrome_mode(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),        // status
-            Constraint::Min(3),           // main
-            Constraint::Length(footer_h), // contextual hint
+            Constraint::Length(1),                      // status
+            Constraint::Length(show_task_strip as u16), // task strip
+            Constraint::Min(3),                         // main
+            Constraint::Length(footer_h),               // contextual hint
         ])
         .split(content_area);
     let status = rows[0];
-    let main = rows[1];
-    let footer = rows[2];
+    let task_strip = rows[1];
+    let main = rows[2];
+    let footer = rows[3];
 
     // main row: [left column (files+chat+bottom_panel), sidebar]
     let (left_area, sidebar) = if show_sidebar && !expand_conversation {
@@ -323,6 +390,7 @@ fn split_areas_with_chrome_mode(
 
     LayoutRegions {
         status,
+        task_strip,
         chat,
         files,
         sidebar,

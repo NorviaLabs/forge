@@ -265,13 +265,38 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         }
     }
 
+    // Repository ownership comes before any session exists. The exclusive
+    // lease is what enforces one Forge per repository group; acquiring it
+    // after `open_session` would let a losing process write session state
+    // first and only then discover it does not own the repository.
+    let mut startup_notices = Vec::new();
+    let bootstrap = if forge_session::RepositoryRuntimeStorage::new(&cwd).is_ok() {
+        match forge_session::RepositoryBootstrap::acquire(&cfg).await {
+            Ok(bootstrap) => {
+                match bootstrap.recover_interrupted_creations().await {
+                    Ok(notices) => startup_notices.extend(notices),
+                    Err(error) => {
+                        startup_notices.push(format!("task recovery incomplete: {error}"));
+                    }
+                }
+                Some(bootstrap)
+            }
+            Err(error) => {
+                startup_notices.push(format!("multi-task mode unavailable: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let (target, create_notice) = if decision.allow_resume_picker {
         resolve_target(&cfg, cli.resume).await?
     } else {
         (SessionTarget::New, None)
     };
     let opened = open_session(&cfg, target).await?;
-    let mut startup_notices = opened.notices;
+    startup_notices.extend(opened.notices);
     if let Some(notice) = create_notice {
         startup_notices.push(notice);
     }
@@ -298,6 +323,19 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
                 .is_some()
                 && forge_connect::has_connected_profile()
         });
+    let supervisor = match bootstrap {
+        Some(bootstrap) => match bootstrap
+            .open_siblings(&cfg, opened.session.session_id)
+            .await
+        {
+            Ok((_supervisor, handle)) => Some(handle),
+            Err(error) => {
+                startup_notices.push(format!("multi-task mode unavailable: {error}"));
+                None
+            }
+        },
+        None => None,
+    };
     let runtime = TuiRuntimeConfig {
         model_label: last
             .as_ref()
@@ -320,6 +358,7 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
             startup_items: None,
             onboarding_connect: decision.require_connect,
             ready_placeholder: decision.show_ready_placeholder,
+            supervisor,
         },
     )
     .await

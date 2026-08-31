@@ -27,6 +27,8 @@ pub enum StorageMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RuntimeDataKind {
+    /// Repository-group control database and exclusive-owner metadata.
+    Control,
     Session,
     Lifecycle,
     Queue,
@@ -49,6 +51,7 @@ pub enum RuntimeDataKind {
 impl RuntimeDataKind {
     fn subdir(self) -> &'static str {
         match self {
+            Self::Control => "control",
             Self::Session => "sessions",
             Self::Lifecycle => "lifecycle",
             Self::Queue => "queue",
@@ -60,6 +63,69 @@ impl RuntimeDataKind {
             Self::Attachment => "attachments",
             Self::Worktree => "worktrees",
         }
+    }
+}
+
+/// Runtime storage shared by every linked worktree of one Git repository.
+///
+/// [`LocalRuntimeStorage`] is intentionally scoped to one worktree. That is
+/// correct for editor state, but a multi-task supervisor needs one roster and
+/// one journal root no matter which linked worktree launched Forge. This
+/// wrapper resolves Git's main worktree first and delegates all storage setup
+/// there, so `.forge/local` remains excluded and protected by the same path
+/// policy as existing runtime data.
+pub struct RepositoryRuntimeStorage {
+    main_worktree: PathBuf,
+    local: LocalRuntimeStorage,
+}
+
+impl RepositoryRuntimeStorage {
+    pub fn new(workspace: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let main_worktree = crate::main_worktree(workspace.as_ref())
+            .map_err(|error| StorageError::RepositoryTopology(error.to_string()))?;
+        let local = LocalRuntimeStorage::new(&main_worktree);
+        Ok(Self {
+            main_worktree,
+            local,
+        })
+    }
+
+    pub fn main_worktree(&self) -> &Path {
+        &self.main_worktree
+    }
+}
+
+impl RuntimeStorage for RepositoryRuntimeStorage {
+    fn repository_root(&self) -> Option<&Path> {
+        self.local.repository_root()
+    }
+
+    fn storage_mode(&self) -> StorageMode {
+        self.local.storage_mode()
+    }
+
+    fn identity(&self) -> &RuntimeIdentity {
+        self.local.identity()
+    }
+
+    fn fallback_reason(&self) -> Option<String> {
+        self.local.fallback_reason()
+    }
+
+    fn ensure_ready(&self) -> Result<(), StorageError> {
+        self.local.ensure_ready()
+    }
+
+    fn root(&self) -> Result<PathBuf, StorageError> {
+        self.local.root()
+    }
+
+    fn path_for(&self, kind: RuntimeDataKind) -> Result<PathBuf, StorageError> {
+        self.local.path_for(kind)
+    }
+
+    fn path_for_read(&self, kind: RuntimeDataKind) -> Option<PathBuf> {
+        self.local.path_for_read(kind)
     }
 }
 
@@ -116,6 +182,8 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("no application-data directory is available on this platform")]
     NoAppDataDir,
+    #[error("repository topology error: {0}")]
+    RepositoryTopology(String),
 }
 
 pub trait RuntimeStorage {

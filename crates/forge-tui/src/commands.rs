@@ -17,6 +17,7 @@ pub enum SlashCommand {
     /// shortcut opens, just reachable without knowing that shortcut exists.
     Help,
     ResumeList,
+    Tasks,
     Resume {
         session_id: Uuid,
     },
@@ -92,6 +93,13 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
         "help" | "?" => Ok(SlashCommand::Help),
+        "tasks" => {
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/tasks".into()))
+            } else {
+                Ok(SlashCommand::Tasks)
+            }
+        }
         "resume" => match parts.next() {
             None => Ok(SlashCommand::ResumeList),
             Some(id) => {
@@ -166,6 +174,7 @@ mod tests {
         }
         for command in [
             SlashCommand::Help,
+            SlashCommand::Tasks,
             SlashCommand::Quit,
             SlashCommand::Clear,
             SlashCommand::Refresh,
@@ -176,6 +185,12 @@ mod tests {
         ] {
             assert!(command.available_while_busy(), "{command:?}");
         }
+    }
+
+    #[test]
+    fn tasks_opens_the_repository_task_switcher() {
+        assert_eq!(parse_slash("/tasks").unwrap().unwrap(), SlashCommand::Tasks);
+        assert!(parse_slash("/tasks now").unwrap().is_err());
     }
 
     #[test]

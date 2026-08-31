@@ -38,6 +38,10 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Search);
     assert!(app.workspace_files.explorer.search_focused);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))

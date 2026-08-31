@@ -33,6 +33,25 @@ impl TuiApp {
         let mut app = Self {
             // Captured before the first `draw` so the first frame reads a real
             // snapshot rather than the empty default.
+            task_chrome: vec![TaskChromeItem {
+                session_id: session.session_id,
+                slot: Some(1),
+                label: runtime
+                    .cwd
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("primary")
+                    .to_string(),
+                branch: repo_header.branch.clone().unwrap_or_else(|| "HEAD".into()),
+                lifecycle: session.active_task.lifecycle,
+                selected: true,
+                secondary: None,
+                attention: false,
+            }],
+            task_strip_selection: 0,
+            selected_task_id: session.session_id,
+            task_view_states: std::collections::HashMap::new(),
+            supervisor: None,
             session_view: SessionSnapshot::capture(&session),
             transcript_view: TranscriptSnapshot::capture(&session),
             session,

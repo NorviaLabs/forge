@@ -128,6 +128,10 @@ pub struct AgentSession {
     /// top-level/foreground session, which is cancelled via the TUI's own
     /// `cancel_requested` bool instead.
     cancel_token: Option<CancellationToken>,
+    /// Cancellation for the current root turn. Separate from `cancel_token`:
+    /// the latter also identifies subagents, which cannot ask root-level
+    /// questions. Root actors replace this token between turns.
+    turn_cancel_token: CancellationToken,
     /// Cumulative provider token usage for this session.
     pub token_usage: SessionTokenUsage,
     /// Runtime bookkeeping scoped to the current user turn. It is reset when
