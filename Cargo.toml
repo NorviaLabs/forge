@@ -53,7 +53,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 ureq = { version = "3", features = ["json"] }
 futures = "0.3"
 bytes = "1"
-jsonschema = "0.50"
+jsonschema = "0.52"
 crossterm = "0.29"
 # `layout-cache` is one of ratatui's default features, so turning defaults off
 # silently dropped it and every layout solve ran the constraint solver from
