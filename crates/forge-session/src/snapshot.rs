@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_core::{AgentSession, TurnEvent};
+use forge_model::SharedMessages;
 use forge_types::{HitlPayload, Message, QuestionPayload, SessionId, TaskLifecycle};
 
 /// What a frontend needs to draw one frame, minus the transcript.
@@ -127,9 +128,10 @@ impl Default for SessionSnapshot {
 /// pay to copy it.
 #[derive(Debug, Clone, Default)]
 pub struct TranscriptSnapshot {
-    messages: Arc<[Message]>,
+    messages: SharedMessages,
     events: Arc<[TurnEvent]>,
     fingerprint: Option<TranscriptFingerprint>,
+    revision: u64,
 }
 
 /// What the transcript looked like last time it was copied.
@@ -141,6 +143,7 @@ pub struct TranscriptSnapshot {
 /// new one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TranscriptFingerprint {
+    messages_storage_id: u64,
     messages: usize,
     events: usize,
     last_message_content: usize,
@@ -151,6 +154,7 @@ struct TranscriptFingerprint {
 impl TranscriptFingerprint {
     fn of(session: &AgentSession) -> Self {
         Self {
+            messages_storage_id: session.messages.storage_id(),
             messages: session.messages.len(),
             events: session.events.len(),
             last_message_content: session.messages.last().map_or(0, |m| m.content.len()),
@@ -174,9 +178,13 @@ impl TranscriptSnapshot {
         if self.fingerprint == Some(fingerprint) {
             return;
         }
-        self.messages = Arc::from(session.messages.as_slice());
+        // `SharedMessages` is copy-on-write. The live session clones its
+        // storage only when a snapshot still holds the previous version, so a
+        // refresh shares the new allocation instead of cloning every message.
+        self.messages = session.messages.shared();
         self.events = Arc::from(session.events.as_slice());
         self.fingerprint = Some(fingerprint);
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// A snapshot taken now, for callers outside a frame.
@@ -187,11 +195,16 @@ impl TranscriptSnapshot {
     }
 
     pub fn messages(&self) -> &[Message] {
-        &self.messages
+        self.messages.as_slice()
     }
 
     pub fn events(&self) -> &[TurnEvent] {
         &self.events
+    }
+
+    /// Monotonic identity for the current transcript projection inputs.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -287,12 +300,14 @@ mod tests {
 
         let mut snapshot = TranscriptSnapshot::capture(&session);
         let first = snapshot.messages().as_ptr();
+        let revision = snapshot.revision();
         snapshot.refresh(&session);
         assert_eq!(
             first,
             snapshot.messages().as_ptr(),
             "an unchanged transcript must not be copied again"
         );
+        assert_eq!(snapshot.revision(), revision);
     }
 
     /// ...and a changed one must be picked up, including the last message
@@ -305,9 +320,11 @@ mod tests {
 
         let mut snapshot = TranscriptSnapshot::capture(&session);
         let before = snapshot.messages().len();
+        let revision = snapshot.revision();
 
         session.run_user_message("second").await.unwrap();
         snapshot.refresh(&session);
+        assert!(snapshot.revision() > revision);
         assert!(
             snapshot.messages().len() > before,
             "a longer transcript must be picked up"

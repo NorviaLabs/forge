@@ -152,6 +152,24 @@ async fn cache_hit_shares_transcript_lines_without_copying() {
     );
 }
 
+#[tokio::test]
+async fn same_length_message_changes_invalidate_transcript_cache() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session.messages.push(forge_types::Message::new(
+        forge_types::MessageRole::Assistant,
+        "old text",
+    ));
+    draw_app(&mut app, 100, 30);
+    let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    app.session.messages.last_mut().unwrap().content = "new text".into();
+    draw_app(&mut app, 100, 30);
+    let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    assert!(!Arc::ptr_eq(&first, &second));
+}
+
 /// Busy-phase flips used to sit on the conversation render key, so every
 /// tool-call start rebuilt the whole transcript. Historical lines do not
 /// depend on the current phase — live chrome is the separate preview buffer.

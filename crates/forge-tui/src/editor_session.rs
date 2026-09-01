@@ -22,10 +22,20 @@ pub(crate) struct EditorSession {
     state: EditorState,
     event_handler: EditorEventHandler,
     accepted_text: String,
+    dirty: bool,
     format: DocumentFormat,
     syntax_language: Option<String>,
     syntax_theme: forge_syntax::HighlightTheme,
     revision: u64,
+    pending_operator: Option<char>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextChangeKind {
+    None,
+    Guaranteed,
+    Check,
+    UndoRedo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,23 +76,158 @@ impl EditorSession {
             state: EditorState::new(Lines::from(&text)),
             event_handler: EditorEventHandler::vim_mode(),
             accepted_text: text,
+            dirty: false,
             format,
             syntax_language: None,
             syntax_theme: forge_syntax::HighlightTheme::default(),
             revision: 0,
+            pending_operator: None,
         }
     }
 
     /// Route one terminal key through edtui and report whether the buffer changed.
     pub(crate) fn handle_key(&mut self, event: KeyEvent) -> bool {
-        let before = self.text();
+        let change_kind = self.text_change_kind(event);
+        let undo_before = matches!(change_kind, TextChangeKind::UndoRedo).then(|| self.text());
         self.event_handler.on_key_event(event, &mut self.state);
-        let changed = before != self.text();
-        if changed {
-            self.revision = self.revision.wrapping_add(1);
-            self.refresh_syntax_highlights();
+        match change_kind {
+            TextChangeKind::None => false,
+            TextChangeKind::Guaranteed => {
+                self.mark_changed();
+                true
+            }
+            TextChangeKind::Check => {
+                let was_dirty = self.dirty;
+                let changed = !self.text_matches_accepted();
+                self.dirty = changed;
+                if changed || was_dirty {
+                    self.revision = self.revision.wrapping_add(1);
+                    if self.syntax_language.is_some() {
+                        let text = self.text();
+                        self.refresh_syntax_highlights_from(&text);
+                    }
+                }
+                changed || was_dirty
+            }
+            TextChangeKind::UndoRedo => {
+                let text = self.text();
+                let changed = !self.text_matches_accepted();
+                let content_changed = undo_before.as_deref() != Some(text.as_str());
+                self.dirty = changed;
+                if content_changed {
+                    self.revision = self.revision.wrapping_add(1);
+                    if self.syntax_language.is_some() {
+                        self.refresh_syntax_highlights_from(&text);
+                    }
+                }
+                content_changed
+            }
         }
-        changed
+    }
+
+    fn text_change_kind(&mut self, event: KeyEvent) -> TextChangeKind {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        if let Some(operator) = self.pending_operator.take() {
+            if self.mode() == EditorMode::Normal
+                && event.modifiers.is_empty()
+                && matches!(event.code, KeyCode::Char('i' | 'a' | 'f' | 't'))
+            {
+                self.pending_operator = Some(operator);
+                return TextChangeKind::None;
+            }
+            return if self.mode() == EditorMode::Normal {
+                TextChangeKind::Check
+            } else {
+                TextChangeKind::None
+            };
+        }
+
+        match self.mode() {
+            EditorMode::Insert => match event.code {
+                KeyCode::Char(_)
+                    if event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT =>
+                {
+                    TextChangeKind::Guaranteed
+                }
+                KeyCode::Tab | KeyCode::Enter if event.modifiers.is_empty() => {
+                    TextChangeKind::Guaranteed
+                }
+                KeyCode::Backspace | KeyCode::Delete if event.modifiers.is_empty() => {
+                    TextChangeKind::Check
+                }
+                KeyCode::Char('h' | 'u') if event.modifiers == KeyModifiers::CONTROL => {
+                    TextChangeKind::Check
+                }
+                _ => TextChangeKind::None,
+            },
+            EditorMode::Normal => {
+                if event.modifiers.is_empty() {
+                    match event.code {
+                        KeyCode::Char('d' | 'c') => {
+                            self.pending_operator = match event.code {
+                                KeyCode::Char(operator) => Some(operator),
+                                _ => None,
+                            };
+                            TextChangeKind::None
+                        }
+                        KeyCode::Char('o' | 'O' | 'x' | 'D' | 'J' | 'p' | 'P' | '.')
+                        | KeyCode::Delete => TextChangeKind::Check,
+                        KeyCode::Char('u') => TextChangeKind::UndoRedo,
+                        _ => TextChangeKind::None,
+                    }
+                } else if event.modifiers == KeyModifiers::SHIFT
+                    && matches!(event.code, KeyCode::Char('D' | 'J' | 'O' | 'P'))
+                {
+                    TextChangeKind::Check
+                } else if event.code == KeyCode::Char('r')
+                    && event.modifiers == KeyModifiers::CONTROL
+                {
+                    TextChangeKind::UndoRedo
+                } else {
+                    TextChangeKind::None
+                }
+            }
+            EditorMode::Visual => {
+                if event.modifiers.is_empty()
+                    && matches!(event.code, KeyCode::Char('d' | 'x' | 'c' | 'p'))
+                {
+                    TextChangeKind::Check
+                } else {
+                    TextChangeKind::None
+                }
+            }
+            EditorMode::Search => TextChangeKind::None,
+        }
+    }
+
+    fn text_matches_accepted(&self) -> bool {
+        let mut accepted = self.accepted_text.chars();
+        let mut previous_row = None;
+
+        for (character, index) in self.state.lines.iter() {
+            if previous_row.is_some_and(|row| row != index.row) && accepted.next() != Some('\n') {
+                return false;
+            }
+            previous_row = Some(index.row);
+
+            if let Some(character) = character {
+                if accepted.next() != Some(*character) {
+                    return false;
+                }
+            }
+        }
+
+        accepted.next().is_none()
+    }
+
+    fn mark_changed(&mut self) {
+        self.dirty = true;
+        self.revision = self.revision.wrapping_add(1);
+        if self.syntax_language.is_some() {
+            let text = self.text();
+            self.refresh_syntax_highlights_from(&text);
+        }
     }
 
     pub(crate) fn text(&self) -> String {
@@ -148,7 +293,7 @@ impl EditorSession {
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
-        self.text() != self.accepted_text
+        self.dirty
     }
 
     /// Apply a Vim-style substitution while preserving the current mode and
@@ -203,6 +348,7 @@ impl EditorSession {
                 .unwrap_or_default();
             self.state.cursor.col = self.state.cursor.col.min(line_len.saturating_sub(1));
             self.revision = self.revision.wrapping_add(1);
+            self.dirty = text != self.accepted_text;
             self.refresh_syntax_highlights();
         }
 
@@ -216,6 +362,7 @@ impl EditorSession {
     /// Mark the current editor text as the accepted on-disk version.
     pub(crate) fn accept_current_text(&mut self) {
         self.accepted_text = self.text();
+        self.dirty = false;
     }
 
     /// Replace the buffer with text accepted from disk and reset Vim state.
@@ -224,8 +371,10 @@ impl EditorSession {
         self.state = EditorState::new(Lines::from(&text));
         self.event_handler = EditorEventHandler::vim_mode();
         self.accepted_text = text;
+        self.dirty = false;
         self.format = format;
         self.revision = self.revision.wrapping_add(1);
+        self.pending_operator = None;
         self.refresh_syntax_highlights();
     }
 
@@ -252,15 +401,19 @@ impl EditorSession {
     }
 
     fn refresh_syntax_highlights(&mut self) {
+        let source = self.text();
+        self.refresh_syntax_highlights_from(&source);
+    }
+
+    fn refresh_syntax_highlights_from(&mut self, source: &str) {
         let Some(language) = self.syntax_language.as_deref() else {
             self.state.clear_highlights();
             return;
         };
-        let source = self.text();
         let theme = self.syntax_theme;
-        let spans = std::panic::catch_unwind(|| forge_syntax::highlight(language, &source, &theme))
+        let spans = std::panic::catch_unwind(|| forge_syntax::highlight(language, source, &theme))
             .unwrap_or_default();
-        self.set_forge_highlights(&source, &spans, &theme);
+        self.set_forge_highlights(source, &spans, &theme);
     }
 
     /// Replace edtui's position-based highlights with ranges produced by
@@ -405,6 +558,63 @@ mod tests {
     }
 
     #[test]
+    fn undoing_back_to_accepted_text_clears_dirty_state() {
+        let mut session = EditorSession::new("hello");
+        session.handle_key(key(KeyCode::Char('i')));
+        session.handle_key(key(KeyCode::Char('x')));
+        assert!(session.is_dirty());
+
+        session.handle_key(key(KeyCode::Esc));
+        session.handle_key(key(KeyCode::Char('u')));
+
+        assert_eq!(session.text(), "hello");
+        assert!(!session.is_dirty());
+
+        session.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(session.text(), "xhello");
+        assert!(session.is_dirty());
+    }
+
+    #[test]
+    fn inverse_insert_edit_clears_dirty_state() {
+        let mut session = EditorSession::new("hello");
+        session.handle_key(key(KeyCode::Char('i')));
+        session.handle_key(key(KeyCode::Char('x')));
+        session.handle_key(key(KeyCode::Backspace));
+
+        assert_eq!(session.text(), "hello");
+        assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn no_op_substitution_keeps_clean_state() {
+        let mut session = EditorSession::new("hello");
+
+        assert_eq!(session.substitute("hello", "hello", false, false), 1);
+        assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn insert_shortcuts_track_changes() {
+        let mut delete_indent = EditorSession::new("  hi");
+        delete_indent.handle_key(key(KeyCode::Char('i')));
+        delete_indent.set_cursor(0, 4);
+        delete_indent.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+
+        assert_eq!(delete_indent.text(), "  ");
+        assert!(delete_indent.is_dirty());
+    }
+
+    #[test]
+    fn shifted_normal_mutations_track_dirty_state() {
+        let mut session = EditorSession::new("hello");
+
+        session.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+
+        assert!(session.is_dirty());
+    }
+
+    #[test]
     fn document_format_round_trips_crlf_and_final_newline() {
         let session = EditorSession::new("one\r\ntwo\r\n");
 
@@ -479,6 +689,12 @@ mod tests {
         let mut session = EditorSession::new("fn main() {}");
         session.set_syntax_language(Some("rust"));
         assert!(!session.state.highlights.is_empty());
+        let original_highlights = session.state.highlights.clone();
+
+        session.handle_key(key(KeyCode::Char('i')));
+        session.handle_key(key(KeyCode::Char('x')));
+        session.handle_key(key(KeyCode::Backspace));
+        assert_eq!(session.state.highlights, original_highlights);
 
         session.set_syntax_language(None);
         assert!(session.state.highlights.is_empty());

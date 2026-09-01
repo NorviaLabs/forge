@@ -1,11 +1,12 @@
 //! OpenAI-shaped JSON → Forge ModelResponse.
 
 use std::path::Path;
+use std::sync::Arc;
 
-use forge_types::{Message, MessageRole, ModelResponse, ToolCall, ToolDescriptor, Usage};
+use forge_types::{ImageRef, Message, MessageRole, ModelResponse, ToolCall, ToolDescriptor, Usage};
 use serde_json::{json, Value};
 
-use crate::image::{load_image_ref, openai_image_part};
+use crate::image::{load_image_ref, openai_image_part_with_loaded, LoadedImage};
 use crate::ModelError;
 
 /// Map wire `complete` result object to Forge `ModelResponse`.
@@ -178,6 +179,29 @@ pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
 }
 
 pub fn forge_messages_to_wire_in(messages: &[Message], workspace: &Path) -> Vec<Value> {
+    forge_messages_to_wire_in_with_loader(messages, workspace, &|workspace, image| {
+        load_image_ref(workspace, image).map(Arc::new)
+    })
+}
+
+pub(crate) fn forge_messages_to_wire_in_cached(
+    messages: &[Message],
+    workspace: &Path,
+    client: &crate::native::NativeModelClient,
+) -> Vec<Value> {
+    forge_messages_to_wire_in_with_loader(messages, workspace, &|workspace, image| {
+        client.load_image_ref(workspace, image)
+    })
+}
+
+fn forge_messages_to_wire_in_with_loader<F>(
+    messages: &[Message],
+    workspace: &Path,
+    load_image: &F,
+) -> Vec<Value>
+where
+    F: Fn(&Path, &ImageRef) -> Result<Arc<LoadedImage>, String>,
+{
     messages
         .iter()
         .map(|m| {
@@ -190,7 +214,7 @@ pub fn forge_messages_to_wire_in(messages: &[Message], workspace: &Path) -> Vec<
                 // user rather than escalating it to system/assistant.
                 _ => "user",
             };
-            let content = openai_message_content(m, workspace);
+            let content = openai_message_content(m, workspace, load_image);
             let mut obj = json!({
                 "role": role,
                 "content": content,
@@ -229,7 +253,10 @@ pub fn forge_messages_to_wire_in(messages: &[Message], workspace: &Path) -> Vec<
         .collect()
 }
 
-fn openai_message_content(message: &Message, workspace: &Path) -> Value {
+fn openai_message_content<F>(message: &Message, workspace: &Path, load_image: &F) -> Value
+where
+    F: Fn(&Path, &ImageRef) -> Result<Arc<LoadedImage>, String>,
+{
     if message.attachments.is_empty() {
         return json!(message.content);
     }
@@ -238,8 +265,8 @@ fn openai_message_content(message: &Message, workspace: &Path) -> Value {
         parts.push(json!({"type": "text", "text": message.content}));
     }
     for image in &message.attachments {
-        match load_image_ref(workspace, image) {
-            Ok(loaded) => parts.push(openai_image_part(&loaded.mime, &loaded.bytes)),
+        match load_image(workspace, image) {
+            Ok(loaded) => parts.push(openai_image_part_with_loaded(&loaded)),
             Err(_) => parts.push(json!({
                 "type": "text",
                 "text": format!("image at `{}` is no longer available", image.path)

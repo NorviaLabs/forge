@@ -69,15 +69,25 @@ mod test_support {
     }
 }
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use forge_config::Config;
-use forge_types::ModelResponse;
+use forge_types::{ImageRef, ModelResponse};
 
+use crate::image::{load_image_ref, LoadedImage};
 use crate::{ModelClient, ModelError, ModelRequest, StreamEventTx};
+
+const IMAGE_CACHE_MAX_ENTRIES: usize = 16;
+
+struct CachedImage {
+    modified: Option<std::time::SystemTime>,
+    byte_len: u64,
+    image: Arc<LoadedImage>,
+}
 
 pub(super) fn process_sse_lines(
     pending: &mut String,
@@ -119,6 +129,7 @@ pub struct NativeModelClient {
     configured_base_url: Option<String>,
     configured_api_key: Option<String>,
     credentials: Arc<Mutex<BTreeMap<String, String>>>,
+    image_cache: Mutex<HashMap<PathBuf, CachedImage>>,
 }
 
 impl NativeModelClient {
@@ -134,6 +145,7 @@ impl NativeModelClient {
             configured_base_url: cfg.model.base_url.clone(),
             configured_api_key: cfg.model.api_key.clone(),
             credentials: Arc::new(Mutex::new(BTreeMap::new())),
+            image_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -170,6 +182,39 @@ impl NativeModelClient {
             .clone()
             .or_else(|| self.injected_or_env(env_names))
             .unwrap_or_else(|| default.into())
+    }
+
+    pub(super) fn load_image_ref(
+        &self,
+        workspace: &Path,
+        image: &ImageRef,
+    ) -> Result<Arc<LoadedImage>, String> {
+        let path = crate::image::resolve_image_path(workspace, &image.path);
+        let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+        let modified = metadata.modified().ok();
+        if let Ok(cache) = self.image_cache.lock() {
+            if let Some(cached) = cache.get(&path) {
+                if cached.byte_len == metadata.len() && cached.modified == modified {
+                    return Ok(Arc::clone(&cached.image));
+                }
+            }
+        }
+
+        let loaded = Arc::new(load_image_ref(workspace, image)?);
+        if let Ok(mut cache) = self.image_cache.lock() {
+            if cache.len() >= IMAGE_CACHE_MAX_ENTRIES {
+                cache.clear();
+            }
+            cache.insert(
+                path,
+                CachedImage {
+                    modified,
+                    byte_len: metadata.len(),
+                    image: Arc::clone(&loaded),
+                },
+            );
+        }
+        Ok(loaded)
     }
 }
 
@@ -212,7 +257,7 @@ impl ModelClient for NativeModelClient {
     fn prompt_wire(&self, req: &ModelRequest) -> serde_json::Value {
         match transport_for_route(req.route_id.as_deref()) {
             forge_connect::ProviderTransport::Anthropic => {
-                let (system, messages) = anthropic::messages_body(req);
+                let (system, messages) = anthropic::messages_body(req, Some(self));
                 let mut body = serde_json::json!({ "messages": messages });
                 if !system.is_empty() {
                     body["system"] = serde_json::Value::String(system);
@@ -240,7 +285,7 @@ impl ModelClient for NativeModelClient {
                 codex::request_body(self, req, &req.model, &codex::tool_aliases(req)),
             ),
             forge_connect::ProviderTransport::OpenaiCompat => {
-                crate::prompt_wire::openai_compat_prompt(req)
+                crate::prompt_wire::openai_compat_prompt_cached(req, self)
             }
         }
     }
@@ -301,6 +346,27 @@ mod tests {
             client.credential(&["OPENAI_API_KEY"]).as_deref(),
             Some("injected")
         );
+    }
+
+    #[test]
+    fn image_requests_reuse_cached_bytes_until_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, forge_types::sample_png_bytes()).unwrap();
+        let image = forge_types::ImageRef::new("shot.png", "image/png", 1);
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+
+        let first = client.load_image_ref(dir.path(), &image).unwrap();
+        let encoded = first.base64().as_ptr();
+        let second = client.load_image_ref(dir.path(), &image).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(encoded, second.base64().as_ptr());
+
+        let mut changed = forge_types::sample_png_bytes();
+        changed.push(0);
+        std::fs::write(&path, changed).unwrap();
+        let third = client.load_image_ref(dir.path(), &image).unwrap();
+        assert!(!Arc::ptr_eq(&second, &third));
     }
 
     #[test]
