@@ -232,7 +232,7 @@ mod tests {
             include_str!("../themes/forge-dark.toml")
                 .replace("id = \"forge-dark\"", "id = \"broken\"")
                 // Truncated hex value: 5 digits instead of 6.
-                .replace("cursor = \"#AEC0EA\"", "cursor = \"#AEC0E\""),
+                .replace("cursor = \"#439EFD\"", "cursor = \"#439E\""),
         )
         .unwrap();
         let (registry, diagnostics) = ThemeRegistry::load_with_diagnostics(Some(dir.path()));
@@ -255,7 +255,7 @@ mod tests {
             include_str!("../themes/forge-dark.toml")
                 .replace("id = \"forge-dark\"", "id = \"collides\"")
                 // Point the accent straight at `success`.
-                .replace("accent = \"#8FA4D6\"", "accent = \"#9BD39A\""),
+                .replace("accent = \"#439EFD\"", "accent = \"#5BDB87\""),
         )
         .unwrap();
 
