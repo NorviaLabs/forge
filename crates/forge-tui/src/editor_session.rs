@@ -28,6 +28,7 @@ pub(crate) struct EditorSession {
     syntax_theme: forge_syntax::HighlightTheme,
     revision: u64,
     pending_operator: Option<char>,
+    highlight_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +83,7 @@ impl EditorSession {
             syntax_theme: forge_syntax::HighlightTheme::default(),
             revision: 0,
             pending_operator: None,
+            highlight_pending: false,
         }
     }
 
@@ -102,10 +104,7 @@ impl EditorSession {
                 self.dirty = changed;
                 if changed || was_dirty {
                     self.revision = self.revision.wrapping_add(1);
-                    if self.syntax_language.is_some() {
-                        let text = self.text();
-                        self.refresh_syntax_highlights_from(&text);
-                    }
+                    self.highlight_pending = self.syntax_language.is_some();
                 }
                 changed || was_dirty
             }
@@ -116,9 +115,7 @@ impl EditorSession {
                 self.dirty = changed;
                 if content_changed {
                     self.revision = self.revision.wrapping_add(1);
-                    if self.syntax_language.is_some() {
-                        self.refresh_syntax_highlights_from(&text);
-                    }
+                    self.highlight_pending = self.syntax_language.is_some();
                 }
                 content_changed
             }
@@ -224,10 +221,7 @@ impl EditorSession {
     fn mark_changed(&mut self) {
         self.dirty = true;
         self.revision = self.revision.wrapping_add(1);
-        if self.syntax_language.is_some() {
-            let text = self.text();
-            self.refresh_syntax_highlights_from(&text);
-        }
+        self.highlight_pending = self.syntax_language.is_some();
     }
 
     pub(crate) fn text(&self) -> String {
@@ -405,7 +399,14 @@ impl EditorSession {
         self.refresh_syntax_highlights_from(&source);
     }
 
+    pub(crate) fn refresh_pending_highlights(&mut self) {
+        if self.highlight_pending {
+            self.refresh_syntax_highlights();
+        }
+    }
+
     fn refresh_syntax_highlights_from(&mut self, source: &str) {
+        self.highlight_pending = false;
         let Some(language) = self.syntax_language.as_deref() else {
             self.state.clear_highlights();
             return;

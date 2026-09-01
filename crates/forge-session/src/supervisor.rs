@@ -384,7 +384,7 @@ impl RepositorySupervisor {
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.apply_provider_env(&connect_credentials());
-        let mut sessions = Vec::new();
+        let mut session_tasks = tokio::task::JoinSet::new();
         for task in control.tasks().await?.into_iter().filter(|task| {
             task.session_id != primary_session_id && task.lifecycle == SessionLifecycle::Active
         }) {
@@ -393,13 +393,20 @@ impl RepositorySupervisor {
             task_cfg.workspace_root = Some(task.workspace.display().to_string());
             let (journal_dir, _) = resolve_journal_dir(&task_cfg);
             task_cfg.journal.path = journal_dir.display().to_string();
-            let opened = open_session_with_model(
-                &task_cfg,
-                SessionTarget::Resume(task.session_id),
-                model.clone(),
-            )
-            .await?;
-            sessions.push((task, opened.session));
+            let model = model.clone();
+            session_tasks.spawn(async move {
+                open_session_with_model(&task_cfg, SessionTarget::Resume(task.session_id), model)
+                    .await
+                    .map(|opened| (task, opened.session))
+            });
+        }
+        let mut sessions = Vec::new();
+        while let Some(result) = session_tasks.join_next().await {
+            sessions.push(
+                result.map_err(|error| {
+                    RepositorySupervisorError::Assembly(anyhow::anyhow!(error))
+                })??,
+            );
         }
         Self::spawn(
             control,
