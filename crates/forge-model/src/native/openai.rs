@@ -32,7 +32,11 @@ pub(super) async fn complete(
     let route = route(client, model)?;
     let mut body = json!({
         "model": route.model,
-        "messages": crate::normalize::forge_messages_to_wire_in(&req.messages, &req.workspace_root),
+        "messages": crate::normalize::forge_messages_to_wire_in_cached(
+            &req.messages,
+            &req.workspace_root,
+            client,
+        ),
         "stream": true,
         "stream_options": {"include_usage": true}
     });

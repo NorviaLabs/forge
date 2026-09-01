@@ -698,7 +698,7 @@ impl ConversationRender for ConversationModel {
         keep_from_end: usize,
     ) -> (Vec<Line<'static>>, Option<PlanDock>) {
         let lines = self.render_lines(available_width, keep_from_end, None);
-        let dock = plan_dock_for(self, available_width, keep_from_end, &lines);
+        let dock = plan_dock_for(self, available_width, &lines);
         (lines, dock)
     }
 
@@ -1123,50 +1123,63 @@ pub(super) struct TranscriptSlices<'a> {
     pub status_lines: &'a [Line<'static>],
 }
 
-/// Locate the plan card inside `lines`, and build the row that stands in
-/// for it.
+/// Locate the latest visible plan card inside `lines`, and build its dock row.
 ///
 /// The card is found by rendering it standalone and matching its first and
-/// last rows against what was produced, rather than by threading an index
-/// out of the block loop — the loop feeds three cached entry points and a
-/// tail window, and an index would have to be kept correct through all of
-/// them. Matching costs a scan of the rendered lines, and only when a plan
-/// exists at all.
+/// last rows against what was produced. This avoids a second full semantic
+/// projection solely to locate the plan.
 fn plan_dock_for(
     model: &ConversationModel,
     available_width: usize,
-    keep_from_end: usize,
     lines: &[Line<'static>],
 ) -> Option<PlanDock> {
     let width = available_width.max(4);
-    let blocks = model.semantic_blocks();
     let prose_width = prose_width_for(width);
-    let start = start_block_for_tail(&blocks, width, prose_width, keep_from_end);
-    let (index, plan) = blocks
+    let turn_boundaries = model.turn_boundaries();
+    let latest_turn = turn_boundaries.last().copied();
+    let plan = model
+        .items
         .iter()
         .enumerate()
         .rev()
-        .find_map(|(i, block)| match block {
-            ConversationBlock::PlanChecklist(p) => Some((i, p)),
+        .find_map(|(index, item)| match item {
+            ChatItem::PlanChecklist {
+                explanation,
+                steps,
+                evidence,
+            } => {
+                let turn = turn_boundaries
+                    .iter()
+                    .copied()
+                    .rev()
+                    .find(|&start| start <= index);
+                let visible = match turn {
+                    None => true,
+                    Some(start) => {
+                        Some(start) == latest_turn || Some(start) == model.opts.expanded_turn
+                    }
+                };
+                visible.then(|| PlanChecklistPresentation {
+                    explanation: explanation.clone(),
+                    steps: steps.clone(),
+                    evidence: evidence.clone(),
+                })
+            }
             _ => None,
         })?;
     // Follow mode renders only a tail window, so a plan far enough back is
     // not in `lines` at all — which is exactly when it most needs docking.
     // Treat "not rendered" as "above the window", not as "no plan".
-    let end = if index < start {
-        0
-    } else {
-        let card = render_plan_checklist(plan, width);
-        let located = card.first().zip(card.last()).and_then(|(first, last)| {
-            let (first, last) = (line_plain(first), line_plain(last));
-            let head = lines.iter().rposition(|line| line_plain(line) == first)?;
-            lines[head..]
-                .iter()
-                .position(|line| line_plain(line) == last)
-                .map(|offset| head + offset + 1)
-        });
-        located.unwrap_or(0)
-    };
+    let card = render_plan_checklist(&plan, width);
+    let located = card.first().zip(card.last()).and_then(|(first, last)| {
+        let (first, last) = (line_plain(first), line_plain(last));
+        let head = lines.iter().rposition(|line| line_plain(line) == first)?;
+        lines[head..]
+            .iter()
+            .position(|line| line_plain(line) == last)
+            .map(|offset| head + offset + 1)
+    });
+    let end = located.unwrap_or(0);
 
     let done = plan
         .steps

@@ -687,6 +687,21 @@ impl Journal {
     }
 
     pub async fn replay(&self, session_id: SessionId) -> Result<ReplayState, JournalError> {
+        self.replay_with_events(session_id, true).await
+    }
+
+    async fn replay_for_checkpoint(
+        &self,
+        session_id: SessionId,
+    ) -> Result<ReplayState, JournalError> {
+        self.replay_with_events(session_id, false).await
+    }
+
+    async fn replay_with_events(
+        &self,
+        session_id: SessionId,
+        collect_events: bool,
+    ) -> Result<ReplayState, JournalError> {
         let sid = session_id.to_string();
         let checkpoint =
             sqlx::query("SELECT seq, payload FROM replay_checkpoints WHERE session_id = ?")
@@ -757,23 +772,12 @@ impl Journal {
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
-            // The event is pushed onto `state.events` unconditionally, so the
-            // payload is moved into it here and the arms below project *out of
-            // it* by reference. Building `ev` from a clone instead meant every
-            // journal event was deep-copied once on principle, and the typed
-            // arms then copied it a second time before deserialising.
-            let ev = JournalEvent {
-                seq,
-                session_id,
-                ts,
-                event_type,
-                schema_version: row.get::<i64, _>("schema_version") as u32,
-                payload,
-                trace_id: row.try_get("trace_id").ok(),
-            };
-            let payload = &ev.payload;
+            // Checkpoint replay only needs the projected state. Avoid building
+            // and retaining raw JournalEvent values that the checkpoint drops.
+            let schema_version = row.get::<i64, _>("schema_version") as u32;
+            let trace_id = row.try_get("trace_id").ok();
 
-            match event_type {
+            match &event_type {
                 JournalEventType::UserMessage => {
                     if let Some(c) = payload.get("content").and_then(|v| v.as_str()) {
                         state.user_messages.push(c.to_string());
@@ -800,7 +804,7 @@ impl Journal {
                 JournalEventType::ModelResponse => {
                     // Older journals only contain response metadata and remain resumable with
                     // partial history; current journals persist the complete response.
-                    if let Ok(response) = ModelResponse::deserialize(payload) {
+                    if let Ok(response) = ModelResponse::deserialize(&payload) {
                         let has_thinking = response
                             .thinking
                             .as_ref()
@@ -892,7 +896,7 @@ impl Journal {
                     });
                 }
                 JournalEventType::ToolResult => {
-                    if let Ok(p) = ToolResultPayload::deserialize(payload) {
+                    if let Ok(p) = ToolResultPayload::deserialize(&payload) {
                         open_intents.remove(&p.call_id);
                         state.messages.push(Message {
                             outcome: p.output.effective_outcome(),
@@ -1030,7 +1034,17 @@ impl Journal {
                 _ => {}
             }
 
-            state.events.push(ev);
+            if collect_events {
+                state.events.push(JournalEvent {
+                    seq,
+                    session_id,
+                    ts,
+                    event_type,
+                    schema_version,
+                    payload,
+                    trace_id,
+                });
+            }
         }
 
         // A `Promoting` item with no confirming `QueuePromoted`/`QueueRemoved`
@@ -1052,7 +1066,7 @@ impl Journal {
     }
 
     async fn write_replay_checkpoint(&self, session_id: SessionId) -> Result<(), JournalError> {
-        let state = self.replay(session_id).await?;
+        let state = self.replay_for_checkpoint(session_id).await?;
         let seq = state.last_seq;
         if seq == 0 {
             return Ok(());

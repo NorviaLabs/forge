@@ -120,14 +120,15 @@ pub(super) async fn complete(
     })
 }
 
-fn codex_user_content(message: &forge_types::Message, workspace: &std::path::Path) -> Value {
+fn codex_user_content(
+    message: &forge_types::Message,
+    workspace: &std::path::Path,
+    client: &NativeModelClient,
+) -> Value {
     let mut parts = vec![json!({"type": "input_text", "text": message.content})];
     for image in &message.attachments {
-        match crate::image::load_image_ref(workspace, image) {
-            Ok(loaded) => parts.push(crate::image::codex_input_image_part(
-                &loaded.mime,
-                &loaded.bytes,
-            )),
+        match client.load_image_ref(workspace, image) {
+            Ok(loaded) => parts.push(crate::image::codex_input_image_part_with_loaded(&loaded)),
             Err(_) => parts.push(json!({
                 "type": "input_text",
                 "text": format!("image at `{}` is no longer available", image.path)
@@ -137,7 +138,11 @@ fn codex_user_content(message: &forge_types::Message, workspace: &std::path::Pat
     Value::Array(parts)
 }
 
-fn codex_tool_output(message: &forge_types::Message, workspace: &std::path::Path) -> Value {
+fn codex_tool_output(
+    message: &forge_types::Message,
+    workspace: &std::path::Path,
+    client: &NativeModelClient,
+) -> Value {
     if message.attachments.is_empty() {
         return json!(message.content);
     }
@@ -146,11 +151,8 @@ fn codex_tool_output(message: &forge_types::Message, workspace: &std::path::Path
         parts.push(json!({"type": "input_text", "text": message.content}));
     }
     for image in &message.attachments {
-        match crate::image::load_image_ref(workspace, image) {
-            Ok(loaded) => parts.push(crate::image::codex_input_image_part(
-                &loaded.mime,
-                &loaded.bytes,
-            )),
+        match client.load_image_ref(workspace, image) {
+            Ok(loaded) => parts.push(crate::image::codex_input_image_part_with_loaded(&loaded)),
             Err(_) => parts.push(json!({
                 "type": "input_text",
                 "text": format!("image at `{}` is no longer available", image.path)
@@ -161,7 +163,7 @@ fn codex_tool_output(message: &forge_types::Message, workspace: &std::path::Path
 }
 
 pub(super) fn request_body(
-    _client: &NativeModelClient,
+    client: &NativeModelClient,
     req: &ModelRequest,
     model: &str,
     aliases: &BTreeMap<String, String>,
@@ -191,14 +193,14 @@ pub(super) fn request_body(
                     input.push(json!({
                         "type": "function_call_output",
                         "call_id": call_id,
-                        "output": codex_tool_output(message, &req.workspace_root)
+                    "output": codex_tool_output(message, &req.workspace_root, client)
                     }));
                 }
             }
             MessageRole::User => input.push(json!({
                 "type": "message",
                 "role": "user",
-                "content": codex_user_content(message, &req.workspace_root)
+                "content": codex_user_content(message, &req.workspace_root, client)
             })),
             MessageRole::Assistant => {
                 if !message.content.is_empty() {

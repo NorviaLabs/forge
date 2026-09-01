@@ -18,6 +18,9 @@ use crate::theme;
 const BINARY_PROBE_BYTES: usize = 8_192;
 /// Tab stops are every N columns.
 const TAB_WIDTH: usize = 4;
+/// Tree-sitter highlighting is useful for normal files but too expensive to
+/// rebuild for every editor change once a document becomes very large.
+const MAX_HIGHLIGHT_BYTES: usize = 1024 * 1024;
 
 /// Legacy mode tag used by the non-editable fallback viewer. Editable text
 /// files derive their mode from [`EditorSession`] instead.
@@ -213,6 +216,14 @@ impl SourceViewer {
     /// Open a workspace file. `root` is the workspace root; `path` may be
     /// absolute or relative and is validated to stay inside `root`.
     pub fn open(&mut self, root: &Path, path: &Path) {
+        self.open_with_highlighting(root, path, true);
+    }
+
+    pub(crate) fn open_for_editor(&mut self, root: &Path, path: &Path) {
+        self.open_with_highlighting(root, path, false);
+    }
+
+    fn open_with_highlighting(&mut self, root: &Path, path: &Path, highlight: bool) {
         self.path = None;
         self.rel_path = String::new();
         self.lines.clear();
@@ -289,10 +300,16 @@ impl SourceViewer {
                 return;
             }
         };
-        self.document_text = Some(text.clone());
         self.lines = split_lines(&text);
         self.status = ViewerStatus::Ok;
-        self.rebuild_highlight(&text);
+        if highlight {
+            self.rebuild_highlight(&text);
+        } else {
+            let (label, grammar) = detect_highlight_language(&self.rel_path, &text);
+            self.language_label = label;
+            self.highlight_disabled = grammar.is_some() && text.len() > MAX_HIGHLIGHT_BYTES;
+        }
+        self.document_text = Some(text);
         self.clamp_viewport();
     }
 
@@ -300,12 +317,17 @@ impl SourceViewer {
     /// current plain-text lines.
     fn rebuild_highlight(&mut self, expanded_text: &str) {
         self.highlighted_lines.clear();
+        self.highlight_disabled = false;
         let (label, lang) = detect_highlight_language(&self.rel_path, expanded_text);
         self.language_label = label;
 
         let Some(lang) = lang else {
             return;
         };
+        if expanded_text.len() > MAX_HIGHLIGHT_BYTES {
+            self.highlight_disabled = true;
+            return;
+        }
 
         let theme = theme::syntax_theme();
         let lines = match std::panic::catch_unwind(|| {
@@ -344,6 +366,14 @@ impl SourceViewer {
     /// Reload the current file if one is open. Preserves the viewport when
     /// possible and shows a brief notice when content changed.
     pub fn refresh(&mut self, root: &Path) {
+        self.refresh_with_highlighting(root, true);
+    }
+
+    pub(crate) fn refresh_for_editor(&mut self, root: &Path) {
+        self.refresh_with_highlighting(root, false);
+    }
+
+    fn refresh_with_highlighting(&mut self, root: &Path, highlight: bool) {
         let Some(path) = self.path.clone() else {
             return;
         };
@@ -375,7 +405,11 @@ impl SourceViewer {
         let jump_open = self.jump.open;
         let jump_input = self.jump.input.clone();
 
-        self.open(root, &path);
+        if highlight {
+            self.open(root, &path);
+        } else {
+            self.open_with_highlighting(root, &path, false);
+        }
 
         // Restore viewport if the file is still readable.
         if matches!(self.status, ViewerStatus::Ok) {
@@ -1702,6 +1736,34 @@ mod tests {
             !viewer.highlighted_lines.is_empty(),
             "rust file should be highlighted"
         );
+    }
+
+    #[test]
+    fn editor_open_detects_language_without_building_unused_viewer_spans() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open_for_editor(root.path(), &path);
+
+        assert_eq!(viewer.language_label.as_deref(), Some("rust"));
+        assert!(viewer.highlighted_lines.is_empty());
+        assert_eq!(viewer.document_text.as_deref(), Some("fn main() {}\n"));
+    }
+
+    #[test]
+    fn very_large_grammar_file_disables_expensive_highlighting() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("large.rs");
+        fs::write(&path, "let value = 1;\n".repeat(100_000)).unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+
+        assert_eq!(viewer.status, ViewerStatus::Ok);
+        assert!(viewer.highlight_disabled);
+        assert!(viewer.highlighted_lines.is_empty());
     }
 
     #[test]
