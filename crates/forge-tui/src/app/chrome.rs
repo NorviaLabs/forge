@@ -973,25 +973,23 @@ pub(super) fn load_repo_header(cwd: &Path) -> RepoHeaderCache {
         .and_then(|value| value.to_str())
         .map(str::to_string);
 
-    let branch = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--branch"])
         .current_dir(cwd)
         .output()
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty());
-
-    let dirty = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|text| !text.trim().is_empty())
-        .unwrap_or(false);
+        .map(|text| {
+            let mut lines = text.lines();
+            let branch = lines
+                .next()
+                .and_then(|line| line.strip_prefix("## "))
+                .map(|line| line.split("...").next().unwrap_or(line).to_string())
+                .filter(|line| !line.is_empty() && !line.starts_with("HEAD "));
+            (branch, lines.any(|line| !line.is_empty()))
+        });
+    let (branch, dirty) = status.unwrap_or_default();
 
     RepoHeaderCache {
         repo_name,

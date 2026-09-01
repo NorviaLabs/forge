@@ -198,10 +198,13 @@ pub(super) async fn next_foreground_wake(
 /// tick in one place makes foreground waits and the idle loop service the same
 /// file watcher, background tasks, approvals, connection state and transient
 /// chrome. Rendering and terminal input stay with the single Ratatui owner.
-pub(super) async fn tick_application(app: &mut TuiApp) -> Result<(), TuiError> {
+pub(super) async fn tick_application(app: &mut TuiApp) -> Result<bool, TuiError> {
     app.poll_supervisor_events();
     app.poll_file_changes();
-    app.poll_interactive_terminal();
+    let terminal_changed = app.poll_interactive_terminal();
+    if let Some(editor) = app.editor_session.as_mut() {
+        editor.refresh_pending_highlights();
+    }
     app.tick_render_state();
     app.warm_catalog_once_connected();
     app.poll_catalog_refresh();
@@ -217,7 +220,7 @@ pub(super) async fn tick_application(app: &mut TuiApp) -> Result<(), TuiError> {
     app.sync_question_focus();
     // Grok-style device-code: poll token endpoint while overlay is open.
     app.poll_oauth_tick();
-    Ok(())
+    Ok(terminal_changed)
 }
 
 /// Run one complete TUI tick while foreground work is in flight, then consume
@@ -228,7 +231,7 @@ pub(super) async fn paint_foreground_frame<B: ratatui::backend::Backend>(
     service_application: bool,
 ) -> Result<(), TuiError> {
     if service_application {
-        tick_application(app).await?;
+        let _ = tick_application(app).await?;
     }
     // Deltas arrive irregularly and each one paints, so the reveal has to
     // advance here too — otherwise a burst would sit still until the next
@@ -408,10 +411,14 @@ async fn run_loop(
     let mut last_idle_draw = std::time::Instant::now();
 
     while !app.exit.is_requested() {
-        tick_application(app).await?;
+        frame_dirty |= tick_application(app).await?;
         let is_animating = app.busy_state.is_active()
             || app.pending_approved_tool.is_some()
-            || app.interactive_terminal.is_some();
+            || app.bottom_panel.open
+                && app
+                    .interactive_terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.running);
         if frame_dirty || is_animating || last_idle_draw.elapsed() >= IDLE_REDRAW_INTERVAL {
             terminal.draw(|f| app.draw(f))?;
             frame_dirty = false;
