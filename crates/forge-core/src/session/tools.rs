@@ -9,6 +9,7 @@ pub(crate) struct PendingToolExecution {
     tools: Arc<ToolRegistry>,
     tool_ctx: ToolContext,
     budget: ValidationBudget,
+    prepared: Option<forge_tools::ValidatedToolCall>,
 }
 
 pub(crate) struct CompletedToolExecution {
@@ -21,7 +22,7 @@ pub(crate) struct CompletedToolExecution {
 
 pub(crate) enum ToolExecutionStart {
     Finished(Option<ModelResponse>),
-    Execute(PendingToolExecution),
+    Execute(Box<PendingToolExecution>),
 }
 
 pub(crate) struct PendingToolApplications {
@@ -67,17 +68,29 @@ impl PendingHitlExecution {
 
 impl PendingToolExecution {
     pub async fn execute(self) -> CompletedToolExecution {
+        let started = std::time::Instant::now();
         let Self {
             call,
             tools,
             tool_ctx,
             mut budget,
+            prepared,
         } = self;
+        let tool_name = call.name.clone();
         let pre_edit = pre_edit_snapshot(&tool_ctx, &call).await;
         let pre_git = git_pre_state(&tool_ctx, &call).await;
-        let result = tools
-            .call(&tool_ctx, &call.name, call.arguments.clone(), &mut budget)
-            .await;
+        let result = if let Some(prepared) = prepared {
+            tools.call_prepared(&tool_ctx, prepared).await
+        } else {
+            tools
+                .call(&tool_ctx, &call.name, call.arguments.clone(), &mut budget)
+                .await
+        };
+        tracing::debug!(
+            tool = %tool_name,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "tool call completed"
+        );
         CompletedToolExecution {
             call,
             budget,
@@ -172,12 +185,15 @@ async fn pre_edit_snapshot(
         }
         "apply_patch" => {
             let patch = call.arguments.get("patch")?.as_str()?;
-            let mut snapshots = Vec::new();
-            for (path, _kind) in parse_patch_paths(patch) {
-                let hash = hash_workspace_path(tool_ctx, &path).await;
-                snapshots.push((path, hash));
-            }
-            Some(snapshots)
+            Some(
+                futures::future::join_all(parse_patch_paths(patch).into_iter().map(
+                    |(path, _kind)| async move {
+                        let hash = hash_workspace_path(tool_ctx, &path).await;
+                        (path, hash)
+                    },
+                ))
+                .await,
+            )
         }
         _ => None,
     }
@@ -236,7 +252,7 @@ impl AgentSession {
         const MAX_PARALLEL_READS: usize = 8;
         while let Some(call) = pending.calls.next() {
             if self.can_parallelize_tool_call(&call) {
-                let mut calls = vec![call];
+                let mut calls = vec![forge_tools::canonicalize_tool_call(call)];
                 while calls.len() < MAX_PARALLEL_READS
                     && pending
                         .calls
@@ -244,13 +260,22 @@ impl AgentSession {
                         .first()
                         .is_some_and(|call| self.can_parallelize_tool_call(call))
                 {
-                    calls.push(pending.calls.next().expect("peeked tool call"));
+                    calls.push(forge_tools::canonicalize_tool_call(
+                        pending.calls.next().expect("peeked tool call"),
+                    ));
                 }
+                let mut intent_calls = Vec::with_capacity(calls.len());
                 let mut executions = Vec::with_capacity(calls.len());
                 for call in calls {
                     let mut budget = pending.budget.clone();
-                    match self.start_tool_call(&call, &mut budget).await? {
-                        ToolExecutionStart::Execute(execution) => executions.push(execution),
+                    match self
+                        .start_tool_call_prevalidated(&call, &mut budget, false)
+                        .await?
+                    {
+                        ToolExecutionStart::Execute(execution) => {
+                            intent_calls.push(execution.call.clone());
+                            executions.push(*execution);
+                        }
                         ToolExecutionStart::Finished(None) => {}
                         ToolExecutionStart::Finished(Some(pause)) => {
                             self.turn.restore_validation_budget(pending.budget);
@@ -261,6 +286,9 @@ impl AgentSession {
                     }
                 }
                 if !executions.is_empty() {
+                    self.journal
+                        .append_tool_intents(self.session_id, &intent_calls)
+                        .await?;
                     return Ok(ModelResponseApplication::Execute(Box::new(
                         PendingToolApplication {
                             executions,
@@ -288,7 +316,7 @@ impl AgentSession {
                 ToolExecutionStart::Execute(execution) => {
                     return Ok(ModelResponseApplication::Execute(Box::new(
                         PendingToolApplication {
-                            executions: vec![execution],
+                            executions: vec![*execution],
                             remaining: pending,
                         },
                     )));
@@ -607,6 +635,26 @@ impl AgentSession {
         call: &ToolCall,
         budget: &mut ValidationBudget,
     ) -> Result<ToolExecutionStart, LoopError> {
+        self.start_tool_call_inner(call, budget, false, true).await
+    }
+
+    async fn start_tool_call_prevalidated(
+        &mut self,
+        call: &ToolCall,
+        budget: &mut ValidationBudget,
+        append_intent: bool,
+    ) -> Result<ToolExecutionStart, LoopError> {
+        self.start_tool_call_inner(call, budget, true, append_intent)
+            .await
+    }
+
+    async fn start_tool_call_inner(
+        &mut self,
+        call: &ToolCall,
+        budget: &mut ValidationBudget,
+        validated: bool,
+        append_intent: bool,
+    ) -> Result<ToolExecutionStart, LoopError> {
         if self.try_serve_journaled_tool(call).await? {
             return Ok(ToolExecutionStart::Finished(None));
         }
@@ -696,9 +744,11 @@ impl AgentSession {
             }
         }
 
-        self.journal
-            .append_tool_intent(self.session_id, &call)
-            .await?;
+        if append_intent {
+            self.journal
+                .append_tool_intent(self.session_id, &call)
+                .await?;
+        }
 
         // `background_run` never reaches `ToolRegistry::call` — it's
         // intercepted here and routed to `spawn_background_shell` instead,
@@ -713,12 +763,17 @@ impl AgentSession {
             return self.dispatch_ask_user_question(&call).await;
         }
 
-        Ok(ToolExecutionStart::Execute(PendingToolExecution {
-            call: call.clone(),
-            tools: self.tools.clone(),
-            tool_ctx: self.tool_ctx.clone(),
-            budget: std::mem::take(budget),
-        }))
+        Ok(ToolExecutionStart::Execute(Box::new(
+            PendingToolExecution {
+                call: call.clone(),
+                tools: self.tools.clone(),
+                tool_ctx: self.tool_ctx.clone(),
+                budget: std::mem::take(budget),
+                prepared: validated
+                    .then(|| self.tools.prepare_call(&call.name, call.arguments.clone()))
+                    .transpose()?,
+            },
+        )))
     }
 
     pub(crate) async fn finish_tool_call(
@@ -888,6 +943,7 @@ impl AgentSession {
                     self.tool_ctx.clone()
                 },
                 budget: std::mem::take(budget),
+                prepared: None,
             },
         }))
     }
