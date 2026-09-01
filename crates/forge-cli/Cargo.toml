@@ -13,7 +13,6 @@ path = "src/main.rs"
 [dependencies]
 forge-config = { workspace = true }
 forge-connect = { workspace = true }
-forge-core = { workspace = true }
 forge-session = { workspace = true }
 forge-tui = { workspace = true }
 forge-tools = { workspace = true }
@@ -25,6 +24,5 @@ anyhow = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
