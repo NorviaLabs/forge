@@ -1,84 +1,55 @@
-# Forge Dark — black-green terminal palette based on the approved Forge mock.
-#
-# The brand green lives in the ground, not in the signal: every neutral from
-# `background` to `text_primary` is green-tinted, which is what makes the
-# theme recognisable. The accent is deliberately *not* green, so that focus
-# ("where am I") and success ("what happened") can never be confused. See
-# `accent` below.
+# Forge Dark — neutral charcoal surfaces with blue, cyan, and green signals.
 #
 # Status colours are colourblind-safe by design, not just by accident: red
 # and green are the pair that collapses together under protanopia and
 # deuteranopia (the two most common forms of colour-vision deficiency), so
-# `success` uses teal/bluish-green and `error` uses crimson/magenta instead
+# `success` uses green and `error` uses red-pink instead
 # of the conventional green/red — the same substitution used by validated
 # accessible palettes (Okabe–Ito) and by Claude Code's own colourblind-
-# friendly themes. `warning`'s amber and `accent`'s blue were already clear
-# of that collision and are unchanged.
+# friendly themes. `warning`'s yellow and `accent`'s blue remain clear of that
+# collision.
 id = "forge-dark"
 name = "Forge Dark"
 
-background = "#0B0F0D"
-background_deep = "#070A09"
-surface = "#101513"
-surface_raised = "#151D18"
-surface_hover = "#1C2920"
-border = "#29362E"
-border_muted = "#1D2822"
-text_primary = "#C7D1C8"
-text_secondary = "#8C9A90"
-text_muted = "#5F6C64"
-# Focus. Once success (158°), warning (39°), error (340°) and the agent
-# violet (274°) are placed, the only arc left with 60° of clearance from
-# every outcome hue is 179–234°; this sits at 222°, keeping the theme's own
-# saturation and lightness. 7.8:1 on `background`.
-accent = "#8FA4D6"
-accent_soft = "#262E40"
+background = "#080808"
+background_deep = "#080808"
+surface = "#141414"
+surface_raised = "#1E1E1E"
+surface_hover = "#292929"
+border = "#343434"
+border_muted = "#292929"
+text_primary = "#EBEBEB"
+text_secondary = "#A0A0A0"
+text_muted = "#757575"
+accent = "#439EFD"
+accent_soft = "#163A5C"
 agent = "#B9A4C9"
-# Teal, not green — colourblind-safe substitute for the classic "success
-# green", which is the half of the red/green pair that survives worst under
-# protanopia/deuteranopia. 11.6:1 on `background`.
-success = "#81DAB9"
-warning = "#D8B779"
-# Crimson/magenta, not red — the other half of the classic collision.
-# 7.3:1 on `background`.
-error = "#E481A2"
-info = "#91B7CA"
-diff_add = "#214538"
-diff_remove = "#532836"
-selection = "#303B55"
-cursor = "#AEC0EA"
-# Neutral, not teal: `tag` is a dedicated low-emphasis text step, and every
-# other built-in already treats it as one (S <= 17). Forge Dark's was the
-# only saturated value, which made "current"/"connected" labels read as a
-# hue with a meaning of its own.
-tag = "#B2BDB6"
-search_match = "#394560"
-waiting_border = "#D8B779"
-# Response structure (editorial treatment): the model answer's skeleton —
-# section labels, list markers, heading rules' hue family — is tinted so a
-# long reply can be skimmed by shape before it is read. `info`'s hue: §5.2
-# already casts blue as neutral information, which is what a section label
-# is, and it must stay clear of the accent (focus) and every outcome colour.
-structure = "#91B7CA"
-# Scan band: the raised ground behind a whole list block. Sits between the
-# canvas (#0B0F0D) and the inline-code chip tint `surface_raised`
-# (#151D18) so chips stay visible inside a banded list.
-scan_band = "#111913"
-# Zebra tint for even body rows of a rendered table; ≈50/50 of background
-# and surface, stated explicitly so theme authors can tune or disable it.
-zebra_row = "#0E1210"
+success = "#5BDB87"
+warning = "#E6C66A"
+error = "#F26D78"
+info = "#1DB0BB"
+diff_add = "#183A28"
+diff_remove = "#4A2026"
+selection = "#292929"
+cursor = "#439EFD"
+tag = "#A0A0A0"
+search_match = "#6E4918"
+waiting_border = "#E6C66A"
+structure = "#1DB0BB"
+scan_band = "#181818"
+zebra_row = "#111111"
 
 [syntax]
-comment = "#66746B"
-keyword = "#C1A1D2"
-string = "#81DAB9"
-number = "#D8B779"
-function = "#ABE3CE"
-type = "#91B7CA"
-variable = "#C7D1C8"
-operator = "#91A097"
-punctuation = "#91A097"
-property = "#91B7CA"
-tag = "#91B7CA"
-attribute = "#D3B178"
-default = "#C7D1C8"
+comment = "#757575"
+keyword = "#439EFD"
+string = "#5BDB87"
+number = "#E6931C"
+function = "#9ED0FF"
+type = "#1DB0BB"
+variable = "#EBEBEB"
+operator = "#A0A0A0"
+punctuation = "#757575"
+property = "#1DB0BB"
+tag = "#1DB0BB"
+attribute = "#9E671A"
+default = "#EBEBEB"

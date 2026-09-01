@@ -1015,7 +1015,7 @@ mod tests {
         install_defaults();
         // Exact Forge Dark `tag` tone — `text_secondary_color` reuses the
         // `tag` token (see its doc comment) rather than `text_secondary`.
-        assert_eq!(text_secondary_color(), Color::Rgb(0xB2, 0xBD, 0xB6));
+        assert_eq!(text_secondary_color(), Color::Rgb(0xA0, 0xA0, 0xA0));
         assert_ne!(text_secondary_color(), accent_color());
         assert_ne!(text_secondary_color(), info_color());
         assert_eq!(text_secondary().fg, Some(text_secondary_color()));
@@ -1195,7 +1195,7 @@ mod tests {
         let themes = dir.path().join(".forge").join("themes");
         std::fs::create_dir_all(&themes).unwrap();
         let mut content = include_str!("../themes/forge-dark.toml").to_string();
-        content = content.replace("accent = \"#8FA4D6\"", "accent = \"#FF0000\"");
+        content = content.replace("accent = \"#439EFD\"", "accent = \"#FF0000\"");
         std::fs::write(themes.join("forge-dark.toml"), content).unwrap();
         install(ThemeRegistry::load(Some(dir.path())), THEME_FORGE_DARK);
         assert_eq!(palette(THEME_FORGE_DARK).accent, Color::Rgb(255, 0, 0));
@@ -1220,7 +1220,7 @@ mod tests {
         std::fs::create_dir_all(&themes).unwrap();
         let content = include_str!("../themes/forge-dark.toml")
             .to_string()
-            .replace("accent = \"#8FA4D6\"", "accent = \"#FF0000\"");
+            .replace("accent = \"#439EFD\"", "accent = \"#FF0000\"");
         std::fs::write(themes.join("forge-dark.toml"), content).unwrap();
         install(ThemeRegistry::load(Some(dir.path())), THEME_FORGE_DARK);
 
