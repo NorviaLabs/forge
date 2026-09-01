@@ -548,7 +548,7 @@ pub struct PaletteItem {
 impl PaletteItem {
     pub fn display_cmd(&self) -> String {
         if self.is_skill {
-            format!("skill:{}", self.cmd.trim_start_matches('/'))
+            format!("/skill:{}", self.cmd.trim_start_matches('/'))
         } else {
             self.cmd.clone()
         }

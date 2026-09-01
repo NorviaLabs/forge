@@ -1477,7 +1477,7 @@ mod tests {
             is_skill: true,
         };
 
-        assert_eq!(item.display_cmd(), "skill:launch-it");
+        assert_eq!(item.display_cmd(), "/skill:launch-it");
         assert_eq!(item.cmd, "/launch-it");
     }
 
