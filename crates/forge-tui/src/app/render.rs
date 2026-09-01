@@ -319,6 +319,7 @@ impl TuiApp {
         .max(1);
         let key = ConversationRenderKey {
             session_id: self.session_view.session_id,
+            transcript_revision: self.transcript_view.revision(),
             width: sidebar_width,
             messages: visible_messages.len(),
             last_message_content: visible_messages

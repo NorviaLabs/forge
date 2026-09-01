@@ -35,7 +35,7 @@ pub(super) async fn complete(
     } else {
         format!("{}/v1/messages", base_url.trim_end_matches('/'))
     };
-    let (system, messages) = messages_body(&req);
+    let (system, messages) = messages_body(&req, Some(client));
     let mut body = json!({
         "model": model.trim_start_matches("anthropic/"),
         "max_tokens": 8192,
@@ -141,17 +141,22 @@ pub(super) async fn complete(
     })
 }
 
-fn anthropic_payload_content(message: &forge_types::Message, workspace: &std::path::Path) -> Value {
+fn anthropic_payload_content(
+    message: &forge_types::Message,
+    workspace: &std::path::Path,
+    client: Option<&NativeModelClient>,
+) -> Value {
     let mut parts = Vec::new();
     if !message.content.is_empty() {
         parts.push(json!({"type": "text", "text": message.content}));
     }
     for image in &message.attachments {
-        match crate::image::load_image_ref(workspace, image) {
-            Ok(loaded) => parts.push(crate::image::anthropic_image_part(
-                &loaded.mime,
-                &loaded.bytes,
-            )),
+        let loaded = client.map_or_else(
+            || crate::image::load_image_ref(workspace, image).map(std::sync::Arc::new),
+            |client| client.load_image_ref(workspace, image),
+        );
+        match loaded {
+            Ok(loaded) => parts.push(crate::image::anthropic_image_part_with_loaded(&loaded)),
             Err(_) => parts.push(json!({
                 "type": "text",
                 "text": format!("image at `{}` is no longer available", image.path)
@@ -164,7 +169,10 @@ fn anthropic_payload_content(message: &forge_types::Message, workspace: &std::pa
     Value::Array(parts)
 }
 
-pub(super) fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
+pub(super) fn messages_body(
+    req: &ModelRequest,
+    client: Option<&NativeModelClient>,
+) -> (String, Vec<Value>) {
     let mut system = Vec::new();
     let mut messages = Vec::new();
     for message in req.messages.iter() {
@@ -175,12 +183,12 @@ pub(super) fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
                 "content": [{
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id.clone().unwrap_or_default(),
-                    "content": anthropic_payload_content(message, &req.workspace_root)
+                    "content": anthropic_payload_content(message, &req.workspace_root, client)
                 }]
             })),
             MessageRole::User => messages.push(json!({
                 "role": "user",
-                "content": anthropic_payload_content(message, &req.workspace_root)
+                "content": anthropic_payload_content(message, &req.workspace_root, client)
             })),
             MessageRole::Assistant => {
                 let mut content = Vec::new();
@@ -444,7 +452,7 @@ mod tests {
             .into(),
             tools: vec![],
         };
-        let (_system, messages) = messages_body(&req);
+        let (_system, messages) = messages_body(&req, None);
         let user = &messages[0]["content"];
         assert_eq!(user[0]["type"], "text");
         assert_eq!(user[1]["type"], "image");
@@ -498,7 +506,7 @@ mod tests {
             .into(),
             tools: Vec::<ToolDescriptor>::new(),
         };
-        let (system, messages) = messages_body(&req);
+        let (system, messages) = messages_body(&req, None);
         assert_eq!(system, "system");
         assert_eq!(messages[1]["content"][0]["type"], "tool_use");
         assert_eq!(messages[2]["content"][0]["type"], "tool_result");
@@ -529,7 +537,7 @@ mod tests {
             .into(),
             tools: Vec::<ToolDescriptor>::new(),
         };
-        let (_system, messages) = messages_body(&req);
+        let (_system, messages) = messages_body(&req, None);
         let dumped = serde_json::to_string(&messages).unwrap();
         assert!(dumped.contains("visible"), "{dumped}");
         assert!(

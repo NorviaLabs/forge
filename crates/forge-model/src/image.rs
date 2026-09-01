@@ -1,6 +1,7 @@
 //! Load path-ref images at request-build time and emit provider content parts.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use forge_types::{inspect_image, ImageRef, Message};
 use serde_json::{json, Value};
@@ -10,6 +11,15 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 pub struct LoadedImage {
     pub mime: String,
     pub bytes: Vec<u8>,
+    base64: OnceLock<String>,
+}
+
+impl LoadedImage {
+    pub(crate) fn base64(&self) -> &str {
+        self.base64
+            .get_or_init(|| base64_encode(&self.bytes))
+            .as_str()
+    }
 }
 
 pub fn resolve_image_path(workspace: &Path, rel: &str) -> PathBuf {
@@ -28,6 +38,7 @@ pub fn load_image_ref(workspace: &Path, image: &ImageRef) -> Result<LoadedImage,
     Ok(LoadedImage {
         mime: meta.mime.to_string(),
         bytes,
+        base64: OnceLock::new(),
     })
 }
 
@@ -130,34 +141,46 @@ fn extension_for(path: &str, mime: &str) -> &'static str {
     }
 }
 
-pub fn data_url(mime: &str, bytes: &[u8]) -> String {
-    format!("data:{mime};base64,{}", base64_encode(bytes))
+pub(crate) fn openai_image_part_with_loaded(image: &LoadedImage) -> Value {
+    openai_image_part_with_base64(&image.mime, image.base64())
 }
 
-pub fn openai_image_part(mime: &str, bytes: &[u8]) -> Value {
+fn openai_image_part_with_base64(mime: &str, encoded: &str) -> Value {
     json!({
         "type": "image_url",
-        "image_url": { "url": data_url(mime, bytes) }
+        "image_url": { "url": data_url_with_base64(mime, encoded) }
     })
 }
 
-pub fn anthropic_image_part(mime: &str, bytes: &[u8]) -> Value {
+pub(crate) fn anthropic_image_part_with_loaded(image: &LoadedImage) -> Value {
+    anthropic_image_part_with_base64(&image.mime, image.base64())
+}
+
+fn anthropic_image_part_with_base64(mime: &str, encoded: &str) -> Value {
     json!({
         "type": "image",
         "source": {
             "type": "base64",
             "media_type": mime,
-            "data": base64_encode(bytes)
+            "data": encoded
         }
     })
 }
 
-pub fn codex_input_image_part(mime: &str, bytes: &[u8]) -> Value {
+pub(crate) fn codex_input_image_part_with_loaded(image: &LoadedImage) -> Value {
+    codex_input_image_part_with_base64(&image.mime, image.base64())
+}
+
+fn codex_input_image_part_with_base64(mime: &str, encoded: &str) -> Value {
     json!({
         "type": "input_image",
-        "image_url": data_url(mime, bytes),
+        "image_url": data_url_with_base64(mime, encoded),
         "detail": "high"
     })
+}
+
+fn data_url_with_base64(mime: &str, encoded: &str) -> String {
+    format!("data:{mime};base64,{encoded}")
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -252,7 +275,7 @@ mod tests {
 
     #[test]
     fn data_url_omits_raw_in_log_preview_shape() {
-        let url = data_url("image/png", b"abc");
+        let url = data_url_with_base64("image/png", &base64_encode(b"abc"));
         assert!(url.starts_with("data:image/png;base64,"));
         assert!(!url.contains("abc"));
     }

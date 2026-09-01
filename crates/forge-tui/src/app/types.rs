@@ -721,6 +721,7 @@ pub(crate) struct FooterLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConversationRenderKey {
     pub(crate) session_id: uuid::Uuid,
+    pub(crate) transcript_revision: u64,
     pub(crate) width: u16,
     pub(crate) messages: usize,
     pub(crate) last_message_content: usize,

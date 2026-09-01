@@ -76,7 +76,7 @@ impl TuiApp {
                     editor.accept_current_text();
                 }
                 self.source_viewer
-                    .refresh(self.session_view.workspace_root());
+                    .refresh_for_editor(self.session_view.workspace_root());
                 self.workspace_files.explorer.refresh_git_status();
                 self.set_feedback(FeedbackSeverity::Ok, format!("saved {}", path.display()));
             }
@@ -102,7 +102,7 @@ impl TuiApp {
             editor.replace_text(&text);
         }
         self.source_viewer
-            .refresh(self.session_view.workspace_root());
+            .refresh_for_editor(self.session_view.workspace_root());
         self.set_feedback(FeedbackSeverity::Info, "reloaded file from disk");
     }
 
@@ -258,7 +258,7 @@ impl TuiApp {
 
     pub(super) fn show_file_in_editor(&mut self, path: &Path) {
         let root = self.session_view.workspace_root().to_path_buf();
-        self.source_viewer.open(&root, path);
+        self.source_viewer.open_for_editor(&root, path);
         self.editor_session = self
             .source_viewer
             .document_text
@@ -266,7 +266,11 @@ impl TuiApp {
             .filter(|_| self.source_viewer.status == ViewerStatus::Ok)
             .map(EditorSession::new);
         if let Some(editor) = self.editor_session.as_mut() {
-            editor.set_syntax_language(self.source_viewer.language_label.as_deref());
+            editor.set_syntax_language(
+                (!self.source_viewer.highlight_disabled)
+                    .then_some(self.source_viewer.language_label.as_deref())
+                    .flatten(),
+            );
             editor.set_syntax_theme(crate::theme::syntax_theme());
         }
         self.focus_block(FocusBlock::Workspace);
@@ -696,14 +700,22 @@ impl TuiApp {
 
         if let Some(p) = &path {
             if p.exists() {
-                self.source_viewer.refresh(&root);
+                if self.editor_session.is_some() {
+                    self.source_viewer.refresh_for_editor(&root);
+                } else {
+                    self.source_viewer.refresh(&root);
+                }
                 // Preserve sensible cursor.
                 self.source_viewer.current_line =
                     old_line.min(self.source_viewer.lines.len().saturating_sub(1));
                 self.source_viewer.top_line =
                     old_top.min(self.source_viewer.lines.len().saturating_sub(1));
             } else {
-                self.source_viewer.refresh(&root);
+                if self.editor_session.is_some() {
+                    self.source_viewer.refresh_for_editor(&root);
+                } else {
+                    self.source_viewer.refresh(&root);
+                }
             }
         }
 

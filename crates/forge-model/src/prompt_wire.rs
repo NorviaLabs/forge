@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::normalize::{forge_messages_to_wire_in, tools_to_openai_functions};
+use crate::normalize::tools_to_openai_functions;
 use crate::ModelRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +56,24 @@ pub fn prompt_wire(req: &ModelRequest, transport: PromptTransport) -> Value {
 }
 
 pub fn openai_compat_prompt(req: &ModelRequest) -> Value {
+    openai_compat_prompt_with_messages(req, crate::normalize::forge_messages_to_wire_in)
+}
+
+pub(crate) fn openai_compat_prompt_cached(
+    req: &ModelRequest,
+    client: &crate::native::NativeModelClient,
+) -> Value {
+    openai_compat_prompt_with_messages(req, |messages, workspace| {
+        crate::normalize::forge_messages_to_wire_in_cached(messages, workspace, client)
+    })
+}
+
+fn openai_compat_prompt_with_messages(
+    req: &ModelRequest,
+    messages: impl Fn(&[forge_types::Message], &std::path::Path) -> Vec<Value>,
+) -> Value {
     let mut wire = json!({
-        "messages": forge_messages_to_wire_in(&req.messages, &req.workspace_root),
+        "messages": messages(&req.messages, &req.workspace_root),
     });
     let tools = tools_to_openai_functions(&req.tools);
     if !tools.is_empty() {
