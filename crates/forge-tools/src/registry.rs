@@ -241,6 +241,11 @@ pub struct ToolRegistry {
     descriptors: Mutex<Option<Arc<Vec<ToolDescriptor>>>>,
 }
 
+pub struct ValidatedToolCall {
+    name: String,
+    args: Value,
+}
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
@@ -370,6 +375,32 @@ impl ToolRegistry {
         }
 
         tool.call(ctx, args).await
+    }
+
+    /// Execute a call whose canonical name and arguments were validated by the
+    /// caller immediately before scheduling it. Only use for immutable,
+    /// read-only calls retained from the same response.
+    pub fn prepare_call(&self, name: &str, args: Value) -> Result<ValidatedToolCall, ToolError> {
+        let name = canonical_tool_name(name);
+        self.get(name)
+            .ok_or_else(|| ToolError::Unknown(name.to_string()))?;
+        self.validate_call(name, &args)
+            .map_err(ToolError::Validation)?;
+        Ok(ValidatedToolCall {
+            name: name.to_string(),
+            args,
+        })
+    }
+
+    pub async fn call_prepared(
+        &self,
+        ctx: &ToolContext,
+        prepared: ValidatedToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        let tool = self
+            .get(&prepared.name)
+            .ok_or_else(|| ToolError::Unknown(prepared.name.clone()))?;
+        tool.call(ctx, prepared.args).await
     }
 
     /// Validate without executing or consuming retry budget.
