@@ -227,6 +227,7 @@ pub struct DiffView {
     /// Files the reviewer has ticked off. Session-scoped: a review is a
     /// reading of *this* set of changes, so it does not outlive them.
     pub reviewed: std::collections::HashSet<PathBuf>,
+    rendered_unified: Option<(u16, PathBuf, Vec<Line<'static>>)>,
 }
 
 impl Default for DiffView {
@@ -244,6 +245,7 @@ impl Default for DiffView {
             search: PatchSearch::default(),
             layout: PatchLayout::default(),
             reviewed: std::collections::HashSet::new(),
+            rendered_unified: None,
         }
     }
 }
@@ -433,6 +435,7 @@ impl DiffView {
         }
         let anchor = self.scroll;
         self.patch = PatchState::Ready(Box::new(patch));
+        self.rendered_unified = None;
         self.loaded_for = Some((revision, path));
         self.scroll = anchor.min(self.max_scroll());
         // Matches are line indices into a patch that just changed.
@@ -442,6 +445,7 @@ impl DiffView {
 
     pub fn set_patch_error(&mut self, revision: u64, path: PathBuf, error: String) {
         self.patch = PatchState::Failed(error);
+        self.rendered_unified = None;
         self.loaded_for = Some((revision, path));
     }
 
@@ -454,6 +458,28 @@ impl DiffView {
             }
             _ => false,
         }
+    }
+
+    fn unified_lines(&mut self, width: u16) -> Option<&[Line<'static>]> {
+        let PatchState::Ready(patch) = &self.patch else {
+            return None;
+        };
+        let path = patch.path.clone();
+        let needs_render = !matches!(
+            self.rendered_unified.as_ref(),
+            Some((cached_width, cached_path, _)) if *cached_width == width && *cached_path == path
+        );
+        if needs_render {
+            let rendered = crate::conversation::render_numbered_diff(
+                &path.display().to_string(),
+                &patch.lines,
+                width as usize,
+            );
+            self.rendered_unified = Some((width, path, rendered));
+        }
+        self.rendered_unified
+            .as_ref()
+            .map(|(_, _, lines)| lines.as_slice())
     }
 
     /// Header text for a pane `width` columns wide.
@@ -828,18 +854,21 @@ impl Widget for DiffViewWidget<'_> {
             }
             PatchState::Ready(patch) => match self.view.effective_layout(body.width) {
                 PatchLayout::Unified => {
-                    let path = patch.path.display().to_string();
-                    let rendered = crate::conversation::render_numbered_diff(
-                        &path,
-                        &patch.lines,
-                        body.width as usize,
-                    );
+                    let scroll = self.view.scroll;
+                    let search = self.view.search.clone();
+                    let rendered = self.view.unified_lines(body.width).unwrap_or_default();
                     let visible: Vec<Line> = rendered
-                        .into_iter()
+                        .iter()
+                        .cloned()
                         .enumerate()
-                        .skip(self.view.scroll)
+                        .skip(scroll)
                         .take(body.height as usize)
-                        .map(|(index, line)| highlight_match(line, self.view.line_is_match(index)))
+                        .map(|(index, line)| {
+                            highlight_match(
+                                line,
+                                search.is_active() && search.matches.contains(&index),
+                            )
+                        })
                         .collect();
                     Paragraph::new(visible).render(body, buf);
                 }
