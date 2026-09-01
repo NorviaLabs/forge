@@ -217,12 +217,6 @@ async fn open_session_with_model(
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());
         let cache = forge_connect::ModelCatalogCache::user_default();
-        if !cfg!(test) && !cache.image_input_ready() {
-            let _ = forge_connect::refresh_models_dev_registry(
-                forge_connect::loaded_registry().profiles(),
-                &cache,
-            );
-        }
         session.set_image_input_supported(cache.model_accepts_image_input(&cfg.model.model));
         // Compaction reads the model's real context window from the registry
         // cache. An unknown id keeps `CompactionPolicy`'s conservative
