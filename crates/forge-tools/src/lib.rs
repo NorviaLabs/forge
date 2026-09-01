@@ -30,6 +30,7 @@ pub use invocation::tool_invocation;
 pub use output_filters::compress_tool_output;
 pub use registry::{
     canonical_tool_name, canonicalize_tool_call, SessionTempDir, ToolContext, ToolRegistry,
+    ValidatedToolCall,
 };
 pub use skills::{LoadSkillArgs, LoadSkillTool};
 pub use unified_exec::{unified_exec_tools, ExecCommandTool, WriteStdinTool};

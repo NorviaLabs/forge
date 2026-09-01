@@ -425,6 +425,39 @@ impl Journal {
         .await
     }
 
+    pub async fn append_tool_intents(
+        &self,
+        session_id: SessionId,
+        calls: &[ToolCall],
+    ) -> Result<(), JournalError> {
+        if calls.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        let ts = Utc::now().to_rfc3339();
+        let sid = session_id.to_string();
+        for call in calls {
+            let payload = serde_json::to_string(&json!({
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+            }))?;
+            sqlx::query(
+                r#"
+                INSERT INTO events (session_id, ts, event_type, schema_version, payload)
+                VALUES (?, ?, 'ToolIntent', 1, ?)
+                "#,
+            )
+            .bind(&sid)
+            .bind(&ts)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn append_tool_result(
         &self,
         session_id: SessionId,
