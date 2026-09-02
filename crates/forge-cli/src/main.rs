@@ -1,6 +1,6 @@
 //! Forge CLI — launches the full-screen TUI by default.
 
-use std::{io::Read, path::PathBuf};
+use std::{io::Read, path::PathBuf, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -73,8 +73,7 @@ enum Command {
     Bench(BenchArgs),
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
@@ -86,18 +85,25 @@ async fn main() {
         .with_ansi(false)
         .init();
 
-    if let Err(message) = refuse_without_sandbox(forge_tools::sandbox::availability()) {
-        eprintln!("{message}");
-        std::process::exit(ExitCode::Failed.code());
-    }
-
-    let code = match run(cli).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e:#}");
-            ExitCode::Failed
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build Tokio runtime");
+    let code = runtime.block_on(async move {
+        if let Err(message) = refuse_without_sandbox(forge_tools::sandbox::availability()) {
+            eprintln!("{message}");
+            return ExitCode::Failed;
         }
-    };
+
+        match run(cli).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                ExitCode::Failed
+            }
+        }
+    });
+    runtime.shutdown_timeout(Duration::ZERO);
     std::process::exit(code.code());
 }
 
