@@ -299,42 +299,6 @@ pub enum ConversationBlock {
     Metadata(MetadataPresentation),
     Thinking(ThinkingPresentation),
     TurnSummary(TurnSummaryPresentation),
-    CompactTurn(CompactTurnPresentation),
-}
-
-/// A historical (non-latest) turn collapsed to one line. Derived from that
-/// turn's own items — not exact timing/token stats, which today are only
-/// ever kept for the single most recent turn (see `record_turn_summary`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompactTurnPresentation {
-    pub request: String,
-    pub outcome: String,
-    pub has_error: bool,
-    pub tool_count: usize,
-    /// Real duration/chars/tokens/tools for this turn, when it completed
-    /// cleanly and its stats were archived (see `ConversationViewOpts::turn_stats`).
-    /// `None` for a turn that never cleanly completed (cancelled, still
-    /// paused) — the derived `outcome`/`tool_count` above are the fallback.
-    pub real_stats: Option<TurnStats>,
-}
-
-/// Real per-turn timing/cost stats, archived on clean completion and handed
-/// back in for a compacted historical turn to display instead of a derived
-/// placeholder. Keyed externally by turn ordinal — see
-/// `ConversationViewOpts::turn_stats`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TurnStats {
-    pub secs: f64,
-    pub chars: usize,
-    pub tools: usize,
-    pub output_tokens: Option<u64>,
-}
-
-impl TurnStats {
-    pub fn tokens_per_second(&self) -> Option<f64> {
-        let tokens = self.output_tokens?;
-        (self.secs >= 1.0 && tokens > 0).then(|| tokens as f64 / self.secs)
-    }
 }
 
 /// The closing line of a finished turn.
@@ -694,15 +658,6 @@ pub struct ConversationViewOpts {
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
     /// When thinking just finished (answer streaming), show its elapsed time.
     pub stream_thought_secs: Option<f64>,
-    /// The historical turn (identified by its `ChatItem::User` index) the
-    /// user has manually expanded back to full detail, if any. The latest
-    /// turn is never compacted regardless of this field.
-    pub expanded_turn: Option<usize>,
-    /// Real stats for turns that completed cleanly, keyed by turn ordinal
-    /// (0-indexed position among `ConversationModel::turn_boundaries`).
-    /// Turns with no entry (cancelled, still paused) get a derived summary
-    /// instead when compacted.
-    pub turn_stats: std::collections::HashMap<usize, TurnStats>,
 }
 
 /// What a verification command concluded, as read from its own output.
@@ -1034,12 +989,7 @@ pub struct ConversationModel {
 
 impl ConversationModel {
     pub fn semantic_blocks(&self) -> Vec<ConversationBlock> {
-        semantic_blocks_from_items(
-            &self.items,
-            self.opts.tool_expanded,
-            self.opts.expanded_turn,
-            &self.opts.turn_stats,
-        )
+        semantic_blocks_from_items(&self.items, self.opts.tool_expanded)
     }
 
     /// Indices into `items` where each turn starts (each `ChatItem::User`).
@@ -1515,76 +1465,7 @@ fn user_message_boundaries(items: &[ChatItem]) -> Vec<usize> {
         .collect()
 }
 
-/// Derives a historical turn's one-line compact summary from its raw items.
-fn compact_turn_presentation(
-    turn_items: &[ChatItem],
-    real_stats: Option<TurnStats>,
-) -> CompactTurnPresentation {
-    let request = turn_items
-        .iter()
-        .find_map(|item| match item {
-            ChatItem::User { text } => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let outcome = turn_items
-        .iter()
-        .rev()
-        .find_map(|item| match item {
-            ChatItem::Assistant { text } | ChatItem::StreamingAssistant { text } => {
-                Some(text.clone())
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| "no response".to_string());
-    let has_error = turn_items.iter().any(|item| {
-        matches!(
-            item,
-            ChatItem::ToolCard { outcome, .. } | ChatItem::ActivityGroup { outcome, .. }
-                if !outcome.is_success()
-        ) || matches!(item, ChatItem::ValidationFailure { .. })
-    });
-    let tool_count = turn_items
-        .iter()
-        .filter(|item| {
-            matches!(
-                item,
-                ChatItem::ToolCard { .. } | ChatItem::ActivityGroup { .. }
-            )
-        })
-        .count();
-    CompactTurnPresentation {
-        request,
-        outcome,
-        has_error,
-        // Prefer the archived real tool count when this turn cleanly
-        // completed — the structural count still backs turns that didn't.
-        tool_count: real_stats.map_or(tool_count, |s| s.tools),
-        real_stats,
-    }
-}
-
-fn semantic_blocks_from_items(
-    items: &[ChatItem],
-    tool_expanded: bool,
-    expanded_turn: Option<usize>,
-    turn_stats: &std::collections::HashMap<usize, TurnStats>,
-) -> Vec<ConversationBlock> {
-    let boundaries = user_message_boundaries(items);
-    let latest_start = boundaries.last().copied();
-    // Precompute which turns compact away (everything but the latest and any
-    // explicitly-expanded turn), and where each one ends (plus its ordinal,
-    // to look up its archived real stats), before the main per-item loop
-    // runs — a compacted turn's items never reach that loop.
-    let compact_end_by_start: std::collections::HashMap<usize, (usize, usize)> = boundaries
-        .iter()
-        .enumerate()
-        .map(|(ordinal, &start)| {
-            let end = boundaries.get(ordinal + 1).copied().unwrap_or(items.len());
-            (start, (ordinal, end))
-        })
-        .filter(|&(start, _)| Some(start) != latest_start && Some(start) != expanded_turn)
-        .collect();
+fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<ConversationBlock> {
     let mut blocks = Vec::new();
     let mut progress: Option<ActiveProgressPresentation> = None;
     let mut activity_group: Option<ActivityGroupPresentation> = None;
@@ -1606,16 +1487,6 @@ fn semantic_blocks_from_items(
 
     let mut i = 0usize;
     while i < items.len() {
-        if let Some(&(ordinal, end)) = compact_end_by_start.get(&i) {
-            flush_progress(&mut blocks, &mut progress);
-            flush_activity(&mut blocks, &mut activity_group);
-            blocks.push(ConversationBlock::CompactTurn(compact_turn_presentation(
-                &items[i..end],
-                turn_stats.get(&ordinal).copied(),
-            )));
-            i = end;
-            continue;
-        }
         let item = &items[i];
         match item {
             ChatItem::User { text } => {
@@ -3070,148 +2941,27 @@ mod tests {
         ]
     }
 
-    fn two_turn_model(
-        second_tool_outcome: forge_types::ExecutionOutcome,
-        expanded_turn: Option<usize>,
-    ) -> ConversationModel {
+    fn two_turn_model(second_tool_outcome: forge_types::ExecutionOutcome) -> ConversationModel {
         ConversationModel {
             items: two_turn_items(second_tool_outcome),
             scroll: 0,
             follow: true,
-            opts: ConversationViewOpts {
-                expanded_turn,
-                ..ConversationViewOpts::default()
-            },
+            opts: ConversationViewOpts::default(),
         }
     }
 
     #[test]
-    fn compact_turn_uses_real_stats_when_available() {
-        let mut model = two_turn_model(forge_types::ExecutionOutcome::Success, None);
-        let stats = TurnStats {
-            secs: 12.5,
-            chars: 340,
-            tools: 2,
-            output_tokens: Some(50),
-        };
-        model.opts.turn_stats.insert(0, stats);
-
+    fn historical_turns_remain_expanded() {
+        let model = two_turn_model(forge_types::ExecutionOutcome::Success);
         let blocks = model.semantic_blocks();
-        assert!(
-            matches!(
-                blocks.first(),
-                Some(ConversationBlock::CompactTurn(p)) if p.real_stats == Some(stats)
-            ),
-            "expected the compacted first turn to carry its archived real stats"
-        );
-    }
-
-    #[test]
-    fn compact_turn_falls_back_without_real_stats() {
-        let model = two_turn_model(forge_types::ExecutionOutcome::Success, None);
-        let blocks = model.semantic_blocks();
-        assert!(
-            matches!(
-                blocks.first(),
-                Some(ConversationBlock::CompactTurn(p)) if p.real_stats.is_none()
-            ),
-            "no archived stats for this turn — should fall back to the derived summary"
-        );
-    }
-
-    #[test]
-    fn a_historical_turn_compacts_to_one_block() {
-        let model = two_turn_model(forge_types::ExecutionOutcome::Success, None);
-        let blocks = model.semantic_blocks();
-        assert!(
-            matches!(
-                blocks.first(),
-                Some(ConversationBlock::CompactTurn(p)) if p.request == "first request"
-            ),
-            "expected the first (historical) turn compacted, got {blocks:?}"
-        );
-        // The latest turn is untouched: its own UserMessage/ActivityGroup/
-        // AssistantAnswer blocks are all still present.
-        assert!(blocks
-            .iter()
-            .any(|b| matches!(b, ConversationBlock::UserMessage(p) if p.text == "second request")));
-        assert!(blocks
-            .iter()
-            .any(|b| matches!(b, ConversationBlock::ActivityGroup(_))));
-    }
-
-    #[test]
-    fn an_explicitly_expanded_historical_turn_renders_in_full() {
-        let model = two_turn_model(forge_types::ExecutionOutcome::Success, Some(0));
-        let blocks = model.semantic_blocks();
-        assert!(
-            !blocks
-                .iter()
-                .any(|b| matches!(b, ConversationBlock::CompactTurn(_))),
-            "an explicitly expanded turn should not compact, got {blocks:?}"
-        );
+        // Starting another turn must not replace the previous turn with a
+        // one-line summary.
         assert!(blocks
             .iter()
             .any(|b| matches!(b, ConversationBlock::UserMessage(p) if p.text == "first request")));
-    }
-
-    #[test]
-    fn compact_turn_reports_the_right_outcome_and_error_state() {
-        let clean = two_turn_model(forge_types::ExecutionOutcome::Success, None);
-        let clean_blocks = clean.semantic_blocks();
-        assert!(matches!(
-            clean_blocks.first(),
-            Some(ConversationBlock::CompactTurn(p))
-                if p.outcome == "first answer" && !p.has_error
+        assert!(blocks.iter().any(
+            |b| matches!(b, ConversationBlock::AssistantAnswer(p) if p.text == "first answer")
         ));
-
-        // Make the FIRST turn's tool fail instead, so its compacted summary
-        // (not the still-latest second turn) reflects the error.
-        let mut items = two_turn_items(forge_types::ExecutionOutcome::Success);
-        items[1] = ChatItem::ToolCard {
-            name: "read_file".into(),
-            summary: "a.rs · failed".into(),
-            detail: "not found".into(),
-            state: ToolCardState::Error,
-            duration: None,
-            subcommand: None,
-            outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
-        };
-        let failing = ConversationModel {
-            items,
-            scroll: 0,
-            follow: true,
-            opts: ConversationViewOpts::default(),
-        };
-        let failing_blocks = failing.semantic_blocks();
-        assert!(matches!(
-            failing_blocks.first(),
-            Some(ConversationBlock::CompactTurn(p)) if p.has_error
-        ));
-    }
-
-    #[test]
-    fn the_latest_turn_is_never_compacted_even_with_no_expanded_turn_set() {
-        let single = ConversationModel {
-            items: vec![
-                ChatItem::User {
-                    text: "only turn".into(),
-                },
-                ChatItem::Assistant {
-                    text: "reply".into(),
-                },
-            ],
-            scroll: 0,
-            follow: true,
-            opts: ConversationViewOpts::default(),
-        };
-        assert!(!single
-            .semantic_blocks()
-            .iter()
-            .any(|b| matches!(b, ConversationBlock::CompactTurn(_))));
-
-        let two = two_turn_model(forge_types::ExecutionOutcome::Success, None);
-        let blocks = two.semantic_blocks();
         assert!(blocks
             .iter()
             .any(|b| matches!(b, ConversationBlock::UserMessage(p) if p.text == "second request")));
