@@ -48,6 +48,12 @@ pub enum SlashCommand {
     /// Show the token-budget breakdown by category (system prompt, tool
     /// schemas, messages) — the detail `/status` deliberately omits.
     Context,
+    /// Open the effort picker.
+    Effort,
+    /// Toggle thinking generation, or set it explicitly.
+    Thinking {
+        enabled: Option<bool>,
+    },
     /// Open (and focus) the terminal panel. The `Ctrl+\`` chord is the fast
     /// path, but it is an unusual key to guess and appears only in the help
     /// overlay — without a palette entry the terminal is unreachable for
@@ -70,6 +76,8 @@ impl SlashCommand {
             Self::ResumeList
                 | Self::Resume { .. }
                 | Self::Model
+                | Self::Effort
+                | Self::Thinking { .. }
                 | Self::Compact
                 | Self::Connect
                 | Self::Disconnect { .. }
@@ -136,6 +144,23 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }),
         "status" => Ok(SlashCommand::Status),
         "context" | "ctx" => Ok(SlashCommand::Context),
+        "effort" => {
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/effort".into()))
+            } else {
+                Ok(SlashCommand::Effort)
+            }
+        }
+        "thinking" => match parts.next().map(str::to_ascii_lowercase) {
+            None => Ok(SlashCommand::Thinking { enabled: None }),
+            Some(value) if value == "on" && parts.next().is_none() => Ok(SlashCommand::Thinking {
+                enabled: Some(true),
+            }),
+            Some(value) if value == "off" && parts.next().is_none() => Ok(SlashCommand::Thinking {
+                enabled: Some(false),
+            }),
+            Some(_) => Err(CommandError::Usage("/thinking [on|off]".into())),
+        },
         "diff" | "d" => match parts.next() {
             None => Ok(SlashCommand::Diff {
                 source: crate::diff_view::DiffSource::WorkingTree,
@@ -169,6 +194,8 @@ mod tests {
             SlashCommand::Connect,
             SlashCommand::Disconnect { profile_id: None },
             SlashCommand::Edit,
+            SlashCommand::Effort,
+            SlashCommand::Thinking { enabled: None },
         ] {
             assert!(!command.available_while_busy(), "{command:?}");
         }
@@ -247,8 +274,7 @@ mod tests {
         // `/diff` is deliberately absent from this list: it came back as the
         // workspace pane's review mode.
         for command in [
-            "/cost", "/appove", "/approve", "/deny", "/effort", "/sync", "/copy", "/file",
-            "/files", "/open",
+            "/cost", "/appove", "/approve", "/deny", "/sync", "/copy", "/file", "/files", "/open",
         ] {
             assert!(matches!(
                 parse_slash(command).unwrap().unwrap_err(),
@@ -357,6 +383,38 @@ mod tests {
             SlashCommand::Context
         );
         assert_eq!(parse_slash("/ctx").unwrap().unwrap(), SlashCommand::Context);
+    }
+
+    #[test]
+    fn parses_effort_and_thinking() {
+        assert_eq!(
+            parse_slash("/effort").unwrap().unwrap(),
+            SlashCommand::Effort
+        );
+        assert_eq!(
+            parse_slash("/effort high").unwrap().unwrap_err(),
+            CommandError::Usage("/effort".into())
+        );
+        assert_eq!(
+            parse_slash("/thinking").unwrap().unwrap(),
+            SlashCommand::Thinking { enabled: None }
+        );
+        assert_eq!(
+            parse_slash("/thinking off").unwrap().unwrap(),
+            SlashCommand::Thinking {
+                enabled: Some(false)
+            }
+        );
+        assert_eq!(
+            parse_slash("/thinking ON").unwrap().unwrap(),
+            SlashCommand::Thinking {
+                enabled: Some(true)
+            }
+        );
+        assert_eq!(
+            parse_slash("/thinking maybe").unwrap().unwrap_err(),
+            CommandError::Usage("/thinking [on|off]".into())
+        );
     }
 
     #[test]

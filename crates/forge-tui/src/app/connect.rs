@@ -446,6 +446,7 @@ impl TuiApp {
             .filter(|v| !v.is_empty())
             .map(str::to_string);
         self.session.set_reasoning_effort(value);
+        self.session.set_thinking_enabled(self.thinking_enabled);
     }
 
     /// Re-read the active model's cached models.dev metadata: whether it

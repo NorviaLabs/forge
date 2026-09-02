@@ -293,6 +293,10 @@ impl AgentSession {
         self.reasoning_effort = effort;
     }
 
+    pub fn set_thinking_enabled(&mut self, enabled: bool) {
+        self.thinking_enabled = enabled;
+    }
+
     /// Push provider credentials into the model client (OAuth tokens → worker env).
     pub fn apply_provider_env(&self, pairs: &[(String, String)]) {
         self.model.apply_provider_env(pairs);

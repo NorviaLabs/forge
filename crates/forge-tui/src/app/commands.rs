@@ -590,7 +590,7 @@ impl TuiApp {
                     self.record_deliberate_selection();
                     self.set_feedback(
                         FeedbackSeverity::Info,
-                        format!("reasoning effort: {}", stepped.label()),
+                        format!("effort: {}", stepped.label()),
                     );
                 }
             }
@@ -872,6 +872,18 @@ impl TuiApp {
                         title: "Context".into(),
                         rows: self.context_report_rows(),
                     });
+                }
+                Ok(SlashCommand::Effort) => {
+                    if self.require_primary_task("changing effort") {
+                        self.open_connect_picker_compact(ConnectModelColumn::Effort);
+                    }
+                }
+                Ok(SlashCommand::Thinking { enabled }) => {
+                    if self.require_primary_task("changing thinking") {
+                        self.thinking_enabled = enabled.unwrap_or(!self.thinking_enabled);
+                        let label = if self.thinking_enabled { "on" } else { "off" };
+                        self.push_notice(vec![format!("thinking: {label}")]);
+                    }
                 }
                 Ok(SlashCommand::Terminal) => {
                     // Open rather than toggle: the user asked for the terminal

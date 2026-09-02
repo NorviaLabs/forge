@@ -116,6 +116,7 @@ impl TuiApp {
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,
             },
+            thinking_enabled: true,
             composer_chip_focus: None,
             tool_detail: ToolDetailState::default(),
             workspace_navigation: WorkspaceNavigation::default(),

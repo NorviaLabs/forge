@@ -171,6 +171,8 @@ Useful in-app commands:
 /terminal      Open the terminal panel
 /theme         Change the presentation theme
 /status        Session status and diagnostics
+/effort        Set model effort
+/thinking      Toggle model thinking generation
 /help          Open help
 /quit          Exit Forge
 ```

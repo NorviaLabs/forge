@@ -44,6 +44,7 @@ pub(super) async fn complete(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
+
     // Routing hint only; caching itself stays implicit. `prompt_cache_options`
     // with an explicit mode is deliberately not sent: OpenAI documents 30m as
     // both the only and the default TTL on the models that support it, so
@@ -55,7 +56,12 @@ pub(super) async fn complete(
         body["prompt_cache_key"] =
             Value::String(crate::prompt_cache::prompt_cache_key(&req.workspace_root));
     }
-    apply_reasoning_effort(&mut body, model, req.reasoning_effort.as_deref());
+    apply_reasoning_effort(
+        &mut body,
+        model,
+        req.reasoning_effort.as_deref(),
+        req.thinking_enabled,
+    );
 
     let url = format!("{}/chat/completions", route.base_url.trim_end_matches('/'));
     let mut request = client.http.post(url).json(&body);
@@ -350,7 +356,18 @@ fn finalize_tool_calls(
         .collect()
 }
 
-fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Option<&str>) {
+fn apply_reasoning_effort(
+    body: &mut Value,
+    model: &str,
+    reasoning_effort: Option<&str>,
+    thinking_enabled: bool,
+) {
+    if !thinking_enabled {
+        if forge_connect::ModelCatalogCache::user_default().model_supports_thinking_off(model) {
+            body["reasoning_effort"] = Value::String("none".into());
+        }
+        return;
+    }
     let Some(raw_effort) = reasoning_effort else {
         return;
     };
@@ -414,6 +431,7 @@ mod tests {
             model: model.into(),
             route_id: None,
             reasoning_effort: None,
+            thinking_enabled: true,
             prompt_cache: true,
         }
     }
@@ -436,6 +454,13 @@ mod tests {
             route(&client, "ollama/llama3.2").unwrap().base_url,
             "http://localhost:11434/v1"
         );
+    }
+
+    #[test]
+    fn thinking_off_sends_none_effort() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, "openai/gpt-5", Some("high"), false);
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]

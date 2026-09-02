@@ -151,6 +151,7 @@ fn request(messages: usize) -> ModelRequest {
         workspace_root: std::path::PathBuf::from("/tmp/workspace"),
         route_id: None,
         reasoning_effort: Some("high".into()),
+        thinking_enabled: true,
         prompt_cache: true,
     }
 }
