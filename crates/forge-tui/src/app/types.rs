@@ -737,9 +737,9 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) queue_selected: Option<usize>,
     pub(crate) chat_message_start: usize,
     pub(crate) chat_event_start: usize,
-    /// How many lines from the tail to materialize. Follow-mode frames only
-    /// need a viewport plus overscan; scrolling up raises this. History above
-    /// the window is not rebuilt.
+    /// Bucketed tail budget used while the cache is partial. Once the cache
+    /// reaches transcript start, this is `usize::MAX` so scroll offsets do not
+    /// invalidate a cache that already contains every settled line.
     pub(crate) keep_from_end: usize,
     pub(crate) activity_summary: Option<(String, Option<&'static str>, BannerKind)>,
     pub(crate) tool_expanded: bool,
@@ -775,6 +775,9 @@ pub(crate) struct ConversationRenderCache {
     /// Shared so the render path can hold the lines without copying them. A
     /// frame clones the handle, not the ~940KB of `Line`/`Span` data behind it.
     pub(crate) lines: Arc<Vec<Line<'static>>>,
+    /// Whether `lines` contains the complete settled transcript rather than a
+    /// tail window. Complete caches can clamp scroll against their real height.
+    pub(crate) complete: bool,
     /// Where the plan card sits in `lines`, and the row that replaces it once
     /// it has scrolled away. Cached with the lines it indexes into.
     pub(crate) plan_dock: Option<crate::conversation::PlanDock>,

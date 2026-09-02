@@ -307,9 +307,11 @@ impl TuiApp {
             .map(|r| r.height.saturating_sub(2) as usize)
             .unwrap_or(0);
         // Follow-mode only paints the viewport plus overscan. Scrolling up
-        // raises the window so earlier blocks are materialized on demand.
+        // raises the window so earlier blocks are materialized on demand. The
+        // bucket keeps each small scroll from rebuilding the transcript.
         const TRANSCRIPT_OVERSCAN: usize = 64;
-        let keep_from_end = if self.conversation_view.follow {
+        const TRANSCRIPT_SCROLL_BUCKET: usize = 64;
+        let requested_keep_from_end = if self.conversation_view.follow {
             sidebar_inner_h.saturating_add(TRANSCRIPT_OVERSCAN)
         } else {
             sidebar_inner_h
@@ -317,7 +319,11 @@ impl TuiApp {
                 .saturating_add(TRANSCRIPT_OVERSCAN)
         }
         .max(1);
-        let key = ConversationRenderKey {
+        let window_keep_from_end = requested_keep_from_end
+            .saturating_add(TRANSCRIPT_SCROLL_BUCKET - 1)
+            / TRANSCRIPT_SCROLL_BUCKET
+            * TRANSCRIPT_SCROLL_BUCKET;
+        let mut key = ConversationRenderKey {
             session_id: self.session_view.session_id,
             transcript_revision: self.transcript_view.revision(),
             width: sidebar_width,
@@ -345,7 +351,7 @@ impl TuiApp {
             queue_selected: self.task_selection.queue(),
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
-            keep_from_end,
+            keep_from_end: window_keep_from_end,
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.is_expanded(),
             expanded_turn: self.turn_expansion.get(),
@@ -377,6 +383,26 @@ impl TuiApp {
             question_idx: self.question_menu_indexes().0,
             question_option_idx: self.question_menu_indexes().1,
         };
+        // A complete cache already contains every settled line. Keep it
+        // complete while scrolling instead of rebuilding a smaller tail, but
+        // only when all other inputs still match. A changed transcript may no
+        // longer fit in the old complete cache.
+        let same_complete_cache = self
+            .render_cache
+            .conversation
+            .as_ref()
+            .is_some_and(|cache| {
+                if !cache.complete {
+                    return false;
+                }
+                let mut previous_key = cache.key.clone();
+                previous_key.keep_from_end = window_keep_from_end;
+                previous_key == key
+            });
+        if same_complete_cache {
+            key.keep_from_end = usize::MAX;
+        }
+        let cache_keep_from_end = key.keep_from_end;
         if self
             .render_cache
             .conversation
@@ -433,10 +459,16 @@ impl TuiApp {
                 conv = conv.with_pending_question(presentation);
             }
             let width = conversation_text_width(sidebar_width);
-            let (lines, plan_dock) = conv.lines_and_plan_dock(width, keep_from_end);
+            let (lines, plan_dock, complete) =
+                conv.lines_and_plan_dock_with_completeness(width, cache_keep_from_end);
+            let mut cache_key = key;
+            if complete {
+                cache_key.keep_from_end = usize::MAX;
+            }
             self.render_cache.conversation = Some(ConversationRenderCache {
-                key,
+                key: cache_key,
                 lines: Arc::new(lines),
+                complete,
                 plan_dock,
             });
         }
@@ -482,7 +514,7 @@ impl TuiApp {
                     &self.stream.preview[..revealed],
                     opts.stream_thought_secs,
                     width,
-                    keep_from_end,
+                    window_keep_from_end,
                     &mut self.stream.markdown,
                 );
                 open_preview_above_streamed_thinking(
@@ -558,6 +590,7 @@ impl TuiApp {
             .as_ref()
             .expect("conversation cache populated");
         let cached_lines = Arc::clone(&cached.lines);
+        let cached_complete = cached.complete;
         let plan_dock = cached.plan_dock.clone();
         // The sidebar always shows the conversation, regardless of what the
         // center pane shows — it's no longer one of the `WorkspaceView`
@@ -582,6 +615,16 @@ impl TuiApp {
             } else {
                 input_h.saturating_add(1)
             };
+            if cached_complete && live_lines.is_empty() && status_lines.is_empty() {
+                let total = cached_lines.len().saturating_add(bottom_padding as usize);
+                let max_scroll = total
+                    .saturating_sub(conversation_area.height as usize)
+                    .min(u16::MAX as usize) as u16;
+                self.conversation_view.scroll = self.conversation_view.scroll.min(max_scroll);
+                if max_scroll == 0 {
+                    self.conversation_view.follow = true;
+                }
+            }
             self.conversation_rows = visible_conversation_copy_rows(
                 &cached_lines,
                 &live_lines,
