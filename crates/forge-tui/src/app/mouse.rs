@@ -13,7 +13,11 @@ use crate::clipboard;
 use crate::selection::{self, cell_inside, Cell, ContextMenuItem, CopyPane};
 
 /// Conversation/explorer rows moved per plain wheel notch.
-const WHEEL_NOTCH: isize = 1;
+///
+/// Terminals report a wheel notch rather than a pixel delta. Moving a single
+/// row makes scrolling feel stalled, especially in the conversation pane, so
+/// use the conventional three-row wheel increment.
+const WHEEL_NOTCH: isize = 3;
 /// Page size (rows) used for shift+wheel on the conversation and file explorer.
 /// Mirrors the keyboard `PageUp`/`PageDown` step so both inputs stay consistent.
 const WHEEL_PAGE: isize = 5;
@@ -329,7 +333,7 @@ impl TuiApp {
                 page
             }
         } else {
-            direction
+            direction * WHEEL_NOTCH
         };
         if let Some(editor) = self.editor_session.as_mut() {
             let key = if shift {
@@ -343,10 +347,13 @@ impl TuiApp {
             } else {
                 crossterm::event::KeyCode::Down
             };
-            editor.handle_key(crossterm::event::KeyEvent::new(
-                key,
-                crossterm::event::KeyModifiers::NONE,
-            ));
+            let steps = delta.unsigned_abs().max(1);
+            for _ in 0..steps {
+                editor.handle_key(crossterm::event::KeyEvent::new(
+                    key,
+                    crossterm::event::KeyModifiers::NONE,
+                ));
+            }
             self.source_viewer.current_line = editor.cursor_row();
             return;
         }
