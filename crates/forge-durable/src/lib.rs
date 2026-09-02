@@ -436,6 +436,8 @@ impl Journal {
         let mut tx = self.pool.begin().await?;
         let ts = Utc::now().to_rfc3339();
         let sid = session_id.to_string();
+        let event_type = serde_json::to_string(&JournalEventType::ToolIntent)?;
+        let event_type = event_type.trim_matches('"');
         for call in calls {
             let payload = serde_json::to_string(&json!({
                 "call_id": call.id,
@@ -445,11 +447,48 @@ impl Journal {
             sqlx::query(
                 r#"
                 INSERT INTO events (session_id, ts, event_type, schema_version, payload)
-                VALUES (?, ?, 'ToolIntent', 1, ?)
+                VALUES (?, ?, ?, 1, ?)
                 "#,
             )
             .bind(&sid)
             .bind(&ts)
+            .bind(event_type)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn append_tool_results(
+        &self,
+        session_id: SessionId,
+        results: &[(ToolCall, ToolOutput)],
+    ) -> Result<(), JournalError> {
+        if results.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        let ts = Utc::now().to_rfc3339();
+        let sid = session_id.to_string();
+        let event_type = serde_json::to_string(&JournalEventType::ToolResult)?;
+        let event_type = event_type.trim_matches('"');
+        for (call, output) in results {
+            let payload = serde_json::to_string(&json!({
+                "call_id": call.id,
+                "name": call.name,
+                "output": output,
+            }))?;
+            sqlx::query(
+                r#"
+                INSERT INTO events (session_id, ts, event_type, schema_version, payload)
+                VALUES (?, ?, ?, 1, ?)
+                "#,
+            )
+            .bind(&sid)
+            .bind(&ts)
+            .bind(event_type)
             .bind(payload)
             .execute(&mut *tx)
             .await?;
@@ -1298,6 +1337,51 @@ mod tests {
         let b = j.append_user_message(sid, "2").await.unwrap();
         assert!(b > a);
         assert_eq!(j.last_seq().await.unwrap(), b);
+    }
+
+    #[tokio::test]
+    async fn batched_tool_results_replay_in_call_order() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_session_created(sid).await.unwrap();
+        let calls = vec![
+            ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "a"}),
+            },
+            ToolCall {
+                id: "c2".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "b"}),
+            },
+        ];
+        j.append_tool_intents(sid, &calls).await.unwrap();
+        j.append_tool_results(
+            sid,
+            &calls
+                .into_iter()
+                .zip(["first", "second"])
+                .map(|(call, content)| {
+                    (
+                        call,
+                        ToolOutput {
+                            outcome: Default::default(),
+                            content: content.into(),
+                            is_error: false,
+                            exit_code: None,
+                            attachments: Vec::new(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.messages[0].content, "first");
+        assert_eq!(state.messages[1].content, "second");
     }
 
     #[tokio::test]

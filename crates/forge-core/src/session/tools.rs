@@ -333,6 +333,30 @@ impl AgentSession {
     ) -> Result<ModelResponseApplication, LoopError> {
         let mut pending = completed.remaining;
         let parallel = completed.executions.len() > 1;
+        if parallel
+            && completed
+                .executions
+                .iter()
+                .all(|execution| execution.result.is_ok())
+        {
+            let mut prepared = Vec::with_capacity(completed.executions.len());
+            for execution in completed.executions {
+                prepared.push(self.prepare_successful_tool_result(execution).await?);
+            }
+            self.journal
+                .append_tool_results(self.session_id, &prepared)
+                .await?;
+            for (call, output) in prepared {
+                self.remember_tool_result(&call, &output);
+                self.messages
+                    .push(Message::from_tool_output(&call, &output));
+                self.events.push(TurnEvent {
+                    kind: "tool".into(),
+                    detail: format!("{} -> {} chars", call.name, output.content.len()),
+                });
+            }
+            return self.next_tool_application(pending).await;
+        }
         for execution in completed.executions {
             if let Err(ToolError::SandboxDenied {
                 content,
@@ -391,6 +415,29 @@ impl AgentSession {
             }
         }
         self.next_tool_application(pending).await
+    }
+
+    async fn prepare_successful_tool_result(
+        &mut self,
+        completed: CompletedToolExecution,
+    ) -> Result<(ToolCall, ToolOutput), LoopError> {
+        let CompletedToolExecution {
+            call,
+            budget: _,
+            pre_edit,
+            pre_git,
+            result,
+        } = completed;
+        let mut output = result.expect("successful parallel tool result");
+        Self::backfill_tool_outcome(&mut output);
+        self.push_success_evidence(&call, pre_edit, pre_git, &output)
+            .await;
+        if self.enable_context {
+            output.content = compress_recognized_command_output(&call, output.content);
+            output.content = self.context.maybe_offload_tool_content(output.content)?;
+        }
+        self.freeze_tool_output(&mut output);
+        Ok((call, output))
     }
 
     async fn hash_workspace_path(&self, relative: &str) -> Option<u64> {
