@@ -27,23 +27,8 @@ pub(super) fn is_railed_block(block: &ConversationBlock) -> bool {
     )
 }
 
-/// Collapse to a single line and truncate to `max_chars`, replacing the tail
-/// with an ellipsis if it didn't fit — for a compacted historical turn's
-/// request/outcome text, which must never wrap onto a second line.
-fn single_line_truncate(text: &str, max_chars: usize) -> String {
-    let single_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if single_line.chars().count() <= max_chars {
-        return single_line;
-    }
-    let keep = max_chars.saturating_sub(1);
-    let mut truncated: String = single_line.chars().take(keep).collect();
-    truncated.push('…');
-    truncated
-}
-
 /// Shared "· N chars · R tok/s · N tools" suffix, used by both the live
-/// `TurnSummary` line and a compacted historical turn showing its real
-/// archived stats.
+/// `TurnSummary` line.
 fn turn_stats_detail(chars: usize, tokens_per_second: Option<f64>, tools: usize) -> String {
     let mut detail = format!("·  {} chars", compact_count(chars));
     if let Some(rate) = tokens_per_second {
@@ -401,8 +386,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
         ConversationBlock::ActiveProgress(_)
         | ConversationBlock::Metadata(_)
-        | ConversationBlock::TurnSummary(_)
-        | ConversationBlock::CompactTurn(_) => 1,
+        | ConversationBlock::TurnSummary(_) => 1,
         // Measured, not guessed. The card's height depends on the width (how
         // far the question and each option's consequence wrap) and on how many
         // options there are, and under-budgeting it scrolls its own top border
@@ -1041,43 +1025,6 @@ impl ConversationRenderInternals for ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                ConversationBlock::CompactTurn(p) => {
-                    let (glyph, glyph_style) = if p.has_error {
-                        ("⚠", theme::warn())
-                    } else {
-                        ("✓", theme::ok())
-                    };
-                    // A turn that completed cleanly shows its real archived
-                    // stats instead of a derived outcome guess — same
-                    // "secs · chars · tok/s · tools" shape as the live
-                    // TurnSummary line, just folded onto the compact row.
-                    let trailer = match p.real_stats {
-                        Some(stats) => format!(
-                            "{}  {}",
-                            format_elapsed_tenths(stats.secs),
-                            turn_stats_detail(stats.chars, stats.tokens_per_second(), stats.tools)
-                        ),
-                        None => single_line_truncate(&p.outcome, width / 4),
-                    };
-                    // Reserve room for the glyph/arrow/meta furniture so the
-                    // request and trailer text never overflow the row.
-                    let furniture = 4 + 5 + 1 + trailer.chars().count();
-                    let text_budget = width.saturating_sub(furniture).max(8);
-                    let mut spans = vec![
-                        Span::styled("▸ ", theme::dim()),
-                        Span::styled(single_line_truncate(&p.request, text_budget), theme::text()),
-                        Span::styled("  →  ", theme::dim()),
-                        Span::styled(glyph, glyph_style),
-                        Span::styled(format!(" {trailer}"), theme::metadata_style()),
-                    ];
-                    if p.real_stats.is_none() && p.tool_count > 0 {
-                        spans.push(Span::styled(
-                            format!("  ·  {} tools", p.tool_count),
-                            theme::dim(),
-                        ));
-                    }
-                    lines.push(Line::from(spans));
-                }
                 ConversationBlock::Metadata(p) => {
                     // Metadata is a one-line summary — `block_height` budgets
                     // exactly one row for it — and its long content is almost
@@ -1196,9 +1143,7 @@ fn plan_dock_for(
                     .find(|&start| start <= index);
                 let visible = match turn {
                     None => true,
-                    Some(start) => {
-                        Some(start) == latest_turn || Some(start) == model.opts.expanded_turn
-                    }
+                    Some(start) => Some(start) == latest_turn,
                 };
                 visible.then(|| PlanChecklistPresentation {
                     explanation: explanation.clone(),
@@ -4216,53 +4161,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_compacted_turn_renders_as_one_line() {
-        let model = three_block_model();
-        let lines = model.lines_for_width(80);
-        let texts: Vec<String> = lines.iter().map(line_text).collect();
-        let compact_line = texts
-            .iter()
-            .find(|t| t.contains("first") && t.contains("second"))
-            .expect("compacted turn's request and outcome text on one line");
-        assert!(
-            compact_line.contains('▸'),
-            "compact line should carry the chevron marker, got {compact_line:?}"
-        );
-        // Only one line for the whole first turn — not the multi-line
-        // full-detail rendering it would have gotten before compaction.
-        assert_eq!(
-            texts.iter().filter(|t| t.contains("first")).count(),
-            1,
-            "the historical turn's request text should appear exactly once"
-        );
-    }
-
-    #[test]
-    fn a_compacted_turn_with_real_stats_has_no_doubled_separator() {
-        let mut model = three_block_model();
-        model.opts.turn_stats.insert(
-            0,
-            forge_transcript::TurnStats {
-                secs: 1.5,
-                chars: 29,
-                tools: 0,
-                output_tokens: Some(9),
-            },
-        );
-        let lines = model.lines_for_width(80);
-        let compact_line = lines
-            .iter()
-            .map(line_text)
-            .find(|t| t.contains('▸') && t.contains("1.5s"))
-            .expect("compacted turn showing its real stats");
-        assert!(
-            !compact_line.contains("· ·") && !compact_line.contains("·  ·"),
-            "doubled separator between elapsed time and stats detail: {compact_line:?}"
-        );
-        assert!(compact_line.contains("29 chars"), "{compact_line:?}");
-    }
-
     fn three_block_model() -> ConversationModel {
         let msgs = vec![
             Message {
@@ -4423,10 +4321,8 @@ mod tests {
     #[test]
     fn every_turn_boundary_gets_a_rule_even_without_a_plan() {
         let model = three_block_model();
-        // The first turn ([question, answer]) is historical (a later turn's
-        // question — "third" — exists) and compacts to one CompactTurn
-        // block; the still-open second turn's lone UserMessage is untouched.
-        assert_eq!(model.semantic_blocks().len(), 2);
+        // Both completed and in-progress turns retain their full blocks.
+        assert_eq!(model.semantic_blocks().len(), 3);
 
         let lines = model.lines_for_width(60);
         // [question, answer, question]: two turns, no plan checklist at all.

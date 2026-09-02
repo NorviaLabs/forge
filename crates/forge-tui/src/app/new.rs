@@ -118,8 +118,6 @@ impl TuiApp {
             },
             composer_chip_focus: None,
             tool_detail: ToolDetailState::default(),
-            turn_expansion: TurnExpansionState::default(),
-            turn_stats: std::collections::HashMap::new(),
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
             diff_view: crate::diff_view::DiffView::default(),
