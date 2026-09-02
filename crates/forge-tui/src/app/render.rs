@@ -282,8 +282,6 @@ impl TuiApp {
             compact: false,
             stream_wait,
             stream_thought_secs: self.timing.thought_secs,
-            expanded_turn: self.turn_expansion.get(),
-            turn_stats: self.turn_stats.clone(),
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
         let all_messages = self.transcript_view.messages();
@@ -354,8 +352,6 @@ impl TuiApp {
             keep_from_end: window_keep_from_end,
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.is_expanded(),
-            expanded_turn: self.turn_expansion.get(),
-            turn_stats_len: self.turn_stats.len(),
             splash_dismissed: self.conversation_view.splash_dismissed,
             home_card: (!slash_mode && !self.conversation_view.splash_dismissed).then(|| {
                 (
