@@ -385,10 +385,7 @@ impl TuiApp {
                 self.overlay = None;
                 self.reasoning_effort.value = level;
                 self.record_deliberate_selection();
-                self.set_feedback(
-                    FeedbackSeverity::Ok,
-                    format!("reasoning effort: {}", level.label()),
-                );
+                self.set_feedback(FeedbackSeverity::Ok, format!("effort: {}", level.label()));
             }
             OverlayAction::PreviewTheme(theme_id) => {
                 self.set_theme_active(&theme_id);

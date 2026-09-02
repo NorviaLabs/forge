@@ -102,6 +102,7 @@ pub struct AgentSession {
     /// to omit the field entirely (model doesn't support it, or effort is
     /// Auto). Set via `set_reasoning_effort`, read by `build_model_request`.
     reasoning_effort: Option<String>,
+    thinking_enabled: bool,
     journal: SessionPersistence,
     /// Shared across a parent session and every subagent spawned from it —
     /// `register` only ever runs during `create`/`resume` setup, so sharing
