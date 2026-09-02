@@ -4,6 +4,13 @@
 
 use super::prelude::*;
 
+fn numbered_lines(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 #[tokio::test]
 async fn typing_reuses_cached_conversation_lines() {
     use ratatui::backend::TestBackend;
@@ -150,6 +157,118 @@ async fn cache_hit_shares_transcript_lines_without_copying() {
         Arc::ptr_eq(&first, &second),
         "a cache hit must reuse the same line allocation, not clone it"
     );
+}
+
+#[tokio::test]
+async fn scrolling_within_a_render_bucket_reuses_transcript_lines() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session
+        .messages
+        .push(Message::new(MessageRole::User, "show the history"));
+    app.session
+        .messages
+        .push(Message::new(MessageRole::Assistant, numbered_lines(400)));
+
+    draw_app(&mut app, 120, 40);
+    let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+    let first_key = app
+        .render_cache
+        .conversation
+        .as_ref()
+        .unwrap()
+        .key
+        .keep_from_end;
+    assert!(!app.render_cache.conversation.as_ref().unwrap().complete);
+
+    app.conversation_view.follow = false;
+    app.conversation_view.scroll = 1;
+    draw_app(&mut app, 120, 40);
+    let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    assert_eq!(
+        app.render_cache
+            .conversation
+            .as_ref()
+            .unwrap()
+            .key
+            .keep_from_end,
+        first_key,
+        "one-row scroll must stay inside its render bucket"
+    );
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
+async fn scrolling_past_a_render_bucket_rebuilds_transcript_lines() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session
+        .messages
+        .push(Message::new(MessageRole::User, "show the history"));
+    app.session
+        .messages
+        .push(Message::new(MessageRole::Assistant, numbered_lines(400)));
+
+    draw_app(&mut app, 120, 40);
+    let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+    let first_key = app
+        .render_cache
+        .conversation
+        .as_ref()
+        .unwrap()
+        .key
+        .keep_from_end;
+
+    app.conversation_view.follow = false;
+    app.conversation_view.scroll = 64;
+    draw_app(&mut app, 120, 40);
+    let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+    let second_key = app
+        .render_cache
+        .conversation
+        .as_ref()
+        .unwrap()
+        .key
+        .keep_from_end;
+
+    assert_ne!(first_key, second_key);
+    assert!(!Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
+async fn complete_transcript_clamps_overscroll_and_allows_downward_scroll() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session
+        .messages
+        .push(Message::new(MessageRole::User, "show the history"));
+    app.session
+        .messages
+        .push(Message::new(MessageRole::Assistant, numbered_lines(50)));
+
+    draw_app(&mut app, 120, 40);
+    assert!(app.render_cache.conversation.as_ref().unwrap().complete);
+
+    app.conversation_view.follow = false;
+    app.conversation_view.scroll = u16::MAX;
+    draw_app(&mut app, 120, 40);
+    let top = app.conversation_view.scroll;
+    assert!(
+        top > 0,
+        "clamped scroll should reach non-zero history: top={top}, lines={}, area={:?}",
+        app.render_cache.conversation.as_ref().unwrap().lines.len(),
+        app.conversation_area
+    );
+    assert!(top < u16::MAX);
+
+    app.scroll_conversation_up(1);
+    draw_app(&mut app, 120, 40);
+    assert_eq!(app.conversation_view.scroll, top);
+
+    app.scroll_conversation_down(1);
+    draw_app(&mut app, 120, 40);
+    assert_eq!(app.conversation_view.scroll, top - 1);
 }
 
 #[tokio::test]
