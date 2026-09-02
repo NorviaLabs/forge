@@ -64,6 +64,7 @@ pub(crate) struct TaskLocalViewState {
     /// Model settings are per-task; the provider route that authenticates them
     /// is not, and stays on `connect`.
     pub(crate) reasoning_effort: ReasoningEffortState,
+    pub(crate) thinking_enabled: bool,
     pub(crate) model_label: String,
     pub(crate) provider: String,
 }
@@ -105,6 +106,7 @@ impl Default for TaskLocalViewState {
             task_selection: TaskSelectionState::default(),
             timing: TurnTimingState::default(),
             reasoning_effort: ReasoningEffortState::default(),
+            thinking_enabled: true,
             model_label: String::new(),
             provider: String::new(),
         }
@@ -523,7 +525,7 @@ pub(crate) enum SemanticCommand {
     PasteClipboardImage,
     ToggleToolDetails,
     OpenTaskSwitcher,
-    /// Step reasoning effort one level (`Alt+,` back, `Alt+.` forward)
+    /// Step effort one level (`Alt+,` back, `Alt+.` forward)
     /// within the current model's valid options — see
     /// [`crate::effort::ReasoningEffort::step`].
     StepReasoningEffort(bool),
@@ -1450,6 +1452,7 @@ pub struct TuiApp {
     /// Phase 10 / TUI-10 — activity ring buffer.
     pub(crate) activity: ActivityFeed,
     pub(crate) reasoning_effort: ReasoningEffortState,
+    pub(crate) thinking_enabled: bool,
     /// When `Some`, composer chip bar is focused at this index.
     pub(crate) composer_chip_focus: Option<usize>,
     pub(crate) tool_detail: ToolDetailState,

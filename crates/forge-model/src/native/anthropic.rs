@@ -63,7 +63,7 @@ pub(super) async fn complete(
         apply_anthropic_prompt_cache(&mut body);
     }
     let reasoning_effort = req.reasoning_effort.as_deref();
-    apply_reasoning_effort(&mut body, model, reasoning_effort);
+    apply_reasoning_settings(&mut body, model, reasoning_effort, req.thinking_enabled);
 
     let response = client
         .http
@@ -375,7 +375,15 @@ fn finalize_tool_uses(
         .collect()
 }
 
-fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Option<&str>) {
+fn apply_reasoning_settings(
+    body: &mut Value,
+    model: &str,
+    reasoning_effort: Option<&str>,
+    thinking_enabled: bool,
+) {
+    if !thinking_enabled {
+        body["thinking"] = json!({"type": "disabled"});
+    }
     let Some(raw_effort) = reasoning_effort else {
         return;
     };
@@ -422,6 +430,19 @@ mod tests {
     use forge_types::{Message, ModelStreamEvent, SideEffectClass, ToolDescriptor};
 
     #[test]
+    fn thinking_off_sends_disabled_mode() {
+        let mut body = json!({});
+        apply_reasoning_settings(
+            &mut body,
+            "anthropic/claude-sonnet-4-6",
+            Some("high"),
+            false,
+        );
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["output_config"]["effort"], "high");
+    }
+
+    #[test]
     fn user_and_tool_image_refs_become_anthropic_image_blocks() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("shot.png"), forge_types::sample_png_bytes()).unwrap();
@@ -431,6 +452,7 @@ mod tests {
             route_id: None,
             prompt_cache: true,
             reasoning_effort: None,
+            thinking_enabled: true,
             messages: vec![
                 Message::new(MessageRole::User, "compare")
                     .with_attachments(vec![forge_types::ImageRef::new("shot.png", "image/png", 1)]),
@@ -473,6 +495,7 @@ mod tests {
             route_id: None,
             prompt_cache: true,
             reasoning_effort: None,
+            thinking_enabled: true,
             messages: vec![
                 Message::new(MessageRole::System, "system"),
                 Message::new(MessageRole::User, "hello"),
@@ -520,6 +543,7 @@ mod tests {
             route_id: None,
             prompt_cache: true,
             reasoning_effort: None,
+            thinking_enabled: true,
             messages: vec![
                 Message::new(MessageRole::User, "hello"),
                 Message {
@@ -648,6 +672,7 @@ mod tests {
             model: "anthropic/claude-sonnet-4-6".into(),
             route_id: Some("anthropic-api".into()),
             reasoning_effort: Some("high".into()),
+            thinking_enabled: true,
             messages: vec![
                 Message::new(MessageRole::System, "system"),
                 Message::new(MessageRole::User, "hello"),
@@ -701,6 +726,7 @@ mod tests {
             model: "anthropic/claude".into(),
             route_id: Some("anthropic-api".into()),
             reasoning_effort: None,
+            thinking_enabled: true,
             messages: vec![].into(),
             tools: vec![],
             prompt_cache: true,

@@ -210,6 +210,7 @@ pub struct ModelRequest {
     /// route-aware selection is rolled through the workspace.
     pub route_id: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub thinking_enabled: bool,
     pub prompt_cache: bool,
 }
 
@@ -312,6 +313,7 @@ mod tests {
                 model: "mock".into(),
                 route_id: None,
                 reasoning_effort: None,
+                thinking_enabled: true,
                 prompt_cache: true,
             })
             .await
@@ -333,6 +335,7 @@ mod tests {
                     model: "mock".into(),
                     route_id: None,
                     reasoning_effort: None,
+                    thinking_enabled: true,
                     prompt_cache: true,
                 },
                 Some(tx),
@@ -370,6 +373,7 @@ mod tests {
                 model: "mock".into(),
                 route_id: None,
                 reasoning_effort: None,
+                thinking_enabled: true,
                 prompt_cache: true,
             })
             .await
@@ -404,6 +408,7 @@ mod tests {
                     model: "mock".into(),
                     route_id: None,
                     reasoning_effort: None,
+                    thinking_enabled: true,
                     prompt_cache: false,
                 },
                 Some(tx),

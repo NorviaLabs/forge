@@ -266,7 +266,13 @@ pub(super) fn request_body(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    if let Some(effort) = codex_effort(req) {
+    if !req.thinking_enabled {
+        if forge_connect::ModelCatalogCache::user_default().model_supports_thinking_off(&req.model)
+        {
+            body["include"] = Value::Array(Vec::new());
+            body["reasoning"] = json!({"effort": "none", "summary": "none"});
+        }
+    } else if let Some(effort) = codex_effort(req) {
         body["reasoning"]["effort"] = Value::String(effort);
     }
     body
@@ -485,6 +491,7 @@ mod tests {
             model: "openai-codex/gpt-test".into(),
             route_id: Some("openai-chatgpt".into()),
             reasoning_effort: None,
+            thinking_enabled: true,
             prompt_cache: true,
         }
     }
@@ -498,6 +505,23 @@ mod tests {
         assert!(alias
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
+    }
+
+    #[test]
+    fn unsupported_thinking_off_omits_provider_setting() {
+        let mut request = request_with_tool("read_file");
+        request.model = "openai-codex/unknown-thinking-toggle-test-model".into();
+        request.reasoning_effort = Some("high".into());
+        request.thinking_enabled = false;
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        let aliases = tool_aliases(&request);
+
+        let body = request_body(&client, &request, &request.model, &aliases);
+
+        assert!(body["reasoning"].get("effort").is_none());
+        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["include"][0], "reasoning.encrypted_content");
+        assert_eq!(body["tools"][0]["name"], "read_file");
     }
 
     #[test]
@@ -777,6 +801,7 @@ mod tests {
             messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],
             reasoning_effort: None,
+            thinking_enabled: true,
             prompt_cache: true,
         };
         let response = client.complete(request).await.unwrap();
@@ -807,6 +832,7 @@ mod tests {
             messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],
             reasoning_effort: None,
+            thinking_enabled: true,
             prompt_cache: true,
         };
         let err = client.complete(request).await.unwrap_err();

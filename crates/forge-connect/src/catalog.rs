@@ -341,6 +341,27 @@ impl ModelCatalogCache {
         metadata_id_candidates(model_id)
             .into_iter()
             .find_map(|id| file.registry_effort.get(&id).cloned())
+            .map(|options| {
+                options
+                    .into_iter()
+                    .filter(|option| option != "none")
+                    .collect()
+            })
+    }
+
+    pub fn model_supports_thinking_off(&self, model_id: &str) -> bool {
+        if model_id.is_empty() {
+            return false;
+        }
+        let file = self.load();
+        if !file.registry_effort_ready {
+            return false;
+        }
+        metadata_id_candidates(model_id).into_iter().any(|id| {
+            file.registry_effort
+                .get(&id)
+                .is_some_and(|options| options.iter().any(|option| option == "none"))
+        })
     }
 
     /// Whether `reasoning_options` has been ingested at least once.
@@ -511,7 +532,7 @@ fn models_dev_effort_options(model: &serde_json::Value) -> Vec<String> {
                 continue;
             };
             let value = value.trim().to_ascii_lowercase();
-            if matches!(value.as_str(), "none" | "auto" | "default" | "") {
+            if matches!(value.as_str(), "auto" | "default" | "") {
                 continue;
             }
             if !values.iter().any(|existing| existing == &value) {
@@ -1396,7 +1417,7 @@ mod tests {
             models_dev_effort_options(&serde_json::json!({
                 "reasoning_options": [{"type": "effort", "values": ["none", "low"]}]
             })),
-            vec!["low"]
+            vec!["none", "low"]
         );
         assert!(models_dev_effort_options(&serde_json::json!({})).is_empty());
     }
