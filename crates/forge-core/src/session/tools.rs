@@ -341,7 +341,7 @@ impl AgentSession {
         {
             let mut prepared = Vec::with_capacity(completed.executions.len());
             for execution in completed.executions {
-                prepared.push(self.prepare_successful_tool_result(execution).await?);
+                prepared.push(Box::pin(self.prepare_successful_tool_result(execution)).await?);
             }
             self.journal
                 .append_tool_results(self.session_id, &prepared)
