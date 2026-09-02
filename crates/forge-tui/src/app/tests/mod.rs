@@ -23,6 +23,5 @@ mod prelude;
 mod questions;
 mod tasks;
 mod theme;
-mod turn_stats;
 mod watch;
 mod workspace;

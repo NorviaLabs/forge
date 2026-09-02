@@ -276,9 +276,7 @@ impl TuiApp {
             stream: std::mem::take(&mut self.stream),
             activity: std::mem::take(&mut self.activity),
             banner_state: std::mem::take(&mut self.banner_state),
-            turn_stats: std::mem::take(&mut self.turn_stats),
             tool_detail: std::mem::take(&mut self.tool_detail),
-            turn_expansion: std::mem::take(&mut self.turn_expansion),
             composer_chip_focus: self.composer_chip_focus.take(),
             approval_session: std::mem::take(&mut self.approval_session),
             question_session: std::mem::take(&mut self.question_session),
@@ -314,9 +312,7 @@ impl TuiApp {
         self.stream = state.stream;
         self.activity = state.activity;
         self.banner_state = state.banner_state;
-        self.turn_stats = state.turn_stats;
         self.tool_detail = state.tool_detail;
-        self.turn_expansion = state.turn_expansion;
         self.composer_chip_focus = state.composer_chip_focus;
         self.approval_session = state.approval_session;
         self.question_session = state.question_session;

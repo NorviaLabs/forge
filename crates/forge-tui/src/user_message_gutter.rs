@@ -409,10 +409,6 @@ mod tests {
                 .iter()
                 .map(line_plain)
                 .filter(|text| !text.is_empty() && !text.chars().all(|c| c == '─'))
-                // A compacted historical turn is a summary row, not a
-                // message bubble — it deliberately doesn't share the
-                // gutter's indent, so it's exempt from this alignment check.
-                .filter(|text| !text.trim_start().starts_with('▸'))
                 .all(|text| text.starts_with("  ")),
             "{label}: request is not left-aligned with the message indent:\n{}",
             lines.iter().map(line_plain).collect::<Vec<_>>().join("\n")

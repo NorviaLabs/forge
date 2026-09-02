@@ -82,7 +82,7 @@ async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
     );
     assert!(
         !help.contains("• Ctrl+T  Open task switcher"),
-        "help must not advertise Ctrl+T, which toggles last-turn expansion: {help}"
+        "help must not advertise removed Ctrl+T turn expansion: {help}"
     );
     assert!(
         !help.contains("Alt+1"),

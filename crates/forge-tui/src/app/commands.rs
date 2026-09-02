@@ -192,9 +192,6 @@ impl TuiApp {
             {
                 Some(SemanticCommand::OpenTaskSwitcher)
             }
-            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(SemanticCommand::ToggleLastTurnExpanded)
-            }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleFiles)
             }
@@ -583,19 +580,6 @@ impl TuiApp {
             }
             SemanticCommand::ToggleToolDetails => self.tool_detail.toggle(),
             SemanticCommand::OpenTaskSwitcher => self.open_task_switcher(),
-            SemanticCommand::ToggleLastTurnExpanded => {
-                let all_messages = self.transcript_view.messages();
-                let visible_messages =
-                    &all_messages[self.conversation_view.message_start.min(all_messages.len())..];
-                let boundaries = ConversationModel::from_messages(
-                    visible_messages,
-                    &[],
-                    self.session_view.lifecycle,
-                    ConversationViewOpts::default(),
-                )
-                .turn_boundaries();
-                self.turn_expansion.toggle_last(&boundaries);
-            }
             SemanticCommand::StepReasoningEffort(forward) => {
                 let stepped = self
                     .reasoning_effort
@@ -817,7 +801,6 @@ impl TuiApp {
                                 format!("session resumed · {session_id}"),
                             );
                             self.banner_state.items.clear();
-                            self.turn_stats.clear();
                             // `resume_session` already restored the durable queue for
                             // the target session — do not clear it out from under
                             // that restoration.
@@ -849,7 +832,6 @@ impl TuiApp {
                     self.conversation_view.message_start = self.session.messages.len();
                     self.conversation_view.event_start = self.session.events.len();
                     self.banner_state.items.clear();
-                    self.turn_stats.clear();
                     self.notice_state.items.clear();
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
@@ -1023,9 +1005,6 @@ impl TuiApp {
         // previously scrolled up to inspect an older response.
         self.conversation_view.follow = true;
         self.conversation_view.scroll = 0;
-        // A fresh turn shouldn't inherit a stale manual expansion pinned to
-        // whatever was the most recent historical turn before this one.
-        self.turn_expansion.clear();
         self.stream.clear_preview();
         self.stream.thinking.clear();
         self.push_activity(
