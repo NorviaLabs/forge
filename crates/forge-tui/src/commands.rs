@@ -68,18 +68,15 @@ pub enum SlashCommand {
 
 impl SlashCommand {
     /// Commands that can run while a foreground model/tool turn owns the
-    /// session. Lifecycle, provider, or terminal-ownership changes wait until
-    /// the turn is finished (or interrupted); view-only commands stay usable.
+    /// session. Model settings are safe to change because they are read when
+    /// the next model step is built; lifecycle, provider, or terminal-
+    /// ownership changes wait until the turn is finished (or interrupted).
     pub fn available_while_busy(&self) -> bool {
         !matches!(
             self,
             Self::ResumeList
                 | Self::Resume { .. }
-                | Self::Model
-                | Self::Effort
-                | Self::Thinking { .. }
                 | Self::Compact
-                | Self::Connect
                 | Self::Disconnect { .. }
                 | Self::Edit
         )
@@ -186,20 +183,20 @@ mod tests {
     }
 
     #[test]
-    fn busy_turns_reject_session_mutations_but_keep_ui_commands_available() {
+    fn busy_turns_allow_model_settings_but_reject_other_session_mutations() {
         for command in [
             SlashCommand::ResumeList,
-            SlashCommand::Model,
             SlashCommand::Compact,
-            SlashCommand::Connect,
             SlashCommand::Disconnect { profile_id: None },
             SlashCommand::Edit,
-            SlashCommand::Effort,
-            SlashCommand::Thinking { enabled: None },
         ] {
             assert!(!command.available_while_busy(), "{command:?}");
         }
         for command in [
+            SlashCommand::Model,
+            SlashCommand::Effort,
+            SlashCommand::Thinking { enabled: None },
+            SlashCommand::Connect,
             SlashCommand::Help,
             SlashCommand::Tasks,
             SlashCommand::Quit,

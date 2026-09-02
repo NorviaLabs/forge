@@ -571,8 +571,6 @@ impl TuiApp {
                 .map_err(|error| TuiError::Other(error.to_string()))?;
         }
 
-        self.sync_effort_to_session();
-
         let max_turns = self.session.max_turns();
         let mut outcome_err: Option<String> = None;
         let mut turn_cancelled = false;
@@ -598,6 +596,10 @@ impl TuiApp {
                 // valid, matching AgentSession's non-interactive path.
                 let _ = self.session.finish_context_compaction(completed).await;
             }
+            // Model controls remain live while a turn is running. The request
+            // already in flight is immutable, so changes made during its
+            // stream apply to this turn's next continuation.
+            self.sync_effort_to_session();
             let req = match self.session.prepare_model_step_after_compaction(turn).await {
                 Ok(r) => r,
                 Err(e) => {

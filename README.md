@@ -210,8 +210,9 @@ The footer carries a chip row: model and effort. It is an ordinary `Tab`
 stop — `Tab` to it, `←`/`→` to pick a chip, `Enter` to open the picker.
 `Enter` still sends from the composer; `⏎` is a hint only. `Ctrl+Shift+V` attaches a
 PNG/JPEG/GIF/WebP from the local clipboard (workspace-only; SSH has no image
-clipboard). The model can also call `view_image` on a workspace file when the
-active model accepts image input.
+clipboard). Model, effort, thinking, and provider connection controls remain
+available while a turn is running; changes apply to the next model step. The model can also call
+`view_image` on a workspace file when the active model accepts image input.
 
 The Files explorer needs a terminal at least 116 columns wide. Below that
 `Ctrl+E` says so rather than toggling a pane that cannot be drawn.
