@@ -384,6 +384,7 @@ impl TuiApp {
             OverlayAction::SelectEffort(level) => {
                 self.overlay = None;
                 self.reasoning_effort.value = level;
+                self.sync_effort_to_session();
                 self.record_deliberate_selection();
                 self.set_feedback(FeedbackSeverity::Ok, format!("effort: {}", level.label()));
             }
