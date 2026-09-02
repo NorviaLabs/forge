@@ -587,6 +587,7 @@ impl TuiApp {
                     .step(&self.runtime.model_label, forward);
                 if stepped != self.reasoning_effort.value {
                     self.reasoning_effort.value = stepped;
+                    self.sync_effort_to_session();
                     self.record_deliberate_selection();
                     self.set_feedback(
                         FeedbackSeverity::Info,
@@ -881,6 +882,7 @@ impl TuiApp {
                 Ok(SlashCommand::Thinking { enabled }) => {
                     if self.require_primary_task("changing thinking") {
                         self.thinking_enabled = enabled.unwrap_or(!self.thinking_enabled);
+                        self.sync_effort_to_session();
                         let label = if self.thinking_enabled { "on" } else { "off" };
                         self.push_notice(vec![format!("thinking: {label}")]);
                     }
@@ -1040,11 +1042,8 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn busy_turns_keep_navigation_and_cancellation_but_gate_runtime_mutations() {
+    fn busy_turns_allow_model_settings_but_gate_other_runtime_mutations() {
         for command in [
-            SemanticCommand::QuickSwitchModel,
-            SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
-            SemanticCommand::StepReasoningEffort(true),
             SemanticCommand::OpenExternalEditor,
             SemanticCommand::SaveEditor,
             SemanticCommand::BeginCreateFile,
@@ -1055,6 +1054,9 @@ mod tests {
             assert!(!command.available_while_busy(), "{command:?}");
         }
         for command in [
+            SemanticCommand::QuickSwitchModel,
+            SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
+            SemanticCommand::StepReasoningEffort(true),
             SemanticCommand::FocusComposer,
             SemanticCommand::SubmitMessage,
             SemanticCommand::ToggleBottomPanel,
@@ -1063,6 +1065,33 @@ mod tests {
         ] {
             assert!(command.available_while_busy(), "{command:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn model_settings_can_change_while_a_turn_is_running() {
+        let (_dir, mut app) = app().await;
+        app.busy_state.start(BusyPhase::Model);
+
+        app.dispatch_line("/thinking off").await.unwrap();
+        assert!(!app.thinking_enabled);
+        assert!(!app.session.build_model_request().thinking_enabled);
+
+        app.dispatch_line("/effort").await.unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConnectModel {
+                focus: ConnectModelColumn::Effort,
+                ..
+            })
+        ));
+
+        app.overlay = None;
+        app.dispatch_line("/model").await.unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+
+        app.overlay = None;
+        app.dispatch_line("/connect").await.unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
     }
 
     /// Git-initializes `dir` so writes routed through the runtime-storage
