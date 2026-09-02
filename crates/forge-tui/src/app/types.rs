@@ -541,16 +541,15 @@ pub(crate) enum SemanticCommand {
 
 impl SemanticCommand {
     /// Operations that must not overlap a foreground turn. The event pump
-    /// still accepts navigation, composer input, queue operations and
-    /// cancellation; these commands would change the active runtime route or
-    /// write the workspace while a detached tool still has an in-flight view.
+    /// still accepts navigation, composer input, queue operations,
+    /// cancellation, and model controls. Model controls only affect the next
+    /// model step; these remaining commands would change the active runtime
+    /// route or write the workspace while a detached tool still has an
+    /// in-flight view.
     pub(crate) fn available_while_busy(&self) -> bool {
         !matches!(
             self,
-            Self::QuickSwitchModel
-                | Self::OpenModelControl(_)
-                | Self::StepReasoningEffort(_)
-                | Self::OpenExternalEditor
+            Self::OpenExternalEditor
                 | Self::SaveEditor
                 | Self::BeginCreateFile
                 | Self::BeginCreateDirectory
