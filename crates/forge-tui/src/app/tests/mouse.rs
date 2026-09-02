@@ -40,7 +40,7 @@ async fn wheel_up_over_chat_unfollows_and_scrolls_conversation() {
     app.handle_mouse(wheel_up()).await.unwrap();
 
     assert!(!app.conversation_view.follow);
-    assert_eq!(app.conversation_view.scroll, 1);
+    assert_eq!(app.conversation_view.scroll, 3);
 }
 
 #[tokio::test]
@@ -75,14 +75,18 @@ async fn shift_wheel_pages_conversation_like_pagedown() {
 #[tokio::test]
 async fn wheel_over_workspace_with_file_scrolls_source_viewer() {
     let (dir, mut app) = focus_test_app().await;
-    std::fs::write(dir.path().join("source.rs"), "line1\nline2\nline3\n").unwrap();
+    let source = (1..=40)
+        .map(|line| format!("line{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.path().join("source.rs"), source).unwrap();
     app.open_file_in_editor(&dir.path().join("source.rs"));
     app.focus_block(FocusBlock::Workspace);
     let start = app.source_viewer.current_line;
 
     app.handle_mouse(wheel_down()).await.unwrap();
 
-    assert_eq!(app.source_viewer.current_line, start + 1);
+    assert_eq!(app.source_viewer.current_line, start + 3);
 }
 
 #[tokio::test]
