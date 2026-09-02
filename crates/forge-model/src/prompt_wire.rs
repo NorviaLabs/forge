@@ -331,6 +331,7 @@ mod tests {
             workspace_root: std::path::PathBuf::from("."),
             route_id: None,
             reasoning_effort: Some("high".into()),
+            thinking_enabled: true,
             prompt_cache: true,
         }
     }

@@ -648,6 +648,19 @@ impl TuiApp {
 
         let m = self.refresh_status_model();
         let mut rows = session_chrome_rows(&m);
+        if let Some(profile_at) = rows
+            .iter()
+            .position(|row| matches!(row, StatusRow::Field { label, .. } if label == "Profile"))
+        {
+            rows.insert(
+                profile_at,
+                StatusRow::field_with_note(
+                    "Thinking",
+                    if self.thinking_enabled { "on" } else { "off" },
+                    "/thinking to toggle",
+                ),
+            );
+        }
 
         // Session identity, inserted under the heading `session_chrome_rows`
         // opened, so the group reads as one block.

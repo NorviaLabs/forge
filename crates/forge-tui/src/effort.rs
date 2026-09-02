@@ -1,4 +1,4 @@
-//! Provider-neutral reasoning effort selected for the current TUI session.
+//! Provider-neutral effort selected for the current TUI session.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

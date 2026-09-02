@@ -898,6 +898,56 @@ async fn drain_pending_prompt_omits_effort_for_model_that_does_not_support_it() 
 }
 
 #[tokio::test]
+async fn drain_pending_prompt_sends_separate_thinking_flag() {
+    let _home_guard = isolated_home_guard();
+    let dir = TempDir::new().unwrap();
+    let mock = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: Some("provider ignored the toggle".into()),
+    }]));
+    let session = session_for_workspace_with_model(dir.path(), mock.clone()).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "anthropic/claude-sonnet-4-6".into(),
+            provider: "anthropic".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(dir.path().join("preferences.toml"));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.reasoning_effort.value = ReasoningEffort::High;
+    app.thinking_enabled = false;
+
+    app.dispatch_line("hi").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let sent = mock
+        .last_request()
+        .expect("model client received a request");
+    assert_eq!(sent.reasoning_effort.as_deref(), Some("high"));
+    assert!(!sent.thinking_enabled);
+    assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
+    assert!(app.stream.thinking.is_empty());
+    assert!(app
+        .session
+        .messages
+        .iter()
+        .all(|message| message.thinking.is_none()));
+}
+
+#[tokio::test]
 async fn model_command_applies_provider_id_to_session() {
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();
@@ -1396,6 +1446,63 @@ async fn startup_notices_seed_notice_panel() {
     );
 
     assert_eq!(app.notice_state.items, vec!["mcp: failed"]);
+}
+
+#[tokio::test]
+async fn effort_command_opens_effort_picker() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.8.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("/effort").await.unwrap();
+
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConnectModel {
+            focus: ConnectModelColumn::Effort,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn thinking_command_toggles_without_changing_effort() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.8.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.reasoning_effort.value = ReasoningEffort::High;
+
+    app.dispatch_line("/thinking off").await.unwrap();
+
+    assert!(!app.thinking_enabled);
+    assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
+    assert_eq!(app.notice_state.items, vec!["thinking: off"]);
+
+    app.dispatch_line("/thinking").await.unwrap();
+
+    assert!(app.thinking_enabled);
+    assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
+    assert_eq!(app.notice_state.items, vec!["thinking: on"]);
 }
 
 #[tokio::test]

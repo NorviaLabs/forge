@@ -769,6 +769,16 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             is_skill: false,
         },
         PaletteItem {
+            cmd: "/effort".into(),
+            desc: "Set model effort".into(),
+            is_skill: false,
+        },
+        PaletteItem {
+            cmd: "/thinking".into(),
+            desc: "Toggle model thinking".into(),
+            is_skill: false,
+        },
+        PaletteItem {
             cmd: "/compact".into(),
             desc: "Continue in a fresh context".into(),
             is_skill: false,
@@ -2530,7 +2540,7 @@ impl Widget for OverlayWidget<'_> {
                 let title_text = match focus {
                     ConnectModelColumn::Providers => "Select a provider",
                     ConnectModelColumn::Models => "Select a model",
-                    ConnectModelColumn::Effort => "Select reasoning effort",
+                    ConnectModelColumn::Effort => "Select effort",
                 };
                 let block = Block::default()
                     .borders(Borders::ALL)

@@ -71,6 +71,7 @@ impl AgentSession {
             workspace_root: self.tool_ctx.workspace_root.clone(),
             route_id: (!self.active_route_id.is_empty()).then(|| self.active_route_id.clone()),
             reasoning_effort: self.reasoning_effort.clone(),
+            thinking_enabled: self.thinking_enabled,
             prompt_cache: true,
         }
     }

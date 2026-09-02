@@ -107,6 +107,9 @@ impl TuiApp {
         event: &ModelStreamEvent,
         acc: &mut ModelStepAccumulator,
     ) -> Option<String> {
+        if !self.thinking_enabled && matches!(event, ModelStreamEvent::ThinkingDelta { .. }) {
+            return None;
+        }
         observe_stream_event(&mut self.session, event, None, acc);
         match event {
             ModelStreamEvent::TextDelta { text } => {
@@ -734,6 +737,11 @@ impl TuiApp {
                     break;
                 }
             };
+
+            if !self.thinking_enabled {
+                last.thinking = None;
+                self.stream.thinking.clear();
+            }
 
             // Provider may attach reasoning only on the final object (no stream deltas).
             if self.stream.thinking.is_empty() {
