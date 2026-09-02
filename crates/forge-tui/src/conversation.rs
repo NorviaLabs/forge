@@ -622,6 +622,22 @@ pub(crate) fn render_streaming_preview(
     lines
 }
 
+/// Render-cache details needed by the TUI frame renderer.
+pub(crate) trait ConversationRenderInternals {
+    fn lines_and_plan_dock_with_completeness(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> (Vec<Line<'static>>, Option<PlanDock>, bool);
+
+    fn render_lines_with_completeness(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+        stream_cache: Option<&mut StreamMarkdownCache>,
+    ) -> (Vec<Line<'static>>, bool);
+}
+
 /// Drawing a [`ConversationModel`].
 ///
 /// An extension trait rather than an inherent impl, because Rust requires
@@ -680,7 +696,8 @@ impl ConversationRender for ConversationModel {
         available_width: usize,
         keep_from_end: usize,
     ) -> Vec<Line<'static>> {
-        self.render_lines(available_width, keep_from_end, None)
+        self.render_lines_with_completeness(available_width, keep_from_end, None)
+            .0
     }
 
     fn lines_for_width_from_end_cached(
@@ -689,7 +706,8 @@ impl ConversationRender for ConversationModel {
         keep_from_end: usize,
         cache: &mut StreamMarkdownCache,
     ) -> Vec<Line<'static>> {
-        self.render_lines(available_width, keep_from_end, Some(cache))
+        self.render_lines_with_completeness(available_width, keep_from_end, Some(cache))
+            .0
     }
 
     fn lines_and_plan_dock(
@@ -697,8 +715,8 @@ impl ConversationRender for ConversationModel {
         available_width: usize,
         keep_from_end: usize,
     ) -> (Vec<Line<'static>>, Option<PlanDock>) {
-        let lines = self.render_lines(available_width, keep_from_end, None);
-        let dock = plan_dock_for(self, available_width, &lines);
+        let (lines, dock, _) =
+            self.lines_and_plan_dock_with_completeness(available_width, keep_from_end);
         (lines, dock)
     }
 
@@ -706,8 +724,31 @@ impl ConversationRender for ConversationModel {
         &self,
         available_width: usize,
         keep_from_end: usize,
-        mut stream_cache: Option<&mut StreamMarkdownCache>,
+        stream_cache: Option<&mut StreamMarkdownCache>,
     ) -> Vec<Line<'static>> {
+        self.render_lines_with_completeness(available_width, keep_from_end, stream_cache)
+            .0
+    }
+}
+
+impl ConversationRenderInternals for ConversationModel {
+    fn lines_and_plan_dock_with_completeness(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> (Vec<Line<'static>>, Option<PlanDock>, bool) {
+        let (lines, complete) =
+            self.render_lines_with_completeness(available_width, keep_from_end, None);
+        let dock = plan_dock_for(self, available_width, &lines);
+        (lines, dock, complete)
+    }
+
+    fn render_lines_with_completeness(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+        mut stream_cache: Option<&mut StreamMarkdownCache>,
+    ) -> (Vec<Line<'static>>, bool) {
         let width = available_width.max(4);
         let prose_width = prose_width_for(width);
         let mut lines = Vec::new();
@@ -1088,7 +1129,7 @@ impl ConversationRender for ConversationModel {
                 }
             }
         }
-        lines
+        (lines, start_block == 0)
     }
 }
 

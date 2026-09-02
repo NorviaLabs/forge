@@ -50,6 +50,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use forge_config::FileIconMode;
 use forge_core::{AgentSession, LoopConfig};
 use forge_model::MockModelClient;
@@ -382,6 +383,41 @@ fn cache_miss_cost_per_message_is_bounded() {
          ({short_allocs} allocs at 40 turns vs {long_allocs} at 150, limit \
          {MAX_PER_MESSAGE}). Every render-key change pays this, so it is what a \
          long session feels when the cache misses."
+    );
+}
+
+/// At least one ordinary page-up frame must stay on the cache-hit budget.
+///
+/// Page-up is deliberately used instead of reaching into private mouse
+/// handling: it drives the same conversation scroll state through the public
+/// input path while keeping this guard outside the crate.
+#[test]
+fn scrolling_reuses_render_buckets() {
+    let _guard = lock_measurement();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (_dir, mut app) = runtime.block_on(app_with_turns(150));
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test backend");
+    terminal.draw(|frame| app.draw(frame)).expect("warm draw");
+
+    let mut costs = Vec::new();
+    for _ in 0..5 {
+        runtime
+            .block_on(app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)))
+            .expect("page-up should be handled");
+        ALLOCS.store(0, Relaxed);
+        COUNTING.store(1, Relaxed);
+        terminal.draw(|frame| app.draw(frame)).expect("scroll draw");
+        COUNTING.store(0, Relaxed);
+        costs.push(ALLOCS.load(Relaxed));
+    }
+
+    const CACHE_HIT_BUDGET: usize = 600;
+    assert!(
+        costs.iter().any(|&cost| cost < CACHE_HIT_BUDGET),
+        "scroll frames never reused a render bucket: {costs:?}"
     );
 }
 
