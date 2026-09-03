@@ -27,13 +27,21 @@ use tracing_subscriber::EnvFilter;
     long_about = "Forge — an AI coding agent, editor, and shell in one terminal workspace.\n\n\
                   Running `forge` with no arguments opens the full-screen TUI in the current \
                   directory. Sessions are journalled to .forge/local/sessions in the workspace, \
-                  so an interrupted one can be reopened with --resume.",
+                  so an interrupted one can be reopened with --continue or --resume.",
     after_help = "Run `forge` with no arguments to start. Press ? inside for keyboard shortcuts."
 )]
 struct Cli {
     /// Reopen a previous session. Omit the id to pick from a list.
     #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
     resume: Option<Option<SessionId>>,
+
+    /// Continue the most recent previous session in this workspace.
+    #[arg(long, conflicts_with_all = ["resume", "fork"])]
+    r#continue: bool,
+
+    /// Fork a previous session into a new conversation.
+    #[arg(long, value_name = "SESSION_ID", conflicts_with_all = ["resume", "continue"])]
+    fork: Option<SessionId>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -297,7 +305,13 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     };
 
     let (target, create_notice) = if decision.allow_resume_picker {
-        resolve_target(&cfg, cli.resume).await?
+        if let Some(session_id) = cli.fork {
+            (SessionTarget::Fork(session_id), None)
+        } else if cli.r#continue {
+            resolve_target(&cfg, Some(None)).await?
+        } else {
+            resolve_target(&cfg, cli.resume).await?
+        }
     } else {
         (SessionTarget::New, None)
     };
@@ -382,6 +396,15 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_continue_and_fork_parse() {
+        let cli = Cli::try_parse_from(["forge", "--continue"]).unwrap();
+        assert!(cli.r#continue);
+        let session_id = SessionId::new_v4();
+        let cli = Cli::try_parse_from(["forge", "--fork", &session_id.to_string()]).unwrap();
+        assert_eq!(cli.fork, Some(session_id));
+    }
 
     #[test]
     fn cli_resume_parses_session_id() {

@@ -14,6 +14,17 @@ pub struct SessionTempDir {
     dir: tempfile::TempDir,
 }
 
+impl Clone for ToolRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            tools: self.tools.clone(),
+            schemas: self.schemas.clone(),
+            validators: Mutex::new(self.validators.lock().unwrap().clone()),
+            descriptors: Mutex::new(self.descriptors.lock().unwrap().clone()),
+        }
+    }
+}
+
 impl SessionTempDir {
     pub fn create(session_id: impl std::fmt::Display) -> Result<Arc<Self>, ToolError> {
         let dir = tempfile::Builder::new()

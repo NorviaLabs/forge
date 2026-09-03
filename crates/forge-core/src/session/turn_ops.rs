@@ -27,6 +27,7 @@ impl AgentSession {
         self.journal
             .append_user_message_with_attachments(self.session_id, &content, &attachments)
             .await?;
+        self.canonical_user_messages.push(content.clone());
         self.record_protected_fact(&content);
         self.messages
             .push(Message::new(MessageRole::User, content).with_attachments(attachments));

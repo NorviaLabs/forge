@@ -1421,6 +1421,9 @@ pub struct TuiApp {
     pub(crate) connect: connect::ConnectionModel,
     /// Phase 7 — submitted command history (Up/Down when no overlay).
     pub(crate) history: InputHistory,
+    /// User-level history persistence for composer recall. Unlike the model
+    /// transcript, this survives starting a new session.
+    pub(crate) history_store: HistoryStore,
     pub(crate) slash_suggestions: SlashSuggestionState,
     pub(crate) notice_state: NoticeState,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
