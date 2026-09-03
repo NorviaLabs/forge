@@ -906,8 +906,7 @@ pub(crate) fn failure_category_label(category: &str) -> String {
     }
 }
 
-pub(crate) fn format_exit_token_usage(report: &forge_core::TokenUsageReport) -> String {
-    let api = &report.api;
+pub(crate) fn format_exit_token_usage(api: &forge_core::SessionTokenUsage) -> String {
     format!(
         "Token usage: total={} input={} (+ {} cached) output={} (reasoning {})",
         format_with_commas(api.total_api_tokens()),
