@@ -156,6 +156,12 @@ impl TuiApp {
             // and printing the same keys twice on one screen reads as noise.
             return Some("Waiting for approval".into());
         }
+        if self.session.queue().len() > 0 {
+            if self.busy_state.is_active() {
+                return Some("Queued · Ctrl+↑/↓ select · Ctrl+Backspace cancel".into());
+            }
+            return Some("Queued · empty Enter sends next · Ctrl+↑/↓ select".into());
+        }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {
                 Overlay::TurnLimit { .. } => Some("Enter confirm · Esc cancel".into()),
