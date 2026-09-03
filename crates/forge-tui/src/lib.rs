@@ -45,7 +45,7 @@ pub use conversation::{
 };
 pub use effort::ReasoningEffort;
 pub use file_explorer::{FileExplorer, FileExplorerWidget};
-pub use history::InputHistory;
+pub use history::{HistoryStore, InputHistory, MAX_INPUT_HISTORY};
 pub use launch::{decide_launch, LaunchDecision};
 pub use layout::{
     is_too_small, split_areas, split_areas_ex, split_areas_full, LayoutRegions, MIN_HEIGHT,

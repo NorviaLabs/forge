@@ -350,6 +350,7 @@ impl AgentSession {
                 self.context_state.epoch = state.epoch;
                 self.context_state.checkpoint = state.checkpoint;
                 self.context_state.tail_start_message_index = state.tail_start_message_index;
+                self.context_state.protected_facts = state.protected_facts;
             }
             Err(error) => {
                 tracing::warn!(%error, "unreadable persisted context state; continuing uncompacted");

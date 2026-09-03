@@ -42,7 +42,7 @@ use forge_tools::ToolRegistry;
 use forge_types::{SessionId, SideEffectClass};
 use serde_json::json;
 
-/// Which session to open: a new one, or a specific existing one to resume.
+/// Which session to open: a new one, an existing one, or a fork.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionTarget {
     /// Create a fresh session.
@@ -50,15 +50,8 @@ pub enum SessionTarget {
     New,
     /// Resume the session with this id.
     Resume(SessionId),
-}
-
-impl SessionTarget {
-    fn resume_id(self) -> Option<SessionId> {
-        match self {
-            SessionTarget::New => None,
-            SessionTarget::Resume(id) => Some(id),
-        }
-    }
+    /// Create a new session seeded from this session's model-visible context.
+    Fork(SessionId),
 }
 
 /// A session plus any non-fatal notices produced while assembling it
@@ -205,14 +198,21 @@ async fn open_session_with_model(
         web_search: cfg.tools.web_search.clone(),
     };
 
-    let mut session = if let Some(session_id) = target.resume_id() {
-        AgentSession::resume(loop_cfg, model, tools, session_id)
+    let mut session = match target {
+        SessionTarget::New => AgentSession::create(loop_cfg, model, tools)
             .await
-            .map_err(|e| anyhow::anyhow!(e))?
-    } else {
-        AgentSession::create(loop_cfg, model, tools)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?
+            .map_err(|e| anyhow::anyhow!(e))?,
+        SessionTarget::Resume(session_id) => {
+            AgentSession::resume(loop_cfg, model, tools, session_id)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?
+        }
+        SessionTarget::Fork(session_id) => {
+            let source = AgentSession::resume(loop_cfg, model.clone(), tools.clone(), session_id)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+            source.fork().await.map_err(|e| anyhow::anyhow!(e))?
+        }
     };
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());

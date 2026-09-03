@@ -147,6 +147,7 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
+            canonical_user_messages: Vec::new(),
         })
     }
 
@@ -253,6 +254,7 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
+            canonical_user_messages: state.user_messages.clone(),
         };
         child.reconcile_incomplete_intents(&incomplete).await?;
         // Deliberately no `mark_interrupted_if_stale()` here — that method
