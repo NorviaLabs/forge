@@ -627,7 +627,13 @@ impl TuiApp {
                         self.exit.request_with_code(ExitCode::Canceled);
                     } else {
                         self.cancellation.request();
-                        self.push_toast("interrupt requested · Ctrl+C again to quit");
+                        let queued = self.session.queue().len();
+                        self.push_toast(match queued {
+                            0 => "interrupt requested · Ctrl+C again to quit".into(),
+                            count => format!(
+                                "interrupt requested · {count} queued preserved · Ctrl+C again to quit"
+                            ),
+                        });
                     }
                 } else {
                     self.exit.request_with_code(ExitCode::Canceled);
@@ -855,9 +861,15 @@ impl TuiApp {
                                 );
                             } else {
                                 self.status_state.message = "session resumed".into();
+                                let queued = self.session.queue().len();
                                 self.set_feedback(
                                     FeedbackSeverity::Ok,
-                                    "session restored · ready for the next action",
+                                    match queued {
+                                        0 => "session restored · ready for the next action".into(),
+                                        count => {
+                                            format!("session restored · {count} queued messages")
+                                        }
+                                    },
                                 );
                             }
                             self.push_toast(format!("resumed {session_id}"));

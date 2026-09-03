@@ -149,12 +149,15 @@ impl TuiApp {
             return Some("Enter confirm · Esc cancel".into());
         }
         if self.session.pending_question().is_some() {
-            return Some("Waiting · question · ↑↓  Enter  Esc skip".into());
+            return Some(format!(
+                "Waiting · question{} · ↑↓  Enter  Esc skip",
+                self.queued_wait_suffix()
+            ));
         }
         if self.session.pending_hitl().is_some() {
             // State only. The card carries its own key hint a few rows above,
             // and printing the same keys twice on one screen reads as noise.
-            return Some("Waiting for approval".into());
+            return Some(format!("Waiting for approval{}", self.queued_wait_suffix()));
         }
         if self.session.queue().len() > 0 {
             if self.busy_state.is_active() {
@@ -187,6 +190,13 @@ impl TuiApp {
                 })
             }
             FocusMode::Navigation => None,
+        }
+    }
+
+    fn queued_wait_suffix(&self) -> String {
+        match self.session.queue().len() {
+            0 => String::new(),
+            count => format!(" · {count} queued · resolve this first"),
         }
     }
 }
