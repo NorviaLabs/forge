@@ -41,8 +41,6 @@ pub struct FooterModel {
     /// that didn't finish on an otherwise completed turn. Styled as secondary
     /// text, never as failure — the lifecycle glyph alone carries severity.
     pub lifecycle_detail: Option<String>,
-    /// Number of future messages waiting behind the current turn.
-    pub queue_len: usize,
     /// 0.0..=1.0
     pub ctx_pct: f64,
     /// Session API-reported prompt/input tokens.
@@ -353,12 +351,6 @@ impl FooterBar<'_> {
             ]
         };
         right.push(Span::styled(m.lifecycle.label(), theme::text_secondary()));
-        if m.queue_len > 0 {
-            right.push(Span::styled(
-                format!(" · {} queued", m.queue_len),
-                theme::text_secondary(),
-            ));
-        }
         if let Some(detail) = m
             .lifecycle_detail
             .as_deref()
@@ -552,14 +544,6 @@ mod tests {
             "{out:?}"
         );
         assert!(out.trim_start().starts_with('●'), "{out:?}");
-    }
-
-    #[test]
-    fn renders_queued_count_in_activity_state() {
-        let mut m = model(TurnLifecycle::Working, 0.34);
-        m.queue_len = 2;
-        let out = rendered(&m, 100);
-        assert!(out.contains("Working · 2 queued"), "{out:?}");
     }
 
     #[test]
