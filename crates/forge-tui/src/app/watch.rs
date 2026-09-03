@@ -132,9 +132,6 @@ impl TuiApp {
             } else {
                 self.refresh_active_source_viewer();
             }
-            self.notice_state.items.clear();
-        } else if renamed_open_file {
-            self.notice_state.items.clear();
         }
         let files_are_active = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
             && self.focus.mode() == FocusMode::Navigation;

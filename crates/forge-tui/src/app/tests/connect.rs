@@ -84,13 +84,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
     assert!(!app.is_provider_connected());
     assert!(!app.connect.store.is_connected("openai").unwrap());
     assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
-    assert!(
-        app.notice_state
-            .items
-            .iter()
-            .any(|l| l.contains("disconnected"))
-            || app.status_state.message.contains("disconnected")
-    );
+    assert!(app.feedback.text.contains("disconnected"));
 }
 
 #[tokio::test]

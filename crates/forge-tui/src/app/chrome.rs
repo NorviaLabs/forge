@@ -1,8 +1,8 @@
-//! Operator-facing chrome for [`TuiApp`]: notices, toasts, feedback, the
+//! Operator-facing chrome for [`TuiApp`]: toasts, feedback, the
 //! activity summary, and the status header and footer.
 //!
 //! Split out of `app.rs` per #19. Everything here reports state back to the
-//! operator rather than changing it — transient notices and toasts, error and
+//! operator rather than changing it — toasts, error and
 //! info feedback, the activity feed summary, and the header and footer models
 //! describing the current turn, repository and token limits.
 //!
@@ -183,31 +183,6 @@ impl TuiApp {
                 self.set_feedback(FeedbackSeverity::Error, message.clone());
             }
             _ => {}
-        }
-    }
-
-    pub(super) fn push_notice(&mut self, lines: Vec<String>) {
-        self.push_notice_with_severity(lines, FeedbackSeverity::Info);
-    }
-
-    pub(super) fn push_notice_with_severity(
-        &mut self,
-        lines: Vec<String>,
-        severity: FeedbackSeverity,
-    ) {
-        self.notice_state.items = lines;
-        self.notice_state.until = Some(Instant::now() + Duration::from_secs(7));
-        self.set_feedback(severity, self.notice_state.items.join("\n"));
-    }
-
-    pub(super) fn tick_notices(&mut self) {
-        if self
-            .notice_state
-            .until
-            .is_some_and(|until| Instant::now() >= until)
-        {
-            self.notice_state.items.clear();
-            self.notice_state.until = None;
         }
     }
 

@@ -590,7 +590,7 @@ impl TuiApp {
             // denied so the operator sees what `resolve_hitl` actually did with it.
             _ => "Action denied".into(),
         };
-        self.push_notice(vec![self.status_state.message.clone()]);
+        self.set_feedback(FeedbackSeverity::Info, self.status_state.message.clone());
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
