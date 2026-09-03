@@ -730,8 +730,6 @@ pub(crate) struct ConversationRenderKey {
     /// summary replacing another leaves the count unchanged, so the closing
     /// line of the previous turn would stay on screen through the next one.
     pub(crate) turn_summary: Option<(u64, usize, usize, Option<u64>)>,
-    pub(crate) queue: usize,
-    pub(crate) queue_selected: Option<usize>,
     pub(crate) chat_message_start: usize,
     pub(crate) chat_event_start: usize,
     /// Bucketed tail budget used while the cache is partial. Once the cache

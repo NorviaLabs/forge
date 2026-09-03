@@ -170,11 +170,6 @@ pub enum ChatItem {
     GeneratorRepair {
         text: String,
     },
-    Queued {
-        index: usize,
-        text: String,
-        selected: bool,
-    },
     ToolCard {
         name: String,
         summary: String,
@@ -1404,21 +1399,6 @@ impl ConversationModel {
         self
     }
 
-    pub fn with_queued_messages(
-        mut self,
-        items: impl IntoIterator<Item = String>,
-        selected: Option<usize>,
-    ) -> Self {
-        for (i, text) in items.into_iter().enumerate() {
-            self.items.push(ChatItem::Queued {
-                index: i,
-                text,
-                selected: selected == Some(i),
-            });
-        }
-        self
-    }
-
     pub fn with_extra_banners(mut self, banners: impl IntoIterator<Item = ChatItem>) -> Self {
         for b in banners {
             self.items.push(b);
@@ -1752,18 +1732,6 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 blocks.push(ConversationBlock::Metadata(MetadataPresentation {
                     text: format!("{status} · {model}"),
                 }));
-            }
-            ChatItem::Queued { text, .. } => {
-                flush_progress(&mut blocks, &mut progress);
-                flush_activity(&mut blocks, &mut activity_group);
-                blocks.push(ConversationBlock::ActiveProgress(
-                    ActiveProgressPresentation {
-                        id: "queued".into(),
-                        label: "Queued".into(),
-                        summary: text.clone(),
-                        status: ActiveProgressStatus::Started,
-                    },
-                ));
             }
             ChatItem::Banner { text, kind } => {
                 flush_progress(&mut blocks, &mut progress);
