@@ -333,7 +333,7 @@ async fn run_tui_inner(
 ) -> Result<ExitSummary, TuiError> {
     enable_raw_mode()?;
     // Ensure the terminal is restored on panic, returned errors and normal exit.
-    let _guard = TerminalGuard::install();
+    let guard = TerminalGuard::install();
     let mut stdout = stdout();
     execute!(
         stdout,
@@ -388,15 +388,16 @@ async fn run_tui_inner(
         let _ = std::fs::remove_file(path);
     }
 
-    result.map(|_| {
-        let report = app.session.token_usage_report();
-        ExitSummary {
-            exit_code: app.exit.code(),
-            session_id: app.session.session_id.to_string(),
-            token_usage: (report.api.total_api_tokens() > 0)
-                .then(|| format_exit_token_usage(&report)),
-        }
-    })
+    let summary = ExitSummary {
+        exit_code: app.exit.code(),
+        session_id: app.session.session_id.to_string(),
+        token_usage: (app.session.token_usage.total_api_tokens() > 0)
+            .then(|| format_exit_token_usage(&app.session.token_usage)),
+    };
+
+    drop(guard);
+
+    result.map(|_| summary)
 }
 
 async fn run_loop(
