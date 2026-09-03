@@ -280,9 +280,7 @@ impl TuiApp {
                 self.push_toast(format!("queued #{n}"));
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    format!(
-                        "queued #{n} · {n} waiting · Ctrl+Up/Down select · Ctrl+Backspace cancel"
-                    ),
+                    format!("queued #{n} · {n} waiting · Alt+Up edit last"),
                 );
                 self.push_activity(
                     ActivityKind::System,
@@ -419,6 +417,22 @@ impl TuiApp {
             return;
         };
         self.cancel_queued_at(idx).await;
+    }
+
+    pub(super) async fn edit_last_queued_message(&mut self) {
+        let len = self.session.queue().len();
+        if len == 0 {
+            return;
+        }
+        match self.session.cancel_queued_at(len).await {
+            Ok(Some(item)) => {
+                self.input.set_text(item.text);
+                self.focus.transition_to(FocusBlock::Composer);
+                self.clamp_queue_selection();
+            }
+            Ok(None) => self.clamp_queue_selection(),
+            Err(error) => self.report_error(&format!("Could not edit the queued message: {error}")),
+        }
     }
 
     /// Non-blocking; call once per tick (mirrors `git_status.poll()`, just
