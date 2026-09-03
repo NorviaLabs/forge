@@ -27,6 +27,7 @@ impl TurnCoordinator {
             match session.apply_model_response(response).await? {
                 ApplyOutcome::Done(response) | ApplyOutcome::Hitl(response) => return Ok(response),
                 ApplyOutcome::Continue => {}
+                ApplyOutcome::YieldToQueue(response) => return Ok(response),
             }
         }
 

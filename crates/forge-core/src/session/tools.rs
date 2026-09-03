@@ -355,6 +355,12 @@ impl AgentSession {
                     detail: format!("{} -> {} chars", call.name, output.content.len()),
                 });
             }
+            if !self.queue().is_empty() {
+                self.turn.restore_validation_budget(pending.budget);
+                return Ok(ModelResponseApplication::Finished(
+                    ApplyOutcome::YieldToQueue(pending.response),
+                ));
+            }
             return self.next_tool_application(pending).await;
         }
         for execution in completed.executions {
@@ -413,6 +419,11 @@ impl AgentSession {
                     pending.response,
                 )));
             }
+        }
+        if !self.queue().is_empty() {
+            return Ok(ModelResponseApplication::Finished(
+                ApplyOutcome::YieldToQueue(pending.response),
+            ));
         }
         self.next_tool_application(pending).await
     }
