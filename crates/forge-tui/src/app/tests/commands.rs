@@ -32,8 +32,8 @@ async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
 async fn ctrl_r_fuzzy_searches_history_and_enter_restores_selection() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, mut app) = focus_test_app().await;
-    app.history.push("cargo test".into());
-    app.history.push("git status".into());
+    app.history.push("cargo test");
+    app.history.push("git status");
     app.input.set_text("draft");
 
     app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
@@ -59,7 +59,7 @@ async fn ctrl_r_fuzzy_searches_history_and_enter_restores_selection() {
 async fn ctrl_r_escape_restores_the_original_composer_draft() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, mut app) = focus_test_app().await;
-    app.history.push("cargo test".into());
+    app.history.push("cargo test");
     app.input.set_text("unfinished draft");
 
     app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
