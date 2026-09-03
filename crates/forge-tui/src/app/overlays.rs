@@ -370,9 +370,10 @@ impl TuiApp {
             OverlayAction::ModelNotInCatalog(model) => {
                 self.status_state.message =
                     format!("model `{model}` is not available for this account");
-                self.push_notice(vec![
-                    "Choose a model from the connected route's catalog.".into()
-                ]);
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    "Choose a model from the connected route's catalog.",
+                );
             }
             OverlayAction::SwitchToRoute { profile_id } => {
                 // A connected route is a credential/entitlement choice, not

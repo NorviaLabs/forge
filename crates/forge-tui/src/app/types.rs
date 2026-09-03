@@ -1234,11 +1234,6 @@ impl ToastState {
     }
 }
 
-pub(crate) struct NoticeState {
-    pub(crate) items: Vec<String>,
-    pub(crate) until: Option<Instant>,
-}
-
 #[derive(Default)]
 pub(crate) struct BannerState {
     pub(crate) items: Vec<ChatItem>,
@@ -1427,7 +1422,6 @@ pub struct TuiApp {
     /// transcript, this survives starting a new session.
     pub(crate) history_store: HistoryStore,
     pub(crate) slash_suggestions: SlashSuggestionState,
-    pub(crate) notice_state: NoticeState,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     pub(crate) feedback: FeedbackModel,
     pub(crate) feedback_until: Option<Instant>,

@@ -28,6 +28,14 @@ impl TuiApp {
         history.load_resumed(history_store.load(crate::history::MAX_INPUT_HISTORY));
         let mut startup_notices = runtime.startup_notices.clone();
         startup_notices.extend(theme_notices);
+        let startup_banners = startup_notices
+            .iter()
+            .cloned()
+            .map(|text| ChatItem::Banner {
+                text,
+                kind: BannerKind::Info,
+            })
+            .collect();
         let file_icons = runtime.file_icons;
         // One synchronous read at startup so the first frame shows the real branch
         // instead of blanking until the first background refresh lands.
@@ -75,19 +83,11 @@ impl TuiApp {
             history,
             history_store,
             slash_suggestions: SlashSuggestionState { selected: 0 },
-            notice_state: NoticeState {
-                items: startup_notices.clone(),
-                until: (!startup_notices.is_empty())
-                    .then(|| Instant::now() + Duration::from_secs(7)),
+            feedback: FeedbackModel::default(),
+            feedback_until: None,
+            banner_state: BannerState {
+                items: startup_banners,
             },
-            feedback: if startup_notices.is_empty() {
-                FeedbackModel::default()
-            } else {
-                FeedbackModel::info(startup_notices.join("\n"))
-            },
-            feedback_until: (!startup_notices.is_empty())
-                .then(|| Instant::now() + Duration::from_secs(7)),
-            banner_state: BannerState { items: Vec::new() },
             search_status: SearchStatusState { label: None },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState::default(),

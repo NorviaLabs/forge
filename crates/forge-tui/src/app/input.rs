@@ -139,7 +139,6 @@ impl TuiApp {
         self.input.clear();
         self.record_submitted_line(&line).await;
         self.slash_suggestions.selected = 0;
-        self.notice_state.items.clear();
         self.input.history_browse = false;
         self.enqueue_user_message(line).await;
         Ok(())
@@ -742,7 +741,6 @@ impl TuiApp {
             if !line.is_empty() {
                 self.record_submitted_line(&line).await;
                 self.slash_suggestions.selected = 0;
-                self.notice_state.items.clear();
                 self.input.history_browse = false;
                 self.dispatch_line(&line).await?;
             }
@@ -761,7 +759,6 @@ impl TuiApp {
         if line.trim_start().starts_with('/') {
             self.record_submitted_line(&line).await;
             self.slash_suggestions.selected = 0;
-            self.notice_state.items.clear();
             self.input.history_browse = false;
             self.dispatch_line(&line).await?;
             return Ok(());
@@ -787,7 +784,6 @@ impl TuiApp {
                 Ok(()) => {
                     self.record_submitted_line(&line).await;
                     self.slash_suggestions.selected = 0;
-                    self.notice_state.items.clear();
                     self.input.history_browse = false;
                 }
                 Err(error) => {
@@ -829,7 +825,6 @@ impl TuiApp {
         if consumed {
             self.record_submitted_line(&line).await;
             self.slash_suggestions.selected = 0;
-            self.notice_state.items.clear();
             self.input.history_browse = false;
         }
         match route {
