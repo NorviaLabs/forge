@@ -76,6 +76,13 @@ impl Widget for FeedbackBar<'_> {
             Span::raw(" "),
             Span::styled(&self.model.text, style),
         ]);
+        if area.height == 1 {
+            Paragraph::new(text)
+                .style(theme::panel())
+                .wrap(Wrap { trim: true })
+                .render(area, buf);
+            return;
+        }
         Paragraph::new(text)
             .style(theme::panel())
             .wrap(Wrap { trim: true })

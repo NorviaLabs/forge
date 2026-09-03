@@ -123,7 +123,6 @@ impl TuiApp {
         }
         self.push_activity(ActivityKind::Context, FeedbackSeverity::Ok, summary.clone());
         self.status_state.message = summary;
-        self.notice_state.items.clear();
         self.busy_state.stop();
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
@@ -296,7 +295,9 @@ impl TuiApp {
         } else {
             format!("{changed} files changed")
         };
-        self.notice_state.items.clear();
-        self.push_notice(vec!["Returned from external editor".into(), gs_text]);
+        self.banner_state.items.push(ChatItem::Banner {
+            text: format!("Returned from external editor\n{gs_text}"),
+            kind: BannerKind::Info,
+        });
     }
 }
