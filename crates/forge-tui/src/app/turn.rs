@@ -825,7 +825,15 @@ impl TuiApp {
                             }
                             continue;
                         }
-                        // `ApplyOutcome` is `#[non_exhaustive]`. Treat an outcome this
+                        ApplyOutcome::YieldToQueue(_response) => {
+                            self.session
+                                .yield_current_turn_for_queue()
+                                .await
+                                .map_err(|e| TuiError::Other(format!("queue handoff: {e}")))?;
+                            outcome_err = None;
+                            self.maybe_note_workspace_changed_from_recent_tools();
+                            break 'turns;
+                        }
                         // build does not recognise as terminal for the turn rather than
                         // looping: an unknown outcome must not drive another model call.
                         _ => {

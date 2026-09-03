@@ -5,6 +5,11 @@
 use crate::*;
 
 impl AgentSession {
+    pub async fn yield_current_turn_for_queue(&mut self) -> Result<(), LoopError> {
+        self.transition(TaskLifecycle::Completed, TransitionReason::QueueYield)
+            .await
+    }
+
     /// Read-only view of queued future-task instructions.
     pub fn queue(&self) -> &TaskQueue {
         &self.tasks.queue
