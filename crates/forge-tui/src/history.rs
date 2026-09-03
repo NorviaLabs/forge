@@ -280,6 +280,52 @@ impl InputHistory {
     }
 }
 
+pub fn search_entries(entries: &[String], query: &str) -> Vec<String> {
+    let query = query.trim().to_ascii_lowercase();
+    let mut matches = entries
+        .iter()
+        .rev()
+        .filter_map(|entry| fuzzy_match_score(entry, &query).map(|score| (score, entry)))
+        .collect::<Vec<_>>();
+    matches.sort_by(|(left_score, _), (right_score, _)| right_score.cmp(left_score));
+    matches
+        .into_iter()
+        .map(|(_, entry)| entry.clone())
+        .collect()
+}
+
+fn fuzzy_match_score(candidate: &str, query: &str) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let candidate = candidate.to_ascii_lowercase();
+    let candidate_chars = candidate.chars().collect::<Vec<_>>();
+    let query_chars = query.chars().collect::<Vec<_>>();
+    let mut candidate_index = 0;
+    let mut previous_match = None;
+    let mut score = 0;
+    for query_char in query_chars {
+        let relative_index = candidate_chars[candidate_index..]
+            .iter()
+            .position(|candidate_char| *candidate_char == query_char)?;
+        let match_index = candidate_index + relative_index;
+        score += 10 - relative_index.min(10) as i32;
+        if previous_match == Some(match_index.saturating_sub(1)) {
+            score += 12;
+        }
+        if match_index == 0
+            || candidate_chars
+                .get(match_index.saturating_sub(1))
+                .is_some_and(|character| !character.is_ascii_alphanumeric())
+        {
+            score += 8;
+        }
+        previous_match = Some(match_index);
+        candidate_index = match_index + 1;
+    }
+    Some(score - candidate_chars.len().min(40) as i32)
+}
+
 fn looks_like_secret(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     if lower.contains("api_key=") || lower.contains("apikey=") {
@@ -432,6 +478,25 @@ mod tests {
     fn empty_history_up_noop() {
         let mut h = InputHistory::default();
         assert!(h.up("x").is_none());
+    }
+
+    #[test]
+    fn fuzzy_search_matches_subsequences_newest_first() {
+        let entries = vec![
+            "cargo test".to_string(),
+            "git status --short".to_string(),
+            "git diff --stat".to_string(),
+        ];
+        assert_eq!(search_entries(&entries, "gds"), vec!["git diff --stat"]);
+    }
+
+    #[test]
+    fn fuzzy_search_prefers_consecutive_matches() {
+        let entries = vec!["run cargo test".to_string(), "cargo test".to_string()];
+        assert_eq!(
+            search_entries(&entries, "ct"),
+            vec!["cargo test", "run cargo test"]
+        );
     }
 
     #[test]

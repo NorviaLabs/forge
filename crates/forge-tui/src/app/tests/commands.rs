@@ -29,6 +29,54 @@ async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
 }
 
 #[tokio::test]
+async fn ctrl_r_fuzzy_searches_history_and_enter_restores_selection() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, mut app) = focus_test_app().await;
+    app.history.push("cargo test");
+    app.history.push("git status");
+    app.input.set_text("draft");
+
+    app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::HistorySearch { .. })));
+
+    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('t'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.input.text, "cargo test");
+    assert!(app.overlay.is_none());
+}
+
+#[tokio::test]
+async fn ctrl_r_escape_restores_the_original_composer_draft() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, mut app) = focus_test_app().await;
+    app.history.push("cargo test");
+    app.input.set_text("unfinished draft");
+
+    app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.input.text, "unfinished draft");
+    assert!(app.overlay.is_none());
+}
+
+#[tokio::test]
 async fn edtui_search_keeps_shift_arrows_inside_the_search_field() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");

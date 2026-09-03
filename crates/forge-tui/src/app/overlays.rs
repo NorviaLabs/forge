@@ -100,6 +100,7 @@ impl TuiApp {
                 text.push_str("• Enter  Send\n");
                 text.push_str("• !command  Run in the embedded terminal\n");
                 text.push_str("• ⇧Enter  Newline\n");
+                text.push_str("• Ctrl+R  Fuzzy-search input history\n");
                 text.push_str("• Tab  Next block (Footer, then Bottom Panel)\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
@@ -174,6 +175,12 @@ impl TuiApp {
                     crossterm::event::KeyModifiers::NONE,
                 ))
                 .await?;
+            }
+            OverlayAction::SelectHistory(text) => {
+                self.input.set_text(text);
+                self.input.history_browse = false;
+                self.history.reset_browse();
+                self.overlay = None;
             }
             OverlayAction::Toast(message) => {
                 self.set_feedback(FeedbackSeverity::Warn, message);
@@ -482,6 +489,11 @@ impl TuiApp {
             if crate::theme::active() != restore {
                 self.set_theme_active(&restore);
             }
+        }
+        if let Some(Overlay::HistorySearch { draft, .. }) = &self.overlay {
+            self.input.set_text(draft.clone());
+            self.input.history_browse = false;
+            self.history.reset_browse();
         }
         self.overlay = None;
     }
