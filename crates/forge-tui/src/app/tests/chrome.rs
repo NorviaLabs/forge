@@ -731,7 +731,7 @@ async fn tui09_status_renders_structured_session_card() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.notice_state.items.is_empty());
+    assert!(app.feedback.is_empty());
     let rows = match app.overlay.as_ref() {
         Some(Overlay::StatusReport { rows, .. }) => rows,
         other => panic!("expected status overlay, got {other:?}"),
@@ -884,6 +884,19 @@ async fn tui08_feedback_strip_visible_on_frame() {
         }
         text.push('\n');
     }
+    let regions = crate::layout::split_areas_with_expanded_conversation(
+        ratatui::layout::Rect::new(0, 0, 100, 30),
+        1,
+        3,
+        false,
+        0,
+        0,
+        2,
+        true,
+        0,
+    );
+    assert_eq!(regions.feedback.height, 1);
+    assert!(regions.feedback.y < regions.input.y);
     assert!(
         text.contains("rate limited") || text.contains("429") || text.contains("Model error"),
         "frame missing feedback:\n{text}"

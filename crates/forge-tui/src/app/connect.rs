@@ -257,7 +257,6 @@ impl TuiApp {
         self.sync_model_capabilities();
         self.feedback = FeedbackModel::default();
         self.status_state.message = "disconnected".into();
-        self.notice_state.items.clear();
         self.banner_state.items.retain(|b| {
             !matches!(
                 b,
@@ -536,7 +535,6 @@ impl TuiApp {
                 self.apply_connect_credentials(&profile_id);
                 self.feedback = FeedbackModel::default();
                 self.status_state.message.clear();
-                self.notice_state.items.clear();
                 self.push_activity(
                     ActivityKind::System,
                     FeedbackSeverity::Ok,
@@ -606,7 +604,6 @@ impl TuiApp {
     pub(super) fn open_connect_picker(&mut self) {
         self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers, false));
         self.status_state.message = "Choose a provider".into();
-        self.notice_state.items.clear();
         self.start_catalog_refresh();
     }
 
@@ -645,7 +642,6 @@ impl TuiApp {
         }
         self.overlay = Some(overlay);
         self.status_state.message = format!("Connect {profile_id}");
-        self.notice_state.items.clear();
     }
 
     /// After a successful connect, either land directly in a usable steady
@@ -729,7 +725,6 @@ impl TuiApp {
         self.record_deliberate_selection();
         self.overlay = None;
         self.onboarding_connect = false;
-        self.notice_state.items.clear();
         let title = self
             .connect
             .registry
@@ -760,7 +755,6 @@ impl TuiApp {
             FeedbackSeverity::Ok,
             format!("{title} connected · choose a model"),
         );
-        self.notice_state.items.clear();
         self.start_catalog_refresh();
     }
 
@@ -817,7 +811,7 @@ impl TuiApp {
         match &action {
             ConnectAction::Open | ConnectAction::List => {
                 self.open_connect_picker();
-                // Also fill notices with list for accessibility
+                // Keep the picker as the source of truth for the provider list.
                 let mut model = Some(self.runtime.model_label.clone());
                 if let Ok(msg) = handle_connect_action(
                     ConnectAction::List,
@@ -827,7 +821,9 @@ impl TuiApp {
                     &mut self.connect.profile,
                     &mut model,
                 ) {
-                    self.push_notice(msg.lines().map(|s| s.to_string()).collect());
+                    if let Some(line) = msg.lines().next() {
+                        self.set_feedback(FeedbackSeverity::Info, line);
+                    }
                 }
                 return;
             }
@@ -882,8 +878,7 @@ impl TuiApp {
                 }
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
                 self.status_state.message = lines.first().cloned().unwrap_or_default();
-                self.notice_state.items.clear();
-                self.notice_state.until = None;
+                self.set_feedback(FeedbackSeverity::Info, self.status_state.message.clone());
                 self.push_activity(
                     ActivityKind::Connect,
                     FeedbackSeverity::Ok,
@@ -909,7 +904,7 @@ impl TuiApp {
                     self.open_api_key_prompt(&profile_id, Some(error));
                 } else {
                     self.status_state.message = error.clone();
-                    self.push_notice_with_severity(vec![error], FeedbackSeverity::Error);
+                    self.set_feedback(FeedbackSeverity::Error, error);
                 }
             }
         }
@@ -930,7 +925,7 @@ impl TuiApp {
             Ok(Err(pending)) => self.show_oauth_pending(pending),
             Err(e) => {
                 self.status_state.message = e.to_string();
-                self.push_notice_with_severity(vec![e.to_string()], FeedbackSeverity::Error);
+                self.set_feedback(FeedbackSeverity::Error, e.to_string());
                 self.report_error(&e.to_string());
             }
         }
@@ -983,12 +978,11 @@ impl TuiApp {
             .map(|p| p.title.clone())
             .unwrap_or_else(|| pending.profile_id.clone());
         let instructions = pending.operator_instructions();
-        let lines: Vec<String> = instructions.lines().map(|s| s.to_string()).collect();
-        self.status_state.message = lines
-            .first()
-            .cloned()
+        self.status_state.message = instructions
+            .lines()
+            .next()
+            .map(str::to_string)
             .unwrap_or_else(|| format!("OAuth for {}", pending.profile_id));
-        self.push_notice(lines);
         self.overlay = Some(Overlay::connect_oauth(
             pending.profile_id.clone(),
             title,
@@ -1156,7 +1150,6 @@ impl TuiApp {
         self.record_deliberate_selection();
         self.feedback = FeedbackModel::default();
         self.status_state.message.clear();
-        self.notice_state.items.clear();
         self.push_activity(
             ActivityKind::System,
             FeedbackSeverity::Ok,

@@ -808,9 +808,10 @@ impl TuiApp {
                     ) {
                         Ok(sessions) if sessions.is_empty() => {
                             self.status_state.message = "no previous sessions".into();
-                            self.push_notice(vec![
-                                "No previous sessions found for this workspace.".into(),
-                            ]);
+                            self.set_feedback(
+                                FeedbackSeverity::Info,
+                                "No previous sessions found for this workspace.",
+                            );
                         }
                         Ok(sessions) => {
                             self.status_state.message =
@@ -828,7 +829,6 @@ impl TuiApp {
                                     title,
                                 });
                             }
-                            self.notice_state.items.clear();
                             self.overlay = Some(Overlay::resume_picker(items));
                         }
                         Err(error) => {
@@ -849,7 +849,6 @@ impl TuiApp {
                     match self.session.resume_session(session_id).await {
                         Ok(_report) => {
                             self.overlay = None;
-                            self.notice_state.items.clear();
                             self.busy_state.stop();
                             self.exit
                                 .set_code(match self.session.active_task.lifecycle {
@@ -921,7 +920,6 @@ impl TuiApp {
                     self.conversation_view.message_start = self.session.messages.len();
                     self.conversation_view.event_start = self.session.events.len();
                     self.banner_state.items.clear();
-                    self.notice_state.items.clear();
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_state.message.clear();
@@ -972,7 +970,7 @@ impl TuiApp {
                         self.thinking_enabled = enabled.unwrap_or(!self.thinking_enabled);
                         self.sync_effort_to_session();
                         let label = if self.thinking_enabled { "on" } else { "off" };
-                        self.push_notice(vec![format!("thinking: {label}")]);
+                        self.set_feedback(FeedbackSeverity::Info, format!("thinking: {label}"));
                     }
                 }
                 Ok(SlashCommand::Terminal) => {
@@ -988,7 +986,6 @@ impl TuiApp {
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
-                    self.notice_state.items.clear();
                     self.push_toast(msg);
                 }
             }

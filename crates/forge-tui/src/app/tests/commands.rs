@@ -162,7 +162,7 @@ async fn resume_command_replaces_active_conversation_in_app() {
         .iter()
         .any(|message| message.content == "restored conversation"));
     assert!(app.status_state.message.contains("resumed"));
-    assert!(app.notice_state.items.is_empty());
+    assert!(app.feedback.text.contains("resumed"));
     assert!(app
         .activity
         .all()
@@ -1115,7 +1115,7 @@ async fn app_status_command() {
     );
     app.dispatch_line("/status").await.unwrap();
     assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
-    assert!(app.notice_state.items.is_empty());
+    assert!(app.feedback.is_empty());
 }
 
 #[tokio::test]
@@ -1146,7 +1146,7 @@ async fn clear_hides_existing_chat_without_deleting_context() {
     assert_eq!(app.session.messages.len(), message_count);
     assert_eq!(app.session.events.len(), event_count);
     assert!(app.banner_state.items.is_empty());
-    assert!(app.notice_state.items.is_empty());
+    assert!(app.feedback.is_empty());
     assert_eq!(app.conversation_view.scroll, 0);
     assert!(app.conversation_view.follow);
 }
@@ -1384,7 +1384,7 @@ async fn enter_runs_slash_from_main_textbox() {
         .await
         .unwrap();
     assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
-    assert!(app.notice_state.items.is_empty());
+    assert!(app.feedback.is_empty());
     assert!(app.history.entries().iter().any(|e| e == "/status"));
 }
 
@@ -1493,7 +1493,10 @@ async fn startup_notices_seed_notice_panel() {
         },
     );
 
-    assert_eq!(app.notice_state.items, vec!["mcp: failed"]);
+    assert!(matches!(
+        app.banner_state.items.as_slice(),
+        [ChatItem::Banner { text, .. }] if text == "mcp: failed"
+    ));
 }
 
 #[tokio::test]
@@ -1544,13 +1547,13 @@ async fn thinking_command_toggles_without_changing_effort() {
 
     assert!(!app.thinking_enabled);
     assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
-    assert_eq!(app.notice_state.items, vec!["thinking: off"]);
+    assert_eq!(app.feedback.text, "thinking: off");
 
     app.dispatch_line("/thinking").await.unwrap();
 
     assert!(app.thinking_enabled);
     assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
-    assert_eq!(app.notice_state.items, vec!["thinking: on"]);
+    assert_eq!(app.feedback.text, "thinking: on");
 }
 
 #[tokio::test]

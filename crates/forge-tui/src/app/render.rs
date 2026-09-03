@@ -82,7 +82,7 @@ impl TuiApp {
             return;
         }
         crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
-        let fb_h = 0;
+        let fb_h = u16::from(!self.feedback.is_empty());
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let theme_picking = matches!(self.overlay, Some(Overlay::Theme { .. }));
         let input_h = if theme_picking {
@@ -979,35 +979,6 @@ impl TuiApp {
                 // Theme dock already replaced the composer band above.
                 Overlay::Theme { .. } => {}
                 _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
-            }
-        }
-
-        if !self.feedback.is_empty() {
-            let width = area.width.saturating_sub(2).clamp(32, 56);
-            let content_width = width.saturating_sub(4).max(1) as usize;
-            let line_count = self
-                .feedback
-                .text
-                .lines()
-                .map(|line| line.chars().count().max(1).div_ceil(content_width))
-                .sum::<usize>()
-                .max(1) as u16;
-            let height = line_count
-                .saturating_add(2)
-                .min(area.height.saturating_sub(2));
-            if height > 0 && width > 0 {
-                let notice_area = ratatui::layout::Rect {
-                    x: area.x + area.width.saturating_sub(width).saturating_sub(1),
-                    y: area.y.saturating_add(1),
-                    width,
-                    height,
-                };
-                frame.render_widget(
-                    FeedbackBar {
-                        model: &self.feedback,
-                    },
-                    notice_area,
-                );
             }
         }
 
