@@ -26,6 +26,14 @@ fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16
     (input.visual_lines_for_width(content_width) + 4).min(crate::layout::MAX_COMPOSER_INPUT_H)
 }
 
+fn queued_messages_for_render(session: &AgentSession) -> Vec<String> {
+    session
+        .queue()
+        .visible()
+        .map(|item| item.text.clone())
+        .collect()
+}
+
 impl TuiApp {
     /// Drive the live streaming preview from a test.
     ///
@@ -91,6 +99,12 @@ impl TuiApp {
             composer_input_height(&self.input, area)
         };
         let panel_h = if self.bottom_panel.open { 16 } else { 0 };
+        let queued_messages = queued_messages_for_render(&self.session);
+        let queue_h = if queued_messages.is_empty() {
+            0
+        } else {
+            (queued_messages.len().min(4) as u16).saturating_add(1)
+        };
         let contextual_hint = self.contextual_hint();
         // The event-loop tick refreshes this cache; drawing only reads it.
         let connected = self.provider_connected_cached();
@@ -120,7 +134,7 @@ impl TuiApp {
                 fb_h,
                 input_h,
                 self.workspace_files.visible,
-                0,
+                queue_h,
                 panel_h,
                 hint_h,
                 true,
@@ -132,7 +146,7 @@ impl TuiApp {
                 fb_h,
                 input_h,
                 self.workspace_files.visible,
-                0,
+                queue_h,
                 panel_h,
                 hint_h,
                 true,
@@ -144,7 +158,7 @@ impl TuiApp {
                 fb_h,
                 input_h,
                 self.workspace_files.visible,
-                0,
+                queue_h,
                 panel_h,
                 hint_h,
                 true,
@@ -156,7 +170,7 @@ impl TuiApp {
                 fb_h,
                 input_h,
                 self.workspace_files.visible,
-                0,
+                queue_h,
                 panel_h,
                 hint_h,
                 true,
@@ -345,8 +359,6 @@ impl TuiApp {
                 } => Some((secs.to_bits(), *chars, *tools, *output_tokens)),
                 _ => None,
             }),
-            queue: self.session_view.queue_len,
-            queue_selected: self.task_selection.queue(),
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
             keep_from_end: window_keep_from_end,
@@ -433,14 +445,6 @@ impl TuiApp {
                 conv =
                     conv.with_activity_summary(summary.label, summary.action_label, summary.kind);
             }
-            conv = conv.with_queued_messages(
-                self.session
-                    .queue()
-                    .visible()
-                    .map(|item| item.text.clone())
-                    .collect::<Vec<_>>(),
-                self.task_selection.queue(),
-            );
             self.sync_approval_menu();
             self.sync_question_menu();
             if let Some(payload) = self.session_view.pending_hitl.clone() {
@@ -467,6 +471,16 @@ impl TuiApp {
                 complete,
                 plan_dock,
             });
+        }
+
+        if regions.queue.height > 0 {
+            frame.render_widget(
+                QueuedMessages {
+                    messages: &queued_messages,
+                    selected: self.task_selection.queue(),
+                },
+                regions.queue,
+            );
         }
         let width = conversation_text_width(sidebar_width);
         // Tail-only changes use `StreamMarkdownCache` and must become visible
@@ -963,7 +977,6 @@ impl TuiApp {
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
             lifecycle_detail: status.incomplete_checks.clone(),
-            queue_len: self.session_view.queue_len,
             ctx_pct: status.ctx_pct,
             prompt_tokens: self.session_view.prompt_tokens,
             completion_tokens: self.session_view.completion_tokens,

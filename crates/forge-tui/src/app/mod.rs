@@ -69,7 +69,7 @@ use crate::widgets::{
     classify_operator_error, composer_cursor_position, composer_text_area_width,
     footer_short_model_id, BottomPanel, BottomPanelModel, BottomPanelState, BusyPhase, FeedbackBar,
     FeedbackModel, FeedbackSeverity, FooterBar, FooterFocus, FooterModel, InputBar, InputModel,
-    StatusBar, StatusModel, TaskStrip, TaskStripItem,
+    QueuedMessages, StatusBar, StatusModel, TaskStrip, TaskStripItem,
 };
 use forge_config::FileIconMode;
 use forge_workspace::file_ops::{
