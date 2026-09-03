@@ -47,6 +47,41 @@ async fn edtui_search_keeps_shift_arrows_inside_the_search_field() {
 }
 
 #[tokio::test]
+async fn codex_edit_binding_restores_most_recent_queued_message() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.enqueue_user_message("first".into()).await;
+    app.enqueue_user_message("last".into()).await;
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::ALT))
+        .await
+        .unwrap();
+
+    assert_eq!(app.input.text, "last");
+    assert_eq!(app.session.queue().len(), 1);
+    assert_eq!(
+        app.session
+            .queue()
+            .visible()
+            .next()
+            .map(|item| item.text.as_str()),
+        Some("first")
+    );
+}
+
+#[tokio::test]
 async fn ctrl_g_remains_editor_owned_with_edtui_active() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");

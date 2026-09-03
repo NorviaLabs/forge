@@ -487,6 +487,8 @@ pub(crate) enum SemanticCommand {
     FocusComposer,
     FocusPane(FocusBlock),
     SubmitMessage,
+    QueueMessage,
+    EditLastQueuedMessage,
     InsertComposerNewline,
     OpenSlashCommands,
     OpenHelp,
