@@ -141,6 +141,8 @@ pub enum ApplyOutcome {
     Done(ModelResponse),
     /// Tools ran; call the model again.
     Continue,
+    /// A queued task should start after this tool result.
+    YieldToQueue(ModelResponse),
     /// Paused for human-in-the-loop.
     Hitl(ModelResponse),
 }
