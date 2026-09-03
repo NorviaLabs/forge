@@ -490,6 +490,7 @@ pub(crate) enum SemanticCommand {
     QueueMessage,
     EditLastQueuedMessage,
     InsertComposerNewline,
+    OpenHistorySearch,
     OpenSlashCommands,
     OpenHelp,
     SelectEntry(PathBuf),

@@ -403,6 +403,9 @@ impl TuiApp {
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::InsertComposerNewline)
             }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::OpenHistorySearch)
+            }
             KeyCode::Char('v')
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.modifiers.contains(KeyModifiers::SHIFT) =>
@@ -492,6 +495,14 @@ impl TuiApp {
             SemanticCommand::QueueMessage => self.queue_composer_message().await?,
             SemanticCommand::EditLastQueuedMessage => self.edit_last_queued_message().await,
             SemanticCommand::InsertComposerNewline => self.input.insert_newline(),
+            SemanticCommand::OpenHistorySearch => {
+                self.overlay = Some(Overlay::history_search(
+                    self.history.entries().to_vec(),
+                    self.input.text.clone(),
+                ));
+                self.input.history_browse = false;
+                self.history.reset_browse();
+            }
             SemanticCommand::OpenSlashCommands => {
                 self.enter_chat_composer();
                 if self.input.text.is_empty() {

@@ -201,6 +201,13 @@ pub enum Overlay {
         filter: String,
         items: Vec<TaskSwitcherItem>,
     },
+    HistorySearch {
+        query: String,
+        selected: usize,
+        entries: Vec<String>,
+        items: Vec<String>,
+        draft: String,
+    },
     TaskRename {
         session_id: String,
         label: String,
@@ -1233,6 +1240,17 @@ impl Overlay {
         }
     }
 
+    pub fn history_search(entries: Vec<String>, draft: String) -> Self {
+        let items = crate::history::search_entries(&entries, "");
+        Self::HistorySearch {
+            query: String::new(),
+            selected: 0,
+            entries,
+            items,
+            draft,
+        }
+    }
+
     /// The switcher row under the cursor, if any survives the filter.
     fn task_switcher_selection(&self) -> Option<&TaskSwitcherItem> {
         let Self::TaskSwitcher {
@@ -1333,6 +1351,15 @@ impl Overlay {
                 let next = (current as i32 + delta).rem_euclid(indices.len() as i32) as usize;
                 *selected = indices[next];
             }
+            Self::HistorySearch {
+                selected, items, ..
+            } => {
+                if items.is_empty() {
+                    return;
+                }
+                let n = items.len() as i32;
+                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
             Self::Theme {
                 selected, items, ..
             } => {
@@ -1410,6 +1437,7 @@ pub enum OverlayAction {
     None,
     Close,
     SelectTask(String),
+    SelectHistory(String),
     CreateTask {
         label: String,
         first_prompt: Option<String>,
@@ -1608,6 +1636,21 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Char(c) if matches!(overlay, Overlay::HistorySearch { .. }) && !c.is_control() => {
+            if let Overlay::HistorySearch {
+                query,
+                selected,
+                entries,
+                items,
+                ..
+            } = overlay
+            {
+                query.push(c);
+                *items = crate::history::search_entries(entries, query);
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
         Key::Paste(ref data) if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
             if let Overlay::TaskSwitcher {
                 selected, filter, ..
@@ -1621,12 +1664,48 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Paste(data) if matches!(overlay, Overlay::HistorySearch { .. }) => {
+            if let Overlay::HistorySearch {
+                query,
+                selected,
+                entries,
+                items,
+                ..
+            } = overlay
+            {
+                query.extend(data.chars().map(|character| {
+                    if character.is_control() {
+                        ' '
+                    } else {
+                        character
+                    }
+                }));
+                *items = crate::history::search_entries(entries, query);
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
         Key::Backspace if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
             if let Overlay::TaskSwitcher {
                 selected, filter, ..
             } = overlay
             {
                 filter.pop();
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::HistorySearch { .. }) => {
+            if let Overlay::HistorySearch {
+                query,
+                selected,
+                entries,
+                items,
+                ..
+            } = overlay
+            {
+                query.pop();
+                *items = crate::history::search_entries(entries, query);
                 *selected = 0;
             }
             OverlayAction::None
@@ -1738,6 +1817,11 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
+            Overlay::HistorySearch { selected, items, .. } => items
+                .get(*selected)
+                .cloned()
+                .map(OverlayAction::SelectHistory)
+                .unwrap_or(OverlayAction::None),
             Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
             Overlay::ConnectModel {
                 providers,
@@ -3022,6 +3106,86 @@ impl Widget for OverlayWidget<'_> {
                 )
                 .render(r, buf);
             }
+            Overlay::HistorySearch {
+                query,
+                selected,
+                items,
+                ..
+            } => {
+                let visible = items.len().clamp(1, 10) as u16;
+                let r = centered_content_rect(area, 78, visible.saturating_add(3), 18);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .title(Span::styled(
+                        format!(
+                            " History · {} ",
+                            crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
+                        ),
+                        theme::brand(),
+                    ));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                let query_line = Line::from(vec![
+                    Span::styled("Search: ", theme::muted()),
+                    Span::styled(query.clone(), theme::text()),
+                    Span::styled("█", theme::brand()),
+                ]);
+                if inner.height > 0 {
+                    Paragraph::new(query_line)
+                        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+                }
+                let list_area = Rect::new(
+                    inner.x,
+                    inner.y.saturating_add(1),
+                    inner.width,
+                    inner.height.saturating_sub(1),
+                );
+                let visible = list_area.height.max(1) as usize;
+                let start = selected
+                    .saturating_add(1)
+                    .saturating_sub(visible)
+                    .min(items.len().saturating_sub(visible));
+                let rows = items
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(visible)
+                    .map(|(index, item)| {
+                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let style = if index == *selected {
+                            theme::selected_row()
+                        } else {
+                            theme::text()
+                        };
+                        ListItem::new(Span::styled(
+                            format!(
+                                "{marker}{}",
+                                item.chars()
+                                    .map(|character| {
+                                        if character.is_control() {
+                                            ' '
+                                        } else {
+                                            character
+                                        }
+                                    })
+                                    .collect::<String>()
+                            ),
+                            style,
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                if rows.is_empty() && list_area.height > 0 {
+                    List::new(vec![ListItem::new(Span::styled(
+                        "No matching history",
+                        theme::muted(),
+                    ))])
+                    .render(list_area, buf);
+                } else {
+                    List::new(rows).render(list_area, buf);
+                }
+            }
             Overlay::TaskRename { label, error, .. } => {
                 let r = centered_rect(64, 30, area);
                 let error = error
@@ -3291,6 +3455,35 @@ mod tests {
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Esc),
             OverlayAction::Close
+        );
+    }
+
+    #[test]
+    fn history_search_renders_query_and_results() {
+        let overlay = Overlay::history_search(
+            vec!["cargo test".into(), "git status".into()],
+            String::new(),
+        );
+        let text = render_text(&overlay);
+        assert!(text.contains("History"));
+        assert!(text.contains("Search:"));
+        assert!(text.contains("cargo test"));
+        assert!(text.contains("git status"));
+    }
+
+    #[test]
+    fn history_search_filters_and_selects_a_result() {
+        let entries = vec![
+            "cargo test".into(),
+            "git status".into(),
+            "cargo check".into(),
+        ];
+        let mut overlay = Overlay::history_search(entries, "draft".into());
+        handle_overlay_key(&mut overlay, Key::Char('c'));
+        handle_overlay_key(&mut overlay, Key::Char('t'));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SelectHistory("cargo test".into())
         );
     }
 
