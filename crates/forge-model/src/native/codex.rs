@@ -43,13 +43,11 @@ pub(super) async fn complete(
             )
         })?;
     let aliases = tool_aliases(&req);
-    // Unlike the Anthropic and OpenAI-compatible transports, the ChatGPT
-    // backend-api Codex endpoint (`DEFAULT_BASE_URL` above) rejects an
-    // `input[].content[].cache_control` field outright with `HTTP 400
-    // "Unknown parameter"` — it is not the same Responses API surface as
-    // api.openai.com's, despite the shared request shape. Do not apply
-    // `apply_codex_prompt_cache` here; prompt caching for this profile isn't
-    // supported, not merely disabled.
+    // The ChatGPT backend-api Codex endpoint rejects inline
+    // `input[].content[].cache_control` markers, so request_body never emits
+    // them. It still accepts the top-level cache affinity key used by the
+    // Responses API; omitting that key lets identical prefixes be routed to
+    // different cache shards and sharply lowers the observed hit rate.
     let body = request_body(client, &req, model, &aliases);
     let request_id = Uuid::new_v4().to_string();
     let response = client
@@ -265,6 +263,10 @@ pub(super) fn request_body(
     });
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
+    }
+    if req.prompt_cache {
+        body["prompt_cache_key"] =
+            Value::String(crate::prompt_cache::prompt_cache_key(&req.workspace_root));
     }
     if !req.thinking_enabled {
         if forge_connect::ModelCatalogCache::user_default().model_supports_thinking_off(&req.model)
@@ -646,6 +648,23 @@ mod tests {
             !body.to_string().contains("cache_control"),
             "codex request body must never contain cache_control: {body}"
         );
+        assert_eq!(
+            body["prompt_cache_key"],
+            crate::prompt_cache::prompt_cache_key(&request.workspace_root),
+            "Codex still needs top-level cache affinity without inline markers"
+        );
+    }
+
+    #[test]
+    fn codex_request_omits_cache_affinity_when_disabled() {
+        let mut request = request_with_tool("read_file");
+        request.prompt_cache = false;
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        let aliases = tool_aliases(&request);
+
+        let body = request_body(&client, &request, &request.model, &aliases);
+
+        assert!(body.get("prompt_cache_key").is_none());
     }
 
     #[test]
