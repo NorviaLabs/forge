@@ -1,6 +1,12 @@
-//! Input command history (TUI-05 / tui-input-history.md).
+//! Input history (TUI-05 / tui-input-history.md).
 
-/// In-session submitted-line history for the TUI input bar.
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+pub const MAX_INPUT_HISTORY: usize = 500;
+
+/// Submitted-line history for the TUI input bar.
 #[derive(Debug, Clone)]
 pub struct InputHistory {
     /// Oldest → newest.
@@ -14,7 +20,136 @@ pub struct InputHistory {
 
 impl Default for InputHistory {
     fn default() -> Self {
-        Self::new(500)
+        Self::new(MAX_INPUT_HISTORY)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredHistoryEntry {
+    workspace: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct StoredHistory {
+    #[serde(default)]
+    entries: Vec<StoredHistoryEntry>,
+}
+
+/// User-level history store, partitioned by canonical workspace.
+#[derive(Debug, Clone)]
+pub struct HistoryStore {
+    path: PathBuf,
+    workspace: String,
+}
+
+impl HistoryStore {
+    pub fn new(path: PathBuf, workspace: &Path) -> Self {
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf())
+            .display()
+            .to_string();
+        Self { path, workspace }
+    }
+
+    pub fn user_default(workspace: &Path) -> Self {
+        let path = std::env::var_os("FORGE_INPUT_HISTORY_PATH")
+            .map(PathBuf::from)
+            .or_else(|| {
+                Some(
+                    dirs::data_dir()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join("forge")
+                        .join("input-history.json"),
+                )
+            })
+            .expect("history path fallback");
+        Self::new(path, workspace)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn read(&self) -> StoredHistory {
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn load(&self, max_entries: usize) -> Vec<String> {
+        self.read()
+            .entries
+            .into_iter()
+            .filter(|entry| {
+                entry.workspace == self.workspace && InputHistory::should_store(&entry.text)
+            })
+            .map(|entry| entry.text)
+            .rev()
+            .take(max_entries.max(1))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+
+    pub fn push(&self, line: &str, max_entries: usize) -> std::io::Result<()> {
+        if !InputHistory::should_store(line) {
+            return Ok(());
+        }
+        let text = line.trim();
+        let mut history = self.read();
+        if history
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.workspace == self.workspace)
+            .is_some_and(|entry| entry.text == text)
+        {
+            return Ok(());
+        }
+        history.entries.push(StoredHistoryEntry {
+            workspace: self.workspace.clone(),
+            text: text.to_string(),
+        });
+        let keep = max_entries.max(1);
+        let workspace_count = history
+            .entries
+            .iter()
+            .filter(|entry| entry.workspace == self.workspace)
+            .count();
+        if workspace_count > keep {
+            let remove = workspace_count - keep;
+            let mut removed = 0;
+            history.entries.retain(|entry| {
+                if entry.workspace == self.workspace && removed < remove {
+                    removed += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        let Some(parent) = self.path.parent() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "history path has no parent",
+            ));
+        };
+        std::fs::create_dir_all(parent)?;
+        let temp = self.path.with_extension("json.tmp");
+        let encoded = serde_json::to_vec_pretty(&history).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+        })?;
+        std::fs::write(&temp, encoded)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(temp, &self.path)
     }
 }
 
@@ -169,6 +304,7 @@ fn looks_like_secret(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn push_and_up_down_cycle() {
@@ -188,6 +324,35 @@ mod tests {
             "explicit leave restores the stashed live draft"
         );
         assert!(!h.browsing());
+    }
+
+    #[test]
+    fn persistent_history_survives_sessions_but_stays_workspace_scoped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("history.json");
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let store = HistoryStore::new(path.clone(), &first);
+        store.push("one", 500).unwrap();
+        store.push("two", 500).unwrap();
+
+        let reloaded = HistoryStore::new(path.clone(), &first);
+        assert_eq!(reloaded.load(500), ["one", "two"]);
+        let other = HistoryStore::new(path, &second);
+        assert!(other.load(500).is_empty());
+    }
+
+    #[test]
+    fn persistent_history_filters_secrets_and_trims_oldest_entry() {
+        let dir = TempDir::new().unwrap();
+        let store = HistoryStore::new(dir.path().join("history.json"), dir.path());
+        store.push("one", 2).unwrap();
+        store.push("api_key=secret", 2).unwrap();
+        store.push("two", 2).unwrap();
+        store.push("three", 2).unwrap();
+        assert_eq!(store.load(2), ["two", "three"]);
     }
 
     #[test]

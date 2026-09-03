@@ -16,6 +16,8 @@ pub enum SlashCommand {
     /// Open the help overlay — the same one the empty composer's `?`
     /// shortcut opens, just reachable without knowing that shortcut exists.
     Help,
+    Continue,
+    Fork,
     ResumeList,
     Tasks,
     Resume {
@@ -74,7 +76,9 @@ impl SlashCommand {
     pub fn available_while_busy(&self) -> bool {
         !matches!(
             self,
-            Self::ResumeList
+            Self::Continue
+                | Self::Fork
+                | Self::ResumeList
                 | Self::Resume { .. }
                 | Self::Compact
                 | Self::Disconnect { .. }
@@ -98,6 +102,20 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
         "help" | "?" => Ok(SlashCommand::Help),
+        "continue" => {
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/continue".into()))
+            } else {
+                Ok(SlashCommand::Continue)
+            }
+        }
+        "fork" => {
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/fork".into()))
+            } else {
+                Ok(SlashCommand::Fork)
+            }
+        }
         "tasks" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/tasks".into()))
@@ -177,6 +195,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_continue_and_fork_commands() {
+        assert_eq!(
+            parse_slash("/continue").unwrap().unwrap(),
+            SlashCommand::Continue
+        );
+        assert_eq!(parse_slash("/fork").unwrap().unwrap(), SlashCommand::Fork);
+        assert!(parse_slash("/continue now").unwrap().is_err());
+        assert!(parse_slash("/fork now").unwrap().is_err());
+    }
+
+    #[test]
     fn parses_phase1_commands() {
         assert!(parse_slash("/tools").unwrap().is_err());
         assert!(parse_slash("/journal").unwrap().is_err());
@@ -185,6 +214,8 @@ mod tests {
     #[test]
     fn busy_turns_allow_model_settings_but_reject_other_session_mutations() {
         for command in [
+            SlashCommand::Continue,
+            SlashCommand::Fork,
             SlashCommand::ResumeList,
             SlashCommand::Compact,
             SlashCommand::Disconnect { profile_id: None },

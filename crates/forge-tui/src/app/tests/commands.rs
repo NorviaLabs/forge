@@ -3,6 +3,7 @@
 //! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
 
 use super::prelude::*;
+use crate::HistoryStore;
 use forge_connect::PreferenceStore;
 
 #[tokio::test]
@@ -162,6 +163,12 @@ async fn resume_restores_input_history_for_up_down_recall() {
         .await
         .unwrap();
     previous.append_user_message("first message").await.unwrap();
+    HistoryStore::new(
+        dir.path().join(".forge-test-input-history.json"),
+        dir.path(),
+    )
+    .push("first message", crate::MAX_INPUT_HISTORY)
+    .unwrap();
     let previous_id = previous.session_id;
 
     let mut app = TuiApp::new(
@@ -176,9 +183,9 @@ async fn resume_restores_input_history_for_up_down_recall() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    // A brand-new TuiApp starts with empty history — resuming should
-    // populate it from the target session's own past input.
-    assert!(app.history.is_empty());
+    // A brand-new TuiApp loads workspace history independently of the
+    // session transcript.
+    assert_eq!(app.history.len(), 1);
     app.dispatch_line(&format!("/resume {previous_id}"))
         .await
         .unwrap();
@@ -213,6 +220,12 @@ async fn resume_restores_local_only_slash_commands_too() {
     // exactly the kind of local-only command the old, UserMessage-only
     // history restoration used to drop.
     previous.record_composer_line("/status").await.unwrap();
+    HistoryStore::new(
+        dir.path().join(".forge-test-input-history.json"),
+        dir.path(),
+    )
+    .push("/status", crate::MAX_INPUT_HISTORY)
+    .unwrap();
     let previous_id = previous.session_id;
 
     let mut app = TuiApp::new(

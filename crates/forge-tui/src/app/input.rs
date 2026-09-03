@@ -687,18 +687,14 @@ impl TuiApp {
         }
     }
 
-    /// Records a submitted composer line in both local Up/Down history and
-    /// the session journal, so the two never drift apart. Journal recording
-    /// is best-effort (`let _ =`) — a persistence hiccup here must never
-    /// block sending the message — and gated by the same `should_store`
-    /// policy `history.push` already applies internally, keeping the two
-    /// stores policy-consistent (no secret-looking or empty lines in
-    /// either).
+    /// Records a submitted composer line in local Up/Down history and the
+    /// user-level history store. Model transcripts remain session-scoped;
+    /// composer recall survives starting a new session.
     async fn record_submitted_line(&mut self, line: &str) {
         self.history.push(line);
-        if InputHistory::should_store(line) {
-            let _ = self.session.record_composer_line(line).await;
-        }
+        let _ = self
+            .history_store
+            .push(line, crate::history::MAX_INPUT_HISTORY);
     }
 
     pub(super) async fn submit_composer_message(&mut self) -> Result<(), TuiError> {

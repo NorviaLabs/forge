@@ -162,6 +162,8 @@ Useful in-app commands:
 /connect       Connect or change a provider
 /model         Browse or change models
 /resume        Browse previous sessions in the current journal
+/continue     Resume the most recent previous session
+/fork         Start a new session from this conversation
 /clear         Clear the visible transcript
 /compact       Compact the active context
 /disconnect    Remove a saved provider connection
@@ -488,14 +490,24 @@ Every Forge session has a durable identifier and journal. If a process stops
 unexpectedly, start Forge with:
 
 ```sh
-forge --resume
+forge --continue
 ```
 
-or resume a known session directly:
+`--continue` resumes the most recently modified previous session in the
+current workspace. To browse or resume a specific session:
 
 ```sh
+forge --resume
 forge --resume <session-id>
 ```
+
+Use `--fork <session-id>` to create a new session seeded with the selected
+conversation while leaving the original session unchanged. The equivalent TUI
+commands are `/continue`, `/resume`, and `/fork`. Model transcripts are
+session-scoped; composer Up/Down recall is stored separately at the user level
+and partitioned by workspace, so starting a new session does not erase recent
+input recall. `/clear` hides the rendered transcript but does not erase model
+context; use `/compact` when you want a smaller model-visible context.
 
 Inside the TUI, `/resume` lists previous sessions and shows a title hint from
 the first user message when available. Session journals stay separate from

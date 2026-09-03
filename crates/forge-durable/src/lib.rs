@@ -89,11 +89,8 @@ pub struct ReplayState {
     /// tool intents without results (fail-safe)
     pub incomplete_intents: Vec<String>,
     pub user_messages: Vec<String>,
-    /// Every composer submission, oldest → newest, independent of whether it
-    /// became a model-directed `UserMessage` — see
-    /// `JournalEventType::ComposerLineSubmitted`. Feeds the TUI's Up/Down
-    /// arrow-key history on resume; distinct from `user_messages`, which
-    /// stays scoped to true model-directed text (used for session titling).
+    /// Legacy composer submissions retained for journal compatibility. Current
+    /// TUI recall is stored separately at user level.
     pub composer_lines: Vec<String>,
     /// Ordered active conversation reconstructed from journal events.
     pub messages: Vec<Message>,
@@ -1020,6 +1017,21 @@ impl Journal {
                         if let Ok(messages) = Vec::<Message>::deserialize(messages) {
                             state.messages = messages;
                         }
+                    }
+                    if let Some(user_messages) = payload.get("user_messages") {
+                        if let Ok(user_messages) = Vec::<String>::deserialize(user_messages) {
+                            state.user_messages = user_messages;
+                        }
+                    }
+                    if let Some(tool_results) = payload.get("tool_results") {
+                        if let Ok(tool_results) =
+                            HashMap::<String, ToolResultPayload>::deserialize(tool_results)
+                        {
+                            state.tool_results = tool_results;
+                        }
+                    }
+                    if let Some(context_state) = payload.get("context_state") {
+                        state.context_state = Some(context_state.clone());
                     }
                 }
                 JournalEventType::QueueEnqueued => {

@@ -151,10 +151,7 @@ pub struct ResumeReport {
     pub model_steps: usize,
     pub tool_results: usize,
     pub incomplete_intents: usize,
-    /// Every composer submission for this session, oldest → newest —
-    /// slash commands and plain chat alike, independent of whether it
-    /// became a model-directed message — for restoring the TUI composer's
-    /// Up/Down arrow-key history on resume. See
-    /// `JournalEventType::ComposerLineSubmitted`.
+    /// Legacy session composer lines retained for journal compatibility. TUI
+    /// recall is now loaded from its user-level workspace history store.
     pub composer_lines: Vec<String>,
 }

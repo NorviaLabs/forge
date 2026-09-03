@@ -30,6 +30,13 @@ pub(crate) fn isolate_global_skills() {
     static EMPTY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     let dir = EMPTY.get_or_init(|| tempfile::tempdir().expect("temp dir for skill isolation"));
     std::env::set_var("FORGE_GLOBAL_SKILLS_DIR", dir.path());
+    static HISTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let history =
+        HISTORY.get_or_init(|| tempfile::tempdir().expect("temp dir for history isolation"));
+    std::env::set_var(
+        "FORGE_INPUT_HISTORY_PATH",
+        history.path().join("input-history.json"),
+    );
 }
 
 /// Points the platform application-data directory (`dirs::data_dir()`, which

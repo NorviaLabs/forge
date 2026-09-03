@@ -23,6 +23,9 @@ impl TuiApp {
         crate::theme::install(registry, theme_id);
         let mut input = InputModel::default();
         input.hint = "Describe a task…".into();
+        let history_store = history_store_for_workspace(&workspace_root);
+        let mut history = InputHistory::default();
+        history.load_resumed(history_store.load(crate::history::MAX_INPUT_HISTORY));
         let mut startup_notices = runtime.startup_notices.clone();
         startup_notices.extend(theme_notices);
         let file_icons = runtime.file_icons;
@@ -69,7 +72,8 @@ impl TuiApp {
             },
             runtime,
             connect: connect::ConnectionModel::new(),
-            history: InputHistory::default(),
+            history,
+            history_store,
             slash_suggestions: SlashSuggestionState { selected: 0 },
             notice_state: NoticeState {
                 items: startup_notices.clone(),
@@ -180,5 +184,16 @@ impl TuiApp {
         app.init_file_watcher();
         app.load_ui_state();
         app.restore_saved_auth().apply_connection_chrome()
+    }
+}
+
+fn history_store_for_workspace(workspace: &std::path::Path) -> HistoryStore {
+    #[cfg(test)]
+    {
+        HistoryStore::new(workspace.join(".forge-test-input-history.json"), workspace)
+    }
+    #[cfg(not(test))]
+    {
+        HistoryStore::user_default(workspace)
     }
 }

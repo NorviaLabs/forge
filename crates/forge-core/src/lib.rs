@@ -165,6 +165,8 @@ pub struct AgentSession {
     /// by this ordinal, which compaction cannot disturb because it only
     /// rewrites the projection.
     canonical_user_turns: usize,
+    /// Canonical user messages retained for session forks and durable titles.
+    canonical_user_messages: Vec<String>,
 }
 
 #[derive(Debug)]

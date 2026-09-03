@@ -50,7 +50,7 @@ use crate::editor::EditorError;
 use crate::editor_session::EditorSession;
 use crate::effort::ReasoningEffort;
 use crate::file_explorer::{FileExplorer, FileExplorerWidget};
-use crate::history::InputHistory;
+use crate::history::{HistoryStore, InputHistory};
 use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
 use crate::layout::{

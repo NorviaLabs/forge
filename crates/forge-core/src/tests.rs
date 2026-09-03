@@ -1870,6 +1870,36 @@ async fn empty_final_after_tools_is_terminal_failure_not_success() {
 }
 
 #[tokio::test]
+async fn fork_creates_a_new_session_with_context_and_leaves_source_unchanged() {
+    let dir = tempdir().unwrap();
+    let mut source = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+    )
+    .await
+    .unwrap();
+    source
+        .append_user_message("keep this context")
+        .await
+        .unwrap();
+    let source_id = source.session_id;
+    let source_len = source.messages.len();
+
+    let fork = source.fork().await.unwrap();
+
+    assert_ne!(fork.session_id, source_id);
+    assert_eq!(fork.active_task.lifecycle, TaskLifecycle::Ready);
+    assert_eq!(fork.messages.len(), source_len);
+    assert!(fork
+        .messages
+        .iter()
+        .any(|message| message.content == "keep this context"));
+    assert_eq!(source.session_id, source_id);
+    assert_eq!(source.messages.len(), source_len);
+}
+
+#[tokio::test]
 async fn resume_restores_conversation_context_and_usage() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();

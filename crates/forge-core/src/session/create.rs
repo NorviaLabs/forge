@@ -97,6 +97,7 @@ impl AgentSession {
         self.context_state = SessionContextState::default();
         self.compaction = CompactionTelemetry::default();
         self.restore_protected_facts(&user_messages);
+        self.canonical_user_messages = user_messages;
         self.restore_context_state(context_state.as_ref());
         self.reconcile_incomplete_intents(&incomplete).await?;
         // Stale Working without a live executor is Interrupted, not eternal Working.
@@ -178,6 +179,7 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
+            canonical_user_messages: Vec::new(),
         })
     }
 
@@ -260,6 +262,7 @@ impl AgentSession {
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
             canonical_user_turns: 0,
+            canonical_user_messages: state.user_messages.clone(),
         };
         session.restore_protected_facts(&state.user_messages);
         session.restore_context_state(state.context_state.as_ref());
@@ -273,6 +276,88 @@ impl AgentSession {
         // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
         session.mark_interrupted_if_stale().await?;
         Ok(session)
+    }
+
+    /// Create a new session seeded with this session's current model-visible
+    /// context. The source journal is untouched; the fork is ready for a new
+    /// task with a fresh lifecycle and runtime scratch space.
+    pub async fn fork(&self) -> Result<Self, LoopError> {
+        let loop_cfg = LoopConfig {
+            max_turns: self.max_turns,
+            workspace: self.workspace_root().to_path_buf(),
+            journal_dir: self.journal.directory().to_path_buf(),
+            enable_context_lifecycle: self.enable_context,
+            enable_governance: self.enable_gov,
+            web_search: WebSearchConfig::default(),
+        };
+        let mut fork = Self::create(loop_cfg, self.model.clone(), (*self.tools).clone()).await?;
+        fork.active_model = self.active_model.clone();
+        fork.active_route_id = self.active_route_id.clone();
+        fork.reasoning_effort = self.reasoning_effort.clone();
+        fork.thinking_enabled = self.thinking_enabled;
+        fork.governance = self.governance.clone();
+        fork.context.config = self.context.config.clone();
+        fork.context.goal = self.context.goal.clone();
+        fork.compaction_policy = self.compaction_policy;
+        fork.tool_ctx.image_input = self.tool_ctx.image_input;
+        fork.tool_ctx.active_model = self.tool_ctx.active_model.clone();
+
+        let mut messages: Vec<Message> = self.messages.iter().cloned().collect();
+        let session_tmp = fork
+            .tool_ctx
+            .session_tmp
+            .as_ref()
+            .map(|tmp| tmp.path().to_path_buf());
+        let Some(session_tmp) = session_tmp else {
+            return Err(LoopError::Other(
+                "fork session scratch space is missing".into(),
+            ));
+        };
+        let system = assemble_system_prompt(
+            &fork.context.load_agents_md(),
+            fork.context.load_skills().as_slice(),
+            &session_tmp,
+        );
+        restore_system_message(&mut messages, system.clone());
+        if let Some(first) = messages
+            .first_mut()
+            .filter(|message| message.role == MessageRole::System)
+        {
+            first.content = system;
+        }
+        let context_state = serde_json::to_value(&self.context_state).map_err(|error| {
+            LoopError::Other(format!("could not serialize fork context: {error}"))
+        })?;
+        let tool_results = serde_json::to_value(&self.journaled_tool_results).map_err(|error| {
+            LoopError::Other(format!("could not serialize fork tool results: {error}"))
+        })?;
+        fork.journal
+            .append_context_reset(
+                fork.session_id,
+                json!({
+                    "messages": messages,
+                    "user_messages": self.canonical_user_messages.clone(),
+                    "context_state": context_state,
+                    "tool_results": tool_results,
+                }),
+            )
+            .await?;
+        fork.journal
+            .append_status(fork.session_id, TaskLifecycle::Ready)
+            .await?;
+        fork.messages = messages.into();
+        fork.journaled_tool_results = self.journaled_tool_results.clone();
+        fork.canonical_user_messages = self.canonical_user_messages.clone();
+        let fork_user_messages = fork.canonical_user_messages.clone();
+        fork.restore_protected_facts(&fork_user_messages);
+        fork.context_state = self.context_state.clone();
+        fork.apply_egress_policy(crate::egress_policy_for_workspace(fork.workspace_root()))
+            .await;
+        fork.last_prompt_wire = None;
+        fork.last_prompt_hash = None;
+        fork.cache_epoch = 0;
+        fork.last_cache_transport = None;
+        Ok(fork)
     }
 
     /// Whether this session can reach the network at all.

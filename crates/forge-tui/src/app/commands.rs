@@ -706,6 +706,72 @@ impl TuiApp {
                         "Help · press Enter to get started or Esc to dismiss",
                     );
                 }
+                Ok(SlashCommand::Continue) => {
+                    let session = recent_resume_sessions(
+                        self.session.journal_dir(),
+                        self.session.session_id,
+                        1,
+                    )?
+                    .first()
+                    .map(|session| session.id);
+                    if let Some(session_id) = session {
+                        Box::pin(self.dispatch_line(&format!("/resume {session_id}"))).await?;
+                    } else {
+                        self.set_feedback(
+                            FeedbackSeverity::Info,
+                            "no previous session to continue",
+                        );
+                    }
+                }
+                Ok(SlashCommand::Fork) => {
+                    if !self.require_primary_task("/fork") {
+                        return Ok(());
+                    }
+                    match self.session.fork().await {
+                        Ok(session) => {
+                            let session_id = session.session_id;
+                            let old_session_id = self.session.session_id;
+                            self.task_view_states.remove(&old_session_id);
+                            self.session = session;
+                            self.selected_task_id = session_id;
+                            self.task_chrome
+                                .retain(|task| task.session_id == session_id);
+                            if self.task_chrome.is_empty() {
+                                self.task_chrome.push(TaskChromeItem {
+                                    session_id,
+                                    slot: Some(1),
+                                    label: self
+                                        .runtime
+                                        .cwd
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or("primary")
+                                        .to_string(),
+                                    branch: "HEAD".into(),
+                                    lifecycle: self.session.active_task.lifecycle,
+                                    selected: true,
+                                    secondary: None,
+                                    attention: false,
+                                });
+                            }
+                            self.session_view = SessionSnapshot::capture(&self.session);
+                            self.transcript_view = TranscriptSnapshot::capture(&self.session);
+                            self.conversation_view.message_start = 0;
+                            self.conversation_view.event_start = 0;
+                            self.conversation_view.scroll = 0;
+                            self.conversation_view.follow = true;
+                            self.render_cache.conversation = None;
+                            self.set_feedback(
+                                FeedbackSeverity::Ok,
+                                "forked session · ready for a new task",
+                            );
+                            self.push_toast(format!("forked {session_id}"));
+                        }
+                        Err(error) => {
+                            self.report_error(&format!("Could not fork session: {error}"))
+                        }
+                    }
+                }
                 Ok(SlashCommand::Quit) => {
                     self.exit.request();
                     self.status_state.message = "quitting…".into();
@@ -764,8 +830,7 @@ impl TuiApp {
                         return Ok(());
                     }
                     match self.session.resume_session(session_id).await {
-                        Ok(report) => {
-                            self.history.load_resumed(report.composer_lines);
+                        Ok(_report) => {
                             self.overlay = None;
                             self.notice_state.items.clear();
                             self.busy_state.stop();
