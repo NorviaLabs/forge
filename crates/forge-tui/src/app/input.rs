@@ -128,6 +128,23 @@ impl TuiApp {
         Ok(true)
     }
 
+    pub(super) async fn queue_composer_message(&mut self) -> Result<(), TuiError> {
+        if !self.busy_state.is_active() {
+            return self.submit_composer_message().await;
+        }
+        let line = self.input.text.trim().to_string();
+        if line.is_empty() {
+            return Ok(());
+        }
+        self.input.clear();
+        self.record_submitted_line(&line).await;
+        self.slash_suggestions.selected = 0;
+        self.notice_state.items.clear();
+        self.input.history_browse = false;
+        self.enqueue_user_message(line).await;
+        Ok(())
+    }
+
     pub(super) async fn handle_task_strip_key(
         &mut self,
         key: event::KeyEvent,

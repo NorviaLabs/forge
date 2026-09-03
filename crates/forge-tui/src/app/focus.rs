@@ -161,9 +161,9 @@ impl TuiApp {
         }
         if !self.session.queue().is_empty() {
             if self.busy_state.is_active() {
-                return Some("Queued · Ctrl+↑/↓ select · Ctrl+Backspace cancel".into());
+                return Some("Queued · Alt+↑ edit last".into());
             }
-            return Some("Queued · empty Enter sends next · Ctrl+↑/↓ select".into());
+            return Some("Queued · empty Enter sends next · Alt+↑ edit last".into());
         }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {
