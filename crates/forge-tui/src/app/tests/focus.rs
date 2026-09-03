@@ -647,13 +647,12 @@ async fn contextual_hint_explains_queued_messages_while_waiting() {
         request_id: "request".into(),
         payload: forge_types::HitlPayload {
             call_id: "request".into(),
-            tool_name: "tool".into(),
-            command: "command".into(),
-            cwd: None,
-            env_delta: Vec::new(),
-            question: None,
-            reason: None,
+            tool: "tool".into(),
+            args_redacted: serde_json::json!({"command": "command"}),
+            reason: "test approval".into(),
             failure: None,
+            sandbox_escalation: false,
+            denied_host: None,
         },
     });
     assert_eq!(

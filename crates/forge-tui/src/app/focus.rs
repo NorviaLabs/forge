@@ -159,7 +159,7 @@ impl TuiApp {
             // and printing the same keys twice on one screen reads as noise.
             return Some(format!("Waiting for approval{}", self.queued_wait_suffix()));
         }
-        if self.session.queue().len() > 0 {
+        if !self.session.queue().is_empty() {
             if self.busy_state.is_active() {
                 return Some("Queued · Ctrl+↑/↓ select · Ctrl+Backspace cancel".into());
             }
