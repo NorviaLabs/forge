@@ -1015,31 +1015,18 @@ async fn tui08_context_sets_feedback_strip() {
 
 #[test]
 fn exit_summary_formats_token_usage() {
-    let report = forge_core::TokenUsageReport {
-        api: forge_core::SessionTokenUsage {
-            prompt_tokens: 6_094,
-            completion_tokens: 36,
-            model_calls_with_usage: 1,
-            model_steps: 1,
-            thinking_tokens_est: 19,
-            prompt_cache_hits: 5_504,
-            prompt_cache_writes: 0,
-        },
-        context_tokens_est: 0,
-        context_capacity: 1,
-        context_pct: 0.0,
-        system_tokens_est: 0,
-        user_tokens_est: 0,
-        assistant_tokens_est: 0,
-        tool_tokens_est: 0,
-        thinking_in_context_est: 0,
-        tool_schema_tokens_est: 0,
-        message_count: 0,
-        tool_message_count: 0,
+    let usage = forge_core::SessionTokenUsage {
+        prompt_tokens: 6_094,
+        completion_tokens: 36,
+        model_calls_with_usage: 1,
+        model_steps: 1,
+        thinking_tokens_est: 19,
+        prompt_cache_hits: 5_504,
+        prompt_cache_writes: 0,
     };
 
     assert_eq!(
-        format_exit_token_usage(&report),
+        format_exit_token_usage(&usage),
         "Token usage: total=6,130 input=6,094 (+ 5,504 cached) output=36 (reasoning 19)"
     );
 }
