@@ -19,6 +19,7 @@ pub enum TransitionReason {
     NewTask,
     /// The completion evaluator authorized `Working -> Completed`.
     Completion(crate::CompletionReason),
+    QueueYield,
     /// A turn ended in failure for a reason not modeled as a
     /// `CompletionReason` (e.g. step-limit exhaustion, repeated invalid tool
     /// calls) — see `AgentSession::finalize_turn_failure`'s `category` arg.
