@@ -639,6 +639,29 @@ async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
 }
 
 #[tokio::test]
+async fn contextual_hint_explains_queued_messages_while_waiting() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session.enqueue_task("next task").await.unwrap();
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
+    app.session.active_task.wait_reason = Some(forge_types::WaitReason::Approval {
+        request_id: "request".into(),
+        payload: forge_types::HitlPayload {
+            call_id: "request".into(),
+            tool: "tool".into(),
+            args_redacted: serde_json::json!({"command": "command"}),
+            reason: "test approval".into(),
+            failure: None,
+            sandbox_escalation: false,
+            denied_host: None,
+        },
+    });
+    assert_eq!(
+        app.contextual_hint().as_deref(),
+        Some("Waiting for approval · 1 queued · resolve this first")
+    );
+}
+
+#[tokio::test]
 async fn footer_focus_hint_is_relevant_to_the_selected_chip() {
     // Chips stay visible when the footer is focused; the hint names the
     // action of the currently selected chip, and follows focus.
