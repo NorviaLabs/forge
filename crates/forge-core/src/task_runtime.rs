@@ -5,9 +5,11 @@
 //! those stores remain private runtime state.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 
-use forge_types::{BackgroundTaskId, HitlDecision};
+use forge_types::{BackgroundTaskId, HitlDecision, SessionId};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::background::{BackgroundTaskOutcome, BackgroundTaskRegistry};
@@ -19,6 +21,15 @@ pub(crate) struct TaskRuntime {
     pub(crate) receivers:
         HashMap<BackgroundTaskId, std::sync::Mutex<Receiver<BackgroundTaskOutcome>>>,
     pub(crate) subagent_hitl_senders: HashMap<BackgroundTaskId, UnboundedSender<HitlDecision>>,
+    pub(crate) retained_subagents: HashMap<SessionId, RetainedSubagent>,
+}
+
+pub(crate) struct RetainedSubagent {
+    pub(crate) label: String,
+    pub(crate) workspace: PathBuf,
+    pub(crate) result_sink: Arc<Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
+    pub(crate) hitl_sender: UnboundedSender<HitlDecision>,
+    pub(crate) latest_message: Arc<Mutex<Option<String>>>,
 }
 
 impl TaskRuntime {
@@ -28,6 +39,7 @@ impl TaskRuntime {
             background: BackgroundTaskRegistry::new(),
             receivers: HashMap::new(),
             subagent_hitl_senders: HashMap::new(),
+            retained_subagents: HashMap::new(),
         }
     }
 

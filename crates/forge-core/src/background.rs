@@ -218,6 +218,16 @@ impl BackgroundTaskRegistry {
         self.tasks.get(&id).map(|t| t.latest_message.clone())
     }
 
+    pub fn set_latest_message_cell(
+        &mut self,
+        id: BackgroundTaskId,
+        latest_message: Arc<Mutex<Option<String>>>,
+    ) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.latest_message = latest_message;
+        }
+    }
+
     pub fn mark_running(&mut self, id: BackgroundTaskId) {
         if let Some(task) = self.tasks.get_mut(&id) {
             if !task.status.is_terminal() {
@@ -236,6 +246,12 @@ impl BackgroundTaskRegistry {
         }
         if terminal {
             self.prune_terminal_tasks();
+        }
+    }
+
+    pub fn replace_cancel_token(&mut self, id: BackgroundTaskId, cancel: CancellationToken) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.cancel = cancel;
         }
     }
 
@@ -258,6 +274,10 @@ impl BackgroundTaskRegistry {
 
     pub fn get(&self, id: BackgroundTaskId) -> Option<&BackgroundTaskHandle> {
         self.tasks.get(&id)
+    }
+
+    pub fn remove(&mut self, id: BackgroundTaskId) -> Option<BackgroundTaskHandle> {
+        self.tasks.remove(&id)
     }
 
     pub fn list(&self) -> impl Iterator<Item = &BackgroundTaskHandle> {
@@ -381,11 +401,8 @@ impl AgentSession {
                     self.resume_subagent_task(task, workspace.clone()).await?;
                     continue;
                 }
-                // No recorded workspace — shouldn't happen for a subagent
-                // that reached `append_subagent_spawned` (the worktree must
-                // already have existed at that point), but fall through to
-                // the conservative mark-cancelled path below rather than
-                // guessing a path or silently dropping the task.
+                // No recorded workspace — fall through to the conservative
+                // mark-cancelled path rather than guessing a path.
             }
             let kind = if task.kind == "subagent" {
                 BackgroundTaskKind::Subagent {
@@ -497,10 +514,28 @@ impl AgentSession {
             self.tasks
                 .background
                 .set_status(id, BackgroundTaskStatus::WaitingForApproval { payload });
+            if let Some(child_session_id) = self
+                .tasks
+                .background
+                .get(id)
+                .and_then(|task| task.child_session_id)
+            {
+                let _ =
+                    self.coordinator
+                        .update(child_session_id, crate::AgentStatus::Waiting, None);
+            }
         }
         for (id, outcome) in finished {
-            self.tasks.receivers.remove(&id);
-            self.tasks.subagent_hitl_senders.remove(&id);
+            let is_subagent = self
+                .tasks
+                .background
+                .get(id)
+                .and_then(|task| task.child_session_id)
+                .is_some();
+            if !is_subagent {
+                self.tasks.receivers.remove(&id);
+                self.tasks.subagent_hitl_senders.remove(&id);
+            }
             self.finish_background_task(id, outcome).await?;
         }
         Ok(())
@@ -519,6 +554,17 @@ impl AgentSession {
             Some(tx) => tx.send(decision).is_ok(),
             None => false,
         }
+    }
+
+    pub(crate) fn background_id_for_child(
+        &self,
+        child_session_id: SessionId,
+    ) -> Option<BackgroundTaskId> {
+        self.tasks
+            .background
+            .list()
+            .find(|task| task.child_session_id == Some(child_session_id))
+            .map(|task| task.id)
     }
 
     /// Entry point for `run_one_tool`'s `background_run` interception:
@@ -581,6 +627,7 @@ impl AgentSession {
         id: BackgroundTaskId,
         outcome: Option<BackgroundTaskOutcome>,
     ) -> Result<(), LoopError> {
+        let deliver_to_queue = !matches!(outcome, Some(BackgroundTaskOutcome::Subagent(_)));
         let label = self
             .tasks
             .background
@@ -648,7 +695,9 @@ impl AgentSession {
             .append_background_task_finished(self.session_id, id, status.tag(), &summary)
             .await?;
         self.tasks.background.set_status(id, status);
-        self.enqueue_task(&summary).await?;
+        if deliver_to_queue {
+            self.enqueue_task(&summary).await?;
+        }
         Ok(())
     }
 }

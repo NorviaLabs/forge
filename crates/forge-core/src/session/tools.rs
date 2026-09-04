@@ -3,7 +3,27 @@
 //! Split out of `lib.rs`; methods are moved verbatim.
 
 use crate::*;
+use forge_tools::{
+    AgentMessageArgs, ListAgentsArgs, SpawnAgentArgs, TargetAgentArgs, WaitAgentArgs,
+};
 
+fn is_agent_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "spawn_agent"
+            | "send_message"
+            | "followup_task"
+            | "wait_agent"
+            | "list_agents"
+            | "interrupt_agent"
+    )
+}
+
+fn parse_agent_id(value: &str) -> Result<SessionId, LoopError> {
+    value
+        .parse()
+        .map_err(|error| LoopError::Other(format!("invalid agent id `{value}`: {error}")))
+}
 pub(crate) struct PendingToolExecution {
     call: ToolCall,
     tools: Arc<ToolRegistry>,
@@ -821,6 +841,17 @@ impl AgentSession {
             return self.dispatch_ask_user_question(&call).await;
         }
 
+        if is_agent_tool(&call.name) {
+            if !validated {
+                self.tools
+                    .validate_call(&call.name, &call.arguments)
+                    .map_err(ToolError::Validation)?;
+            }
+            return Ok(ToolExecutionStart::Finished(
+                self.dispatch_agent_tool_result(&call).await?,
+            ));
+        }
+
         Ok(ToolExecutionStart::Execute(Box::new(
             PendingToolExecution {
                 call: call.clone(),
@@ -832,6 +863,166 @@ impl AgentSession {
                     .transpose()?,
             },
         )))
+    }
+
+    async fn dispatch_agent_tool(
+        &mut self,
+        call: &ToolCall,
+    ) -> Result<Option<ModelResponse>, LoopError> {
+        let output = match call.name.as_str() {
+            "spawn_agent" => {
+                let args: SpawnAgentArgs =
+                    serde_json::from_value(call.arguments.clone()).map_err(|error| {
+                        LoopError::Other(format!("invalid spawn_agent arguments: {error}"))
+                    })?;
+                let task_id = self
+                    .spawn_subagent(SubagentSpec {
+                        role: args.task_name,
+                        prompt: args.message,
+                        tool_allowlist: args.tool_allowlist,
+                        max_turns: args.max_turns,
+                    })
+                    .await?;
+                let agent_id = self
+                    .background()
+                    .get(task_id)
+                    .and_then(|task| task.child_session_id)
+                    .ok_or_else(|| LoopError::Other("spawned agent has no session id".into()))?;
+                ToolOutput::success(
+                    json!({"agent_id": agent_id.to_string(), "status": "running"}).to_string(),
+                )
+            }
+            "send_message" => {
+                let args: AgentMessageArgs = serde_json::from_value(call.arguments.clone())
+                    .map_err(|error| {
+                        LoopError::Other(format!("invalid send_message arguments: {error}"))
+                    })?;
+                let target = parse_agent_id(&args.target)?;
+                self.coordinator
+                    .send_message(self.session_id, target, args.message)
+                    .map_err(|error| LoopError::Other(error.to_string()))?;
+                ToolOutput::success(
+                    json!({"target": target.to_string(), "delivered": true, "woken": false})
+                        .to_string(),
+                )
+            }
+            "followup_task" => {
+                let args: AgentMessageArgs = serde_json::from_value(call.arguments.clone())
+                    .map_err(|error| {
+                        LoopError::Other(format!("invalid followup_task arguments: {error}"))
+                    })?;
+                let target = parse_agent_id(&args.target)?;
+                let retained_task = self
+                    .followup_retained_subagent(target, args.message.clone())
+                    .await?;
+                if retained_task.is_none() {
+                    let cancel = self
+                        .coordinator
+                        .followup(self.session_id, target, args.message)
+                        .map_err(|error| LoopError::Other(error.to_string()))?;
+                    if let Some(task_id) = self.background_id_for_child(target) {
+                        self.tasks.background.mark_running(task_id);
+                        self.tasks.background.replace_cancel_token(task_id, cancel);
+                    }
+                }
+                ToolOutput::success(
+                    json!({"target": target.to_string(), "delivered": true, "woken": true})
+                        .to_string(),
+                )
+            }
+            "wait_agent" => {
+                let args: WaitAgentArgs =
+                    serde_json::from_value(call.arguments.clone()).map_err(|error| {
+                        LoopError::Other(format!("invalid wait_agent arguments: {error}"))
+                    })?;
+                let revision = args
+                    .since_revision
+                    .unwrap_or_else(|| self.coordinator.revision());
+                let result = self
+                    .coordinator
+                    .wait_for_change(
+                        self.session_id,
+                        revision,
+                        args.timeout_ms.map(std::time::Duration::from_millis),
+                    )
+                    .await
+                    .map_err(|error| LoopError::Other(error.to_string()))?;
+                ToolOutput::success(
+                    serde_json::to_string(&result)
+                        .map_err(|error| LoopError::Other(error.to_string()))?,
+                )
+            }
+            "list_agents" => {
+                let args: ListAgentsArgs =
+                    serde_json::from_value(call.arguments.clone()).map_err(|error| {
+                        LoopError::Other(format!("invalid list_agents arguments: {error}"))
+                    })?;
+                let agents = self
+                    .coordinator
+                    .descendants(self.session_id, args.path_prefix.as_deref())
+                    .map_err(|error| LoopError::Other(error.to_string()))?;
+                ToolOutput::success(
+                    serde_json::to_string(&agents)
+                        .map_err(|error| LoopError::Other(error.to_string()))?,
+                )
+            }
+            "interrupt_agent" => {
+                let args: TargetAgentArgs = serde_json::from_value(call.arguments.clone())
+                    .map_err(|error| {
+                        LoopError::Other(format!("invalid interrupt_agent arguments: {error}"))
+                    })?;
+                let target = parse_agent_id(&args.target)?;
+                let interrupted = self
+                    .coordinator
+                    .interrupt(self.session_id, target)
+                    .map_err(|error| LoopError::Other(error.to_string()))?;
+                ToolOutput::success(
+                    json!({"target": target.to_string(), "interrupted": interrupted}).to_string(),
+                )
+            }
+            _ => unreachable!(),
+        };
+        self.journal
+            .append_tool_result(self.session_id, call, &output)
+            .await?;
+        self.remember_tool_result(call, &output);
+        self.messages.push(Message::from_tool_output(call, &output));
+        self.events.push(TurnEvent {
+            kind: "agent_tool".into(),
+            detail: serde_json::json!({
+                "action": call.name,
+                "agent_id": self.session_id,
+            })
+            .to_string(),
+        });
+        Ok(None)
+    }
+
+    async fn dispatch_agent_tool_result(
+        &mut self,
+        call: &ToolCall,
+    ) -> Result<Option<ModelResponse>, LoopError> {
+        match self.dispatch_agent_tool(call).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                let output = ToolOutput::failed_exit(error.to_string(), None);
+                self.journal
+                    .append_tool_result(self.session_id, call, &output)
+                    .await?;
+                self.remember_tool_result(call, &output);
+                self.messages.push(Message::from_tool_output(call, &output));
+                self.events.push(TurnEvent {
+                    kind: "agent_tool_error".into(),
+                    detail: serde_json::json!({
+                        "action": call.name,
+                        "agent_id": self.session_id,
+                        "error": error.to_string(),
+                    })
+                    .to_string(),
+                });
+                Ok(None)
+            }
+        }
     }
 
     pub(crate) async fn finish_tool_call(
@@ -983,6 +1174,16 @@ impl AgentSession {
         if call.name == "ask_user_question" {
             self.turn.record_call(call.clone());
             self.dispatch_ask_user_question(call).await?;
+            return Ok(None);
+        }
+        if is_agent_tool(&call.name) {
+            self.turn.record_call(call.clone());
+            if append_intent {
+                self.journal
+                    .append_tool_intent(self.session_id, call)
+                    .await?;
+            }
+            self.dispatch_agent_tool_result(call).await?;
             return Ok(None);
         }
         self.turn.record_call(call.clone());
