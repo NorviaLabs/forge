@@ -225,6 +225,7 @@ impl TuiApp {
                 .map(|(index, task)| TaskStripItem {
                     slot: task.slot,
                     label: task.label.clone(),
+                    branch: task.branch.clone(),
                     state: task.lifecycle.into(),
                     secondary: task.secondary.clone(),
                     selected: task.selected,
