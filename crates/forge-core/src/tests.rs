@@ -1162,10 +1162,9 @@ async fn build_model_request_carries_reasoning_effort_when_set() {
         .await
         .unwrap();
     s.set_reasoning_effort(Some("high".into()));
-    assert_eq!(
-        s.build_model_request().reasoning_effort,
-        Some("high".to_string())
-    );
+    let request = s.build_model_request();
+    assert_eq!(request.reasoning_effort, Some("high".to_string()));
+    assert_eq!(request.session_id, Some(s.session_id.to_string()));
 }
 
 #[tokio::test]

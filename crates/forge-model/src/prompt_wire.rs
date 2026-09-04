@@ -330,6 +330,7 @@ mod tests {
             model: "test".into(),
             workspace_root: std::path::PathBuf::from("."),
             route_id: None,
+            session_id: None,
             reasoning_effort: Some("high".into()),
             thinking_enabled: true,
             prompt_cache: true,

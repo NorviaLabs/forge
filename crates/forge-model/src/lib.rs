@@ -209,6 +209,9 @@ pub struct ModelRequest {
     /// Stable offering identity. `None` is retained for legacy callers while
     /// route-aware selection is rolled through the workspace.
     pub route_id: Option<String>,
+    /// Forge session id, forwarded as `x-opencode-session` on OpenCode
+    /// routes for prompt-cache affinity. Opaque to other providers.
+    pub session_id: Option<String>,
     pub reasoning_effort: Option<String>,
     pub thinking_enabled: bool,
     pub prompt_cache: bool,
@@ -312,6 +315,7 @@ mod tests {
                 tools: vec![],
                 model: "mock".into(),
                 route_id: None,
+                session_id: None,
                 reasoning_effort: None,
                 thinking_enabled: true,
                 prompt_cache: true,
@@ -334,6 +338,7 @@ mod tests {
                     tools: vec![],
                     model: "mock".into(),
                     route_id: None,
+                    session_id: None,
                     reasoning_effort: None,
                     thinking_enabled: true,
                     prompt_cache: true,
@@ -372,6 +377,7 @@ mod tests {
                 tools: vec![],
                 model: "mock".into(),
                 route_id: None,
+                session_id: None,
                 reasoning_effort: None,
                 thinking_enabled: true,
                 prompt_cache: true,
@@ -407,6 +413,7 @@ mod tests {
                     tools: vec![],
                     model: "mock".into(),
                     route_id: None,
+                    session_id: None,
                     reasoning_effort: None,
                     thinking_enabled: true,
                     prompt_cache: false,
