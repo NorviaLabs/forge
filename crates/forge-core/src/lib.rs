@@ -1,5 +1,6 @@
 //! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
+mod agent_coordinator;
 mod background;
 mod completion;
 mod lifecycle;
@@ -19,6 +20,10 @@ pub use stream::{
     ModelStepAccumulator,
 };
 
+pub use agent_coordinator::{
+    AgentActivity, AgentCoordinator, AgentCoordinatorConfig, AgentCoordinatorError, AgentSnapshot,
+    AgentStatus, AgentWaitResult,
+};
 pub use background::{
     BackgroundTaskHandle, BackgroundTaskKind, BackgroundTaskRegistry, BackgroundTaskStatus,
 };
@@ -83,6 +88,7 @@ pub(crate) use helpers::*;
 
 pub struct AgentSession {
     pub session_id: SessionId,
+    coordinator: AgentCoordinator,
     pub messages: SharedMessages,
     pub events: Vec<TurnEvent>,
     /// Authoritative task/attempt lifecycle. The single source of truth for

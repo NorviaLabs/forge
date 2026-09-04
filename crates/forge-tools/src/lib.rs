@@ -8,6 +8,7 @@ mod edit;
 pub mod egress;
 mod fast_file_tools;
 mod invocation;
+mod orchestration;
 mod output_filters;
 mod registry;
 pub mod sandbox;
@@ -27,6 +28,10 @@ pub use builtins::{
 };
 pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
+pub use orchestration::{
+    AgentMessageArgs, FollowupTaskTool, InterruptAgentTool, ListAgentsArgs, ListAgentsTool,
+    SendMessageTool, SpawnAgentArgs, SpawnAgentTool, TargetAgentArgs, WaitAgentArgs, WaitAgentTool,
+};
 pub use output_filters::compress_tool_output;
 pub use registry::{
     canonical_tool_name, canonicalize_tool_call, SessionTempDir, ToolContext, ToolRegistry,

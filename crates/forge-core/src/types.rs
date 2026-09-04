@@ -46,6 +46,7 @@ pub struct LoopConfig {
     pub enable_governance: bool,
     /// Phase 9 — controls registration of `web_search` (WEB-01).
     pub web_search: WebSearchConfig,
+    pub agents: forge_config::AgentConfig,
 }
 
 impl Default for LoopConfig {
@@ -57,6 +58,7 @@ impl Default for LoopConfig {
             enable_context_lifecycle: true,
             enable_governance: true,
             web_search: WebSearchConfig::default(),
+            agents: forge_config::AgentConfig::default(),
         }
     }
 }

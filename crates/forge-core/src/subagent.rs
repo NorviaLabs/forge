@@ -21,12 +21,14 @@ use forge_tools::ToolContext;
 use forge_types::{BackgroundTaskId, HitlDecision, Message, MessageRole, SessionId, TaskLifecycle};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent_coordinator::AgentCommand;
 use crate::background::{BackgroundTaskKind, BackgroundTaskOutcome, BackgroundTaskStatus};
 use crate::persistence::SessionPersistence;
 use crate::turn_state::TurnState;
 use crate::{
     assemble_system_prompt, ActiveTaskState, AgentSession, LoopError, SessionTokenUsage, TaskQueue,
 };
+use crate::{AgentCoordinator, AgentStatus};
 
 /// What to hand a new subagent.
 #[derive(Debug, Clone)]
@@ -95,6 +97,7 @@ impl AgentSession {
 
         Ok(AgentSession {
             session_id,
+            coordinator: self.coordinator.clone(),
             messages: vec![Message {
                 outcome: Default::default(),
                 role: MessageRole::System,
@@ -210,6 +213,7 @@ impl AgentSession {
 
         let mut child = AgentSession {
             session_id,
+            coordinator: self.coordinator.clone(),
             messages: messages.into(),
             events: vec![crate::TurnEvent {
                 kind: "resume".into(),
@@ -285,6 +289,16 @@ impl AgentSession {
             return Ok(());
         };
         let cancel = CancellationToken::new();
+        if !self.coordinator.contains(child_session_id) {
+            self.coordinator
+                .register_child_with_cancel(
+                    self.session_id,
+                    child_session_id,
+                    task.label.clone(),
+                    cancel.clone(),
+                )
+                .map_err(|error| LoopError::Other(error.to_string()))?;
+        }
         // Reuses `task.id` (not a fresh id) — see `resume_slot`'s doc
         // comment for why that's what lets the eventual
         // `append_background_task_finished` (from either the error path
@@ -307,6 +321,11 @@ impl AgentSession {
             Ok(child) => child,
             Err(e) => {
                 let error = format!("could not resume subagent: {e}");
+                let _ = self.coordinator.update(
+                    child_session_id,
+                    AgentStatus::Failed,
+                    Some(error.clone()),
+                );
                 self.tasks.background.set_status(
                     id,
                     BackgroundTaskStatus::Failed {
@@ -349,29 +368,152 @@ impl AgentSession {
             .unwrap_or_default();
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let result_sink = Arc::new(std::sync::Mutex::new(Some(tx)));
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
         self.tasks.subagent_hitl_senders.insert(id, hitl_tx);
-        tokio::spawn(async move {
-            let mut child = child;
-            // A resumed child continues the SAME turn (its messages/tool
-            // history came back via journal replay) rather than starting a
-            // new one — `run_agent_turns`, not `run_user_message`. If it was
-            // already `Waiting` (or already terminal) when the journal
-            // replayed, there's nothing to run yet; `drive_subagent`'s loop
-            // and status derivation handle both starting points identically.
-            let result = if child.active_task.lifecycle == TaskLifecycle::Working {
-                child.run_agent_turns(None).await
-            } else {
-                Ok(forge_types::ModelResponse {
-                    text: String::new(),
-                    tool_calls: vec![],
-                    usage: None,
-                    thinking: None,
-                })
-            };
-            drive_subagent(child, result, child_session_id, tx, hitl_rx, latest_message).await;
-        });
+        let coordinator = self.coordinator.clone();
+        let initial_resume = child.active_task.lifecycle == TaskLifecycle::Working;
+        spawn_subagent_actor(
+            child,
+            None,
+            initial_resume,
+            child_session_id,
+            result_sink,
+            hitl_rx,
+            latest_message,
+            coordinator,
+        )?;
         self.tasks.receivers.insert(id, std::sync::Mutex::new(rx));
+        Ok(())
+    }
+
+    pub(crate) async fn followup_retained_subagent(
+        &mut self,
+        target: SessionId,
+        message: String,
+    ) -> Result<Option<BackgroundTaskId>, LoopError> {
+        let Some(retained) = self.tasks.retained_subagents.get(&target) else {
+            return Ok(None);
+        };
+        let snapshot = self
+            .coordinator
+            .descendant(self.session_id, target)
+            .map_err(|error| LoopError::Other(error.to_string()))?;
+        if !snapshot.status.is_terminal() {
+            return Ok(None);
+        }
+        let label = retained.label.clone();
+        let workspace = retained.workspace.clone();
+        let result_sink = retained.result_sink.clone();
+        let hitl_sender = retained.hitl_sender.clone();
+        let latest_message = retained.latest_message.clone();
+        let cancel = CancellationToken::new();
+        let task_id = self.tasks.background.spawn_slot(
+            BackgroundTaskKind::Subagent {
+                role: label.clone(),
+                prompt: message.clone(),
+            },
+            label.clone(),
+            self.active_task.task_id,
+            cancel.clone(),
+            Some(target),
+        );
+        self.journal
+            .append_background_task_started_with_parent(
+                self.session_id,
+                task_id,
+                "subagent",
+                &label,
+                Some(target),
+                Some(self.session_id),
+            )
+            .await?;
+        self.journal
+            .append_subagent_spawned(self.session_id, task_id, target, &label, &workspace)
+            .await?;
+        let branch = workspace
+            .file_name()
+            .map(|name| format!("forge/subagent/{}", name.to_string_lossy()))
+            .unwrap_or_else(|| format!("forge/subagent/{label}"));
+        self.tasks
+            .background
+            .set_worktree(task_id, workspace, branch);
+        let (tx, rx) = std::sync::mpsc::channel();
+        *result_sink.lock().unwrap() = Some(tx);
+        self.tasks
+            .background
+            .set_latest_message_cell(task_id, latest_message);
+        self.tasks
+            .subagent_hitl_senders
+            .insert(task_id, hitl_sender);
+        self.tasks
+            .receivers
+            .insert(task_id, std::sync::Mutex::new(rx));
+        if let Err(error) =
+            self.coordinator
+                .followup_with_cancel(self.session_id, target, message, cancel)
+        {
+            let error = error.to_string();
+            self.tasks.background.set_status(
+                task_id,
+                BackgroundTaskStatus::Failed {
+                    error: error.clone(),
+                },
+            );
+            self.tasks.receivers.remove(&task_id);
+            self.tasks.subagent_hitl_senders.remove(&task_id);
+            self.journal
+                .append_background_task_finished(
+                    self.session_id,
+                    task_id,
+                    BackgroundTaskStatus::Failed {
+                        error: error.clone(),
+                    }
+                    .tag(),
+                    &error,
+                )
+                .await?;
+            return Err(LoopError::Other(error));
+        }
+        self.tasks.background.mark_running(task_id);
+        Ok(Some(task_id))
+    }
+
+    pub(crate) async fn restore_finished_subagent_task(
+        &mut self,
+        task: &forge_durable::RestoredBackgroundTask,
+        workspace: PathBuf,
+    ) -> Result<(), LoopError> {
+        let Some(child_session_id) = task.child_session_id else {
+            return Ok(());
+        };
+        let cancel = CancellationToken::new();
+        let child = self
+            .resume_child(child_session_id, workspace, cancel)
+            .await?;
+        let result_sink = Arc::new(std::sync::Mutex::new(None));
+        let latest_message = Arc::new(std::sync::Mutex::new(None));
+        let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
+        self.tasks.retained_subagents.insert(
+            child_session_id,
+            crate::task_runtime::RetainedSubagent {
+                label: task.label.clone(),
+                workspace: child.workspace_root().to_path_buf(),
+                result_sink: result_sink.clone(),
+                hitl_sender: hitl_tx,
+                latest_message: latest_message.clone(),
+            },
+        );
+        spawn_subagent_actor(
+            child,
+            None,
+            false,
+            child_session_id,
+            result_sink,
+            hitl_rx,
+            latest_message,
+            self.coordinator.clone(),
+        )?;
         Ok(())
     }
 
@@ -396,6 +538,23 @@ impl AgentSession {
 
         let child_session_id = forge_durable::new_session_id();
         let cancel = CancellationToken::new();
+        self.coordinator
+            .register_child_with_cancel(
+                self.session_id,
+                child_session_id,
+                spec.role.clone(),
+                cancel.clone(),
+            )
+            .map_err(|error| LoopError::Other(error.to_string()))?;
+        self.events.push(crate::TurnEvent {
+            kind: "subagent_spawned".into(),
+            detail: serde_json::json!({
+                "agent_id": child_session_id,
+                "parent_id": self.session_id,
+                "task_name": spec.role.clone(),
+            })
+            .to_string(),
+        });
         let task_id = self.tasks.background.spawn_slot(
             BackgroundTaskKind::Subagent {
                 role: spec.role.clone(),
@@ -407,12 +566,13 @@ impl AgentSession {
             Some(child_session_id),
         );
         self.journal
-            .append_background_task_started(
+            .append_background_task_started_with_parent(
                 self.session_id,
                 task_id,
                 "subagent",
                 &spec.role,
                 Some(child_session_id),
+                Some(self.session_id),
             )
             .await?;
 
@@ -420,6 +580,11 @@ impl AgentSession {
             match forge_storage::create_worktree(&repo_root, &base_dir, task_id.0, &spec.role) {
                 Ok(wt) => wt,
                 Err(e) => {
+                    let _ = self.coordinator.update(
+                        child_session_id,
+                        AgentStatus::Failed,
+                        Some(e.to_string()),
+                    );
                     return self
                         .fail_subagent_spawn(task_id, format!("could not create worktree: {e}"))
                         .await;
@@ -444,6 +609,11 @@ impl AgentSession {
         {
             Ok(child) => child,
             Err(e) => {
+                let _ = self.coordinator.update(
+                    child_session_id,
+                    AgentStatus::Failed,
+                    Some(e.to_string()),
+                );
                 let _ = forge_storage::remove_worktree(&repo_root, &worktree.path);
                 return self
                     .fail_subagent_spawn(task_id, format!("could not start subagent: {e}"))
@@ -462,14 +632,20 @@ impl AgentSession {
             .unwrap_or_default();
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let result_sink = Arc::new(std::sync::Mutex::new(Some(tx)));
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
         self.tasks.subagent_hitl_senders.insert(task_id, hitl_tx);
         let prompt = spec.prompt.clone();
-        tokio::spawn(async move {
-            let mut child = child;
-            let result = child.run_user_message(&prompt).await;
-            drive_subagent(child, result, child_session_id, tx, hitl_rx, latest_message).await;
-        });
+        spawn_subagent_actor(
+            child,
+            Some(prompt),
+            false,
+            child_session_id,
+            result_sink,
+            hitl_rx,
+            latest_message,
+            self.coordinator.clone(),
+        )?;
         self.tasks
             .receivers
             .insert(task_id, std::sync::Mutex::new(rx));
@@ -515,14 +691,75 @@ impl AgentSession {
 /// resumed child was already `Waiting`/terminal when its journal replayed —
 /// the loop and status derivation below handle either starting point
 /// identically).
+#[allow(clippy::too_many_arguments)]
+fn spawn_subagent_actor(
+    child: AgentSession,
+    initial_prompt: Option<String>,
+    resume_turn: bool,
+    child_session_id: SessionId,
+    result_sink: Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
+    mut hitl_rx: tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
+    latest_message: Arc<std::sync::Mutex<Option<String>>>,
+    coordinator: AgentCoordinator,
+) -> Result<(), LoopError> {
+    let (_, mut command_rx) = coordinator
+        .actor_channel(child_session_id)
+        .map_err(|error| LoopError::Other(error.to_string()))?;
+    tokio::spawn(async move {
+        let mut child = child;
+        let result = if let Some(prompt) = initial_prompt {
+            Some(child.run_user_message(&prompt).await)
+        } else if resume_turn {
+            Some(child.run_agent_turns(None).await)
+        } else {
+            None
+        };
+        if let Some(result) = result {
+            child = drive_subagent(
+                child,
+                result,
+                child_session_id,
+                result_sink.clone(),
+                &mut hitl_rx,
+                latest_message.clone(),
+                coordinator.clone(),
+            )
+            .await;
+        }
+
+        while let Some(AgentCommand::Wake { cancel }) = command_rx.recv().await {
+            child.cancel_token = Some(cancel);
+            let messages = coordinator
+                .take_mailbox(child_session_id)
+                .unwrap_or_default();
+            if messages.is_empty() {
+                continue;
+            }
+            let result = child.run_user_message(&messages.join("\n\n")).await;
+            child = drive_subagent(
+                child,
+                result,
+                child_session_id,
+                result_sink.clone(),
+                &mut hitl_rx,
+                latest_message.clone(),
+                coordinator.clone(),
+            )
+            .await;
+        }
+    });
+    Ok(())
+}
+
 async fn drive_subagent(
     mut child: AgentSession,
     mut result: Result<forge_types::ModelResponse, LoopError>,
     child_session_id: SessionId,
-    tx: std::sync::mpsc::Sender<BackgroundTaskOutcome>,
-    mut hitl_rx: tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
+    result_sink: Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
+    hitl_rx: &mut tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
     latest_message: Arc<std::sync::Mutex<Option<String>>>,
-) {
+    coordinator: AgentCoordinator,
+) -> AgentSession {
     let cancel_token = child
         .cancel_token
         .clone()
@@ -544,7 +781,10 @@ async fn drive_subagent(
         let Some(payload) = child.pending_hitl().cloned() else {
             break;
         };
-        let _ = tx.send(BackgroundTaskOutcome::WaitingForApproval(payload));
+        let _ = coordinator.update(child_session_id, AgentStatus::Waiting, None);
+        if let Some(tx) = result_sink.lock().unwrap().clone() {
+            let _ = tx.send(BackgroundTaskOutcome::WaitingForApproval(payload));
+        }
 
         tokio::select! {
             decision = hitl_rx.recv() => match decision {
@@ -555,6 +795,9 @@ async fn drive_subagent(
                     }
                     result = child.run_agent_turns(None).await;
                     snapshot(&child);
+                    if child.active_task.lifecycle == TaskLifecycle::Working {
+                        let _ = coordinator.update(child_session_id, AgentStatus::Running, None);
+                    }
                 }
                 // Sender dropped (parent session gone) — fall through to the
                 // reconciliation below, which cancels any non-terminal lifecycle.
@@ -616,7 +859,23 @@ async fn drive_subagent(
         summary,
         token_usage: child.token_usage.clone(),
     };
-    let _ = tx.send(BackgroundTaskOutcome::Subagent(outcome));
+    let coordinator_status = match &outcome.status {
+        BackgroundTaskStatus::Succeeded { .. } => AgentStatus::Completed,
+        BackgroundTaskStatus::Failed { .. } => AgentStatus::Failed,
+        BackgroundTaskStatus::Cancelled => AgentStatus::Cancelled,
+        BackgroundTaskStatus::Queued
+        | BackgroundTaskStatus::Running
+        | BackgroundTaskStatus::WaitingForApproval { .. } => AgentStatus::Failed,
+    };
+    let _ = coordinator.update(
+        child_session_id,
+        coordinator_status,
+        Some(outcome.summary.clone()),
+    );
+    if let Some(tx) = result_sink.lock().unwrap().clone() {
+        let _ = tx.send(BackgroundTaskOutcome::Subagent(outcome));
+    }
+    child
 }
 
 fn last_assistant_text(messages: &[Message]) -> String {
@@ -990,9 +1249,9 @@ mod tests {
             }
             other => panic!("expected Succeeded, got {other:?}"),
         }
-        // Result delivery: next-turn-boundary via the existing queue, same
-        // as a finished shell job.
-        assert_eq!(s.queue().len(), 1);
+        // Subagent results are retrieved explicitly through the orchestration
+        // tools rather than being injected into the parent's prompt queue.
+        assert_eq!(s.queue().len(), 0);
     }
 
     #[tokio::test]
