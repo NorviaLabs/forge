@@ -1183,7 +1183,16 @@ mod tests {
             FileIconMode::Unicode,
         );
         assert_eq!(unselected.spans[1].style, theme::text());
-        assert_eq!(unselected.spans.last().unwrap().content.as_ref(), "ADD   ");
+        assert!(
+            unselected
+                .spans
+                .last()
+                .unwrap()
+                .content
+                .as_ref()
+                .starts_with("ADD"),
+            "animated status should retain its semantic label"
+        );
     }
 
     #[test]
@@ -1204,8 +1213,16 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(text, "  long_filename.rs MOD   ");
-        assert_eq!(line.spans.last().unwrap().content.as_ref(), "MOD   ");
+        assert!(text.contains("  long_filename.rs MOD"), "{text:?}");
+        assert!(
+            line.spans
+                .last()
+                .unwrap()
+                .content
+                .as_ref()
+                .starts_with("MOD"),
+            "animated status should retain its semantic label"
+        );
     }
 
     #[test]
