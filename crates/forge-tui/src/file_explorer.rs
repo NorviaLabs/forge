@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use forge_config::FileIconMode;
 
-use crate::status_glyph::{status_glyph, Status};
+use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
 use crate::widgets::input::TEXT_INSET;
 use forge_workspace::git_status::{GitStatusCache, GitStatusKind};
@@ -935,7 +935,7 @@ fn explorer_row_line(
         Span::styled(name.to_string(), name_style),
     ];
     if let Some(status) = status {
-        let mut glyph = status_glyph(Status::from(status));
+        let mut glyph = status_indicator_now(Status::from(status));
         if let Some(style) = selection_style {
             glyph.style = style;
         }
@@ -1183,11 +1183,11 @@ mod tests {
             FileIconMode::Unicode,
         );
         assert_eq!(unselected.spans[1].style, theme::text());
-        assert_eq!(unselected.spans.last().unwrap().content.as_ref(), "A");
+        assert_eq!(unselected.spans.last().unwrap().content.as_ref(), "ADD   ");
     }
 
     #[test]
-    fn row_rendering_uses_git_status_letters() {
+    fn row_rendering_uses_animated_git_status_labels() {
         let line = explorer_row_line(
             "",
             " ",
@@ -1204,8 +1204,8 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(text, "  long_filename.rs M");
-        assert_eq!(line.spans.last().unwrap().content.as_ref(), "M");
+        assert_eq!(text, "  long_filename.rs MOD   ");
+        assert_eq!(line.spans.last().unwrap().content.as_ref(), "MOD   ");
     }
 
     #[test]

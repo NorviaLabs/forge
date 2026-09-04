@@ -1,4 +1,4 @@
-use crate::status_glyph::{status_glyph, Status};
+use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
 use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
@@ -75,7 +75,7 @@ impl Widget for TaskStrip<'_> {
                 spans.push(Span::styled(" · ", theme::border_muted()));
             }
             let status = Self::state_status(item.state);
-            let glyph = status_glyph(status);
+            let indicator = status_indicator_now(status);
             let base = if let Some(slot) = item.slot {
                 format!("{slot} {}", item.label)
             } else {
@@ -90,7 +90,7 @@ impl Widget for TaskStrip<'_> {
             };
             let mut item_spans = vec![
                 Span::styled("[", theme::border_muted()),
-                glyph,
+                indicator,
                 Span::styled(format!(" {base}"), style),
             ];
             if let Some(secondary) = &item.secondary {

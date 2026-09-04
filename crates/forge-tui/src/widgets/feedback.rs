@@ -1,6 +1,6 @@
 //! Feedback strip (Phase 10 / TUI-08) — always-visible latest status/error.
 
-use crate::status_glyph::{status_glyph, Status};
+use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -66,10 +66,10 @@ impl Widget for FeedbackBar<'_> {
             return;
         }
         let (icon, style) = match self.model.severity {
-            FeedbackSeverity::Info => (status_glyph(Status::Info), theme::info()),
-            FeedbackSeverity::Warn => (status_glyph(Status::Warning), theme::warn()),
-            FeedbackSeverity::Error => (status_glyph(Status::Error), theme::danger()),
-            FeedbackSeverity::Ok => (status_glyph(Status::Success), theme::ok()),
+            FeedbackSeverity::Info => (status_indicator_now(Status::Info), theme::info()),
+            FeedbackSeverity::Warn => (status_indicator_now(Status::Warning), theme::warn()),
+            FeedbackSeverity::Error => (status_indicator_now(Status::Error), theme::danger()),
+            FeedbackSeverity::Ok => (status_indicator_now(Status::Success), theme::ok()),
         };
         let text = Line::from(vec![
             icon,
