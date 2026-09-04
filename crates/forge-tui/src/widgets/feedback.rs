@@ -211,7 +211,7 @@ mod tests {
 
         let long = FeedbackModel::warn("abcdefghijklmnopqrstuvwxyz");
         let rendered = render_feedback(&long, 20, 4);
-        assert!(rendered.contains("!") && rendered.contains("abcdef"));
+        assert!(rendered.contains("WAIT") && rendered.contains("abcdef"));
     }
 
     #[test]
