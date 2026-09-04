@@ -1209,17 +1209,32 @@ impl ExitState {
 #[derive(Default)]
 pub(crate) struct ToastState {
     current: Option<(Instant, String)>,
+    stack: crate::widgets::ToastStack,
 }
 
 impl ToastState {
-    pub(crate) fn show(&mut self, text: impl Into<String>) -> String {
+    pub(crate) fn show(
+        &mut self,
+        severity: crate::widgets::feedback::FeedbackSeverity,
+        text: impl Into<String>,
+    ) -> String {
         let text = text.into();
         self.current = Some((Instant::now(), text.clone()));
+        self.stack.push(severity, text.clone());
         text
+    }
+
+    pub(crate) fn push_overlay(
+        &mut self,
+        severity: crate::widgets::feedback::FeedbackSeverity,
+        text: impl Into<String>,
+    ) {
+        self.stack.push(severity, text);
     }
 
     pub(crate) fn clear(&mut self) {
         self.current = None;
+        self.stack.clear();
     }
 
     pub(crate) fn expire(&mut self, timeout: Duration) {
@@ -1230,6 +1245,15 @@ impl ToastState {
         {
             self.current = None;
         }
+        self.stack.tick();
+    }
+
+    pub(crate) fn render_overlay(
+        &mut self,
+        frame_area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        self.stack.render_overlay(frame_area, buf);
     }
 }
 
@@ -1245,6 +1269,7 @@ pub(crate) struct RenderCacheState {
 pub(crate) struct BusyState {
     active: bool,
     phase: BusyPhase,
+    throbber: throbber_widgets_tui::ThrobberState,
 }
 
 impl Default for BusyState {
@@ -1252,6 +1277,7 @@ impl Default for BusyState {
         Self {
             active: false,
             phase: BusyPhase::Idle,
+            throbber: throbber_widgets_tui::ThrobberState::default(),
         }
     }
 }
@@ -1263,6 +1289,13 @@ impl BusyState {
 
     pub(crate) fn phase(&self) -> BusyPhase {
         self.phase.clone()
+    }
+
+    /// Animation state driving the footer working meter. Advanced once per
+    /// event-loop tick while a turn runs — deterministic, unlike the wall
+    /// clock the meter used to read directly.
+    pub(crate) fn throbber(&self) -> &throbber_widgets_tui::ThrobberState {
+        &self.throbber
     }
 
     pub(crate) fn start(&mut self, phase: BusyPhase) {
@@ -1281,6 +1314,17 @@ impl BusyState {
     pub(crate) fn stop(&mut self) {
         self.active = false;
         self.phase = BusyPhase::Idle;
+        self.throbber = throbber_widgets_tui::ThrobberState::default();
+    }
+
+    /// Advance the spinner one frame. Called from the event-loop tick while
+    /// a turn runs — never from `draw`, which must not mutate state. Idle
+    /// ticks leave the frame alone so a restarted turn always begins at the
+    /// same glyph.
+    pub(crate) fn tick(&mut self) {
+        if self.active {
+            self.throbber.calc_next();
+        }
     }
 }
 

@@ -10,7 +10,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Which footer control (if any) is focused for keyboard/mouse activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +41,10 @@ pub struct FooterModel {
     pub lifecycle_detail: Option<String>,
     /// 0.0..=1.0
     pub ctx_pct: f64,
+    /// Spinner frames while a turn runs. Advanced once per event-loop tick
+    /// by the app busy state, so motion pauses with work instead of
+    /// free-running on the wall clock.
+    pub throbber: throbber_widgets_tui::ThrobberState,
     /// Session API-reported prompt/input tokens.
     pub prompt_tokens: u64,
     /// Session API-reported completion/output tokens.
@@ -99,37 +102,17 @@ fn lifecycle_label(life: TurnLifecycle) -> (&'static str, Style) {
     }
 }
 
-/// Cells in the working meter. Wide enough to read as a wave, narrow enough
-/// that the footer's 76-column floor still fits every chip beside it.
-const WAVE_CELLS: usize = 5;
-/// One period of the wave, sampled per cell. Rotating this is the animation.
-const WAVE: [&str; WAVE_CELLS] = ["▁", "▃", "▆", "▃", "▁"];
-
-fn wave_phase_at(millis: u128) -> usize {
-    ((millis / 120) as usize) % WAVE_CELLS
-}
-
-fn wave_phase() -> usize {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    wave_phase_at(millis)
-}
-
-/// A travelling wave, shown in place of the lifecycle label while a turn runs.
-fn wave_meter(phase: usize) -> Vec<ratatui::text::Span<'static>> {
-    (0..WAVE_CELLS)
-        .map(|index| {
-            let cell = WAVE[(index + phase) % WAVE_CELLS];
-            let style = match cell {
-                "▆" => theme::accent_style().add_modifier(Modifier::BOLD),
-                "▃" => theme::accent_style(),
-                _ => theme::dim(),
-            };
-            ratatui::text::Span::styled(cell, style)
-        })
-        .collect()
+/// Working meter: one quarter-circle glyph stepped by the app tick.
+///
+/// The glyphs come from [`throbber_widgets_tui::BLACK_CIRCLE`] — the same
+/// ◐◓◑◒ family the turn line already speaks — so the footer and the
+/// transcript share one spinner vocabulary. Frames advance in
+/// `tick_render_state`, never in `render`: a pure widget of `(model, frame)`.
+fn working_meter(state: &throbber_widgets_tui::ThrobberState) -> Vec<ratatui::text::Span<'static>> {
+    vec![throbber_widgets_tui::Throbber::default()
+        .throbber_set(throbber_widgets_tui::BLACK_CIRCLE)
+        .throbber_style(theme::accent_style().add_modifier(Modifier::BOLD))
+        .to_symbol_span(state)]
 }
 
 /// Horizontal inset applied to the content row so the footer's text aligns
@@ -334,9 +317,7 @@ impl FooterBar<'_> {
         let dim = m.dimmed;
         let working = meter && m.lifecycle == TurnLifecycle::Working && !dim;
         let mut right: Vec<Span<'static>> = if working {
-            let mut spans = wave_meter(wave_phase());
-            spans.push(Span::raw(" "));
-            spans
+            working_meter(&m.throbber)
         } else {
             let (label, dot_style) = lifecycle_label(m.lifecycle);
             vec![
@@ -483,25 +464,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_wave_travels_and_repeats() {
-        assert_eq!(wave_phase_at(0), 0);
-        assert_eq!(wave_phase_at(119), 0);
-        assert_eq!(wave_phase_at(120), 1);
-        assert_eq!(wave_phase_at(600), 0);
+    fn the_meter_steps_through_the_quarter_circle_family() {
+        // Frames come from the app tick, not the wall clock: stepping state
+        // by hand must walk the BLACK_CIRCLE set in order, then wrap.
+        let glyph = |steps: usize| {
+            let mut state = throbber_widgets_tui::ThrobberState::default();
+            for _ in 0..steps {
+                state.calc_next();
+            }
+            working_meter(&state)
+                .into_iter()
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>()
+                .join("")
+        };
+        assert_eq!(glyph(0), "◑ ");
+        assert_eq!(glyph(1), "◒ ");
+        assert_eq!(glyph(2), "◐ ");
+        assert_eq!(glyph(3), "◓ ");
+        assert_eq!(glyph(4), "◑ ");
     }
 
     /// The meter has to actually move: two frames a beat apart must differ,
-    /// or it is a static row of blocks pretending to be an indicator.
+    /// or it is a static glyph pretending to be an indicator.
     #[test]
     fn the_meter_differs_between_beats() {
-        let cells = |phase: usize| {
-            wave_meter(phase)
+        let glyph = |steps: usize| {
+            let mut state = throbber_widgets_tui::ThrobberState::default();
+            for _ in 0..steps {
+                state.calc_next();
+            }
+            working_meter(&state)
                 .into_iter()
                 .map(|span| span.content.to_string())
                 .collect::<Vec<_>>()
         };
-        assert_ne!(cells(0), cells(1));
-        assert_eq!(cells(0), cells(WAVE_CELLS));
+        let a = glyph(0);
+        let b = glyph(1);
+        assert_ne!(a, b);
+        assert_eq!(a, glyph(4));
     }
 
     fn model(lifecycle: TurnLifecycle, ctx_pct: f64) -> FooterModel {
@@ -592,7 +593,7 @@ mod tests {
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 90);
         assert!(
-            out.contains('▁') || out.contains('▃') || out.contains('▆'),
+            out.contains('◑') || out.contains('◒') || out.contains('◐') || out.contains('◓'),
             "{out:?}"
         );
         assert!(out.contains("34%"), "{out:?}");
@@ -649,7 +650,7 @@ mod tests {
         assert!(out.contains("Medium"), "{out:?}");
         assert!(out.contains("Hit Enter ⏎ to open model"), "{out:?}");
         assert!(
-            !out.contains('▁') && !out.contains('▃') && !out.contains('▆'),
+            !out.contains('◑') && !out.contains('◒') && !out.contains('◐') && !out.contains('◓'),
             "activity yields to the hint: {out:?}"
         );
         let area = Rect::new(0, 0, 90, 2);
@@ -742,7 +743,7 @@ mod tests {
         assert!(out.contains("Medium"), "{out:?}");
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
         assert!(
-            out.contains('▁') || out.contains('▃') || out.contains('▆'),
+            out.contains('◑') || out.contains('◒') || out.contains('◐') || out.contains('◓'),
             "{out:?}"
         );
         assert!(out.contains("34%"), "{out:?}");
