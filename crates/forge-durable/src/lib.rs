@@ -255,7 +255,21 @@ pub struct RestoredBackgroundTask {
     pub kind: String,
     pub label: String,
     pub child_session_id: Option<SessionId>,
+    /// Parent session for a subagent. Older journals omit this field and are
+    /// treated as direct children of the session being resumed.
+    #[serde(default)]
+    pub parent_session_id: Option<SessionId>,
+    /// Last durable background status. Older journals only recorded whether a
+    /// task finished, so those entries default to `running`.
+    #[serde(default = "default_restored_task_status")]
+    pub status: String,
+    #[serde(default)]
+    pub summary: Option<String>,
     pub finished: bool,
+}
+
+fn default_restored_task_status() -> String {
+    "running".into()
 }
 
 impl Journal {
@@ -680,6 +694,26 @@ impl Journal {
         label: &str,
         child_session_id: Option<SessionId>,
     ) -> Result<u64, JournalError> {
+        self.append_background_task_started_with_parent(
+            session_id,
+            task_id,
+            kind,
+            label,
+            child_session_id,
+            None,
+        )
+        .await
+    }
+
+    pub async fn append_background_task_started_with_parent(
+        &self,
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        kind: &str,
+        label: &str,
+        child_session_id: Option<SessionId>,
+        parent_session_id: Option<SessionId>,
+    ) -> Result<u64, JournalError> {
         self.append(
             session_id,
             JournalEventType::BackgroundTaskStarted,
@@ -688,6 +722,7 @@ impl Journal {
                 "kind": kind,
                 "label": label,
                 "child_session_id": child_session_id,
+                "parent_session_id": parent_session_id,
             }),
         )
         .await
@@ -1093,6 +1128,11 @@ impl Journal {
                             kind: kind.to_string(),
                             label: label.to_string(),
                             child_session_id,
+                            parent_session_id: payload
+                                .get("parent_session_id")
+                                .and_then(|v| SessionId::deserialize(v).ok()),
+                            status: "running".into(),
+                            summary: None,
                             finished: false,
                         });
                     }
@@ -1102,6 +1142,13 @@ impl Journal {
                         if let Some(task) = state.background_tasks.iter_mut().find(|t| t.id.0 == id)
                         {
                             task.finished = true;
+                            if let Some(status) = payload.get("status").and_then(|v| v.as_str()) {
+                                task.status = status.to_string();
+                            }
+                            task.summary = payload
+                                .get("summary")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
                         }
                     }
                 }

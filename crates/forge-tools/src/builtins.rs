@@ -1586,6 +1586,12 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(write_stdin),
         std::sync::Arc::new(UpdatePlanTool),
         std::sync::Arc::new(AskUserQuestionTool),
+        std::sync::Arc::new(crate::SpawnAgentTool),
+        std::sync::Arc::new(crate::SendMessageTool),
+        std::sync::Arc::new(crate::FollowupTaskTool),
+        std::sync::Arc::new(crate::WaitAgentTool),
+        std::sync::Arc::new(crate::ListAgentsTool),
+        std::sync::Arc::new(crate::InterruptAgentTool),
         std::sync::Arc::new(crate::skills::LoadSkillTool),
         crate::web_fetch::web_fetch_tool(),
     ];
@@ -2118,6 +2124,12 @@ itself, never to git hooks)."
         );
         assert!(tools.iter().any(|t| t.name() == "update_plan"));
         assert!(tools.iter().any(|t| t.name() == "ask_user_question"));
+        assert!(tools.iter().any(|t| t.name() == "spawn_agent"));
+        assert!(tools.iter().any(|t| t.name() == "send_message"));
+        assert!(tools.iter().any(|t| t.name() == "followup_task"));
+        assert!(tools.iter().any(|t| t.name() == "wait_agent"));
+        assert!(tools.iter().any(|t| t.name() == "list_agents"));
+        assert!(tools.iter().any(|t| t.name() == "interrupt_agent"));
         assert!(tools.iter().any(|t| t.name() == "ls"));
     }
 
