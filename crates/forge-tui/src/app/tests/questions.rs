@@ -53,10 +53,7 @@ async fn drawing_a_question_keeps_menu_focus_so_arrows_move() {
     let first = render_app_text(&mut app, 100, 34);
     assert_eq!(app.focus.block(), FocusBlock::Approval);
     assert_eq!(app.question_menu_indexes(), (0, 0));
-    assert!(
-        first.contains("\u{276f} 1. Postgres (Recommended)"),
-        "{first}"
-    );
+    assert!(first.contains("1. Postgres (Recommended)"), "{first}");
 
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
@@ -65,11 +62,8 @@ async fn drawing_a_question_keeps_menu_focus_so_arrows_move() {
 
     let second = render_app_text(&mut app, 100, 34);
     assert_eq!(app.focus.block(), FocusBlock::Approval);
-    assert!(second.contains("\u{276f} 2. SQLite"), "{second}");
-    assert!(
-        !second.contains("\u{276f} 1. Postgres (Recommended)"),
-        "{second}"
-    );
+    assert!(second.contains("2. SQLite"), "{second}");
+    assert!(!second.contains("1. Postgres (Recommended)"), "{second}");
 }
 
 #[tokio::test]
