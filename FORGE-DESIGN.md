@@ -230,19 +230,19 @@ Rules:
 - Blue/info is lower priority than the accent and should not compete with focus.
 - Never use semantic colour on every row in a busy transcript.
 
-### 5.3 Status glyphs (colour never travels alone)
+### 5.3 Status indicators (colour never travels alone)
 
-`crates/forge-tui/src/status_glyph.rs` defines one glyph vocabulary used everywhere:
+`crates/forge-tui/src/status_glyph.rs` defines one compact animated vocabulary used everywhere:
 
-| Glyph | Meaning |
+| Indicator | Meaning |
 |---|---|
-| `✓` | Success |
-| `!` | Warning / waiting |
-| `✗` | Error |
-| `i` | Information |
-| `M` / `A` / `D` / `?` / `!` / `U` | Git modified / added / deleted / untracked / ignored / conflicted |
+| `OK` | Success |
+| `WAIT` | Warning / waiting |
+| `ERR` | Error |
+| `INFO` | Information |
+| `MOD` / `ADD` / `DEL` / `NEW` / `SKIP` / `MERGE` | Git modified / added / deleted / untracked / ignored / conflicted |
 
-All glyphs are bold so they survive limited-colour terminals.
+Indicators use short words and cycling dots so they survive limited-colour terminals without relying on symbolic glyphs. The dots advance on the existing 100ms render tick; animation is restrained and never changes layout width.
 
 ### 5.4 Limited-colour fallback
 

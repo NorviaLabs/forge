@@ -1,5 +1,6 @@
 use ratatui::style::Modifier;
 use ratatui::text::Span;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::theme;
 use crate::widgets::FeedbackSeverity;
@@ -43,20 +44,31 @@ impl From<FeedbackSeverity> for Status {
     }
 }
 
-pub fn status_glyph(status: Status) -> Span<'static> {
-    let (glyph, style) = match status {
-        Status::Success => ("✓", theme::tool_success_style()),
-        Status::Warning => ("!", theme::warn().add_modifier(Modifier::BOLD)),
-        Status::Error => ("✗", theme::danger().add_modifier(Modifier::BOLD)),
-        Status::Info => ("i", theme::info().add_modifier(Modifier::BOLD)),
-        Status::Modified => ("M", theme::git_modified().add_modifier(Modifier::BOLD)),
-        Status::Added => ("A", theme::git_added().add_modifier(Modifier::BOLD)),
-        Status::Deleted => ("D", theme::git_deleted().add_modifier(Modifier::BOLD)),
-        Status::Untracked => ("?", theme::git_untracked().add_modifier(Modifier::BOLD)),
-        Status::Ignored => ("!", theme::git_ignored().add_modifier(Modifier::BOLD)),
-        Status::Conflicted => ("U", theme::git_deleted().add_modifier(Modifier::BOLD)),
+/// Render semantic status as a compact animated word rather than a symbolic glyph.
+/// Cycling dots provide motion while the word keeps the meaning explicit.
+pub fn status_indicator(status: Status, millis: u128) -> Span<'static> {
+    let (label, style) = match status {
+        Status::Success => ("OK", theme::tool_success_style()),
+        Status::Warning => ("WAIT", theme::warn().add_modifier(Modifier::BOLD)),
+        Status::Error => ("ERR", theme::danger().add_modifier(Modifier::BOLD)),
+        Status::Info => ("INFO", theme::info().add_modifier(Modifier::BOLD)),
+        Status::Modified => ("MOD", theme::git_modified().add_modifier(Modifier::BOLD)),
+        Status::Added => ("ADD", theme::git_added().add_modifier(Modifier::BOLD)),
+        Status::Deleted => ("DEL", theme::git_deleted().add_modifier(Modifier::BOLD)),
+        Status::Untracked => ("NEW", theme::git_untracked().add_modifier(Modifier::BOLD)),
+        Status::Ignored => ("SKIP", theme::git_ignored().add_modifier(Modifier::BOLD)),
+        Status::Conflicted => ("MERGE", theme::git_deleted().add_modifier(Modifier::BOLD)),
     };
-    Span::styled(glyph, style)
+    let dots = ["   ", ".  ", ".. ", "..."][(millis / 140) as usize % 4];
+    Span::styled(format!("{label}{dots}"), style)
+}
+
+pub fn status_indicator_now(status: Status) -> Span<'static> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    status_indicator(status, millis)
 }
 
 #[cfg(test)]
@@ -64,17 +76,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_glyphs_use_semantic_bold_styles() {
+    fn status_indicators_use_semantic_bold_styles() {
         assert_eq!(
-            status_glyph(Status::Success).style,
+            status_indicator(Status::Success, 0).style,
             theme::tool_success_style()
         );
         assert_eq!(
-            status_glyph(Status::Modified).style,
+            status_indicator(Status::Modified, 0).style,
             theme::git_modified().add_modifier(Modifier::BOLD)
         );
         assert_eq!(
-            status_glyph(Status::Error).style,
+            status_indicator(Status::Error, 0).style,
             theme::danger().add_modifier(Modifier::BOLD)
         );
     }
@@ -96,32 +108,32 @@ mod git_theme_tests {
     // `forge-workspace`: it asserts how a status is *drawn*, which is
     // this module's job, not the workspace crate's.
     #[test]
-    fn status_glyph_follows_theme_semantics() {
+    fn status_indicator_follows_theme_semantics() {
         use ratatui::style::Modifier;
         use GitStatusKind::*;
 
         assert_eq!(
-            status_glyph(Modified.into()).style,
+            status_indicator(Modified.into(), 0).style,
             crate::theme::git_modified().add_modifier(Modifier::BOLD)
         );
         assert_eq!(
-            status_glyph(Added.into()).style,
+            status_indicator(Added.into(), 0).style,
             crate::theme::git_added().add_modifier(Modifier::BOLD)
         );
         assert_eq!(
-            status_glyph(Deleted.into()).style,
+            status_indicator(Deleted.into(), 0).style,
             crate::theme::git_deleted().add_modifier(Modifier::BOLD)
         );
         assert_eq!(
-            status_glyph(Untracked.into()).style,
+            status_indicator(Untracked.into(), 0).style,
             crate::theme::git_untracked().add_modifier(Modifier::BOLD)
         );
         assert_eq!(
-            status_glyph(Ignored.into()).style,
+            status_indicator(Ignored.into(), 0).style,
             crate::theme::git_ignored().add_modifier(Modifier::BOLD)
         );
         assert_eq!(
-            status_glyph(Conflicted.into()).style,
+            status_indicator(Conflicted.into(), 0).style,
             crate::theme::git_deleted().add_modifier(Modifier::BOLD)
         );
     }

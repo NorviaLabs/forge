@@ -1,7 +1,7 @@
 //! Session chrome data for `/status`.
 
 use crate::overlays::StatusRow;
-use crate::status_glyph::{status_glyph, Status};
+use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
 use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
@@ -492,7 +492,7 @@ fn push_lifecycle_label(
             .strip_prefix(life.symbol())
             .and_then(|text| text.strip_prefix(' '))
         {
-            spans.push(status_glyph(status));
+            spans.push(status_indicator_now(status));
             spans.push(Span::raw(" "));
             spans.push(Span::styled(rest.to_string(), style));
             return;

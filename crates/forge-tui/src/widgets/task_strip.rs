@@ -1,4 +1,4 @@
-use crate::status_glyph::{status_glyph, Status};
+use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
 use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
@@ -37,6 +37,7 @@ impl From<TaskLifecycle> for TaskStripState {
 pub struct TaskStripItem {
     pub slot: Option<u8>,
     pub label: String,
+    pub branch: String,
     pub state: TaskStripState,
     pub secondary: Option<String>,
     pub selected: bool,
@@ -69,13 +70,13 @@ impl Widget for TaskStrip<'_> {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let mut spans = vec![Span::styled(" Tasks ", theme::metadata_style())];
+        let mut spans = vec![Span::styled(" WORKTREES ", theme::metadata_style())];
         for (index, item) in self.items.iter().enumerate() {
             if index > 0 {
                 spans.push(Span::styled(" · ", theme::border_muted()));
             }
             let status = Self::state_status(item.state);
-            let glyph = status_glyph(status);
+            let indicator = status_indicator_now(status);
             let base = if let Some(slot) = item.slot {
                 format!("{slot} {}", item.label)
             } else {
@@ -90,9 +91,15 @@ impl Widget for TaskStrip<'_> {
             };
             let mut item_spans = vec![
                 Span::styled("[", theme::border_muted()),
-                glyph,
+                indicator,
                 Span::styled(format!(" {base}"), style),
             ];
+            if !item.branch.is_empty() {
+                item_spans.push(Span::styled(
+                    format!(" · {}", item.branch),
+                    theme::metadata_style(),
+                ));
+            }
             if let Some(secondary) = &item.secondary {
                 item_spans.push(Span::styled(
                     format!(" {secondary}"),
@@ -145,6 +152,7 @@ mod tests {
         let items = vec![TaskStripItem {
             slot: Some(1),
             label: "parser-fix".into(),
+            branch: "forge/parser-fix-1".into(),
             state: TaskStripState::Running,
             secondary: Some("M".into()),
             selected: true,
