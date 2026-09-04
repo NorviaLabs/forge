@@ -71,7 +71,6 @@ similar = "3"
 edtui = { version = "0.11.6", default-features = false }
 ratatui-toaster = "0.1"
 throbber-widgets-tui = "0.11"
-tui-skeleton = "0.3"
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }
