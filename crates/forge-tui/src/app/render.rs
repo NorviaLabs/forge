@@ -588,23 +588,10 @@ impl TuiApp {
                 // prose width — without this the interrupt hint was clipped to
                 // "esc to interru".
                 let line_width = width.saturating_sub(2);
-                let mut turn_lines = vec![
+                vec![
                     Line::from(""),
                     crate::widgets::turn_line(&model, line_width, millis),
-                ];
-                // Nothing has arrived yet: mark where the answer will land
-                // with a placeholder shimmer instead of an empty pane, which
-                // otherwise reads exactly like a stall.
-                if self.stream.preview.is_empty()
-                    && self.stream.thinking.is_empty()
-                    && self.timing.chars == 0
-                {
-                    turn_lines.extend(crate::widgets::waiting_lines(
-                        (elapsed * 1000.0) as u64,
-                        line_width,
-                    ));
-                }
-                turn_lines
+                ]
             } else {
                 Vec::new()
             };
