@@ -482,7 +482,7 @@ Rules:
 - Tool calls use concise verbs: `Read 4 files`, `Ran cargo test`.
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
-- While a turn runs but nothing has arrived yet, placeholder shimmer rows (`tui-skeleton`, `widgets/waiting.rs`) mark where the answer will land — a stall and a slow provider must not look identical. Gated behind the busy debounce so instant turns never flash it.
+- While a turn runs, the live turn line (`widgets/turn_line.rs`) names the phase and counts up. No placeholder shimmer rows in the transcript — the pane stays empty until content arrives. Gated behind the busy debounce so instant turns never flash it.
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible.
 - Do not render a permanent progress narration stream.
