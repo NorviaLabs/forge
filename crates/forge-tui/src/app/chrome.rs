@@ -187,7 +187,7 @@ impl TuiApp {
     }
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
-        let text = self.toast.show(text);
+        let text = self.toast.show(FeedbackSeverity::Ok, text);
         self.set_feedback(FeedbackSeverity::Ok, text);
     }
 
@@ -224,6 +224,11 @@ impl TuiApp {
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
         self.set_feedback(FeedbackSeverity::Error, msg.clone());
+        // Errors also surface as an overlay toast: the strip persists but
+        // sits far from the reader's eyes, while the toast interrupts calmly
+        // at the corner for two seconds.
+        self.toast
+            .push_overlay(FeedbackSeverity::Error, msg.clone());
         // Replace prior error banners — don't accumulate red clutter in the chat.
         self.banner_state.items.retain(|b| {
             !matches!(
@@ -400,6 +405,9 @@ impl TuiApp {
         self.connected_cached();
         self.refresh_progress_state();
         self.stream.advance_reveal(Instant::now());
+        // Spinner frames advance with the event loop, not the wall clock:
+        // pausing work pauses motion, and tests can step frames exactly.
+        self.busy_state.tick();
     }
 
     fn refresh_progress_state(&mut self) {

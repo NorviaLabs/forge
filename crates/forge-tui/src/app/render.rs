@@ -588,10 +588,23 @@ impl TuiApp {
                 // prose width — without this the interrupt hint was clipped to
                 // "esc to interru".
                 let line_width = width.saturating_sub(2);
-                vec![
+                let mut turn_lines = vec![
                     Line::from(""),
                     crate::widgets::turn_line(&model, line_width, millis),
-                ]
+                ];
+                // Nothing has arrived yet: mark where the answer will land
+                // with a placeholder shimmer instead of an empty pane, which
+                // otherwise reads exactly like a stall.
+                if self.stream.preview.is_empty()
+                    && self.stream.thinking.is_empty()
+                    && self.timing.chars == 0
+                {
+                    turn_lines.extend(crate::widgets::waiting_lines(
+                        (elapsed * 1000.0) as u64,
+                        line_width,
+                    ));
+                }
+                turn_lines
             } else {
                 Vec::new()
             };
@@ -978,6 +991,7 @@ impl TuiApp {
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
             lifecycle_detail: status.incomplete_checks.clone(),
+            throbber: self.busy_state.throbber().clone(),
             ctx_pct: status.ctx_pct,
             prompt_tokens: self.session_view.prompt_tokens,
             completion_tokens: self.session_view.completion_tokens,
@@ -996,10 +1010,14 @@ impl TuiApp {
             }
         }
 
-        // The right-click context menu is the topmost layer.
+        // The right-click context menu is the topmost interactive layer.
         if let Some(menu) = self.context_menu.as_ref() {
             render_context_menu(frame.buffer_mut(), menu);
         }
+
+        // Transient toast overlay paints last: notification only, never
+        // focusable, never blocking. Positioned bottom-right by the engine.
+        self.toast.render_overlay(area, frame.buffer_mut());
     }
 
     /// Center-pane placeholder for when nothing is open — `workspace_navigation.current()`
