@@ -899,6 +899,10 @@ fn highlight_match(line: Line<'static>, is_match: bool) -> Line<'static> {
 /// Old on the left, new on the right. Context lines appear on both sides;
 /// a removal leaves the right side blank and an addition the left, so the
 /// two columns stay vertically aligned with each other.
+///
+/// Each side carries its own line number and `-/+/space` marker plus the same
+/// syntax highlighting the unified view paints — bare colored text lost
+/// position context the moment review switched to split mode.
 fn render_split(view: &DiffView, patch: &Patch, area: Rect, buf: &mut Buffer) {
     let gutter = 1u16;
     let column = area.width.saturating_sub(gutter) / 2;
@@ -915,55 +919,151 @@ fn render_split(view: &DiffView, patch: &Patch, area: Rect, buf: &mut Buffer) {
         ..area
     };
 
-    let mut left: Vec<Line<'static>> = Vec::new();
-    let mut right: Vec<Line<'static>> = Vec::new();
-    for (index, raw) in patch.lines.iter().enumerate() {
-        let hit = view.line_is_match(index);
-        let (l, r) = split_row(raw);
-        left.push(split_line(l, raw, hit));
-        right.push(split_line(r, raw, hit));
+    let numbered = crate::conversation::number_diff_lines(&patch.lines);
+    let number_width = numbered
+        .iter()
+        .flat_map(|line| [line.old, line.new])
+        .flatten()
+        .max()
+        .map(|line| line.to_string().len())
+        .unwrap_or(1);
+    // One highlight pass over the new-file-order contents, indexed in row
+    // order exactly like the unified view — context rows share one index so
+    // both sides paint identical spans for identical text.
+    let code = numbered
+        .iter()
+        .filter(|line| !line.header)
+        .map(|line| line.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let highlighted = crate::conversation::lang_from_path(&patch.path.display().to_string())
+        .map(|lang| forge_syntax::highlight_to_lines(lang, &code, &crate::theme::syntax_theme()));
+    let mut code_index = 0;
+    let mut rows: Vec<(Line<'static>, Line<'static>)> = Vec::with_capacity(numbered.len());
+    for line in &numbered {
+        // Search hits index raw patch lines; numbering skips preambles, so
+        // the rendered position cannot stand in for the match index.
+        let hit = view.line_is_match(line.raw);
+        if line.header {
+            let style = if hit {
+                theme::diff_hunk().patch(theme::search_match())
+            } else {
+                theme::diff_hunk()
+            };
+            let header = Line::from(Span::styled(line.content.clone(), style));
+            rows.push((header.clone(), header));
+            continue;
+        }
+        let parts = highlighted.as_ref().and_then(|lines| lines.get(code_index));
+        code_index += 1;
+        let (left, right) = match line.marker {
+            '-' => (
+                Some(split_cell(
+                    line.old,
+                    number_width,
+                    '-',
+                    parts,
+                    theme::diff_remove(),
+                    hit,
+                )),
+                None,
+            ),
+            '+' => (
+                None,
+                Some(split_cell(
+                    line.new,
+                    number_width,
+                    '+',
+                    parts,
+                    theme::diff_add(),
+                    hit,
+                )),
+            ),
+            _ => (
+                Some(split_cell(
+                    line.old,
+                    number_width,
+                    ' ',
+                    parts,
+                    theme::diff_context(),
+                    hit,
+                )),
+                Some(split_cell(
+                    line.new,
+                    number_width,
+                    ' ',
+                    parts,
+                    theme::diff_context(),
+                    hit,
+                )),
+            ),
+        };
+        rows.push((
+            left.unwrap_or_else(|| Line::from(Span::styled(String::new(), theme::panel()))),
+            right.unwrap_or_else(|| Line::from(Span::styled(String::new(), theme::panel()))),
+        ));
     }
 
     let take = area.height as usize;
     let skip = view.scroll;
-    Paragraph::new(left.into_iter().skip(skip).take(take).collect::<Vec<_>>())
-        .render(left_area, buf);
-    Paragraph::new(right.into_iter().skip(skip).take(take).collect::<Vec<_>>())
-        .render(right_area, buf);
+    Paragraph::new(
+        rows.iter()
+            .map(|(left, _)| left.clone())
+            .skip(skip)
+            .take(take)
+            .collect::<Vec<_>>(),
+    )
+    .render(left_area, buf);
+    Paragraph::new(
+        rows.iter()
+            .map(|(_, right)| right.clone())
+            .skip(skip)
+            .take(take)
+            .collect::<Vec<_>>(),
+    )
+    .render(right_area, buf);
 }
 
-/// Which side(s) a raw patch line belongs on.
-fn split_row(raw: &str) -> (Option<&str>, Option<&str>) {
-    if raw.starts_with("@@") {
-        return (Some(raw), Some(raw));
-    }
-    match raw.chars().next() {
-        Some('-') => (Some(&raw[1..]), None),
-        Some('+') => (None, Some(&raw[1..])),
-        Some(' ') => (Some(&raw[1..]), Some(&raw[1..])),
-        _ => (Some(raw), Some(raw)),
-    }
-}
-
-fn split_line(text: Option<&str>, raw: &str, hit: bool) -> Line<'static> {
-    let Some(text) = text else {
-        return Line::from(Span::styled(String::new(), theme::panel()));
-    };
-    let base = if raw.starts_with("@@") {
-        theme::diff_hunk()
-    } else if raw.starts_with('+') {
-        theme::diff_add()
-    } else if raw.starts_with('-') {
-        theme::diff_remove()
-    } else {
-        theme::diff_context()
-    };
+/// One side of a split row: right-aligned line number, marker, content.
+///
+/// Numbers and markers carry the row's diff background so the gutter reads
+/// as part of the row; syntax spans keep the same background via
+/// `syntax_segment`, mirroring the unified view.
+fn split_cell(
+    num: Option<usize>,
+    number_width: usize,
+    marker: char,
+    parts: Option<&Vec<forge_syntax::HighlightedSegment>>,
+    line_style: ratatui::style::Style,
+    hit: bool,
+) -> Line<'static> {
     let style = if hit {
-        base.patch(theme::search_match())
+        line_style.patch(theme::search_match())
     } else {
-        base
+        line_style
     };
-    Line::from(Span::styled(text.to_string(), style))
+    let num = num.map(|num| num.to_string()).unwrap_or_default();
+    let mut spans = vec![Span::styled(
+        format!("{num:>number_width$} {marker} "),
+        style,
+    )];
+    if let Some(parts) = parts {
+        for (text, rgb, bold, italic) in parts {
+            let mut style =
+                theme::syntax_segment(*rgb, Some(line_style.bg.unwrap_or(theme::panel_alt_bg())));
+            if hit {
+                style = style.patch(theme::search_match());
+            }
+            if *bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if *italic {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            spans.push(Span::styled(text.clone(), style));
+        }
+    }
+    Line::from(spans)
 }
 
 fn render_message(area: Rect, buf: &mut Buffer, heading: &str, body: &str) {
@@ -1422,11 +1522,50 @@ mod v2_tests {
 
     #[test]
     fn split_rows_put_removals_left_and_additions_right() {
-        assert_eq!(split_row("-gone"), (Some("gone"), None));
-        assert_eq!(split_row("+new"), (None, Some("new")));
-        assert_eq!(split_row(" same"), (Some("same"), Some("same")));
-        let hunk = split_row("@@ -1 +1 @@");
-        assert_eq!(hunk.0, hunk.1, "a hunk header spans both columns");
+        // Numbering (shared with the unified view) decides sides now: a
+        // removal carries only an old number, an addition only a new one.
+        let numbered = crate::conversation::number_diff_lines(&[
+            "@@ -1 +1 @@".to_string(),
+            "-gone".to_string(),
+            "+new".to_string(),
+            " same".to_string(),
+        ]);
+        assert_eq!(numbered.len(), 4);
+        assert!(numbered[0].header, "hunk header spans both columns");
+        assert_eq!(
+            (numbered[1].old, numbered[1].new, numbered[1].marker),
+            (Some(1), None, '-')
+        );
+        assert_eq!(
+            (numbered[2].old, numbered[2].new, numbered[2].marker),
+            (None, Some(1), '+')
+        );
+        assert_eq!(
+            (numbered[3].old, numbered[3].new, numbered[3].marker),
+            (Some(2), Some(2), ' ')
+        );
+        // Raw indices survive numbering so search hits (indexed on patch
+        // lines) still land on the right rendered row.
+        let raws: Vec<usize> = numbered.iter().map(|line| line.raw).collect();
+        assert_eq!(raws, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn split_cells_carry_number_and_marker_gutters() {
+        let cell = split_cell(Some(12), 2, '-', None, theme::diff_remove(), false);
+        let text: String = cell
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.starts_with("12 - "), "{text:?}");
+        let blank = split_cell(None, 2, ' ', None, theme::diff_context(), false);
+        let blank_text: String = blank
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(blank_text.starts_with("   "), "{blank_text:?}");
     }
 
     #[test]
