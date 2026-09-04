@@ -461,6 +461,7 @@ One row (`widgets/footer.rs`): configuration chips on the left, live activity on
 - **Lifecycle:** turn state glyph plus short detail qualifier, styled secondary — severity lives in the glyph, never duplicated in colour.
 - **Context pressure:** a word, not a meter — `context` / `context high` / `context full`, coloured ok/warn/error at the 70% and 90% thresholds. (The old nine-cell shade-bar was removed: at typical single-digit percentages it read as stipple texture.)
 - **Hints:** the §6 hint grammar. Blocking dialogs take over the whole row; footer-focus hints share the row with the chips.
+- **Working meter:** one quarter-circle glyph from the same ◐◓◑◒ family the turn line speaks, stepped once per event-loop tick while a turn runs (`throbber-widgets-tui` state, forge styling). Motion pauses with work instead of free-running on the wall clock.
 - When an approval pends, the row dims — it must not look interactive.
 
 ### 9.4 Chat transcript (sidebar)
@@ -481,6 +482,7 @@ Rules:
 - Tool calls use concise verbs: `Read 4 files`, `Ran cargo test`.
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
+- While a turn runs but nothing has arrived yet, placeholder shimmer rows (`tui-skeleton`, `widgets/waiting.rs`) mark where the answer will land — a stall and a slow provider must not look identical. Gated behind the busy debounce so instant turns never flash it.
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible.
 - Do not render a permanent progress narration stream.
@@ -542,6 +544,11 @@ Rules:
 - Focused presentation: thick top rule + `●` + accent title — legible without colour (shape carries it too).
 - Busy phase, activity feed lines, shell label and a painted caret render inside the panel.
 - Standard control keys, arrows, Tab, paste and resize are forwarded to the shell.
+
+### 9.10 Transient toast overlay
+
+- Success and error notices additionally surface as a positioned toast (`ratatui-toaster`, `widgets/toasts.rs`), bottom-right, auto-expiring after 2s. Notification only: never focusable, never blocking.
+- The feedback strip keeps its persistent latest-status role; the toast is the interruption, the strip is the record.
 
 ## 10. Theme Policy
 

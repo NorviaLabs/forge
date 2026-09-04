@@ -5,7 +5,9 @@ pub mod input;
 pub mod queued_messages;
 pub mod status;
 pub mod task_strip;
+pub mod toasts;
 pub mod turn_line;
+pub mod waiting;
 
 pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState};
 pub use feedback::{classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity};
@@ -14,4 +16,6 @@ pub use input::{composer_cursor_position, composer_text_area_width, InputBar, In
 pub use queued_messages::QueuedMessages;
 pub use status::{session_chrome_rows, BusyPhase, StatusBar, StatusModel, TurnLifecycle};
 pub use task_strip::{TaskStrip, TaskStripItem};
+pub use toasts::ToastStack;
 pub use turn_line::{phase_verb, turn_line, TurnLineModel};
+pub use waiting::waiting_lines;
