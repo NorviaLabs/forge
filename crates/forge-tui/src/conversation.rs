@@ -1977,20 +1977,25 @@ const RAIL_MIN_WIDTH: usize = 50;
 const RAIL_EXTRA: usize = 2;
 
 #[derive(Debug, PartialEq, Eq)]
-struct NumberedDiffLine {
-    old: Option<usize>,
-    new: Option<usize>,
-    marker: char,
-    content: String,
-    header: bool,
+pub(super) struct NumberedDiffLine {
+    pub(super) old: Option<usize>,
+    pub(super) new: Option<usize>,
+    pub(super) marker: char,
+    pub(super) content: String,
+    pub(super) header: bool,
+    /// Index into the raw patch lines this row came from. `diff --git`,
+    /// `---` and `+++` preambles are skipped, so rendered position and raw
+    /// position diverge — search hits index raw lines (see `recompute_matches`
+    /// in `diff_view.rs`) and need the mapping to survive numbering.
+    pub(super) raw: usize,
 }
 
-fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
+pub(super) fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
     let mut numbered = Vec::new();
     let mut old_line = None;
     let mut new_line = None;
 
-    for line in lines {
+    for (raw, line) in lines.iter().enumerate() {
         if line.starts_with("diff --git ") || line.starts_with("--- ") || line.starts_with("+++ ") {
             continue;
         }
@@ -2005,6 +2010,7 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
                 marker: ' ',
                 content: line.clone(),
                 header: true,
+                raw,
             });
             continue;
         }
@@ -2015,6 +2021,7 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
                 marker: ' ',
                 content: line.clone(),
                 header: true,
+                raw,
             });
             continue;
         }
@@ -2048,6 +2055,7 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
             marker,
             content,
             header: false,
+            raw,
         });
     }
     numbered
