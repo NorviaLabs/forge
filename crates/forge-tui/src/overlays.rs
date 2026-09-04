@@ -3102,6 +3102,21 @@ impl Widget for OverlayWidget<'_> {
                     .saturating_add(1)
                     .saturating_sub(visible)
                     .min(items.len().saturating_sub(visible));
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .title(Span::styled(
+                        format!(
+                            " Resume a session · {} · {} ",
+                            picker_position(*selected, items.len()),
+                            crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
+                        ),
+                        theme::brand(),
+                    ));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                let list_area = picker_scrollbar(inner, buf, items.len(), start, visible);
                 let list_items: Vec<ListItem> = items
                     .iter()
                     .enumerate()
@@ -3121,21 +3136,7 @@ impl Widget for OverlayWidget<'_> {
                         ListItem::new(Span::styled(row, style))
                     })
                     .collect();
-                List::new(list_items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::border())
-                            .style(theme::panel())
-                            .title(Span::styled(
-                                format!(
-                                    " Resume a session · {} ",
-                                    crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
-                                ),
-                                theme::brand(),
-                            )),
-                    )
-                    .render(r, buf);
+                List::new(list_items).render(list_area, buf);
             }
             Overlay::TaskSwitcher {
                 selected,
@@ -3154,6 +3155,20 @@ impl Widget for OverlayWidget<'_> {
                     .saturating_add(1)
                     .saturating_sub(visible)
                     .min(indices.len().saturating_sub(visible));
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .title(Span::styled(
+                        format!(
+                            " Tasks · {} · Enter switch · n new · a attach · r rename · x archive · d cleanup ",
+                            picker_position(selected_position, indices.len())
+                        ),
+                        theme::brand(),
+                    ));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                let list_area = picker_scrollbar(inner, buf, indices.len(), start, visible);
                 // Rows are pre-sorted by group, so the heading only has to
                 // appear when it changes — no separate header rows, which a
                 // filtered list would leave stranded above nothing.
@@ -3198,17 +3213,7 @@ impl Widget for OverlayWidget<'_> {
                         Constraint::Min(14),
                     ],
                 )
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border())
-                        .style(theme::panel())
-                        .title(Span::styled(
-                            " Tasks · Enter switch · n new · a attach · r rename · x archive · d cleanup ",
-                            theme::brand(),
-                        )),
-                )
-                .render(r, buf);
+                .render(list_area, buf);
             }
             Overlay::HistorySearch {
                 query,
@@ -3225,7 +3230,8 @@ impl Widget for OverlayWidget<'_> {
                     .style(theme::panel())
                     .title(Span::styled(
                         format!(
-                            " History · {} ",
+                            " History · {} · {} ",
+                            picker_position(*selected, items.len()),
                             crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
                         ),
                         theme::brand(),
@@ -3252,6 +3258,7 @@ impl Widget for OverlayWidget<'_> {
                     .saturating_add(1)
                     .saturating_sub(visible)
                     .min(items.len().saturating_sub(visible));
+                let list_area = picker_scrollbar(list_area, buf, items.len(), start, visible);
                 let rows = items
                     .iter()
                     .enumerate()
@@ -3453,7 +3460,8 @@ impl Widget for OverlayWidget<'_> {
                     .style(theme::panel())
                     .title(Span::styled(
                         format!(
-                            " File explorer · readonly · {} ",
+                            " File explorer · readonly · {} · {} ",
+                            picker_position(*selected, items.len()),
                             crate::hints::hint_text(crate::hints::BROWSE)
                         ),
                         theme::brand(),
@@ -3471,7 +3479,8 @@ impl Widget for OverlayWidget<'_> {
                 Paragraph::new(cwd.as_str())
                     .style(theme::muted())
                     .render(regions[0], buf);
-                List::new(list_items).render(regions[1], buf);
+                let list_area = picker_scrollbar(regions[1], buf, items.len(), start, visible);
+                List::new(list_items).render(list_area, buf);
                 let status = error
                     .as_deref()
                     .unwrap_or("Enter opens directories/files · ←/Backspace moves up");
@@ -3487,16 +3496,22 @@ impl Widget for OverlayWidget<'_> {
                 let r = centered_rect(86, 78, area);
                 clear_modal(r, buf);
                 let visible = r.height.saturating_sub(2).max(1) as usize;
-                let width = r.width.saturating_sub(2) as usize;
+                // Reserve the track column before truncating rows so text
+                // never sits under the scrollbar. Truncate by columns, not
+                // bytes: `String::truncate` panics on a char boundary split.
+                let overflow = lines.len() > visible;
+                let width = r
+                    .width
+                    .saturating_sub(2)
+                    .saturating_sub(u16::from(overflow)) as usize;
                 let body = lines
                     .iter()
                     .enumerate()
                     .skip(*scroll)
                     .take(visible)
                     .map(|(index, line)| {
-                        let mut row = format!("{:>4} │ {}", index + 1, line);
-                        row.truncate(width);
-                        row
+                        let row = format!("{:>4} │ {}", index + 1, line);
+                        row.chars().take(width).collect::<String>()
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -3517,6 +3532,27 @@ impl Widget for OverlayWidget<'_> {
                             .title(Span::styled(title, theme::brand())),
                     )
                     .render(r, buf);
+                if overflow && r.width > 2 && r.height > 2 {
+                    let track =
+                        Rect::new(r.x + r.width - 2, r.y + 1, 1, r.height.saturating_sub(2));
+                    let mut state = ScrollbarState::new(lines.len())
+                        .position(*scroll)
+                        .viewport_content_length(visible);
+                    ratatui::widgets::StatefulWidget::render(
+                        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                            .begin_symbol(Some("▲"))
+                            .end_symbol(Some("▼"))
+                            .track_symbol(Some("│"))
+                            .thumb_symbol("█")
+                            .thumb_style(theme::text_secondary())
+                            .track_style(theme::dim())
+                            .begin_style(theme::dim())
+                            .end_style(theme::dim()),
+                        track,
+                        buf,
+                        &mut state,
+                    );
+                }
             }
         }
     }
@@ -3627,6 +3663,42 @@ mod tests {
         assert!(text.contains("Select a model · 0/0"), "{text}");
     }
 
+    #[test]
+    fn resume_picker_title_carries_position_counter() {
+        let overlay = Overlay::resume_picker(vec![
+            ResumeSessionItem {
+                id: "aaa".into(),
+                modified: "2026-09-04 10:00".into(),
+                title: Some("first".into()),
+            },
+            ResumeSessionItem {
+                id: "bbb".into(),
+                modified: "2026-09-04 11:00".into(),
+                title: None,
+            },
+        ]);
+        let text = render_text(&overlay);
+        assert!(text.contains("Resume a session · 1/2"), "{text}");
+    }
+
+    #[test]
+    fn history_search_title_carries_position_counter() {
+        let overlay = Overlay::history_search(
+            vec!["cargo test".into(), "git status".into()],
+            String::new(),
+        );
+        let text = render_text(&overlay);
+        assert!(text.contains("History · 1/2"), "{text}");
+    }
+
+    #[test]
+    fn file_viewer_truncates_wide_unicode_without_panicking() {
+        // `String::truncate` panics mid-char; the viewer must cut by columns.
+        let wide = "é".repeat(200);
+        let overlay = Overlay::file_viewer("notes.txt", wide);
+        let text = render_text(&overlay);
+        assert!(text.contains("notes.txt"), "{text}");
+    }
     #[test]
     fn welcome_starts_onboarding() {
         let mut overlay = Overlay::welcome();
