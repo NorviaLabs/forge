@@ -496,9 +496,14 @@ impl MdRenderer {
             Tag::Strikethrough => {
                 self.push_style(Style::default().add_modifier(Modifier::CROSSED_OUT))
             }
+            // Links read as links through underline alone. The accent is the
+            // focus color ("where am I"), never content emphasis — painting
+            // answer-body links with it makes every URL look interactive in
+            // the pane that owns the caret. Primary text + underline keeps
+            // the affordance without borrowing focus meaning.
             Tag::Link { .. } => self.push_style(
                 Style::default()
-                    .fg(theme::accent_color())
+                    .fg(theme::text_primary_color())
                     .add_modifier(Modifier::UNDERLINED),
             ),
             Tag::Image { .. } => {
@@ -1444,6 +1449,25 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .expect("inline code token present");
         assert_eq!(code_span.style.fg, theme::inline_code().fg);
         assert_eq!(code_span.style.bg, theme::inline_code().bg);
+    }
+
+    /// Links read as links through underline alone. Accent is the focus
+    /// color; answer-body links painted with it borrow "where am I" meaning.
+    #[test]
+    fn links_do_not_borrow_the_accent_color() {
+        let rendered = render_markdown("see [ratatui](https://ratatui.rs) for widgets", 80);
+        let link = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "ratatui")
+            .expect("link text present");
+        assert_eq!(
+            link.style.fg,
+            Some(theme::text_primary_color()),
+            "link reads at primary weight"
+        );
+        assert_ne!(link.style.fg, Some(theme::accent_color()));
+        assert!(link.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 
     /// Inline code carries file paths and identifiers — the tokens a reader

@@ -2490,7 +2490,12 @@ fn classify_tool_content(
     call: Option<&ToolCall>,
     outcome: &forge_types::ExecutionOutcome,
 ) -> (ToolCardState, String, Option<String>, String) {
-    let detail = redact_tool_output(content);
+    // Tool output often carries terminal color codes (cargo colors, `ls
+    // --color`, test runners). They are display bytes, not content: strip
+    // them here so summaries, counts, wrapping and rendered rows downstream
+    // never see escape glyphs or mis-measure widths. Verdict parsing strips
+    // its own copies independently (see `strip_ansi` callers below).
+    let detail = strip_ansi(&redact_tool_output(content));
     // Human-readable invocation for the subcommand line under the tool label.
     // Redacted the same way as the command text: a sensitive command must not
     // surface on an always-visible line.
@@ -2516,7 +2521,7 @@ fn classify_tool_content(
                 (None, Some(id)) => format!("session #{id} · {label}"),
                 (None, None) => label.into(),
             };
-            return (state, summary, invocation, output.into());
+            return (state, summary, invocation, strip_ansi(output));
         }
     }
     let lower = detail.to_ascii_lowercase();
@@ -3091,6 +3096,55 @@ mod tests {
         assert!(model.is_in_latest_turn(tool_index));
         // The first turn's own reply does not.
         assert!(!model.is_in_latest_turn(boundaries[0] + 1));
+    }
+
+    #[test]
+    fn tool_output_color_codes_never_reach_grouped_items() {
+        // `ls --color` style output: SGR codes are display bytes, and the
+        // transcript measures widths and wraps on the stripped text.
+        let messages = vec![Message {
+            outcome: Default::default(),
+            role: MessageRole::Tool,
+            content: "\u{1b}[32mREADME.md\u{1b}[0m\n\u{1b}[1msrc/main.rs\u{1b}[0m".into(),
+            tool_call_id: Some("1".into()),
+            name: Some("glob".into()),
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        }];
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[],
+            forge_types::TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        );
+        let card = model
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ChatItem::ToolCard {
+                    summary, detail, ..
+                } => Some((summary.clone(), detail.clone())),
+                ChatItem::ActivityGroup {
+                    summary, detail, ..
+                } => Some((summary.clone(), detail.clone())),
+                _ => None,
+            })
+            .expect("glob output lands in a grouped activity");
+        assert!(!card.0.contains('\u{1b}'), "summary: {card:?}");
+        assert!(!card.1.contains('\u{1b}'), "detail: {card:?}");
+        assert!(
+            card.1.contains("README.md") && card.1.contains("src/main.rs"),
+            "stripping must keep the text: {card:?}"
+        );
+        for block in model.semantic_blocks() {
+            if let ConversationBlock::ActivityGroup(group) = block {
+                for item in &group.items {
+                    assert!(!item.contains('\u{1b}'), "group item: {item:?}");
+                }
+            }
+        }
     }
 
     #[test]
