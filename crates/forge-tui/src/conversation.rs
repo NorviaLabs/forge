@@ -1606,8 +1606,7 @@ pub(super) fn render_question_card(
         // The digit already answers the question — `handle_question_menu_key`
         // has accepted 1-9 all along, with nothing on screen to say so.
         let ordinal = format!("{}. ", idx + 1);
-        let chosen = "";
-        let lead = marker.chars().count() + ordinal.chars().count() + chosen.chars().count();
+        let lead = marker.chars().count() + ordinal.chars().count();
         for (n, wrapped) in wrap(&opt.label, inner.saturating_sub(lead))
             .into_iter()
             .enumerate()
@@ -1628,15 +1627,8 @@ pub(super) fn render_question_card(
                 },
                 theme::metadata_style().add_modifier(Modifier::BOLD),
             ));
-            if !chosen.is_empty() {
-                spans.push(Span::styled(
-                    if n == 0 {
-                        chosen.to_string()
-                    } else {
-                        " ".repeat(chosen.chars().count())
-                    },
-                    theme::ok(),
-                ));
+            if opt.chosen {
+                spans.push(Span::styled("selected ", theme::ok()));
             }
             spans.push(Span::styled(wrapped, style));
             row(spans);
