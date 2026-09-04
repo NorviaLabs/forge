@@ -7,7 +7,8 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Table, Widget,
+    Block, Borders, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Table, Widget,
 };
 use std::path::{Path, PathBuf};
 
@@ -2390,6 +2391,49 @@ fn clear_modal(rect: Rect, buf: &mut Buffer) {
     theme::fill(rect, buf, theme::panel());
 }
 
+/// `3/48` position counter for picker titles: 1-based selection over total.
+/// Empty lists report `0/0` rather than dividing attention with a bare `0`.
+fn picker_position(selected: usize, total: usize) -> String {
+    if total == 0 {
+        "0/0".to_string()
+    } else {
+        format!("{}/{}", selected.min(total - 1) + 1, total)
+    }
+}
+
+/// Paint a scrollbar in the last column of `list_area` when the list
+/// overflows it. Returns the narrowed content area so rows never sit under
+/// the track. No-op (full width back) when everything fits — a track with a
+/// full-height thumb is decoration, not information.
+fn picker_scrollbar(list_area: Rect, buf: &mut Buffer, total: usize, start: usize) -> Rect {
+    let visible = list_area.height.max(1) as usize;
+    if total <= visible || list_area.width <= 1 {
+        return list_area;
+    }
+    let content = Rect::new(
+        list_area.x,
+        list_area.y,
+        list_area.width - 1,
+        list_area.height,
+    );
+    let track = Rect::new(
+        list_area.x + list_area.width - 1,
+        list_area.y,
+        1,
+        list_area.height,
+    );
+    let mut state = ScrollbarState::new(total).position(start);
+    ratatui::widgets::StatefulWidget::render(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_style(theme::text_secondary())
+            .track_style(theme::dim()),
+        track,
+        buf,
+        &mut state,
+    );
+    content
+}
+
 /// Bottom band used when `OverlayWidget` paints the theme picker into a full
 /// frame (tests / fallback). Prefer the layout `input` region from `draw`.
 /// Card in the lower-right of `area`. Use this when the host is already the
@@ -2642,10 +2686,28 @@ impl Widget for OverlayWidget<'_> {
                 // `Table`) leave no stray background characters showing.
                 clear_modal(r, buf);
                 let active = active_vendor_route_labels(providers, active_profile_id.as_deref());
+                // Position counter pins selection context: long catalogs scroll,
+                // so `7/48` says where the highlight sits without counting rows.
                 let title_text = match focus {
-                    ConnectModelColumn::Providers => "Select a provider",
-                    ConnectModelColumn::Models => "Select a model",
-                    ConnectModelColumn::Effort => "Select effort",
+                    ConnectModelColumn::Providers => {
+                        let total = flatten_provider_rows(providers).len();
+                        format!(
+                            "Select a provider · {}",
+                            picker_position(*provider_cursor, total)
+                        )
+                    }
+                    ConnectModelColumn::Models => {
+                        let filtered: Vec<&ModelGroup> = groups
+                            .iter()
+                            .filter(|g| group_matches_input(model_input, g))
+                            .collect();
+                        let total = flatten_model_rows(&filtered).len();
+                        format!(
+                            "Select a model · {}",
+                            picker_position(*model_selected, total)
+                        )
+                    }
+                    ConnectModelColumn::Effort => "Select effort".to_string(),
                 };
                 let block = Block::default()
                     .borders(Borders::ALL)
@@ -2673,6 +2735,7 @@ impl Widget for OverlayWidget<'_> {
                         let flat = flatten_provider_rows(providers);
                         let visible = list_area.height.max(1) as usize;
                         let start = window_start(*provider_cursor, flat.len(), visible);
+                        let list_area = picker_scrollbar(list_area, buf, flat.len(), start);
                         let end = (start + visible).min(flat.len());
                         let provider_items: Vec<ListItem> = flat[start..end]
                             .iter()
@@ -2788,7 +2851,17 @@ impl Widget for OverlayWidget<'_> {
                         // single-row table sharing `widths`/spacing with the
                         // body table below, so the columns still line up)
                         // give the list the breathing room a bare `Table`
-                        // with `.header()` packs too tightly.
+                        // with `.header()` packs too tightly. The scrollbar
+                        // narrows the shared area first so header and body
+                        // columns stay aligned under the same widths.
+                        let filtered: Vec<&ModelGroup> = groups
+                            .iter()
+                            .filter(|g| group_matches_input(model_input, g))
+                            .collect();
+                        let rows = flatten_model_rows(&filtered);
+                        let visible = list_area.height.saturating_sub(3).max(1) as usize;
+                        let start = window_start_pin_top(*model_selected, rows.len(), visible);
+                        let list_area = picker_scrollbar(list_area, buf, rows.len(), start);
                         let sections = Layout::default()
                             .direction(Direction::Vertical)
                             .constraints([
@@ -2804,11 +2877,6 @@ impl Widget for OverlayWidget<'_> {
                             .column_spacing(1)
                             .render(header_area, buf);
 
-                        let filtered: Vec<&ModelGroup> = groups
-                            .iter()
-                            .filter(|g| group_matches_input(model_input, g))
-                            .collect();
-                        let rows = flatten_model_rows(&filtered);
                         let visible = list_area.height.max(1) as usize;
                         let start = window_start_pin_top(*model_selected, rows.len(), visible);
                         let end = (start + visible).min(rows.len());
@@ -3488,6 +3556,41 @@ mod tests {
         assert_eq!(buf[(0, 0)].symbol(), "x");
         // Modal interior is repainted panel chrome, not leaked transcript.
         assert_ne!(buf[(50, 24)].symbol(), "x");
+    }
+
+    #[test]
+    fn picker_position_counts_one_based_selection_over_total() {
+        assert_eq!(picker_position(0, 8), "1/8");
+        assert_eq!(picker_position(6, 8), "7/8");
+        // Stale cursor past the end clamps instead of reporting `9/8`.
+        assert_eq!(picker_position(99, 8), "8/8");
+        assert_eq!(picker_position(0, 0), "0/0");
+    }
+
+    #[test]
+    fn picker_scrollbar_only_narrows_overflowing_lists() {
+        let fitting = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+        // Everything fits: full width back, no track painted.
+        assert_eq!(picker_scrollbar(fitting, &mut buf, 5, 0), fitting);
+        // Overflow: one column reserved for the track.
+        let overflowing = picker_scrollbar(fitting, &mut buf, 48, 6);
+        assert_eq!(overflowing.width, 39);
+        assert_eq!(overflowing.height, 10);
+    }
+
+    #[test]
+    fn connect_model_title_carries_position_counter() {
+        let overlay = Overlay::connect_model_open(
+            vec![],
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default_for_model("gpt"),
+            ConnectModelColumn::Models,
+        );
+        let text = render_text(&overlay);
+        assert!(text.contains("Select a model · 0/0"), "{text}");
     }
 
     #[test]
