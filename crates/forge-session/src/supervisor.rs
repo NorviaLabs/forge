@@ -1214,8 +1214,8 @@ mod tests {
         predicate: impl Fn(&TaskRuntimeSnapshot) -> bool,
     ) -> TaskRuntimeSnapshot {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut events = handle.subscribe();
         while std::time::Instant::now() < deadline {
-            let mut events = handle.subscribe();
             match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
                 Ok(Ok(SupervisorEvent::TaskUpdated(snapshot))) => {
                     if snapshot.task.session_id == session_id && predicate(&snapshot) {
