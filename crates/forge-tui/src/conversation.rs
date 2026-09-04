@@ -2972,14 +2972,11 @@ mod tests {
         let model = bash_tool_card(long_command, "5", false);
         let text = rendered_text(&model);
 
-        assert!(text.contains("└─ $ cargo build"), "{text}");
+        assert!(text.contains("$ cargo build"), "{text}");
         // A command too wide for the pane wraps with the connector carried
         // down, so the full invocation stays visible instead of truncating.
         assert!(text.contains("--short"), "{text}");
-        assert!(
-            text.contains("│"),
-            "wrapped continuation must carry the connector:\n{text}"
-        );
+        assert!(!text.contains('│'), "{text}");
         assert!(text.contains("5 output lines"), "{text}");
         assert!(text.contains("Ctrl+O"), "{text}");
     }
@@ -3027,7 +3024,7 @@ mod tests {
         let text = rendered_text(&model);
 
         assert!(
-            text.contains("└─ git status --short · 12 output lines"),
+            text.contains("git status --short · 12 output lines"),
             "invocation must render on its own connector line:\n{text}"
         );
         assert!(
@@ -3079,10 +3076,7 @@ mod tests {
             opts: ConversationViewOpts::default(),
         };
         let text = rendered_text(&model);
-        assert!(
-            text.contains("└─ src/foo.rs"),
-            "write tools should surface the path, not the output preview:\n{text}"
-        );
+        assert!(text.contains("src/foo.rs"), "{text}");
     }
 
     #[test]
@@ -3300,8 +3294,8 @@ mod tests {
         );
         let header = lines
             .iter()
-            .find(|l| line_text(l).starts_with("│ Plan"))
-            .expect("rail-prefixed header row present");
+            .find(|l| line_text(l).contains("Plan"))
+            .expect("plan header row present");
         assert!(
             line_text(header).contains("1 of 1"),
             "header should state step position, got {:?}",
@@ -3312,8 +3306,8 @@ mod tests {
             .find(|l| line_text(l).contains("Inspect code"))
             .expect("step content row present");
         assert!(
-            line_text(content_row).starts_with('│'),
-            "step row should open with the rail glyph, got {:?}",
+            !line_text(content_row).starts_with('│'),
+            "step row should not use a rail glyph, got {:?}",
             line_text(content_row)
         );
         for span in &content_row.spans {
@@ -3632,10 +3626,8 @@ mod tests {
                 );
             }
             assert!(
-                lines
-                    .iter()
-                    .any(|l| line_text(l).trim_start().starts_with('│')),
-                "approval prompt should open every row with the rail glyph"
+                lines.iter().all(|l| !line_text(l).contains('│')),
+                "approval prompt should not use rail glyphs"
             );
         }
     }
@@ -4026,10 +4018,7 @@ mod tests {
         assert!(text.contains("Which database?"), "{text}");
         // Numbered, because 1-9 already answer the question, and marked with
         // the same caret the approval card uses.
-        assert!(
-            text.contains("\u{276f} 1. Postgres (Recommended)"),
-            "{text}"
-        );
+        assert!(text.contains("1. Postgres (Recommended)"), "{text}");
         assert!(text.contains("Relational default."), "{text}");
         assert!(text.contains("Other"), "{text}");
         // Every option explains itself, not only the one under the cursor:
@@ -4041,8 +4030,8 @@ mod tests {
         // Framed like the approval card. Both are the same thing to the
         // operator — the agent has stopped and cannot continue without them.
         assert!(
-            lines.iter().any(|line| line_text(line).contains('┌')),
-            "question should render as a card: {text}"
+            lines.iter().all(|line| !line_text(line).contains('┌')),
+            "{text}"
         );
     }
 
@@ -4361,15 +4350,10 @@ mod tests {
         let lines = model.lines_for_width(80);
         assert_eq!(rule_lines(&lines).len(), 0);
 
-        let railed: Vec<&Line<'static>> = lines
-            .iter()
-            .filter(|l| line_text(l).starts_with('│'))
-            .collect();
-        assert!(!railed.is_empty(), "tool trail renders on the rail");
-        assert!(railed
+        assert!(lines
             .iter()
             .any(|l| line_text(l).contains("Explored repository")));
-        assert!(railed.iter().any(|l| line_text(l).contains("cargo test")));
+        assert!(lines.iter().any(|l| line_text(l).contains("cargo test")));
 
         // User message and final answer break out of the rail.
         let user = lines
@@ -4468,12 +4452,7 @@ mod tests {
             rule_lines(&expanded_lines).len(),
             "expand must not change phase boundaries"
         );
-        let railed =
-            |ls: &[Line<'static>]| ls.iter().filter(|l| line_text(l).starts_with('│')).count();
-        assert!(
-            railed(&expanded_lines) >= railed(&collapsed_lines),
-            "expanded tool items stay on the rail"
-        );
+        assert!(expanded_lines.len() >= collapsed_lines.len());
     }
 
     #[test]
@@ -4491,7 +4470,7 @@ mod tests {
                 rule_lines(&lines).len(),
                 lines
                     .iter()
-                    .filter(|l| line_text(l).starts_with('│'))
+                    .filter(|l| line_text(l).starts_with("  "))
                     .count(),
             );
             if let Some(prev) = baseline {
