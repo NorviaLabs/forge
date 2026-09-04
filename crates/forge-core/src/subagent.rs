@@ -691,6 +691,7 @@ impl AgentSession {
 /// resumed child was already `Waiting`/terminal when its journal replayed —
 /// the loop and status derivation below handle either starting point
 /// identically).
+#[allow(clippy::too_many_arguments)]
 fn spawn_subagent_actor(
     child: AgentSession,
     initial_prompt: Option<String>,

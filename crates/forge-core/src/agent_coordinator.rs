@@ -629,7 +629,7 @@ mod tests {
         coordinator
             .update(child, AgentStatus::Completed, Some("done".into()))
             .unwrap();
-        assert_eq!(coordinator.interrupt(root, child).unwrap(), false);
+        assert!(!coordinator.interrupt(root, child).unwrap());
     }
 
     #[tokio::test]
