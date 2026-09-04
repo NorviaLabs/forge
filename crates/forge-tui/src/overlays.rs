@@ -2405,8 +2405,19 @@ fn picker_position(selected: usize, total: usize) -> String {
 /// overflows it. Returns the narrowed content area so rows never sit under
 /// the track. No-op (full width back) when everything fits — a track with a
 /// full-height thumb is decoration, not information.
-fn picker_scrollbar(list_area: Rect, buf: &mut Buffer, total: usize, start: usize) -> Rect {
-    let visible = list_area.height.max(1) as usize;
+///
+/// `visible` is the body-row count the windowed `start` was computed against;
+/// it sizes the thumb proportionally. Without it the state defaults the
+/// viewport to the track height, concludes everything fits, and paints
+/// nothing while still costing the narrowed column.
+fn picker_scrollbar(
+    list_area: Rect,
+    buf: &mut Buffer,
+    total: usize,
+    start: usize,
+    visible: usize,
+) -> Rect {
+    let visible = visible.max(1);
     if total <= visible || list_area.width <= 1 {
         return list_area;
     }
@@ -2422,11 +2433,19 @@ fn picker_scrollbar(list_area: Rect, buf: &mut Buffer, total: usize, start: usiz
         1,
         list_area.height,
     );
-    let mut state = ScrollbarState::new(total).position(start);
+    let mut state = ScrollbarState::new(total)
+        .position(start)
+        .viewport_content_length(visible);
     ratatui::widgets::StatefulWidget::render(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .track_symbol(Some("│"))
+            .thumb_symbol("█")
             .thumb_style(theme::text_secondary())
-            .track_style(theme::dim()),
+            .track_style(theme::dim())
+            .begin_style(theme::dim())
+            .end_style(theme::dim()),
         track,
         buf,
         &mut state,
@@ -2735,7 +2754,8 @@ impl Widget for OverlayWidget<'_> {
                         let flat = flatten_provider_rows(providers);
                         let visible = list_area.height.max(1) as usize;
                         let start = window_start(*provider_cursor, flat.len(), visible);
-                        let list_area = picker_scrollbar(list_area, buf, flat.len(), start);
+                        let list_area =
+                            picker_scrollbar(list_area, buf, flat.len(), start, visible);
                         let end = (start + visible).min(flat.len());
                         let provider_items: Vec<ListItem> = flat[start..end]
                             .iter()
@@ -2861,7 +2881,8 @@ impl Widget for OverlayWidget<'_> {
                         let rows = flatten_model_rows(&filtered);
                         let visible = list_area.height.saturating_sub(3).max(1) as usize;
                         let start = window_start_pin_top(*model_selected, rows.len(), visible);
-                        let list_area = picker_scrollbar(list_area, buf, rows.len(), start);
+                        let list_area =
+                            picker_scrollbar(list_area, buf, rows.len(), start, visible);
                         let sections = Layout::default()
                             .direction(Direction::Vertical)
                             .constraints([
@@ -3572,11 +3593,24 @@ mod tests {
         let fitting = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
         // Everything fits: full width back, no track painted.
-        assert_eq!(picker_scrollbar(fitting, &mut buf, 5, 0), fitting);
-        // Overflow: one column reserved for the track.
-        let overflowing = picker_scrollbar(fitting, &mut buf, 48, 6);
+        assert_eq!(picker_scrollbar(fitting, &mut buf, 5, 0, 10), fitting);
+        // Overflow: one column reserved for the track, thumb painted in it.
+        let overflowing = picker_scrollbar(fitting, &mut buf, 48, 6, 10);
         assert_eq!(overflowing.width, 39);
         assert_eq!(overflowing.height, 10);
+        let track_x = fitting.x + fitting.width - 1;
+        let thumb_rows = (0..fitting.height)
+            .filter(|y| buf[(track_x, fitting.y + y)].symbol() == "█")
+            .count();
+        assert!(thumb_rows > 0, "thumb must paint on overflow");
+        // Track symbols fill the rest of the column, never leak into content.
+        for y in 0..fitting.height {
+            let symbol = buf[(track_x, fitting.y + y)].symbol();
+            assert!(
+                symbol == "█" || symbol == "│" || symbol == "▲" || symbol == "▼",
+                "unexpected track symbol {symbol:?}"
+            );
+        }
     }
 
     #[test]
