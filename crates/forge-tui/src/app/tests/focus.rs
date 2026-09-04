@@ -639,7 +639,7 @@ async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
 }
 
 #[tokio::test]
-async fn contextual_hint_explains_queued_messages_while_waiting() {
+async fn contextual_hint_omits_queue_information_while_waiting() {
     let (_dir, mut app) = focus_test_app().await;
     app.session.enqueue_task("next task").await.unwrap();
     app.session.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
@@ -657,7 +657,7 @@ async fn contextual_hint_explains_queued_messages_while_waiting() {
     });
     assert_eq!(
         app.contextual_hint().as_deref(),
-        Some("Waiting for approval · 1 queued · resolve this first")
+        Some("Waiting for approval")
     );
 }
 
