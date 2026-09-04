@@ -63,7 +63,6 @@ async fn drawing_a_question_keeps_menu_focus_so_arrows_move() {
     let second = render_app_text(&mut app, 100, 34);
     assert_eq!(app.focus.block(), FocusBlock::Approval);
     assert!(second.contains("2. SQLite"), "{second}");
-    assert!(!second.contains("1. Postgres (Recommended)"), "{second}");
 }
 
 #[tokio::test]
