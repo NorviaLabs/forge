@@ -14,6 +14,7 @@ pub fn render_theme_preview(theme_id: &str, area: Rect, buf: &mut Buffer) {
     }
     let palette = theme::palette(theme_id);
     let syntax = theme::syntax_theme_for(theme_id);
+    ratatui::widgets::Clear.render(area, buf);
     theme::fill(
         area,
         buf,

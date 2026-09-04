@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, List, ListItem, Padding, Paragraph, Row, Table, Widget,
+    Block, Borders, Cell, Clear, List, ListItem, Padding, Paragraph, Row, Table, Widget,
 };
 use std::path::{Path, PathBuf};
 
@@ -2380,6 +2380,16 @@ fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
     )
 }
 
+/// Blank a modal rect before painting block content.
+///
+/// `Clear` resets prior glyphs so table/list widgets that skip cells cannot
+/// leak transcript characters through; `fill` then grounds remaining cells in
+/// the panel style. Call once per modal rect, before any `Block` render.
+fn clear_modal(rect: Rect, buf: &mut Buffer) {
+    Clear.render(rect, buf);
+    theme::fill(rect, buf, theme::panel());
+}
+
 /// Bottom band used when `OverlayWidget` paints the theme picker into a full
 /// frame (tests / fallback). Prefer the layout `input` region from `draw`.
 /// Card in the lower-right of `area`. Use this when the host is already the
@@ -2530,21 +2540,17 @@ pub struct OverlayWidget<'a> {
 
 impl Widget for OverlayWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // Dimmed transcript behind every modal keeps context legible without
+        // competing with the picker. Theme dock is the exception: it replaces
+        // the composer band so live preview stays honest against undimmed UI.
         match self.overlay {
-            // Dim the transcript in place instead of blanking it, so it stays
-            // legible-but-muted behind the picker rather than disappearing.
-            // `Help` (aka `welcome()`) doubles as the zero-state onboarding
-            // overlay auto-opened on a disconnected launch, which must keep
-            // the conversation visible per the onboarding requirement — and
-            // dimming is a strict improvement for the plain `/help` case too.
-            Overlay::ConnectModel { .. } | Overlay::Help => theme::dim_region(area, buf),
-            // Theme dock keeps the real UI painted undimmed so live preview is honest.
             Overlay::Theme { .. } => {}
-            _ => theme::fill(area, buf, theme::canvas()),
+            _ => theme::dim_region(area, buf),
         }
         match self.overlay {
             Overlay::Help => {
                 let r = centered_rect(64, 58, area);
+                clear_modal(r, buf);
                 Paragraph::new(
                     "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• /status Session status\n• /context Token budget by category\n• Tab / Shift+Tab  Focus visible blocks\n• Ctrl+`  Toggle bottom panel\n• Alt+M  Quick-switch model\n• Alt+, / Alt+.  Change effort\n• Footer chips: Enter opens/cycles the selected chip\n• ← / →  Switch tab in the active block\n• Enter/i Interact\n• Tab     Complete (Chat composer)\n• ↑↓      Navigate local list or input\n• Esc     Leave one interaction level\n• F1      Help\n\nEditor (when a text file is open)\n• Normal mode on open; i  Insert mode\n• :w / :q / :wq  Save / quit / save and quit\n• :e [path]  Reload or open a workspace file\n• :s/.../.../  Replace on the current line\n• :%s/.../.../  Replace across the buffer\n• Alt+E  Open the external editor\n• Esc     Return to workspace\n\nText files are editable. Binary and invalid-UTF-8 files are read-only. Forge\nasks before leaving dirty buffers and offers reload or force-save when disk\ncontent changed.\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
                 )
@@ -2554,12 +2560,14 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::brand())
                         .style(theme::panel())
+                        .padding(Padding::horizontal(1))
                         .title(Span::styled(" Help ", theme::brand())),
                 )
                 .render(r, buf);
             }
             Overlay::StatusReport { title, rows } => {
                 let r = centered_capped_rect(area, 74, 30);
+                clear_modal(r, buf);
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -2575,6 +2583,7 @@ impl Widget for OverlayWidget<'_> {
             }
             Overlay::TurnLimit { turns } => {
                 let r = centered_rect(52, 24, area);
+                clear_modal(r, buf);
                 let body = format!(
                     "The agent used {turns} model steps and still has work to do.\n\nContinue for another {turns} steps?\n\n[y/Enter] Continue    [n/Esc] Stop"
                 );
@@ -2583,6 +2592,8 @@ impl Widget for OverlayWidget<'_> {
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::warn())
+                            .style(theme::panel())
+                            .padding(Padding::horizontal(1))
                             .title(Span::styled(
                                 " Turn limit reached ",
                                 theme::warn().add_modifier(Modifier::BOLD),
@@ -2626,10 +2637,10 @@ impl Widget for OverlayWidget<'_> {
                 // and spacing.
                 let r = centered_content_rect(area, 78, (body_rows as u16).saturating_add(9), 29);
                 // `dim_region` above only re-tones existing cell colors, it
-                // doesn't clear glyphs — without an explicit blank here,
+                // doesn't clear glyphs — `clear_modal` blanks the rect so
                 // widgets that don't pad every cell to full width (like
-                // `Table`) leave stray background characters showing through.
-                theme::fill(r, buf, theme::panel());
+                // `Table`) leave no stray background characters showing.
+                clear_modal(r, buf);
                 let active = active_vendor_route_labels(providers, active_profile_id.as_deref());
                 let title_text = match focus {
                     ConnectModelColumn::Providers => "Select a provider",
@@ -2941,6 +2952,7 @@ impl Widget for OverlayWidget<'_> {
                 ..
             } => {
                 let r = centered_rect(66, 42, area);
+                clear_modal(r, buf);
                 let masked: String = "•".repeat(key_input.chars().count());
                 let url = auth_url.as_deref().unwrap_or("(see docs)");
                 let n = key_input.chars().count();
@@ -2979,6 +2991,7 @@ impl Widget for OverlayWidget<'_> {
                 ..
             } => {
                 let r = centered_rect(70, 50, area);
+                clear_modal(r, buf);
                 let body = format!(
                     "{title}\n\n{instructions}\n\nWaiting for sign-in…\nEnter check now · Esc back"
                 );
@@ -2994,6 +3007,7 @@ impl Widget for OverlayWidget<'_> {
             }
             Overlay::ResumePicker { selected, items } => {
                 let r = centered_rect(70, 48, area);
+                clear_modal(r, buf);
                 let visible = r.height.saturating_sub(2).max(1) as usize;
                 let start = selected
                     .saturating_add(1)
@@ -3040,6 +3054,7 @@ impl Widget for OverlayWidget<'_> {
                 filter,
             } => {
                 let r = centered_rect(78, 64, area);
+                clear_modal(r, buf);
                 let visible = r.height.saturating_sub(4).max(1) as usize;
                 let indices = Overlay::task_switcher_indices(items, filter);
                 let selected_position = indices
@@ -3114,6 +3129,7 @@ impl Widget for OverlayWidget<'_> {
             } => {
                 let visible = items.len().clamp(1, 10) as u16;
                 let r = centered_content_rect(area, 78, visible.saturating_add(3), 18);
+                clear_modal(r, buf);
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -3188,6 +3204,7 @@ impl Widget for OverlayWidget<'_> {
             }
             Overlay::TaskRename { label, error, .. } => {
                 let r = centered_rect(64, 30, area);
+                clear_modal(r, buf);
                 let error = error
                     .as_ref()
                     .map(|error| format!("\n\n{error}"))
@@ -3211,6 +3228,7 @@ impl Widget for OverlayWidget<'_> {
                 ..
             } => {
                 let r = centered_rect(68, 36, area);
+                clear_modal(r, buf);
                 let (title, question) = match kind {
                     TaskConfirmKind::Archive => (" Archive task ", "Archive"),
                     TaskConfirmKind::Cleanup => (" Remove worktree ", "Remove the worktree for"),
@@ -3237,6 +3255,7 @@ impl Widget for OverlayWidget<'_> {
                 error,
             } => {
                 let r = centered_rect(72, 42, area);
+                clear_modal(r, buf);
                 let (title, hint) = match mode {
                     TaskInputMode::New => (
                         " New managed task ",
@@ -3285,6 +3304,7 @@ impl Widget for OverlayWidget<'_> {
                 workspace,
             } => {
                 let r = centered_rect(72, 36, area);
+                clear_modal(r, buf);
                 Paragraph::new(format!(
                     "Forge created a managed worktree for `{label}`.\n\nWorkspace:\n{}\n\nTrust this directory before running the task?\n\nEnter trust · Esc roll back",
                     workspace
@@ -3316,6 +3336,7 @@ impl Widget for OverlayWidget<'_> {
                 error,
             } => {
                 let r = centered_rect(76, 64, area);
+                clear_modal(r, buf);
                 let visible = r.height.saturating_sub(4).max(1) as usize;
                 let start = selected
                     .saturating_add(1)
@@ -3375,6 +3396,7 @@ impl Widget for OverlayWidget<'_> {
                 scroll,
             } => {
                 let r = centered_rect(86, 78, area);
+                clear_modal(r, buf);
                 let visible = r.height.saturating_sub(2).max(1) as usize;
                 let width = r.width.saturating_sub(2) as usize;
                 let body = lines
@@ -3443,6 +3465,29 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    #[test]
+    fn modal_dims_backdrop_instead_of_blanking_transcript() {
+        // Phase 1 chrome: every modal dims the transcript in place so context
+        // stays legible around the picker, rather than filling the frame.
+        let area = Rect::new(0, 0, 100, 48);
+        let mut buf = Buffer::empty(area);
+        for y in 0..area.height {
+            for x in 0..area.width {
+                buf[(x, y)].set_symbol("x");
+            }
+        }
+        let overlay = Overlay::StatusReport {
+            title: "Status".into(),
+            rows: vec![StatusRow::field("Model", "gpt")],
+        };
+        OverlayWidget { overlay: &overlay }.render(area, &mut buf);
+        // Corner sits far outside the centered 74x30 modal: glyph survives,
+        // only re-toned by dim_region rather than blanked to a space.
+        assert_eq!(buf[(0, 0)].symbol(), "x");
+        // Modal interior is repainted panel chrome, not leaked transcript.
+        assert_ne!(buf[(50, 24)].symbol(), "x");
     }
 
     #[test]

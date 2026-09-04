@@ -13,6 +13,7 @@ impl TuiApp {
         buf: &mut ratatui::buffer::Buffer,
     ) {
         let r = centered_rect(64, 58, area);
+        ratatui::widgets::Clear.render(r, buf);
         crate::theme::fill(r, buf, crate::theme::panel());
         Paragraph::new(self.help_text())
             .wrap(ratatui::widgets::Wrap { trim: true })
@@ -21,6 +22,7 @@ impl TuiApp {
                     .borders(Borders::ALL)
                     .border_style(theme::brand())
                     .style(theme::panel())
+                    .padding(ratatui::widgets::Padding::horizontal(1))
                     .title(Span::styled(" Help ", theme::brand())),
             )
             .render(r, buf);

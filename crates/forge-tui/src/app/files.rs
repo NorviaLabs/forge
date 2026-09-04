@@ -731,6 +731,7 @@ impl TuiApp {
         buf: &mut ratatui::buffer::Buffer,
     ) {
         let r = centered_rect(64, 34, area);
+        ratatui::widgets::Clear.render(r, buf);
         crate::theme::fill(r, buf, crate::theme::panel());
         let mut lines = Vec::new();
         let (title, border) = match dialog {

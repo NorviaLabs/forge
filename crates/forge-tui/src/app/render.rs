@@ -857,6 +857,7 @@ impl TuiApp {
                     } else {
                         format!(" Commands ({n}) · {hint} ")
                     };
+                    frame.render_widget(ratatui::widgets::Clear, sug_area);
                     frame.render_widget(
                         Paragraph::new(lines).block(
                             ratatui::widgets::Block::default()
@@ -1227,6 +1228,7 @@ fn paint_rows_selection(
 /// Draw the right-click context menu as a small popover list.
 fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selection::ContextMenu) {
     let rect = menu.rect();
+    ratatui::widgets::Clear.render(rect, buf);
     let max_y = buf.area().height;
     let max_x = buf.area().width;
     for (i, item) in menu.items.iter().enumerate() {
