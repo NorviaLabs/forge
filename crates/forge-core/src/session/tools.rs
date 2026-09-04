@@ -847,8 +847,11 @@ impl AgentSession {
                     .validate_call(&call.name, &call.arguments)
                     .map_err(ToolError::Validation)?;
             }
+            // Box the orchestration dispatch: it inlines `spawn_subagent`
+            // and the coordinator wait futures, which would otherwise bloat
+            // every tool-dispatch future past the test-thread stack limit.
             return Ok(ToolExecutionStart::Finished(
-                self.dispatch_agent_tool_result(&call).await?,
+                Box::pin(self.dispatch_agent_tool_result(&call)).await?,
             ));
         }
 
@@ -1002,7 +1005,7 @@ impl AgentSession {
         &mut self,
         call: &ToolCall,
     ) -> Result<Option<ModelResponse>, LoopError> {
-        match self.dispatch_agent_tool(call).await {
+        match Box::pin(self.dispatch_agent_tool(call)).await {
             Ok(response) => Ok(response),
             Err(error) => {
                 let output = ToolOutput::failed_exit(error.to_string(), None);
@@ -1183,7 +1186,7 @@ impl AgentSession {
                     .append_tool_intent(self.session_id, call)
                     .await?;
             }
-            self.dispatch_agent_tool_result(call).await?;
+            Box::pin(self.dispatch_agent_tool_result(call)).await?;
             return Ok(None);
         }
         self.turn.record_call(call.clone());
