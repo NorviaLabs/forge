@@ -2,6 +2,8 @@
 //!
 //! Split out of `lib.rs`; methods are moved verbatim.
 
+use std::collections::HashSet;
+
 use crate::*;
 
 impl AgentSession {
@@ -77,6 +79,7 @@ impl AgentSession {
             composer_lines: state.composer_lines,
         };
         self.session_id = session_id;
+        self.coordinator = AgentCoordinator::with_config(session_id, self.coordinator.config());
         self.active_task = ActiveTaskState::from_restored(session_id, state.status, wait_reason);
         self.tasks = TaskRuntime::with_queue(queue);
         self.messages = messages.into();
@@ -100,6 +103,49 @@ impl AgentSession {
         self.canonical_user_messages = user_messages;
         self.restore_context_state(context_state.as_ref());
         self.reconcile_incomplete_intents(&incomplete).await?;
+        let mut restored_children = HashSet::new();
+        for task in state.background_tasks.iter().rev() {
+            let Some(child_session_id) = task.child_session_id else {
+                continue;
+            };
+            if !restored_children.insert(child_session_id) {
+                continue;
+            }
+            if !task.finished {
+                continue;
+            }
+            let status = match task.status.as_str() {
+                "succeeded" => AgentStatus::Completed,
+                "failed" => AgentStatus::Failed,
+                "cancelled" => AgentStatus::Cancelled,
+                _ => continue,
+            };
+            let _ = self.coordinator.restore_child(
+                task.parent_session_id.unwrap_or(session_id),
+                child_session_id,
+                task.label.clone(),
+                status,
+                task.summary.clone(),
+            );
+        }
+        restored_children.clear();
+        for task in state
+            .background_tasks
+            .iter()
+            .rev()
+            .filter(|task| task.finished && task.kind == "subagent")
+        {
+            let Some(child_session_id) = task.child_session_id else {
+                continue;
+            };
+            if !restored_children.insert(child_session_id) {
+                continue;
+            }
+            if let Some(workspace) = state.subagent_workspaces.get(&task.id.0) {
+                self.restore_finished_subagent_task(task, workspace.clone())
+                    .await?;
+            }
+        }
         // Stale Working without a live executor is Interrupted, not eternal Working.
         self.mark_interrupted_if_stale().await?;
         Ok(report)
@@ -135,6 +181,10 @@ impl AgentSession {
 
         Ok(Self {
             session_id,
+            coordinator: AgentCoordinator::with_config(
+                session_id,
+                AgentCoordinatorConfig::from(&loop_cfg.agents),
+            ),
             messages: vec![Message {
                 outcome: Default::default(),
                 role: MessageRole::System,
@@ -226,6 +276,10 @@ impl AgentSession {
 
         let mut session = Self {
             session_id,
+            coordinator: AgentCoordinator::with_config(
+                session_id,
+                AgentCoordinatorConfig::from(&loop_cfg.agents),
+            ),
             messages: messages.into(),
             events: vec![TurnEvent {
                 kind: "resume".into(),
@@ -273,6 +327,50 @@ impl AgentSession {
                 &state.subagent_workspaces,
             )
             .await?;
+        let mut restored_children = HashSet::new();
+        for task in state.background_tasks.iter().rev() {
+            let Some(child_session_id) = task.child_session_id else {
+                continue;
+            };
+            if !restored_children.insert(child_session_id) {
+                continue;
+            }
+            if !task.finished {
+                continue;
+            }
+            let status = match task.status.as_str() {
+                "succeeded" => AgentStatus::Completed,
+                "failed" => AgentStatus::Failed,
+                "cancelled" => AgentStatus::Cancelled,
+                _ => continue,
+            };
+            let _ = session.coordinator.restore_child(
+                task.parent_session_id.unwrap_or(session_id),
+                child_session_id,
+                task.label.clone(),
+                status,
+                task.summary.clone(),
+            );
+        }
+        restored_children.clear();
+        for task in state
+            .background_tasks
+            .iter()
+            .rev()
+            .filter(|task| task.finished && task.kind == "subagent")
+        {
+            let Some(child_session_id) = task.child_session_id else {
+                continue;
+            };
+            if !restored_children.insert(child_session_id) {
+                continue;
+            }
+            if let Some(workspace) = state.subagent_workspaces.get(&task.id.0) {
+                session
+                    .restore_finished_subagent_task(task, workspace.clone())
+                    .await?;
+            }
+        }
         // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
         session.mark_interrupted_if_stale().await?;
         Ok(session)
@@ -289,6 +387,7 @@ impl AgentSession {
             enable_context_lifecycle: self.enable_context,
             enable_governance: self.enable_gov,
             web_search: WebSearchConfig::default(),
+            agents: self.coordinator.config().into(),
         };
         let mut fork = Self::create(loop_cfg, self.model.clone(), (*self.tools).clone()).await?;
         fork.active_model = self.active_model.clone();

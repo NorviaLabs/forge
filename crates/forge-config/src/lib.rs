@@ -444,6 +444,54 @@ impl WebSearchConfig {
 pub struct ToolsConfig {
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    #[serde(default)]
+    pub agents: AgentConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    #[serde(default = "default_agent_max_live_agents")]
+    pub max_live_agents: usize,
+    #[serde(default = "default_agent_max_depth")]
+    pub max_depth: usize,
+    #[serde(default = "default_agent_min_wait_ms")]
+    pub min_wait_ms: u64,
+    #[serde(default = "default_agent_default_wait_ms")]
+    pub default_wait_ms: u64,
+    #[serde(default = "default_agent_max_wait_ms")]
+    pub max_wait_ms: u64,
+}
+
+fn default_agent_max_live_agents() -> usize {
+    4
+}
+
+fn default_agent_max_depth() -> usize {
+    2
+}
+
+fn default_agent_min_wait_ms() -> u64 {
+    100
+}
+
+fn default_agent_default_wait_ms() -> u64 {
+    10_000
+}
+
+fn default_agent_max_wait_ms() -> u64 {
+    120_000
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_live_agents: default_agent_max_live_agents(),
+            max_depth: default_agent_max_depth(),
+            min_wait_ms: default_agent_min_wait_ms(),
+            default_wait_ms: default_agent_default_wait_ms(),
+            max_wait_ms: default_agent_max_wait_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -654,6 +702,16 @@ struct ConfigFile {
 #[derive(Debug, Default, Deserialize)]
 struct ToolsConfigFile {
     web_search: Option<WebSearchConfigFile>,
+    agents: Option<AgentConfigFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AgentConfigFile {
+    max_live_agents: Option<usize>,
+    max_depth: Option<usize>,
+    min_wait_ms: Option<u64>,
+    default_wait_ms: Option<u64>,
+    max_wait_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -727,9 +785,32 @@ impl ConfigFile {
             if let Some(ws) = tools.web_search {
                 apply_web_search_file(&mut cfg.tools.web_search, ws);
             }
+            if let Some(agents) = tools.agents {
+                apply_agent_file(&mut cfg.tools.agents, agents);
+            }
         }
         cfg.refused_project_keys.extend(refused);
     }
+}
+
+fn apply_agent_file(dst: &mut AgentConfig, src: AgentConfigFile) {
+    if let Some(value) = src.max_live_agents {
+        dst.max_live_agents = value.max(1);
+    }
+    if let Some(value) = src.max_depth {
+        dst.max_depth = value;
+    }
+    if let Some(value) = src.min_wait_ms {
+        dst.min_wait_ms = value.max(1);
+    }
+    if let Some(value) = src.default_wait_ms {
+        dst.default_wait_ms = value.max(dst.min_wait_ms);
+    }
+    if let Some(value) = src.max_wait_ms {
+        dst.max_wait_ms = value.max(dst.default_wait_ms);
+    }
+    dst.default_wait_ms = dst.default_wait_ms.max(dst.min_wait_ms);
+    dst.max_wait_ms = dst.max_wait_ms.max(dst.default_wait_ms);
 }
 
 fn apply_web_search_file(dst: &mut WebSearchConfig, src: WebSearchConfigFile) {
@@ -831,6 +912,28 @@ fn resolve_workspace(from_cfg: &Option<String>, from_cli: Option<&Path>, cwd: &P
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_config_loads_and_clamps_wait_bounds() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        std::fs::write(
+            &path,
+            "[tools.agents]\nmax_live_agents = 7\nmax_depth = 3\nmin_wait_ms = 250\ndefault_wait_ms = 10\nmax_wait_ms = 100\n",
+        )
+        .unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.tools.agents.max_live_agents, 7);
+        assert_eq!(cfg.tools.agents.max_depth, 3);
+        assert_eq!(cfg.tools.agents.min_wait_ms, 250);
+        assert_eq!(cfg.tools.agents.default_wait_ms, 250);
+        assert_eq!(cfg.tools.agents.max_wait_ms, 250);
+    }
+
     /// Files written before versioning have no `version` key. They must keep
     /// loading unchanged — this is the compatibility guarantee, not a nicety.
     #[test]

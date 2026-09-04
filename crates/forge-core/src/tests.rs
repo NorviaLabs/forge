@@ -17,6 +17,45 @@ struct GatedTool {
     release: Arc<Notify>,
 }
 
+#[tokio::test]
+async fn orchestration_tools_return_results_without_aborting_the_turn() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "list".into(),
+            name: "list_agents".into(),
+            arguments: json!({}),
+        }]),
+        tool_call_response(vec![ToolCall {
+            id: "interrupt".into(),
+            name: "interrupt_agent".into(),
+            arguments: json!({"target": "not-an-agent-id"}),
+        }]),
+        text_only("done"),
+    ]));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    session.run_user_message("inspect agents").await.unwrap();
+    assert_eq!(session.active_task.lifecycle, TaskLifecycle::Completed);
+    let tool_messages: Vec<_> = session
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::Tool)
+        .collect();
+    assert_eq!(tool_messages.len(), 2);
+    assert!(tool_messages[0].content.contains("[]"));
+    assert!(tool_messages[1].content.contains("invalid agent id"));
+    assert!(session
+        .events
+        .iter()
+        .any(|event| event.kind == "agent_tool"));
+    assert!(session
+        .events
+        .iter()
+        .any(|event| event.kind == "agent_tool_error"));
+}
+
 struct SandboxDeniedTool;
 
 /// Reports a sandbox denial even when run unconfined, which a real sandbox
