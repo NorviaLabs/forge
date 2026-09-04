@@ -69,29 +69,14 @@ pub(super) fn card_top_border(
     title: Option<&str>,
     border: Style,
 ) -> Line<'static> {
-    match title {
-        Some(title) => {
-            let fill = total_width
-                .saturating_sub(5)
-                .saturating_sub(title.chars().count());
-            Line::from(vec![Span::styled(
-                format!("┌─ {title} {}┐", "─".repeat(fill)),
-                border,
-            )])
-        }
-        None => Line::from(vec![Span::styled(
-            format!("┌{}┐", "─".repeat(total_width.saturating_sub(2))),
-            border,
-        )]),
-    }
+    let _ = (title, border);
+    Line::from(" ".repeat(total_width))
 }
 
 /// A bordered card's bottom edge: `└────┘`.
 pub(super) fn card_bottom_border(total_width: usize, border: Style) -> Line<'static> {
-    Line::from(vec![Span::styled(
-        format!("└{}┘", "─".repeat(total_width.saturating_sub(2))),
-        border,
-    )])
+    let _ = border;
+    Line::from(" ".repeat(total_width))
 }
 
 /// A bordered card's content row: `│ {content, padded to interior_width} │`.
@@ -114,11 +99,8 @@ pub(super) fn card_content_line(
         Some(bg) => style.bg(bg),
         None => style,
     };
-    Line::from(vec![
-        Span::styled("│ ", border_style),
-        Span::styled(format!("{content}{pad}"), content_style),
-        Span::styled(" │", border_style),
-    ])
+    let _ = border_style;
+    Line::from(vec![Span::styled(format!("{content}{pad}"), content_style)])
 }
 
 /// Like [`card_content_line`], but for a row built from several differently
@@ -141,19 +123,19 @@ pub(super) fn card_content_spans(
         Some(bg) => border.bg(bg),
         None => border,
     };
-    let mut line_spans = vec![Span::styled("│ ", border_style)];
+    let mut line_spans = Vec::new();
     line_spans.append(&mut spans);
     line_spans.push(Span::styled(
         pad,
         fill.map_or(Style::default(), |bg| Style::default().bg(bg)),
     ));
-    line_spans.push(Span::styled(" │", border_style));
+    let _ = border_style;
     Line::from(line_spans)
 }
 
 /// Prepend a rail glyph in the given style to a rendered line.
 pub(super) fn prefix_line_with(line: &mut Line<'static>, glyph_style: Style) {
-    let mut spans = vec![Span::styled(RAIL_GLYPH, glyph_style), Span::raw(" ")];
+    let mut spans = vec![Span::styled("  ", glyph_style)];
     spans.extend(std::mem::take(&mut line.spans));
     line.spans = spans;
 }
@@ -283,7 +265,7 @@ pub(super) fn render_plan_checklist(
     // state through color and weight rather than bracketed glyphs.
     let accent = theme::accent_style();
     let rail_line = |content: Vec<Span<'static>>| -> Line<'static> {
-        let mut spans = vec![Span::styled(format!("{RAIL_GLYPH} "), accent)];
+        let mut spans = vec![Span::styled("  ", accent)];
         spans.extend(content);
         Line::from(spans)
     };
@@ -314,13 +296,11 @@ pub(super) fn render_plan_checklist(
     let body_width = width.saturating_sub(4).max(4);
     for (idx, item) in plan.steps.iter().enumerate() {
         let (marker, marker_style, text_style) = match item.status {
-            PlanStepStatus::Completed => ("\u{2713}", theme::ok(), theme::muted()),
-            PlanStepStatus::InProgress => (
-                "\u{203a}",
-                accent,
-                theme::text().add_modifier(Modifier::BOLD),
-            ),
-            PlanStepStatus::Pending => ("\u{b7}", theme::muted(), theme::muted()),
+            PlanStepStatus::Completed => ("  ", theme::ok(), theme::muted()),
+            PlanStepStatus::InProgress => {
+                ("  ", accent, theme::text().add_modifier(Modifier::BOLD))
+            }
+            PlanStepStatus::Pending => ("  ", theme::muted(), theme::muted()),
         };
         let mut wrapped = wrap(&item.step, body_width).into_iter();
         if let Some(first) = wrapped.next() {
@@ -849,9 +829,8 @@ impl ConversationRenderInternals for ConversationModel {
                         ActivityOutcome::TimedOut => theme::tool_timeout_style(),
                     };
                     let mut spans = Vec::new();
-                    if let Some(category) = p.category {
-                        spans.push(Span::styled(category.icon(), theme::accent_style()));
-                        spans.push(Span::styled(" ", theme::metadata_style()));
+                    if p.category.is_some() {
+                        spans.push(Span::styled("  ", theme::accent_style()));
                     }
                     spans.push(Span::styled(p.label, label_style));
                     spans.push(Span::styled("  ", theme::metadata_style()));
@@ -889,15 +868,11 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                     lines.push(line);
                     let rail_extra = if rail { RAIL_EXTRA } else { 0 };
-                    for (index, subcommand) in p.subcommands.iter().enumerate() {
-                        let last = index + 1 == p.subcommands.len();
-                        let glyph = if last { "└─" } else { "├─" };
+                    for subcommand in p.subcommands.iter() {
                         let sub_width = width.saturating_sub(5 + rail_extra);
-                        for (lineno, wrapped) in wrap(subcommand, sub_width).into_iter().enumerate()
-                        {
-                            let head = if lineno == 0 { glyph } else { "│" };
+                        for wrapped in wrap(subcommand, sub_width) {
                             let mut sub_line = Line::from(Span::styled(
-                                format!("{INDENT_UNIT}{head} {wrapped}"),
+                                format!("{INDENT_UNIT}  {wrapped}"),
                                 theme::muted(),
                             ));
                             if rail {
@@ -1004,7 +979,7 @@ impl ConversationRenderInternals for ConversationModel {
                     // out and only the footer recorded that anything had
                     // concluded. This is the bottom edge, and the cost.
                     let mut spans = vec![
-                        Span::styled("  ✓  ", theme::ok()),
+                        Span::styled("      ", theme::ok()),
                         Span::styled(
                             format!("Answered in {}", format_elapsed_tenths(p.secs)),
                             theme::text().add_modifier(Modifier::BOLD),
@@ -1524,9 +1499,9 @@ fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'stati
             Span::styled(p.provider.clone(), theme::text()),
             Span::raw("  "),
             if p.connected {
-                Span::styled("● connected", theme::ok())
+                Span::styled("connected", theme::ok())
             } else {
-                Span::styled("● not connected", theme::warn())
+                Span::styled("not connected", theme::warn())
             },
         ],
     ));
@@ -1551,7 +1526,7 @@ fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'stati
     row(vec![Span::styled("Try one of these", theme::muted())]);
     for starter in HOME_STARTERS {
         row(vec![
-            Span::styled("  → ", theme::accent_style()),
+            Span::styled("    ", theme::accent_style()),
             Span::styled((*starter).to_string(), theme::text_secondary()),
         ]);
     }
@@ -1622,7 +1597,7 @@ pub(super) fn render_question_card(
         // `wrap` trim the leading space off every unselected row, so the
         // options sat two columns left of the one under the cursor and the
         // list did not read as a list.
-        let marker = if selected { "\u{276f} " } else { "  " };
+        let marker = "  ";
         let style = if selected {
             theme::text().add_modifier(Modifier::BOLD)
         } else {
@@ -1631,7 +1606,7 @@ pub(super) fn render_question_card(
         // The digit already answers the question — `handle_question_menu_key`
         // has accepted 1-9 all along, with nothing on screen to say so.
         let ordinal = format!("{}. ", idx + 1);
-        let chosen = if opt.chosen { "● " } else { "" };
+        let chosen = "";
         let lead = marker.chars().count() + ordinal.chars().count() + chosen.chars().count();
         for (n, wrapped) in wrap(&opt.label, inner.saturating_sub(lead))
             .into_iter()
@@ -1727,11 +1702,7 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
 
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut row = |spans: Vec<Span<'static>>| {
-        let mut all = vec![
-            Span::raw(pad.clone()),
-            Span::styled(RAIL_GLYPH, border),
-            Span::raw(" "),
-        ];
+        let mut all = vec![Span::raw(pad.clone()), Span::raw("  ")];
         // Clip, don't wrap further. Content with no break opportunity — a
         // path, a long single-token command — comes back from `wrap` wider
         // than asked for, and without this it would run straight out past
@@ -1966,9 +1937,6 @@ fn prose_width_for(width: usize) -> usize {
 /// mistake. Prose has no ceiling (see `prose_width`); this is only about how
 /// wide a box should be allowed to get around small content.
 const CARD_MAX_WIDTH: usize = 80;
-
-/// Subtle left rail grouping tool calls and progress under the current turn.
-const RAIL_GLYPH: &str = "│";
 
 /// Pane widths below this drop the rail and indent (flat mode).
 const RAIL_MIN_WIDTH: usize = 50;
