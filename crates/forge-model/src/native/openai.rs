@@ -31,6 +31,9 @@ pub(super) async fn complete(
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
     let route = route(client, model)?;
+    if is_opencode_responses_model(model) {
+        return complete_responses(client, req, route, tx).await;
+    }
     let mut body = json!({
         "model": route.model,
         "messages": crate::normalize::forge_messages_to_wire_in_cached(
@@ -130,6 +133,83 @@ pub(super) async fn complete(
         tool_calls,
         usage,
         thinking: (!thinking.is_empty()).then_some(thinking),
+    })
+}
+
+// OpenCode exposes the Muse Spark Contributor models through its Responses
+// endpoint only. Sending these models to chat/completions produces a generic
+// upstream HTTP 500, so keep the endpoint choice tied to the model capability.
+fn is_opencode_responses_model(model: &str) -> bool {
+    let Some((prefix, model_id)) = model.split_once('/') else {
+        return false;
+    };
+    matches!(prefix, "opencode" | "opencode-go" | "opencode-zen")
+        && (model_id.starts_with("muse-spark-1.2-contributor")
+            || model_id.starts_with("muse-spark-1.3-contributor"))
+}
+
+async fn complete_responses(
+    client: &NativeModelClient,
+    req: ModelRequest,
+    route: Route,
+    tx: Option<StreamEventTx>,
+) -> Result<ModelResponse, ModelError> {
+    let aliases = crate::native::codex::tool_aliases(&req);
+    let body = crate::native::codex::request_body(client, &req, &route.model, &aliases);
+    let response = client
+        .http
+        .post(format!(
+            "{}/responses",
+            route.base_url.trim_end_matches('/')
+        ))
+        .json(&body)
+        .bearer_auth(route.api_key.ok_or(ModelError::MissingApiKey)?)
+        .header("Accept", "text/event-stream")
+        .header("OpenAI-Beta", "responses=experimental")
+        .header("User-Agent", "forge")
+        .send()
+        .await
+        .map_err(|error| ModelError::Transport(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(response_error(response).await);
+    }
+
+    let reverse_aliases = aliases
+        .iter()
+        .map(|(original, alias)| (alias.clone(), original.clone()))
+        .collect();
+    let mut stream = response.bytes_stream();
+    let mut pending = String::new();
+    let mut parsed = crate::native::codex::CodexStream::default();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+        process_sse_lines(&mut pending, |line| {
+            let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                return Ok(());
+            };
+            if data.is_empty() || data == "[DONE]" {
+                return Ok(());
+            }
+            let event: Value = serde_json::from_str(data)
+                .map_err(|error| ModelError::Protocol(format!("invalid SSE JSON: {error}")))?;
+            parsed.consume(&event, &reverse_aliases, tx.as_ref())?;
+            Ok(())
+        })?;
+    }
+    if let Some(tx) = tx {
+        if let Some(ref usage) = parsed.usage {
+            let _ = tx.send(ModelStreamEvent::Usage {
+                usage: usage.clone(),
+            });
+        }
+        let _ = tx.send(ModelStreamEvent::MessageEnd);
+    }
+    Ok(ModelResponse {
+        text: parsed.text,
+        tool_calls: parsed.tool_calls,
+        usage: parsed.usage,
+        thinking: (!parsed.thinking.is_empty()).then_some(parsed.thinking),
     })
 }
 
@@ -701,6 +781,36 @@ mod tests {
         let raw_request = request_rx.await.unwrap().to_ascii_lowercase();
         assert!(raw_request.contains("user-agent: forge"));
         assert!(raw_request.contains("x-opencode-session: session-123"));
+    }
+
+    #[tokio::test]
+    async fn sends_muse_spark_contributor_to_opencode_responses() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[
+            ("OPENCODE_ZEN_API_BASE".into(), base_url),
+            ("OPENCODE_ZEN_API_KEY".into(), "opencode-secret".into()),
+        ]);
+        let mut request = request("opencode-zen/muse-spark-1.3-contributor");
+        request.route_id = Some("opencode-zen".into());
+
+        let response = client.complete(request).await.unwrap();
+        assert_eq!(response.text, "hello");
+        assert_eq!(response.usage.unwrap().completion_tokens, 2);
+
+        let raw_request = request_rx.await.unwrap();
+        assert!(raw_request.starts_with("POST /responses HTTP/1.1"));
+        assert!(raw_request.contains("\"model\":\"muse-spark-1.3-contributor\""));
+        assert!(!raw_request.contains("/chat/completions"));
     }
 
     #[tokio::test]
