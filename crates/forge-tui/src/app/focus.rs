@@ -180,6 +180,15 @@ impl TuiApp {
                     _ => "Hit Enter ⏎ to change effort".into(),
                 })
             }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => {
+                Some("←→ select · Enter switch · s stop · c continue · x archive".into())
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Files => {
+                Some("↑↓ navigate · Enter open · / search · Esc close".into())
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Search => {
+                Some("Type to filter · Enter open · Esc cancel".into())
+            }
             FocusMode::Navigation => None,
         }
     }

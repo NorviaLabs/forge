@@ -689,3 +689,26 @@ async fn footer_focus_hint_is_relevant_to_the_selected_chip() {
         "two chips wrap back to model: {wrap_hint}"
     );
 }
+
+#[tokio::test]
+async fn navigation_hints_match_the_active_chrome_surface() {
+    let (_dir, mut app) = focus_test_app().await;
+
+    app.focus_block(FocusBlock::TaskStrip);
+    assert_eq!(
+        app.contextual_hint().as_deref(),
+        Some("←→ select · Enter switch · s stop · c continue · x archive")
+    );
+
+    app.focus_block(FocusBlock::Files);
+    assert_eq!(
+        app.contextual_hint().as_deref(),
+        Some("↑↓ navigate · Enter open · / search · Esc close")
+    );
+
+    app.focus_block(FocusBlock::Search);
+    assert_eq!(
+        app.contextual_hint().as_deref(),
+        Some("Type to filter · Enter open · Esc cancel")
+    );
+}
