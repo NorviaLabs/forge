@@ -1,0 +1,24 @@
+  ⌂ ~/Projects/forge/.worktrees/astra-tui-redesign  ·  ⎇ feat/astra-tui-2026*
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │     ▸ write_stdin  1 item  Ctrl+O                                        │
+  │                                                                          │
+  │     Planning max wait time limit                                         │
+  │                                                                          │
+  │ multi-task mode unavailable: repository task database error: error       │
+  ┌ Select a model · 0/0 ────────────────────────────────────────────────────┐
+  │                                                                          │
+  │ ⌕ zzzz-no-model                                                          │
+  │                                                                          │
+  │ MODEL                            PROVIDER               SOURCE / ACCOUNT │
+  │                                                                          │
+  │ No models match this filter.                                             │
+  │ Active: OpenAI · ChatGPT / openai-codex/gpt-5.6-luna / Medium            │
+  │ ↑↓ move · ←→ section · Enter select · Esc close                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃  Reply, or describe the next task…                                       ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  ────────────────────────────────────────────────────────────────────────────
+   ● gpt-5.6-luna │ Medium  run   ·  context 16%  ·  1M tokens · 71.52% cache
