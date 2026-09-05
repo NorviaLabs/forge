@@ -35,7 +35,9 @@ cursor = "#439EFD"
 tag = "#A0A0A0"
 search_match = "#6E4918"
 waiting_border = "#E6C66A"
-structure = "#1DB0BB"
+# Response structure uses the theme's orange syntax-number hue so headlines
+# remain distinct from the blue focus accent and status colours.
+structure = "#E6931C"
 scan_band = "#181818"
 zebra_row = "#111111"
 
