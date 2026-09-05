@@ -646,11 +646,11 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
-            text.contains("tracked.txt MOD"),
+            text.contains("tracked.txt M"),
             "missing modified indicator:\n{text}"
         );
         assert!(
-            text.contains("untracked.txt NEW"),
+            text.contains("untracked.txt ?"),
             "missing untracked indicator:\n{text}"
         );
     }

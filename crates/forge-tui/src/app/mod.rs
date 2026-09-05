@@ -44,7 +44,8 @@ use thiserror::Error;
 use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{parse_slash, SlashCommand};
 use crate::conversation::{
-    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
+    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, TurnKey,
+    TurnSummaryPresentation,
 };
 use crate::editor::EditorError;
 use crate::editor_session::EditorSession;

@@ -8,6 +8,7 @@
 pub use forge_transcript::*;
 
 use crate::markdown::{render_markdown, STREAM_CARET};
+use crate::status_glyph::{lifecycle_marker, Lifecycle};
 use crate::theme;
 use crate::user_message_gutter;
 use forge_syntax::highlight_to_lines;
@@ -284,15 +285,23 @@ pub(super) fn render_plan_checklist(
 
     let body_width = width.saturating_sub(6).max(1);
     for (idx, item) in plan.steps.iter().enumerate() {
+        // 2026 lifecycle grammar via shared helpers (DESIGN-002).
+        let lifecycle = match item.status {
+            PlanStepStatus::Completed => Lifecycle::Complete,
+            PlanStepStatus::InProgress => Lifecycle::Active,
+            PlanStepStatus::Pending => Lifecycle::Pending,
+        };
+        let marker_span = lifecycle_marker(lifecycle);
         let (marker, marker_style, text_style) = match item.status {
-            PlanStepStatus::Completed => ("[✓]", theme::muted(), theme::muted()),
+            PlanStepStatus::Completed => ("[x]", theme::muted(), theme::muted()),
             PlanStepStatus::InProgress => (
-                "[•]",
-                theme::info(),
+                "[>]",
+                theme::activity().add_modifier(Modifier::BOLD),
                 theme::text().add_modifier(Modifier::BOLD),
             ),
             PlanStepStatus::Pending => ("[ ]", theme::muted(), theme::muted()),
         };
+        debug_assert_eq!(marker, marker_span.content.as_ref());
         let mut wrapped = wrap(&item.step, body_width).into_iter();
         if let Some(first) = wrapped.next() {
             lines.push(rail_line(vec![
@@ -711,6 +720,17 @@ impl ConversationRenderInternals for ConversationModel {
         let rail = width >= RAIL_MIN_WIDTH;
         let blocks = self.semantic_blocks();
         let start_block = start_block_for_tail(&blocks, width, prose_width, keep_from_end);
+        // DESIGN-007: completed turns recede — a successful group in an
+        // older turn renders neutral, never green. Failures, denials,
+        // unknowns and the latest turn keep their full emphasis.
+        let total_turns = blocks
+            .iter()
+            .filter(|b| matches!(b, ConversationBlock::UserMessage(_)))
+            .count();
+        let mut turn_index = blocks[..start_block.min(blocks.len())]
+            .iter()
+            .filter(|b| matches!(b, ConversationBlock::UserMessage(_)))
+            .count();
         // A full-width rule opens every turn boundary (every UserMessage
         // after the first block in the transcript) — independent of whether
         // that turn has a plan checklist. Compact tool rows stay tight
@@ -718,6 +738,10 @@ impl ConversationRenderInternals for ConversationModel {
         let mut seen_any_block = start_block > 0;
         for block in blocks.into_iter().skip(start_block) {
             let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));
+            if is_turn_start {
+                turn_index += 1;
+            }
+            let in_latest_turn = total_turns == 0 || turn_index == total_turns;
             let railed = is_railed_block(&block);
             if !railed && gap && !lines.is_empty() {
                 // Major blocks read as boundaries: separate them from the
@@ -809,7 +833,13 @@ impl ConversationRenderInternals for ConversationModel {
                     lines.push(line);
                 }
                 ConversationBlock::ActivityGroup(p) => {
+                    // DESIGN-007: routine success recedes once its turn is
+                    // history. Every other outcome keeps its emphasis so
+                    // failures, denials and uncertainty stay findable.
                     let label_style = match p.outcome {
+                        ActivityOutcome::Success if !in_latest_turn => {
+                            theme::text_secondary().add_modifier(Modifier::BOLD)
+                        }
                         ActivityOutcome::Success => theme::tool_success_style(),
                         ActivityOutcome::Failure => theme::danger().add_modifier(Modifier::BOLD),
                         ActivityOutcome::Blocked => theme::warn().add_modifier(Modifier::BOLD),
@@ -825,7 +855,14 @@ impl ConversationRenderInternals for ConversationModel {
                         theme::metadata_style(),
                     ));
                     if p.category.is_some() {
-                        spans.push(Span::styled("  ", theme::accent_style()));
+                        // The accent bar marks live structure; history gets
+                        // the quiet separator weight instead (DESIGN-007).
+                        let bar = if in_latest_turn {
+                            theme::accent_style()
+                        } else {
+                            theme::metadata_style()
+                        };
+                        spans.push(Span::styled("  ", bar));
                     }
                     spans.push(Span::styled(p.label, label_style));
                     spans.push(Span::styled("  ", theme::metadata_style()));
@@ -974,7 +1011,9 @@ impl ConversationRenderInternals for ConversationModel {
                     // out and only the footer recorded that anything had
                     // concluded. This is the bottom edge, and the cost.
                     let mut spans = vec![
-                        Span::styled("      ", theme::ok()),
+                        // Neutral indent: finishing statuses carry no
+                        // color wash, even on whitespace (DESIGN-011).
+                        Span::styled("      ", theme::metadata_style()),
                         Span::styled(
                             format!("Answered in {}", format_elapsed_tenths(p.secs)),
                             theme::text().add_modifier(Modifier::BOLD),
@@ -1587,8 +1626,9 @@ pub(super) fn render_question_card(
         // The marker is its own span. Folding it into the wrapped string let
         // `wrap` trim the leading space off every unselected row, so the
         // options sat two columns left of the one under the cursor and the
-        // list did not read as a list.
-        let marker = "  ";
+        // list did not read as a list. Selected rows carry the shared `>`
+        // grammar (DESIGN-004/013).
+        let marker = if selected { "> " } else { "  " };
         let style = if selected {
             theme::text().add_modifier(Modifier::BOLD)
         } else {
@@ -1819,8 +1859,10 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
 
     for (idx, opt) in p.options.iter().enumerate() {
         let selected = idx == p.selected;
+        // Shared `>` focus grammar (DESIGN-004/013): shape, not color,
+        // marks the option about to happen.
         let (marker, style) = if selected {
-            ("\u{276f} ", theme::text().add_modifier(Modifier::BOLD))
+            ("> ", theme::text().add_modifier(Modifier::BOLD))
         } else {
             ("  ", theme::muted())
         };
@@ -2257,6 +2299,8 @@ mod tests {
     #[test]
     fn expansion_state_does_not_mutate_transcript_data() {
         let collapsed = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "bash".into(),
                 summary: "$ cargo test · failed".into(),
@@ -2324,6 +2368,8 @@ mod tests {
     #[test]
     fn thinking_renders_markdown_emphasis_without_literal_delimiters() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::Thinking {
                 text: "**Inspecting** the parser".into(),
                 duration_secs: None,
@@ -2354,6 +2400,8 @@ mod tests {
     #[test]
     fn thinking_headings_on_separate_paragraphs_render_without_asterisks() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::Thinking {
                 text: "**Designing SessionTemp temporary directory management**\n\n**Planning safe session temp directory creation**".into(),
                 duration_secs: None,
@@ -2876,6 +2924,8 @@ mod tests {
     #[test]
     fn failed_validation_command_does_not_render_as_validation_completed() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "bash".into(),
                 summary: "$ cargo test · failed · exit code 101".into(),
@@ -2916,6 +2966,8 @@ mod tests {
         ];
         for (outcome, _) in cases {
             let model = ConversationModel {
+                turn_summaries: Vec::new(),
+                turn_summary_base: 0,
                 items: vec![ChatItem::ActivityGroup {
                     category: ActivityCategory::Validating,
                     summary: "summary".into(),
@@ -2998,6 +3050,8 @@ mod tests {
     #[test]
     fn tool_card_with_subcommand_renders_connector_line() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "git".into(),
                 summary: "git status --short · 12 output lines".into(),
@@ -3027,6 +3081,8 @@ mod tests {
     fn tool_card_without_subcommand_keeps_single_line() {
         // Render-only tools (apply_patch, MCP) keep the old single-line form.
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "apply_patch".into(),
                 summary: "patch applies cleanly".into(),
@@ -3052,6 +3108,8 @@ mod tests {
     #[test]
     fn write_tool_subcommand_uses_path_when_summary_is_output_preview() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "write_file".into(),
                 summary: "wrote · +1 -0 src/foo.rs".into(),
@@ -3083,6 +3141,8 @@ mod tests {
         assert!(running_text.contains("Reading via read_file"));
 
         let completed = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: group_routine_activity(vec![
                 ChatItem::ToolCard {
                     name: "write_file".into(),
@@ -3221,6 +3281,8 @@ mod tests {
             });
         }
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items,
             scroll: 0,
             follow: true,
@@ -3299,10 +3361,10 @@ mod tests {
                         .to_string()
                 })
                 .collect::<Vec<_>>();
-            assert!(rendered.iter().any(|line| line == "  [✓] Inspect code"));
+            assert!(rendered.iter().any(|line| line == "  [x] Inspect code"));
             assert!(rendered
                 .iter()
-                .any(|line| line.starts_with("  [•] Implement")));
+                .any(|line| line.starts_with("  [>] Implement")));
             assert!(rendered.iter().any(|line| line == "  [ ] Run tests"));
             assert!(lines.iter().all(|line| line.width() <= width));
             if width == 32 {
@@ -3322,6 +3384,77 @@ mod tests {
             ..plan
         };
         assert!(line_text(&render_plan_checklist(&pending, 40)[0]).contains("0 of 1 done"));
+    }
+
+    /// DESIGN-010: a flat plan (the only shape `update_plan` provides —
+    /// `PlanItem` carries no hierarchy fields) renders unchanged: ASCII
+    /// lifecycle markers, bold-primary in-progress step, header count,
+    /// step evidence, and no non-ASCII symbols anywhere in its rows.
+    #[test]
+    fn flat_plan_renders_markers_count_and_evidence() {
+        use forge_types::PlanStepStatus;
+        let plan = PlanChecklistPresentation {
+            explanation: Some("Next steps".into()),
+            steps: vec![
+                forge_types::PlanItem {
+                    step: "Inspect code".into(),
+                    status: PlanStepStatus::Completed,
+                },
+                forge_types::PlanItem {
+                    step: "Implement fix".into(),
+                    status: PlanStepStatus::InProgress,
+                },
+                forge_types::PlanItem {
+                    step: "Run tests".into(),
+                    status: PlanStepStatus::Pending,
+                },
+            ],
+            evidence: vec![vec!["read src/lib.rs".into()], Vec::new(), Vec::new()],
+        };
+        let lines = render_plan_checklist(&plan, 80);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            text.iter().any(|l| l.contains("Plan · 1 of 3 done")),
+            "header counts completion: {text:?}"
+        );
+        assert!(
+            text.iter().any(|l| l == "  [x] Inspect code"),
+            "completed checks off: {text:?}"
+        );
+        assert!(
+            text.iter().any(|l| l.starts_with("  [>] Implement fix")),
+            "in-progress marked: {text:?}"
+        );
+        assert!(
+            text.iter().any(|l| l == "  [ ] Run tests"),
+            "pending marked: {text:?}"
+        );
+        assert!(
+            text.iter().any(|l| l.contains("read src/lib.rs")),
+            "step evidence shown: {text:?}"
+        );
+        // No emoji progress bars or decorative symbols: only the ASCII
+        // lifecycle markers plus the established `·` separator vocabulary.
+        const BANNED: [char; 12] = ['✓', '✗', '•', '●', '○', '◌', '■', '⚑', '✅', '█', '░', '…'];
+        for line in &text {
+            assert!(
+                !line.chars().any(|c| BANNED.contains(&c)),
+                "plan rows stay symbol-free: {line:?}"
+            );
+        }
+        // In-progress step text is bold primary, not muted.
+        let active = lines
+            .iter()
+            .find(|l| line_text(l).contains("Implement fix"))
+            .unwrap();
+        assert!(
+            active
+                .spans
+                .iter()
+                .any(|s| s.content.contains("Implement fix")
+                    && s.style == theme::text().add_modifier(Modifier::BOLD)),
+            "in-progress step bold primary: {active:?}"
+        );
     }
 
     #[test]
@@ -3972,7 +4105,7 @@ mod tests {
         assert!(text.contains("git push -u origin feature"), "{text}");
         assert!(text.contains("workspace"), "{text}");
         assert!(!text.contains("cwd: workspace"), "{text}");
-        assert!(text.contains("\u{276f} Run once"), "{text}");
+        assert!(text.contains("> Run once"), "{text}");
         assert!(text.contains("Approval needed"), "{text}");
         assert!(
             text.contains("Remember similar commands this session"),
@@ -4091,6 +4224,8 @@ mod tests {
     #[test]
     fn context_handoff_card_shows_lifecycle_and_progress() {
         let m = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ContextHandoff {
                 before_pct: 82.0,
                 after_pct: 14.0,
@@ -4113,6 +4248,8 @@ mod tests {
     #[test]
     fn session_recovery_card_shows_replay_guarantees() {
         let m = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::SessionRecovery {
                 session_id: "a1b2c3d4".into(),
                 journal_path: ".forge/sessions/a1b2c3d4.db".into(),
@@ -4278,6 +4415,8 @@ mod tests {
 
     fn tool_turn_model() -> ConversationModel {
         ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: tool_turn_items(),
             scroll: 0,
             follow: true,
@@ -4301,6 +4440,8 @@ mod tests {
 
     fn planned_turn_model() -> ConversationModel {
         ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "fix the failing test".into(),
@@ -4397,6 +4538,176 @@ mod tests {
         }
     }
 
+    /// DESIGN-007: routine success recedes once its turn is history — old
+    /// groups render neutral, never green. Failures keep their emphasis
+    /// wherever they sit, and the latest turn is untouched.
+    #[test]
+    fn older_successful_groups_recede_while_failures_stay_visible() {
+        use forge_types::ExecutionOutcome;
+        fn group(
+            category: ActivityCategory,
+            state: ToolCardState,
+            outcome: ExecutionOutcome,
+            summary: &str,
+        ) -> ChatItem {
+            ChatItem::ActivityGroup {
+                category,
+                summary: summary.into(),
+                detail: "detail".into(),
+                state,
+                outcome,
+                retries: 0,
+            }
+        }
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User {
+                    text: "first".into(),
+                },
+                group(
+                    ActivityCategory::Implementing,
+                    ToolCardState::Done,
+                    ExecutionOutcome::Success,
+                    "1 edit",
+                ),
+                group(
+                    ActivityCategory::Validating,
+                    ToolCardState::Error,
+                    ExecutionOutcome::Failed { exit_code: Some(1) },
+                    "1 failed",
+                ),
+                ChatItem::Assistant {
+                    text: "first answer".into(),
+                },
+                ChatItem::User {
+                    text: "second".into(),
+                },
+                group(
+                    ActivityCategory::Reviewing,
+                    ToolCardState::Done,
+                    ExecutionOutcome::Success,
+                    "2 files",
+                ),
+                ChatItem::Assistant {
+                    text: "second answer".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let lines = model.lines_for_width(80);
+        let style_of = |needle: &str| {
+            lines
+                .iter()
+                .find(|line| line.spans.iter().any(|span| span.content.contains(needle)))
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .find(|span| span.content.contains(needle))
+                        .unwrap()
+                        .style
+                })
+                .unwrap_or_else(|| panic!("{needle} rendered"))
+        };
+        // Old success: neutral, not green.
+        assert_eq!(
+            style_of("Implemented changes"),
+            theme::text_secondary().add_modifier(Modifier::BOLD)
+        );
+        // Latest success: full emphasis.
+        assert_eq!(style_of("Reviewed workspace"), theme::tool_success_style());
+        // Old failure: still red.
+        assert_eq!(
+            style_of("Validation"),
+            theme::danger().add_modifier(Modifier::BOLD)
+        );
+    }
+
+    /// DESIGN-011: finishing statuses stay neutral — the completion line
+    /// carries no green wash and no failure marker — while a failed tool in
+    /// the same turn keeps its distinct danger styling. Complete and failed
+    /// never share a visual.
+    #[test]
+    fn completion_stays_neutral_beside_failure() {
+        use forge_types::ExecutionOutcome;
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User {
+                    text: "run it".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "bash".into(),
+                    summary: "$ cargo test · failed".into(),
+                    detail: "status 101".into(),
+                    state: ToolCardState::Error,
+                    duration: None,
+                    subcommand: Some("$ cargo test".into()),
+                    outcome: ExecutionOutcome::Failed {
+                        exit_code: Some(101),
+                    },
+                },
+                ChatItem::Assistant {
+                    text: "It failed.".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+        .with_turn_summaries(
+            vec![(
+                0,
+                forge_transcript::TurnSummaryPresentation {
+                    secs: 9.0,
+                    chars: 40,
+                    tools: 1,
+                    output_tokens: None,
+                },
+            )],
+            0,
+        );
+        let lines = model.lines_for_width(80);
+        // Failure row: the group label keeps danger styling (the
+        // subcommand line states the failure in words, secondary).
+        let failure = lines
+            .iter()
+            .find(|l| line_text(l).contains("Validation"))
+            .expect("failure row present");
+        assert!(
+            failure
+                .spans
+                .iter()
+                .any(|s| s.style.fg == theme::danger().fg),
+            "failure keeps danger styling: {failure:?}"
+        );
+        // Completion row: neutral — no success green, no failure marker.
+        let done = lines
+            .iter()
+            .find(|l| line_text(l).contains("Answered in"))
+            .expect("completion row present");
+        for span in &done.spans {
+            assert_ne!(
+                span.style.fg,
+                theme::ok().fg,
+                "completion must not wash green: {done:?}"
+            );
+            assert_ne!(
+                span.style.fg,
+                theme::danger().fg,
+                "completion must not borrow failure red: {done:?}"
+            );
+        }
+        assert!(
+            !line_text(done).contains("[!]"),
+            "completion carries no failure marker: {done:?}"
+        );
+    }
+
     #[test]
     fn tool_activity_groups_on_the_turn_rail() {
         let model = tool_turn_model();
@@ -4440,6 +4751,8 @@ mod tests {
         // the thoughts (regression: "Explored repository" printed directly
         // under the last thinking line).
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::Thinking {
                     text: "ponder the failing test".into(),
@@ -4484,12 +4797,16 @@ mod tests {
     #[test]
     fn expand_does_not_change_rule_or_rail_structure() {
         let collapsed = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: tool_turn_items(),
             scroll: 0,
             follow: true,
             opts: ConversationViewOpts::default(),
         };
         let expanded = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: tool_turn_items(),
             scroll: 0,
             follow: true,
@@ -4536,6 +4853,8 @@ mod tests {
 
     fn bash_tool_card(command: &str, output_lines: &str, expanded: bool) -> ConversationModel {
         ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "bash".into(),
                 summary: format!("$ {command} · {} output lines", output_lines),
@@ -4659,6 +4978,8 @@ mod tests {
             "Paragraph finished.\n\n",
         ] {
             let model = ConversationModel {
+                turn_summaries: Vec::new(),
+                turn_summary_base: 0,
                 items: Vec::new(),
                 scroll: 0,
                 follow: true,
@@ -4727,6 +5048,8 @@ mod tests {
     #[test]
     fn the_transcript_never_stacks_blank_lines() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "do the thing".into(),
@@ -4984,7 +5307,8 @@ pub(super) fn render_verification_card(
     let headline = p.verdict.headline();
     let mut out = Vec::new();
 
-    let left_w = 2 + 1 + p.command.chars().count();
+    // INDENT_UNIT (2) + ASCII marker (3) + space + command.
+    let left_w = 2 + 3 + 1 + p.command.chars().count();
     let gap = width
         .saturating_sub(left_w + headline.chars().count() + 2)
         .max(1);
@@ -5064,7 +5388,7 @@ mod verification_card_tests {
         assert!(out.contains("31 passed"), "{out}");
         assert!(out.contains("Ran 31 tests"), "{out}");
         assert!(out.contains("OK"), "{out}");
-        assert!(out.starts_with(&format!("{INDENT_UNIT}✓")), "{out:?}");
+        assert!(out.starts_with(&format!("{INDENT_UNIT}[x]")), "{out:?}");
     }
 
     #[test]
@@ -5079,10 +5403,10 @@ mod verification_card_tests {
         );
         let out = text_of(&render_verification_card(&p, 80));
         assert!(
-            !out.contains('✓'),
+            !out.contains("[x]"),
             "an unchecked run must not look checked: {out}"
         );
-        assert!(out.contains('?'), "{out}");
+        assert!(out.contains("[?]"), "{out}");
         assert!(out.contains("no result line"), "{out}");
     }
 
@@ -5096,7 +5420,7 @@ mod verification_card_tests {
             "",
         );
         let out = text_of(&render_verification_card(&p, 80));
-        assert!(out.contains('✗'), "{out}");
+        assert!(out.contains("[!]"), "{out}");
         assert!(out.contains("1 failed"), "{out}");
         assert!(out.contains("AssertionError"), "{out}");
     }

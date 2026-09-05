@@ -88,6 +88,7 @@ impl TuiApp {
             banner_state: BannerState {
                 items: startup_banners,
             },
+            turn_summaries: Vec::new(),
             search_status: SearchStatusState { label: None },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState::default(),

@@ -193,8 +193,8 @@ mod tests {
     fn builtins_include_all_shipped_themes() {
         let registry = ThemeRegistry::load(None);
         let expected = [
-            (THEME_FORGE_DARK, "Forge Dark", Rgb(8, 8, 8)),
-            (THEME_FORGE_LIGHT, "Forge Light", Rgb(242, 245, 239)),
+            (THEME_FORGE_DARK, "Forge Dark", Rgb(0x14, 0x14, 0x14)),
+            (THEME_FORGE_LIGHT, "Forge Light", Rgb(0xFA, 0xFA, 0xFA)),
         ];
         for (id, name, background) in expected {
             let theme = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));

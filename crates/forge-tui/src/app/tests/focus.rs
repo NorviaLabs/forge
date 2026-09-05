@@ -195,6 +195,34 @@ async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
 }
 
 #[tokio::test]
+async fn open_modal_suppresses_background_marker_and_close_restores_it() {
+    // DESIGN-004: exactly one effective keyboard owner is visible. While a
+    // modal is open the background pane loses its `>` marker (paint only —
+    // `FocusState` is untouched); closing the modal brings the marker back
+    // on the still-valid owner.
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_bottom_panel();
+    app.focus_block(FocusBlock::BottomPanel);
+
+    let plain = render_app_text(&mut app, 120, 40);
+    assert!(plain.contains("> Terminal"), "{plain}");
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+
+    app.overlay = Some(Overlay::welcome());
+    let modal = render_app_text(&mut app, 120, 40);
+    assert!(
+        !modal.contains("> Terminal"),
+        "background marker must suppress under a modal:\n{modal}"
+    );
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+
+    app.overlay = None;
+    let restored = render_app_text(&mut app, 120, 40);
+    assert!(restored.contains("> Terminal"), "{restored}");
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+}
+
+#[tokio::test]
 async fn opening_and_closing_bottom_panel_transfers_focus() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
@@ -703,7 +731,7 @@ async fn navigation_hints_match_the_active_chrome_surface() {
     app.focus_block(FocusBlock::Files);
     assert_eq!(
         app.contextual_hint().as_deref(),
-        Some("↑↓ navigate · Enter open · / search · Esc close")
+        Some("↑↓ navigate · Enter open · ⇧Tab search · Esc cancel")
     );
 
     app.focus_block(FocusBlock::Search);

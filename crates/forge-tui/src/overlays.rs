@@ -2620,10 +2620,10 @@ pub fn render_theme_dock(
         .borders(Borders::ALL)
         .border_style(theme::border())
         .style(theme::panel())
-        .title(Span::styled(
-            format!(" Theme · {} ", crate::hints::hint_text(crate::hints::THEME)),
-            theme::brand(),
-        ));
+        .title(theme::modal_title(&format!(
+            "Theme · {}",
+            crate::hints::hint_text(crate::hints::THEME)
+        )));
     let inner = block.inner(area);
     block.render(area, buf);
     let list_area = inner;
@@ -2631,7 +2631,7 @@ pub fn render_theme_dock(
     // System is always first; keep a separator under it when present.
     let mut rows: Vec<(usize, ListItem)> = Vec::with_capacity(items.len().saturating_add(1));
     for (index, (id, name)) in items.iter().enumerate() {
-        let marker = if index == selected { "▶ " } else { "  " };
+        let marker = if index == selected { "> " } else { "  " };
         let is_current = id == current;
         let selected_row = index == selected;
         let style = if selected_row {
@@ -2705,7 +2705,7 @@ impl Widget for OverlayWidget<'_> {
                         .border_style(theme::brand())
                         .style(theme::panel())
                         .padding(Padding::horizontal(1))
-                        .title(Span::styled(" Help ", theme::brand())),
+                        .title(theme::modal_title("Help")),
                 )
                 .render(r, buf);
             }
@@ -2814,7 +2814,7 @@ impl Widget for OverlayWidget<'_> {
                     .border_style(theme::border())
                     .style(theme::panel())
                     .padding(Padding::new(1, 1, 1, 0))
-                    .title(Span::styled(format!(" {title_text} "), theme::brand()));
+                    .title(theme::modal_title(&title_text));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let regions = Layout::default()
@@ -2874,7 +2874,7 @@ impl Widget for OverlayWidget<'_> {
                                     Some(route) => route.reuse_offer.as_deref().unwrap_or(""),
                                     _ => "",
                                 };
-                                let marker = if selected { "▶ " } else { "  " };
+                                let marker = if selected { "> " } else { "  " };
                                 let mut text = format!("{marker}{indent}{glyph} {label}");
                                 if tag.is_empty() {
                                     ListItem::new(Span::styled(text, style))
@@ -3025,7 +3025,7 @@ impl Widget for OverlayWidget<'_> {
                                     } else {
                                         item.route_label.as_str()
                                     };
-                                    let marker = if selected { "▶ " } else { "  " };
+                                    let marker = if selected { "> " } else { "  " };
                                     Row::new(vec![
                                         Cell::from(format!("{marker}{}", g.model_id)),
                                         Cell::from(provider.to_string()),
@@ -3065,7 +3065,7 @@ impl Widget for OverlayWidget<'_> {
                                         } else {
                                             theme::text()
                                         };
-                                        let marker = if selected { "▶ " } else { "  " };
+                                        let marker = if selected { "> " } else { "  " };
                                         let is_current = *effort == *active_effort;
                                         let default_label = if *effort == default_effort {
                                             " (default)"
@@ -3143,10 +3143,7 @@ impl Widget for OverlayWidget<'_> {
                             .borders(Borders::ALL)
                             .border_style(theme::border())
                             .style(theme::panel())
-                            .title(Span::styled(
-                                " Connect with API key ",
-                                theme::brand().add_modifier(Modifier::BOLD),
-                            )),
+                            .title(theme::modal_title("Connect with API key")),
                     )
                     .render(r, buf);
                 let cursor_y = r.y + 7;
@@ -3171,7 +3168,7 @@ impl Widget for OverlayWidget<'_> {
                             .borders(Borders::ALL)
                             .border_style(theme::border())
                             .style(theme::panel())
-                            .title(Span::styled(" Sign in ", theme::brand())),
+                            .title(theme::modal_title("Sign in")),
                     )
                     .render(r, buf);
             }
@@ -3196,14 +3193,11 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .title(Span::styled(
-                        format!(
-                            " Resume a session · {} · {} ",
-                            picker_position(selected_position, indices.len()),
-                            crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
-                        ),
-                        theme::brand(),
-                    ));
+                    .title(theme::modal_title(&format!(
+                        "Resume a session · {} · {}",
+                        picker_position(selected_position, indices.len()),
+                        crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
+                    )));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let filter_height = u16::from(!filter.is_empty());
@@ -3245,7 +3239,7 @@ impl Widget for OverlayWidget<'_> {
                         .take(visible)
                         .map(|(_position, index)| {
                             let item = &items[*index];
-                            let marker = if *index == *selected { "▶ " } else { "  " };
+                            let marker = if *index == *selected { "> " } else { "  " };
                             let style = if *index == *selected {
                                 theme::selected_row()
                             } else {
@@ -3282,13 +3276,10 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .title(Span::styled(
-                        format!(
-                            " Tasks · {} · Enter switch · n new · a attach · r rename · x archive · d cleanup ",
-                            picker_position(selected_position, indices.len())
-                        ),
-                        theme::brand(),
-                    ));
+                    .title(theme::modal_title(&format!(
+                        "Tasks · {} · Enter switch · n new · a attach · r rename · x archive · d cleanup",
+                        picker_position(selected_position, indices.len())
+                    )));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let list_area = picker_scrollbar(inner, buf, indices.len(), start, visible);
@@ -3314,7 +3305,7 @@ impl Widget for OverlayWidget<'_> {
                         } else {
                             theme::text()
                         };
-                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let marker = if index == *selected { "> " } else { "  " };
                         let attention = if item.attention { " !" } else { "" };
                         Row::new(vec![
                             Cell::from(Span::styled(heading, theme::muted())),
@@ -3351,14 +3342,11 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .title(Span::styled(
-                        format!(
-                            " History · {} · {} ",
-                            picker_position(*selected, items.len()),
-                            crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
-                        ),
-                        theme::brand(),
-                    ));
+                    .title(theme::modal_title(&format!(
+                        "History · {} · {}",
+                        picker_position(*selected, items.len()),
+                        crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
+                    )));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let query_line = Line::from(vec![
@@ -3388,7 +3376,7 @@ impl Widget for OverlayWidget<'_> {
                     .skip(start)
                     .take(visible)
                     .map(|(index, item)| {
-                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let marker = if index == *selected { "> " } else { "  " };
                         let style = if index == *selected {
                             theme::selected_row()
                         } else {
@@ -3436,7 +3424,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
-                        .title(Span::styled(" Rename task ", theme::brand())),
+                        .title(theme::modal_title("Rename task")),
                 )
                 .render(r, buf);
             }
@@ -3449,8 +3437,8 @@ impl Widget for OverlayWidget<'_> {
                 let r = centered_rect(68, 36, area);
                 clear_modal(r, buf);
                 let (title, question) = match kind {
-                    TaskConfirmKind::Archive => (" Archive task ", "Archive"),
-                    TaskConfirmKind::Cleanup => (" Remove worktree ", "Remove the worktree for"),
+                    TaskConfirmKind::Archive => ("Archive task", "Archive"),
+                    TaskConfirmKind::Cleanup => ("Remove worktree", "Remove the worktree for"),
                 };
                 Paragraph::new(format!(
                     "{question} `{label}`?\n\n{detail}\n\nEnter confirm · Esc cancel"
@@ -3460,7 +3448,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
-                        .title(Span::styled(title, theme::brand())),
+                        .title(theme::modal_title(title)),
                 )
                 .render(r, buf);
             }
@@ -3477,11 +3465,11 @@ impl Widget for OverlayWidget<'_> {
                 clear_modal(r, buf);
                 let (title, hint) = match mode {
                     TaskInputMode::New => (
-                        " New managed task ",
+                        "New managed task",
                         "Branches from this worktree's committed HEAD.",
                     ),
                     TaskInputMode::Attach => (
-                        " Attach worktree ",
+                        "Attach worktree",
                         "Must be an existing worktree of this repository.",
                     ),
                 };
@@ -3513,7 +3501,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
-                        .title(Span::styled(title, theme::brand())),
+                        .title(theme::modal_title(title)),
                 )
                 .render(r, buf);
             }
@@ -3533,7 +3521,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
-                        .title(Span::styled(" Trust task worktree ", theme::brand())),
+                        .title(theme::modal_title("Trust task worktree")),
                 )
                 .render(r, buf);
             }
@@ -3567,7 +3555,7 @@ impl Widget for OverlayWidget<'_> {
                     .skip(start)
                     .take(visible)
                     .map(|(index, item)| {
-                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let marker = if index == *selected { "> " } else { "  " };
                         let style = if index == *selected {
                             theme::selected_row()
                         } else {
@@ -3581,14 +3569,11 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .title(Span::styled(
-                        format!(
-                            " File explorer · readonly · {} · {} ",
-                            picker_position(*selected, items.len()),
-                            crate::hints::hint_text(crate::hints::BROWSE)
-                        ),
-                        theme::brand(),
-                    ));
+                    .title(theme::modal_title(&format!(
+                        "File explorer · readonly · {} · {}",
+                        picker_position(*selected, items.len()),
+                        crate::hints::hint_text(crate::hints::BROWSE)
+                    )));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let regions = Layout::default()
@@ -3640,7 +3625,7 @@ impl Widget for OverlayWidget<'_> {
                     .join("\n");
                 let hint = crate::hints::hint_text(crate::hints::SCROLL_BACK_CLOSE);
                 let title = format!(
-                    " {} · readonly · {}/{} · {hint} ",
+                    "{} · readonly · {}/{} · {hint}",
                     path,
                     (*scroll + 1).min(lines.len().max(1)),
                     lines.len().max(1)
@@ -3652,7 +3637,7 @@ impl Widget for OverlayWidget<'_> {
                             .borders(Borders::ALL)
                             .border_style(theme::border())
                             .style(theme::panel())
-                            .title(Span::styled(title, theme::brand())),
+                            .title(theme::modal_title(&title)),
                     )
                     .render(r, buf);
                 if overflow && r.width > 2 && r.height > 2 {
@@ -5343,6 +5328,32 @@ mod tests {
             line.find(needle).unwrap()
         };
         assert_eq!(col_of("gpt-5.6-sol"), col_of("off"));
+    }
+
+    /// DESIGN-014: modal titles carry the shared `>` focus marker in blue
+    /// bold — the modal owns the keyboard while open.
+    #[test]
+    fn modal_titles_carry_the_focus_marker() {
+        let help = render_text(&Overlay::Help);
+        assert!(help.contains("> Help"), "{help}");
+    }
+
+    /// DESIGN-015: picker selection uses the ASCII `>` marker, one row per
+    /// item, with no decorative glyphs anywhere in the list.
+    #[test]
+    fn picker_selection_uses_ascii_marker() {
+        let overlay = Overlay::connect_model_open_compact(
+            vec![],
+            duplicate_name_items(),
+            Some("openai_codex"),
+            "openai-codex/gpt-5.6-luna",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        let text = render_text(&overlay);
+        assert!(text.contains("gpt-5.6-luna"), "{text}");
+        assert!(text.contains("> "), "{text}");
+        assert!(!text.contains('▶'), "{text}");
     }
 
     #[test]
