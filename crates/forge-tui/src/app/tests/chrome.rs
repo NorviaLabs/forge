@@ -1256,7 +1256,7 @@ async fn a_running_turn_paints_a_live_line_in_the_transcript() {
 
     let rendered = render_app_text(&mut app, 120, 40);
     assert!(
-        rendered.contains("Writing the answer…"),
+        rendered.contains("Writing the answer"),
         "no live turn line:\n{rendered}"
     );
     assert!(

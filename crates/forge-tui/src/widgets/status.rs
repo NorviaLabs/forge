@@ -76,7 +76,7 @@ impl BusyPhase {
     }
 }
 
-fn tool_progress_description(name: &str) -> String {
+pub(crate) fn tool_progress_description(name: &str) -> String {
     match name {
         "read_file" => "Reading files".into(),
         "ls" => "Listing files".into(),
