@@ -164,6 +164,9 @@ impl TuiApp {
                 _ => None,
             };
         }
+        if !self.conversation_view.follow {
+            return Some("Ctrl+End return to latest".into());
+        }
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 Some("Enter next · ⇧Enter previous · Esc cancel".into())
