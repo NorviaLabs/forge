@@ -1,0 +1,35 @@
+                                ⌂ /private/tmp/astra-forge-fixture  ·  ⎇ fix/ux-fixture*
+    TASKS [INFO..  1 astra-forge-fixture · main]
+   ┌──────────────────────────┐┌────────────────────────────────────────────────────┐┌──────────────────────────────┐
+   │ ┌──────────────────────┐ ││ NORMAL · ● formatter.py · line 1 of 3 · modified   ││   [✓] Edit display_name and  │
+   │ │ formatter            │ ││ 1 # UX fixturedef display_name(first, last):       ││       add tests              │
+   │ └──────────────────────┘ ││ 2     return " ".join(part.strip() for part in (fi ││       apply_patch            │
+   │ ──────────────────────── ││   rst, last) if part.strip())                      ││   [✓] Run unittest           │
+   │ ▾ astra-forge-fixture    ││ 3                                                  ││       verification           │
+   │   ▾ __pycache__          ││                                                    ││       exec_command python3   │
+   │       formatter.cpython- ││                                                    ││       -m, git                │
+   │       test_formatter.cpy ││                                                    ││                              │
+   │     formatter.py MOD..   ││                                                    ││   Implemented display_name   │
+   │     test_formatte┌ Unsaved Changes ─────────────────────────────────────────────────────────┐nd added tests    │
+   │                  │The current file has unsaved changes.                                     │                  │
+   │                  │                                                                          │                  │
+   │                  │Save and leave?  Enter/s save · d discard · Esc cancel                    │irst name         │
+   │                  │                                                                          │ast name          │
+   │                  │                                                                          │ding whitespace   │
+   │                  │                                                                          │m unittest -v     │
+   │                  │                                                                          │l 4 tests.        │
+   │                  │                                                                          │                  │
+   │                  │                                                                          │red in 44s   ·  6 │
+   │                  └──────────────────────────────────────────────────────────────────────────┘                  │
+   │                          ││                                                    ││                              │
+   │                          ││                                                    ││                              │
+   │                          ││                                                    ││                              │
+   │                          ││                                                    ││                              │
+   │                          ││                                                    ││                              │
+   │                          ││                                                    │└──────────────────────────────┘
+   │                          ││                                                    │┌──────────────────────────────┐
+   │                          ││                                                    ││ Reply, or describe the next  │
+   │ formatter.py             ││ NORMAL                                             ││ task…                        │
+   └──────────────────────────┘└────────────────────────────────────────────────────┘└──────────────────────────────┘
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                          Enter confirm · Esc cancel

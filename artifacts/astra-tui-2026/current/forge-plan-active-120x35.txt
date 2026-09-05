@@ -1,0 +1,35 @@
+                                ⌂ /private/tmp/astra-forge-fixture  ·  ⎇ fix/ux-fixture
+    TASKS [INFO... 1 astra-forge-fixture · main]
+   ┌──────────────────────────┐┌────────────────────────────────────────────────────────────────────────────────────┐
+   │ ┌──────────────────────┐ ││     Planning three-step inspection                                                 │
+   │ │ Search files…        │ ││                                                                                    │
+   │ └──────────────────────┘ ││   I’ll inspect the fixture, patch display_name with focused tests, then run the    │
+   │ ──────────────────────── ││   requested unittest command.                                                      │
+   │ ▾ astra-forge-fixture    ││                                                                                    │
+   │   ▸ .forge               ││ Plan updated · 0 of 3 done · Inspect fixture and display_name implementation       │
+   │     formatter.py         ││                                                                                    │
+   │     README.md            ││     ▸   Explored repository  2 files inspected  Ctrl+O                             │
+   │     test_formatter.py    ││                                                                                    │
+   │                          ││   The fixture has a minimal concatenation bug and one existing test. I’ll make     │
+   │                          ││   the function normalize each part, omit empty parts, and cover both blank cases   │
+   │                          ││   plus surrounding whitespace.                                                     │
+   │                          ││                                                                                    │
+   │                          ││   Inspection is complete; implementation and focused test coverage are next.       │
+   │                          ││   Plan · 1 of 3 done                                                               │
+   │                          ││   [✓] Inspect fixture and display_name implementation                              │
+   │                          ││       ls ., read_file formatter.py, read_file test_formatter.py                    │
+   │                          ││   [•] Edit display_name and add tests                                              │
+   │                          ││   [ ] Run unittest verification                                                    │
+   │                          ││                                                                                    │
+   │                          ││                                                                                    │
+   │                          ││   Thinking    22s · ↓ 395 chars                                 esc to interrupt   │
+   │                          ││                                                                                    │
+   │                          ││                                                                                    │
+   │                          ││                                                                                    │
+   │                          ││                                                                                    │
+   │                          │└────────────────────────────────────────────────────────────────────────────────────┘
+   │                          │┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   │                          │┃  Reply, or describe the next task…                                                 ┃
+   └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    ● OpenAI/gpt-5.6-luna │ Medium                            Working  ·  context 1%  ·  43.4k tokens · 28.60% cache
