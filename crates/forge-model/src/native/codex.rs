@@ -281,16 +281,16 @@ pub(super) fn request_body(
 }
 
 #[derive(Default)]
-struct CodexStream {
-    text: String,
-    thinking: String,
-    tool_calls: Vec<ToolCall>,
-    usage: Option<Usage>,
+pub(super) struct CodexStream {
+    pub(super) text: String,
+    pub(super) thinking: String,
+    pub(super) tool_calls: Vec<ToolCall>,
+    pub(super) usage: Option<Usage>,
     last_reasoning_part: Option<(String, String, u64)>,
 }
 
 impl CodexStream {
-    fn consume(
+    pub(super) fn consume(
         &mut self,
         event: &Value,
         reverse_aliases: &BTreeMap<String, String>,
