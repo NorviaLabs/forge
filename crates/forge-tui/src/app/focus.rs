@@ -167,6 +167,11 @@ impl TuiApp {
         if !self.conversation_view.follow {
             return Some("Ctrl+End return to latest".into());
         }
+        if self.focus.block() == FocusBlock::Composer
+            && (self.attachment.file().is_some() || self.attachment.has_images())
+        {
+            return Some("Backspace remove attachment · Ctrl+U clear draft".into());
+        }
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 Some("Enter next · ⇧Enter previous · Esc cancel".into())
