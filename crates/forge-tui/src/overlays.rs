@@ -828,6 +828,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             is_skill: false,
         },
         PaletteItem {
+            cmd: "/diff turn".into(),
+            desc: "Review files changed by the last turn".into(),
+            is_skill: false,
+        },
+        PaletteItem {
             cmd: "/disconnect".into(),
             desc: "Log out and clear credentials".into(),
             is_skill: false,
