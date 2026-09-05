@@ -1243,6 +1243,9 @@ impl TuiApp {
             KeyCode::Backspace if key.modifiers.is_empty() => {
                 if self.input.text.is_empty() && self.dismiss_last_image_chip() {
                     self.set_feedback(FeedbackSeverity::Info, "image dismissed");
+                } else if self.input.text.is_empty() && self.attachment.file().is_some() {
+                    self.attachment.clear_file();
+                    self.set_feedback(FeedbackSeverity::Info, "file attachment dismissed");
                 } else {
                     self.input.backspace();
                     self.clamp_slash_suggest();
