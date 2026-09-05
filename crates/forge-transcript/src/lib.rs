@@ -675,11 +675,14 @@ pub enum Verdict {
 }
 
 impl Verdict {
+    /// ASCII lifecycle marker (2026 grammar, DESIGN-008): completed work is
+    /// `[x]`, failure `[!]`, and an unparsed result `[?]` — never a bare
+    /// `?`, which reads as punctuation rather than state.
     pub fn glyph(&self) -> &'static str {
         match self {
-            Self::Passed { .. } => "✓",
-            Self::Failed { .. } => "✗",
-            Self::Unparsed { .. } => "?",
+            Self::Passed { .. } => "[x]",
+            Self::Failed { .. } => "[!]",
+            Self::Unparsed { .. } => "[?]",
         }
     }
 
@@ -692,6 +695,50 @@ impl Verdict {
                 None => format!("{lines} lines, no result line"),
             },
         }
+    }
+}
+
+/// Kind label for shell work. Adjacent standalone shell rows coalesce under
+/// it (DESIGN-009); compare against this constant, never a literal.
+pub const SHELL_KIND_LABEL: &str = "Shell";
+
+/// Typed tool-kind label replacing decorative icons (2026 grammar,
+/// DESIGN-002/008). Unknown and MCP tools keep their registered name instead
+/// of being guessed.
+pub fn tool_kind_label(tool_name: &str) -> &str {
+    let lower = tool_name.to_ascii_lowercase();
+    // Match on the canonical tool identity, not substrings in output.
+    if lower.contains("read") || lower == "r" {
+        "Read"
+    } else if lower.contains("search") || lower.contains("grep") || lower.contains("glob") {
+        "Search"
+    } else if lower.contains("shell")
+        || lower.contains("exec")
+        || lower.contains("bash")
+        || lower == "$"
+    {
+        SHELL_KIND_LABEL
+    } else if lower.starts_with("git") || lower == "g" {
+        "Git"
+    } else if lower.contains("edit")
+        || lower.contains("write")
+        || lower.contains("apply")
+        || lower == "~"
+    {
+        "Edit"
+    } else if lower.contains("check")
+        || lower.contains("test")
+        || lower.contains("lint")
+        || lower.contains("valid")
+        || lower == "t"
+    {
+        "Check"
+    } else if lower.contains("web") || lower.contains("fetch") || lower == "@" {
+        "Web"
+    } else if lower.contains("plan") || lower == "#" {
+        "Plan"
+    } else {
+        tool_name
     }
 }
 
@@ -974,17 +1021,56 @@ pub fn format_elapsed_tenths(secs: f64) -> String {
     }
 }
 
+/// View-only identity of one user turn: no durable display id exists on
+/// `Message`, so presentation derives the key from session identity plus the
+/// user-message ordinal. Never persisted — resume rebuilds it, and restored
+/// turns simply carry no ephemeral timing. (DESIGN-005.)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TurnKey {
+    /// Opaque session identity supplied by the caller (e.g. session id).
+    pub session: String,
+    /// 0-based ordinal of the turn's user message within the session.
+    pub user_ordinal: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConversationModel {
     pub items: Vec<ChatItem>,
     pub scroll: u16,
     pub follow: bool,
     pub opts: ConversationViewOpts,
+    /// Per-turn completion metadata keyed by absolute user ordinal, placed
+    /// under each turn's own answer instead of one global receipt at the end.
+    /// Empty by default; the app attaches its session presentation state via
+    /// [`Self::with_turn_summaries`]. View-only: never persisted.
+    pub turn_summaries: Vec<(u64, TurnSummaryPresentation)>,
+    /// Absolute user ordinal of the first `ChatItem::User` in `items`
+    /// (0 when unwindowed). Added to the local count when matching
+    /// [`Self::turn_summaries`].
+    pub turn_summary_base: u64,
 }
 
 impl ConversationModel {
     pub fn semantic_blocks(&self) -> Vec<ConversationBlock> {
-        semantic_blocks_from_items(&self.items, self.opts.tool_expanded)
+        semantic_blocks_from_items(
+            &self.items,
+            self.opts.tool_expanded,
+            &self.turn_summaries,
+            self.turn_summary_base,
+        )
+    }
+
+    /// Attach per-turn completion metadata (absolute user ordinals) for the
+    /// window starting at `base_ordinal`. Replaces any previously attached
+    /// summaries; pass an empty vec to clear.
+    pub fn with_turn_summaries(
+        mut self,
+        summaries: Vec<(u64, TurnSummaryPresentation)>,
+        base_ordinal: u64,
+    ) -> Self {
+        self.turn_summaries = summaries;
+        self.turn_summary_base = base_ordinal;
+        self
     }
 
     /// Indices into `items` where each turn starts (each `ChatItem::User`).
@@ -1215,6 +1301,8 @@ impl ConversationModel {
             scroll: 0,
             follow: true,
             opts,
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
         }
     }
 
@@ -1445,10 +1533,23 @@ fn user_message_boundaries(items: &[ChatItem]) -> Vec<usize> {
         .collect()
 }
 
-fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<ConversationBlock> {
+fn semantic_blocks_from_items(
+    items: &[ChatItem],
+    tool_expanded: bool,
+    turn_summaries: &[(u64, TurnSummaryPresentation)],
+    turn_summary_base: u64,
+) -> Vec<ConversationBlock> {
     let mut blocks = Vec::new();
     let mut progress: Option<ActiveProgressPresentation> = None;
     let mut activity_group: Option<ActivityGroupPresentation> = None;
+    // Per-turn completion metadata by absolute user ordinal (last wins).
+    // View-only: the stored message stream is never reordered or rewritten.
+    // Built lazily so the hot path is untouched when no turn has finished.
+    let summaries: Option<std::collections::HashMap<u64, &TurnSummaryPresentation>> =
+        (!turn_summaries.is_empty()).then(|| turn_summaries.iter().map(|(k, v)| (*k, v)).collect());
+    // 0-based ordinal of the current turn within `items`.
+    let mut user_ordinal: u64 = 0;
+    let mut saw_user = false;
 
     let flush_progress =
         |blocks: &mut Vec<ConversationBlock>, progress: &mut Option<ActiveProgressPresentation>| {
@@ -1465,6 +1566,17 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
         }
     };
 
+    // A finished turn's completion line sits directly under its own answer,
+    // after its pending activity has flushed — never under a newer turn.
+    let flush_turn_summary = |blocks: &mut Vec<ConversationBlock>, absolute_ordinal: u64| {
+        if let Some(summary) = summaries
+            .as_ref()
+            .and_then(|map| map.get(&absolute_ordinal))
+        {
+            blocks.push(ConversationBlock::TurnSummary((*summary).clone()));
+        }
+    };
+
     let mut i = 0usize;
     while i < items.len() {
         let item = &items[i];
@@ -1472,6 +1584,12 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
             ChatItem::User { text } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
+                if saw_user {
+                    flush_turn_summary(&mut blocks, turn_summary_base + user_ordinal);
+                    user_ordinal += 1;
+                } else {
+                    saw_user = true;
+                }
                 blocks.push(ConversationBlock::UserMessage(UserMessagePresentation {
                     text: text.clone(),
                 }));
@@ -1564,11 +1682,18 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     append_activity_entry(&mut blocks, &mut activity_group, entry);
                 } else {
                     flush_progress(&mut blocks, &mut progress);
-                    flush_activity(&mut blocks, &mut activity_group);
-                    blocks.push(ConversationBlock::ActivityGroup(
+                    // Routed through the pending-group merge so adjacent
+                    // standalone shell calls coalesce (DESIGN-009);
+                    // anything else flushes straight through unchanged.
+                    append_activity_entry(
+                        &mut blocks,
+                        &mut activity_group,
                         ActivityGroupPresentation {
                             id: format!("tool:{name}:{summary}"),
-                            label: name.clone(),
+                            // Typed kind label (Read/Search/Shell/…);
+                            // unknown and MCP tools keep their
+                            // registered name (DESIGN-008).
+                            label: tool_kind_label(name).to_string(),
                             count_label: "1 item".into(),
                             category: None,
                             outcome: derive_activity_outcome(*state, None, outcome, false),
@@ -1581,7 +1706,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             // printed the same line twice under itself.
                             items: vec![detail.clone()],
                         },
-                    ));
+                    );
                 }
             }
             ChatItem::ActivityGroup {
@@ -1761,6 +1886,9 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
     }
     flush_progress(&mut blocks, &mut progress);
     flush_activity(&mut blocks, &mut activity_group);
+    if saw_user {
+        flush_turn_summary(&mut blocks, turn_summary_base + user_ordinal);
+    }
     let blocks = if tool_expanded {
         blocks
     } else {
@@ -1880,7 +2008,16 @@ fn append_activity_entry(
     next: ActivityGroupPresentation,
 ) {
     if let Some(group) = pending.as_mut() {
-        if group.id == next.id {
+        // DESIGN-009: adjacent standalone shell calls coalesce into one row.
+        // Same-category groups already merge by id; multi-part shell work
+        // (non-validation `exec`/`bash` calls, which stand alone) merges by
+        // kind instead. Every invocation stays visible on its own subcommand
+        // line — nothing is re-guessed or folded away.
+        let shell_coalesce = group.category.is_none()
+            && next.category.is_none()
+            && group.label == SHELL_KIND_LABEL
+            && next.label == SHELL_KIND_LABEL;
+        if group.id == next.id || shell_coalesce {
             group.count_label =
                 result_count_label(group.items.len() + next.items.len(), "item", "items");
             // A group that was failing and is now being merged with newer
@@ -1894,6 +2031,9 @@ fn append_activity_entry(
             group.outcome = merge_activity_outcomes(group.outcome, next.outcome);
             group.expanded |= next.expanded;
             group.items.extend(next.items);
+            // Every invocation stays visible on its own line — a merged row
+            // never folds a command away (DESIGN-009).
+            group.subcommands.extend(next.subcommands);
             return;
         }
         if let Some(group) = pending.take() {
@@ -2788,6 +2928,8 @@ mod tests {
     #[test]
     fn semantic_blocks_group_tool_activity_by_category() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::ToolCard {
                     name: "read_file".into(),
@@ -2831,6 +2973,8 @@ mod tests {
     #[test]
     fn exec_command_validation_summaries_group_as_validating() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "exec_command".into(),
                 summary: "$ cargo check -p forge-tui · session #1 · exited".into(),
@@ -2857,6 +3001,8 @@ mod tests {
     #[test]
     fn turn_boundaries_finds_each_user_message() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "first".into(),
@@ -2877,6 +3023,143 @@ mod tests {
         };
 
         assert_eq!(model.turn_boundaries(), vec![0, 2]);
+    }
+
+    fn completion(secs: f64, tools: usize) -> TurnSummaryPresentation {
+        TurnSummaryPresentation {
+            secs,
+            chars: 120,
+            tools,
+            output_tokens: None,
+        }
+    }
+
+    fn summary_secs(blocks: &[ConversationBlock]) -> Vec<f64> {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                ConversationBlock::TurnSummary(p) => Some(p.secs),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// DESIGN-005: each finished turn's completion line sits directly under
+    /// its own answer — a newer live turn never inherits an older `Finished`.
+    #[test]
+    fn turn_summaries_attach_to_their_own_turn() {
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User {
+                    text: "first".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply one".into(),
+                },
+                ChatItem::User {
+                    text: "second".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply two".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+        .with_turn_summaries(vec![(0, completion(10.0, 2)), (1, completion(20.0, 3))], 0);
+        let blocks = model.semantic_blocks();
+        let kinds: Vec<&str> = blocks
+            .iter()
+            .map(|b| match b {
+                ConversationBlock::UserMessage(_) => "user",
+                ConversationBlock::AssistantAnswer(_) => "answer",
+                ConversationBlock::TurnSummary(_) => "summary",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "answer", "summary", "user", "answer", "summary"],
+            "{kinds:?}"
+        );
+        assert_eq!(summary_secs(&blocks), vec![10.0, 20.0]);
+    }
+
+    /// A live turn with no recorded summary shows no completion line, even
+    /// when the previous turn finished.
+    #[test]
+    fn live_turn_without_summary_shows_no_finished_line() {
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User {
+                    text: "first".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply one".into(),
+                },
+                ChatItem::User {
+                    text: "second".into(),
+                },
+                ChatItem::Assistant {
+                    text: "partial".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+        .with_turn_summaries(vec![(0, completion(10.0, 2))], 0);
+        let blocks = model.semantic_blocks();
+        assert_eq!(summary_secs(&blocks), vec![10.0]);
+        // The summary belongs to turn 0: it precedes the second request.
+        let summary_pos = blocks
+            .iter()
+            .position(|b| matches!(b, ConversationBlock::TurnSummary(_)))
+            .unwrap();
+        let second_user_pos = blocks
+            .iter()
+            .position(|b| matches!(b, ConversationBlock::UserMessage(p) if p.text == "second"))
+            .unwrap();
+        assert!(summary_pos < second_user_pos);
+    }
+
+    /// Windowing: `base_ordinal` shifts local ordinals to absolute ones, so a
+    /// summary recorded before the window still lands on its visible turn.
+    #[test]
+    fn turn_summaries_respect_the_window_base_ordinal() {
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User {
+                    text: "visible turn".into(),
+                },
+                ChatItem::Assistant {
+                    text: "reply".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+        .with_turn_summaries(vec![(7, completion(5.0, 1))], 7);
+        assert_eq!(summary_secs(&model.semantic_blocks()), vec![5.0]);
+        // A summary for any other ordinal does not attach here.
+        let bare = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: model.items.clone(),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+        .with_turn_summaries(vec![(3, completion(5.0, 1))], 7);
+        assert!(summary_secs(&bare.semantic_blocks()).is_empty());
     }
 
     fn two_turn_items(second_tool_outcome: forge_types::ExecutionOutcome) -> Vec<ChatItem> {
@@ -2916,6 +3199,8 @@ mod tests {
 
     fn two_turn_model(second_tool_outcome: forge_types::ExecutionOutcome) -> ConversationModel {
         ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: two_turn_items(second_tool_outcome),
             scroll: 0,
             follow: true,
@@ -2946,6 +3231,8 @@ mod tests {
     #[test]
     fn turn_boundaries_single_turn() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "only turn".into(),
@@ -2965,6 +3252,8 @@ mod tests {
     #[test]
     fn turn_boundaries_empty_before_any_user_message() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::Brand {
                 version: "0.1.0-beta.6".into(),
             }],
@@ -2981,6 +3270,8 @@ mod tests {
     #[test]
     fn is_in_latest_turn_respects_the_last_boundary() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "first".into(),
@@ -3150,6 +3441,8 @@ mod tests {
     #[test]
     fn semantic_blocks_replace_streaming_answer_updates() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::StreamingAssistant {
                     text: "working on the change".into(),
@@ -3176,6 +3469,8 @@ mod tests {
     #[test]
     fn semantic_blocks_preserve_assistant_then_activity_order() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::Assistant {
                     text: "final answer".into(),
@@ -3209,6 +3504,8 @@ mod tests {
     #[test]
     fn completed_turn_keeps_item_order_of_activity_then_answer() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "Summarize this codebase".into(),
@@ -3254,6 +3551,8 @@ mod tests {
     #[test]
     fn semantic_blocks_preserve_interleaved_narration_and_tools() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "fix the parser".into(),
@@ -3320,6 +3619,8 @@ mod tests {
     #[test]
     fn thinking_and_plan_stay_in_item_order() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "plan the change".into(),
@@ -3373,6 +3674,8 @@ mod tests {
     #[test]
     fn routine_reads_do_not_merge_across_assistant_narration() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: group_routine_activity(vec![
                 ChatItem::ToolCard {
                     name: "read_file".into(),
@@ -3421,6 +3724,8 @@ mod tests {
     #[test]
     fn routine_reads_merge_across_thinking_narration() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: group_routine_activity(vec![
                 ChatItem::ToolCard {
                     name: "read_file".into(),
@@ -3538,6 +3843,8 @@ mod tests {
         }
 
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: group_routine_activity(vec![
                 read("README.md"),
                 thinking("I'll explore the repo structure and key files."),
@@ -3564,6 +3871,8 @@ mod tests {
     #[test]
     fn failure_banner_stays_after_interleaved_answer() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "Summarize this codebase".into(),
@@ -3610,6 +3919,8 @@ mod tests {
     #[test]
     fn duplicate_turn_failure_banners_keep_the_last() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User { text: "go".into() },
                 ChatItem::Banner {
@@ -3791,6 +4102,8 @@ mod tests {
     #[test]
     fn failed_turn_renders_activity_before_failure() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User {
                     text: "Summarize this codebase".into(),
@@ -3871,6 +4184,8 @@ mod tests {
     #[test]
     fn all_assistant_answers_per_turn_are_kept() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![
                 ChatItem::User { text: "hi".into() },
                 ChatItem::Assistant {
@@ -4064,6 +4379,8 @@ mod tests {
     #[test]
     fn a_failed_validation_that_later_succeeds_recovers_the_group() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: group_routine_activity(vec![
                 ChatItem::ToolCard {
                     name: "bash".into(),
@@ -4165,6 +4482,8 @@ mod tests {
     #[test]
     fn a_recovered_group_reports_its_retry_count() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: group_routine_activity(vec![
                 ChatItem::ToolCard {
                     name: "bash".into(),
@@ -4239,6 +4558,8 @@ mod tests {
     #[test]
     fn routine_activity_groups_respect_boundaries_and_failures() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: group_routine_activity(vec![
                 ChatItem::ToolCard {
                     name: "read_file".into(),
@@ -4441,6 +4762,8 @@ mod tests {
     #[test]
     fn tool_expanded_reveals_successful_tool_details() {
         let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items: vec![ChatItem::ToolCard {
                 name: "read_file".into(),
                 summary: "src/lib.rs".into(),
@@ -4687,6 +5010,8 @@ mod spent_reasoning_tests {
 
     fn model(items: Vec<ChatItem>, tool_expanded: bool) -> ConversationModel {
         ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
             items,
             scroll: 0,
             follow: true,
@@ -4866,9 +5191,187 @@ mod verification_tests {
                 lines: 3
             }
         );
-        assert_eq!(verdict.glyph(), "?");
+        assert_eq!(verdict.glyph(), "[?]");
         assert!(verdict.headline().contains("no result line"), "{verdict:?}");
         assert_eq!(evidence, vec!["all done"]);
+    }
+
+    /// DESIGN-008: typed kind labels replace decorative icons; unknown and
+    /// MCP tools keep their registered name instead of being guessed.
+    #[test]
+    fn tool_kind_labels_cover_the_vocabulary_and_preserve_unknown() {
+        assert_eq!(tool_kind_label("read_file"), "Read");
+        assert_eq!(tool_kind_label("search"), "Search");
+        assert_eq!(tool_kind_label("exec_command"), "Shell");
+        assert_eq!(tool_kind_label("git_status"), "Git");
+        assert_eq!(tool_kind_label("edit_file"), "Edit");
+        assert_eq!(tool_kind_label("run_tests"), "Check");
+        assert_eq!(tool_kind_label("web_fetch"), "Web");
+        assert_eq!(tool_kind_label("update_plan"), "Plan");
+        assert_eq!(tool_kind_label("mcp__custom_tool"), "mcp__custom_tool");
+    }
+
+    /// A standalone (uncategorized) tool row shows its kind label, never the
+    /// raw snake_case tool name.
+    #[test]
+    fn standalone_tool_rows_show_kind_labels() {
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User { text: "hi".into() },
+                ChatItem::ToolCard {
+                    name: "mcp__weather_lookup".into(),
+                    summary: "Portland · 58°F".into(),
+                    detail: "Portland · 58°F".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "src/lib.rs".into(),
+                    detail: "src/lib.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+                ChatItem::ToolCard {
+                    name: "web_fetch".into(),
+                    summary: "https://example.com".into(),
+                    detail: "page text".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let labels: Vec<String> = model
+            .semantic_blocks()
+            .iter()
+            .filter_map(|block| match block {
+                ConversationBlock::ActivityGroup(p) => Some(p.label.clone()),
+                _ => None,
+            })
+            .collect();
+        // read_file is routine (grouped); the MCP tool stands alone with its
+        // registered name intact; web_fetch stands alone under its kind.
+        assert!(
+            labels.iter().any(|l| l == "mcp__weather_lookup"),
+            "unknown tools keep their name: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l == "Web"),
+            "standalone tools show kind labels: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l == "read_file" || l == "web_fetch"),
+            "no raw snake_case tool names on rows: {labels:?}"
+        );
+    }
+
+    /// DESIGN-009: adjacent standalone shell calls coalesce into one row.
+    /// Every invocation stays visible — nothing re-guessed or folded away.
+    #[test]
+    fn adjacent_shell_calls_coalesce_into_one_row() {
+        fn shell_card(command: &str) -> ChatItem {
+            ChatItem::ToolCard {
+                name: "exec_command".into(),
+                summary: format!("$ {command} · session #1 · exited"),
+                detail: format!("$ {command}\noutput"),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: Some(format!("$ {command}")),
+                outcome: forge_types::ExecutionOutcome::Success,
+            }
+        }
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User { text: "hi".into() },
+                shell_card("echo one"),
+                shell_card("echo two"),
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let blocks = model.semantic_blocks();
+        let groups: Vec<&ActivityGroupPresentation> = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ConversationBlock::ActivityGroup(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups.len(), 1, "two shell calls, one row");
+        assert_eq!(groups[0].label, SHELL_KIND_LABEL);
+        assert_eq!(groups[0].count_label, "2 items");
+        assert!(
+            groups[0].subcommands.iter().any(|s| s.contains("echo one")),
+            "first command visible: {:?}",
+            groups[0].subcommands
+        );
+        assert!(
+            groups[0].subcommands.iter().any(|s| s.contains("echo two")),
+            "second command visible: {:?}",
+            groups[0].subcommands
+        );
+    }
+
+    /// Coalescing is adjacency-scoped and kind-scoped: a different tool in
+    /// between, or a different kind beside, keeps separate rows.
+    #[test]
+    fn shell_coalescing_respects_boundaries() {
+        fn shell_card(command: &str) -> ChatItem {
+            ChatItem::ToolCard {
+                name: "exec_command".into(),
+                summary: format!("$ {command} · session #1 · exited"),
+                detail: format!("$ {command}\noutput"),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: Some(format!("$ {command}")),
+                outcome: forge_types::ExecutionOutcome::Success,
+            }
+        }
+        let web = ChatItem::ToolCard {
+            name: "web_fetch".into(),
+            summary: "https://example.com".into(),
+            detail: "page".into(),
+            state: ToolCardState::Done,
+            duration: None,
+            subcommand: None,
+            outcome: forge_types::ExecutionOutcome::Success,
+        };
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::User { text: "hi".into() },
+                shell_card("echo one"),
+                web,
+                shell_card("echo two"),
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let blocks = model.semantic_blocks();
+        let labels: Vec<&str> = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ConversationBlock::ActivityGroup(p) => Some(p.label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, vec!["Shell", "Web", "Shell"], "{labels:?}");
     }
 
     #[test]
@@ -4886,7 +5389,7 @@ mod verification_tests {
                 headline: "30 passed · 1 failed".into()
             }
         );
-        assert_eq!(verdict.glyph(), "✗");
+        assert_eq!(verdict.glyph(), "[!]");
         assert!(
             evidence.iter().any(|l| l.contains("AssertionError")),
             "{evidence:?}"

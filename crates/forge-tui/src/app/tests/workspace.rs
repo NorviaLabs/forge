@@ -97,6 +97,25 @@ async fn workspace_home_requires_a_dirty_editor_decision() {
     ));
     assert!(app.current_workspace_is_file());
 
+    // DESIGN-017: the conflict dialog carries the shared `> Title` modal
+    // grammar, not a padded bare title.
+    let rendered = render_app_text(&mut app, 120, 35);
+    assert!(
+        rendered.contains("> Unsaved Changes"),
+        "conflict dialog title:\n{rendered}"
+    );
+    // DESIGN-018 matrix: the title and choices survive the 80×24 minimum
+    // frame too.
+    let narrow = render_app_text(&mut app, 80, 24);
+    assert!(
+        narrow.contains("> Unsaved Changes"),
+        "conflict dialog title at 80x24:\n{narrow}"
+    );
+    assert!(
+        narrow.contains("d discard"),
+        "conflict dialog choices at 80x24:\n{narrow}"
+    );
+
     app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
         .await
         .unwrap();

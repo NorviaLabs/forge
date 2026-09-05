@@ -397,6 +397,43 @@ pub fn info() -> Style {
     Style::default().fg(info_color())
 }
 
+/// Structural focus marker: the single `>` that identifies the effective
+/// keyboard owner (2026 design system, principle 4). Shape — not color —
+/// carries the meaning, so focus stays legible in monochrome.
+pub const FOCUS_MARKER: &str = ">";
+
+/// Modal title span: `> Label` in blue bold. A modal owns the keyboard
+/// while open, so its title always carries the focus marker (DESIGN-014).
+pub fn modal_title(label: &str) -> ratatui::text::Span<'static> {
+    use ratatui::text::Span;
+    Span::styled(format!("> {label} "), brand())
+}
+
+/// Shared pane-title row: `> Label` in blue bold when the pane owns input,
+/// two-space-indented neutral label otherwise. The reserved marker column
+/// keeps titles aligned whether or not the pane is focused.
+pub fn pane_title(focused: bool, label: &str) -> ratatui::text::Line<'static> {
+    use ratatui::text::Span;
+    if focused {
+        ratatui::text::Line::from(vec![Span::styled(
+            format!("{FOCUS_MARKER} {label}"),
+            brand(),
+        )])
+    } else {
+        ratatui::text::Line::from(vec![Span::styled(format!("  {label}"), text_secondary())])
+    }
+}
+
+/// Active-work style (2026 design system): orange `[>]` live rows only.
+/// Never use for focus, selection, or completed success.
+pub fn activity() -> Style {
+    Style::default().fg(activity_color())
+}
+
+pub fn activity_color() -> Color {
+    active_palette().activity
+}
+
 pub fn success_color() -> Color {
     active_palette().ok
 }
@@ -596,24 +633,24 @@ pub fn metadata_style() -> Style {
     muted()
 }
 
+/// Active explorer selection: the neutral `selection` route (shared with the
+/// pickers) plus the tree's own `>` pointer, so selection never reads as a
+/// blue focus wash. Contrast of `selection_fg` on `selection` is pinned by
+/// the palette AA tests.
 pub fn selection_active() -> Style {
-    selected_file()
+    selected_row()
 }
 
+/// Inactive explorer selection: no background at all — the blue is gone —
+/// but bold text plus the tree's `>` pointer keeps the row locatable.
 pub fn selection_inactive() -> Style {
-    selected_file()
-}
-
-/// Selected file row in the explorer (accent_soft + text_primary).
-pub fn selected_file() -> Style {
-    let p = active_palette();
-    Style::default().fg(p.text).bg(p.accent_soft)
+    heading()
 }
 
 /// Directory rows in the explorer.
 ///
 /// Bold primary text rather than the accent: being a directory is a kind of
-/// content, not a focus state, and the ▸/▾ disclosure glyph already carries
+/// content, not a focus state, and the >/v disclosure marker already carries
 /// the distinction. Leaving it on the accent meant every expanded tree
 /// competed with the one row the user had actually selected.
 pub fn directory() -> Style {
@@ -783,6 +820,8 @@ pub struct Palette {
     pub warn: Color,
     pub danger: Color,
     pub info: Color,
+    /// Active-work token (2026 design system, `activity` palette field).
+    pub activity: Color,
     pub tool: Color,
     pub selection: Color,
     pub diff_add: Color,
@@ -832,6 +871,7 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         warn: to_color(src.warning),
         danger: to_color(src.error),
         info: to_color(src.info),
+        activity: to_color(src.activity),
         tool: to_color(src.info),
         selection: to_color(src.selection),
         diff_add: to_color(src.diff_add),
@@ -925,11 +965,15 @@ mod tests {
     }
 
     #[test]
-    fn selected_file_uses_accent_soft() {
+    fn explorer_selection_is_neutral_not_blue() {
         install_defaults();
         let dark = dark_palette();
-        assert_eq!(selected_file().bg, Some(to_color(dark.accent_soft)));
-        assert_eq!(selected_file().fg, Some(to_color(dark.text_primary)));
+        // Active: the shared neutral selection route (same as the pickers).
+        assert_eq!(selected_row().bg, Some(to_color(dark.selection)));
+        assert_eq!(selection_active().bg, Some(to_color(dark.selection)));
+        // Inactive: no background at all — bold text plus the `>` pointer
+        // carries it.
+        assert_eq!(selection_inactive().bg, None);
     }
 
     #[test]
@@ -977,6 +1021,31 @@ mod tests {
         install_defaults();
         assert_eq!(brand().fg, Some(accent_color()));
         assert_eq!(active_panel_border().fg, Some(accent_color()));
+    }
+
+    #[test]
+    fn modal_title_carries_marker_in_brand() {
+        install_defaults();
+        let span = modal_title("Help");
+        assert_eq!(span.content, "> Help ");
+        assert_eq!(span.style, brand());
+    }
+
+    #[test]
+    fn pane_title_marks_focus_with_shape_not_just_color() {
+        install_defaults();
+        let focused = pane_title(true, "Terminal").to_string();
+        let idle = pane_title(false, "Terminal").to_string();
+        assert!(focused.starts_with("> Terminal"), "{focused:?}");
+        assert_eq!(idle, "  Terminal");
+        // Monochrome legibility: the two states differ in text, and the
+        // focused title carries the accent at bold weight.
+        assert_ne!(focused, idle);
+        assert_eq!(pane_title(true, "Terminal").spans[0].style, brand());
+        assert_eq!(
+            pane_title(false, "Terminal").spans[0].style,
+            text_secondary()
+        );
     }
 
     /// `tag` is a low-emphasis text step, not a hue with a meaning of its
@@ -1133,19 +1202,21 @@ mod tests {
         install(ThemeRegistry::load(None), THEME_FORGE_LIGHT);
         let syntax = syntax_theme();
 
-        assert_eq!(syntax.default, (0x1E, 0x2A, 0x1E));
-        assert_eq!(syntax.comment, (0x6C, 0x7A, 0x6C));
-        assert_eq!(syntax.keyword, (0x6D, 0x4F, 0x97));
-        assert_eq!(syntax.string, (0x19, 0x6B, 0x3E));
-        assert_eq!(syntax.number, (0x8C, 0x60, 0x18));
-        assert_eq!(syntax.function, (0x25, 0x7E, 0x4D));
-        assert_eq!(syntax.type_, (0x26, 0x58, 0x6D));
-        assert_eq!(syntax.variable, (0x1E, 0x2A, 0x1E));
-        assert_eq!(syntax.operator, (0x55, 0x63, 0x55));
-        assert_eq!(syntax.punctuation, (0x55, 0x63, 0x55));
-        assert_eq!(syntax.property, (0x26, 0x58, 0x6D));
-        assert_eq!(syntax.tag, (0x26, 0x58, 0x6D));
-        assert_eq!(syntax.attribute, (0x8C, 0x60, 0x18));
+        // 2026 tokens: comments map to secondary, keywords to restrained blue,
+        // strings to green, numbers to cyan; no green-tinted neutrals.
+        assert_eq!(syntax.default, (0x20, 0x20, 0x20));
+        assert_eq!(syntax.comment, (0x54, 0x54, 0x54));
+        assert_eq!(syntax.keyword, (0x00, 0x5E, 0xB8));
+        assert_eq!(syntax.string, (0x18, 0x72, 0x3B));
+        assert_eq!(syntax.number, (0x00, 0x71, 0x7B));
+        assert_eq!(syntax.function, (0x20, 0x20, 0x20));
+        assert_eq!(syntax.type_, (0x00, 0x71, 0x7B));
+        assert_eq!(syntax.variable, (0x20, 0x20, 0x20));
+        assert_eq!(syntax.operator, (0x54, 0x54, 0x54));
+        assert_eq!(syntax.punctuation, (0x54, 0x54, 0x54));
+        assert_eq!(syntax.property, (0x00, 0x71, 0x7B));
+        assert_eq!(syntax.tag, (0x00, 0x71, 0x7B));
+        assert_eq!(syntax.attribute, (0x79, 0x5B, 0x00));
 
         install_defaults();
     }

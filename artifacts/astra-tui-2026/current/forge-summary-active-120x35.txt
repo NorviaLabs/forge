@@ -1,0 +1,35 @@
+                      ⌂ ~/Projects/forge/.worktrees/astra-tui-redesign  ·  ⎇ feat/astra-tui-2026*
+   ┌──────────────────────────┐┌────────────────────────────────────────────────────────────────────────────────────┐
+   │ ┌──────────────────────┐ ││     Planning repository inspection steps                                           │
+   │ │ Search files…        │ ││                                                                                    │
+   │ └──────────────────────┘ ││   I’ll inspect the repository structure and key documentation, then summarize      │
+   │ ──────────────────────── ││   its purpose and architecture without changing anything.                          │
+   │ ▾ astra-tui-redesign     ││                                                                                    │
+   │   ▸ .cargo               ││     ▸   Explored repository  3 files inspected · 3 searches  Ctrl+O                │
+   │   ▸ .github              ││                                                                                    │
+   │   ▸ artifacts            ││   I’ve confirmed this is a 20-crate Rust workspace; next I’m mapping crate         │
+   │   ▸ crates               ││   responsibilities, runtime flow, and user-facing capabilities from source and     │
+   │   ▸ docs                 ││   docs.                                                                            │
+   │   ▸ install              ││                                                                                    │
+   │     .gitattributes       ││     ▸   Explored repository  7 items  Ctrl+O                                       │
+   │     .gitignore           ││                                                                                    │
+   │     AGENTS.md            ││ multi-task mode unavailable: repository task database error: error returned from   │
+   │     Cargo.lock           ││ database: (code: 2067) UNIQUE constraint failed: tasks.slot                        │
+   │     Cargo.toml           ││                                                                                    │
+   │     CLAUDE.md            ││     Planning parallel Cargo.toml inspection · 45s                                  │
+   │     CODE_OF_CONDUCT.md   ││                                                                                    │
+   │     CONTRIBUTING.md      ││   The main flow is clear: CLI → session assembly/supervisor → core agent loop →    │
+   │     deny.toml            ││   model/tools, with durab▌                                                         │
+   │     FORGE-DESIGN.md      ││                                                                                    │
+   │     LICENSE              ││                                                                                    │
+   │     opencode.json        ││   Writing the answer    45s · ↓ 789 chars                       esc to interrupt   │
+   │     README.md            ││                                                                                    │
+   │     SECURITY.md          ││                                                                                    │
+   │                          ││                                                                                    │
+   │                          ││                                                                                    │
+   │                          │└────────────────────────────────────────────────────────────────────────────────────┘
+   │                          │┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   │                          │┃  Reply, or describe the next task…                                                 ┃
+   └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    ● OpenAI/gpt-5.6-luna │ Medium                           Working  ·  context 7%  ·  109.1k tokens · 39.41% cache

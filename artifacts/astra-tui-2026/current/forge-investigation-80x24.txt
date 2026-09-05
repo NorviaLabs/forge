@@ -1,0 +1,24 @@
+  ⌂ ~/Projects/forge/.worktrees/astra-tui-redesign  ·  ⎇ feat/astra-tui-2026*
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ ↑ Plan  0/5 done  ·  Map crate dependency and runtime architecture       │
+  │                                                                          │
+  │     ▸   Explored repository  8 items  Ctrl+O                             │
+  │                                                                          │
+  │ multi-task mode unavailable: repository task database error: error       │
+  │ returned from database: (code: 2067) UNIQUE constraint failed:           │
+  │ tasks.slot                                                               │
+  │                                                                          │
+  │       Answered in 64s   ·  3.2k chars  ·  35 tok/s  ·  39 tools          │
+  │                                                                          │
+  │                                                                          │
+  │   Thinking    24s · ↓ 342 chars                       esc to interrupt   │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃  Reply, or describe the next task…                                       ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  ────────────────────────────────────────────────────────────────────────────
+   ● gpt-…luna │ Medium run   ·  context 11%  ·  316.8k tokens · 68.53% cache

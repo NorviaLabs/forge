@@ -5,8 +5,11 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 /// Minimum terminal size for a usable TUI.
 pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 18;
-const CONTENT_WIDTH_PERCENT: u32 = 95;
-/// Composer input band (visual lines + chrome), capped for normal chat.
+/// 2026 geometry: 1-column frame gutters replace the legacy 95% inset.
+/// See `crate::design::FRAME_INSET_X` and `FILES_VISIBLE_FRAME_W`.
+use crate::design::{FILES_VISIBLE_FRAME_W, FRAME_INSET_X};
+/// Composer text rows (visual lines), capped for normal chat. The band adds
+/// one top rule row on top of this (DESIGN-012).
 pub const MAX_COMPOSER_INPUT_H: u16 = 10;
 /// Bottom theme picker dock: fits built-in themes without scrolling; scrolls for more.
 pub const THEME_DOCK_H: u16 = 12;
@@ -68,10 +71,12 @@ pub fn split_areas_with_task_strip_expanded_conversation(
     )
 }
 
-/// Width threshold below which the file explorer hides. Higher than
-/// `SIDEBAR_MIN_CONTENT_WIDTH` so the explorer is the first thing to go as
-/// the terminal narrows.
-const FILES_WIDTH_THRESHOLD: u16 = 110;
+/// Frame-column gate for Files visibility (2026 contract: 116).
+/// Higher than `SIDEBAR_MIN_CONTENT_WIDTH` so the explorer is the first
+/// thing to go as the terminal narrows. Previously a 110 content-column
+/// threshold applied after the 95% inset (effective 116 frame columns);
+/// the inset is gone but the frame gate is preserved byte-for-byte.
+const FILES_WIDTH_THRESHOLD: u16 = FILES_VISIBLE_FRAME_W;
 /// Minimum chat/files width the sidebar must leave behind. The sidebar
 /// itself doesn't hide on narrow-width precedence like `files` does — the
 /// composer lives inside it — so this is only a defensive floor against
@@ -83,26 +88,21 @@ fn content_width(area: Rect) -> u16 {
 }
 
 fn content_width_for(frame_width: u16) -> u16 {
-    (u32::from(frame_width) * CONTENT_WIDTH_PERCENT / 100) as u16
+    frame_width.saturating_sub(FRAME_INSET_X * 2)
 }
 
 /// Whether the file explorer can be rendered at this terminal width.
 ///
-/// Shares [`FILES_WIDTH_THRESHOLD`] with `split_areas_ex` so a caller asking
-/// "will this show?" can never disagree with what the layout actually does.
-/// Callers use it to explain a refusal instead of toggling a flag that has no
-/// visible effect.
+/// Frame-column gate (116). Shares [`FILES_WIDTH_THRESHOLD`] with
+/// `split_areas_ex` so a caller asking "will this show?" can never disagree
+/// with what the layout actually does.
 pub fn files_fit(frame_width: u16) -> bool {
-    content_width_for(frame_width) >= FILES_WIDTH_THRESHOLD
+    frame_width >= FILES_WIDTH_THRESHOLD
 }
 
 /// Narrowest terminal that can show the explorer, for user-facing messages.
 pub fn files_min_frame_width() -> u16 {
-    let mut width = FILES_WIDTH_THRESHOLD;
-    while !files_fit(width) {
-        width += 1;
-    }
-    width
+    FILES_WIDTH_THRESHOLD
 }
 
 fn sidebar_width(content_width: u16) -> u16 {
@@ -273,13 +273,14 @@ fn split_areas_with_chrome_mode(
 ) -> LayoutRegions {
     let content_width = content_width(area);
     let content_area = Rect {
-        x: area.x + area.width.saturating_sub(content_width) / 2,
+        x: area.x.saturating_add(FRAME_INSET_X),
         y: area.y,
         width: content_width,
         height: area.height,
     };
     let fb = feedback_h.min(2);
-    let input_h = input_h.clamp(3, THEME_DOCK_H);
+    // DESIGN-012: rule (1) + at least one text row.
+    let input_h = input_h.clamp(2, THEME_DOCK_H);
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
     let footer_h = footer_h.min(2);
@@ -331,8 +332,7 @@ fn split_areas_with_chrome_mode(
     let top = left_rows[0];
     let bottom_panel = left_rows[1];
 
-    let show_files =
-        show_files && content_area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + 40;
+    let show_files = show_files && area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + 40;
     let file_width = (content_area.width / 4).clamp(28, 37);
     let (files, chat) = if show_files {
         let columns = Layout::default()
@@ -419,7 +419,7 @@ pub fn estimate_composer_region_width(
     let width = content_width(area);
     if expanded_conversation {
         let file_width = (width / 4).clamp(28, 37);
-        if show_files && width >= FILES_WIDTH_THRESHOLD && width >= file_width + 40 {
+        if show_files && area.width >= FILES_WIDTH_THRESHOLD && width >= file_width + 40 {
             width.saturating_sub(file_width).max(1) as usize
         } else {
             width.max(1) as usize
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn estimate_composer_content_width_matches_sidebar_width() {
         let area = Rect::new(0, 0, 140, 40);
-        assert_eq!(estimate_composer_content_width(area), 33);
+        assert_eq!(estimate_composer_content_width(area), 34);
         assert_eq!(
             estimate_composer_content_width(Rect::new(0, 0, 200, 40)),
             88
@@ -457,21 +457,40 @@ mod tests {
     #[test]
     fn expanded_composer_width_tracks_the_conversation_pane() {
         let area = Rect::new(0, 0, 120, 40);
-        assert_eq!(estimate_composer_region_width(area, false, true), 114);
-        assert_eq!(estimate_composer_region_width(area, true, true), 86);
+        assert_eq!(estimate_composer_region_width(area, false, true), 118);
+        assert_eq!(estimate_composer_region_width(area, true, true), 89);
         assert_eq!(estimate_composer_region_width(area, false, false), 32);
     }
 
     #[test]
-    fn wide_layout_uses_95_percent_width_for_chat() {
+    fn files_gate_stays_at_116_frame_columns() {
+        assert!(!files_fit(80));
+        assert!(!files_fit(100));
+        assert!(!files_fit(115));
+        assert!(files_fit(116));
+        assert!(files_fit(120));
+        assert_eq!(files_min_frame_width(), 116);
+    }
+
+    #[test]
+    fn frame_uses_one_column_gutters() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
-        assert_eq!(r.status, Rect::new(3, 0, 114, 1));
+        // 2026 geometry: content spans frame minus 1-col gutters.
+        assert_eq!(r.status, Rect::new(1, 0, 118, 1));
+        assert_eq!(r.status.x, 1);
+    }
+
+    #[test]
+    fn wide_layout_uses_full_gutter_width_for_chat() {
+        let area = Rect::new(0, 0, 120, 40);
+        let r = split_areas(area);
+        assert_eq!(r.status, Rect::new(1, 0, 118, 1));
         // Chat gets the width left of the sidebar; taller than before since
         // the composer no longer eats vertical space from this column — it
         // lives in the sidebar's own split instead.
-        assert_eq!(r.chat, Rect::new(3, 1, 82, 39));
-        assert_eq!(r.sidebar, Some(Rect::new(85, 1, 32, 36)));
+        assert_eq!(r.chat, Rect::new(1, 1, 86, 39));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 1, 32, 36)));
         assert_eq!(r.footer.height, 0);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.bottom_panel.height, 0);
@@ -505,17 +524,17 @@ mod tests {
     }
 
     #[test]
-    fn very_wide_layout_centers_the_95_percent_content_column() {
+    fn very_wide_layout_uses_full_gutter_column() {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
-        assert_eq!(r.status, Rect::new(5, 0, 190, 1));
-        assert_eq!(r.chat, Rect::new(5, 1, 102, 39));
+        assert_eq!(r.status, Rect::new(1, 0, 198, 1));
+        assert_eq!(r.chat, Rect::new(1, 1, 110, 39));
         // The composer is scoped to the sidebar's width now, not the full
         // content column.
-        assert_eq!(r.input.x, 107);
+        assert_eq!(r.input.x, 111);
         assert_eq!(r.input.width, 88);
-        assert_eq!(r.footer.x, 5);
-        assert_eq!(r.footer.width, 190);
+        assert_eq!(r.footer.x, 1);
+        assert_eq!(r.footer.width, 198);
         assert_eq!(r.footer.height, 0);
     }
 
@@ -555,17 +574,17 @@ mod tests {
     fn narrow_layout_keeps_full_chat_width() {
         let area = Rect::new(0, 0, 60, 24);
         let r = split_areas(area);
-        assert_eq!(r.chat.width, 57);
-        assert_eq!(r.status.width, 57);
+        assert_eq!(r.chat.width, 58);
+        assert_eq!(r.status.width, 58);
     }
 
     #[test]
     fn files_panel_reserves_bounded_left_space() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0, true, 0);
-        assert_eq!(r.files, Some(Rect::new(3, 1, 28, 39)));
-        assert_eq!(r.chat, Rect::new(31, 1, 54, 39));
-        assert_eq!(r.sidebar, Some(Rect::new(85, 1, 32, 36)));
+        assert_eq!(r.files, Some(Rect::new(1, 1, 29, 39)));
+        assert_eq!(r.chat, Rect::new(30, 1, 57, 39));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 1, 32, 36)));
     }
 
     #[test]
@@ -573,7 +592,7 @@ mod tests {
         let narrow =
             split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, 0, 0, true, 0);
         assert!(narrow.files.is_none());
-        assert_eq!(narrow.chat.width, 63);
+        assert_eq!(narrow.chat.width, 66);
     }
 
     #[test]
@@ -589,10 +608,10 @@ mod tests {
             true,
             0,
         );
-        assert_eq!(r.files, Some(Rect::new(3, 1, 28, 39)));
+        assert_eq!(r.files, Some(Rect::new(1, 1, 29, 39)));
         assert_eq!(r.chat.width, 0);
-        assert_eq!(r.sidebar, Some(Rect::new(31, 1, 86, 36)));
-        assert_eq!(r.input.width, 86);
+        assert_eq!(r.sidebar, Some(Rect::new(30, 1, 89, 36)));
+        assert_eq!(r.input.width, 89);
     }
 
     #[test]
@@ -613,5 +632,22 @@ mod tests {
     fn min_size_guard() {
         assert!(is_too_small(Rect::new(0, 0, 30, 10)));
         assert!(!is_too_small(Rect::new(0, 0, 100, 30)));
+    }
+
+    /// DESIGN-017: the conversation pane never falls below 44 columns while
+    /// the workspace is visible — below that the sidebar yields, not chat.
+    #[test]
+    fn chat_never_falls_below_44_columns() {
+        for width in [MIN_WIDTH, 100, 120, 160, 200] {
+            let r =
+                split_areas_with_side_panels(Rect::new(0, 0, width, 40), 0, 3, true, 0, 0, true, 0);
+            if r.sidebar.is_some() {
+                assert!(
+                    r.chat.width >= 44,
+                    "chat is {} columns at frame width {width}",
+                    r.chat.width
+                );
+            }
+        }
     }
 }

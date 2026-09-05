@@ -1984,10 +1984,15 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             h3.add_modifier.contains(Modifier::BOLD),
             "H3 lost its weight"
         );
-        assert_ne!(
-            h1.fg, h3.fg,
-            "H3 must step down in value from H1, or rank is invisible"
-        );
+        // 2026 tokens are deliberately neutral: structure and secondary share
+        // the same hue, so rank is carried by rule + case + weight, not color.
+        // H1/H2 are uppercased section labels with a rule; H3 keeps its case.
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.as_ref().to_string()))
+            .collect();
+        assert!(text.contains("ONE"), "H1 section label uppercased");
+        assert!(text.contains("Three"), "H3 keeps sentence case");
         // H1 and H2 each get a full-width rule; H3 gets none.
         let rules = lines
             .iter()

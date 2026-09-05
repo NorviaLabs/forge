@@ -197,8 +197,12 @@ impl TuiApp {
             FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => {
                 Some("←→ select · Enter switch · s stop · c continue · p pin · x archive".into())
             }
+            // No `/`-to-search binding exists: `/` typed here falls through
+            // to the composer. Search is one ⇧Tab away (proven by
+            // `tab_cycles_visible_blocks_and_skips_hidden_ones`), and Esc
+            // backs out to the previous block without hiding the pane.
             FocusMode::Navigation if self.focus.block() == FocusBlock::Files => {
-                Some("↑↓ navigate · Enter open · / search · Esc close".into())
+                Some("↑↓ navigate · Enter open · ⇧Tab search · Esc cancel".into())
             }
             FocusMode::Navigation if self.focus.block() == FocusBlock::Search => {
                 Some("Type to filter · Enter open · Esc cancel".into())

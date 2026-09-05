@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 use crate::editor_session::EditorSession;
 use crate::file_explorer::safe_path;
 use crate::theme;
+use crate::widgets::input::TEXT_INSET;
 
 /// How many bytes to inspect for binary detection.
 const BINARY_PROBE_BYTES: usize = 8_192;
@@ -1287,16 +1288,22 @@ impl SourceViewerWidget<'_> {
                     .unwrap_or_default()
             )
         } else if mode == "INSERT" {
-            "-- INSERT --".to_string()
+            "INSERT".to_string()
         } else if mode == "NORMAL" {
             "NORMAL".to_string()
         } else {
             mode
         };
-        Paragraph::new(Line::styled(status, status_style)).render(rows[2], buf);
+        // DESIGN-017: the mode row starts at the composer's text inset, so
+        // the editor baseline and the composer baseline share a left edge.
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ".repeat(TEXT_INSET as usize), status_style),
+            Span::styled(status, status_style),
+        ]))
+        .render(rows[2], buf);
         if self.editor_command.is_some() {
             let command = self.editor_command.unwrap_or_default();
-            let cursor_x = rows[2].x + 1 + command.chars().count() as u16;
+            let cursor_x = rows[2].x + TEXT_INSET + 1 + command.chars().count() as u16;
             if cursor_x < rows[2].x + rows[2].width {
                 theme::paint_caret(buf, cursor_x, rows[2].y);
             }
@@ -1350,7 +1357,7 @@ impl SourceViewerWidget<'_> {
 ///
 /// Parts are sacrificed in increasing order of importance: the plain-text
 /// note, the language, the mode tag, the directory portion of the path, then
-/// the line counter. The `●` marker is never dropped.
+/// the line counter. The `*` unsaved marker is never dropped.
 struct SourceHeader<'a> {
     mode: &'a str,
     rel_path: &'a str,
@@ -1372,13 +1379,15 @@ fn compose_source_header(header: &SourceHeader<'_>, width: usize) -> String {
         note,
         modified,
     } = *header;
-    let marker = if modified { "\u{25cf} " } else { "" };
+    // DESIGN-017: the ASCII `*` is the unsaved marker (the old `●` broke the
+    // no-Unicode-chrome rule). It prefixes the exact file path and is never
+    // dropped; no trailing "modified" word — the marker already says it.
+    let marker = if modified { "* " } else { "" };
     let basename = std::path::Path::new(rel_path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(rel_path);
     let counter = format!("line {} of {}", line, total);
-    let word = if modified { "modified" } else { "" };
     let full = format!("{marker}{rel_path}");
     let short = format!("{marker}{basename}");
 
@@ -1398,13 +1407,11 @@ fn compose_source_header(header: &SourceHeader<'_>, width: usize) -> String {
             &counter,
             language.unwrap_or(""),
             note.unwrap_or(""),
-            word,
         ]),
-        join(&[mode, &full, &counter, language.unwrap_or(""), word]),
-        join(&[mode, &full, &counter, word]),
-        join(&[&full, &counter, word]),
-        join(&[&short, &counter, word]),
-        join(&[&short, word]),
+        join(&[mode, &full, &counter, language.unwrap_or("")]),
+        join(&[mode, &full, &counter]),
+        join(&[&full, &counter]),
+        join(&[&short, &counter]),
         short.clone(),
     ];
 
@@ -2164,7 +2171,7 @@ mod tests {
                 rendered.push_str(buf[(x, y)].symbol());
             }
         }
-        assert!(rendered.contains("modified"));
+        assert!(rendered.contains('*'), "unsaved marker: {rendered}");
     }
 
     /// The pure composer is only half of it: the widget has to pass the pane
@@ -2208,7 +2215,7 @@ mod tests {
             rendered.push('\n');
         }
         assert!(
-            rendered.contains('\u{25cf}'),
+            rendered.contains('*'),
             "unsaved state must be visible in a narrow pane:\n{rendered}"
         );
     }
@@ -2239,7 +2246,7 @@ mod tests {
                 "header overflows at width {width}: {header:?}"
             );
             assert!(
-                header.contains('\u{25cf}'),
+                header.contains('*'),
                 "the unsaved marker must survive width {width}: {header:?}"
             );
         }
@@ -2296,10 +2303,7 @@ mod tests {
             !tiny.contains("line"),
             "the counter goes before the name: {tiny:?}"
         );
-        assert!(
-            tiny.starts_with('\u{25cf}'),
-            "the marker still leads: {tiny:?}"
-        );
+        assert!(tiny.starts_with('*'), "the marker still leads: {tiny:?}");
     }
 
     /// An unmodified file must not grow a marker, or the indicator means
@@ -2318,8 +2322,7 @@ mod tests {
             },
             60,
         );
-        assert!(!clean.contains('\u{25cf}'), "{clean:?}");
-        assert!(!clean.contains("modified"), "{clean:?}");
+        assert!(!clean.contains('*'), "{clean:?}");
     }
 
     #[test]
@@ -2357,7 +2360,7 @@ mod tests {
             editor_message: None,
         }
         .render(area, &mut insert);
-        assert!(buffer_text(&insert, area).contains("-- INSERT --"));
+        assert!(buffer_text(&insert, area).contains("INSERT"));
 
         let mut command = Buffer::empty(area);
         SourceViewerWidget {
@@ -2369,7 +2372,8 @@ mod tests {
         }
         .render(area, &mut command);
         assert!(buffer_text(&command, area).contains(":w"));
-        let cursor_style = command[(4, area.bottom() - 2)].style();
+        // Panel padding (2) + text inset (1) + `:` (1) + `w` (1).
+        let cursor_style = command[(5, area.bottom() - 2)].style();
         let caret_style = theme::caret();
         assert_eq!(cursor_style.fg, caret_style.fg);
         assert_eq!(cursor_style.bg, caret_style.bg);

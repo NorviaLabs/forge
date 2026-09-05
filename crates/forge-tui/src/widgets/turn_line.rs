@@ -1,5 +1,5 @@
-//! The live turn line: one animated row pinned to the bottom of the
-//! transcript while a turn is in flight.
+//! The live turn line: one stable row pinned above the composer while a turn
+//! is in flight (2026 design system, DESIGN-006).
 //!
 //! Before this, the only indicator that anything was happening lived in the
 //! footer — the far corner of the screen, ninety columns from the text the
@@ -8,8 +8,10 @@
 //! frames: eight seconds in which a stalled renderer and a hung provider
 //! looked exactly alike.
 //!
-//! This line sits where the answer is about to appear, names the phase, counts
-//! up from zero, reports what has arrived, and says how to stop it.
+//! The line sits where the answer is about to appear: `[>]` in the activity
+//! token, the evidence-backed phase in bold primary, elapsed time secondary.
+//! Motion comes from the elapsed tick alone — no per-letter shimmer, no
+//! character counter, no duplicate busy state in the footer.
 
 use crate::theme;
 use crate::widgets::status::BusyPhase;
@@ -25,55 +27,8 @@ pub struct TurnLineModel {
     /// Phase verb, already in present participle form ("Thinking").
     pub verb: String,
     pub elapsed_secs: f64,
-    /// Characters of thinking + answer received so far.
-    pub chars: usize,
     /// Whether Esc will actually interrupt right now.
     pub interruptible: bool,
-}
-
-fn shimmer_phase(state: &throbber_widgets_tui::ThrobberState) -> usize {
-    throbber_widgets_tui::Throbber::default()
-        .label("")
-        .throbber_set(throbber_widgets_tui::HORIZONTAL_BLOCK)
-        .to_line(state)
-        .spans
-        .into_iter()
-        .next()
-        .and_then(|span| {
-            span.content.chars().find_map(|character| {
-                "▏▎▍▌▋▊▉█"
-                    .chars()
-                    .position(|candidate| candidate == character)
-            })
-        })
-        .unwrap_or_default()
-}
-
-/// Apply a traveling brightness wave to the letters of a label. The throbber
-/// state remains the shared clock, but the animation is intentionally carried
-/// by the words rather than a separate block glyph.
-pub(crate) fn shimmer_text(
-    state: &throbber_widgets_tui::ThrobberState,
-    label: &str,
-) -> Vec<Span<'static>> {
-    let phase = shimmer_phase(state);
-    label
-        .chars()
-        .enumerate()
-        .map(|(index, character)| {
-            let distance = (index + 8 - phase) % 8;
-            let style = if character.is_whitespace() {
-                theme::text_secondary()
-            } else if distance == 0 {
-                theme::accent_style().add_modifier(Modifier::BOLD)
-            } else if distance == 1 || distance == 7 {
-                theme::text_secondary()
-            } else {
-                theme::muted()
-            };
-            Span::styled(character.to_string(), style)
-        })
-        .collect()
 }
 
 /// Name the phase the turn is in.
@@ -99,55 +54,30 @@ pub fn phase_verb(phase: &BusyPhase, thinking: bool, answering: bool) -> String 
     }
 }
 
-/// Round to a compact count: `842`, `1.2k`, `48k`.
-fn compact(n: usize) -> String {
-    match n {
-        0..=999 => n.to_string(),
-        1_000..=9_999 => format!("{:.1}k", n as f64 / 1_000.0),
-        _ => format!("{}k", n / 1_000),
-    }
-}
-
-/// The metrics half of the line: elapsed and volume.
-///
-/// Characters rather than tokens, deliberately: no provider reports token
-/// usage while the stream is still open, so a token count here would be an
-/// estimate presented as a measurement.
-///
-/// No rate. Characters per second measures the wrong thing — it moves with
-/// how verbose the model is being, not with how fast it is going, so the
-/// number swung between paragraphs and code without anything having changed.
-/// The turn summary reports tokens per second once the turn ends, where the
-/// provider's own usage figures make it a real measurement.
-fn metrics(model: &TurnLineModel) -> String {
-    let elapsed = forge_transcript::format_elapsed_tenths(model.elapsed_secs);
-    if model.chars == 0 {
-        return elapsed;
-    }
-    format!("{elapsed} · ↓ {} chars", compact(model.chars))
+/// Elapsed time, secondary. No character counter and no rate: no provider
+/// reports token usage while the stream is still open, and characters per
+/// second measures verbosity rather than speed. Volume and rate belong to
+/// the finished turn summary, where the provider's usage makes them real.
+fn elapsed(model: &TurnLineModel) -> String {
+    forge_transcript::format_elapsed_tenths(model.elapsed_secs)
 }
 
 /// Build the line, right-aligning the interrupt hint to `width`.
-pub fn turn_line(model: &TurnLineModel, width: usize, millis: u128) -> Line<'static> {
-    let mut state = throbber_widgets_tui::ThrobberState::default();
-    for _ in 0..((millis / 140) % 8) {
-        state.calc_next();
-    }
-    turn_line_with_throbber(model, width, &state)
-}
-
-pub fn turn_line_with_throbber(
-    model: &TurnLineModel,
-    width: usize,
-    throbber: &throbber_widgets_tui::ThrobberState,
-) -> Line<'static> {
+///
+/// Pure in the model: the same phase and elapsed second always render the
+/// same line, so settled frames stay cacheable and only the elapsed tick
+/// invalidates chrome. `_millis` is retained for call-site compatibility.
+pub fn turn_line(model: &TurnLineModel, width: usize, _millis: u128) -> Line<'static> {
     let mut spans = vec![
-        Span::raw("  "),
+        Span::styled("[>]", theme::activity().add_modifier(Modifier::BOLD)),
         Span::raw(" "),
-        Span::raw("   "),
-        Span::styled(metrics(model), theme::metadata_style()),
+        Span::styled(
+            model.verb.clone(),
+            theme::text().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" · "),
+        Span::styled(elapsed(model), theme::metadata_style()),
     ];
-    spans.splice(1..1, shimmer_text(throbber, &model.verb));
     if model.interruptible {
         let used: usize = spans.iter().map(Span::width).sum();
         let hint_w = INTERRUPT_HINT.chars().count();
@@ -169,7 +99,6 @@ mod tests {
         TurnLineModel {
             verb: "Thinking".into(),
             elapsed_secs: 3.0,
-            chars: 512,
             interruptible: true,
         }
     }
@@ -181,9 +110,18 @@ mod tests {
     #[test]
     fn the_line_names_the_phase_and_counts_up() {
         let rendered = text(&turn_line(&model(), 80, 0));
+        assert!(rendered.contains("[>]"), "{rendered}");
         assert!(rendered.contains("Thinking"), "{rendered}");
         assert!(rendered.contains("3.0s"), "{rendered}");
-        assert!(rendered.contains("512 chars"), "{rendered}");
+    }
+
+    #[test]
+    fn the_marker_uses_the_activity_token() {
+        let line = turn_line(&model(), 80, 0);
+        assert_eq!(
+            line.spans[0].style,
+            theme::activity().add_modifier(Modifier::BOLD)
+        );
     }
 
     /// Esc has been bound for a long time and nothing on screen ever said so.
@@ -234,46 +172,22 @@ mod tests {
         }
     }
 
-    /// Motion must not depend on the metrics changing: a provider that sends
-    /// nothing for a while still has to look alive.
+    /// Motion comes from the elapsed tick: the line is pure in the model, so
+    /// a stalled provider still advances once a second, and identical inputs
+    /// render identical lines (settled frames stay cacheable).
     #[test]
-    fn the_glyph_alone_keeps_the_line_moving() {
-        let stalled = TurnLineModel {
-            elapsed_secs: 4.0,
-            chars: 0,
-            ..model()
-        };
-        let a = turn_line_with_throbber(
-            &stalled,
-            80,
-            &throbber_widgets_tui::ThrobberState::default(),
+    fn the_elapsed_tick_alone_keeps_the_line_moving() {
+        let mut stalled = model();
+        stalled.elapsed_secs = 4.0;
+        let a = text(&turn_line(&stalled, 80, 0));
+        stalled.elapsed_secs = 5.0;
+        let b = text(&turn_line(&stalled, 80, 0));
+        assert_ne!(a, b, "the elapsed tick must move the line");
+        // Same inputs, same line — no hidden clock inside the renderer.
+        assert_eq!(
+            text(&turn_line(&model(), 80, 0)),
+            text(&turn_line(&model(), 80, 999))
         );
-        let mut next = throbber_widgets_tui::ThrobberState::default();
-        for _ in 0..32 {
-            next.calc_next();
-            let b = turn_line_with_throbber(&stalled, 80, &next);
-            if a.spans[1..]
-                .iter()
-                .map(|span| span.style)
-                .collect::<Vec<_>>()
-                != b.spans[1..]
-                    .iter()
-                    .map(|span| span.style)
-                    .collect::<Vec<_>>()
-            {
-                return;
-            }
-        }
-        panic!("the spinner did not advance");
-    }
-
-    #[test]
-    fn shimmer_is_applied_to_each_letter() {
-        let line = turn_line_with_throbber(&model(), 80, &Default::default());
-        assert_eq!(line.spans[1].content, "T");
-        assert_eq!(line.spans[2].content, "h");
-        assert!(line.spans.len() > 6);
-        assert!(line.spans[1].style != line.spans[2].style);
     }
 
     #[test]
@@ -300,27 +214,17 @@ mod tests {
         );
     }
 
-    /// Characters per second moved with how verbose the model was being
-    /// rather than how fast it was going, so it swung between a paragraph and
-    /// a code block with nothing having changed. The turn summary reports
-    /// tokens per second instead, where the provider's usage makes it real.
+    /// No character counter and no rate on the live line: volume and rate
+    /// belong to the finished turn summary, where the provider's usage
+    /// makes them real measurements.
     #[test]
-    fn the_live_line_reports_no_rate() {
-        let slow = TurnLineModel {
-            elapsed_secs: 30.0,
-            chars: 30,
-            ..model()
-        };
+    fn the_live_line_reports_no_rate_or_volume() {
+        let mut slow = model();
+        slow.elapsed_secs = 30.0;
         let rendered = text(&turn_line(&slow, 80, 0));
         assert!(!rendered.contains("/s"), "{rendered}");
-        // The volume it is a rate of is still there.
-        assert!(rendered.contains("30 chars"), "{rendered}");
-    }
-
-    #[test]
-    fn counts_stay_compact() {
-        assert_eq!(compact(842), "842");
-        assert_eq!(compact(1_240), "1.2k");
-        assert_eq!(compact(48_000), "48k");
+        assert!(!rendered.contains("chars"), "{rendered}");
+        assert!(!rendered.contains('↓'), "{rendered}");
+        assert!(rendered.contains("30s"), "{rendered}");
     }
 }

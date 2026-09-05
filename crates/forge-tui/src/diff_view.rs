@@ -518,7 +518,9 @@ impl DiffView {
         let path = entry.path.display();
         let counts = match &self.patch {
             PatchState::Ready(patch) if patch.binary => " · binary".to_string(),
-            PatchState::Ready(patch) => format!(" · +{} −{}", patch.added, patch.removed),
+            // DESIGN-017: ASCII `+`/`-` — the old `−` (U+2212) broke the
+            // no-Unicode-chrome rule and its glyph was missing in some fonts.
+            PatchState::Ready(patch) => format!(" · +{} -{}", patch.added, patch.removed),
             _ => String::new(),
         };
         // The pane is ~50 columns wide in practice, so anything appended here
@@ -729,13 +731,15 @@ impl Widget for DiffViewWidget<'_> {
             return;
         }
 
-        let header = self.view.header_for_width(inner.width as usize);
+        // DESIGN-017: the header names the selected file, so it renders as
+        // the pane title — `>` marker plus focus colour when the pane owns
+        // input, neutral indent otherwise. The 2-cell marker column comes
+        // off the elision budget so the counts and position never clip.
+        let header = self
+            .view
+            .header_for_width(inner.width.saturating_sub(2) as usize);
         let header_area = Rect { height: 1, ..inner };
-        Paragraph::new(Line::from(Span::styled(
-            header,
-            theme::heading().add_modifier(Modifier::BOLD),
-        )))
-        .render(header_area, buf);
+        Paragraph::new(theme::pane_title(self.focused, &header)).render(header_area, buf);
 
         // The keymap is not obvious and `?` is not discoverable on its own, so
         // the pane carries its own hint row. `hint_spans` drops verbs before
@@ -836,7 +840,7 @@ impl Widget for DiffViewWidget<'_> {
 
         match &self.view.patch {
             PatchState::Loading => {
-                render_message(body, buf, "Computing diff…", "");
+                render_message(body, buf, "Computing diff...", "");
             }
             PatchState::Failed(error) => {
                 render_message(body, buf, "Could not compute the diff", error);
@@ -1256,7 +1260,7 @@ mod tests {
         );
         let header = view.header();
         assert!(header.contains("b.rs"), "{header}");
-        assert!(header.contains("+1 −1"), "{header}");
+        assert!(header.contains("+1 -1"), "{header}");
         assert!(header.contains("2 of 2"), "{header}");
     }
 
@@ -1641,6 +1645,6 @@ mod header_budget_tests {
             "the filename survives: {header}"
         );
         assert!(header.contains("1 of 7"), "so does the position: {header}");
-        assert!(header.contains("+1 −1"), "and the counts: {header}");
+        assert!(header.contains("+1 -1"), "and the counts: {header}");
     }
 }

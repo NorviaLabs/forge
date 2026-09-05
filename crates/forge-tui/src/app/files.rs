@@ -734,24 +734,28 @@ impl TuiApp {
         ratatui::widgets::Clear.render(r, buf);
         crate::theme::fill(r, buf, crate::theme::panel());
         let mut lines = Vec::new();
+        // DESIGN-017: every workspace dialog — including the unsaved-changes
+        // and file-changed-on-disk conflicts — carries the shared `> Title`
+        // modal grammar. The border keeps the severity colour; the title
+        // marker says "this owns the keyboard".
         let (title, border) = match dialog {
             ExplorerDialog::Name { action, .. } => (
                 match action {
-                    ExplorerNameAction::CreateFile => " New File ",
-                    ExplorerNameAction::CreateDirectory => " New Folder ",
-                    ExplorerNameAction::Rename => " Rename ",
+                    ExplorerNameAction::CreateFile => "New File",
+                    ExplorerNameAction::CreateDirectory => "New Folder",
+                    ExplorerNameAction::Rename => "Rename",
                 },
                 theme::brand(),
             ),
             ExplorerDialog::ConfirmDelete { permanent, .. } if *permanent => {
-                (" Permanent Delete ", theme::danger())
+                ("Permanent Delete", theme::danger())
             }
-            ExplorerDialog::ConfirmDelete { .. } => (" Delete ", theme::warn()),
-            ExplorerDialog::ConfirmCreate { .. } => (" Confirm Create ", theme::warn()),
-            ExplorerDialog::ConfirmRename { .. } => (" Confirm Rename ", theme::warn()),
-            ExplorerDialog::DirtyExit => (" Unsaved Changes ", theme::warn()),
-            ExplorerDialog::DirtySwitch { .. } => (" Unsaved Changes ", theme::warn()),
-            ExplorerDialog::SaveConflict => (" File Changed on Disk ", theme::warn()),
+            ExplorerDialog::ConfirmDelete { .. } => ("Delete", theme::warn()),
+            ExplorerDialog::ConfirmCreate { .. } => ("Confirm Create", theme::warn()),
+            ExplorerDialog::ConfirmRename { .. } => ("Confirm Rename", theme::warn()),
+            ExplorerDialog::DirtyExit => ("Unsaved Changes", theme::warn()),
+            ExplorerDialog::DirtySwitch { .. } => ("Unsaved Changes", theme::warn()),
+            ExplorerDialog::SaveConflict => ("File Changed on Disk", theme::warn()),
         };
         match dialog {
             ExplorerDialog::Name {
@@ -919,7 +923,7 @@ impl TuiApp {
                     .borders(Borders::ALL)
                     .border_style(border)
                     .style(theme::panel())
-                    .title(Span::styled(title, border)),
+                    .title(theme::modal_title(title)),
             )
             .render(r, buf);
     }

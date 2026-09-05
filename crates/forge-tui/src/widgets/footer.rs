@@ -102,19 +102,10 @@ fn lifecycle_label(life: TurnLifecycle) -> (&'static str, Style) {
     }
 }
 
-/// Working label with the dependency's animated shimmer style.
-///
-/// Frames advance in `tick_render_state`, never in `render`: a pure widget of
-/// `(model, frame)`. The brightness sweep reads as ongoing work without using
-/// a circular spinner glyph.
-fn working_meter(
-    state: &throbber_widgets_tui::ThrobberState,
-    label: &'static str,
-) -> Vec<ratatui::text::Span<'static>> {
-    crate::widgets::turn_line::shimmer_text(state, label)
-}
-
-/// Horizontal inset applied to the content row so the footer's text aligns
+/// Horizontal inset applied to the content row so the footer's text aligns.
+/// (DESIGN-006 retired the animated footer "Working" meter: the live turn
+/// line above the composer owns busy motion; the footer keeps the static
+/// state word for every lifecycle.)
 /// with the composer's left/right edges above it, rather than running flush
 /// to the terminal border. Kept to 1 cell — the 76-col MIN_WIDTH floor must
 /// still fit the full model label plus every chip.
@@ -133,27 +124,11 @@ impl Widget for FooterBar<'_> {
         theme::fill(area, buf, theme::canvas());
         let m = self.model;
 
-        // A divider rule separates the footer from the composer above it.
-        // On a pathologically short area (height 1) there's no room for
-        // both the rule and the content — skip the rule and use the whole
-        // area as content, same as the pre-two-row behavior.
-        let (rule_area, content_area) = if area.height >= 2 {
-            (
-                Some(Rect::new(area.x, area.y, area.width, 1)),
-                Rect::new(area.x, area.y + 1, area.width, area.height - 1),
-            )
-        } else {
-            (None, area)
-        };
-        if let Some(rule_area) = rule_area {
-            buf.set_stringn(
-                rule_area.x,
-                rule_area.y,
-                "─".repeat(rule_area.width as usize),
-                rule_area.width as usize,
-                theme::border_muted(),
-            );
-        }
+        // DESIGN-012: the footer is a single content row with no separator
+        // of its own — the composer's top rule already bounds the zone.
+        // Extra height (shouldn't happen; layout reserves one row) is left
+        // as canvas.
+        let content_area = Rect::new(area.x, area.y, area.width, 1.min(area.height));
         // Inset the content row so text aligns with the composer's edges
         // instead of running flush to the terminal border.
         let area = Rect::new(
@@ -204,30 +179,17 @@ impl Widget for FooterBar<'_> {
                     .saturating_sub(1)
                     >= min_left
             };
-            // Degrade in order: the working meter costs the most columns and
-            // goes first, then the token unit label. The chips never drop.
+            // Degrade in order: the token unit label drops first. The chips
+            // never drop.
             //
-            // The meter is the one element that yields to the model id rather
-            // than the other way round: a truncated `deepseek-…flash-free`
-            // costs the reader more than an animation does, so the meter only
-            // appears when the id fits whole beside it.
-            let whole_model = footer_short_model_id(&m.llm_label).chars().count() as u16;
-            let room_for_meter = |line: &ratatui::text::Line<'static>| {
-                area.width
-                    .saturating_sub(line.width() as u16)
-                    .saturating_sub(1)
-                    >= config_chrome as u16 + effort_chars + whole_model
-            };
-            let metered = self.activity_line(true, true);
-            if room_for_meter(&metered) {
-                metered
+            // DESIGN-006: the live turn line owns the busy state, so the
+            // footer carries no animated duplicate — just the static state
+            // word beside context and usage.
+            let labeled = self.activity_line(true);
+            if fits(&labeled) {
+                labeled
             } else {
-                let labeled = self.activity_line(true, false);
-                if fits(&labeled) {
-                    labeled
-                } else {
-                    self.activity_line(false, false)
-                }
+                self.activity_line(false)
             }
         } else {
             // The focused footer's per-chip hint reads as a whisper: dimmed
@@ -310,20 +272,17 @@ impl Widget for FooterBar<'_> {
 }
 
 impl FooterBar<'_> {
-    fn activity_line(&self, labeled_usage: bool, meter: bool) -> ratatui::text::Line<'static> {
+    fn activity_line(&self, labeled_usage: bool) -> ratatui::text::Line<'static> {
         use ratatui::text::Span;
         let m = self.model;
         let dim = m.dimmed;
-        let working = meter && m.lifecycle == TurnLifecycle::Working && !dim;
-        let mut right: Vec<Span<'static>> = if working {
-            working_meter(&m.throbber, m.lifecycle.label())
-        } else {
-            let (label, dot_style) = lifecycle_label(m.lifecycle);
-            vec![
-                Span::styled(label, dot_style.add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-            ]
-        };
+        // Static state word for every lifecycle, including Working: the live
+        // turn line above the composer owns busy motion (DESIGN-006).
+        let (label, dot_style) = lifecycle_label(m.lifecycle);
+        let mut right: Vec<Span<'static>> = vec![
+            Span::styled(label, dot_style.add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+        ];
         if let Some(detail) = m
             .lifecycle_detail
             .as_deref()
@@ -461,80 +420,17 @@ fn truncate_middle(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    /// DESIGN-006: no animated busy meter in the footer — the live turn line
+    /// owns busy motion. A busy footer shows the same static state word as
+    /// every other lifecycle, with identical output on every frame.
     #[test]
-    fn the_meter_steps_through_the_shimmer_family() {
-        // Frames come from the app tick, not the wall clock: stepping state
-        // by hand must walk the shimmer set in order, then wrap.
-        let glyph = |steps: usize| {
-            let mut state = throbber_widgets_tui::ThrobberState::default();
-            for _ in 0..steps {
-                state.calc_next();
-            }
-            working_meter(&state, "Working")
-        };
-        assert_eq!(
-            glyph(0)
-                .iter()
-                .map(|span| span.content.to_string())
-                .collect::<Vec<_>>()
-                .join(""),
-            "Working"
-        );
-        assert_eq!(
-            glyph(1)
-                .iter()
-                .map(|span| span.content.to_string())
-                .collect::<Vec<_>>()
-                .join(""),
-            "Working"
-        );
-        assert_eq!(
-            glyph(2)
-                .iter()
-                .map(|span| span.content.to_string())
-                .collect::<Vec<_>>()
-                .join(""),
-            "Working"
-        );
-        assert_eq!(
-            glyph(3)
-                .iter()
-                .map(|span| span.content.to_string())
-                .collect::<Vec<_>>()
-                .join(""),
-            "Working"
-        );
-        assert_eq!(
-            glyph(4)
-                .iter()
-                .map(|span| span.content.to_string())
-                .collect::<Vec<_>>()
-                .join(""),
-            "Working"
-        );
-    }
-
-    /// The meter has to actually move: two frames a beat apart must differ,
-    /// or it is a static glyph pretending to be an indicator.
-    #[test]
-    fn the_meter_differs_between_beats() {
-        let glyph = |steps: usize| {
-            let mut state = throbber_widgets_tui::ThrobberState::default();
-            for _ in 0..steps {
-                state.calc_next();
-            }
-            working_meter(&state, "Working")
-        };
-        let a = glyph(0);
-        let b = glyph(1);
-        assert_ne!(
-            a.iter().map(|span| span.style).collect::<Vec<_>>(),
-            b.iter().map(|span| span.style).collect::<Vec<_>>()
-        );
-        assert_ne!(
-            a.iter().map(|span| span.style).collect::<Vec<_>>(),
-            glyph(4).iter().map(|span| span.style).collect::<Vec<_>>()
-        );
+    fn busy_footer_carries_no_animation() {
+        let m = model(TurnLifecycle::Working, 0.34);
+        let first = rendered(&m, 90);
+        let second = rendered(&m, 90);
+        assert_eq!(first, second, "footer frames must be static");
+        assert!(first.contains("run"), "{first:?}");
+        assert!(!first.contains("Working"), "{first:?}");
     }
 
     fn model(lifecycle: TurnLifecycle, ctx_pct: f64) -> FooterModel {
@@ -551,10 +447,11 @@ mod tests {
     /// Renders at the standard two-row height (rule + content) and returns
     /// the content row's text.
     fn rendered(m: &FooterModel, width: u16) -> String {
-        let area = Rect::new(0, 0, width, 2);
+        // DESIGN-012: single content row, no separator row.
+        let area = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(area);
         FooterBar { model: m }.render(area, &mut buf);
-        (0..area.width).map(|x| buf[(x, 1)].symbol()).collect()
+        (0..area.width).map(|x| buf[(x, 0)].symbol()).collect()
     }
 
     #[test]
@@ -574,13 +471,17 @@ mod tests {
     }
 
     #[test]
-    fn renders_a_divider_rule_above_the_content_row() {
+    fn footer_is_a_single_row_with_no_separator() {
+        // DESIGN-012: no rule row of its own — the composer's top rule
+        // bounds the zone. Content sits on row 0 at any height.
         let m = model(TurnLifecycle::Ready, 0.34);
-        let area = Rect::new(0, 0, 90, 2);
-        let mut buf = Buffer::empty(area);
-        FooterBar { model: &m }.render(area, &mut buf);
-        for x in 0..area.width {
-            assert_eq!(buf[(x, 0)].symbol(), "─", "rule row should be solid");
+        for height in [1, 2] {
+            let area = Rect::new(0, 0, 90, height);
+            let mut buf = Buffer::empty(area);
+            FooterBar { model: &m }.render(area, &mut buf);
+            let row0: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+            assert!(row0.contains("Medium"), "{row0:?}");
+            assert!(!row0.chars().all(|c| c == '─'), "{row0:?}");
         }
     }
 
@@ -624,7 +525,7 @@ mod tests {
     fn renders_state_and_context_on_the_right() {
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 90);
-        assert!(out.contains("Working"), "{out:?}");
+        assert!(out.contains("run"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
         assert!(out.contains("0 tokens"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
@@ -650,7 +551,7 @@ mod tests {
         let area = Rect::new(0, 0, 90, 2);
         let mut buf = Buffer::empty(area);
         FooterBar { model: &m }.render(area, &mut buf);
-        assert_eq!(buf[(PAD, 1)].style().fg, theme::warn().fg);
+        assert_eq!(buf[(PAD, 0)].style().fg, theme::warn().fg);
     }
 
     #[test]
@@ -682,13 +583,13 @@ mod tests {
             !out.contains('◑') && !out.contains('◒') && !out.contains('◐') && !out.contains('◓'),
             "activity yields to the hint: {out:?}"
         );
-        let area = Rect::new(0, 0, 90, 2);
+        let area = Rect::new(0, 0, 90, 1);
         let mut buf = Buffer::empty(area);
         FooterBar { model: &m }.render(area, &mut buf);
         let hint_cell = (0..area.width)
-            .find(|&x| buf[(x, 1)].symbol() == "⏎")
+            .find(|&x| buf[(x, 0)].symbol() == "⏎")
             .expect("hint glyph should render");
-        let style = buf[(hint_cell, 1)].style();
+        let style = buf[(hint_cell, 0)].style();
         assert!(
             style.add_modifier.contains(Modifier::ITALIC),
             "hint should be italic: {style:?}"
@@ -771,7 +672,7 @@ mod tests {
         let out = rendered(&m, 76);
         assert!(out.contains("Medium"), "{out:?}");
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
-        assert!(out.contains("Working"), "{out:?}");
+        assert!(out.contains("run"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
         assert!(out.contains("0 tokens"), "{out:?}");
     }
