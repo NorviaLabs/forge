@@ -79,7 +79,7 @@ async fn tool_call_transitions_do_not_re_trigger_the_debounce() {
     });
     let text = render_app_text(&mut app, 100, 30);
     assert!(
-        text.contains("Running") && text.contains("read_file"),
+        text.contains("Reading files"),
         "the line should stay visible and update in place, not re-hide:\n{text}"
     );
 }
