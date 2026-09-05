@@ -181,7 +181,7 @@ impl TuiApp {
                 })
             }
             FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => {
-                Some("←→ select · Enter switch · s stop · c continue · x archive".into())
+                Some("←→ select · Enter switch · s stop · c continue · p pin · x archive".into())
             }
             FocusMode::Navigation if self.focus.block() == FocusBlock::Files => {
                 Some("↑↓ navigate · Enter open · / search · Esc close".into())
