@@ -223,6 +223,18 @@ impl TuiApp {
     /// Operator errors remain visible in chat, feedback, and activity.
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
+
+        // A provider can emit the same failure more than once while a turn is
+        // unwinding (for example, a stream error followed by a task error).
+        // Keep the current error visible, but do not add another toast,
+        // banner, or activity row for an identical message. This keeps the
+        // three presentation surfaces from becoming a duplicate error stack.
+        if self.feedback.severity == FeedbackSeverity::Error && self.feedback.text == msg {
+            self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
+            self.busy_state.set_phase(BusyPhase::Idle);
+            return;
+        }
+
         self.set_feedback(FeedbackSeverity::Error, msg.clone());
         // Errors also surface as an overlay toast: the strip persists but
         // sits far from the reader's eyes, while the toast interrupts calmly

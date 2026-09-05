@@ -195,6 +195,7 @@ pub enum Overlay {
     },
     ResumePicker {
         selected: usize,
+        filter: String,
         items: Vec<ResumeSessionItem>,
     },
     TaskSwitcher {
@@ -887,6 +888,24 @@ impl Overlay {
             .collect()
     }
 
+    fn resume_picker_indices(items: &[ResumeSessionItem], filter: &str) -> Vec<usize> {
+        let filter = filter.to_ascii_lowercase();
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                filter.is_empty()
+                    || item.id.to_ascii_lowercase().contains(&filter)
+                    || item.modified.to_ascii_lowercase().contains(&filter)
+                    || item
+                        .title
+                        .as_deref()
+                        .is_some_and(|title| title.to_ascii_lowercase().contains(&filter))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     pub fn task_input(mode: TaskInputMode) -> Self {
         Self::TaskInput {
             mode,
@@ -1233,7 +1252,11 @@ impl Overlay {
     }
 
     pub fn resume_picker(items: Vec<ResumeSessionItem>) -> Self {
-        Self::ResumePicker { selected: 0, items }
+        Self::ResumePicker {
+            selected: 0,
+            filter: String::new(),
+            items,
+        }
     }
 
     /// Build the switcher with rows already in group order, so navigation,
@@ -1338,13 +1361,20 @@ impl Overlay {
                 }
             },
             Self::ResumePicker {
-                selected, items, ..
+                selected,
+                filter,
+                items,
             } => {
-                if items.is_empty() {
+                let indices = Self::resume_picker_indices(items, filter);
+                if indices.is_empty() {
                     return;
                 }
-                let n = items.len() as i32;
-                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+                let current = indices
+                    .iter()
+                    .position(|index| index == selected)
+                    .unwrap_or(0);
+                let next = (current as i32 + delta).rem_euclid(indices.len() as i32) as usize;
+                *selected = indices[next];
             }
             Self::TaskSwitcher {
                 selected,
@@ -1647,6 +1677,20 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Char(c)
+            if matches!(overlay, Overlay::ResumePicker { .. })
+                && !c.is_control()
+                && !c.is_whitespace() =>
+        {
+            if let Overlay::ResumePicker {
+                selected, filter, ..
+            } = overlay
+            {
+                filter.push(c);
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
         Key::Char(c) if matches!(overlay, Overlay::HistorySearch { .. }) && !c.is_control() => {
             if let Overlay::HistorySearch {
                 query,
@@ -1664,6 +1708,19 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         }
         Key::Paste(ref data) if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
             if let Overlay::TaskSwitcher {
+                selected, filter, ..
+            } = overlay
+            {
+                filter.extend(
+                    data.chars()
+                        .filter(|c| !c.is_control() && !c.is_whitespace()),
+                );
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Paste(data) if matches!(overlay, Overlay::ResumePicker { .. }) => {
+            if let Overlay::ResumePicker {
                 selected, filter, ..
             } = overlay
             {
@@ -1698,6 +1755,16 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         }
         Key::Backspace if matches!(overlay, Overlay::TaskSwitcher { .. }) => {
             if let Overlay::TaskSwitcher {
+                selected, filter, ..
+            } = overlay
+            {
+                filter.pop();
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::ResumePicker { .. }) => {
+            if let Overlay::ResumePicker {
                 selected, filter, ..
             } = overlay
             {
@@ -1954,9 +2021,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 profile_id: profile_id.clone(),
             },
             Overlay::ResumePicker {
-                selected, items, ..
+                selected,
+                filter,
+                items,
             } => {
-                if let Some(item) = items.get(*selected) {
+                let indices = Overlay::resume_picker_indices(items, filter);
+                if indices.contains(selected) {
+                    let item = &items[*selected];
                     OverlayAction::RunCommand(format!("/resume {}", item.id))
                 } else {
                     OverlayAction::None
@@ -3104,14 +3175,23 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
-            Overlay::ResumePicker { selected, items } => {
+            Overlay::ResumePicker {
+                selected,
+                filter,
+                items,
+            } => {
                 let r = centered_rect(70, 48, area);
                 clear_modal(r, buf);
-                let visible = r.height.saturating_sub(2).max(1) as usize;
-                let start = selected
+                let visible = r.height.saturating_sub(3).max(1) as usize;
+                let indices = Overlay::resume_picker_indices(items, filter);
+                let selected_position = indices
+                    .iter()
+                    .position(|index| index == selected)
+                    .unwrap_or(0);
+                let start = selected_position
                     .saturating_add(1)
                     .saturating_sub(visible)
-                    .min(items.len().saturating_sub(visible));
+                    .min(indices.len().saturating_sub(visible));
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -3119,34 +3199,67 @@ impl Widget for OverlayWidget<'_> {
                     .title(Span::styled(
                         format!(
                             " Resume a session · {} · {} ",
-                            picker_position(*selected, items.len()),
+                            picker_position(selected_position, indices.len()),
                             crate::hints::hint_text(crate::hints::MOVE_SELECT_CLOSE)
                         ),
                         theme::brand(),
                     ));
                 let inner = block.inner(r);
                 block.render(r, buf);
-                let list_area = picker_scrollbar(inner, buf, items.len(), start, visible);
-                let list_items: Vec<ListItem> = items
-                    .iter()
-                    .enumerate()
-                    .skip(start)
-                    .take(visible)
-                    .map(|(index, item)| {
-                        let marker = if index == *selected { "▶ " } else { "  " };
-                        let style = if index == *selected {
-                            theme::selected_row()
-                        } else {
-                            theme::text()
-                        };
-                        let row = match &item.title {
-                            Some(title) => format!("{marker}{title}  ·  {}", item.modified),
-                            None => format!("{marker}{}  ·  {}", item.id, item.modified),
-                        };
-                        ListItem::new(Span::styled(row, style))
-                    })
-                    .collect();
-                List::new(list_items).render(list_area, buf);
+                let filter_height = u16::from(!filter.is_empty());
+                if !filter.is_empty() {
+                    Paragraph::new(format!("Filter: {filter}"))
+                        .style(theme::muted())
+                        .render(Rect { height: 1, ..inner }, buf);
+                }
+                let list_inner = Rect {
+                    y: inner.y + filter_height,
+                    height: inner.height.saturating_sub(filter_height),
+                    ..inner
+                };
+                let list_area = picker_scrollbar(list_inner, buf, indices.len(), start, visible);
+                if indices.is_empty() {
+                    Paragraph::new(vec![
+                        Line::from(Span::styled(
+                            if filter.is_empty() {
+                                "No previous sessions"
+                            } else {
+                                "No sessions match the filter"
+                            },
+                            theme::text(),
+                        )),
+                        Line::from(Span::styled(
+                            "Start a conversation to create one.",
+                            theme::muted(),
+                        )),
+                        Line::from(""),
+                        Line::from(Span::styled("Esc close", theme::metadata_style())),
+                    ])
+                    .centered()
+                    .render(list_area, buf);
+                } else {
+                    let list_items: Vec<ListItem> = indices
+                        .iter()
+                        .enumerate()
+                        .skip(start)
+                        .take(visible)
+                        .map(|(_position, index)| {
+                            let item = &items[*index];
+                            let marker = if *index == *selected { "▶ " } else { "  " };
+                            let style = if *index == *selected {
+                                theme::selected_row()
+                            } else {
+                                theme::text()
+                            };
+                            let row = match &item.title {
+                                Some(title) => format!("{marker}{title}  ·  {}", item.modified),
+                                None => format!("{marker}{}  ·  {}", item.id, item.modified),
+                            };
+                            ListItem::new(Span::styled(row, style))
+                        })
+                        .collect();
+                    List::new(list_items).render(list_area, buf);
+                }
             }
             Overlay::TaskSwitcher {
                 selected,
@@ -3689,6 +3802,18 @@ mod tests {
         ]);
         let text = render_text(&overlay);
         assert!(text.contains("Resume a session · 1/2"), "{text}");
+    }
+
+    #[test]
+    fn empty_resume_picker_explains_how_to_create_a_session() {
+        let overlay = Overlay::resume_picker(Vec::new());
+        let text = render_text(&overlay);
+        assert!(text.contains("No previous sessions"), "{text}");
+        assert!(
+            text.contains("Start a conversation to create one."),
+            "{text}"
+        );
+        assert!(text.contains("Esc close"), "{text}");
     }
 
     #[test]
@@ -4491,6 +4616,54 @@ mod tests {
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::RunCommand("/resume second".into())
+        );
+    }
+
+    #[test]
+    fn resume_picker_filters_titles_and_keeps_selection_in_filtered_rows() {
+        let mut overlay = Overlay::resume_picker(vec![
+            ResumeSessionItem {
+                id: "first".into(),
+                modified: "today".into(),
+                title: Some("Fix login flow".into()),
+            },
+            ResumeSessionItem {
+                id: "second".into(),
+                modified: "yesterday".into(),
+                title: Some("Update docs".into()),
+            },
+            ResumeSessionItem {
+                id: "third".into(),
+                modified: "last week".into(),
+                title: Some("Fix checkout flow".into()),
+            },
+        ]);
+        handle_overlay_key(&mut overlay, Key::Char('f'));
+        handle_overlay_key(&mut overlay, Key::Char('i'));
+        handle_overlay_key(&mut overlay, Key::Char('x'));
+        handle_overlay_key(&mut overlay, Key::Down);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/resume third".into())
+        );
+        handle_overlay_key(&mut overlay, Key::Backspace);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/resume first".into())
+        );
+    }
+
+    #[test]
+    fn resume_picker_filter_with_no_matches_cannot_select_a_session() {
+        let mut overlay = Overlay::resume_picker(vec![ResumeSessionItem {
+            id: "first".into(),
+            modified: "today".into(),
+            title: Some("Fix login flow".into()),
+        }]);
+        handle_overlay_key(&mut overlay, Key::Paste("missing".into()));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
         );
     }
 
