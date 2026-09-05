@@ -404,8 +404,29 @@ fn split_areas_with_chrome_mode(
 }
 
 /// Estimate the sidebar composer width before the layout split runs.
+#[allow(dead_code)]
 pub fn estimate_composer_content_width(area: Rect) -> usize {
-    sidebar_width(content_width(area)).max(1) as usize
+    estimate_composer_region_width(area, false, false)
+}
+
+/// Estimate the width of the region containing the composer before vertical
+/// layout runs. This mirrors the horizontal split used by the renderer.
+pub fn estimate_composer_region_width(
+    area: Rect,
+    show_files: bool,
+    expanded_conversation: bool,
+) -> usize {
+    let width = content_width(area);
+    if expanded_conversation {
+        let file_width = (width / 4).clamp(28, 37);
+        if show_files && width >= FILES_WIDTH_THRESHOLD && width >= file_width + 40 {
+            width.saturating_sub(file_width).max(1) as usize
+        } else {
+            width.max(1) as usize
+        }
+    } else {
+        sidebar_width(width).max(1) as usize
+    }
 }
 
 /// Whether the frame is below the size the layout is built for.
@@ -431,6 +452,14 @@ mod tests {
             estimate_composer_content_width(Rect::new(0, 0, 200, 40)),
             88
         );
+    }
+
+    #[test]
+    fn expanded_composer_width_tracks_the_conversation_pane() {
+        let area = Rect::new(0, 0, 120, 40);
+        assert_eq!(estimate_composer_region_width(area, false, true), 114);
+        assert_eq!(estimate_composer_region_width(area, true, true), 86);
+        assert_eq!(estimate_composer_region_width(area, false, false), 32);
     }
 
     #[test]
