@@ -177,6 +177,9 @@ impl TuiApp {
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::CancelSelectedQueueMessage)
             }
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ReturnToLatest)
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::QuitOrInterrupt)
             }
@@ -485,6 +488,11 @@ impl TuiApp {
                 }
             }
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
+            SemanticCommand::ReturnToLatest => {
+                self.conversation_view.scroll = 0;
+                self.conversation_view.follow = true;
+                self.set_feedback(FeedbackSeverity::Info, "conversation: latest");
+            }
             SemanticCommand::CloseOverlay => {
                 self.dismiss_overlay();
                 self.explorer_dialog.clear();
