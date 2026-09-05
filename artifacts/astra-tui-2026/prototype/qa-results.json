@@ -1,6 +1,0 @@
-{
-  "checks": 360,
-  "errors": [],
-  "method": "Chromium via Playwright; each scenario at six terminal sizes in dark and light; exact row and column counts",
-  "date": "2026-09-05T09:28:35.274Z"
-}
