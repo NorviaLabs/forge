@@ -90,7 +90,7 @@ impl TuiApp {
     /// The files the most recent assistant turn wrote, taken from the
     /// transcript's own diff cards. Using the cards rather than `git` keeps
     /// "last turn" honest when the tree has moved on since.
-    fn last_turn_diff_entries(&self) -> Vec<DiffEntry> {
+    pub(super) fn last_turn_diff_entries(&self) -> Vec<DiffEntry> {
         self.last_turn_diff_cards()
             .into_iter()
             .map(|(path, _)| DiffEntry {
