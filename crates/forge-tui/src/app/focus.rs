@@ -172,6 +172,12 @@ impl TuiApp {
         {
             return Some("Backspace remove attachment · Ctrl+U clear draft".into());
         }
+        if self.focus.block() == FocusBlock::Composer
+            && self.busy_state.is_active()
+            && !self.session.queue().is_empty()
+        {
+            return Some("Ctrl+↑↓ select queued · Ctrl+Backspace remove".into());
+        }
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 Some("Enter next · ⇧Enter previous · Esc cancel".into())
