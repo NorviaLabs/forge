@@ -183,6 +183,9 @@ impl TuiApp {
             tools,
             output_tokens,
         });
+        if !self.last_turn_diff_entries().is_empty() {
+            self.status_state.message = "Turn complete · /diff turn to review changes".into();
+        }
     }
 
     /// How many times one model step may be re-issued after a transient
