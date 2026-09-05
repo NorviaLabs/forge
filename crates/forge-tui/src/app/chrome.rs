@@ -742,6 +742,40 @@ impl TuiApp {
     /// Deliberately not folded into the footer or `/status`: it's detail
     /// most turns never need, and inlining it there would cost the row that
     /// is supposed to be scannable at a glance.
+    pub(super) fn plan_report_rows(&self) -> Vec<StatusRow> {
+        use forge_types::UpdatePlanArgs;
+
+        let latest = self
+            .transcript_view
+            .messages()
+            .iter()
+            .rev()
+            .flat_map(|message| message.tool_calls.iter().rev())
+            .find(|call| call.name == "update_plan")
+            .and_then(|call| serde_json::from_value::<UpdatePlanArgs>(call.arguments.clone()).ok());
+
+        let Some(plan) = latest else {
+            return vec![StatusRow::field("Plan", "No plan recorded")];
+        };
+        let mut rows = Vec::with_capacity(plan.plan.len() + 2);
+        if let Some(explanation) = plan.explanation.filter(|text| !text.trim().is_empty()) {
+            rows.push(StatusRow::field("Goal", explanation));
+            rows.push(StatusRow::Gap);
+        }
+        for (index, item) in plan.plan.iter().enumerate() {
+            let marker = match item.status {
+                forge_types::PlanStepStatus::Completed => "✓",
+                forge_types::PlanStepStatus::InProgress => "•",
+                forge_types::PlanStepStatus::Pending => "○",
+            };
+            rows.push(StatusRow::field(
+                "Step",
+                format!("{marker} {} · {}", index + 1, item.step),
+            ));
+        }
+        rows
+    }
+
     pub(super) fn context_report_rows(&self) -> Vec<StatusRow> {
         use crate::overlays::thousands;
 

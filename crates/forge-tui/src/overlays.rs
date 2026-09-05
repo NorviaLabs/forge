@@ -777,6 +777,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             is_skill: false,
         },
         PaletteItem {
+            cmd: "/plan".into(),
+            desc: "Inspect the latest execution plan".into(),
+            is_skill: false,
+        },
+        PaletteItem {
             cmd: "/effort".into(),
             desc: "Set model effort".into(),
             is_skill: false,
