@@ -80,6 +80,12 @@ pub fn hint_spans(pairs: &[Hint], budget: usize) -> Vec<Span<'static>> {
 
 /// Move, choose, leave — the shape almost every list-shaped surface needs.
 pub const MOVE_SELECT_CLOSE: &[Hint] = &[("↑↓", "move"), ("Enter", "select"), ("Esc", "close")];
+pub const PICKER: &[Hint] = &[
+    ("↑↓", "move"),
+    ("←→", "section"),
+    ("Enter", "select"),
+    ("Esc", "close"),
+];
 pub const APPROVAL: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "don't run")];
 pub const QUESTION: &[Hint] = &[("↑↓", "move"), ("Enter", "answer"), ("Esc", "skip")];
 pub const QUESTION_MULTI: &[Hint] = &[
