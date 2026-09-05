@@ -3108,7 +3108,7 @@ impl Widget for OverlayWidget<'_> {
                     .style(theme::text())
                     .render(regions[2], buf);
                 Paragraph::new(Line::from(crate::hints::hint_spans(
-                    crate::hints::MOVE_SELECT_CLOSE,
+                    crate::hints::PICKER,
                     regions[3].width as usize,
                 )))
                 .render(regions[3], buf);
