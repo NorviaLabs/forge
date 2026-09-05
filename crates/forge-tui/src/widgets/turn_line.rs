@@ -16,14 +16,6 @@ use crate::widgets::status::BusyPhase;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-/// Spinner frames. Quarter-circles, matching the lifecycle glyphs the status
-/// bar already uses, so the vocabulary stays forge's own.
-const GLYPHS: [&str; 4] = ["◐", "◓", "◑", "◒"];
-
-/// How long each spinner frame holds. Fast enough to read as motion, slow
-/// enough not to strobe on a 100ms event loop.
-const GLYPH_MILLIS: u128 = 140;
-
 /// What the reader is told to press to stop the turn.
 pub const INTERRUPT_HINT: &str = "esc to interrupt";
 
@@ -39,6 +31,51 @@ pub struct TurnLineModel {
     pub interruptible: bool,
 }
 
+fn shimmer_phase(state: &throbber_widgets_tui::ThrobberState) -> usize {
+    throbber_widgets_tui::Throbber::default()
+        .label("")
+        .throbber_set(throbber_widgets_tui::HORIZONTAL_BLOCK)
+        .to_line(state)
+        .spans
+        .into_iter()
+        .next()
+        .and_then(|span| {
+            span.content.chars().find_map(|character| {
+                "▏▎▍▌▋▊▉█"
+                    .chars()
+                    .position(|candidate| candidate == character)
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Apply a traveling brightness wave to the letters of a label. The throbber
+/// state remains the shared clock, but the animation is intentionally carried
+/// by the words rather than a separate block glyph.
+pub(crate) fn shimmer_text(
+    state: &throbber_widgets_tui::ThrobberState,
+    label: &str,
+) -> Vec<Span<'static>> {
+    let phase = shimmer_phase(state);
+    label
+        .chars()
+        .enumerate()
+        .map(|(index, character)| {
+            let distance = (index + 8 - phase) % 8;
+            let style = if character.is_whitespace() {
+                theme::text_secondary()
+            } else if distance == 0 {
+                theme::accent_style().add_modifier(Modifier::BOLD)
+            } else if distance == 1 || distance == 7 {
+                theme::text_secondary()
+            } else {
+                theme::muted()
+            };
+            Span::styled(character.to_string(), style)
+        })
+        .collect()
+}
+
 /// Name the phase the turn is in.
 ///
 /// `BusyPhase` was already tracked and then flattened to the single word
@@ -47,7 +84,7 @@ pub struct TurnLineModel {
 pub fn phase_verb(phase: &BusyPhase, thinking: bool, answering: bool) -> String {
     match phase {
         BusyPhase::Connect => "Connecting".into(),
-        BusyPhase::Tool { name } => format!("Running {name}"),
+        BusyPhase::Tool { name } => crate::widgets::status::tool_progress_description(name),
         BusyPhase::Other(label) if !label.trim().is_empty() => {
             let label = label.trim();
             let mut chars = label.chars();
@@ -60,11 +97,6 @@ pub fn phase_verb(phase: &BusyPhase, thinking: bool, answering: bool) -> String 
         _ if thinking => "Thinking".into(),
         _ => "Waiting for the model".into(),
     }
-}
-
-/// Which spinner frame `millis` since the epoch lands on.
-pub fn glyph_at(millis: u128) -> &'static str {
-    GLYPHS[((millis / GLYPH_MILLIS) as usize) % GLYPHS.len()]
 }
 
 /// Round to a compact count: `842`, `1.2k`, `48k`.
@@ -97,17 +129,25 @@ fn metrics(model: &TurnLineModel) -> String {
 
 /// Build the line, right-aligning the interrupt hint to `width`.
 pub fn turn_line(model: &TurnLineModel, width: usize, millis: u128) -> Line<'static> {
+    let mut state = throbber_widgets_tui::ThrobberState::default();
+    for _ in 0..((millis / 140) % 8) {
+        state.calc_next();
+    }
+    turn_line_with_throbber(model, width, &state)
+}
+
+pub fn turn_line_with_throbber(
+    model: &TurnLineModel,
+    width: usize,
+    throbber: &throbber_widgets_tui::ThrobberState,
+) -> Line<'static> {
     let mut spans = vec![
         Span::raw("  "),
-        Span::styled(glyph_at(millis), theme::accent_style()),
-        Span::raw("  "),
-        Span::styled(
-            format!("{}…", model.verb),
-            theme::text().add_modifier(Modifier::BOLD),
-        ),
+        Span::raw(" "),
         Span::raw("   "),
         Span::styled(metrics(model), theme::metadata_style()),
     ];
+    spans.splice(1..1, shimmer_text(throbber, &model.verb));
     if model.interruptible {
         let used: usize = spans.iter().map(Span::width).sum();
         let hint_w = INTERRUPT_HINT.chars().count();
@@ -141,7 +181,7 @@ mod tests {
     #[test]
     fn the_line_names_the_phase_and_counts_up() {
         let rendered = text(&turn_line(&model(), 80, 0));
-        assert!(rendered.contains("Thinking…"), "{rendered}");
+        assert!(rendered.contains("Thinking"), "{rendered}");
         assert!(rendered.contains("3.0s"), "{rendered}");
         assert!(rendered.contains("512 chars"), "{rendered}");
     }
@@ -203,9 +243,37 @@ mod tests {
             chars: 0,
             ..model()
         };
-        let a = text(&turn_line(&stalled, 80, 0));
-        let b = text(&turn_line(&stalled, 80, GLYPH_MILLIS));
-        assert_ne!(a, b, "the spinner did not advance");
+        let a = turn_line_with_throbber(
+            &stalled,
+            80,
+            &throbber_widgets_tui::ThrobberState::default(),
+        );
+        let mut next = throbber_widgets_tui::ThrobberState::default();
+        for _ in 0..32 {
+            next.calc_next();
+            let b = turn_line_with_throbber(&stalled, 80, &next);
+            if a.spans[1..]
+                .iter()
+                .map(|span| span.style)
+                .collect::<Vec<_>>()
+                != b.spans[1..]
+                    .iter()
+                    .map(|span| span.style)
+                    .collect::<Vec<_>>()
+            {
+                return;
+            }
+        }
+        panic!("the spinner did not advance");
+    }
+
+    #[test]
+    fn shimmer_is_applied_to_each_letter() {
+        let line = turn_line_with_throbber(&model(), 80, &Default::default());
+        assert_eq!(line.spans[1].content, "T");
+        assert_eq!(line.spans[2].content, "h");
+        assert!(line.spans.len() > 6);
+        assert!(line.spans[1].style != line.spans[2].style);
     }
 
     #[test]
@@ -219,7 +287,7 @@ mod tests {
                 false,
                 false
             ),
-            "Running bash"
+            "Running command"
         );
         assert_eq!(phase_verb(&BusyPhase::Model, true, false), "Thinking");
         assert_eq!(

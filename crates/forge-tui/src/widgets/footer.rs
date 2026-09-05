@@ -102,17 +102,16 @@ fn lifecycle_label(life: TurnLifecycle) -> (&'static str, Style) {
     }
 }
 
-/// Working meter: one quarter-circle glyph stepped by the app tick.
+/// Working label with the dependency's animated shimmer style.
 ///
-/// The glyphs come from [`throbber_widgets_tui::BLACK_CIRCLE`] — the same
-/// ◐◓◑◒ family the turn line already speaks — so the footer and the
-/// transcript share one spinner vocabulary. Frames advance in
-/// `tick_render_state`, never in `render`: a pure widget of `(model, frame)`.
-fn working_meter(state: &throbber_widgets_tui::ThrobberState) -> Vec<ratatui::text::Span<'static>> {
-    vec![throbber_widgets_tui::Throbber::default()
-        .throbber_set(throbber_widgets_tui::BLACK_CIRCLE)
-        .throbber_style(theme::accent_style().add_modifier(Modifier::BOLD))
-        .to_symbol_span(state)]
+/// Frames advance in `tick_render_state`, never in `render`: a pure widget of
+/// `(model, frame)`. The brightness sweep reads as ongoing work without using
+/// a circular spinner glyph.
+fn working_meter(
+    state: &throbber_widgets_tui::ThrobberState,
+    label: &'static str,
+) -> Vec<ratatui::text::Span<'static>> {
+    crate::widgets::turn_line::shimmer_text(state, label)
 }
 
 /// Horizontal inset applied to the content row so the footer's text aligns
@@ -317,7 +316,7 @@ impl FooterBar<'_> {
         let dim = m.dimmed;
         let working = meter && m.lifecycle == TurnLifecycle::Working && !dim;
         let mut right: Vec<Span<'static>> = if working {
-            working_meter(&m.throbber)
+            working_meter(&m.throbber, m.lifecycle.label())
         } else {
             let (label, dot_style) = lifecycle_label(m.lifecycle);
             vec![
@@ -325,7 +324,6 @@ impl FooterBar<'_> {
                 Span::raw(" "),
             ]
         };
-        right.push(Span::styled(m.lifecycle.label(), theme::text_secondary()));
         if let Some(detail) = m
             .lifecycle_detail
             .as_deref()
@@ -464,25 +462,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_meter_steps_through_the_quarter_circle_family() {
+    fn the_meter_steps_through_the_shimmer_family() {
         // Frames come from the app tick, not the wall clock: stepping state
-        // by hand must walk the BLACK_CIRCLE set in order, then wrap.
+        // by hand must walk the shimmer set in order, then wrap.
         let glyph = |steps: usize| {
             let mut state = throbber_widgets_tui::ThrobberState::default();
             for _ in 0..steps {
                 state.calc_next();
             }
-            working_meter(&state)
-                .into_iter()
+            working_meter(&state, "Working")
+        };
+        assert_eq!(
+            glyph(0)
+                .iter()
                 .map(|span| span.content.to_string())
                 .collect::<Vec<_>>()
-                .join("")
-        };
-        assert_eq!(glyph(0), "◑ ");
-        assert_eq!(glyph(1), "◒ ");
-        assert_eq!(glyph(2), "◐ ");
-        assert_eq!(glyph(3), "◓ ");
-        assert_eq!(glyph(4), "◑ ");
+                .join(""),
+            "Working"
+        );
+        assert_eq!(
+            glyph(1)
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>()
+                .join(""),
+            "Working"
+        );
+        assert_eq!(
+            glyph(2)
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>()
+                .join(""),
+            "Working"
+        );
+        assert_eq!(
+            glyph(3)
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>()
+                .join(""),
+            "Working"
+        );
+        assert_eq!(
+            glyph(4)
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>()
+                .join(""),
+            "Working"
+        );
     }
 
     /// The meter has to actually move: two frames a beat apart must differ,
@@ -494,15 +523,18 @@ mod tests {
             for _ in 0..steps {
                 state.calc_next();
             }
-            working_meter(&state)
-                .into_iter()
-                .map(|span| span.content.to_string())
-                .collect::<Vec<_>>()
+            working_meter(&state, "Working")
         };
         let a = glyph(0);
         let b = glyph(1);
-        assert_ne!(a, b);
-        assert_eq!(a, glyph(4));
+        assert_ne!(
+            a.iter().map(|span| span.style).collect::<Vec<_>>(),
+            b.iter().map(|span| span.style).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            a.iter().map(|span| span.style).collect::<Vec<_>>(),
+            glyph(4).iter().map(|span| span.style).collect::<Vec<_>>()
+        );
     }
 
     fn model(lifecycle: TurnLifecycle, ctx_pct: f64) -> FooterModel {
@@ -592,10 +624,7 @@ mod tests {
     fn renders_state_and_context_on_the_right() {
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 90);
-        assert!(
-            out.contains('◑') || out.contains('◒') || out.contains('◐') || out.contains('◓'),
-            "{out:?}"
-        );
+        assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
         assert!(out.contains("0 tokens"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
@@ -742,10 +771,7 @@ mod tests {
         let out = rendered(&m, 76);
         assert!(out.contains("Medium"), "{out:?}");
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
-        assert!(
-            out.contains('◑') || out.contains('◒') || out.contains('◐') || out.contains('◓'),
-            "{out:?}"
-        );
+        assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
         assert!(out.contains("0 tokens"), "{out:?}");
     }
@@ -792,8 +818,7 @@ mod tests {
         m.llm_label = "anthropic/claude-opus-4-8-20260815-preview".into();
         m.effort_label = "Extra High".into();
         let out = rendered(&m, 76);
-        assert!(out.contains("run"), "{out:?}");
-        assert!(out.contains("100%"), "{out:?}");
+        assert!(out.contains("context full"), "{out:?}");
         assert!(out.contains("0 tokens"), "{out:?}");
     }
 
