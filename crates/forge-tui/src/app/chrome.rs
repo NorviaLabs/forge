@@ -223,6 +223,18 @@ impl TuiApp {
     /// Operator errors remain visible in chat, feedback, and activity.
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
+
+        // A provider can emit the same failure more than once while a turn is
+        // unwinding (for example, a stream error followed by a task error).
+        // Keep the current error visible, but do not add another toast,
+        // banner, or activity row for an identical message. This keeps the
+        // three presentation surfaces from becoming a duplicate error stack.
+        if self.feedback.severity == FeedbackSeverity::Error && self.feedback.text == msg {
+            self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
+            self.busy_state.set_phase(BusyPhase::Idle);
+            return;
+        }
+
         self.set_feedback(FeedbackSeverity::Error, msg.clone());
         // Errors also surface as an overlay toast: the strip persists but
         // sits far from the reader's eyes, while the toast interrupts calmly
@@ -742,6 +754,40 @@ impl TuiApp {
     /// Deliberately not folded into the footer or `/status`: it's detail
     /// most turns never need, and inlining it there would cost the row that
     /// is supposed to be scannable at a glance.
+    pub(super) fn plan_report_rows(&self) -> Vec<StatusRow> {
+        use forge_types::UpdatePlanArgs;
+
+        let latest = self
+            .transcript_view
+            .messages()
+            .iter()
+            .rev()
+            .flat_map(|message| message.tool_calls.iter().rev())
+            .find(|call| call.name == "update_plan")
+            .and_then(|call| serde_json::from_value::<UpdatePlanArgs>(call.arguments.clone()).ok());
+
+        let Some(plan) = latest else {
+            return vec![StatusRow::field("Plan", "No plan recorded")];
+        };
+        let mut rows = Vec::with_capacity(plan.plan.len() + 2);
+        if let Some(explanation) = plan.explanation.filter(|text| !text.trim().is_empty()) {
+            rows.push(StatusRow::field("Goal", explanation));
+            rows.push(StatusRow::Gap);
+        }
+        for (index, item) in plan.plan.iter().enumerate() {
+            let marker = match item.status {
+                forge_types::PlanStepStatus::Completed => "✓",
+                forge_types::PlanStepStatus::InProgress => "•",
+                forge_types::PlanStepStatus::Pending => "○",
+            };
+            rows.push(StatusRow::field(
+                "Step",
+                format!("{marker} {} · {}", index + 1, item.step),
+            ));
+        }
+        rows
+    }
+
     pub(super) fn context_report_rows(&self) -> Vec<StatusRow> {
         use crate::overlays::thousands;
 

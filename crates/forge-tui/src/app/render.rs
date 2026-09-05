@@ -14,16 +14,20 @@ use super::*;
 /// composer. Past this a palette stops being a menu and becomes a page.
 const SLASH_PALETTE_MAX_ROWS: u16 = 16;
 
-fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16 {
-    let content_width = crate::layout::estimate_composer_content_width(area)
-        .saturating_sub(2) // side borders
-        .saturating_sub(crate::widgets::input::TEXT_INSET as usize)
-        .max(1);
-    // +2 borders, +2 padding (one row above/below the content) so short
-    // content has room to actually be vertically centered — with only 1
-    // spare row, integer-division centering has nowhere to put the second
-    // half and just sits at the top.
-    (input.visual_lines_for_width(content_width) + 4).min(crate::layout::MAX_COMPOSER_INPUT_H)
+fn composer_input_height(
+    input: &InputModel,
+    area: ratatui::layout::Rect,
+    show_files: bool,
+    expanded_conversation: bool,
+) -> u16 {
+    let content_width =
+        crate::layout::estimate_composer_region_width(area, show_files, expanded_conversation)
+            .saturating_sub(2) // side borders
+            .saturating_sub(crate::widgets::input::TEXT_INSET as usize)
+            .max(1);
+    // The input widget owns its two border rows. Keep one additional row for
+    // the compact composer so short prompts do not reserve a large blank band.
+    (input.visual_lines_for_width(content_width) + 2).min(crate::layout::MAX_COMPOSER_INPUT_H)
 }
 
 fn queued_messages_for_render(session: &AgentSession) -> Vec<String> {
@@ -93,10 +97,21 @@ impl TuiApp {
         let fb_h = u16::from(!self.feedback.is_empty());
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let theme_picking = matches!(self.overlay, Some(Overlay::Theme { .. }));
+        // Resolve this before measuring the composer so wrapping uses the
+        // same horizontal geometry that the layout will paint.
+        let expand_conversation = !matches!(
+            self.workspace_navigation.current(),
+            Some(WorkspaceView::File(_) | WorkspaceView::Diff)
+        );
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else {
-            composer_input_height(&self.input, area)
+            composer_input_height(
+                &self.input,
+                area,
+                self.workspace_files.visible,
+                expand_conversation,
+            )
         };
         let panel_h = if self.bottom_panel.open { 16 } else { 0 };
         let queued_messages = queued_messages_for_render(&self.session);
@@ -123,10 +138,6 @@ impl TuiApp {
         // An open file or `/diff` occupies the center workspace pane. Anything
         // else (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
-        let expand_conversation = !matches!(
-            self.workspace_navigation.current(),
-            Some(WorkspaceView::File(_) | WorkspaceView::Diff)
-        );
         let task_mode = self.supervisor.is_some();
         let regions = if expand_conversation && task_mode {
             split_areas_with_task_strip_expanded_conversation(
@@ -1309,7 +1320,23 @@ mod tests {
                 .join(" "),
         );
 
-        assert_eq!(composer_input_height(&input, Rect::new(0, 0, 120, 40)), 10);
+        assert_eq!(
+            composer_input_height(&input, Rect::new(0, 0, 120, 40), false, false),
+            9
+        );
+    }
+
+    #[test]
+    fn short_composer_uses_a_compact_three_row_band() {
+        let input = InputModel::default();
+        assert_eq!(
+            composer_input_height(&input, Rect::new(0, 0, 120, 40), false, false),
+            3
+        );
+        assert_eq!(
+            composer_input_height(&input, Rect::new(0, 0, 120, 40), false, true),
+            3
+        );
     }
 
     #[test]

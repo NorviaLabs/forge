@@ -164,6 +164,20 @@ impl TuiApp {
                 _ => None,
             };
         }
+        if !self.conversation_view.follow {
+            return Some("Ctrl+End return to latest".into());
+        }
+        if self.focus.block() == FocusBlock::Composer
+            && (self.attachment.file().is_some() || self.attachment.has_images())
+        {
+            return Some("Backspace remove attachment · Ctrl+U clear draft".into());
+        }
+        if self.focus.block() == FocusBlock::Composer
+            && self.busy_state.is_active()
+            && !self.session.queue().is_empty()
+        {
+            return Some("Ctrl+↑↓ select queued · Ctrl+Backspace remove".into());
+        }
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 Some("Enter next · ⇧Enter previous · Esc cancel".into())
@@ -179,6 +193,15 @@ impl TuiApp {
                     0 => "Hit Enter ⏎ to open model".into(),
                     _ => "Hit Enter ⏎ to change effort".into(),
                 })
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => {
+                Some("←→ select · Enter switch · s stop · c continue · p pin · x archive".into())
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Files => {
+                Some("↑↓ navigate · Enter open · / search · Esc close".into())
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Search => {
+                Some("Type to filter · Enter open · Esc cancel".into())
             }
             FocusMode::Navigation => None,
         }

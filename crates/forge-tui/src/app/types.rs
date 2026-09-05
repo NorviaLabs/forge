@@ -527,6 +527,7 @@ pub(crate) enum SemanticCommand {
     ToggleCurrentFileAttachment,
     PasteClipboardImage,
     ToggleToolDetails,
+    ReturnToLatest,
     OpenTaskSwitcher,
     /// Step effort one level (`Alt+,` back, `Alt+.` forward)
     /// within the current model's valid options — see
