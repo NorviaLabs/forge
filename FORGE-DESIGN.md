@@ -498,6 +498,13 @@ answer, and outcome colours stay reserved for result state.
 
 Implementation: `crates/forge-tui/src/conversation.rs`.
 
+Planning checklists use compact `[ ]` pending, `[•]` in-progress and `[✓]`
+completed markers. The active task has bold text and an info-coloured marker;
+other tasks are muted. Wrapped text aligns after the checkbox. The heading
+reports completed tasks, and the pinned summary retains the count and current
+task when the checklist scrolls away. Completion reflects the agent's reported
+plan status; tool evidence remains below each step.
+
 ### 9.5 Composer
 
 - `surface` background; hairline border normally; `accent` border when focused; `waiting_border` while an approval pends ("paused" look — the composer visibly cannot accept a send).
