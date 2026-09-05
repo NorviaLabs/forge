@@ -253,19 +253,15 @@ pub(super) fn render_plan_checklist(
         for l in wrap(explanation, width.saturating_sub(2)) {
             lines.push(Line::from(vec![
                 Span::raw(INDENT_UNIT),
-                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
+                Span::styled(l, theme::muted()),
             ]));
         }
     }
 
-    // A left rail, not a box — the rail says "this is a checklist" at a
-    // fraction of a full border's weight. Step status is carried by marker +
-    // weight (✓ dim, › bold accent, · muted) instead of [✓]/[►]/[ ]
-    // checkboxes, matching how the rest of the response stream now signals
-    // state through color and weight rather than bracketed glyphs.
-    let accent = theme::accent_style();
+    // Checkboxes keep every state legible without colour. Reserve the
+    // interaction accent for focus; active work uses the information token.
     let rail_line = |content: Vec<Span<'static>>| -> Line<'static> {
-        let mut spans = vec![Span::styled("  ", accent)];
+        let mut spans = vec![Span::raw("  ")];
         spans.extend(content);
         Line::from(spans)
     };
@@ -276,31 +272,26 @@ pub(super) fn render_plan_checklist(
         .iter()
         .filter(|item| item.status == PlanStepStatus::Completed)
         .count();
-    let current_idx = plan
-        .steps
-        .iter()
-        .position(|item| item.status == PlanStepStatus::InProgress)
-        .unwrap_or_else(|| done.min(total.saturating_sub(1)));
     let header = if total == 0 {
         "Plan".to_string()
-    } else if done == total {
-        format!("Plan · {done} of {total} done")
     } else {
-        format!("Plan · step {} of {total}", current_idx + 1)
+        format!("Plan · {done} of {total} done")
     };
     lines.push(rail_line(vec![Span::styled(
         header,
         theme::metadata_style(),
     )]));
 
-    let body_width = width.saturating_sub(4).max(4);
+    let body_width = width.saturating_sub(6).max(1);
     for (idx, item) in plan.steps.iter().enumerate() {
         let (marker, marker_style, text_style) = match item.status {
-            PlanStepStatus::Completed => ("  ", theme::ok(), theme::muted()),
-            PlanStepStatus::InProgress => {
-                ("  ", accent, theme::text().add_modifier(Modifier::BOLD))
-            }
-            PlanStepStatus::Pending => ("  ", theme::muted(), theme::muted()),
+            PlanStepStatus::Completed => ("[✓]", theme::muted(), theme::muted()),
+            PlanStepStatus::InProgress => (
+                "[•]",
+                theme::info(),
+                theme::text().add_modifier(Modifier::BOLD),
+            ),
+            PlanStepStatus::Pending => ("[ ]", theme::muted(), theme::muted()),
         };
         let mut wrapped = wrap(&item.step, body_width).into_iter();
         if let Some(first) = wrapped.next() {
@@ -311,7 +302,7 @@ pub(super) fn render_plan_checklist(
         }
         for cont in wrapped {
             lines.push(rail_line(vec![
-                Span::raw("  "),
+                Span::raw("    "),
                 Span::styled(cont, text_style),
             ]));
         }
@@ -333,7 +324,7 @@ pub(super) fn render_plan_checklist(
                 .take(2)
             {
                 lines.push(rail_line(vec![
-                    Span::raw("  "),
+                    Span::raw("    "),
                     Span::styled(wrapped, theme::metadata_style()),
                 ]));
             }
@@ -1154,13 +1145,9 @@ fn plan_dock_for(
         .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
         .map(|item| item.step.as_str());
     let mut spans = vec![
-        Span::styled("\u{2191} ", theme::accent_style()),
+        Span::styled("\u{2191} ", theme::muted()),
         Span::styled("Plan  ", theme::metadata_style()),
-        Span::styled(
-            "\u{2593}".repeat(done) + &"\u{2591}".repeat(total.saturating_sub(done)),
-            theme::accent_style(),
-        ),
-        Span::styled(format!("  {done}/{total}"), theme::muted()),
+        Span::styled(format!("{done}/{total} done"), theme::muted()),
     ];
     if let Some(step) = current {
         spans.push(Span::styled("  \u{b7}  ", theme::muted()));
@@ -3265,6 +3252,65 @@ mod tests {
             top.contains("Plan") && top.contains("1/2"),
             "docked row missing from the top of the pane: {top:?}"
         );
+    }
+
+    #[test]
+    fn plan_checkboxes_and_wrapping_survive_without_colour() {
+        use forge_types::{PlanItem, PlanStepStatus};
+        let plan = PlanChecklistPresentation {
+            explanation: None,
+            steps: vec![
+                PlanItem {
+                    step: "Inspect code".into(),
+                    status: PlanStepStatus::Completed,
+                },
+                PlanItem {
+                    step: "Implement the planning checklist presentation".into(),
+                    status: PlanStepStatus::InProgress,
+                },
+                PlanItem {
+                    step: "Run tests".into(),
+                    status: PlanStepStatus::Pending,
+                },
+            ],
+            evidence: Vec::new(),
+        };
+        for width in [32, 40, 80] {
+            let lines = render_plan_checklist(&plan, width);
+            let mut buf = Buffer::empty(Rect::new(0, 0, width as u16, lines.len() as u16));
+            ratatui::widgets::Paragraph::new(lines.clone()).render(buf.area, &mut buf);
+            let rendered = (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            assert!(rendered.iter().any(|line| line == "  [✓] Inspect code"));
+            assert!(rendered
+                .iter()
+                .any(|line| line.starts_with("  [•] Implement")));
+            assert!(rendered.iter().any(|line| line == "  [ ] Run tests"));
+            assert!(lines.iter().all(|line| line.width() <= width));
+            if width == 32 {
+                assert!(
+                    rendered
+                        .iter()
+                        .any(|line| line.starts_with("      checklist")),
+                    "{rendered:?}"
+                );
+            }
+        }
+        let pending = PlanChecklistPresentation {
+            steps: vec![PlanItem {
+                step: "Start here".into(),
+                status: PlanStepStatus::Pending,
+            }],
+            ..plan
+        };
+        assert!(line_text(&render_plan_checklist(&pending, 40)[0]).contains("0 of 1 done"));
     }
 
     #[test]
