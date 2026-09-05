@@ -72,8 +72,9 @@ behaviour:
 | `.agents/skills/*/SKILL.md` | Loaded into the system prompt as skills |
 | `forge.toml` | Project configuration (see the restriction below) |
 
-Keys in a project `forge.toml` that can execute code or redirect a credentialed
-request — `[[mcp.servers]]`, `model.base_url`, `model.api_key` — are **refused**
+Keys in a project `forge.toml` that can execute code, redirect a credentialed
+request, or move Forge's authority/data boundary — `[[mcp.servers]]`,
+`model.base_url`, `model.api_key`, `workspace_root`, and `journal` — are **refused**
 from an auto-discovered file and honoured only from your user config or a path
 you name with `--config`. Everything else in that file is applied as written.
 
