@@ -18,13 +18,19 @@ impl Widget for QueuedMessages<'_> {
         }
 
         let visible = self.messages.len().min(MAX_DISPLAYED_MESSAGES);
+        let start = self
+            .selected
+            .unwrap_or(0)
+            .saturating_sub(visible.saturating_sub(1))
+            .min(self.messages.len().saturating_sub(visible));
         let title = Line::from(vec![
             Span::styled("Queued", theme::metadata_style()),
             Span::styled(" · ↑ edit last", theme::dim()),
         ]);
         buf.set_line(area.x, area.y, &title, area.width);
 
-        for (index, message) in self.messages.iter().take(visible).enumerate() {
+        for (offset, message) in self.messages.iter().skip(start).take(visible).enumerate() {
+            let index = start + offset;
             let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
             let prefix = format!("  {}. ", index + 1);
             let available = area.width.saturating_sub(prefix.chars().count() as u16) as usize;
@@ -38,7 +44,7 @@ impl Widget for QueuedMessages<'_> {
                 Span::styled(prefix, theme::dim()),
                 Span::styled(preview, style),
             ]);
-            let row = area.y.saturating_add(1 + index as u16);
+            let row = area.y.saturating_add(1 + offset as u16);
             if row < area.bottom() {
                 buf.set_line(area.x, row, &line, area.width);
             }
@@ -47,7 +53,13 @@ impl Widget for QueuedMessages<'_> {
         if self.messages.len() > MAX_DISPLAYED_MESSAGES {
             let row = area.y.saturating_add(1 + visible as u16);
             if row < area.bottom() {
-                let overflow = format!("  … (+{} more)", self.messages.len() - visible);
+                let overflow = format!(
+                    "  … ({}–{} of {} · {} hidden)",
+                    start + 1,
+                    start + visible,
+                    self.messages.len(),
+                    self.messages.len() - visible
+                );
                 buf.set_line(
                     area.x,
                     row,
@@ -109,7 +121,7 @@ mod tests {
         assert!(output.contains("first message"));
         assert!(output.contains("second message"));
         assert!(output.contains("third message"));
-        assert!(output.contains("… (+1 more)"));
+        assert!(output.contains("1–3 of 4 · 1 hidden"));
         assert!(!output.contains("fourth message"));
     }
 
@@ -117,5 +129,14 @@ mod tests {
     fn truncates_previews_to_the_available_width() {
         let output = render(&["a very long queued message".into()], None, 18, 2);
         assert!(output.contains("a very long…"));
+    }
+
+    #[test]
+    fn selected_message_is_kept_inside_the_visible_window() {
+        let messages = (0..5).map(|i| format!("message {i}")).collect::<Vec<_>>();
+        let output = render(&messages, Some(4), 40, 5);
+        assert!(output.contains("message 4"));
+        assert!(output.contains("3–5 of 5"));
+        assert!(!output.contains("message 0"));
     }
 }
