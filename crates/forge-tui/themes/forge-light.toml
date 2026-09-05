@@ -47,11 +47,9 @@ cursor = "#2E5C8C"
 tag = "#556355"
 search_match = "#F3DE9A"
 waiting_border = "#8C6018"
-# Response structure (editorial treatment): the model answer's skeleton —
-# section labels, list markers, heading rules' hue family — is tinted so a
-# long reply can be skimmed by shape before it is read. `info`'s hue, same
-# reasoning as Forge Dark's comment above.
-structure = "#26586D"
+# Response structure uses the theme's blue focus hue for clear, readable
+# headlines while preserving the light palette's semantic status colours.
+structure = "#3568A0"
 # Scan band: the raised ground behind a whole list block. Sits between the
 # paper canvas (#F2F5EF) and the inline-code chip tint `surface_raised`
 # (#FFFFFF) so chips stay visible inside a banded list.
