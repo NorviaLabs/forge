@@ -80,12 +80,11 @@ pub fn hint_spans(pairs: &[Hint], budget: usize) -> Vec<Span<'static>> {
 
 /// Move, choose, leave — the shape almost every list-shaped surface needs.
 pub const MOVE_SELECT_CLOSE: &[Hint] = &[("↑↓", "move"), ("Enter", "select"), ("Esc", "close")];
-pub const PICKER: &[Hint] = &[
-    ("↑↓", "move"),
-    ("←→", "section"),
-    ("Enter", "select"),
-    ("Esc", "close"),
-];
+/// Model/provider picker. No `←→` pair: the picker opens directly on one
+/// standalone column (providers, models, or effort) since the modal
+/// restructure, so there is no section to switch between — advertising one
+/// would fail the displayed-hints-match-routing invariant.
+pub const PICKER: &[Hint] = &[("↑↓", "move"), ("Enter", "select"), ("Esc", "close")];
 pub const APPROVAL: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "don't run")];
 pub const QUESTION: &[Hint] = &[("↑↓", "move"), ("Enter", "answer"), ("Esc", "skip")];
 pub const QUESTION_MULTI: &[Hint] = &[
@@ -101,7 +100,9 @@ pub const QUESTION_TABS: &[Hint] = &[
     ("Esc", "skip"),
 ];
 pub const THEME: &[Hint] = &[("↑↓", "preview"), ("Enter", "apply"), ("Esc", "cancel")];
-pub const TRUST: &[Hint] = &[("↑↓", "move"), ("Enter", "trust"), ("Esc", "quit")];
+/// First-run trust prompt. Enter confirms the highlighted choice — which is
+/// "exit" when the No row is selected — so the verb is `confirm`, not `trust`.
+pub const TRUST: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "quit")];
 pub const COMMANDS: &[Hint] = &[("↑↓", "move"), ("Tab", "complete"), ("Enter", "run")];
 pub const BROWSE: &[Hint] = &[
     ("↑↓", "move"),

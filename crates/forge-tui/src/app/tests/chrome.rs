@@ -1331,7 +1331,9 @@ async fn a_running_turn_paints_a_live_line_in_the_transcript() {
         rendered.contains(crate::widgets::turn_line::INTERRUPT_HINT),
         "the interrupt was not advertised:\n{rendered}"
     );
-    assert!(rendered.contains("14 chars"), "no volume:\n{rendered}");
+    // DESIGN-006: the live row carries `[>]` + phase + elapsed — no volume.
+    assert!(rendered.contains("[>]"), "no live marker:\n{rendered}");
+    assert!(!rendered.contains("chars"), "volume leaked:\n{rendered}");
 }
 
 /// An idle app must not show a turn line — it is the one piece of chrome that
@@ -1347,6 +1349,12 @@ async fn an_idle_app_paints_no_turn_line() {
 #[tokio::test]
 async fn a_finished_turn_is_closed_by_a_summary() {
     let (_dir, mut app) = focus_test_app().await;
+    app.session
+        .messages
+        .push(Message::new(MessageRole::User, "first request"));
+    app.session
+        .messages
+        .push(Message::new(MessageRole::Assistant, "first answer"));
     app.timing.turn_started = Some(Instant::now() - Duration::from_secs(7));
     app.timing.chars = 810;
     app.timing.tools = 1;
@@ -1358,13 +1366,31 @@ async fn a_finished_turn_is_closed_by_a_summary() {
     assert!(rendered.contains("1 tool"), "{rendered}");
     assert!(!rendered.contains("1 tools"), "plural for one:\n{rendered}");
 
-    // The next turn replaces it rather than stacking receipts.
+    // DESIGN-005: the next finished turn keeps its own summary under its
+    // own answer — it neither replaces the previous turn's line nor inherits
+    // it. Each completion sits directly beneath its answer.
+    app.session
+        .messages
+        .push(Message::new(MessageRole::User, "second request"));
+    app.session
+        .messages
+        .push(Message::new(MessageRole::Assistant, "second answer"));
     app.timing.turn_started = Some(Instant::now() - Duration::from_secs(2));
     app.timing.tools = 3;
     app.record_turn_summary();
     let rendered = render_app_text(&mut app, 120, 40);
     assert!(rendered.contains("3 tools"), "{rendered}");
-    assert!(!rendered.contains("Answered in 7s"), "{rendered}");
+    assert!(
+        rendered.contains("Answered in 7s"),
+        "first turn keeps its own completion:\n{rendered}"
+    );
+    let first_summary = rendered.find("Answered in 7s").unwrap();
+    let second_request = rendered.find("second request").unwrap();
+    let second_summary = rendered.rfind("3 tools").unwrap();
+    assert!(
+        first_summary < second_request && second_request < second_summary,
+        "each summary sits under its own answer:\n{rendered}"
+    );
 }
 
 #[test]

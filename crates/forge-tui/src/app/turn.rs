@@ -154,15 +154,14 @@ impl TuiApp {
     /// cost. Without one the transcript simply stopped: nothing marked the
     /// bottom edge of a turn, and nothing recorded its duration.
     ///
-    /// Only one summary is ever on screen — the previous turn's is replaced,
-    /// so the transcript doesn't fill with receipts.
+    /// DESIGN-005: every finished turn keeps its own summary, keyed by
+    /// session plus user-message ordinal, so each completion line renders
+    /// under its own answer instead of one global receipt trailing the
+    /// newest activity. View-only presentation state — never persisted.
     pub(super) fn record_turn_summary(&mut self) {
         let Some(started) = self.timing.turn_started else {
             return;
         };
-        self.banner_state
-            .items
-            .retain(|item| !matches!(item, ChatItem::TurnSummary { .. }));
         // The provider's own count for this turn: cumulative session usage
         // less what it stood at when the turn began. `None` when the provider
         // reported no usage, so the summary omits a rate rather than printing
@@ -177,12 +176,43 @@ impl TuiApp {
         let chars = self.timing.chars;
         let tools = self.timing.tools;
         let output_tokens = (produced > 0).then_some(produced);
-        self.banner_state.items.push(ChatItem::TurnSummary {
-            secs,
-            chars,
-            tools,
-            output_tokens,
-        });
+        // 0-based ordinal of the just-finished turn: the latest user message.
+        // `Message` carries no display id, so the session-plus-ordinal pair
+        // is the presentation key (rebuilt on resume; restored turns carry
+        // no ephemeral timing).
+        let user_ordinal = self
+            .session
+            .messages
+            .iter()
+            .filter(|m| m.role == forge_types::MessageRole::User)
+            .count()
+            .saturating_sub(1) as u64;
+        let session_id = self.session.session_id.to_string();
+        if let Some(existing) = self
+            .turn_summaries
+            .iter_mut()
+            .find(|r| r.key.session == session_id && r.key.user_ordinal == user_ordinal)
+        {
+            existing.summary = TurnSummaryPresentation {
+                secs,
+                chars,
+                tools,
+                output_tokens,
+            };
+        } else {
+            self.turn_summaries.push(TurnSummaryRecord {
+                key: TurnKey {
+                    session: session_id,
+                    user_ordinal,
+                },
+                summary: TurnSummaryPresentation {
+                    secs,
+                    chars,
+                    tools,
+                    output_tokens,
+                },
+            });
+        }
         if !self.last_turn_diff_entries().is_empty() {
             self.status_state.message = "Turn complete · /diff turn to review changes".into();
         }

@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use std::ops::Range;
 
 #[derive(Debug, Clone, Default)]
@@ -434,22 +434,31 @@ struct ComposerGeometry {
     text_area: Rect,
 }
 
+/// Rows of chrome above the text: the single top rule (DESIGN-012). No
+/// side or bottom borders — the composer is a zone, not a box.
+pub(crate) const COMPOSER_RULE_H: u16 = 1;
+
 fn composer_geometry(
     model: &InputModel,
     area: Rect,
     attachment: Option<&str>,
 ) -> Option<ComposerGeometry> {
-    let block = Block::default().borders(Borders::ALL);
-    let inner = block.inner(area);
-    if inner.width == 0 || inner.height == 0 {
+    // DESIGN-012: one top rule, then text. The text keeps its 1-column
+    // inset — the same text origin convention as the chat pane.
+    let text_w = area.width.saturating_sub(TEXT_INSET);
+    let text_h = area.height.saturating_sub(COMPOSER_RULE_H);
+    if text_w == 0 || text_h == 0 {
         return None;
     }
 
-    let attach_h = u16::from(attachment.is_some() && inner.height > 1);
-    let y = inner.y.saturating_add(attach_h);
-    let remain = inner.height.saturating_sub(attach_h);
-    let text_h = remain.max(1);
-    let input_area = Rect::new(inner.x, y, inner.width, text_h);
+    let attach_h = u16::from(attachment.is_some() && text_h > 1);
+    let y = area
+        .y
+        .saturating_add(COMPOSER_RULE_H)
+        .saturating_add(attach_h);
+    let remain = text_h.saturating_sub(attach_h);
+    let text_area_h = remain.max(1);
+    let input_area = Rect::new(area.x, y, area.width, text_area_h);
 
     let raw_text_area = Rect::new(
         input_area.x.saturating_add(TEXT_INSET),
@@ -546,7 +555,7 @@ impl Widget for InputBar<'_> {
             theme::composer_text()
         };
         let text_focused = self.focused;
-        let border = if text_focused {
+        let rule_style = if text_focused {
             theme::active_panel_border()
         } else if self.waiting {
             theme::waiting_border()
@@ -555,47 +564,50 @@ impl Widget for InputBar<'_> {
         } else {
             theme::composer_border_idle()
         };
-        let border_type = if text_focused || self.waiting || self.not_connected {
-            BorderType::Thick
+        let rule_glyph = if text_focused || self.waiting || self.not_connected {
+            "━"
         } else {
-            BorderType::Plain
+            "─"
         };
         let surface = if self.dimmed {
             theme::surface_hover()
         } else {
             theme::composer_surface()
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            // Reserve the strong cell shape for composer attention states;
-            // an idle composer still has its accent-soft border but no longer
-            // competes with the focused workspace surface.
-            .border_type(border_type)
-            .border_style(border)
-            // Keep the border cells on the same background as adjacent panel
-            // chrome. Painting the composer surface across the whole block
-            // makes the bottom border's cell look one row taller than Files.
-            .style(theme::panel());
-        let inner = block.inner(area);
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
-        block.render(area, buf);
-        theme::fill(inner, buf, surface);
+        // DESIGN-012: the composer is a zone, not a box — one top rule,
+        // no side or bottom borders. The rule carries the attention state
+        // (strong shape when focused/waiting/disconnected).
+        let rule = rule_glyph.repeat(area.width as usize);
+        buf.set_string(area.x, area.y, &rule, rule_style);
+        let text_zone = Rect::new(
+            area.x,
+            area.y.saturating_add(COMPOSER_RULE_H),
+            area.width,
+            area.height.saturating_sub(COMPOSER_RULE_H),
+        );
+        theme::fill(text_zone, buf, surface);
 
         let Some(geometry) = composer_geometry(self.model, area, self.attachment) else {
             return;
         };
         let text_area = geometry.text_area;
 
-        if self.attachment.is_some() && inner.height > 1 {
+        if self.attachment.is_some() && text_zone.height > 1 {
             let att_text = self.attachment.unwrap_or("");
             let att_line = Line::from(vec![
                 Span::styled("» ", theme::info()),
                 Span::styled(att_text, theme::info()),
                 Span::styled("  [Ctrl+A or /cf to remove]", theme::dim()),
             ]);
-            Paragraph::new(att_line).render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+            Paragraph::new(att_line).render(
+                Rect::new(
+                    text_zone.x.saturating_add(TEXT_INSET),
+                    text_zone.y,
+                    text_zone.width.saturating_sub(TEXT_INSET),
+                    1,
+                ),
+                buf,
+            );
         }
 
         let scroll = if text_focused {
@@ -669,11 +681,12 @@ mod tests {
 
     fn render_lines(model: &InputModel, width: u16, height: u16, focused: bool) -> Vec<String> {
         let buf = draw_input_bar(model, width, height, focused, model.not_connected, None);
+        // DESIGN-012 text zone: below the top rule, full width past inset.
         let inner = Rect::new(
-            1,
-            1,
-            buf.area().width.saturating_sub(2),
-            buf.area().height.saturating_sub(2),
+            TEXT_INSET,
+            COMPOSER_RULE_H,
+            buf.area().width.saturating_sub(TEXT_INSET),
+            buf.area().height.saturating_sub(COMPOSER_RULE_H),
         );
         (0..inner.height)
             .map(|y| {
@@ -913,10 +926,10 @@ mod tests {
     fn empty_input_starts_with_caret_cell() {
         let m = InputModel::default();
         let buf = draw_input_bar(&m, 40, 5, true, false, None);
-        // Short content is vertically centered in the box (height 5 → 3
-        // inner rows, 1 line of content → 1 row of top padding), and text
-        // starts right after TEXT_INSET, not a removed gutter column.
-        let cell = &buf[(2, 2)];
+        // DESIGN-012: row 0 is the top rule; short content centers in the
+        // text zone below it (4 rows, 1 line → 1 row of top padding), and
+        // text starts right after TEXT_INSET, not a removed gutter column.
+        let cell = &buf[(TEXT_INSET, 2)];
         assert_eq!(cell.symbol(), theme::CURSOR_CELL);
         assert_eq!(cell.style().bg, theme::caret().bg);
     }
@@ -1025,22 +1038,31 @@ mod tests {
     }
 
     #[test]
-    fn composer_uses_strong_border_only_for_attention_states() {
+    fn composer_uses_strong_rule_only_for_attention_states() {
         let model = InputModel::default();
         let idle = draw_input_bar(&model, 48, 5, false, false, None);
         let focused = draw_input_bar(&model, 48, 5, true, false, None);
 
-        assert_eq!(idle[(0, 0)].symbol(), "┌");
-        assert_eq!(focused[(0, 0)].symbol(), "┏");
+        // DESIGN-012: one top rule, no box corners. Idle is plain, focused
+        // is strong — the attention state lives in the rule's shape.
+        let idle_row: String = (0..48).map(|x| idle[(x, 0)].symbol()).collect();
+        let focused_row: String = (0..48).map(|x| focused[(x, 0)].symbol()).collect();
+        assert_eq!(idle_row, "─".repeat(48));
+        assert_eq!(focused_row, "━".repeat(48));
+        assert!(!idle_row.contains('┌') && !focused_row.contains('┏'));
     }
 
     #[test]
-    fn composer_surface_does_not_extend_through_bottom_border_row() {
+    fn composer_zone_has_rule_then_surface_with_no_box() {
         let model = InputModel::default();
         let buf = draw_input_bar(&model, 48, 5, false, false, None);
 
-        assert_eq!(buf[(0, 4)].style().bg, theme::panel().bg);
+        // DESIGN-012: row 0 is the rule; every row below is surface — no
+        // bottom border row, no side borders.
+        assert_eq!(buf[(0, 0)].symbol(), "─");
+        assert_eq!(buf[(0, 4)].style().bg, theme::composer_surface().bg);
         assert_eq!(buf[(1, 3)].style().bg, theme::composer_surface().bg);
+        assert_eq!(buf[(47, 2)].style().bg, theme::composer_surface().bg);
     }
 
     #[test]

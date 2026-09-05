@@ -50,6 +50,7 @@ pub(crate) struct TaskLocalViewState {
     pub(crate) stream: StreamState,
     pub(crate) activity: ActivityFeed,
     pub(crate) banner_state: BannerState,
+    pub(crate) turn_summaries: Vec<TurnSummaryRecord>,
     pub(crate) tool_detail: ToolDetailState,
     pub(crate) composer_chip_focus: Option<usize>,
     pub(crate) approval_session: super::approvals::ApprovalSessionState,
@@ -94,6 +95,7 @@ impl Default for TaskLocalViewState {
             stream: StreamState::default(),
             activity: ActivityFeed::default(),
             banner_state: BannerState::default(),
+            turn_summaries: Vec::new(),
             tool_detail: ToolDetailState::default(),
             composer_chip_focus: None,
             approval_session: super::approvals::ApprovalSessionState::default(),
@@ -728,10 +730,11 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) events: usize,
     pub(crate) last_event_detail: usize,
     pub(crate) banners: usize,
-    /// The turn summary's own identity. Counting banners is not enough: one
-    /// summary replacing another leaves the count unchanged, so the closing
-    /// line of the previous turn would stay on screen through the next one.
-    pub(crate) turn_summary: Option<(u64, usize, usize, Option<u64>)>,
+    /// Per-turn summaries identity: (user ordinal, secs bits, chars, tools,
+    /// output tokens). Counting records is not enough: a re-recorded turn
+    /// leaves the count unchanged, so the previous duration would stay on
+    /// screen through the next one.
+    pub(crate) turn_summaries: Vec<(u64, u64, usize, usize, Option<u64>)>,
     pub(crate) chat_message_start: usize,
     pub(crate) chat_event_start: usize,
     /// Bucketed tail budget used while the cache is partial. Once the cache
@@ -1263,6 +1266,15 @@ pub(crate) struct BannerState {
     pub(crate) items: Vec<ChatItem>,
 }
 
+/// One finished turn's completion metadata (DESIGN-005). View-only: derived
+/// from the turn's timing and token counters at completion, keyed by session
+/// plus user-message ordinal, never written to the journal.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnSummaryRecord {
+    pub(crate) key: TurnKey,
+    pub(crate) summary: TurnSummaryPresentation,
+}
+
 pub(crate) struct RenderCacheState {
     pub(crate) conversation: Option<ConversationRenderCache>,
 }
@@ -1470,6 +1482,12 @@ pub struct TuiApp {
     pub(crate) feedback: FeedbackModel,
     pub(crate) feedback_until: Option<Instant>,
     pub(crate) banner_state: BannerState,
+    /// Per-turn completion metadata (DESIGN-005): view-only presentation
+    /// state keyed by session plus user-message ordinal. Each record renders
+    /// under its own turn's answer; newer live turns never inherit an older
+    /// `Finished`. Never persisted — resume rebuilds it, so restored turns
+    /// carry no ephemeral timing.
+    pub(crate) turn_summaries: Vec<TurnSummaryRecord>,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pub(crate) pending_turn: PendingTurnState,
     pub(crate) pending_interaction: PendingInteractionState,

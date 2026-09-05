@@ -1,5 +1,5 @@
 ---
-version: 2.0
+version: 2.1
 status: reconciled-with-code
 name: Forge TUI Design System
 product: Forge
@@ -40,8 +40,9 @@ layout-blocks:
   - BottomPanel (interactive terminal)
   - StatusBar / Footer (chrome rows)
 focus-blocks:
-  order: [Search, Files, Workspace, Sidebar, Approval, Composer, Footer, BottomPanel]
+  order: [TaskStrip, Search, Files, Workspace, Sidebar, Approval, Composer, Footer, BottomPanel]
   labels:
+    TaskStrip: TASKS
     Search: SEARCH
     Files: FILES
     Workspace: CHAT
@@ -232,28 +233,30 @@ Rules:
 
 ### 5.3 Status indicators (colour never travels alone)
 
-`crates/forge-tui/src/status_glyph.rs` defines one compact animated vocabulary used everywhere:
+`crates/forge-tui/src/status_glyph.rs` defines one compact ASCII vocabulary used everywhere. Each marker is exactly three cells, with no emoji or Nerd Font dependency, so every state stays legible in monochrome via glyph shape plus an adjacent text label at call sites:
 
 | Indicator | Meaning |
 |---|---|
-| `OK` | Success |
-| `WAIT` | Warning / waiting |
-| `ERR` | Error |
-| `INFO` | Information |
-| `MOD` / `ADD` / `DEL` / `NEW` / `SKIP` / `MERGE` | Git modified / added / deleted / untracked / ignored / conflicted |
+| `[ ]` | Pending / queued |
+| `[>]` | Active work (the only orange element; never focus, selection, or completed success) |
+| `[x]` | Complete (neutral in history; green only for a confirmed successful result glyph) |
+| `[!]` | Failed |
+| `[-]` | Cancelled |
+| `[?]` | Warning / needs attention |
+| `[|]` | Blocked |
 
-Indicators use short words and cycling dots so they survive limited-colour terminals without relying on symbolic glyphs. The dots advance on the existing 100ms render tick; animation is restrained and never changes layout width.
+Git status is single letters from the same module: `M` `A` `D` `?` `!` `U` (modified / added / deleted / untracked / ignored / conflicted), bold and semantically coloured. The `✓` tick survives only where it marks a reviewed file and a status-bar outcome; `✗` only for a failed status outcome. Animation is restrained and never changes layout width.
 
 ### 5.4 Limited-colour fallback
 
 Every semantic state must include a textual or symbolic cue:
 
-- Success: `✓`
-- Warning: `!`
-- Failure: `✗`
-- Information: `i`
-- Focus: stronger/thicker border plus title marker
-- Selection: pointer or inverse text, not colour alone
+- Lifecycle: the §5.3 bracket markers (`[ ]` `[>]` `[x]` `[!]` `[-]` `[?]` `[|]`)
+- Git: single letters (`M` `A` `D` `?` `!` `U`)
+- Success: `[x]` (green only for a confirmed result) or `✓` for reviewed/status outcomes
+- Failure: `[!]` or `✗` for a failed status outcome
+- Focus: stronger/thicker border plus the `>` title marker
+- Selection: neutral background plus the `>` pointer, never tint alone
 
 Themes map onto ANSI fallbacks for terminals without true colour.
 
@@ -272,15 +275,15 @@ Forge inherits the user's terminal font. Never bundle or require a font.
 - Use uppercase for compact structural labels only — the focus-block titles are exactly `SEARCH`, `FILES`, `CHAT`, `SIDEBAR`, `COMPOSER`, `FOOTER`, `PANEL`, `APPROVAL` (`types.rs::FocusBlock::label`).
 - Use sentence case for messages, explanations and actions.
 - Avoid decorative ASCII art inside the product chrome.
-- Decorative Unicode is allowed only when an ASCII fallback exists and the meaning remains clear without it.
+- Chrome glyphs are ASCII first (`>`, `v`, `[ ]`, `*`, `+`/`-`): tree markers, state markers and counts never depend on Unicode coverage. Arrows survive only inside key hints (`↑↓←→`, `⇧`, `⏎`), `·` joins hint pairs, and the block caret keeps its cell — all carrying meaning that is also spelled out in adjacent words.
 
 Hierarchy comes from weight, token step and placement — never from size, since terminal font size belongs to the user.
 
 | Level | Treatment |
 |---|---|
 | Brand / application title | `theme::brand()` — bold primary |
-| Active block title | Bold + accent, often with a state marker (`● Terminal`) |
-| Inactive block title | Normal + muted |
+| Active block title | Bold + accent with the `>` marker (`> Terminal`) |
+| Inactive block title | Normal + muted, two-space indented to hold alignment |
 | Primary content | `text_primary` — assistant response, source code |
 | Supporting content | `text_secondary` — metadata, descriptions |
 | Utility content | `text_muted` — keys, timestamps, counts |
@@ -319,7 +322,7 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
 1. **Files** — repository explorer with Git status markers and its own search row (`Search` is a separate Tab stop nested in the same bordered box).
 2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, feedback strip, and the composer. It never hides; the composer lives inside it.
 3. **Workspace** — the center pane. Its only views are `File` and `Diff` (`types.rs::WorkspaceView`); with nothing open it renders an empty-state placeholder. Conversation is deliberately *not* a workspace view.
-4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `●` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
+4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
 5. **StatusBar / Footer** — chrome rows described in §9.
 
 ### 7.2 Spatial priority
@@ -341,6 +344,7 @@ Content width is 95% of frame width (`CONTENT_WIDTH_PERCENT`).
 | ≥ 116 | Files visible alongside sidebar and workspace (`files_fit()`) |
 | < 116 | Files hide entirely; `Ctrl+E` explains instead of toggling |
 | any | Sidebar never hides — worst-case floor keeps it at 40 columns of content |
+| any | Conversation never falls below 44 columns while the workspace is visible |
 
 Sidebar width: half the content width clamped to 64–88 columns at ≥160; otherwise a quarter clamped to 32–44.
 
@@ -352,6 +356,7 @@ Explorer-first collapse is deliberate: the composer (in the sidebar) outranks th
 - Composer input band is capped at 10 visual lines (`MAX_COMPOSER_INPUT_H`) — it grows within bounds and never crowds out the transcript.
 - Theme picker dock is 12 rows (`THEME_DOCK_H`), sized to show built-ins without scrolling.
 - A modal leaves surrounding context visible so it reads as overlaying Forge, with the background clearly secondary.
+- Every modal title uses the shared `> Title` grammar (`theme::modal_title`) — including the workspace unsaved-changes and file-changed-on-disk conflicts. Borders keep severity colour; the marker says who owns the keyboard.
 
 ### 7.5 Cell spacing
 
@@ -381,10 +386,10 @@ Verify layouts at least at these sizes (tests pin `80×18`):
 
 ### 8.1 Blocks and cycle
 
-Eight spatially stable focus blocks (`types.rs::FocusBlock`), cycled by `Tab` / `Shift+Tab` through a fixed order that skips unavailable blocks:
+Nine spatially stable focus blocks (`types.rs::FocusBlock`), cycled by `Tab` / `Shift+Tab` through a fixed order that skips unavailable blocks:
 
 ```
-Search → Files → Workspace(CHAT) → Sidebar → Approval → Composer → Footer → BottomPanel
+TaskStrip → Search → Files → Workspace(CHAT) → Sidebar → Approval → Composer → Footer → BottomPanel
 ```
 
 - `Approval` enters the cycle only while a HITL request or agent question is pending.
@@ -393,7 +398,7 @@ Search → Files → Workspace(CHAT) → Sidebar → Approval → Composer → F
 - A handled event never falls through to another block.
 - `Esc` pops exactly one interaction level.
 
-Block labels are rendered in the title: `SEARCH FILES CHAT SIDEBAR COMPOSER FOOTER PANEL APPROVAL`.
+The canonical label vocabulary is `TASKS SEARCH FILES CHAT SIDEBAR COMPOSER FOOTER PANEL APPROVAL` (`types.rs::FocusBlock::label`). Labels identify the active block in help and status contexts; panes themselves carry `>` title rows, not label tags.
 
 ### 8.2 Modes
 
@@ -402,7 +407,7 @@ Block labels are rendered in the title: `SEARCH FILES CHAT SIDEBAR COMPOSER FOOT
 - **Navigation** — block-level keys apply.
 - **Transient(owner)** — a captured input field owns keys: `SourceSearch` or `JumpToLine`.
 
-Text entry in the Composer or editor is expressed by which block is focused, not by a mode overlay. There is no persistent mode chip; where ambiguity could exist, the block title carries a marker (e.g. `● Terminal` with a thick rule).
+Text entry in the Composer or editor is expressed by which block is focused, not by a mode overlay. There is no persistent mode chip; where ambiguity could exist, the block title carries a marker (e.g. `> Terminal` with a thick rule).
 
 ### 8.3 Navigation grammar
 
@@ -424,7 +429,7 @@ The active block must use at least two signals:
 
 - accent-coloured or stronger/thicker border
 - accent or bold block title
-- explicit state marker where relevant (`● Terminal`)
+- explicit state marker where relevant (`> Terminal`)
 
 Inactive blocks use a muted hairline border and normal title weight.
 
@@ -450,7 +455,7 @@ Avoid duplicating file counts, task details or provider telemetry already shown 
 
 - Inactive border: `border_muted` / `border`.
 - Active border: `accent` (or thick border type where the region is a single rule).
-- Active title: bold accent with delimiter, e.g. `┌─ CHAT ─`.
+- Active title: bold accent with the `>` marker, e.g. `> Terminal`; modals use `theme::modal_title`, panes `theme::pane_title`.
 - No double borders except to express a modal or focused panel.
 
 ### 9.3 Footer
@@ -498,12 +503,14 @@ answer, and outcome colours stay reserved for result state.
 
 Implementation: `crates/forge-tui/src/conversation.rs`.
 
-Planning checklists use compact `[ ]` pending, `[•]` in-progress and `[✓]`
-completed markers. The active task has bold text and an info-coloured marker;
-other tasks are muted. Wrapped text aligns after the checkbox. The heading
-reports completed tasks, and the pinned summary retains the count and current
-task when the checklist scrolls away. Completion reflects the agent's reported
-plan status; tool evidence remains below each step.
+Planning checklists use the lifecycle grammar: `[ ]` pending, `[>]` active
+(orange, bold — the only orange element), `[x]` completed in neutral muted.
+The active task has bold text; other tasks are muted. Wrapped text aligns
+after the checkbox. The heading reports completed tasks, and the pinned
+summary retains the count and current task when the checklist scrolls away.
+Completion reflects the agent's reported plan status; tool evidence remains
+below each step. Nesting stays flat: deeper levels need a transcript schema
+change, so the renderer locks one level rather than inventing hierarchy.
 
 ### 9.5 Composer
 
@@ -513,16 +520,20 @@ plan status; tool evidence remains below each step.
 
 ### 9.6 File tree
 
-- Selected row uses `surface_hover`/`selection` plus a pointer or strong text.
+- Search is one surface row (`/ ` prefix plus query); the tree begins immediately below. No box, no separator.
+- Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.
 - Active file and selected row may differ; distinguish them.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.
-- Directory expansion uses simple Unicode markers with ASCII fallback.
+- Directory expansion uses ASCII `>` / `v` with 2-cell indentation; the query match inside a name takes the shared `search_match` highlight (contiguous runs only — fuzzy-only matches stay plain).
+- A filtered-to-nothing query reports `No matches for "<query>"`; an empty repository reports `This directory is empty`. The two states are never the same line.
 - Do not clear the visible tree during a Git-only refresh (pinned by test — FORGE-DESIGN invariant).
 - Empty, loading, unavailable and failed states must be distinct.
 
 ### 9.7 Source viewer
 
 - Code remains the visual focus; syntax highlighting is restrained (`syntax.*` palette).
+- The title shows the exact file with an ASCII `*` unsaved marker that is never elided; there is no trailing "modified" word.
+- The NORMAL / INSERT mode row shares the composer's text inset so both baselines align.
 - Search matches rank: active match, other matches, current line.
 - Line numbers muted; active line number accented.
 - Horizontal scrolling must not detach markers from content.
@@ -542,13 +553,15 @@ Rules:
 
 - Preserve old and new line numbers.
 - Prefer foreground/gutter markers over large background fills per changed line.
+- The header names the selected file as the pane title (`> …`), with ASCII `+N -M` counts and the `N of M` position; the marker column comes off the elision budget so counts never clip.
+- Reviewed files carry the `✓` tick; counts stay ASCII even in narrow panes.
 - Stale diff state must be explicit; binary/untracked/conflicted states must be truthful.
 - `/diff` holds no content state itself — the pane reads live diff state so refreshes update in place.
 
 ### 9.9 Terminal (BottomPanel)
 
 - One interactive login shell per session; closing the panel never kills it.
-- Focused presentation: thick top rule + `●` + accent title — legible without colour (shape carries it too).
+- Focused presentation: thick top rule + `> Terminal` + accent title — legible without colour (shape carries it too).
 - Busy phase, activity feed lines, shell label and a painted caret render inside the panel.
 - Standard control keys, arrows, Tab, paste and resize are forwarded to the shell.
 

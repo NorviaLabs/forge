@@ -165,6 +165,9 @@ pub struct ThemePalette {
     pub cursor: Rgb,
     pub tag: Rgb,
     pub search_match: Rgb,
+    /// Active-work token (2026 design system). Optional in TOML with
+    /// `warning` fallback for backward compatibility.
+    pub activity: Rgb,
     /// Border for the composer while an approval is pending ("paused" look).
     pub waiting_border: Rgb,
     /// Hue of structural landmarks inside a model response — section labels
@@ -253,6 +256,10 @@ struct ThemeFile {
     cursor: Rgb,
     tag: Rgb,
     search_match: Rgb,
+    /// Optional active-work token; falls back to `warning` when absent, so
+    /// existing user theme drops without this key keep parsing.
+    #[serde(default)]
+    activity: Option<Rgb>,
     /// Optional: falls back to the theme's `warning` when absent, so existing
     /// user theme drops without this key keep parsing.
     #[serde(default)]
@@ -318,6 +325,7 @@ impl From<ThemeFile> for ThemeDefinition {
                 cursor: file.cursor,
                 tag: file.tag,
                 search_match: file.search_match,
+                activity: file.activity.unwrap_or(file.warning),
                 waiting_border: file.waiting_border.unwrap_or(file.warning),
                 structure: file.structure.unwrap_or(file.info),
                 scan_band: file.scan_band.unwrap_or(file.surface),
@@ -407,6 +415,49 @@ tag = "#56D4DD"
 attribute = "#E3B341"
 default = "#E6EDF3"
 "##;
+
+    #[test]
+    fn activity_falls_back_to_warning_for_older_theme_files() {
+        let theme = parse_theme_toml(SAMPLE_THEME).unwrap();
+        assert_eq!(theme.palette.activity, theme.palette.warning);
+    }
+
+    #[test]
+    fn explicit_activity_token_is_preserved() {
+        let with_activity = SAMPLE_THEME.replace(
+            "search_match = \"#334257\"",
+            "search_match = \"#334257\"\nactivity = \"#FFA31D\"",
+        );
+        let theme = parse_theme_toml(&with_activity).unwrap();
+        assert_eq!(theme.palette.activity, Rgb(0xFF, 0xA3, 0x1D));
+    }
+
+    #[test]
+    fn builtin_themes_match_2026_semantic_tokens() {
+        let dark = parse_theme_toml(include_str!("../../forge-tui/themes/forge-dark.toml"))
+            .expect("forge-dark parses");
+        let p = &dark.palette;
+        assert_eq!(p.background, Rgb(0x14, 0x14, 0x14));
+        assert_eq!(p.background_deep, Rgb(0x08, 0x08, 0x08));
+        assert_eq!(p.surface, Rgb(0x1E, 0x1E, 0x1E));
+        assert_eq!(p.accent, Rgb(0x43, 0x9E, 0xFD));
+        assert_eq!(p.accent_soft, Rgb(0x18, 0x2B, 0x3D));
+        assert_eq!(p.activity, Rgb(0xFF, 0xA3, 0x1D));
+        assert_eq!(p.agent, Rgb(0xA0, 0xA0, 0xA0));
+        assert_eq!(p.structure, Rgb(0xA0, 0xA0, 0xA0));
+        assert_eq!(p.cursor, p.accent);
+        assert!(p.accent_status_collision().is_none());
+
+        let light = parse_theme_toml(include_str!("../../forge-tui/themes/forge-light.toml"))
+            .expect("forge-light parses");
+        let p = &light.palette;
+        assert_eq!(p.background, Rgb(0xFA, 0xFA, 0xFA));
+        assert_eq!(p.background_deep, Rgb(0xE8, 0xE8, 0xE8));
+        assert_eq!(p.accent, Rgb(0x00, 0x5E, 0xB8));
+        assert_eq!(p.activity, Rgb(0x96, 0x53, 0x00));
+        assert_eq!(p.agent, Rgb(0x54, 0x54, 0x54));
+        assert!(p.accent_status_collision().is_none());
+    }
 
     #[test]
     fn parse_hex_accepts_hash_prefix() {
