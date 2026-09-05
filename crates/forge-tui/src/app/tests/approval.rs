@@ -103,7 +103,7 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(!rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
     // The shortcut leads the row it triggers.
-    assert!(rendered.contains("\u{276f} y Run once"), "{rendered}");
+    assert!(rendered.contains("> y Run once"), "{rendered}");
     assert!(rendered.contains("n Don't run"), "{rendered}");
     assert!(
         rendered.contains("Allow bash(git push *) this session"),
@@ -586,7 +586,7 @@ async fn approval_card_renders_in_every_shipped_theme() {
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("\u{276f} y Run once"),
+                rendered.contains("> y Run once"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(

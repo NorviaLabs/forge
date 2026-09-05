@@ -211,7 +211,8 @@ mod tests {
 
         let long = FeedbackModel::warn("abcdefghijklmnopqrstuvwxyz");
         let rendered = render_feedback(&long, 20, 4);
-        assert!(rendered.contains("WAIT") && rendered.contains("abcdef"));
+        // 2026 grammar: warning renders `[?]`, not the animated WAIT word.
+        assert!(rendered.contains("[?]") && rendered.contains("abcdef"));
     }
 
     #[test]

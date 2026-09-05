@@ -1,5 +1,6 @@
 use crate::activity::ActivityFeed;
 use crate::theme;
+use crate::widgets::panel;
 use crate::widgets::BusyPhase;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -37,7 +38,8 @@ impl Widget for BottomPanel<'_> {
         // low-color terminals and easy to miss even in full color. Match the
         // composer's structural cue — a thick border when focused — so
         // "where do my keystrokes go" is answerable from shape, and mark the
-        // title too, since the rule is only one cell tall.
+        // title with the shared `>` grammar, since the rule is only one
+        // cell tall. Callers pass modal-suppressed focus (DESIGN-004).
         let block = Block::default()
             .borders(Borders::TOP)
             .border_type(if self.focused {
@@ -51,14 +53,7 @@ impl Widget for BottomPanel<'_> {
                 theme::inactive_panel_border()
             })
             .style(theme::panel())
-            .title(Line::from(Span::styled(
-                if self.focused {
-                    " ● Terminal "
-                } else {
-                    " Terminal "
-                },
-                theme::text(),
-            )));
+            .title(panel::title(self.focused, false, "Terminal"));
         let inner = block.inner(area);
         block.render(area, buf);
         let lines = terminal_lines(
@@ -241,8 +236,8 @@ mod tests {
             focused, unfocused,
             "focused and unfocused terminals must differ in glyphs, not only color"
         );
-        assert!(focused.contains("● Terminal"), "{focused}");
-        assert!(!unfocused.contains("● Terminal"), "{unfocused}");
+        assert!(focused.contains("> Terminal"), "{focused}");
+        assert!(!unfocused.contains("> Terminal"), "{unfocused}");
         // Thick top rule when focused, plain when not.
         assert!(focused.contains('━'), "{focused}");
         assert!(!unfocused.contains('━'), "{unfocused}");

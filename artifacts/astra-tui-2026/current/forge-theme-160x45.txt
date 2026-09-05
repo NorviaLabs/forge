@@ -1,0 +1,45 @@
+                                                    ⌂ /private/tmp/astra-forge-fixture  ·  ⎇ fix/ux-fixture*
+     TASKS [INFO..  1 astra-forge-fixture · main]
+    ┌───────────────────────────────────┐┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │ ┌───────────────────────────────┐ ││      10 │ +                                                                                                     │
+    │ │ formatter                     │ ││      11 │ +     def test_blank_last_name(self):                                                                 │
+    │ └───────────────────────────────┘ ││      12 │ +         self.assertEqual(display_name("Ada", ""), "Ada")                                            │
+    │ ───────────────────────────────── ││      13 │ +                                                                                                     │
+    │ ▾ astra-forge-fixture             ││      14 │ +     def test_strips_surrounding_spaces(self):                                                       │
+    │   ▾ __pycache__                   ││      15 │ +         self.assertEqual(display_name("  Ada  ", "  Lovelace  "), "Ada Lovelace")                   │
+    │       formatter.cpython-314.pyc N ││                                                                                                                 │
+    │       test_formatter.cpython-314. ││                                                                                                                 │
+    │     formatter.py MOD..            ││   The requested unittest suite passes with all four tests.                                                      │
+    │     test_formatter.py MOD..       ││   Plan · 3 of 3 done                                                                                            │
+    │                                   ││   [✓] Inspect fixture and display_name implementation                                                           │
+    │                                   ││       ls ., read_file formatter.py, read_file test_for┌ Preview ───────────────────────────────────────────────┐│
+    │                                   ││   [✓] Edit display_name and add tests                 │⌂ ~/demo  ·  ⎇ main*                                    ││
+    │                                   ││       apply_patch                                     │fn ready(id: &str) {                                    ││
+    │                                   ││   [✓] Run unittest verification                       │-  let theme = "dark";                                  ││
+    │                                   ││       exec_command python3 -m, git                    │+  row.tag = "connected";                               ││
+    │                                   ││                                                       │› Ship the theme picker.                                ││
+    │                                   ││   Implemented display_name cleanup and added tests for│Preview is live. Nothing written yet.                   ││
+    │                                   ││                                                       │⏸ approval · bash                                       ││
+    │                                   ││   • Blank first name                                  │  git push origin main                                  ││
+    │                                   ││   • Blank last name                                   │▶ Run once                                              ││
+    │                                   ││   • Surrounding whitespace                            │> What does this project do?                            ││
+    │                                   ││   python3 -m unittest -v passes all 4 tests.          │● Ready   ok  wait  error  info                         ││
+    │                                   ││                                                       │                                                        ││
+    │                                   ││       Answered in 44s   ·  693 chars  ·  21 tok/s  ·  │                                                        ││
+    │                                   ││                                                       │                                                        ││
+    │                                   ││                                                       └────────────────────────────────────────────────────────┘│
+    │                                   │└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    │                                   │┌ Theme · ↑↓ preview · Enter apply · Esc cancel ──────────────────────────────────────────────────────────────────┐
+    │                                   ││  System (system)                                                                                                │
+    │                                   ││─────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+    │                                   ││  Forge Dark (forge-dark) · current                                                                              │
+    │                                   ││▶ Forge Light (forge-light)                                                                                      │
+    │                                   ││                                                                                                                 │
+    │                                   ││                                                                                                                 │
+    │                                   ││                                                                                                                 │
+    │                                   ││                                                                                                                 │
+    │                                   ││                                                                                                                 │
+    │ formatter.py                      ││                                                                                                                 │
+    └───────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+    ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     ● OpenAI/gpt-5.6-luna │ Medium                                                                  ready   ·  context 2%  ·  101.1k tokens · 55.20% cache

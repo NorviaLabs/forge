@@ -1,0 +1,35 @@
+                      ⌂ ~/Projects/forge/.worktrees/astra-tui-redesign  ·  ⎇ feat/astra-tui-2026*
+   ┌──────────────────────────┐┌────────────────────────────────────────────────────────────────────────────────────┐
+   │ ┌──────────────────────┐ ││                                                                                    │
+   │ │ Search files…        │ ││     Planning sequential execution with retries                                     │
+   │ └──────────────────────┘ ││                                                                                    │
+   │ ──────────────────────── ││   I’ll run the failing command first, then run the recovery command regardless     │
+   │ ▾ astra-tui-redesign     ││   of its result.                                                                   │
+   │   ▸ .cargo               ││                                                                                    │
+   │   ▸ .forge               ││     ▸ exec_command    Ctrl+O                                                       │
+   │   ▸ .github              ││       $ python3 -c "raise SystemExit(1)" · session #2 · exited                     │
+   │   ▸ artifacts            ││                                                                                    │
+   │   ▸ crates               ││   The first command failed with status 1 as intended; now I’m running the          │
+   │   ▸ docs                 ││   recovery command.                                                                │
+   │   ▸ install              ││                                                                                    │
+   │     .gitattributes       ││     ▸ exec_command    Ctrl+O                                                       │
+   │     .gitignore           ││       $ printf RECOVERED · session #3 · exited                                     │
+   │     AGENTS.md            ││                                                                                    │
+   │     Cargo.lock           ││   python3 -c "raise SystemExit(1)" exited with status 1, while printf RECOVERED    │
+   │     Cargo.toml           ││   succeeded with status 0 and printed RECOVERED.                                   │
+   │     CLAUDE.md            ││                                                                                    │
+   │     CODE_OF_CONDUCT.md   ││ multi-task mode unavailable: repository task database error: error returned from   │
+   │     CONTRIBUTING.md      ││ database: (code: 2067) UNIQUE constraint failed: tasks.slot                        │
+   │     deny.toml            ││                                                                                    │
+   │     FORGE-DESIGN.md      ││       Answered in 12s   ·  356 chars  ·  18 tok/s  ·  2 tools                      │
+   │     LICENSE              ││                                                                                    │
+   │     opencode.json        ││                                                                                    │
+   │     README.md            ││                                                                                    │
+   │     SECURITY.md          ││                                                                                    │
+   │                          ││                                                                                    │
+   │                          │└────────────────────────────────────────────────────────────────────────────────────┘
+   │                          │┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   │                          │┃  Reply, or describe the next task…                                                 ┃
+   └──────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+   ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    ● OpenAI/gpt-5.6-luna │ Medium                             ready   ·  context 16%  ·  1.4M tokens · 76.67% cache

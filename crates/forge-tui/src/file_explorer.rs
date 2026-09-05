@@ -9,6 +9,7 @@ use std::sync::{
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
@@ -916,6 +917,7 @@ fn explorer_row_line(
     panel_focused: bool,
     status: Option<GitStatusKind>,
     _icon_mode: FileIconMode,
+    query: &str,
 ) -> Line<'static> {
     let selection_style = selected.then(|| {
         if panel_focused {
@@ -930,10 +932,21 @@ fn explorer_row_line(
         FileKind::Symlink => theme::symlink(),
         FileKind::File | FileKind::Unknown => theme::text(),
     });
-    let mut spans = vec![
-        Span::styled(format!("{prefix}{marker} "), chrome_style),
-        Span::styled(name.to_string(), name_style),
-    ];
+    // The leading column is the selection pointer: `>` on the selected row,
+    // blank elsewhere, so the tree never shifts and selection never depends
+    // on background tint alone.
+    let pointer = if selected { ">" } else { " " };
+    let mut spans = vec![Span::styled(
+        format!("{pointer}{prefix}{marker} "),
+        chrome_style,
+    )];
+    // Selection wins over everything; otherwise the first query token found
+    // as a contiguous (case-insensitive) run in the name is highlighted.
+    if selection_style.is_some() || query.trim().is_empty() {
+        spans.push(Span::styled(name.to_string(), name_style));
+    } else {
+        spans.extend(highlight_name_spans(name, query, name_style));
+    }
     if let Some(status) = status {
         let mut glyph = status_indicator_now(Status::from(status));
         if let Some(style) = selection_style {
@@ -945,10 +958,73 @@ fn explorer_row_line(
     Line::from(spans)
 }
 
-/// Fixed chrome above the tree: the nested search box (3 rows: top border,
-/// content, bottom border) plus the focus-dot rule below it (1 row).
-const SEARCH_BOX_HEIGHT: u16 = 3;
-const TREE_TOP_OFFSET: u16 = SEARCH_BOX_HEIGHT + 1;
+/// Split `name` into spans with the first query token that occurs as a
+/// contiguous case-insensitive run highlighted with the shared
+/// [`theme::search_match`] style (same as the source viewer). Tokens that
+/// only match as a fuzzy subsequence (or only match an ancestor path) leave
+/// the name plain: no highlight is more truthful than a wrong one.
+fn highlight_name_spans(name: &str, query: &str, base: Style) -> Vec<Span<'static>> {
+    let token = query
+        .split_whitespace()
+        .find(|token| contains_case_insensitive(name, token));
+    let Some(token) = token else {
+        return vec![Span::styled(name.to_string(), base)];
+    };
+    let Some((start, end)) = match_byte_range_case_insensitive(name, token) else {
+        return vec![Span::styled(name.to_string(), base)];
+    };
+    let mut spans = Vec::with_capacity(3);
+    if start > 0 {
+        spans.push(Span::styled(name[..start].to_string(), base));
+    }
+    spans.push(Span::styled(
+        name[start..end].to_string(),
+        theme::search_match(),
+    ));
+    if end < name.len() {
+        spans.push(Span::styled(name[end..].to_string(), base));
+    }
+    spans
+}
+
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+    match_byte_range_case_insensitive(haystack, needle).is_some()
+}
+
+/// Byte range of the first case-insensitive occurrence of `needle` in
+/// `haystack`. Matching runs over lowercased chars while every entry keeps
+/// its source byte offset and length, so multi-byte text and multi-char
+/// lowercasings (e.g. `İ`) still slice on valid boundaries.
+fn match_byte_range_case_insensitive(haystack: &str, needle: &str) -> Option<(usize, usize)> {
+    let needle: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
+    if needle.is_empty() {
+        return None;
+    }
+    let hay: Vec<(usize, usize, char)> = haystack
+        .char_indices()
+        .flat_map(|(byte, c)| {
+            let len = c.len_utf8();
+            c.to_lowercase().map(move |lower| (byte, len, lower))
+        })
+        .collect();
+    (0..=hay.len().saturating_sub(needle.len())).find_map(|i| {
+        let matches = needle.iter().enumerate().all(|(j, nc)| hay[i + j].2 == *nc);
+        if !matches {
+            return None;
+        }
+        let start = hay[i].0;
+        let (last_byte, last_len, _) = hay[i + needle.len() - 1];
+        Some((start, last_byte + last_len))
+    })
+}
+
+/// Fixed chrome above the tree: the search surface is a single row; the tree
+/// begins immediately below it. (DESIGN-016 recovered the old 3-row bordered
+/// box plus its separator rule as tree rows.)
+const SEARCH_ROW_HEIGHT: u16 = 1;
+/// Display width of the `/ ` search affordance prefix.
+const SEARCH_PREFIX_WIDTH: u16 = 2;
+const TREE_TOP_OFFSET: u16 = SEARCH_ROW_HEIGHT;
 
 pub struct FileExplorerWidget<'a> {
     pub explorer: &'a mut FileExplorer,
@@ -983,7 +1059,7 @@ impl Widget for FileExplorerWidget<'_> {
             lines.push(Line::from("No repository detected"));
         } else if let Some(root) = self.explorer.root.as_ref() {
             if root.loading || !root.loaded {
-                lines.push(Line::from("Loading files…"));
+                lines.push(Line::from("Loading files..."));
             } else if let Some(ref error) = root.error {
                 lines.push(Line::styled(
                     format!("Unable to load files: {}", error),
@@ -1000,12 +1076,13 @@ impl Widget for FileExplorerWidget<'_> {
                     ));
                 }
                 let list_height = height.saturating_sub(error_shown as usize);
+                let query = self.explorer.search_query.clone();
                 for node in visible.iter().skip(self.explorer.scroll).take(list_height) {
                     let selected = self.explorer.selected_path.as_ref() == Some(&node.path);
                     let marker = match node.kind {
-                        FileKind::Directory if node.loading => "…",
-                        FileKind::Directory if node.expanded => "▾",
-                        FileKind::Directory => "▸",
+                        FileKind::Directory if node.loading => "...",
+                        FileKind::Directory if node.expanded => "v",
+                        FileKind::Directory => ">",
                         FileKind::File | FileKind::Symlink | FileKind::Unknown => " ",
                     };
                     let prefix = TREE_INDENT.repeat(node.depth);
@@ -1024,6 +1101,7 @@ impl Widget for FileExplorerWidget<'_> {
                         self.focused,
                         status,
                         self.explorer.icon_mode,
+                        &query,
                     ));
                     if let Some(error) = &node.error {
                         lines.push(Line::styled(
@@ -1043,30 +1121,28 @@ impl Widget for FileExplorerWidget<'_> {
                         ));
                     }
                 }
+                // A query that filters everything out is a different state
+                // from an empty repository: say what didn't match.
+                if visible.is_empty() && !query.trim().is_empty() {
+                    lines.push(Line::styled(
+                        format!("No matches for \"{}\"", query.trim()),
+                        theme::muted(),
+                    ));
+                }
             }
         }
         if inner.height >= TREE_TOP_OFFSET {
-            let search_box_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_BOX_HEIGHT);
-            let search_box = Block::default()
-                .borders(Borders::ALL)
-                // The search box's own border carries whether search is
-                // active. A separate indicator below it (a rule with a dot
-                // centred in it) was the universal shape of a slider, and
-                // people tried to drag it.
-                .border_style(if self.search_active {
-                    theme::active_panel_border()
-                } else {
-                    theme::muted()
-                });
-            let search_box_inner = search_box.inner(search_box_area);
-            search_box.render(search_box_area, buf);
-
+            // One surface row: a `/` affordance plus the query. No box, no
+            // separator — the tree begins on the very next row. Search focus
+            // shows in the caret; the `/` prefix marks the row as search even
+            // when the tree has focus and the caret is hidden.
+            let search_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_ROW_HEIGHT);
             let text_focused = self.focused && self.explorer.search_focused;
             let (search, search_style) = if self.explorer.search_query.is_empty() {
                 let text = if text_focused {
-                    format!("{}Search files…", theme::CURSOR_GLYPH)
+                    format!("{}Search files...", theme::CURSOR_GLYPH)
                 } else {
-                    "Search files…".to_string()
+                    "Search files...".to_string()
                 };
                 (text, theme::composer_placeholder())
             } else {
@@ -1077,31 +1153,33 @@ impl Widget for FileExplorerWidget<'_> {
                 };
                 (text, theme::composer_text())
             };
+            // Search state lives on the `/` prefix now that the box border is
+            // gone: it carries the active border colour while the tree rows
+            // stay neutral.
+            let prefix_style = if self.search_active {
+                theme::active_panel_border()
+            } else {
+                theme::muted()
+            };
             Paragraph::new(Line::from(vec![
                 Span::raw(" ".repeat(TEXT_INSET as usize)),
+                Span::styled("/ ", prefix_style),
                 Span::styled(search, search_style),
             ]))
-            .render(search_box_inner, buf);
+            .render(search_area, buf);
             if text_focused {
-                let cursor_x = if self.explorer.search_query.is_empty() {
-                    search_box_inner.x + TEXT_INSET
-                } else {
-                    search_box_inner.x
-                        + TEXT_INSET
-                        + self.explorer.search_query.chars().count() as u16
-                };
-                if cursor_x < search_box_inner.right() {
-                    theme::paint_caret(buf, cursor_x, search_box_inner.y);
+                let cursor_x = search_area.x
+                    + TEXT_INSET
+                    + SEARCH_PREFIX_WIDTH
+                    + if self.explorer.search_query.is_empty() {
+                        0
+                    } else {
+                        self.explorer.search_query.chars().count() as u16
+                    };
+                if cursor_x < search_area.right() {
+                    theme::paint_caret(buf, cursor_x, search_area.y);
                 }
             }
-
-            let rule_y = inner.y + SEARCH_BOX_HEIGHT;
-            let width = inner.width as usize;
-            Paragraph::new(Line::from(Span::styled(
-                "─".repeat(width),
-                theme::border_muted(),
-            )))
-            .render(Rect::new(inner.x, rule_y, inner.width, 1), buf);
 
             Paragraph::new(lines).render(
                 Rect::new(
@@ -1155,9 +1233,11 @@ mod tests {
             true,
             Some(GitStatusKind::Modified),
             FileIconMode::Unicode,
+            "",
         );
         assert_eq!(selected.spans[0].style, theme::selection_active());
         assert_eq!(selected.spans[1].style, theme::selection_active());
+        assert_eq!(selected.spans[0].content.as_ref(), ">  ");
         let inactive = explorer_row_line(
             "",
             " ",
@@ -1168,9 +1248,11 @@ mod tests {
             false,
             None,
             FileIconMode::Unicode,
+            "",
         );
         assert_eq!(inactive.spans[0].style, theme::selection_inactive());
         assert_eq!(inactive.spans[1].style, theme::selection_inactive());
+        assert_eq!(inactive.spans[0].content.as_ref(), ">  ");
         let unselected = explorer_row_line(
             "",
             " ",
@@ -1181,22 +1263,19 @@ mod tests {
             true,
             Some(GitStatusKind::Added),
             FileIconMode::Unicode,
+            "",
         );
+        assert_eq!(unselected.spans[0].content.as_ref(), "   ");
         assert_eq!(unselected.spans[1].style, theme::text());
-        assert!(
-            unselected
-                .spans
-                .last()
-                .unwrap()
-                .content
-                .as_ref()
-                .starts_with("ADD"),
-            "animated status should retain its semantic label"
+        assert_eq!(
+            unselected.spans.last().unwrap().content.as_ref(),
+            "A",
+            "git status keeps its single-letter code"
         );
     }
 
     #[test]
-    fn row_rendering_uses_animated_git_status_labels() {
+    fn row_rendering_uses_git_status_codes() {
         let line = explorer_row_line(
             "",
             " ",
@@ -1207,21 +1286,19 @@ mod tests {
             false,
             Some(GitStatusKind::Modified),
             FileIconMode::Unicode,
+            "",
         );
         let text: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert!(text.contains("  long_filename.rs MOD"), "{text:?}");
-        assert!(
-            line.spans
-                .last()
-                .unwrap()
-                .content
-                .as_ref()
-                .starts_with("MOD"),
-            "animated status should retain its semantic label"
+        // 2026 grammar: single-letter Git codes (M A D ? ! U), no animation.
+        assert!(text.contains("   long_filename.rs M"), "{text:?}");
+        assert_eq!(
+            line.spans.last().unwrap().content.as_ref(),
+            "M",
+            "git status keeps its single-letter code"
         );
     }
 
@@ -1230,7 +1307,7 @@ mod tests {
         let prefix = TREE_INDENT.repeat(2);
         let line = explorer_row_line(
             &prefix,
-            "▸",
+            ">",
             Path::new("src/ui/app.rs"),
             "app.rs",
             FileKind::File,
@@ -1238,13 +1315,15 @@ mod tests {
             false,
             None,
             FileIconMode::Unicode,
+            "",
         );
         let text: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(text, "    ▸ app.rs");
+        // Pointer gutter (blank here) + 2-cell indent + ASCII marker.
+        assert_eq!(text, "     > app.rs");
     }
 
     #[test]
@@ -1259,13 +1338,14 @@ mod tests {
             false,
             None,
             FileIconMode::Unicode,
+            "",
         );
         let text: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(text, "  雪.py");
+        assert_eq!(text, "   雪.py");
         assert!(line.width() > 4);
 
         let hidden = explorer_row_line(
@@ -1278,13 +1358,14 @@ mod tests {
             false,
             None,
             FileIconMode::Unicode,
+            "",
         );
         let text: String = hidden
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(text, "  .env");
+        assert_eq!(text, "   .env");
     }
 
     #[test]
@@ -1931,44 +2012,51 @@ mod tests {
     }
 
     #[test]
-    fn search_box_has_top_and_bottom_border_rows() {
+    fn search_is_one_surface_row_with_tree_immediately_below() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-        let area = Rect::new(0, 0, 24, 14);
+        let area = Rect::new(0, 0, 30, 14);
         let buf = render_widget(&mut explorer, area, true);
-        // Outer FILES block reserves 1 border row + 1 padding column on
-        // each side, so the nested search box starts at (area.x + 2, area.y + 1).
-        let inner_y = area.y + 1;
-        let top_row = row_text(&buf, area, inner_y);
-        let bottom_row = row_text(&buf, area, inner_y + 2);
-        assert!(top_row.contains('┌') && top_row.contains('┐'));
-        assert!(bottom_row.contains('└') && bottom_row.contains('┘'));
+        // Outer FILES block reserves 1 border row, so the search surface row
+        // is the first inner row and the tree starts on the very next one.
+        let search_row = row_text(&buf, area, area.y + 1);
+        // (The focused block caret occupies its own cell between the prefix
+        // and the placeholder, so match the two halves separately.)
+        assert!(search_row.contains("/ "), "{search_row:?}");
+        assert!(search_row.contains("Search files..."), "{search_row:?}");
+        for corner in ['┌', '┐', '└', '┘'] {
+            assert!(!search_row.contains(corner), "{search_row:?}");
+        }
+        // No separator rule between search and tree: the next row already
+        // carries tree content (here the no-repository empty state).
+        let tree_row = row_text(&buf, area, area.y + 2);
+        assert!(tree_row.contains("No repository detected"), "{tree_row:?}");
     }
 
-    /// Search state lives on the search box's own border now. The old
-    /// indicator — a rule with a dot centred in it — was the universal shape
-    /// of a slider, and invited dragging.
+    /// Search state lives on the `/` prefix now that the box border is gone.
+    /// The old indicator — a rule with a dot centred in it — was the
+    /// universal shape of a slider, and invited dragging.
     #[test]
-    fn search_state_shows_on_the_search_box_border_not_a_knob() {
+    fn search_state_shows_on_the_search_prefix_not_a_knob() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 24, 14);
 
         let idle = render_widget(&mut explorer, area, false);
         let active = render_widget(&mut explorer, area, true);
 
-        let rule_y = area.y + 1 + SEARCH_BOX_HEIGHT;
         for buf in [&idle, &active] {
-            let row = row_text(buf, area, rule_y);
+            let row = row_text(buf, area, area.y + 1);
             assert!(!row.contains('○') && !row.contains('●'), "{row}");
         }
 
-        // The box border changes colour instead.
-        let border = (area.x + 2, area.y + 1);
+        // The `/` prefix changes colour instead. Outer border (1) + padding
+        // (1) + inset (1) puts `/` at area.x + 4.
+        let prefix = (area.x + 4, area.y + 1);
         assert_ne!(
-            idle[border].style().fg,
-            active[border].style().fg,
-            "the search box border must carry the state"
+            idle[prefix].style().fg,
+            active[prefix].style().fg,
+            "the search prefix must carry the state"
         );
-        assert_eq!(active[border].style().fg, theme::active_panel_border().fg);
+        assert_eq!(active[prefix].style().fg, theme::active_panel_border().fg);
     }
 
     /// `selected_relative_path` is "." at the workspace root, which left a
@@ -1984,17 +2072,85 @@ mod tests {
     }
 
     #[test]
-    fn search_box_shows_block_caret_and_placeholder_without_icon() {
+    fn search_row_shows_block_caret_and_placeholder_without_icon() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 24, 14);
         let buf = render_widget(&mut explorer, area, true);
-        let content_row = area.y + 2;
+        let content_row = area.y + 1;
         let row = row_text(&buf, area, content_row);
-        let cursor = &buf[(area.x + 4, content_row)];
+        // Outer border (1) + padding (1) + inset (1) + `/ ` prefix (2).
+        let cursor = &buf[(area.x + 5, content_row)];
         assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
         assert_eq!(cursor.style().bg, theme::caret().bg);
-        assert!(row.contains(" Search files…"));
+        assert!(row.contains("/ "), "{row:?}");
+        assert!(row.contains("Search files..."), "{row:?}");
         assert!(!row.contains('⌕'));
+    }
+
+    #[test]
+    fn query_match_highlights_the_contiguous_run_in_the_name() {
+        let line = explorer_row_line(
+            "",
+            " ",
+            Path::new("main.rs"),
+            "main.rs",
+            FileKind::File,
+            false,
+            true,
+            None,
+            FileIconMode::Unicode,
+            "mai",
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "   main.rs");
+        let highlighted: Vec<_> = line
+            .spans
+            .iter()
+            .filter(|span| span.style == theme::search_match())
+            .collect();
+        assert_eq!(highlighted.len(), 1);
+        assert_eq!(highlighted[0].content.as_ref(), "mai");
+    }
+
+    #[test]
+    fn fuzzy_only_match_leaves_the_name_plain() {
+        // "mrs" matches "main.rs" as a fuzzy subsequence but never occurs
+        // contiguously: highlighting it would point at the wrong letters.
+        let line = explorer_row_line(
+            "",
+            " ",
+            Path::new("main.rs"),
+            "main.rs",
+            FileKind::File,
+            false,
+            true,
+            None,
+            FileIconMode::Unicode,
+            "mrs",
+        );
+        assert!(
+            line.spans
+                .iter()
+                .all(|span| span.style != theme::search_match()),
+            "{line:?}"
+        );
+    }
+
+    #[test]
+    fn match_byte_range_stays_on_char_boundaries() {
+        assert_eq!(
+            match_byte_range_case_insensitive("雪main.rs", "MAIN"),
+            Some((3, 7))
+        );
+        assert_eq!(
+            match_byte_range_case_insensitive("lib.rs", "LIB"),
+            Some((0, 3))
+        );
+        assert_eq!(match_byte_range_case_insensitive("lib.rs", "zzz"), None);
     }
 
     #[test]

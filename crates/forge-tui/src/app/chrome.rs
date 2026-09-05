@@ -776,9 +776,9 @@ impl TuiApp {
         }
         for (index, item) in plan.plan.iter().enumerate() {
             let marker = match item.status {
-                forge_types::PlanStepStatus::Completed => "✓",
-                forge_types::PlanStepStatus::InProgress => "•",
-                forge_types::PlanStepStatus::Pending => "○",
+                forge_types::PlanStepStatus::Completed => "x",
+                forge_types::PlanStepStatus::InProgress => ">",
+                forge_types::PlanStepStatus::Pending => " ",
             };
             rows.push(StatusRow::field(
                 "Step",

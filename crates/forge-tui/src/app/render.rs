@@ -22,12 +22,14 @@ fn composer_input_height(
 ) -> u16 {
     let content_width =
         crate::layout::estimate_composer_region_width(area, show_files, expanded_conversation)
-            .saturating_sub(2) // side borders
             .saturating_sub(crate::widgets::input::TEXT_INSET as usize)
             .max(1);
-    // The input widget owns its two border rows. Keep one additional row for
-    // the compact composer so short prompts do not reserve a large blank band.
-    (input.visual_lines_for_width(content_width) + 2).min(crate::layout::MAX_COMPOSER_INPUT_H)
+    // DESIGN-012: the composer owns one chrome row (the top rule), not two
+    // border rows. Text grows to 10 rows max, then scrolls.
+    input
+        .visual_lines_for_width(content_width)
+        .min(crate::layout::MAX_COMPOSER_INPUT_H)
+        + crate::widgets::input::COMPOSER_RULE_H
 }
 
 fn queued_messages_for_render(session: &AgentSession) -> Vec<String> {
@@ -95,7 +97,11 @@ impl TuiApp {
         }
         crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
         let fb_h = u16::from(!self.feedback.is_empty());
-        let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
+        // DESIGN-004: an open modal owns the keyboard, so background panes
+        // suppress their focus markers/borders while it is open. Closing it
+        // restores the previous valid owner via `restore_focus_after_closing`.
+        let modal_open = self.overlay.is_some();
+        let slash_mode = !modal_open && self.input.text.starts_with('/');
         let theme_picking = matches!(self.overlay, Some(Overlay::Theme { .. }));
         // Resolve this before measuring the composer so wrapping uses the
         // same horizontal geometry that the layout will paint.
@@ -131,10 +137,10 @@ impl TuiApp {
             .unwrap_or((None, None));
         // Model/vendor/effort live on the footer chip row; the composer band
         // is text-only and the footer always reserves two rows — a thin
-        // divider rule plus the chip/activity content row. The focused
-        // footer's hint shares the content row (replacing the right-side
-        // activity while focused), never adds a third row.
-        let hint_h: u16 = 2;
+        // DESIGN-012: the footer is a single content row with no separator.
+        // The focused footer's hint shares that row (replacing the
+        // right-side activity while focused), never adds another.
+        let hint_h: u16 = 1;
         // An open file or `/diff` occupies the center workspace pane. Anything
         // else (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
@@ -257,8 +263,11 @@ impl TuiApp {
             frame.render_widget(
                 FileExplorerWidget {
                     explorer: &mut self.workspace_files.explorer,
-                    focused: matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
-                    search_active: self.focus.block() == FocusBlock::Search,
+                    focused: crate::widgets::background_focused(
+                        matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
+                        modal_open,
+                    ),
+                    search_active: self.focus.block() == FocusBlock::Search && !modal_open,
                 },
                 files,
             );
@@ -312,10 +321,23 @@ impl TuiApp {
         // `/clear` only clears the viewport; the full session remains available to the model.
         let all_messages = self.transcript_view.messages();
         let all_events = self.transcript_view.events();
-        let visible_messages =
-            &all_messages[self.conversation_view.message_start.min(all_messages.len())..];
+        let message_start = self.conversation_view.message_start.min(all_messages.len());
+        let visible_messages = &all_messages[message_start..];
         let visible_events =
             &all_events[self.conversation_view.event_start.min(all_events.len())..];
+        // DESIGN-005: absolute user ordinal of the window start, so per-turn
+        // summaries recorded against the full session land on their turn.
+        let window_user_base = all_messages[..message_start]
+            .iter()
+            .filter(|message| message.role == forge_types::MessageRole::User)
+            .count() as u64;
+        let session_id_string = self.session_view.session_id.to_string();
+        let turn_summaries: Vec<(u64, TurnSummaryPresentation)> = self
+            .turn_summaries
+            .iter()
+            .filter(|record| record.key.session == session_id_string)
+            .map(|record| (record.key.user_ordinal, record.summary.clone()))
+            .collect();
         // Computed here, while the message slice is still borrowed: the home
         // splash is a landing page and stays at the top, but once someone has
         // actually said something the pane behaves like a conversation and
@@ -362,15 +384,21 @@ impl TuiApp {
             events: visible_events.len(),
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.banner_state.items.len(),
-            turn_summary: self.banner_state.items.iter().find_map(|item| match item {
-                ChatItem::TurnSummary {
-                    secs,
-                    chars,
-                    tools,
-                    output_tokens,
-                } => Some((secs.to_bits(), *chars, *tools, *output_tokens)),
-                _ => None,
-            }),
+            // DESIGN-005: per-turn summaries digest. Counting records is not
+            // enough: a re-recorded turn leaves the count unchanged, so the
+            // previous duration would stay on screen through the next one.
+            turn_summaries: turn_summaries
+                .iter()
+                .map(|(ordinal, summary)| {
+                    (
+                        *ordinal,
+                        summary.secs.to_bits(),
+                        summary.chars,
+                        summary.tools,
+                        summary.output_tokens,
+                    )
+                })
+                .collect(),
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
             keep_from_end: window_keep_from_end,
@@ -441,6 +469,7 @@ impl TuiApp {
                     ..opts.clone()
                 },
             )
+            .with_turn_summaries(turn_summaries, window_user_base)
             .with_extra_banners(self.banner_state.items.iter().cloned());
             if !slash_mode && !self.conversation_view.splash_dismissed {
                 conv = conv.with_home(
@@ -557,9 +586,10 @@ impl TuiApp {
         } else {
             Arc::new(Vec::new())
         };
-        // The live turn line. Built fresh every frame — it animates, so the
-        // caches above (both keyed by content length) would freeze it — and
-        // cheap enough to be: one line, no markdown, no wrapping.
+        // The live turn line. Built fresh every frame — the elapsed tick
+        // moves it, so the caches above (both keyed by content length)
+        // would freeze it — and cheap enough to be: one line, no markdown,
+        // no wrapping.
         let status_lines: Vec<Line<'static>> =
             if self.busy_state.is_active() && !self.pending_turn.has_prompt() && busy_long_enough {
                 // The whole turn's age, not the current step's: `started` is reset
@@ -584,7 +614,6 @@ impl TuiApp {
                         !self.stream.preview.is_empty(),
                     ),
                     elapsed_secs: elapsed,
-                    chars: self.timing.chars,
                     // Esc interrupts a running turn; it does not interrupt a
                     // turn that is already blocked waiting for the operator.
                     interruptible: !self.session_view.is_awaiting_approval()
@@ -618,7 +647,10 @@ impl TuiApp {
         // center pane shows — it's no longer one of the `WorkspaceView`
         // options.
         if let Some(sidebar) = regions.sidebar {
-            let sidebar_focused = self.focus.block() == FocusBlock::Sidebar;
+            let sidebar_focused = crate::widgets::background_focused(
+                self.focus.block() == FocusBlock::Sidebar,
+                modal_open,
+            );
             let sidebar_block = Block::default()
                 .borders(Borders::ALL)
                 .padding(ratatui::widgets::Padding::horizontal(1))
@@ -685,7 +717,10 @@ impl TuiApp {
                     frame.render_widget(
                         SourceViewerWidget {
                             viewer: &mut self.source_viewer,
-                            focused: self.focus.block() == FocusBlock::Workspace,
+                            focused: crate::widgets::background_focused(
+                                self.focus.block() == FocusBlock::Workspace,
+                                modal_open,
+                            ),
                             editor: self.editor_session.as_mut(),
                             editor_command: self.editor_command.as_deref(),
                             editor_message: self.editor_message.as_deref(),
@@ -697,7 +732,10 @@ impl TuiApp {
                     frame.render_widget(
                         crate::diff_view::DiffViewWidget {
                             view: &mut self.diff_view,
-                            focused: self.focus.block() == FocusBlock::Workspace,
+                            focused: crate::widgets::background_focused(
+                                self.focus.block() == FocusBlock::Workspace,
+                                modal_open,
+                            ),
                         },
                         chat_area,
                     );
@@ -763,7 +801,10 @@ impl TuiApp {
                     terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
                     terminal_cursor: interactive_terminal.map(InteractiveTerminal::cursor_position),
                 },
-                focused: self.focus.block() == FocusBlock::BottomPanel,
+                focused: crate::widgets::background_focused(
+                    self.focus.block() == FocusBlock::BottomPanel,
+                    modal_open,
+                ),
             },
             regions.bottom_panel,
         );
@@ -822,7 +863,7 @@ impl TuiApp {
                         .skip(start)
                         .take(visible)
                         .map(|(i, it)| {
-                            let marker = if i == idx { "▶ " } else { "  " };
+                            let marker = if i == idx { "> " } else { "  " };
                             let raw = format!("{marker}{:<14} {}", it.display_cmd(), it.desc);
                             let mut row = raw
                                 .chars()
@@ -948,8 +989,11 @@ impl TuiApp {
             }
         } else {
             self.composer_area = Some(regions.input);
-            let composer_focused = self.focus.mode() == FocusMode::Navigation
-                && self.focus.block() == FocusBlock::Composer;
+            let composer_focused = crate::widgets::background_focused(
+                self.focus.mode() == FocusMode::Navigation
+                    && self.focus.block() == FocusBlock::Composer,
+                modal_open,
+            );
             frame.render_widget(
                 InputBar {
                     model: &self.input,
@@ -983,10 +1027,14 @@ impl TuiApp {
             llm_label,
             llm_connected: connected,
             effort_label,
-            focus: self.composer_chip_focus.map(|idx| match idx {
-                0 => FooterFocus::Llm,
-                _ => FooterFocus::Effort,
-            }),
+            focus: if modal_open {
+                None
+            } else {
+                self.composer_chip_focus.map(|idx| match idx {
+                    0 => FooterFocus::Llm,
+                    _ => FooterFocus::Effort,
+                })
+            },
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
             lifecycle_detail: status.incomplete_checks.clone(),
@@ -1320,22 +1368,24 @@ mod tests {
                 .join(" "),
         );
 
+        // DESIGN-012: 7 visual lines + 1 top rule row (was +2 box rows).
         assert_eq!(
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, false),
-            9
+            8
         );
     }
 
     #[test]
-    fn short_composer_uses_a_compact_three_row_band() {
+    fn short_composer_uses_a_compact_two_row_band() {
         let input = InputModel::default();
+        // DESIGN-012: 1 visual line + 1 top rule row (was a 3-row box band).
         assert_eq!(
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, false),
-            3
+            2
         );
         assert_eq!(
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, true),
-            3
+            2
         );
     }
 

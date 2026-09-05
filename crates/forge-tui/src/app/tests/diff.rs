@@ -249,7 +249,7 @@ async fn the_patch_pane_loads_the_selected_file() {
     assert_eq!(patch.added, 1);
     assert_eq!(patch.removed, 1);
     assert!(
-        app.diff_view.header().contains("+1 −1"),
+        app.diff_view.header().contains("+1 -1"),
         "{}",
         app.diff_view.header()
     );

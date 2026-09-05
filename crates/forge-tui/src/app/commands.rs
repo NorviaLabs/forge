@@ -908,6 +908,10 @@ impl TuiApp {
                                 format!("session resumed · {session_id}"),
                             );
                             self.banner_state.items.clear();
+                            // Restored turns carry no ephemeral timing: drop
+                            // this session's completion records (DESIGN-005).
+                            self.turn_summaries
+                                .retain(|record| record.key.session != session_id.to_string());
                             // `resume_session` already restored the durable queue for
                             // the target session — do not clear it out from under
                             // that restoration.
@@ -939,6 +943,10 @@ impl TuiApp {
                     self.conversation_view.message_start = self.session.messages.len();
                     self.conversation_view.event_start = self.session.events.len();
                     self.banner_state.items.clear();
+                    // The cleared viewport hides every finished turn; drop
+                    // this session's completion records with it (DESIGN-005).
+                    self.turn_summaries
+                        .retain(|record| record.key.session != self.session.session_id.to_string());
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_state.message.clear();

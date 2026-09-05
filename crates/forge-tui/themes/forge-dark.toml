@@ -1,19 +1,10 @@
-# Forge Dark — neutral charcoal surfaces with blue, cyan, and green signals.
-#
-# Status colours are colourblind-safe by design, not just by accident: red
-# and green are the pair that collapses together under protanopia and
-# deuteranopia (the two most common forms of colour-vision deficiency), so
-# `success` uses green and `error` uses red-pink instead
-# of the conventional green/red — the same substitution used by validated
-# accessible palettes (Okabe–Ito) and by Claude Code's own colourblind-
-# friendly themes. `warning`'s yellow and `accent`'s blue remain clear of that
-# collision.
+# Forge Dark — 2026 semantic tokens (see artifacts/astra-tui-2026/03-forge-design-system.md).
 id = "forge-dark"
 name = "Forge Dark"
 
-background = "#080808"
+background = "#141414"
 background_deep = "#080808"
-surface = "#141414"
+surface = "#1E1E1E"
 surface_raised = "#1E1E1E"
 surface_hover = "#292929"
 border = "#343434"
@@ -22,36 +13,35 @@ text_primary = "#EBEBEB"
 text_secondary = "#A0A0A0"
 text_muted = "#757575"
 accent = "#439EFD"
-accent_soft = "#163A5C"
-agent = "#B9A4C9"
+accent_soft = "#182B3D"
+activity = "#FFA31D"
+agent = "#A0A0A0"
 success = "#5BDB87"
 warning = "#E6C66A"
 error = "#F26D78"
 info = "#1DB0BB"
-diff_add = "#183A28"
-diff_remove = "#4A2026"
+diff_add = "#5BDB87"
+diff_remove = "#F26D78"
 selection = "#292929"
 cursor = "#439EFD"
 tag = "#A0A0A0"
-search_match = "#6E4918"
+search_match = "#E6C66A"
 waiting_border = "#E6C66A"
-# Response structure uses the theme's orange syntax-number hue so headlines
-# remain distinct from the blue focus accent and status colours.
-structure = "#E6931C"
-scan_band = "#181818"
-zebra_row = "#111111"
+structure = "#A0A0A0"
+scan_band = "#141414"
+zebra_row = "#1A1A1A"
 
 [syntax]
-comment = "#757575"
+comment = "#A0A0A0"
 keyword = "#439EFD"
 string = "#5BDB87"
-number = "#E6931C"
-function = "#9ED0FF"
+number = "#1DB0BB"
+function = "#EBEBEB"
 type = "#1DB0BB"
 variable = "#EBEBEB"
 operator = "#A0A0A0"
-punctuation = "#757575"
+punctuation = "#A0A0A0"
 property = "#1DB0BB"
 tag = "#1DB0BB"
-attribute = "#9E671A"
+attribute = "#E6C66A"
 default = "#EBEBEB"
