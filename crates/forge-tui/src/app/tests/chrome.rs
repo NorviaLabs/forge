@@ -856,6 +856,74 @@ async fn tui08_report_error_writes_banner_feedback_and_activity() {
 }
 
 #[tokio::test]
+async fn tui10_repeated_error_does_not_duplicate_chrome() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.10.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.report_error("429 rate limit");
+    let banners = app
+        .banner_state
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ChatItem::Banner {
+                    kind: BannerKind::Error,
+                    ..
+                }
+            )
+        })
+        .count();
+    let activity = app
+        .activity
+        .all()
+        .iter()
+        .filter(|item| item.kind == ActivityKind::Error)
+        .count();
+
+    app.report_error("429 rate limit");
+
+    assert_eq!(
+        app.banner_state
+            .items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                ChatItem::Banner {
+                    kind: BannerKind::Error,
+                    ..
+                }
+            ))
+            .count(),
+        banners
+    );
+    assert_eq!(
+        app.activity
+            .all()
+            .iter()
+            .filter(|item| item.kind == ActivityKind::Error)
+            .count(),
+        activity
+    );
+    assert_eq!(
+        app.feedback.text,
+        "Model error: rate limited (HTTP 429). Wait and retry, or /model."
+    );
+}
+
+#[tokio::test]
 async fn tui08_feedback_strip_visible_on_frame() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

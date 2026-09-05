@@ -50,6 +50,7 @@ pub enum SlashCommand {
     /// Show the token-budget breakdown by category (system prompt, tool
     /// schemas, messages) — the detail `/status` deliberately omits.
     Context,
+    Plan,
     /// Open the effort picker.
     Effort,
     /// Toggle thinking generation, or set it explicitly.
@@ -159,6 +160,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }),
         "status" => Ok(SlashCommand::Status),
         "context" | "ctx" => Ok(SlashCommand::Context),
+        "plan" => Ok(SlashCommand::Plan),
         "effort" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/effort".into()))

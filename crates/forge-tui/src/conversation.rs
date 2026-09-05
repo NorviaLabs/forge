@@ -820,6 +820,10 @@ impl ConversationRenderInternals for ConversationModel {
                         ActivityOutcome::TimedOut => theme::tool_timeout_style(),
                     };
                     let mut spans = Vec::new();
+                    spans.push(Span::styled(
+                        if p.expanded { "  ▾ " } else { "  ▸ " },
+                        theme::metadata_style(),
+                    ));
                     if p.category.is_some() {
                         spans.push(Span::styled("  ", theme::accent_style()));
                     }
@@ -1695,7 +1699,14 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
             } else {
                 let room = inner - used;
                 if room > 0 {
-                    let clipped: String = span.content.chars().take(room).collect();
+                    let clipped: String = if span.width() > room && room > 1 {
+                        format!(
+                            "{}…",
+                            span.content.chars().take(room - 1).collect::<String>()
+                        )
+                    } else {
+                        span.content.chars().take(room).collect()
+                    };
                     all.push(Span::styled(clipped, span.style));
                 }
                 break;
@@ -3899,6 +3910,10 @@ mod tests {
         assert!(
             lines.iter().all(|l| l.width() <= 72),
             "command burst the card: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| line_plain(l).contains('…')),
+            "clipped command should advertise omitted content"
         );
     }
 
