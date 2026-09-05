@@ -971,6 +971,12 @@ impl TuiApp {
                         rows: self.context_report_rows(),
                     });
                 }
+                Ok(SlashCommand::Plan) => {
+                    self.overlay = Some(Overlay::StatusReport {
+                        title: "Plan".into(),
+                        rows: self.plan_report_rows(),
+                    });
+                }
                 Ok(SlashCommand::Effort) => {
                     if self.require_primary_task("changing effort") {
                         self.open_connect_picker_compact(ConnectModelColumn::Effort);
