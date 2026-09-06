@@ -21,6 +21,7 @@ similar = { workspace = true }
 reqwest = { workspace = true, features = ["stream"] }
 futures = { workspace = true }
 tempfile = { workspace = true }
+portable-pty = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

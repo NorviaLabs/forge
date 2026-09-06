@@ -815,6 +815,24 @@ async fn a_compound_command_offers_no_session_or_always_rows() {
     assert!(!rendered.contains("this session"), "{rendered}");
 }
 
+#[tokio::test]
+async fn sandbox_filesystem_approval_explains_the_unconfined_retry() {
+    let (_dir, mut app) = focus_test_app().await;
+    let mut payload = bash_hitl_payload("call-sandbox", "rm -rf outside");
+    payload.reason = "blocked by the sandbox: filesystem access is confined".into();
+    payload.failure = Some("sh: outside: Operation not permitted".into());
+    payload.sandbox_escalation = true;
+    set_pending_approval(&mut app, payload);
+
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(rendered.contains("Approve command retry"), "{rendered}");
+    assert!(
+        rendered.contains("outside the filesystem sandbox"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("destructive commands"), "{rendered}");
+}
+
 /// The same command without the pipe is still rememberable, and the pattern
 /// it offers is one that matches it — the property that silently did not
 /// hold before.
