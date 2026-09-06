@@ -655,6 +655,43 @@ Use this as a structured checklist the user can see — not as a substitute for 
 /// intercept is missing.
 pub struct AskUserQuestionTool;
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequestUnconfinedRetryArgs {
+    /// Tool call id of a failed confined bash command in this user turn.
+    pub retry_of: String,
+    /// Why the exact command needs to run outside the sandbox.
+    pub reason: String,
+}
+
+pub struct RequestUnconfinedRetryTool;
+
+#[async_trait]
+impl Tool for RequestUnconfinedRetryTool {
+    fn name(&self) -> &str {
+        "request_unconfined_retry"
+    }
+
+    fn description(&self) -> &str {
+        "Request user approval to retry an exact failed bash command outside the sandbox when confinement appears to have caused the failure, including browser/application handoff failures. Supply the original tool call id and a reason, never a replacement command. Each failed call can be requested once during the current user turn. Approval is always required; an unconfined failure does not qualify for another retry. Network host denials use the separate host approval flow."
+    }
+
+    fn input_schema(&self) -> Value {
+        schema_for::<RequestUnconfinedRetryArgs>()
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Meta
+    }
+
+    async fn call(&self, _ctx: &ToolContext, _args: Value) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::Execution(
+            "request_unconfined_retry must be intercepted by the agent loop, not executed directly"
+                .into(),
+        ))
+    }
+}
+
 #[async_trait]
 impl Tool for AskUserQuestionTool {
     fn name(&self) -> &str {
@@ -1596,6 +1633,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(write_stdin),
         std::sync::Arc::new(UpdatePlanTool),
         std::sync::Arc::new(AskUserQuestionTool),
+        std::sync::Arc::new(RequestUnconfinedRetryTool),
         std::sync::Arc::new(crate::SpawnAgentTool),
         std::sync::Arc::new(crate::SendMessageTool),
         std::sync::Arc::new(crate::FollowupTaskTool),
@@ -2134,6 +2172,7 @@ itself, never to git hooks)."
         );
         assert!(tools.iter().any(|t| t.name() == "update_plan"));
         assert!(tools.iter().any(|t| t.name() == "ask_user_question"));
+        assert!(tools.iter().any(|t| t.name() == "request_unconfined_retry"));
         assert!(tools.iter().any(|t| t.name() == "spawn_agent"));
         assert!(tools.iter().any(|t| t.name() == "send_message"));
         assert!(tools.iter().any(|t| t.name() == "followup_task"));
@@ -2152,6 +2191,28 @@ itself, never to git hooks)."
         )
         .unwrap_err();
         assert_eq!(err.tool, "ask_user_question");
+    }
+
+    #[tokio::test]
+    async fn retry_tool_requires_reference_and_reason_and_cannot_execute_directly() {
+        let tool = RequestUnconfinedRetryTool;
+        let schema = tool.input_schema();
+        for args in [
+            json!({}),
+            json!({"retry_of": "call"}),
+            json!({"retry_of": "call", "reason": "open browser", "command": "different"}),
+        ] {
+            assert!(validate_args(tool.name(), &schema, &args).is_err());
+        }
+        let args = json!({"retry_of": "call", "reason": "open browser"});
+        assert!(validate_args(tool.name(), &schema, &args).is_ok());
+        let dir = tempdir().unwrap();
+        assert!(tool
+            .call(&ToolContext::new(dir.path().into()), args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("intercepted"));
     }
 
     #[tokio::test]

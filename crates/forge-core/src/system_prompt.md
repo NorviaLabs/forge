@@ -117,7 +117,7 @@ Do not ask the user to unsandbox a command so it can reach the network. The harn
 
 MCP tools still require user approval, because those servers are not confined.
 
-If a write outside the workspace or the scratch directory is blocked, that is the sandbox. Adapt (stay inside those) rather than retrying the same path.
+If a write outside the workspace or the scratch directory is blocked, prefer a path inside those directories when it satisfies the task. If the task requires the exact failed bash command to run outside the sandbox (including a browser/application handoff), use `request_unconfined_retry` with that call's ID and a reason. The harness recovers the command and asks for one-time approval. Do not change the command to bypass confinement. Each failed call can be requested once in the current turn; a failed approved unconfined attempt is an ordinary failure, not a reason to request escalation again.
 
 Use the scratch directory — not the workspace — for files that are not part of the deliverable: throwaway scripts, notes to yourself, intermediate output you generate while working. It is deleted when the session ends. Nothing written there shows up in `git status` or the file explorer, so the workspace stays exactly what the user asked for.
 

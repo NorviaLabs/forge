@@ -244,6 +244,13 @@ impl TuiApp {
                 ApprovalMenuKind::DenyWithNote,
             ];
         }
+        if payload.sandbox_escalation {
+            return vec![
+                ApprovalMenuKind::AllowOnce,
+                ApprovalMenuKind::Deny,
+                ApprovalMenuKind::DenyWithNote,
+            ];
+        }
         let approval = self.approval_state_for_payload(payload);
         let mut kinds = vec![ApprovalMenuKind::AllowOnce];
         if approval.pattern_allow_eligible {
@@ -429,6 +436,9 @@ impl TuiApp {
         &self,
         payload: &HitlPayload,
     ) -> Option<forge_types::ToolCall> {
+        if payload.sandbox_escalation {
+            return None;
+        }
         let approval = self.approval_state_for_payload(payload);
         if !approval.pattern_allow_eligible {
             return None;
@@ -838,6 +848,9 @@ impl TuiApp {
         let Some(payload) = self.session.pending_hitl().cloned() else {
             return Ok(());
         };
+        if payload.sandbox_escalation {
+            return Ok(());
+        }
         let identity = self.approval_identity_for_payload(&payload);
         // `grant_covers`, not `session_pattern_allows`: an "always allow"
         // rule in the operator's permissions file is the same consent as a

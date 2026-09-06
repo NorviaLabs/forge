@@ -35,6 +35,7 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
     "load_skill",
     "ls",
     "read_file",
+    "request_unconfined_retry",
     "send_message",
     "spawn_agent",
     "update_plan",
