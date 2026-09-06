@@ -28,9 +28,11 @@ The latest `main` correctly prevented the tested outside writes and denied unapp
 
 `ExecCommandArgs` exposes `tty` and `login`, but `unified_exec.rs` rejects both with “not supported yet.” This is a contract bug for agents that use the persistent shell interface, and it prevents Forge from matching the interactive command behavior users expect from Codex and OpenCode. The fix needs a real PTY-backed session, terminal resize and EOF handling, and the same spawn-time sandbox policy as the pipe-backed session.
 
-### P1: policy controls are too coarse
+### P1: the implemented policy needs one clear contract
 
-The TUI has no visible sandbox mode selector. The headless command has only `Ask` and blanket `--approve-all`; there is no explicit read-only mode, network-only grant, or deliberate full-access mode. This makes safe automation harder to express and makes `--approve-all` do too much when a test needs only one host or one command family.
+The product needs one implemented policy: `sandboxed`, enabled by default. Every command starts inside the OS sandbox, and network access starts denied. When the sandbox blocks a command or network destination, Forge asks the user and uses the approval to authorize the required retry. Destructive commands are allowed after explicit approval.
+
+The bypassing `--approve-all` policy is intentionally deferred. It would skip both the sandbox and user prompts, so it must not be expanded, exposed as a new TUI mode, or treated as part of this implementation. Any existing headless plumbing remains a separate evaluation concern until that policy is deliberately designed and approved.
 
 ### P1: the network denial is clear in Forge, but recovery is still turn-hostile
 
@@ -67,17 +69,20 @@ Add a disposable PTY test harness under `scripts/` or the existing integration-t
 
 Record the rendered PTY output, exit status, and host-side side effects separately. Add a machine-readable result format so CI can run the Forge rows without requiring Codex or OpenCode.
 
-### 2. Make the policy explicit and orthogonal
+### 2. Implement the single supported policy: sandboxed
 
-Introduce a typed runtime policy with independent fields for:
+Keep the runtime policy deliberately small. The supported policy is `sandboxed`:
 
-- filesystem: `read-only`, `workspace-write`, or explicitly unconfined;
-- network: denied, session host allow-list, or personal unrestricted host allow;
-- approval: ask, session rule, or headless fail/auto behavior.
+- commands start confined to the workspace and session temp directory;
+- `.git` and `.forge` remain protected according to the existing rules;
+- network starts denied and is reopened only through an approved host grant;
+- a filesystem denial can be approved for a one-time unconfined retry, including destructive commands;
+- a network denial can be approved for the requested host while preserving filesystem confinement;
+- every approval is explicit, visible, journaled, and scoped according to the existing one-time/session/personal choices.
 
-Keep the OS sandbox as the floor for the default and for ordinary approvals. Require an explicit CLI flag and a visible TUI confirmation for unconfined execution. Keep repository permissions unable to widen a personal network or filesystem policy.
+Do not add read-only, danger-full-access, or a new sandbox mode picker in this work. Do not implement or broaden `--approve-all`; record it only as a future policy that would bypass both confinement and prompts.
 
-Expose the same policy through the TUI, `forge bench`, session state, and the startup/status chrome. Replace `--approve-all` with a compatibility alias that clearly states whether it approves a tool request, grants a host, or retries unconfined.
+Expose the active `sandboxed` posture in the TUI and headless result metadata so users can tell that an approval authorized a particular retry rather than changing the default policy for the session.
 
 ### 3. Implement a real PTY-backed `exec_command`
 
@@ -90,17 +95,17 @@ Do not silently fall back from requested PTY mode to a pipe. Return a validation
 Use one policy result for filesystem denial, denied host, ordinary command failure, user rejection, and approved retry. In the TUI:
 
 - show the active policy on the approval/host-grant row;
-- distinguish “grant this host while staying sandboxed” from “retry outside the sandbox”;
+- distinguish “grant this host while staying sandboxed” from “approve this command's unconfined retry”;
 - keep the turn resumable after a denial;
 - show the exact next action for a blocked headless run.
 
-In headless mode, emit a JSON event with the denial kind, command, host when known, retry scope, and side-effect guarantee. Add a flag for fail-fast versus returning a resumable blocked result.
+In headless mode, emit a JSON event with the `sandboxed` policy, denial kind, command, host when known, retry scope, and side-effect guarantee. Keep the bypassing `--approve-all` policy out of this interface until it is separately designed.
 
 ### 5. Validate and document the contract
 
 Add focused tests in `forge-tools` for the policy matrix, PTY sessions, egress isolation, pipeline attribution, and retry environment cleanup. Add CLI parsing and JSON-schema tests in `forge-cli`, rendered approval and status tests in `forge-tui`, and one full-workspace validation pass.
 
-Update README and the system prompt with the actual policy vocabulary, the `/tmp` or session-temp boundary, the network grant behavior, and the difference between a sandbox grant and an unconfined retry. The documentation should include the safe PTY reproduction commands used by the regression harness.
+Update README and the system prompt with the actual policy vocabulary, the `/tmp` or session-temp boundary, the network grant behavior, and the difference between a host grant and an approved unconfined retry. Document `sandboxed` as the only supported policy. Mention `--approve-all` only as deferred work; do not describe it as an available product mode. Include the safe PTY reproduction commands used by the regression harness.
 
 ## Acceptance criteria
 
@@ -108,6 +113,8 @@ Update README and the system prompt with the actual policy vocabulary, the `/tmp
 - A zero-status shell construct cannot hide a denied filesystem or network operation.
 - A host grant retries the same command inside the filesystem sandbox and never leaks the sandbox proxy into an unconfined retry.
 - Requested PTY sessions work for supported shells, preserve interactive input/output, and remain confined from spawn through exit.
-- TUI and headless modes expose the same policy concepts and denial kinds.
-- The default path remains workspace-confined with network denied until a personal or session host grant exists.
+- TUI and headless modes expose the same `sandboxed` policy and denial kinds.
+- The default path remains workspace-confined with network denied until the user approves a host grant or approves the specific command retry.
+- Destructive commands still require explicit approval when the sandbox or governance layer blocks them.
+- No read-only, full-access, or `--approve-all` implementation is added by this work.
 - `cargo fmt --all -- --check`, focused crate tests, locked clippy, workspace tests, and the PTY matrix pass before delivery.
