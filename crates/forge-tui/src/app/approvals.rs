@@ -301,6 +301,7 @@ impl TuiApp {
                 .collect();
         }
         let call = tool_call_for_payload(payload);
+        let sandbox_retry = payload.sandbox_escalation;
         // `approval_menu_kinds` only offers the pattern rows when the call is
         // pattern-eligible, which requires a suggestion; the fallback string
         // is unreachable from those rows and never labels one.
@@ -310,9 +311,17 @@ impl TuiApp {
             .into_iter()
             .map(|kind| match kind {
                 ApprovalMenuKind::AllowOnce => crate::conversation::ApprovalMenuRow {
-                    label: "Run once".into(),
+                    label: if sandbox_retry {
+                        "Approve command retry".into()
+                    } else {
+                        "Run once".into()
+                    },
                     detail: None,
-                    help: Some("Runs now. You will be asked again.".into()),
+                    help: Some(if sandbox_retry {
+                        "Retries this command outside the filesystem sandbox. This explicit approval can run destructive commands.".into()
+                    } else {
+                        "Runs now. You will be asked again.".into()
+                    }),
                     key: Some(kind.shortcut().into()),
                 },
                 // The pattern goes in the label, not only in the elided detail
