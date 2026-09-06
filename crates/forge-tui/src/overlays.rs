@@ -275,6 +275,7 @@ pub enum TaskSwitcherGroup {
     Active,
     Unavailable,
     Archived,
+    Removed,
 }
 
 impl TaskSwitcherGroup {
@@ -284,6 +285,7 @@ impl TaskSwitcherGroup {
             Self::Active => "Active",
             Self::Unavailable => "Unavailable",
             Self::Archived => "Archived",
+            Self::Removed => "Removed",
         }
     }
 }

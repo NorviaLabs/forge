@@ -745,7 +745,27 @@ async fn execute_command(
                 ));
             }
             let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
-            forge_storage::remove_clean_worktree(storage.main_worktree(), &task.workspace)?;
+            let worktrees = forge_storage::list_worktree_records(storage.main_worktree())?;
+            if worktrees
+                .iter()
+                .any(|worktree| same_path(&worktree.path, &task.workspace))
+            {
+                forge_storage::remove_clean_worktree_if_branch(
+                    storage.main_worktree(),
+                    &task.workspace,
+                    &task.branch,
+                )?;
+            } else if task.workspace.exists() {
+                return Err(RepositorySupervisorError::Command(format!(
+                    "{} is no longer a registered worktree; refusing to remove it",
+                    task.workspace.display()
+                )));
+            }
+            state.control.mark_worktree_removed(session_id).await?;
+            state.actors.write().await.remove(&session_id);
+            let _ = state
+                .events
+                .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::FinalizeCreation { operation_id } => {
             let completed = state.control.complete_creation(operation_id).await?;
@@ -1465,6 +1485,136 @@ mod tests {
             .unwrap()
             .iter()
             .all(|task| task.label != "parser"));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn archived_cleanup_removes_only_the_checkout_and_retires_the_task_actor() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateTask {
+                label: "cleanup".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let operation_id = loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
+                _ => continue,
+            }
+        };
+        handle
+            .command(SupervisorCommand::FinalizeCreation { operation_id })
+            .await
+            .unwrap();
+        let task = control
+            .tasks()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "cleanup")
+            .expect("created task");
+        assert!(task.workspace.exists());
+
+        handle
+            .command(SupervisorCommand::ArchiveTask {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+
+        assert!(!task.workspace.exists());
+        assert_eq!(
+            control.task(task.session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Removed
+        );
+        loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::Roster(roster)
+                    if roster
+                        .iter()
+                        .all(|snapshot| snapshot.task.session_id != task.session_id) =>
+                {
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dirty_archived_cleanup_preserves_the_worktree_and_task_binding() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateTask {
+                label: "dirty-cleanup".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let operation_id = loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
+                _ => continue,
+            }
+        };
+        handle
+            .command(SupervisorCommand::FinalizeCreation { operation_id })
+            .await
+            .unwrap();
+        let task = control
+            .tasks()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "dirty-cleanup")
+            .expect("created task");
+        std::fs::write(task.workspace.join("uncommitted.txt"), "keep me").unwrap();
+
+        handle
+            .command(SupervisorCommand::ArchiveTask {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        let error = handle
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("dirty"), "unexpected cleanup error: {error}");
+        assert!(task.workspace.exists());
+        assert_eq!(
+            control.task(task.session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Archived
+        );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 

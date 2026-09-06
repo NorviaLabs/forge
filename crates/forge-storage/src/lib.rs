@@ -27,5 +27,6 @@ pub use resolver::{
 };
 pub use worktree::{
     create_task_worktree, create_worktree, list_worktree_records, list_worktrees, main_worktree,
-    remove_clean_worktree, remove_worktree, SubagentWorktree, WorktreeError, WorktreeRecord,
+    remove_clean_worktree, remove_clean_worktree_if_branch, remove_worktree, SubagentWorktree,
+    WorktreeError, WorktreeRecord,
 };
