@@ -1458,6 +1458,8 @@ mod tests {
         assert_contrast("dim", p.dim, "panel_alt", p.panel_alt, 3.1);
         assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
         assert_aa("tag on selection", p.tag, "selection", p.selection);
+        assert_aa("diff add", p.ok, "diff_add", p.diff_add);
+        assert_aa("diff remove", p.danger, "diff_remove", p.diff_remove);
     }
 
     #[test]
@@ -1481,5 +1483,7 @@ mod tests {
 
         assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
         assert_aa("tag on selection", p.tag, "selection", p.selection);
+        assert_aa("diff add", p.ok, "diff_add", p.diff_add);
+        assert_aa("diff remove", p.danger, "diff_remove", p.diff_remove);
     }
 }
