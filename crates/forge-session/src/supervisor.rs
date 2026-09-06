@@ -354,6 +354,11 @@ impl RepositorySupervisor {
 
         if control.task(primary_session_id).await.is_err() {
             let workspace = cfg.workspace_root().to_path_buf();
+            if let Some(stale) = control.tasks().await?.into_iter().find(|task| {
+                task.lifecycle == SessionLifecycle::Active && same_path(&task.workspace, &workspace)
+            }) {
+                control.mark_unavailable(stale.session_id).await?;
+            }
             let branch = worktrees
                 .iter()
                 .find(|worktree| same_path(&worktree.path, &workspace))

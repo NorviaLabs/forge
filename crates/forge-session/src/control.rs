@@ -699,6 +699,21 @@ impl RepositoryControl {
         Ok(())
     }
 
+    pub async fn mark_unavailable(&self, session_id: SessionId) -> Result<(), RepositoryTaskError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET lifecycle = 'unavailable', slot = NULL, updated_at = ? \
+             WHERE session_id = ? AND lifecycle = 'active'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(RepositoryTaskError::NotFound(session_id));
+        }
+        Ok(())
+    }
+
     pub async fn tasks(&self) -> Result<Vec<RepositoryTask>, RepositoryTaskError> {
         let rows = sqlx::query(
             "SELECT * FROM tasks ORDER BY \
