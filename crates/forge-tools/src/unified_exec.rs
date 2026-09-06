@@ -441,6 +441,15 @@ async fn start(
     // commands unconfined for as long as it lives.
     let shell = args.shell.as_deref().unwrap_or("sh");
     let requested_confined = !ctx.unconfined_shell;
+    if requested_confined {
+        if let Err(unavailable) = crate::sandbox::availability() {
+            return Err(ToolError::SandboxDenied {
+                content: args.cmd.clone(),
+                reason: unavailable.reason(),
+                denied_host: None,
+            });
+        }
+    }
     let egress_invocation = if requested_confined {
         crate::egress::EgressInvocation::start(ctx.egress.as_deref())
             .await
