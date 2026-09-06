@@ -47,6 +47,7 @@ pub enum SessionLifecycle {
     Active,
     Archived,
     Unavailable,
+    Removed,
 }
 
 impl SessionLifecycle {
@@ -55,6 +56,7 @@ impl SessionLifecycle {
             "active" => Ok(Self::Active),
             "archived" => Ok(Self::Archived),
             "unavailable" => Ok(Self::Unavailable),
+            "removed" => Ok(Self::Removed),
             value => Err(RepositoryTaskError::InvalidStoredValue {
                 field: "lifecycle",
                 value: value.into(),
@@ -320,10 +322,12 @@ impl RepositoryControl {
                 updated_at TEXT NOT NULL,
                 archived_at TEXT
             );
+            DROP INDEX IF EXISTS tasks_live_workspace;
+            DROP INDEX IF EXISTS tasks_live_slot;
             CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_workspace
-                ON tasks(workspace) WHERE lifecycle <> 'archived';
+                ON tasks(workspace) WHERE lifecycle = 'active';
             CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_slot
-                ON tasks(slot) WHERE lifecycle <> 'archived' AND slot IS NOT NULL;
+                ON tasks(slot) WHERE lifecycle = 'active' AND slot IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS pending_operations (
                 operation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -650,12 +654,11 @@ impl RepositoryControl {
         // The unique index below would also catch this, but as an opaque
         // constraint violation. Attaching a worktree twice is an ordinary
         // operator mistake and deserves a message that names the conflict.
-        if let Some(row) = sqlx::query(
-            "SELECT session_id FROM tasks WHERE workspace = ? AND lifecycle <> 'archived'",
-        )
-        .bind(task.workspace.display().to_string())
-        .fetch_optional(&mut *transaction)
-        .await?
+        if let Some(row) =
+            sqlx::query("SELECT session_id FROM tasks WHERE workspace = ? AND lifecycle = 'active'")
+                .bind(task.workspace.display().to_string())
+                .fetch_optional(&mut *transaction)
+                .await?
         {
             return Err(RepositoryTaskError::WorkspaceInUse {
                 workspace: task.workspace,
@@ -754,6 +757,28 @@ impl RepositoryControl {
         Ok(())
     }
 
+    /// Record that the managed checkout has been removed. The task row stays
+    /// as durable history, but it no longer represents a workspace binding.
+    /// Keeping this state distinct from `archived` makes cleanup idempotent
+    /// across a process crash between Git removal and the database update.
+    pub async fn mark_worktree_removed(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), RepositoryTaskError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET lifecycle = 'removed', slot = NULL, updated_at = ? \
+             WHERE session_id = ? AND lifecycle IN ('archived', 'removed')",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(RepositoryTaskError::NotFound(session_id));
+        }
+        Ok(())
+    }
+
     pub async fn set_selected(
         &self,
         session_id: Option<SessionId>,
@@ -843,16 +868,35 @@ impl RepositoryControl {
         let tasks = self.tasks().await?;
         let now = Utc::now().to_rfc3339();
         let mut transaction = self.pool.begin().await?;
-        for task in tasks
-            .into_iter()
-            .filter(|task| task.lifecycle != SessionLifecycle::Archived)
-        {
+        let active_workspaces: Vec<_> = tasks
+            .iter()
+            .filter(|task| task.lifecycle == SessionLifecycle::Active)
+            .map(|task| (task.session_id, task.workspace.clone()))
+            .collect();
+        for task in tasks.into_iter().filter(|task| {
+            matches!(
+                task.lifecycle,
+                SessionLifecycle::Active | SessionLifecycle::Unavailable
+            )
+        }) {
             let valid = worktrees.iter().any(|worktree| {
                 same_path(&worktree.path, &task.workspace)
                     && worktree.branch.as_deref() == Some(task.branch.as_str())
             });
-            let lifecycle = if valid { "active" } else { "unavailable" };
-            sqlx::query("UPDATE tasks SET lifecycle = ?, updated_at = ? WHERE session_id = ?")
+            let occupied_by_other = valid
+                && active_workspaces.iter().any(|(session_id, workspace)| {
+                    *session_id != task.session_id && same_path(workspace, &task.workspace)
+                });
+            let lifecycle = if valid && !occupied_by_other {
+                "active"
+            } else {
+                "unavailable"
+            };
+            sqlx::query(
+                "UPDATE tasks SET lifecycle = ?, slot = CASE WHEN ? = 'active' THEN slot ELSE NULL END, \
+                 updated_at = ? WHERE session_id = ?",
+            )
+                .bind(lifecycle)
                 .bind(lifecycle)
                 .bind(&now)
                 .bind(task.session_id.to_string())
@@ -963,6 +1007,65 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_task_does_not_block_a_replacement_or_reclaim_the_path() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("task");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let first = new_task(&workspace, "first", Some(1));
+        let first_id = first.session_id;
+        control.register_task(first, None).await.unwrap();
+
+        control.reconcile_worktrees(&[]).await.unwrap();
+        assert_eq!(
+            control.task(first_id).await.unwrap().lifecycle,
+            SessionLifecycle::Unavailable
+        );
+        assert_eq!(control.task(first_id).await.unwrap().slot, None);
+
+        let replacement = new_task(&workspace, "replacement", Some(1));
+        let replacement_id = replacement.session_id;
+        control.register_task(replacement, None).await.unwrap();
+        control
+            .reconcile_worktrees(&[WorktreeRecord {
+                path: workspace.clone(),
+                branch: Some("forge/replacement".into()),
+                head: None,
+                prunable: false,
+            }])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            control.task(first_id).await.unwrap().lifecycle,
+            SessionLifecycle::Unavailable
+        );
+        assert_eq!(
+            control.task(replacement_id).await.unwrap().lifecycle,
+            SessionLifecycle::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn marking_cleanup_removed_is_idempotent_and_releases_the_binding() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("task");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let task = new_task(&workspace, "cleanup", Some(1));
+        let session_id = task.session_id;
+        control.register_task(task, None).await.unwrap();
+        control.archive(session_id).await.unwrap();
+
+        control.mark_worktree_removed(session_id).await.unwrap();
+        control.mark_worktree_removed(session_id).await.unwrap();
+        assert_eq!(
+            control.task(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Removed
+        );
     }
 
     #[tokio::test]
