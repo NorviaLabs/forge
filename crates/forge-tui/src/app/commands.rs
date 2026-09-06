@@ -37,6 +37,7 @@ impl TuiApp {
                     let group = match snapshot.task.lifecycle {
                         SessionLifecycle::Archived => TaskSwitcherGroup::Archived,
                         SessionLifecycle::Unavailable => TaskSwitcherGroup::Unavailable,
+                        SessionLifecycle::Removed => TaskSwitcherGroup::Removed,
                         SessionLifecycle::Active if attention => TaskSwitcherGroup::Attention,
                         SessionLifecycle::Active => TaskSwitcherGroup::Active,
                     };

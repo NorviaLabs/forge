@@ -30,6 +30,14 @@ pub enum WorktreeError {
     ListFailed(String),
     #[error("worktree is dirty: {0}")]
     Dirty(String),
+    #[error("worktree {path} is not registered with Git")]
+    NotRegistered { path: PathBuf },
+    #[error("worktree {path} is on branch {actual:?}, expected branch `{expected}`")]
+    BranchMismatch {
+        path: PathBuf,
+        expected: String,
+        actual: Option<String>,
+    },
     #[error("worktree has no branch checked out")]
     DetachedHead,
     #[error("io error: {0}")]
@@ -121,6 +129,29 @@ fn sanitize_label(label: &str) -> String {
 /// cleanup helper above, this never passes `--force`; user-task cleanup must
 /// refuse uncommitted work rather than discarding it.
 pub fn remove_clean_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), WorktreeError> {
+    remove_clean_worktree_inner(repo_root, worktree_path, None)
+}
+
+/// Remove a clean worktree only if Git still has the expected branch checked
+/// out at that path. The caller uses this for durable task cleanup: an old
+/// archived task must never remove a newer worktree that has been rebound to
+/// the same filesystem path.
+pub fn remove_clean_worktree_if_branch(
+    repo_root: &Path,
+    worktree_path: &Path,
+    expected_branch: &str,
+) -> Result<(), WorktreeError> {
+    remove_clean_worktree_inner(repo_root, worktree_path, Some(expected_branch))
+}
+
+fn remove_clean_worktree_inner(
+    repo_root: &Path,
+    worktree_path: &Path,
+    expected_branch: Option<&str>,
+) -> Result<(), WorktreeError> {
+    if let Some(expected_branch) = expected_branch {
+        verify_worktree_branch(repo_root, worktree_path, expected_branch)?;
+    }
     let status = Command::new("git")
         .arg("-C")
         .arg(worktree_path)
@@ -135,6 +166,12 @@ pub fn remove_clean_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(
     if !dirty.trim().is_empty() {
         return Err(WorktreeError::Dirty(dirty.into_owned()));
     }
+    if let Some(expected_branch) = expected_branch {
+        // Recheck after reading the working tree. This closes the practical
+        // cleanup race where the path is rebound between the first ownership
+        // check and the destructive `git worktree remove` call.
+        verify_worktree_branch(repo_root, worktree_path, expected_branch)?;
+    }
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -147,6 +184,34 @@ pub fn remove_clean_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(
         ));
     }
     Ok(())
+}
+
+fn verify_worktree_branch(
+    repo_root: &Path,
+    worktree_path: &Path,
+    expected_branch: &str,
+) -> Result<(), WorktreeError> {
+    let record = list_worktree_records(repo_root)?
+        .into_iter()
+        .find(|record| same_path(&record.path, worktree_path))
+        .ok_or_else(|| WorktreeError::NotRegistered {
+            path: worktree_path.to_path_buf(),
+        })?;
+    if record.branch.as_deref() != Some(expected_branch) {
+        return Err(WorktreeError::BranchMismatch {
+            path: worktree_path.to_path_buf(),
+            expected: expected_branch.to_string(),
+            actual: record.branch,
+        });
+    }
+    Ok(())
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 /// Create a new worktree for a subagent, on a fresh branch off `repo_root`'s
@@ -344,6 +409,22 @@ mod tests {
             .unwrap();
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(text.contains(&wt.branch), "branch listing was: {text:?}");
+    }
+
+    #[test]
+    fn branch_checked_cleanup_refuses_a_rebound_worktree() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+        let wt = create_task_worktree(repo.path(), base.path(), 1, "cleanup-me").unwrap();
+
+        let error = remove_clean_worktree_if_branch(repo.path(), &wt.path, "forge/other-branch")
+            .unwrap_err();
+        assert!(matches!(error, WorktreeError::BranchMismatch { .. }));
+        assert!(wt.path.exists());
+
+        remove_clean_worktree_if_branch(repo.path(), &wt.path, &wt.branch).unwrap();
+        assert!(!wt.path.exists());
     }
 
     #[test]
