@@ -870,6 +870,9 @@ impl TuiApp {
                         Ok(_report) => {
                             self.overlay = None;
                             self.busy_state.stop();
+                            self.selected_task_id = self.session.session_id;
+                            self.session_view = SessionSnapshot::capture(&self.session);
+                            self.transcript_view = TranscriptSnapshot::capture(&self.session);
                             self.exit
                                 .set_code(match self.session.active_task.lifecycle {
                                     forge_types::TaskLifecycle::Failed => ExitCode::Failed,
