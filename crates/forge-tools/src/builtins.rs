@@ -329,7 +329,17 @@ async fn run_shell_command_inner(
     //
     // Confinement is applied here, at spawn, because that is the only moment
     // it can be: a process that starts unconfined stays unconfined for its
-    // whole life. The supported CLI never starts when the host cannot confine.
+    // whole life. An unavailable sandbox is surfaced as an approval-required
+    // denial instead of silently downgrading this invocation.
+    if confined {
+        if let Err(unavailable) = crate::sandbox::availability() {
+            return Err(ToolError::SandboxDenied {
+                content: command.to_string(),
+                reason: unavailable.reason(),
+                denied_host: None,
+            });
+        }
+    }
     let egress_invocation = if confined {
         crate::egress::EgressInvocation::start(egress)
             .await
