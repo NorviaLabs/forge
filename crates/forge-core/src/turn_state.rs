@@ -15,10 +15,10 @@ pub(crate) struct TurnState {
     calls: Vec<ToolCall>,
     evidence: ExecutionEvidence,
     consecutive_hitl_denials: u32,
-    /// Calls that have already taken their one automatic unconfined retry
-    /// after a sandbox denial (see `claim_auto_unconfined_retry`).
-    auto_unconfined_retries: HashSet<String>,
     failed_confined_bash: HashMap<String, ToolCall>,
+    failed_unconfined_call_shapes: HashSet<String>,
+    pub(crate) approved_retry_calls: HashMap<String, ToolCall>,
+    pub(crate) retry_requests: HashMap<String, ToolCall>,
 }
 
 impl TurnState {
@@ -28,8 +28,10 @@ impl TurnState {
             calls: Vec::new(),
             evidence: ExecutionEvidence::new(),
             consecutive_hitl_denials: 0,
-            auto_unconfined_retries: HashSet::new(),
             failed_confined_bash: HashMap::new(),
+            failed_unconfined_call_shapes: HashSet::new(),
+            approved_retry_calls: HashMap::new(),
+            retry_requests: HashMap::new(),
         }
     }
 
@@ -38,21 +40,10 @@ impl TurnState {
         self.calls.clear();
         self.evidence = ExecutionEvidence::new();
         self.consecutive_hitl_denials = 0;
-        self.auto_unconfined_retries.clear();
         self.failed_confined_bash.clear();
-    }
-
-    /// Whether `call_id` may take an automatic unconfined retry, recording
-    /// that it has. Returns `false` on every later ask for the same call.
-    ///
-    /// A retry outside the sandbox should not be able to raise the sandbox
-    /// denial that triggered it, but "should not" is not a termination
-    /// argument: without this, a tool that reports `SandboxDenied`
-    /// unconditionally would be re-run forever, since the allow rule that
-    /// authorised the first retry still authorises the next. One retry, then
-    /// the denial is reported like any other tool failure.
-    pub(crate) fn claim_auto_unconfined_retry(&mut self, call_id: &str) -> bool {
-        self.auto_unconfined_retries.insert(call_id.to_owned())
+        self.failed_unconfined_call_shapes.clear();
+        self.approved_retry_calls.clear();
+        self.retry_requests.clear();
     }
 
     pub(crate) fn calls(&self) -> &[ToolCall] {
@@ -64,13 +55,24 @@ impl TurnState {
     }
 
     pub(crate) fn record_failed_confined_bash(&mut self, call: ToolCall) {
-        if call.name == "bash" {
+        if call.name == "bash" && !self.failed_unconfined_call_matches(&call) {
             self.failed_confined_bash.insert(call.id.clone(), call);
         }
     }
 
     pub(crate) fn take_failed_confined_bash(&mut self, call_id: &str) -> Option<ToolCall> {
         self.failed_confined_bash.remove(call_id)
+    }
+
+    pub(crate) fn record_failed_unconfined_call(&mut self, call: &ToolCall) {
+        self.failed_confined_bash
+            .retain(|_, candidate| call_shape(candidate) != call_shape(call));
+        self.failed_unconfined_call_shapes.insert(call_shape(call));
+    }
+
+    pub(crate) fn failed_unconfined_call_matches(&self, call: &ToolCall) -> bool {
+        self.failed_unconfined_call_shapes
+            .contains(&call_shape(call))
     }
 
     pub(crate) fn evidence(&self) -> &ExecutionEvidence {
@@ -103,6 +105,10 @@ impl TurnState {
     }
 }
 
+fn call_shape(call: &ToolCall) -> String {
+    format!("{}:{}", call.name, call.arguments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::TurnState;
@@ -127,5 +133,29 @@ mod tests {
 
         assert!(state.calls().is_empty());
         assert!(state.evidence().0.is_empty());
+    }
+
+    #[test]
+    fn failed_unconfined_shape_invalidates_old_and_new_retry_references_until_reset() {
+        let mut state = TurnState::new();
+        let mut call = ToolCall {
+            id: "first".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "open fixture.html"}),
+        };
+        state.record_failed_confined_bash(call.clone());
+        state.record_failed_unconfined_call(&call);
+        assert!(state.take_failed_confined_bash("first").is_none());
+        call.id = "second".into();
+        state.record_failed_confined_bash(call.clone());
+        assert!(state.take_failed_confined_bash("second").is_none());
+        assert!(state.failed_unconfined_call_matches(&call));
+        let mut different = call.clone();
+        different.arguments = json!({"command": "open different.html"});
+        assert!(!state.failed_unconfined_call_matches(&different));
+        state.reset();
+        assert!(!state.failed_unconfined_call_matches(&call));
+        state.record_failed_confined_bash(call);
+        assert!(state.take_failed_confined_bash("second").is_some());
     }
 }
