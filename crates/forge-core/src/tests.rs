@@ -17,6 +17,142 @@ struct GatedTool {
     release: Arc<Notify>,
 }
 
+async fn session_with_explicit_retry_tools(dir: &std::path::Path) -> AgentSession {
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FailedBashTool));
+    tools.register(Arc::new(RequestUnconfinedRetryTool));
+    AgentSession::create(base_cfg(dir), model, tools)
+        .await
+        .unwrap()
+}
+
+async fn run_failed_bash(session: &mut AgentSession) {
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "failed-bash".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "touch /outside/workspace"}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("bash should begin execution");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+}
+
+async fn request_explicit_retry(session: &mut AgentSession) -> ModelResponseApplication {
+    request_explicit_retry_with_id(session, "retry-request").await
+}
+
+async fn request_explicit_retry_with_id(
+    session: &mut AgentSession,
+    request_id: &str,
+) -> ModelResponseApplication {
+    session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: request_id.into(),
+                name: "request_unconfined_retry".into(),
+                arguments: json!({
+                    "retry_of": "failed-bash",
+                    "reason": "the output path is required"
+                }),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn explicit_unconfined_retry_always_requires_hitl_even_with_allow_rule() {
+    let dir = tempdir().unwrap();
+    let mut session = session_with_explicit_retry_tools(dir.path()).await;
+    session.set_governance(
+        Governance::default().with_pattern_rules(parse_pattern_rules(&["bash(*)"]), vec![]),
+    );
+    session.append_user_message("run it").await.unwrap();
+    run_failed_bash(&mut session).await;
+
+    let application = request_explicit_retry(&mut session).await;
+
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let payload = session.pending_hitl().expect("retry must require approval");
+    assert_eq!(payload.call_id, "retry-request");
+    assert_eq!(payload.tool, "bash");
+    assert_eq!(
+        payload.args_redacted,
+        json!({"command": "touch /outside/workspace"})
+    );
+    assert!(payload.sandbox_escalation);
+}
+
+#[tokio::test]
+async fn approved_explicit_retry_executes_recovered_bash_unconfined() {
+    let dir = tempdir().unwrap();
+    let mut session = session_with_explicit_retry_tools(dir.path()).await;
+    session.append_user_message("run it").await.unwrap();
+    run_failed_bash(&mut session).await;
+    let _ = request_explicit_retry(&mut session).await;
+
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should start recovered bash");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("retry-request"))
+        .expect("retry result should bind to request id");
+    assert_eq!(result.name.as_deref(), Some("bash"));
+    assert_eq!(result.content, "unconfined retry succeeded");
+}
+
+#[tokio::test]
+async fn explicit_retry_reference_is_consumed_after_one_request() {
+    let dir = tempdir().unwrap();
+    let mut session = session_with_explicit_retry_tools(dir.path()).await;
+    session.append_user_message("run it").await.unwrap();
+    run_failed_bash(&mut session).await;
+    let _ = request_explicit_retry(&mut session).await;
+    session
+        .resolve_hitl(HitlDecision::Deny, "test")
+        .await
+        .unwrap();
+
+    let application = request_explicit_retry_with_id(&mut session, "retry-request-2").await;
+
+    assert!(!matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("retry-request-2"))
+        .expect("second request should receive denial result");
+    assert!(result.content.contains("unconsumed failed confined bash"));
+}
+
 #[tokio::test]
 async fn orchestration_tools_return_results_without_aborting_the_turn() {
     let dir = tempdir().unwrap();
@@ -57,6 +193,81 @@ async fn orchestration_tools_return_results_without_aborting_the_turn() {
 }
 
 struct SandboxDeniedTool;
+
+struct FailedBashTool;
+
+struct RequestUnconfinedRetryTool;
+
+#[async_trait]
+impl forge_tools::Tool for FailedBashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Fail while confined and succeed while unconfined"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+            "additionalProperties": false
+        })
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        if ctx.unconfined_shell {
+            Ok(ToolOutput::success("unconfined retry succeeded"))
+        } else {
+            Ok(ToolOutput::failed_exit("permission denied", Some(1)))
+        }
+    }
+}
+
+#[async_trait]
+impl forge_tools::Tool for RequestUnconfinedRetryTool {
+    fn name(&self) -> &str {
+        "request_unconfined_retry"
+    }
+
+    fn description(&self) -> &str {
+        "Request approval to retry a failed bash call unconfined"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "retry_of": {"type": "string"},
+                "reason": {"type": "string"}
+            },
+            "required": ["retry_of"],
+            "additionalProperties": false
+        })
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Meta
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        panic!("request_unconfined_retry must be intercepted by forge-core")
+    }
+}
 
 /// Reports a sandbox denial even when run unconfined, which a real sandbox
 /// cannot do — the point is that the auto-retry must terminate anyway rather
