@@ -6,6 +6,7 @@
 
 use forge_tools::ValidationBudget;
 use forge_types::ToolCall;
+use std::collections::{HashMap, HashSet};
 
 use crate::{EvidenceEntry, ExecutionEvidence};
 
@@ -16,7 +17,8 @@ pub(crate) struct TurnState {
     consecutive_hitl_denials: u32,
     /// Calls that have already taken their one automatic unconfined retry
     /// after a sandbox denial (see `claim_auto_unconfined_retry`).
-    auto_unconfined_retries: std::collections::HashSet<String>,
+    auto_unconfined_retries: HashSet<String>,
+    failed_confined_bash: HashMap<String, ToolCall>,
 }
 
 impl TurnState {
@@ -26,7 +28,8 @@ impl TurnState {
             calls: Vec::new(),
             evidence: ExecutionEvidence::new(),
             consecutive_hitl_denials: 0,
-            auto_unconfined_retries: std::collections::HashSet::new(),
+            auto_unconfined_retries: HashSet::new(),
+            failed_confined_bash: HashMap::new(),
         }
     }
 
@@ -36,6 +39,7 @@ impl TurnState {
         self.evidence = ExecutionEvidence::new();
         self.consecutive_hitl_denials = 0;
         self.auto_unconfined_retries.clear();
+        self.failed_confined_bash.clear();
     }
 
     /// Whether `call_id` may take an automatic unconfined retry, recording
@@ -57,6 +61,16 @@ impl TurnState {
 
     pub(crate) fn record_call(&mut self, call: ToolCall) {
         self.calls.push(call);
+    }
+
+    pub(crate) fn record_failed_confined_bash(&mut self, call: ToolCall) {
+        if call.name == "bash" {
+            self.failed_confined_bash.insert(call.id.clone(), call);
+        }
+    }
+
+    pub(crate) fn take_failed_confined_bash(&mut self, call_id: &str) -> Option<ToolCall> {
+        self.failed_confined_bash.remove(call_id)
     }
 
     pub(crate) fn evidence(&self) -> &ExecutionEvidence {

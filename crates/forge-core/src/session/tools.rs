@@ -361,6 +361,12 @@ impl AgentSession {
         {
             let mut prepared = Vec::with_capacity(completed.executions.len());
             for execution in completed.executions {
+                if let Ok(output) = &execution.result {
+                    if output.is_error && execution.call.name == "bash" {
+                        self.turn
+                            .record_failed_confined_bash(execution.call.clone());
+                    }
+                }
                 prepared.push(Box::pin(self.prepare_successful_tool_result(execution)).await?);
             }
             self.journal
@@ -738,6 +744,14 @@ impl AgentSession {
         }
         let call = forge_tools::canonicalize_tool_call(call.clone());
         self.turn.record_call(call.clone());
+        if call.name == "request_unconfined_retry" {
+            if !validated {
+                self.tools
+                    .validate_call(&call.name, &call.arguments)
+                    .map_err(ToolError::Validation)?;
+            }
+            return self.start_explicit_unconfined_retry_request(&call).await;
+        }
         let class = self
             .tools
             .get(&call.name)
@@ -866,6 +880,90 @@ impl AgentSession {
                     .transpose()?,
             },
         )))
+    }
+
+    async fn start_explicit_unconfined_retry_request(
+        &mut self,
+        request: &ToolCall,
+    ) -> Result<ToolExecutionStart, LoopError> {
+        let retry_of = request
+            .arguments
+            .get("retry_of")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| LoopError::Other("request_unconfined_retry requires retry_of".into()))?;
+        let Some(original) = self.turn.take_failed_confined_bash(retry_of) else {
+            let output = ToolOutput::denied(
+                "retry_of must reference an unconsumed failed confined bash call from this turn",
+            );
+            self.journal
+                .append_tool_intent(self.session_id, request)
+                .await?;
+            self.journal
+                .append_tool_result(self.session_id, request, &output)
+                .await?;
+            self.remember_tool_result(request, &output);
+            self.messages
+                .push(Message::from_tool_output(request, &output));
+            return Ok(ToolExecutionStart::Finished(None));
+        };
+
+        let class = self
+            .tools
+            .get(&original.name)
+            .map(|tool| tool.side_effect_class())
+            .unwrap_or(SideEffectClass::Meta);
+        if self.enable_gov {
+            let decision = self.governance.authorize(&original, class);
+            self.governance.record_audit(AuditEvent {
+                session_id: self.session_id.to_string(),
+                principal: self.governance.principal.id.clone(),
+                tool: original.name.clone(),
+                args_redacted: self.governance.redact_args(&original.arguments),
+                decision,
+                policy_id: "explicit_unconfined_retry".into(),
+                result: format!("{decision:?}"),
+                duration_ms: 0,
+                trace_id: None,
+            });
+            if !matches!(decision, PolicyDecision::Allow | PolicyDecision::Hitl) {
+                let output = ToolOutput::denied("governance denied the unconfined retry");
+                self.journal
+                    .append_tool_intent(self.session_id, request)
+                    .await?;
+                self.journal
+                    .append_tool_result(self.session_id, request, &output)
+                    .await?;
+                self.remember_tool_result(request, &output);
+                self.messages
+                    .push(Message::from_tool_output(request, &output));
+                return Ok(ToolExecutionStart::Finished(None));
+            }
+        }
+
+        let retry = ToolCall {
+            id: request.id.clone(),
+            name: original.name,
+            arguments: original.arguments,
+        };
+        self.journal
+            .append_tool_intent(self.session_id, request)
+            .await?;
+        let reason = request
+            .arguments
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .filter(|reason| !reason.trim().is_empty())
+            .map_or_else(
+                || format!("explicit retry requested for failed call {retry_of}"),
+                |reason| format!("explicit retry requested for failed call {retry_of}: {reason}"),
+            );
+        let outcome = self.enter_sandbox_hitl(retry, reason, None, None).await?;
+        let ApplyOutcome::Hitl(response) = outcome else {
+            return Err(LoopError::Other(
+                "explicit unconfined retry did not enter approval wait".into(),
+            ));
+        };
+        Ok(ToolExecutionStart::Finished(Some(response)))
     }
 
     async fn dispatch_agent_tool(
@@ -1043,6 +1141,9 @@ impl AgentSession {
             match result {
                 Ok(mut output) => {
                     Self::backfill_tool_outcome(&mut output);
+                    if output.is_error && call.name == "bash" {
+                        self.turn.record_failed_confined_bash(call.clone());
+                    }
                     self.push_success_evidence(&call, pre_edit, pre_git, &output)
                         .await;
                     if self.enable_context {
@@ -1087,6 +1188,9 @@ impl AgentSession {
                     });
                 }
                 Err(error) => {
+                    if call.name == "bash" {
+                        self.turn.record_failed_confined_bash(call.clone());
+                    }
                     let content = error.to_string();
                     let is_budget = content.contains("validation retry budget exceeded");
                     let outcome = error.as_outcome();
