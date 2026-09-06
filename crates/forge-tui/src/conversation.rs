@@ -353,9 +353,10 @@ fn estimate_wrapped_lines(text: &str, width: usize) -> usize {
 fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: usize) -> usize {
     let body = match block {
         ConversationBlock::UserMessage(p) => {
-            estimate_wrapped_lines(&p.text, width.saturating_sub(2))
+            estimate_wrapped_lines(&p.text, width.saturating_sub(2)).saturating_add(1)
         }
-        ConversationBlock::AssistantAnswer(p) => estimate_wrapped_lines(&p.text, prose_width),
+        ConversationBlock::AssistantAnswer(p) => estimate_wrapped_lines(&p.text, prose_width)
+            .saturating_add(usize::from(!p.streaming && !p.text.trim().is_empty())),
         ConversationBlock::Thinking(p) if p.collapsed => 1,
         ConversationBlock::Thinking(p) => estimate_wrapped_lines(&p.text, prose_width),
         ConversationBlock::CodeBlock(p) => estimate_wrapped_lines(&p.text, width),
@@ -719,6 +720,16 @@ impl ConversationRenderInternals for ConversationModel {
         let gap = !self.opts.compact;
         let rail = width >= RAIL_MIN_WIDTH;
         let blocks = self.semantic_blocks();
+        // §12: empty reasoning carries no actionable information in the
+        // default presentation — skip the placeholder row entirely. The
+        // underlying item is untouched, so visibility controls still apply.
+        let blocks: Vec<ConversationBlock> = blocks
+            .into_iter()
+            .filter(|b| match b {
+                ConversationBlock::Thinking(p) => !p.text.trim().is_empty(),
+                _ => true,
+            })
+            .collect();
         let start_block = start_block_for_tail(&blocks, width, prose_width, keep_from_end);
         // DESIGN-007: completed turns recede — a successful group in an
         // older turn renders neutral, never green. Failures, denials,
@@ -763,6 +774,12 @@ impl ConversationRenderInternals for ConversationModel {
             seen_any_block = true;
             match block {
                 ConversationBlock::UserMessage(p) => {
+                    // §5 role landmark: renderer-owned neutral author label,
+                    // legible without color (shape, not hue, carries authorship).
+                    lines.push(Line::from(Span::styled(
+                        "You",
+                        theme::text().add_modifier(Modifier::BOLD),
+                    )));
                     let theme_id = crate::theme::active();
                     let prefix_width = MESSAGE_PADDING;
                     let user_lines = user_message_gutter::render_user_message_lines(
@@ -799,6 +816,15 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
+                    // §5: one renderer-owned Answer label per final-response
+                    // region — never one per streamed fragment. Streaming
+                    // previews stay unlabeled; the label lands once settled.
+                    if !p.streaming && !p.text.trim().is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            "Answer",
+                            theme::text().add_modifier(Modifier::BOLD),
+                        )));
+                    }
                     lines.extend(render_assistant_answer(
                         &p.text,
                         p.streaming,
@@ -882,12 +908,25 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                     // Only once recovered: a still-failing group shouldn't
                     // show a badge that reads as "this is fine now."
+                    // Chronological outcome counts only — never a
+                    // "retry/recovered" claim from adjacency (§7). Recovery
+                    // wording requires evidence linking the attempts.
                     if p.outcome == ActivityOutcome::Success && p.retries > 0 {
-                        let label = if p.retries == 1 {
-                            "1 retry".to_string()
+                        let failed_label = if p.retries == 1 {
+                            "1 failed".to_string()
                         } else {
-                            format!("{} retries", p.retries)
+                            format!("{} failed", p.retries)
                         };
+                        let label = format!(
+                            "{} {} · {}",
+                            p.items.len().saturating_add(p.retries),
+                            if p.items.len().saturating_add(p.retries) == 1 {
+                                "command"
+                            } else {
+                                "commands"
+                            },
+                            failed_label
+                        );
                         spans.push(Span::styled(format!(" · {label}"), theme::dim()));
                     }
                     spans.push(Span::styled(
@@ -1007,16 +1046,14 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                 }
                 ConversationBlock::TurnSummary(p) => {
-                    // A turn used to end by simply stopping: the answer ran
-                    // out and only the footer recorded that anything had
-                    // concluded. This is the bottom edge, and the cost.
+                    // §11 receipt: one muted row, neutral finish wording.
+                    // "Response finished" describes answer delivery, not task
+                    // success — never a bold verdict competing with the answer.
                     let mut spans = vec![
-                        // Neutral indent: finishing statuses carry no
-                        // color wash, even on whitespace (DESIGN-011).
                         Span::styled("      ", theme::metadata_style()),
                         Span::styled(
-                            format!("Answered in {}", format_elapsed_tenths(p.secs)),
-                            theme::text().add_modifier(Modifier::BOLD),
+                            format!("Response finished · {}", format_elapsed_tenths(p.secs)),
+                            theme::metadata_style(),
                         ),
                     ];
                     // Tokens per second, from the provider's own count for
@@ -1130,6 +1167,9 @@ fn plan_dock_for(
     available_width: usize,
     lines: &[Line<'static>],
 ) -> Option<PlanDock> {
+    // §3/§8: pin only an unfinished plan belonging to the active turn.
+    // A completed plan stays as one compact muted block in history — it
+    // never docks above the final answer competing with it.
     let width = available_width.max(4);
     let prose_width = prose_width_for(width);
     let turn_boundaries = model.turn_boundaries();
@@ -1161,6 +1201,14 @@ fn plan_dock_for(
                 })
             }
             _ => None,
+        })
+        // Only an unfinished plan docks: once every step reports complete,
+        // there is no active work to track and the dock would outrank the
+        // final answer it should yield to.
+        .filter(|plan| {
+            plan.steps
+                .iter()
+                .any(|item| item.status != forge_types::PlanStepStatus::Completed)
         })?;
     // Follow mode renders only a tail window, so a plan far enough back is
     // not in `lines` at all — which is exactly when it most needs docking.
@@ -1959,7 +2007,9 @@ const MESSAGE_PADDING: usize = 2;
 /// columns rather than a share of the width, so it reads as a margin at every
 /// size instead of growing into leftover space.
 fn prose_width_for(width: usize) -> usize {
-    width.saturating_sub(MESSAGE_PADDING * 2).max(4)
+    // §10: 96-column reading measure within the pane. Code, tool commands
+    // and tabular data bypass this and keep full content width at render.
+    width.saturating_sub(MESSAGE_PADDING * 2).clamp(4, 96)
 }
 
 /// Widest a *card* may be drawn: the approval, question, home and plan cards.
@@ -2543,8 +2593,9 @@ mod tests {
         );
     }
 
-    /// A wide pane is used. 119 characters wrapped to two lines under the old
-    /// 72-column measure while two thirds of the pane sat empty.
+    /// A 140-column pane caps prose at the 96-column reading measure (§10):
+    /// 24 words fit on one line at full width but wrap to two within it.
+    /// Code and structured blocks keep the full pane width.
     #[test]
     fn a_wide_viewport_gives_its_width_to_the_answer() {
         let content = std::iter::repeat_n("word", 24)
@@ -2573,10 +2624,10 @@ mod tests {
             .iter()
             .filter(|line| line.spans.iter().any(|span| span.content.contains("word")))
             .count();
-        assert_eq!(answer_lines, 1);
+        assert_eq!(answer_lines, 2);
 
-        // Narrow panes are unaffected: there the pane, not a measure, was
-        // always the limit.
+        // Narrow panes are unaffected: there the pane, not the 96-column
+        // reading measure, was always the limit.
         let narrow = model
             .lines_for_width(48)
             .iter()
@@ -2683,8 +2734,14 @@ mod tests {
             ConversationViewOpts::default(),
         );
         let lines = m.lines_for_width(WIDTH);
+        assert_eq!(
+            line_text(&lines[0]),
+            "You",
+            "renderer-owned author label: {lines:?}"
+        );
         let rendered_lines = lines
             .iter()
+            .skip(1)
             .map(|line| {
                 line.spans
                     .iter()
@@ -2695,7 +2752,7 @@ mod tests {
         let rendered = rendered_lines.join("\n");
         assert_eq!(rendered_lines[0].trim_end(), "  hello world", "{rendered}");
         let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
-        let first = &lines[0];
+        let first = &lines[1];
         // No leading marker — a plain indent, background carried to the edge.
         assert_eq!(first.spans[0].content.as_ref(), "  ");
         assert_eq!(first.spans[0].style.bg, Some(dark.accent_soft));
@@ -2732,6 +2789,7 @@ mod tests {
         let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
         let user_rows: Vec<&Line<'static>> = lines
             .iter()
+            .skip(1)
             .take_while(|line| {
                 line.spans
                     .first()
@@ -3258,6 +3316,63 @@ mod tests {
 
     /// Measured before this existed: the plan card was on screen for 8 frames
     /// out of 70, and after that nothing said a plan existed at all.
+    #[test]
+    fn a_completed_plan_never_docks_above_its_answer() {
+        // §3/§8: a finished plan stays as one compact muted block in
+        // history — it never docks above the final answer competing with it.
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![ChatItem::PlanChecklist {
+                explanation: None,
+                steps: vec![
+                    forge_types::PlanItem {
+                        step: "Inspect the theme tokens".into(),
+                        status: forge_types::PlanStepStatus::Completed,
+                    },
+                    forge_types::PlanItem {
+                        step: "Add the dark palette".into(),
+                        status: forge_types::PlanStepStatus::Completed,
+                    },
+                ],
+                evidence: Vec::new(),
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let (_, dock) = model.lines_and_plan_dock(80, usize::MAX);
+        assert!(dock.is_none(), "completed plans must not dock");
+    }
+
+    #[test]
+    fn a_cancelled_turn_keeps_a_conversational_ending() {
+        // §10: cancellation projects the existing lifecycle outcome into the
+        // transcript — a neutral ending, no red failure styling, no receipt.
+        let msgs = vec![Message {
+            outcome: Default::default(),
+            role: MessageRole::User,
+            content: "do something".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        }];
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Cancelled,
+            ConversationViewOpts::default(),
+        );
+        let rendered: Vec<String> = model.lines_for_width(80).iter().map(line_text).collect();
+        assert!(
+            rendered.iter().any(|row| row.contains("Turn cancelled")),
+            "cancelled turn needs an ending: {rendered:?}"
+        );
+    }
+
     #[test]
     fn the_plan_docks_once_its_card_has_scrolled_away() {
         let mut items = vec![ChatItem::PlanChecklist {
@@ -4500,11 +4615,11 @@ mod tests {
         let after = lines[rule_pos + 1..]
             .iter()
             .map(line_text)
-            .find(|t| !t.is_empty())
+            .find(|t| !t.is_empty() && t != "You")
             .expect("content after the rule");
         assert!(
             after.contains("third"),
-            "the rule immediately precedes the second turn's user message, got {after:?}"
+            "the rule immediately precedes the second turn's user message (past its You label), got {after:?}"
         );
     }
 
@@ -4688,7 +4803,7 @@ mod tests {
         // Completion row: neutral — no success green, no failure marker.
         let done = lines
             .iter()
-            .find(|l| line_text(l).contains("Answered in"))
+            .find(|l| line_text(l).contains("Response finished"))
             .expect("completion row present");
         for span in &done.spans {
             assert_ne!(
@@ -4734,8 +4849,14 @@ mod tests {
             .iter()
             .position(|l| line_text(l).contains("Root cause"))
             .unwrap();
+        // §5 Answer landmark sits directly above the final response.
+        assert_eq!(
+            line_text(&lines[answer_idx - 1]),
+            "Answer",
+            "renderer-owned final-response label precedes the answer"
+        );
         assert!(
-            lines[answer_idx - 1]
+            lines[answer_idx - 2]
                 .spans
                 .iter()
                 .all(|s| s.content.is_empty()),

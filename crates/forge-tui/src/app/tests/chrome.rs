@@ -1361,7 +1361,7 @@ async fn a_finished_turn_is_closed_by_a_summary() {
     app.record_turn_summary();
 
     let rendered = render_app_text(&mut app, 120, 40);
-    assert!(rendered.contains("Answered in 7s"), "{rendered}");
+    assert!(rendered.contains("Response finished · 7s"), "{rendered}");
     assert!(rendered.contains("810 chars"), "{rendered}");
     assert!(rendered.contains("1 tool"), "{rendered}");
     assert!(!rendered.contains("1 tools"), "plural for one:\n{rendered}");
@@ -1381,10 +1381,10 @@ async fn a_finished_turn_is_closed_by_a_summary() {
     let rendered = render_app_text(&mut app, 120, 40);
     assert!(rendered.contains("3 tools"), "{rendered}");
     assert!(
-        rendered.contains("Answered in 7s"),
+        rendered.contains("Response finished · 7s"),
         "first turn keeps its own completion:\n{rendered}"
     );
-    let first_summary = rendered.find("Answered in 7s").unwrap();
+    let first_summary = rendered.find("Response finished · 7s").unwrap();
     let second_request = rendered.find("second request").unwrap();
     let second_summary = rendered.rfind("3 tools").unwrap();
     assert!(

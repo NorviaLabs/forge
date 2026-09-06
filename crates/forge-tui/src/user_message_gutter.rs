@@ -74,6 +74,8 @@ mod tests {
             .into_iter()
             .map(|line| line_plain(&line))
             .filter(|row| !row.is_empty() && !row.chars().all(|c| c == '─'))
+            // Skip the renderer-owned "You" role landmark (§5).
+            .filter(|row| row.trim() != "You")
             .map(|row| row.strip_prefix("  ").unwrap_or(&row).to_string())
             .collect()
     }
@@ -229,6 +231,7 @@ mod tests {
             .map(|line| line_plain(&line))
             .filter(|row| {
                 !row.is_empty()
+                    && row.trim() != "You"
                     && !row.trim_end().ends_with("You ─")
                     && !row.trim().chars().all(|c| c == '─')
             })
@@ -409,6 +412,9 @@ mod tests {
                 .iter()
                 .map(line_plain)
                 .filter(|text| !text.is_empty() && !text.chars().all(|c| c == '─'))
+                // The renderer-owned "You" landmark (§5) is a label row, not
+                // an indented message row.
+                .filter(|text| text.trim() != "You")
                 .all(|text| text.starts_with("  ")),
             "{label}: request is not left-aligned with the message indent:\n{}",
             lines.iter().map(line_plain).collect::<Vec<_>>().join("\n")

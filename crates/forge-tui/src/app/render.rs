@@ -667,7 +667,10 @@ impl TuiApp {
             } else if theme_picking {
                 1
             } else {
-                input_h.saturating_add(1)
+                // §3: state-aware idle padding — never derived from composer
+                // height, so content isn't displaced by input size. At small
+                // heights (≤18) or during decisions, no trailing dead zone.
+                1
             };
             if cached_complete && live_lines.is_empty() && status_lines.is_empty() {
                 let total = cached_lines.len().saturating_add(bottom_padding as usize);
