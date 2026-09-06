@@ -17,11 +17,86 @@ struct GatedTool {
     release: Arc<Notify>,
 }
 
+#[tokio::test]
+async fn a_failed_unconfined_attempt_suppresses_repeat_escalation_for_the_exact_call() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(AlwaysSandboxDeniedTool));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.append_user_message("run it").await.unwrap();
+
+    let first = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "first".into(),
+                name: "always_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = first else {
+        panic!("first attempt should execute confined");
+    };
+    let completed = pending.execute().await;
+    let _ = session.finish_tool_application(completed).await.unwrap();
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should execute unconfined");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    let repeated = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "repeat".into(),
+                name: "always_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = repeated else {
+        panic!("repeat should execute confined before classification");
+    };
+    let completed = pending.execute().await;
+    let outcome = session.finish_tool_application(completed).await.unwrap();
+
+    assert!(!matches!(
+        outcome,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    assert!(session.pending_hitl().is_none());
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("repeat"))
+        .expect("repeat must receive an ordinary failure");
+    assert!(result.content.contains("approved unconfined attempt"));
+}
+
 async fn session_with_explicit_retry_tools(dir: &std::path::Path) -> AgentSession {
     let model = Arc::new(MockModelClient::script(vec![]));
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(FailedBashTool));
-    tools.register(Arc::new(RequestUnconfinedRetryTool));
+    tools.register(
+        forge_tools::default_builtins()
+            .into_iter()
+            .find(|tool| tool.name() == "request_unconfined_retry")
+            .unwrap(),
+    );
     AgentSession::create(base_cfg(dir), model, tools)
         .await
         .unwrap()
@@ -122,7 +197,7 @@ async fn approved_explicit_retry_executes_recovered_bash_unconfined() {
         .rev()
         .find(|message| message.tool_call_id.as_deref() == Some("retry-request"))
         .expect("retry result should bind to request id");
-    assert_eq!(result.name.as_deref(), Some("bash"));
+    assert_eq!(result.name.as_deref(), Some("request_unconfined_retry"));
     assert_eq!(result.content, "unconfined retry succeeded");
 }
 
@@ -151,6 +226,173 @@ async fn explicit_retry_reference_is_consumed_after_one_request() {
         .find(|message| message.tool_call_id.as_deref() == Some("retry-request-2"))
         .expect("second request should receive denial result");
     assert!(result.content.contains("unconsumed failed confined bash"));
+}
+
+#[tokio::test]
+async fn retry_policy_is_checked_for_the_request_and_again_at_approval() {
+    for approve_first in [false, true] {
+        let dir = tempdir().unwrap();
+        let mut session = session_with_explicit_retry_tools(dir.path()).await;
+        session.append_user_message("run it").await.unwrap();
+        run_failed_bash(&mut session).await;
+        if approve_first {
+            let _ = request_explicit_retry(&mut session).await;
+        }
+        let mut acl = AclPolicy::allow_all();
+        acl.deny("request_unconfined_retry".into());
+        session.set_governance(Governance::default().with_acl(acl));
+        if approve_first {
+            let error = match session.prepare_approved_hitl("test").await {
+                Err(error) => error,
+                Ok(_) => panic!("policy change must prevent execution"),
+            };
+            assert!(error.to_string().contains("policy denies retry request"));
+        } else {
+            let outcome = request_explicit_retry(&mut session).await;
+            assert!(!matches!(
+                outcome,
+                ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+            ));
+            assert!(session
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("governance denied"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn approved_retry_preserves_raw_arguments_in_both_approval_paths() {
+    for deferred in [false, true] {
+        let dir = tempdir().unwrap();
+        let mut session = session_with_explicit_retry_tools(dir.path()).await;
+        session.append_user_message("run it").await.unwrap();
+        session.turn.record_failed_confined_bash(ToolCall {
+            id: "failed-bash".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "fixture", "api_token": "test-placeholder"}),
+        });
+        let _ = request_explicit_retry(&mut session).await;
+        assert_eq!(
+            session.pending_hitl().unwrap().args_redacted["api_token"],
+            "[REDACTED]"
+        );
+        if deferred {
+            let pending = session
+                .prepare_approved_hitl("test")
+                .await
+                .unwrap()
+                .unwrap();
+            session
+                .finish_hitl_execution(pending.execute().await)
+                .await
+                .unwrap();
+        } else {
+            session
+                .resolve_hitl(HitlDecision::Approve, "test")
+                .await
+                .unwrap();
+        }
+        let result = session.messages.last().unwrap();
+        assert_eq!(result.name.as_deref(), Some("request_unconfined_retry"));
+        assert_eq!(result.content, "test-placeholder");
+        assert!(session.turn.approved_retry_calls.is_empty());
+        assert!(session.turn.retry_requests.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn missing_original_retry_arguments_fail_closed() {
+    let dir = tempdir().unwrap();
+    let mut session = session_with_explicit_retry_tools(dir.path()).await;
+    session.append_user_message("run it").await.unwrap();
+    run_failed_bash(&mut session).await;
+    let _ = request_explicit_retry(&mut session).await;
+    session.turn.reset(); // Resume reconstructs turn-local state as empty.
+    assert!(session.prepare_approved_hitl("test").await.is_err());
+    assert!(session.pending_hitl().is_some());
+    session
+        .resolve_hitl(HitlDecision::Deny, "test")
+        .await
+        .unwrap();
+    assert!(session.pending_hitl().is_none());
+}
+
+/// Manual smoke check: opens a harmless local page in Safari through the real
+/// shell/sandbox/approval path. Kept out of unattended test runs.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "opens Safari; run explicitly on an interactive macOS desktop"]
+async fn browser_handoff_retries_the_exact_command_after_approval() {
+    let dir = tempdir().unwrap();
+    let page = dir.path().join("sandbox-browser-check.html");
+    std::fs::write(
+        &page,
+        "<!doctype html><title>Forge sandbox check</title><p>Forge browser handoff check</p>",
+    )
+    .unwrap();
+    let mut tools = ToolRegistry::new();
+    for tool in forge_tools::default_builtins() {
+        tools.register(tool);
+    }
+    let mut session = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session
+        .append_user_message("open the local check page")
+        .await
+        .unwrap();
+    let command = format!("/usr/bin/open -g -a Safari '{}'", page.display());
+    let start = session
+        .begin_model_response_application(tool_call_response(vec![ToolCall {
+            id: "browser-handoff".into(),
+            name: "bash".into(),
+            arguments: json!({"command": command}),
+        }]))
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = start else {
+        panic!("expected confined command");
+    };
+    let outcome = session
+        .finish_tool_application(pending.execute().await)
+        .await
+        .unwrap();
+    if matches!(
+        outcome,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ) {
+        let payload = session.pending_hitl().unwrap();
+        assert!(payload.sandbox_escalation);
+        assert_eq!(payload.args_redacted["command"], command);
+        eprintln!("Browser handoff required approval: {}", payload.reason);
+        session
+            .resolve_hitl(HitlDecision::Approve, "manual-smoke-test")
+            .await
+            .unwrap();
+    } else {
+        eprintln!("Browser handoff succeeded while confined on this host");
+    }
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message.role == MessageRole::Tool
+                && message.tool_call_id.as_deref() == Some("browser-handoff")
+        })
+        .unwrap();
+    assert!(
+        matches!(result.outcome, ExecutionOutcome::Success),
+        "{}",
+        result.content
+    );
 }
 
 #[tokio::test]
@@ -196,8 +438,6 @@ struct SandboxDeniedTool;
 
 struct FailedBashTool;
 
-struct RequestUnconfinedRetryTool;
-
 #[async_trait]
 impl forge_tools::Tool for FailedBashTool {
     fn name(&self) -> &str {
@@ -211,7 +451,7 @@ impl forge_tools::Tool for FailedBashTool {
     fn input_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
-            "properties": {"command": {"type": "string"}},
+            "properties": {"command": {"type": "string"}, "api_token": {"type": "string"}},
             "required": ["command"],
             "additionalProperties": false
         })
@@ -224,48 +464,17 @@ impl forge_tools::Tool for FailedBashTool {
     async fn call(
         &self,
         ctx: &ToolContext,
-        _args: serde_json::Value,
+        args: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
         if ctx.unconfined_shell {
-            Ok(ToolOutput::success("unconfined retry succeeded"))
+            Ok(ToolOutput::success(
+                args.get("api_token")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unconfined retry succeeded"),
+            ))
         } else {
             Ok(ToolOutput::failed_exit("permission denied", Some(1)))
         }
-    }
-}
-
-#[async_trait]
-impl forge_tools::Tool for RequestUnconfinedRetryTool {
-    fn name(&self) -> &str {
-        "request_unconfined_retry"
-    }
-
-    fn description(&self) -> &str {
-        "Request approval to retry a failed bash call unconfined"
-    }
-
-    fn input_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "retry_of": {"type": "string"},
-                "reason": {"type": "string"}
-            },
-            "required": ["retry_of"],
-            "additionalProperties": false
-        })
-    }
-
-    fn side_effect_class(&self) -> SideEffectClass {
-        SideEffectClass::Meta
-    }
-
-    async fn call(
-        &self,
-        _ctx: &ToolContext,
-        _args: serde_json::Value,
-    ) -> Result<ToolOutput, ToolError> {
-        panic!("request_unconfined_retry must be intercepted by forge-core")
     }
 }
 
@@ -652,13 +861,11 @@ async fn sandbox_denied_session(dir: &std::path::Path) -> AgentSession {
         .unwrap()
 }
 
-/// A sandbox denial never reaches `authorize`, so this path has to consult
-/// the operator's allow rules itself. It did not: an `allow` line written by
-/// "always allow" went into `permissions.toml` and was read by nothing on
-/// the re-prompt path, so the very next matching command asked again — the
-/// grant looked like it had no effect at all.
+/// A command-shape grant controls whether a tool may run, not whether Forge
+/// may remove its process sandbox. Changing execution mode always needs an
+/// exact-call approval.
 #[tokio::test]
-async fn a_persisted_allow_rule_reruns_a_sandbox_denial_without_prompting() {
+async fn a_persisted_allow_rule_does_not_authorize_unconfined_execution() {
     let dir = tempdir().unwrap();
     let mut session = sandbox_denied_session(dir.path()).await;
     session.set_governance(
@@ -667,32 +874,17 @@ async fn a_persisted_allow_rule_reruns_a_sandbox_denial_without_prompting() {
 
     let application = run_sandbox_denied_call(&mut session).await;
 
-    let ModelResponseApplication::Execute(retry) = application else {
-        panic!("an already-allowed call must re-run, not prompt");
-    };
-    assert!(
-        session.pending_hitl().is_none(),
-        "no approval should have been raised"
-    );
-    let completed = retry.execute().await;
-    session.finish_tool_application(completed).await.unwrap();
-    let result = session
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-sandbox-denied"))
-        .expect("the retry should record a tool result");
-    assert_eq!(
-        result.content, "approved retry ran unconfined",
-        "the retry must run outside the sandbox, as the prompt's approval would have"
-    );
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    assert!(session.pending_hitl().is_some());
 }
 
-/// The same for a grant made at a prompt earlier in this session, which is
-/// the half that did work — via a TUI-only auto-approve — and must keep
-/// working now that the core decides.
+/// Session grants have the same boundary as persisted grants: they authorize
+/// command shape, never a transition to unconfined execution.
 #[tokio::test]
-async fn a_session_grant_reruns_a_sandbox_denial_without_prompting() {
+async fn a_session_grant_does_not_authorize_unconfined_execution() {
     let dir = tempdir().unwrap();
     let mut session = sandbox_denied_session(dir.path()).await;
     assert_eq!(
@@ -708,11 +900,11 @@ async fn a_session_grant_reruns_a_sandbox_denial_without_prompting() {
 
     let application = run_sandbox_denied_call(&mut session).await;
 
-    assert!(
-        matches!(application, ModelResponseApplication::Execute(_)),
-        "a session grant must re-run the call rather than prompt again"
-    );
-    assert!(session.pending_hitl().is_none());
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    assert!(session.pending_hitl().is_some());
 }
 
 /// Without any grant the prompt still happens — the fix must not turn a
@@ -856,11 +1048,9 @@ async fn grant_covers_honours_a_deny_carve_out() {
     assert!(!session.grant_covers(&call));
 }
 
-/// The allow rule that authorises the first unconfined retry still
-/// authorises the next one, so a tool that reports a denial even unconfined
-/// would be re-run forever. One retry per call, then it prompts.
+/// A matching allow rule must not cause even one automatic unconfined retry.
 #[tokio::test]
-async fn an_auto_unconfined_retry_happens_at_most_once_per_call() {
+async fn a_sandbox_denial_never_auto_retries_unconfined() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![]));
     let mut tools = ToolRegistry::new();
@@ -892,18 +1082,12 @@ async fn an_auto_unconfined_retry_happens_at_most_once_per_call() {
     let completed = pending.execute().await;
 
     let application = session.finish_tool_application(completed).await.unwrap();
-    let ModelResponseApplication::Execute(retry) = application else {
-        panic!("the grant should buy one unconfined retry");
-    };
-    let completed = retry.execute().await;
-
-    let application = session.finish_tool_application(completed).await.unwrap();
     assert!(
         matches!(
             application,
             ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
         ),
-        "a second denial for the same call must prompt, not retry again"
+        "the first denial must prompt instead of changing execution mode"
     );
     assert!(session.pending_hitl().is_some());
 }

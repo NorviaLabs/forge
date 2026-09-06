@@ -34,6 +34,7 @@ pub(crate) struct PendingToolExecution {
 
 pub(crate) struct CompletedToolExecution {
     call: ToolCall,
+    unconfined: bool,
     budget: ValidationBudget,
     pre_edit: Option<Vec<(String, Option<u64>)>>,
     pre_git: Option<GitPre>,
@@ -97,6 +98,7 @@ impl PendingToolExecution {
             prepared,
         } = self;
         let tool_name = call.name.clone();
+        let unconfined = tool_ctx.unconfined_shell;
         let pre_edit = pre_edit_snapshot(&tool_ctx, &call).await;
         let pre_git = git_pre_state(&tool_ctx, &call).await;
         let result = if let Some(prepared) = prepared {
@@ -106,6 +108,7 @@ impl PendingToolExecution {
                 .call(&tool_ctx, &call.name, call.arguments.clone(), &mut budget)
                 .await
         };
+
         tracing::debug!(
             tool = %tool_name,
             duration_ms = started.elapsed().as_millis() as u64,
@@ -113,6 +116,7 @@ impl PendingToolExecution {
         );
         CompletedToolExecution {
             call,
+            unconfined,
             budget,
             pre_edit,
             pre_git,
@@ -389,7 +393,7 @@ impl AgentSession {
             }
             return self.next_tool_application(pending).await;
         }
-        for execution in completed.executions {
+        for mut execution in completed.executions {
             if let Err(ToolError::SandboxDenied {
                 content,
                 reason,
@@ -397,39 +401,22 @@ impl AgentSession {
             }) = &execution.result
             {
                 let call = execution.call.clone();
-                if !parallel {
-                    pending.budget = execution.budget;
+                if denied_host.is_none() && self.turn.failed_unconfined_call_matches(&call) {
+                    execution.result = Err(ToolError::Execution(format!(
+                            "command still failed after an approved unconfined attempt; not requesting sandbox approval again: {content}"
+                        )));
+                } else {
+                    if !parallel {
+                        pending.budget = execution.budget;
+                    }
+                    let denied_host = denied_host.clone();
+                    self.turn.restore_validation_budget(pending.budget);
+                    let failure = observed_failure(content, reason);
+                    return self
+                        .enter_sandbox_hitl(call, reason.clone(), failure, denied_host)
+                        .await
+                        .map(ModelResponseApplication::Finished);
                 }
-                let denied_host = denied_host.clone();
-                // A sandbox denial never reaches `authorize`, so nothing on this
-                // path used to consult the operator's allow rules at all: a grant
-                // made at the last prompt — "allow for this session", or an
-                // `allow` line in their permissions file — was written somewhere
-                // this code did not read, and the very next matching command
-                // asked again. Re-running unconfined is exactly the consent the
-                // prompt would collect, so when a rule already covers the call,
-                // take it and skip the prompt.
-                //
-                // Only escalation is auto-resolved. A denied *host* is not a
-                // property of the command shape, so a command-shaped rule must
-                // not silently open a network destination; that still asks.
-                //
-                // The budget travels with the retry rather than being handed
-                // back to the turn, so the restore below belongs to the prompt
-                // path only.
-                if denied_host.is_none()
-                    && self.enable_gov
-                    && self.governance.grant_covers(&call)
-                    && self.turn.claim_auto_unconfined_retry(&call.id)
-                {
-                    return self.retry_unconfined(call, pending).await;
-                }
-                self.turn.restore_validation_budget(pending.budget);
-                let failure = observed_failure(content, reason);
-                return self
-                    .enter_sandbox_hitl(call, reason.clone(), failure, denied_host)
-                    .await
-                    .map(ModelResponseApplication::Finished);
             }
             let (budget, result) = self.finish_tool_call(execution).await;
             if !parallel {
@@ -460,6 +447,7 @@ impl AgentSession {
     ) -> Result<(ToolCall, ToolOutput), LoopError> {
         let CompletedToolExecution {
             call,
+            unconfined: _,
             budget: _,
             pre_edit,
             pre_git,
@@ -907,13 +895,24 @@ impl AgentSession {
             return Ok(ToolExecutionStart::Finished(None));
         };
 
+        self.tools
+            .validate_call(&original.name, &original.arguments)
+            .map_err(ToolError::Validation)?;
         let class = self
             .tools
             .get(&original.name)
             .map(|tool| tool.side_effect_class())
             .unwrap_or(SideEffectClass::Meta);
         if self.enable_gov {
-            let decision = self.governance.authorize(&original, class);
+            let request_decision = self.governance.authorize(request, SideEffectClass::Meta);
+            let decision = if matches!(
+                request_decision,
+                PolicyDecision::Allow | PolicyDecision::Hitl
+            ) {
+                self.governance.authorize(&original, class)
+            } else {
+                PolicyDecision::Deny
+            };
             self.governance.record_audit(AuditEvent {
                 session_id: self.session_id.to_string(),
                 principal: self.governance.principal.id.clone(),
@@ -948,6 +947,9 @@ impl AgentSession {
         self.journal
             .append_tool_intent(self.session_id, request)
             .await?;
+        self.turn
+            .retry_requests
+            .insert(request.id.clone(), request.clone());
         let reason = request
             .arguments
             .get("reason")
@@ -1132,6 +1134,7 @@ impl AgentSession {
     ) -> (ValidationBudget, Result<(), LoopError>) {
         let CompletedToolExecution {
             call,
+            unconfined: _,
             budget,
             pre_edit,
             pre_git,
@@ -1320,14 +1323,24 @@ impl AgentSession {
     ) -> Result<(), LoopError> {
         let CompletedToolExecution {
             call,
+            unconfined,
             budget: _,
             pre_edit,
             pre_git,
             result,
         } = completed.execution;
+        self.turn.approved_retry_calls.remove(&call.id);
+        let result_call = self
+            .turn
+            .retry_requests
+            .remove(&call.id)
+            .unwrap_or_else(|| call.clone());
         match result {
             Ok(mut output) => {
                 Self::backfill_tool_outcome(&mut output);
+                if unconfined && output.is_error {
+                    self.turn.record_failed_unconfined_call(&call);
+                }
                 self.push_success_evidence(&call, pre_edit, pre_git, &output)
                     .await;
                 if self.enable_context {
@@ -1336,9 +1349,9 @@ impl AgentSession {
                 }
                 self.freeze_tool_output(&mut output);
                 self.journal
-                    .append_tool_result(self.session_id, &call, &output)
+                    .append_tool_result(self.session_id, &result_call, &output)
                     .await?;
-                self.remember_tool_result(&call, &output);
+                self.remember_tool_result(&result_call, &output);
                 if call.name == "update_plan" && !output.is_error {
                     // Stateless checklist broadcast — clients replace whatever they
                     // were showing with this payload. Mirrors codex PlanUpdate.
@@ -1348,9 +1361,12 @@ impl AgentSession {
                     });
                 }
                 self.messages
-                    .push(Message::from_tool_output(&call, &output));
+                    .push(Message::from_tool_output(&result_call, &output));
             }
             Err(e) => {
+                if unconfined {
+                    self.turn.record_failed_unconfined_call(&call);
+                }
                 let outcome = e.as_outcome();
                 let output = ToolOutput {
                     outcome: Some(outcome),
@@ -1360,41 +1376,16 @@ impl AgentSession {
                     attachments: Vec::new(),
                 };
                 self.journal
-                    .append_tool_result(self.session_id, &call, &output)
+                    .append_tool_result(self.session_id, &result_call, &output)
                     .await?;
-                self.remember_tool_result(&call, &output);
+                self.remember_tool_result(&result_call, &output);
+                if unconfined {
+                    self.messages
+                        .push(Message::from_tool_output(&result_call, &output));
+                }
             }
         }
         Ok(())
-    }
-
-    /// Re-run a sandbox-denied call outside the sandbox, without a prompt,
-    /// because an allow rule the operator already granted covers it.
-    ///
-    /// Mirrors what `resolve_hitl`'s approve path does with the same call —
-    /// unconfined, and without a second `tool_intent` journal entry, since
-    /// the intent for this call was appended before its confined attempt.
-    async fn retry_unconfined(
-        &mut self,
-        call: ToolCall,
-        mut pending: PendingToolApplications,
-    ) -> Result<ModelResponseApplication, LoopError> {
-        let mut budget = std::mem::take(&mut pending.budget);
-        let started = self
-            .begin_hitl_execution_with_options(&call, &mut budget, true, false)
-            .await?;
-        pending.budget = budget;
-        match started {
-            Some(PendingHitlExecution { execution }) => Ok(ModelResponseApplication::Execute(
-                Box::new(PendingToolApplication {
-                    executions: vec![execution],
-                    remaining: pending,
-                }),
-            )),
-            // `background_run` / `ask_user_question` dispatch themselves and
-            // leave nothing to execute; carry on with the rest of the batch.
-            None => self.next_tool_application(pending).await,
-        }
     }
 
     async fn enter_sandbox_hitl(
@@ -1404,6 +1395,11 @@ impl AgentSession {
         failure: Option<String>,
         denied_host: Option<String>,
     ) -> Result<ApplyOutcome, LoopError> {
+        if denied_host.is_none() {
+            self.turn
+                .approved_retry_calls
+                .insert(call.id.clone(), call.clone());
+        }
         let payload = HitlPayload {
             call_id: call.id.clone(),
             tool: call.name.clone(),

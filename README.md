@@ -376,6 +376,19 @@ filesystem diagnostic and returns zero is not observable from the portable
 process interface; the write is still blocked, but Forge cannot infer that an
 unconfined retry was intended.
 
+If macOS `open` reports the Launch Services permission error `-54`, Forge
+asks to retry that exact command outside the sandbox. For a failed `bash`
+call whose output does not identify a sandbox denial, the agent can use
+`request_unconfined_retry` with the failed call's ID and a reason. Forge
+recovers the original arguments and asks for one-time approval; the request
+cannot supply a replacement command. Session and saved command rules do not
+authorize removal of the sandbox. A failed unconfined attempt cannot trigger
+another escalation for the same command during that turn. Retry references
+are consumed once and expire at the end of the turn. After restarting Forge,
+an approval whose original arguments are unavailable must be denied and the
+command issued again; Forge never executes redacted display arguments as a
+sandbox retry.
+
 There is one residual socket gap worth stating plainly. On Linux the sandbox
 still exposes the rest of the host filesystem read-only rather than hiding
 it, and a read-only *mount* does not stop a process connecting to a Unix

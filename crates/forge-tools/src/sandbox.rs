@@ -1738,6 +1738,16 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
         );
     }
 
+    if output.lines().any(|line| {
+        line.starts_with("_LSOpenURLsWithCompletionHandler() failed")
+            && line.split_whitespace().any(|token| token == "-54")
+    }) {
+        return Some(
+            "blocked while sandboxed: macOS Launch Services refused the application handoff \
+             with permission error -54. Request approval to retry outside the sandbox.",
+        );
+    }
+
     if FILESYSTEM.iter().any(|sig| output.contains(sig)) {
         return Some(FILESYSTEM_EXPLANATION);
     }
@@ -1797,6 +1807,32 @@ fn mentions_path_outside(output: &str, workspace_root: &Path) -> bool {
 #[cfg(test)]
 mod denial_tests {
     use super::*;
+
+    #[test]
+    fn launch_services_permission_denial_requires_approval() {
+        let workspace = ws();
+        let diagnostic = "_LSOpenURLsWithCompletionHandler() failed with error -54 for the URL https://example.com.\r\n";
+        assert!(crate::egress::denial_for_confined_command(
+            diagnostic,
+            diagnostic,
+            false,
+            "sh",
+            workspace.path(),
+            None,
+        )
+        .is_some());
+        assert!(crate::egress::denial_for_confined_command(
+            diagnostic,
+            diagnostic,
+            true,
+            "sh",
+            workspace.path(),
+            None,
+        )
+        .is_none());
+        assert!(explain_denial("unrelated error -54", workspace.path()).is_none());
+        assert!(explain_denial(&diagnostic.replace("-54", "-10814"), workspace.path(),).is_none());
+    }
 
     /// A workspace root the "outside path" checks are measured against.
     fn ws() -> tempfile::TempDir {

@@ -824,6 +824,7 @@ async fn sandbox_filesystem_approval_explains_the_unconfined_retry() {
     payload.sandbox_escalation = true;
     set_pending_approval(&mut app, payload);
 
+    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "n", "N"]);
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(rendered.contains("Approve command retry"), "{rendered}");
     assert!(
@@ -945,6 +946,22 @@ async fn a_persisted_allow_rule_auto_approves_without_a_deny_rule() {
         app.session.pending_hitl().is_none(),
         "an always-allow rule must clear the prompt without asking"
     );
+}
+
+#[tokio::test]
+async fn sandbox_retry_cannot_be_auto_approved_by_a_command_grant() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session.set_governance(
+        forge_governance::Governance::default()
+            .with_pattern_rules(forge_governance::parse_pattern_rules(&["bash(*)"]), vec![]),
+    );
+    let mut payload = bash_hitl_payload("retry", "open https://example.com");
+    payload.sandbox_escalation = true;
+    set_pending_hitl(&mut app, payload);
+    app.drain_auto_hitl().await.unwrap();
+    assert!(app.session.pending_hitl().is_some());
+    assert!(!app.pending_interaction.has_hitl_decision());
+    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "n", "N"]);
 }
 
 /// A leading env assignment is stripped when matching, so the suggested rule
