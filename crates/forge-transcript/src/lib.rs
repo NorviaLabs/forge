@@ -1296,6 +1296,15 @@ impl ConversationModel {
                 kind: BannerKind::Warn,
             });
         }
+        // §10: a cancelled turn keeps a conversational ending. The lifecycle
+        // outcome is existing state projected into the transcript — no new
+        // persistence or execution semantics, and no red failure styling.
+        if status == TaskLifecycle::Cancelled {
+            items.push(ChatItem::Banner {
+                text: "Turn cancelled".into(),
+                kind: BannerKind::Info,
+            });
+        }
         Self {
             items,
             scroll: 0,
