@@ -6,7 +6,8 @@ use clap::{Args, Parser, Subcommand};
 
 use forge_config::{is_trusted, Config, ConfigOverrides};
 use forge_session::{
-    open_session, resolve_journal_dir, run_headless, ApprovalPolicy, SessionTarget,
+    open_session, resolve_journal_dir, run_headless, ApprovalPolicy, ApprovalRequired,
+    SessionTarget,
 };
 use forge_tui::{
     decide_launch, resume_session_items, run_setup, run_tui_with_launch, ExitCode, SetupRequest,
@@ -189,7 +190,7 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
     }
     session.set_reasoning_effort(Some(args.effort.clone()));
 
-    let response = run_headless(
+    let response = match run_headless(
         session,
         &prompt,
         if args.approve_all {
@@ -198,7 +199,47 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
             ApprovalPolicy::Ask
         },
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            let Some(approval) = error.downcast_ref::<ApprovalRequired>() else {
+                return Err(error);
+            };
+            let kind = if approval.payload.denied_host.is_some() {
+                "network_host_denial"
+            } else if approval.payload.sandbox_escalation {
+                "sandbox_filesystem_denial"
+            } else {
+                "governance_approval"
+            };
+            let retry_scope = if approval.payload.denied_host.is_some() {
+                "host_grant_stays_filesystem_sandboxed"
+            } else if approval.payload.sandbox_escalation {
+                "approved_command_retries_unconfined"
+            } else {
+                "tool_call_requires_operator_approval"
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "status": "approval_required",
+                    "policy": "sandboxed",
+                    "approval": {
+                        "kind": kind,
+                        "tool": approval.payload.tool,
+                        "args_redacted": approval.payload.args_redacted,
+                        "reason": approval.payload.reason,
+                        "failure": approval.payload.failure,
+                        "denied_host": approval.payload.denied_host,
+                        "sandbox_escalation": approval.payload.sandbox_escalation,
+                        "retry_scope": retry_scope,
+                    },
+                }))?
+            );
+            return Ok(ExitCode::Failed);
+        }
+    };
 
     println!(
         "{}",

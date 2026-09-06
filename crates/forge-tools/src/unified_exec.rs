@@ -1,13 +1,16 @@
 use async_trait::async_trait;
 use forge_types::{SideEffectClass, ToolOutput};
+use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Mutex as StdMutex};
+use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -22,8 +25,6 @@ pub struct ExecCommandArgs {
     pub cmd: String,
     #[serde(default)]
     pub shell: Option<String>,
-    #[serde(default)]
-    pub login: bool,
     #[serde(default)]
     pub tty: bool,
     #[serde(default = "default_exec_yield")]
@@ -79,15 +80,47 @@ struct Session {
     workspace_root: PathBuf,
     egress_invocation: Option<crate::egress::EgressInvocation>,
     _session_tmp: Option<Arc<crate::SessionTempDir>>,
-    child: Child,
-    stdin: Option<ChildStdin>,
-    stdout: ChildStdout,
-    stderr: ChildStderr,
+    process: Process,
     output: String,
     stderr_output: String,
     output_truncated: bool,
     started: Instant,
+    running: bool,
 }
+
+enum Process {
+    Pipe {
+        child: Child,
+        stdin: Option<ChildStdin>,
+        stdout: ChildStdout,
+        stderr: ChildStderr,
+    },
+    Pty(PtyProcess),
+}
+
+struct PtyProcess {
+    // Kept for future caller-provided resize support. The fixed default size
+    // is part of the current exec_command contract.
+    _master: Box<dyn MasterPty + Send>,
+    writer: Arc<StdMutex<Box<dyn Write + Send>>>,
+    child: Box<dyn PtyChild + Send + Sync>,
+    output_rx: mpsc::Receiver<Vec<u8>>,
+    reader_done: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for PtyProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+const PTY_DEFAULT_SIZE: PtySize = PtySize {
+    rows: 40,
+    cols: 120,
+    pixel_width: 0,
+    pixel_height: 0,
+};
+const PTY_OUTPUT_QUEUE_CAPACITY: usize = 64;
 
 const MAX_SESSION_OUTPUT: usize = 1024 * 1024;
 
@@ -155,7 +188,7 @@ fn output_for(session_id: u64, session: &Session, max_tokens: Option<usize>) -> 
     json!({
         "session_id": session_id,
         "command": session.command,
-        "running": session.child.id().is_some(),
+        "running": session.running,
         "output": output,
         "elapsed_ms": session.started.elapsed().as_millis(),
         "pre_truncation_tokens": pre_truncation_tokens,
@@ -172,25 +205,18 @@ async fn collect(
     let mut stdout_buffer = [0_u8; 4096];
     let mut stderr_buffer = [0_u8; 4096];
     loop {
-        if let Some(status) = session.child.try_wait().map_err(ToolError::Io)? {
-            let exit = format!(
-                "\n[process exited with code {}]",
-                status.code().unwrap_or(-1)
-            );
+        if let Some((success, exit_code)) = try_wait(session)? {
+            session.running = false;
+            let exit = format!("\n[process exited with code {}]", exit_code.unwrap_or(-1));
             append_output(session, exit.as_bytes());
-            let mut tail = Vec::new();
-            session.stdout.read_to_end(&mut tail).await?;
-            append_output(session, &tail);
-            let mut tail = Vec::new();
-            session.stderr.read_to_end(&mut tail).await?;
-            append_stderr(session, &tail);
+            drain_process_output(session).await?;
             let denied_host = session
                 .egress_invocation
                 .as_ref()
                 .and_then(crate::egress::EgressInvocation::take_denied_host);
             if let Some(error) = sandbox_denial(
                 session.confined,
-                status.success(),
+                success,
                 &session.output,
                 &session.stderr_output,
                 &session.shell,
@@ -203,8 +229,8 @@ async fn collect(
             return Ok(ToolOutput {
                 outcome: Default::default(),
                 content: body.to_string(),
-                is_error: !status.success(),
-                exit_code: status.code(),
+                is_error: !success,
+                exit_code,
                 attachments: Vec::new(),
             });
         }
@@ -212,18 +238,25 @@ async fn collect(
             break;
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        tokio::select! {
-            result = session.stdout.read(&mut stdout_buffer) => {
-                let count = result?;
-                if count > 0 { append_output(session, &stdout_buffer[..count]); }
+        if matches!(session.process, Process::Pty(_)) {
+            drain_pty_output(session);
+            tokio::time::sleep(remaining.min(Duration::from_millis(20))).await;
+        } else {
+            if let Some((stderr, count)) =
+                read_pipe_or_wait(session, &mut stdout_buffer, &mut stderr_buffer, remaining)
+                    .await?
+            {
+                if count > 0 {
+                    if stderr {
+                        append_stderr(session, &stderr_buffer[..count]);
+                    } else {
+                        append_output(session, &stdout_buffer[..count]);
+                    }
+                }
             }
-            result = session.stderr.read(&mut stderr_buffer) => {
-                let count = result?;
-                if count > 0 { append_stderr(session, &stderr_buffer[..count]); }
-            }
-            _ = tokio::time::sleep(remaining.min(Duration::from_millis(20))) => {}
         }
     }
+    drain_pty_output(session);
     let body = output_for(session_id, session, max_tokens);
     Ok(ToolOutput {
         outcome: Default::default(),
@@ -234,23 +267,173 @@ async fn collect(
     })
 }
 
+fn try_wait(session: &mut Session) -> Result<Option<(bool, Option<i32>)>, ToolError> {
+    let status = match &mut session.process {
+        Process::Pipe { child, .. } => child
+            .try_wait()?
+            .map(|status| (status.success(), status.code())),
+        Process::Pty(pty) => pty
+            .child
+            .try_wait()?
+            .map(|status| (status.exit_code() == 0, Some(status.exit_code() as i32))),
+    };
+    Ok(status)
+}
+
+async fn drain_process_output(session: &mut Session) -> Result<(), ToolError> {
+    if matches!(session.process, Process::Pty(_)) {
+        for _ in 0..100 {
+            drain_pty_output(session);
+            let reader_done = match &session.process {
+                Process::Pty(pty) => pty.reader_done.load(Ordering::Acquire),
+                Process::Pipe { .. } => true,
+            };
+            if reader_done {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        return Ok(());
+    }
+    let (stdout_tail, stderr_tail) = match &mut session.process {
+        Process::Pipe { stdout, stderr, .. } => {
+            let mut stdout_tail = Vec::new();
+            stdout.read_to_end(&mut stdout_tail).await?;
+            let mut stderr_tail = Vec::new();
+            stderr.read_to_end(&mut stderr_tail).await?;
+            (stdout_tail, stderr_tail)
+        }
+        Process::Pty(_) => unreachable!(),
+    };
+    append_output(session, &stdout_tail);
+    append_stderr(session, &stderr_tail);
+    Ok(())
+}
+
+fn drain_pty_output(session: &mut Session) {
+    let mut chunks = Vec::new();
+    if let Process::Pty(pty) = &mut session.process {
+        while let Ok(bytes) = pty.output_rx.try_recv() {
+            chunks.push(bytes);
+        }
+    }
+    for bytes in chunks {
+        // PTYs merge stdout and stderr. Keep the same bytes for the denial
+        // classifier so shell-generated sandbox diagnostics remain visible.
+        append_stderr(session, &bytes);
+    }
+}
+
+async fn read_pipe_or_wait(
+    session: &mut Session,
+    stdout_buffer: &mut [u8],
+    stderr_buffer: &mut [u8],
+    wait: Duration,
+) -> Result<Option<(bool, usize)>, std::io::Error> {
+    let Process::Pipe { stdout, stderr, .. } = &mut session.process else {
+        return Ok(None);
+    };
+    tokio::select! {
+        result = stdout.read(stdout_buffer) => result.map(|count| Some((false, count))),
+        result = stderr.read(stderr_buffer) => result.map(|count| Some((true, count))),
+        _ = tokio::time::sleep(wait.min(Duration::from_millis(20))) => Ok(None),
+    }
+}
+
+async fn write_process_input(process: &mut Process, chars: &str) -> Result<(), ToolError> {
+    match process {
+        Process::Pipe { stdin, .. } => stdin
+            .as_mut()
+            .ok_or_else(|| ToolError::Execution("shell stdin is closed".into()))?
+            .write_all(chars.as_bytes())
+            .await
+            .map_err(ToolError::Io),
+        Process::Pty(pty) => {
+            let writer = Arc::clone(&pty.writer);
+            let bytes = chars.as_bytes().to_vec();
+            tokio::task::spawn_blocking(move || {
+                let mut writer = writer
+                    .lock()
+                    .map_err(|_| std::io::Error::other("pty writer lock poisoned"))?;
+                writer.write_all(&bytes)?;
+                writer.flush()
+            })
+            .await
+            .map_err(|error| ToolError::Execution(format!("pty input task failed: {error}")))?
+            .map_err(ToolError::Io)
+        }
+    }
+}
+
+fn configure_pipe_environment(
+    command: &mut Command,
+    policy: &crate::sandbox::SandboxPolicy,
+    command_egress: Option<&crate::sandbox::EgressGrant>,
+    confined: bool,
+    identity_dir: &std::path::Path,
+) {
+    for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
+        command.env_remove(name);
+    }
+    for (name, value) in crate::sandbox::temp_env(policy) {
+        command.env(name, value);
+    }
+    if confined {
+        for name in crate::credentials::HOST_CREDENTIAL_ENV {
+            command.env_remove(name);
+        }
+        for (name, value) in crate::sandbox::egress_env(policy) {
+            command.env(name, value);
+        }
+        for (name, value) in crate::credentials::isolated_config_env(identity_dir) {
+            command.env(name, value);
+        }
+        for (name, value) in crate::credentials::host_identity_env(command_egress, identity_dir) {
+            command.env(name, value);
+        }
+        for (name, value) in policy.toolchain_env() {
+            command.env(name, value);
+        }
+    }
+}
+
+fn configure_pty_environment(
+    command: &mut CommandBuilder,
+    policy: &crate::sandbox::SandboxPolicy,
+    command_egress: Option<&crate::sandbox::EgressGrant>,
+    confined: bool,
+    identity_dir: &std::path::Path,
+) {
+    for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
+        command.env_remove(name);
+    }
+    for (name, value) in crate::sandbox::temp_env(policy) {
+        command.env(name, value);
+    }
+    if confined {
+        for name in crate::credentials::HOST_CREDENTIAL_ENV {
+            command.env_remove(name);
+        }
+        for (name, value) in crate::sandbox::egress_env(policy) {
+            command.env(name, value);
+        }
+        for (name, value) in crate::credentials::isolated_config_env(identity_dir) {
+            command.env(name, value);
+        }
+        for (name, value) in crate::credentials::host_identity_env(command_egress, identity_dir) {
+            command.env(name, value);
+        }
+        for (name, value) in policy.toolchain_env() {
+            command.env(name, value);
+        }
+    }
+}
+
 async fn start(
     sessions: &ExecSessionStore,
     ctx: &ToolContext,
     args: ExecCommandArgs,
 ) -> Result<ToolOutput, ToolError> {
-    if args.tty {
-        return Err(ToolError::Execution(
-            "exec_command tty mode is not supported yet".into(),
-        ));
-    }
-    // Login shells source profile files, which can re-export provider
-    // credentials after the explicit removals below.
-    if args.login {
-        return Err(ToolError::Execution(
-            "exec_command login shells are not supported".into(),
-        ));
-    }
     // These sessions outlive the turn that started them and `write_stdin`
     // feeds them afterwards, so confinement has to be applied here at spawn.
     // There is no way to sandbox the session later, and `write_stdin` is not
@@ -284,54 +467,116 @@ async fn start(
         .then(|| crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy))
         .flatten();
     let confined = wrapped.is_some();
-    let mut command = match wrapped {
-        Some((program, wrapped)) => {
-            let mut confined = Command::new(program);
-            confined.args(wrapped);
-            confined
-        }
-        None => {
-            let mut plain = Command::new(shell);
-            plain.args(["-c", &args.cmd]);
-            plain
+    // A missing wrapper is allowed only for hosts where the process-wide CLI
+    // sandbox probe already refused startup. If the host can sandbox but the
+    // workspace policy could not be built, never silently downgrade.
+    if requested_confined && wrapped.is_none() && crate::sandbox::availability().is_ok() {
+        return Err(ToolError::Execution(format!(
+            "refusing to run unconfined: no sandbox could be built for workspace {}",
+            ctx.workspace_root.display()
+        )));
+    }
+    let (program, command_args) =
+        wrapped.unwrap_or_else(|| (shell.to_string(), vec!["-c".to_string(), args.cmd.clone()]));
+    let identity_dir = ctx
+        .session_tmp
+        .as_ref()
+        .map(|dir| dir.path().join("host-identity"))
+        .unwrap_or_else(|| ctx.workspace_root.join(".forge-host-identity"));
+    if confined {
+        let _ = std::fs::create_dir_all(&identity_dir);
+    }
+
+    let process = if args.tty {
+        let pty = native_pty_system()
+            .openpty(PTY_DEFAULT_SIZE)
+            .map_err(|error| ToolError::Execution(format!("failed to open exec PTY: {error}")))?;
+        let mut command = CommandBuilder::new(&program);
+        command.args(&command_args);
+        command.cwd(&ctx.workspace_root);
+        configure_pty_environment(
+            &mut command,
+            &policy,
+            command_egress,
+            confined,
+            &identity_dir,
+        );
+        let child = pty
+            .slave
+            .spawn_command(command)
+            .map_err(|error| ToolError::Execution(format!("failed to spawn exec PTY: {error}")))?;
+        let mut reader = pty
+            .master
+            .try_clone_reader()
+            .map_err(|error| ToolError::Execution(format!("failed to read exec PTY: {error}")))?;
+        let writer = pty
+            .master
+            .take_writer()
+            .map_err(|error| ToolError::Execution(format!("failed to write exec PTY: {error}")))?;
+        let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_CAPACITY);
+        let reader_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_done_for_thread = Arc::clone(&reader_done);
+        thread::Builder::new()
+            .name("forge-exec-pty-reader".into())
+            .spawn(move || {
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => {
+                            if output_tx.send(buffer[..count].to_vec()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                reader_done_for_thread.store(true, Ordering::Release);
+            })
+            .map_err(|error| {
+                ToolError::Execution(format!("failed to start exec PTY reader: {error}"))
+            })?;
+        Process::Pty(PtyProcess {
+            _master: pty.master,
+            writer: Arc::new(StdMutex::new(writer)),
+            child,
+            output_rx,
+            reader_done,
+        })
+    } else {
+        let mut command = Command::new(&program);
+        command.args(&command_args);
+        configure_pipe_environment(
+            &mut command,
+            &policy,
+            command_egress,
+            confined,
+            &identity_dir,
+        );
+        let mut child = command
+            .current_dir(&ctx.workspace_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        Process::Pipe {
+            stdin: Some(
+                child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| ToolError::Execution("failed to open stdin".into()))?,
+            ),
+            stdout: child
+                .stdout
+                .take()
+                .ok_or_else(|| ToolError::Execution("failed to open stdout".into()))?,
+            stderr: child
+                .stderr
+                .take()
+                .ok_or_else(|| ToolError::Execution("failed to open stderr".into()))?,
+            child,
         }
     };
-    for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
-        command.env_remove(name);
-    }
-    for (name, value) in crate::sandbox::temp_env(&policy) {
-        command.env(name, value);
-    }
-    if confined {
-        for name in crate::credentials::HOST_CREDENTIAL_ENV {
-            command.env_remove(name);
-        }
-        for (name, value) in crate::sandbox::egress_env(&policy) {
-            command.env(name, value);
-        }
-        let identity_dir = ctx
-            .session_tmp
-            .as_ref()
-            .map(|dir| dir.path().join("host-identity"))
-            .unwrap_or_else(|| ctx.workspace_root.join(".forge-host-identity"));
-        let _ = std::fs::create_dir_all(&identity_dir);
-        for (name, value) in crate::credentials::isolated_config_env(&identity_dir) {
-            command.env(name, value);
-        }
-        for (name, value) in crate::credentials::host_identity_env(command_egress, &identity_dir) {
-            command.env(name, value);
-        }
-        for (name, value) in policy.toolchain_env() {
-            command.env(name, value);
-        }
-    }
-    let mut child = command
-        .current_dir(&ctx.workspace_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
     let session = Session {
         command: args.cmd.clone(),
         shell: shell.to_string(),
@@ -339,25 +584,12 @@ async fn start(
         workspace_root: ctx.workspace_root.clone(),
         egress_invocation,
         _session_tmp: ctx.session_tmp.clone(),
-        stdin: Some(
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| ToolError::Execution("failed to open stdin".into()))?,
-        ),
-        stdout: child
-            .stdout
-            .take()
-            .ok_or_else(|| ToolError::Execution("failed to open stdout".into()))?,
-        stderr: child
-            .stderr
-            .take()
-            .ok_or_else(|| ToolError::Execution("failed to open stderr".into()))?,
-        child,
+        process,
         output: String::new(),
         stderr_output: String::new(),
         output_truncated: false,
         started: Instant::now(),
+        running: true,
     };
     let id = sessions.next_id();
     let session = Arc::new(Mutex::new(session));
@@ -401,7 +633,7 @@ impl Tool for ExecCommandTool {
         "exec_command"
     }
     fn description(&self) -> &str {
-        "Start a shell command and return partial output, retaining a session for polling or input"
+        "Start a sandboxed shell command with pipe or PTY output, retaining a session for polling or input"
     }
     fn input_schema(&self) -> Value {
         schema_for::<ExecCommandArgs>()
@@ -448,12 +680,7 @@ impl Tool for WriteStdinTool {
             })?;
         let mut session = session.lock().await;
         if !args.chars.is_empty() {
-            session
-                .stdin
-                .as_mut()
-                .ok_or_else(|| ToolError::Execution("shell stdin is closed".into()))?
-                .write_all(args.chars.as_bytes())
-                .await?;
+            write_process_input(&mut session.process, &args.chars).await?;
         }
         let result = collect(
             args.session_id,
@@ -680,16 +907,76 @@ mod tests {
         assert!(completed.content.contains("got:input"));
     }
 
+    #[test]
+    fn exec_schema_does_not_advertise_login_shells() {
+        let (exec_command, _) = unified_exec_tools();
+        let schema = exec_command.input_schema();
+        let properties = schema["properties"]
+            .as_object()
+            .expect("exec schema properties");
+        assert!(!properties.contains_key("login"));
+    }
+
     #[tokio::test]
-    async fn refuses_login_shells() {
+    async fn tty_session_accepts_input_and_reports_merged_output() {
+        if crate::sandbox::availability().is_err() {
+            return;
+        }
         let dir = tempdir().unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());
+        let (exec_command, write_stdin) = unified_exec_tools();
+        let first = exec_command
+            .call(
+                &ctx,
+                json!({
+                    "cmd": "printf 'ready:'; read value; printf 'value=%s\\n' \"$value\"",
+                    "tty": true,
+                    "yield_time_ms": 100
+                }),
+            )
+            .await
+            .unwrap();
+        let mut body: Value = serde_json::from_str(&first.content).unwrap();
+        let id = body["session_id"].as_u64().expect("PTY session id");
+        assert_eq!(body["running"], true);
+        let finished = write_stdin
+            .call(
+                &ctx,
+                json!({"session_id": id, "chars": "input\n", "yield_time_ms": 1_000}),
+            )
+            .await
+            .unwrap();
+        body = serde_json::from_str(&finished.content).unwrap();
+        assert_eq!(body["running"], false, "{body}");
+        assert!(body["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("value="));
+    }
+
+    #[tokio::test]
+    async fn tty_session_stays_confined() {
+        if crate::sandbox::availability().is_err() {
+            return;
+        }
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("tty-escape.txt");
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
         let (exec_command, _) = unified_exec_tools();
         let error = exec_command
-            .call(&ctx, json!({"cmd": "true", "login": true}))
+            .call(
+                &ctx,
+                json!({
+                    "cmd": format!("printf escaped > {}", target.display()),
+                    "tty": true,
+                    "yield_time_ms": 1_000
+                }),
+            )
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("login"), "{error}");
+            .expect_err("a PTY sandbox denial must be surfaced");
+        assert!(matches!(error, ToolError::SandboxDenied { .. }));
+        assert!(!target.exists());
     }
 
     #[tokio::test]
