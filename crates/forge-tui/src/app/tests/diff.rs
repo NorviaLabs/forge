@@ -99,6 +99,33 @@ async fn diff_lists_modified_and_untracked_files_in_a_session_that_edited_nothin
 }
 
 #[tokio::test]
+async fn reopening_diff_refreshes_external_changes_before_listing_files() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("tracked.txt", "one\n")],
+        &[("tracked.txt", "two\n")],
+    );
+
+    app.open_diff_view(DiffSource::WorkingTree);
+    settle_git(&mut app);
+    assert_eq!(app.diff_view.entries.len(), 1);
+
+    std::fs::write(dir.path().join("tracked.txt"), "three\n").unwrap();
+    std::fs::write(dir.path().join("external.txt"), "new\n").unwrap();
+
+    app.open_diff_view(DiffSource::WorkingTree);
+    settle_git(&mut app);
+    let paths: Vec<_> = app
+        .diff_view
+        .entries
+        .iter()
+        .map(|entry| entry.path.display().to_string())
+        .collect();
+    assert_eq!(paths, vec!["external.txt", "tracked.txt"]);
+}
+
+#[tokio::test]
 async fn diff_filters_the_explorer_and_esc_restores_it() {
     let (dir, mut app) = focus_test_app().await;
     repo_with_changes(
