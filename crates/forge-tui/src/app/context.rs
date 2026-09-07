@@ -57,6 +57,17 @@ impl TuiApp {
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
+        if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
+            if self.try_session_command(forge_session::SupervisorCommand::CompactContext {
+                session_id,
+            }) {
+                self.status_state.message = "compacting context…".into();
+                self.set_feedback(FeedbackSeverity::Info, "compacting context…");
+            } else {
+                self.busy_state.stop();
+            }
+            return Ok(());
+        }
         // A failed compaction is not a failed session: the previous context is
         // still valid and still installed, so report and carry on.
         let pending = self
