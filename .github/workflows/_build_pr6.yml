@@ -1,0 +1,133 @@
+name: Build PR6 session UX
+on:
+  push:
+    branches:
+      - refactor/multisession-06-session-ux
+permissions:
+  contents: write
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/multisession-06-session-ux
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - name: Apply and validate Session UX refactor
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Remaining top-level multisession identifiers. Do not touch
+          # AgentSession task/queue/background-task concepts.
+          replacements = {
+              "TaskStrip": "SessionStrip",
+              "TaskRename": "SessionRename",
+              "TaskConfirm": "SessionConfirm",
+              "TaskInput": "SessionInput",
+              "create_task_worktree": "create_session_worktree",
+              "label_from_prompt": "session_label_from_prompt",
+          }
+          for root in [Path("crates/forge-tui"), Path("crates/forge-session"), Path("crates/forge-storage")]:
+              for p in root.rglob("*.rs"):
+                  s = p.read_text()
+                  for old, new in replacements.items():
+                      s = s.replace(old, new)
+                  p.write_text(s)
+
+          p = Path("crates/forge-storage/src/worktree.rs")
+          s = p.read_text()
+          start = s.index("pub fn create_session_worktree(")
+          end = s.index("/// Derive a task label", start)
+          replacement = '''pub fn create_session_worktree(
+              source_worktree: &Path,
+              base_dir: &Path,
+              id: u64,
+              _label: &str,
+          ) -> Result<SubagentWorktree, WorktreeError> {
+              std::fs::create_dir_all(base_dir)?;
+              // Session display labels are mutable UX metadata. Git identity is
+              // deliberately immutable and id-only so renaming a session never
+              // renames its branch or worktree directory.
+              let name = format!("session-{id}");
+              let branch = format!("forge/session-{id}");
+              let path = base_dir.join(&name);
+              let output = Command::new("git")
+                  .arg("-C")
+                  .arg(source_worktree)
+                  .args(["worktree", "add", "-q"])
+                  .arg(&path)
+                  .args(["-b", &branch, "HEAD"])
+                  .output()?;
+              if !output.status.success() {
+                  return Err(WorktreeError::AddFailed(
+                      String::from_utf8_lossy(&output.stderr).into_owned(),
+                  ));
+              }
+              Ok(SubagentWorktree { path, branch })
+          }
+
+          '''
+          s = s[:start] + replacement + s[end:]
+          s = s.replace("/// Derive a task label from a prompt's opening words", "/// Derive a session display label from a prompt's opening words")
+          s = s.replace("Used to name an unnamed task from its first", "Used to name an unnamed session from its first")
+          s = s.replace("prompt, so the strip/branch stay readable", "prompt, so the Sessions strip stays readable")
+          p.write_text(s)
+
+          # Update explicit identity assertions/copy left by the old task naming.
+          for p in [
+              Path("crates/forge-storage/src/worktree.rs"),
+              Path("crates/forge-session/src/supervisor.rs"),
+              Path("crates/forge-tui/src/app/tests/multi_task.rs"),
+          ]:
+              s = p.read_text()
+              s = s.replace('"forge/task-"', '"forge/session-"')
+              s = s.replace('"forge/task-7"', '"forge/session-7"')
+              s = s.replace('join("task-7")', 'join("session-7")')
+              s = s.replace('`task-{id}` path, `forge/task-{id}` branch', '`session-{id}` path, `forge/session-{id}` branch')
+              s = s.replace('id-only branch/path naming', 'stable session-id branch/path naming')
+              p.write_text(s)
+
+          # User-facing multisession copy only.
+          for p in [
+              Path("crates/forge-tui/src/app/commands.rs"),
+              Path("crates/forge-tui/src/app/overlays.rs"),
+              Path("crates/forge-tui/src/app/focus.rs"),
+              Path("crates/forge-tui/src/app/shell.rs"),
+              Path("crates/forge-tui/src/overlays.rs"),
+          ]:
+              s = p.read_text()
+              pairs = [
+                  ("Tasks · Enter switch · Esc close", "Sessions · Enter switch · Esc close"),
+                  ("Active task · current worktree", "Active session · current worktree"),
+                  ("Could not list tasks", "Could not list sessions"),
+                  ("New task", "New session"),
+                  ("new task", "new session"),
+                  ("Switch task", "Switch session"),
+                  ("Select task slot", "Select session slot"),
+                  ("selected task", "selected session"),
+                  ("task switcher", "session switcher"),
+                  ("Multi-task mode", "Multi-session mode"),
+              ]
+              for old, new in pairs:
+                  s = s.replace(old, new)
+              p.write_text(s)
+          PY
+          cargo fmt --all
+          git diff --check
+          cargo check --workspace --all-targets --locked
+          cargo test -p forge-storage --lib --locked
+          cargo test -p forge-session --lib --locked supervisor
+          cargo test -p forge-tui --lib --locked app::tests::multi_task
+          git rm .github/workflows/_build_pr6.yml
+          git add -A
+          git commit -m "refactor: finish Session UX abstraction"
+          git push origin HEAD:refactor/multisession-06-session-ux
