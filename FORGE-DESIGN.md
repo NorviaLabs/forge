@@ -505,6 +505,9 @@ Implementation: `crates/forge-tui/src/conversation.rs`.
 
 Planning checklists use the lifecycle grammar: `[ ]` pending, `[>]` active
 (orange, bold — the only orange element), `[x]` completed in neutral muted.
+While a turn runs, the active `[>]` marker breathes with the footer's running
+dot (bold ↔ dim in the same hue on the event-loop tick, glyph fixed); settled
+history renders the bright frame.
 The active task has bold text; other tasks are muted. Wrapped text aligns
 after the checkbox. The heading reports completed tasks, and the pinned
 summary retains the count and current task when the checklist scrolls away.

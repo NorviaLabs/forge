@@ -239,9 +239,31 @@ pub(super) fn render_numbered_diff(
     rendered
 }
 
+/// Dim half of the shared running pulse: true when the active plan `[>]`
+/// marker should render dim rather than bright. Mirrors the footer's running
+/// dot rhythm so both breathe together on the event-loop tick.
+pub(super) fn plan_pulse_dim(state: &throbber_widgets_tui::ThrobberState) -> bool {
+    !crate::widgets::footer::running_dot_bright(state)
+}
+
 pub(super) fn render_plan_checklist(
     plan: &PlanChecklistPresentation,
     width: usize,
+) -> Vec<Line<'static>> {
+    render_plan_checklist_with_pulse(plan, width, false)
+}
+
+/// Plan checklist with an optional pulse on the active step.
+///
+/// The glyph never changes — only the active marker's brightness breathes
+/// (bold ↔ dim in the activity hue, mirroring the footer's running dot) —
+/// so every frame keeps the same width and reads calm next to the live turn
+/// line. `pulse_dim` is true on the dim half of the event-loop tick cycle;
+/// pass false (bright) for settled history and tests.
+pub(super) fn render_plan_checklist_with_pulse(
+    plan: &PlanChecklistPresentation,
+    width: usize,
+    pulse_dim: bool,
 ) -> Vec<Line<'static>> {
     use forge_types::PlanStepStatus;
     let mut lines = Vec::new();
@@ -300,11 +322,20 @@ pub(super) fn render_plan_checklist(
                     .add_modifier(Modifier::ITALIC)
                     .add_modifier(Modifier::CROSSED_OUT),
             ),
-            PlanStepStatus::InProgress => (
-                "[>]",
-                theme::activity().add_modifier(Modifier::BOLD),
-                theme::text().add_modifier(Modifier::BOLD),
-            ),
+            PlanStepStatus::InProgress => {
+                let base = theme::activity();
+                let marker_style = if pulse_dim {
+                    base.remove_modifier(Modifier::BOLD)
+                        .add_modifier(Modifier::DIM)
+                } else {
+                    base.add_modifier(Modifier::BOLD)
+                };
+                (
+                    "[>]",
+                    marker_style,
+                    theme::text().add_modifier(Modifier::BOLD),
+                )
+            }
             PlanStepStatus::Pending => ("[ ]", theme::muted(), theme::muted()),
         };
         debug_assert!(
@@ -1046,7 +1077,11 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                 }
                 ConversationBlock::PlanChecklist(p) => {
-                    lines.extend(render_plan_checklist(&p, width));
+                    // Pulse only while a turn runs: settled history renders
+                    // the bright frame, matching the live turn line and the
+                    // footer's running dot which animate only while working.
+                    let pulse_dim = self.opts.busy && self.opts.pulse_dim;
+                    lines.extend(render_plan_checklist_with_pulse(&p, width, pulse_dim));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1225,6 +1260,7 @@ fn plan_dock_for(
     // Follow mode renders only a tail window, so a plan far enough back is
     // not in `lines` at all — which is exactly when it most needs docking.
     // Treat "not rendered" as "above the window", not as "no plan".
+    // The dock is a settled summary row: no pulse, matching history.
     let card = render_plan_checklist(&plan, width);
     let located = card.first().zip(card.last()).and_then(|(first, last)| {
         let (first, last) = (line_plain(first), line_plain(last));
@@ -3601,6 +3637,54 @@ mod tests {
             line_text(done) == "  [✓] Inspect code",
             "completed marker is the tick: {done:?}"
         );
+    }
+
+    #[test]
+    fn active_plan_marker_pulses_brightness_without_changing_width() {
+        use forge_types::PlanStepStatus;
+        let plan = PlanChecklistPresentation {
+            explanation: None,
+            steps: vec![forge_types::PlanItem {
+                step: "Implement fix".into(),
+                status: PlanStepStatus::InProgress,
+            }],
+            evidence: Vec::new(),
+        };
+        let bright = render_plan_checklist_with_pulse(&plan, 80, false);
+        let dim = render_plan_checklist_with_pulse(&plan, 80, true);
+        let bright_text: Vec<String> = bright.iter().map(line_text).collect();
+        let dim_text: Vec<String> = dim.iter().map(line_text).collect();
+        assert_eq!(bright_text, dim_text, "pulse must not shift text");
+        assert!(
+            bright_text
+                .iter()
+                .any(|l| l.starts_with("  [>] Implement fix")),
+            "glyph stays fixed: {bright_text:?}"
+        );
+        let bright_style = bright[1].spans[1].style;
+        let dim_style = dim[1].spans[1].style;
+        assert_eq!(
+            bright_style,
+            theme::activity().add_modifier(Modifier::BOLD),
+            "pulse starts bright"
+        );
+        assert_eq!(
+            dim_style,
+            theme::activity()
+                .remove_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::DIM),
+            "dim phase keeps its hue"
+        );
+        assert_ne!(bright_style, dim_style, "brightness must breathe");
+    }
+
+    #[test]
+    fn plan_pulse_dim_mirrors_the_footer_running_dot() {
+        let mut state = throbber_widgets_tui::ThrobberState::default();
+        assert!(!plan_pulse_dim(&state), "pulse starts bright");
+        state.calc_next();
+        state.calc_next();
+        assert!(plan_pulse_dim(&state), "dim half follows the footer dot");
     }
 
     #[test]
