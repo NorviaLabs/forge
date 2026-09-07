@@ -43,7 +43,14 @@ impl TuiApp {
                     };
                     TaskSwitcherItem {
                         session_id: snapshot.task.session_id.to_string(),
-                        label: snapshot.task.label.clone(),
+                        // Unnamed tasks show a placeholder until their first
+                        // prompt names them; the branch column carries the id
+                        // (`forge/task-7`) so rows stay distinguishable.
+                        label: if snapshot.task.label.is_empty() {
+                            "task".into()
+                        } else {
+                            snapshot.task.label.clone()
+                        },
                         branch: snapshot.task.branch.clone(),
                         workspace: snapshot.task.workspace.display().to_string(),
                         state: snapshot.task.turn_state.label().into(),

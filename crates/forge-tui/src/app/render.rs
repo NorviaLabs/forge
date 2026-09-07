@@ -235,13 +235,23 @@ impl TuiApp {
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
         if regions.task_strip.height > 0 {
+            // An unnamed task (created with one key, before its first prompt
+            // names it) shows an ordinal instead of a hole. Numbered among
+            // unnamed tasks, not by strip position, so the first unnamed
+            // task is always `task 1` even with the primary row ahead of it.
+            let mut unnamed = 0usize;
             let strip_items: Vec<TaskStripItem> = self
                 .task_chrome
                 .iter()
                 .enumerate()
                 .map(|(index, task)| TaskStripItem {
                     slot: task.slot,
-                    label: task.label.clone(),
+                    label: if task.label.is_empty() {
+                        unnamed += 1;
+                        format!("task {unnamed}")
+                    } else {
+                        task.label.clone()
+                    },
                     branch: task.branch.clone(),
                     state: task.lifecycle.into(),
                     secondary: task.secondary.clone(),

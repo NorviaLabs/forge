@@ -131,3 +131,177 @@ async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
         "help must not advertise an unimplemented pinned-slot binding: {help}"
     );
 }
+
+/// An app wired to a real supervisor rooted in the same repository, with
+/// trust redirected at a temporary store so granting it never touches the
+/// developer's own. The supervisor starts with no registered sessions, so
+/// the roster only ever contains what the test creates.
+async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHandle) {
+    isolate_global_skills();
+    let dir = TempDir::new().unwrap();
+    for args in [
+        vec!["init", "-q", "--initial-branch=main"],
+        vec!["config", "user.email", "forge@example.com"],
+        vec!["config", "user.name", "Forge Test"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(&args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+    std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+    for args in [vec!["add", "a.txt"], vec!["commit", "-q", "-m", "init"]] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(&args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    let session = session_for_workspace(dir.path()).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.into(),
+        },
+    );
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
+        tempfile::TempDir::new()
+            .unwrap()
+            .path()
+            .join("empty-creds.toml"),
+    );
+
+    let storage = forge_session::RepositoryRuntimeStorage::new(dir.path()).unwrap();
+    let control_dir =
+        forge_storage::RuntimeStorage::path_for(&storage, forge_storage::RuntimeDataKind::Control)
+            .unwrap();
+    let control = Arc::new(
+        forge_session::RepositoryControl::open(&control_dir)
+            .await
+            .unwrap(),
+    );
+    let lease = forge_session::RepositoryLease::acquire(&control_dir, dir.path()).unwrap();
+    let mut cfg = forge_config::Config {
+        resolved_workspace: dir.path().to_path_buf(),
+        workspace_root: Some(dir.path().display().to_string()),
+        ..Default::default()
+    };
+    cfg.journal.path = dir.path().join("j").display().to_string();
+    let model: Arc<dyn forge_model::ModelClient> =
+        Arc::new(forge_model::MockModelClient::script(vec![
+            forge_types::ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+    let (_supervisor, handle) = forge_session::RepositorySupervisor::spawn_with_trust_store(
+        control,
+        lease,
+        Vec::new(),
+        2,
+        cfg,
+        model,
+        Some(dir.path().join("trust.toml")),
+    )
+    .await
+    .unwrap();
+    app.supervisor = Some(SupervisorUiState {
+        handle: handle.clone(),
+        events: handle.subscribe(),
+        current_session_id: app.session.session_id,
+        snapshots: Default::default(),
+    });
+    (dir, app, handle)
+}
+
+async fn wait_for_chrome_task(
+    app: &mut TuiApp,
+    mut matches: impl FnMut(&TaskChromeItem) -> bool,
+) -> TaskChromeItem {
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        if let Some(task) = app.task_chrome.iter().find(|task| matches(task)) {
+            return task.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("task never appeared in chrome");
+}
+
+#[tokio::test]
+async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    // One keypress: no form, no modal. The task is registered unnamed and
+    // prompt-less, with the id-only branch/path naming.
+    let task = wait_for_chrome_task(&mut app, |task| task.label.is_empty()).await;
+    assert!(
+        task.branch.starts_with("forge/task-"),
+        "branch: {}",
+        task.branch
+    );
+    assert!(
+        app.overlay.is_none(),
+        "instant create must not open a modal"
+    );
+
+    // The strip renders the positional fallback instead of a hole.
+    let text = render_app_text(&mut app, 120, 30);
+    assert!(
+        text.contains("task 1"),
+        "strip should fall back to `task 1`: {text}"
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_first_prompt_names_an_unnamed_task() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let task = wait_for_chrome_task(&mut app, |task| task.label.is_empty()).await;
+
+    // The strip opens on the primary row; move right onto the new task,
+    // then select it. Typing the first prompt both names it and runs it —
+    // the strip label comes from the prompt's opening words.
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.input.set_text("rewrite the lexer".to_string());
+    app.submit_composer_message().await.unwrap();
+
+    let named = wait_for_chrome_task(&mut app, |task| task.label == "rewrite-the-lexer").await;
+    assert_eq!(named.session_id, task.session_id);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}

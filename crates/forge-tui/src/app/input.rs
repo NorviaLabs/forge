@@ -149,6 +149,22 @@ impl TuiApp {
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
         let count = self.task_chrome.len();
+        // One-key task start, before the empty-strip guard: creating the
+        // first task is exactly when the strip has nothing to select yet.
+        // The task starts unnamed and prompt-less; its name comes from the
+        // first prompt typed in it (see `enqueue_user_message`).
+        if matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty()) {
+            let created = self
+                .send_task_command(forge_session::SupervisorCommand::CreateTask {
+                    label: String::new(),
+                    first_prompt: None,
+                })
+                .await;
+            if created {
+                self.set_feedback(FeedbackSeverity::Info, "creating task…");
+            }
+            return Ok(true);
+        }
         if count == 0 {
             return Ok(false);
         }
@@ -832,6 +848,24 @@ impl TuiApp {
                 .as_ref()
                 .map(|supervisor| supervisor.handle.clone())
             {
+                // An unnamed task takes its name from its first prompt, so
+                // the strip and the branch-facing label become readable
+                // with the very first message instead of showing an
+                // id-only placeholder.
+                let unnamed = self
+                    .task_chrome
+                    .iter()
+                    .find(|task| task.session_id == self.selected_task_id)
+                    .is_some_and(|task| task.label.is_empty());
+                if unnamed {
+                    let label = forge_storage::label_from_prompt(&line);
+                    let _ = handle
+                        .command(forge_session::SupervisorCommand::RenameTask {
+                            session_id: self.selected_task_id,
+                            label,
+                        })
+                        .await;
+                }
                 self.record_submitted_line(&line).await;
                 handle
                     .command(forge_session::SupervisorCommand::SubmitPrompt {

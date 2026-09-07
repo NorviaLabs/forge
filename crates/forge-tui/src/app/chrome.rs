@@ -104,6 +104,13 @@ impl TuiApp {
                         .iter_mut()
                         .find(|task| task.session_id == snapshot.task.session_id)
                     {
+                        // Full identity sync: a rename (or pin) publishes a
+                        // TaskUpdated with no Roster behind it, and the strip
+                        // must reflect it immediately rather than on the next
+                        // turn transition.
+                        task.label = snapshot.task.label;
+                        task.branch = snapshot.task.branch;
+                        task.slot = snapshot.task.slot;
                         task.lifecycle = lifecycle;
                         task.secondary = Some(snapshot.task.turn_state.label().into());
                     }
