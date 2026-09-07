@@ -87,10 +87,7 @@ pub fn denial_for_confined_command(
         crate::sandbox::explain_denial(content, workspace_root)
     };
     let (reason, denied_host) = if let Some(explanation) = explanation {
-        (
-            explanation.to_string(),
-            denied_host.or_else(|| extract_denied_host(content)),
-        )
+        (explanation.to_string(), denied_host)
     } else {
         let host = denied_host?;
         (HOST_DENIED_EXPLANATION.to_string(), Some(host))
@@ -1085,6 +1082,23 @@ mod tests {
         };
         assert_eq!(denied_host.as_deref(), Some("example.com"));
         assert!(reason.contains("host(...)"), "{reason}");
+    }
+
+    #[test]
+    fn diagnostic_urls_do_not_authorize_host_grant_routing() {
+        let dir = tempfile::tempdir().unwrap();
+        for output in [
+            "_LSOpenURLsWithCompletionHandler() failed with error -54 for the URL https://google.com.",
+            "Operation not permitted: https://google.com",
+        ] {
+            let error = denial_for_confined_command(
+                output, output, false, "bash", dir.path(), None,
+            ).expect("expected sandbox failure");
+            let crate::ToolError::SandboxDenied { denied_host, .. } = error else {
+                panic!("expected SandboxDenied");
+            };
+            assert_eq!(denied_host, None, "diagnostic URL is not proxy evidence");
+        }
     }
 
     #[test]
