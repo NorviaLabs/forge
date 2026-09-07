@@ -1,0 +1,31 @@
+name: Validate PR5
+on:
+  push:
+    branches:
+      - refactor/multisession-05-session-workspace-terminal
+permissions:
+  contents: write
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/multisession-05-session-workspace-terminal
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cargo fmt --all
+          cargo check --workspace --all-targets --locked
+          cargo test -p forge-tui --lib --locked app::tests::multi_task
+          git rm .github/workflows/_validate_pr5.yml
+          git add -A
+          git commit -m "chore: format PR5 session workspace state"
+          git push origin HEAD:refactor/multisession-05-session-workspace-terminal
