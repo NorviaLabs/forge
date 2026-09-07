@@ -24,7 +24,7 @@ pub use control::{
     SupervisorTurnState, WorktreeOwnership,
 };
 pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
-pub use snapshot::{SessionSnapshot, TranscriptSnapshot};
+pub use snapshot::{SessionDetailsSnapshot, SessionSnapshot, TranscriptSnapshot};
 pub use supervisor::{
     RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError, SessionRuntimeSnapshot,
     SupervisorCommand, SupervisorEvent, SupervisorHandle,
