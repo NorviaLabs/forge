@@ -10,8 +10,8 @@ const previews={
   auth:{kicker:'WORKING',title:'auth-refresh',status:'Running tests',branch:'forge/auth-refresh-17',worktree:'~/.forge/local/worktrees/task-17-auth-refresh',model:'OpenAI · GPT-5.6 Sol · High',session:'57092c11…44a8',body:'Lease ownership is fixed. The agent is running the focused refresh tests and checking one concurrency edge case.'},
   index:{kicker:'WORKING',title:'index-cache',status:'Editing',branch:'forge/index-cache-24',worktree:'~/.forge/local/worktrees/task-24-index-cache',model:'OpenCode Go · Qwen3.8 Flash · Medium',session:'7e1c380f…b9c2',body:'The task is replacing repeated full-index scans with a bounded cache and updating invalidation tests.'},
   main:{kicker:'READY',title:'main',status:'Ready',branch:'main',worktree:'~/src/forge',model:'OpenAI · GPT-5.6 Sol · High',session:'1cba118a…e071',body:'Primary repository session is idle and ready for the next prompt.'},
-  api:{kicker:'READY',title:'api-cleanup',status:'Stopped',branch:'forge/api-cleanup-22',worktree:'~/.forge/local/worktrees/task-22-api-cleanup',model:'OpenAI · GPT-5.6 Sol · High',session:'d7096b4c…02fa',body:'Cleanup is stopped with its changes preserved in the task worktree.'},
-  billing:{kicker:'UNAVAILABLE',title:'billing-retry',status:'Branch drift',branch:'forge/billing-retry-18',worktree:'~/.forge/local/worktrees/task-18-billing-retry',model:'OpenAI · GPT-5.6 Sol · High',session:'99ed5db0…f118',body:'The worktree branch no longer matches the immutable session binding. Forge will not resume this task until the drift is resolved externally.'}
+  api:{kicker:'READY',title:'api-cleanup',status:'Stopped',branch:'forge/api-cleanup-22',worktree:'~/.forge/local/worktrees/task-22-api-cleanup',model:'OpenAI · GPT-5.6 Sol · High',session:'d7096b4c…02fa',body:'Cleanup is stopped with its changes preserved in the session worktree.'},
+  billing:{kicker:'UNAVAILABLE',title:'billing-retry',status:'Branch drift',branch:'forge/billing-retry-18',worktree:'~/.forge/local/worktrees/task-18-billing-retry',model:'OpenAI · GPT-5.6 Sol · High',session:'99ed5db0…f118',body:'The worktree branch no longer matches the immutable session binding. Forge will not resume this session until the drift is resolved externally.'}
 };
 function renderPreview(id){
   const p=previews[id]||previews.parser;
@@ -30,7 +30,7 @@ function renderPreview(id){
     </dl>
     <div class="preview-section"><div class="section-label">LATEST TURN</div><p>${p.body}</p></div>
     ${warning?'<div class="approval-card"><div><span class="marker wait">[?]</span><b>Approval required</b></div><p>Write generated grammar snapshot<br><code>tests/fixtures/parser.snap</code></p><div class="approval-actions"><span>[A] Approve once</span><span>[D] Deny</span></div></div>':''}
-    <div class="preview-section"><div class="section-label">RECENT ACTIVITY</div><ul class="recent"><li><span>[✓]</span><b>Latest repository operation</b><small>Task-local state preserved</small></li><li><span>[✓]</span><b>Workspace binding</b><small>${p.branch}</small></li></ul></div>`;
+    <div class="preview-section"><div class="section-label">RECENT ACTIVITY</div><ul class="recent"><li><span>[✓]</span><b>Latest repository operation</b><small>Session-local state preserved</small></li><li><span>[✓]</span><b>Workspace binding</b><small>${p.branch}</small></li></ul></div>`;
 }
 document.querySelectorAll('.task-row').forEach(row=>row.addEventListener('click',()=>{
   document.querySelectorAll('.task-row').forEach(r=>r.classList.toggle('selected',r===row));
@@ -57,13 +57,13 @@ function setCreationState(state){
   const step3=screen.querySelector('[data-create-step="ready"]');
   if(state==='creating'){
     chip?.classList.remove('ready');
-    if(chip){chip.querySelector('.state').textContent='[>]';chip.querySelector('small').textContent='forge/task-25 · creating worktree';}
+    if(chip){chip.querySelector('.state').textContent='[>]';chip.querySelector('small').textContent='forge/session-25 · creating worktree';}
     empty?.classList.remove('ready');
-    if(empty){empty.querySelector('.big-state').textContent='[>]';empty.querySelector('h2').textContent='Creating isolated session…';empty.querySelector('p').textContent='Forge is creating branch forge/task-25 and binding a new session to its managed worktree.';}
+    if(empty){empty.querySelector('.big-state').textContent='[>]';empty.querySelector('h2').textContent='Creating isolated session…';empty.querySelector('p').textContent='Forge is creating branch forge/session-25 and binding a new session to its managed worktree.';}
     composer?.classList.remove('ready');composer?.classList.add('pending');
     if(composer){composer.querySelector('.prompt').textContent='> Composer unlocks when the worktree is ready';composer.querySelector('.composer-helper').textContent='Prompt submission is held until the session/worktree binding exists.';}
     toast?.classList.remove('ready');
-    if(toast){toast.querySelector('b').textContent='Creating session 1';toast.querySelector('small').textContent='main@9c5907c → forge/task-25';toast.querySelector('.marker').textContent='[>]';}
+    if(toast){toast.querySelector('b').textContent='Creating session 1';toast.querySelector('small').textContent='main@9c5907c → forge/session-25';toast.querySelector('.marker').textContent='[>]';}
     if(status)status.textContent='creating session';
     step2?.classList.remove('done');step2?.classList.add('active');
     if(step2)step2.querySelector('.step-marker').textContent='[>]';
@@ -71,13 +71,13 @@ function setCreationState(state){
     if(step3)step3.querySelector('.step-marker').textContent='[ ]';
   }else{
     chip?.classList.add('ready');
-    if(chip){chip.querySelector('.state').textContent='[ ]';chip.querySelector('small').textContent='forge/task-25 · ready';}
+    if(chip){chip.querySelector('.state').textContent='[ ]';chip.querySelector('small').textContent='forge/session-25 · ready';}
     empty?.classList.add('ready');
     if(empty){empty.querySelector('.big-state').textContent='[✓]';empty.querySelector('h2').textContent='Session ready';empty.querySelector('p').textContent='The worktree and session binding are ready. Start typing; the first prompt names the session without renaming the Git branch.';}
     composer?.classList.remove('pending');composer?.classList.add('ready');
-    if(composer){composer.querySelector('.prompt').textContent='> Describe this task…';composer.querySelector('.composer-helper').textContent='First prompt renames “session 1” in Forge. Git branch remains forge/task-25.';}
+    if(composer){composer.querySelector('.prompt').textContent='> Describe this session…';composer.querySelector('.composer-helper').textContent='First prompt renames “session 1” in Forge. Git branch remains forge/session-25.';}
     toast?.classList.add('ready');
-    if(toast){toast.querySelector('b').textContent='session 1 is ready';toast.querySelector('small').textContent='forge/task-25 · managed worktree created';toast.querySelector('.marker').textContent='[✓]';}
+    if(toast){toast.querySelector('b').textContent='session 1 is ready';toast.querySelector('small').textContent='forge/session-25 · managed worktree created';toast.querySelector('.marker').textContent='[✓]';}
     if(status)status.textContent='5 sessions';
     step2?.classList.remove('active');step2?.classList.add('done');
     if(step2)step2.querySelector('.step-marker').textContent='[✓]';
