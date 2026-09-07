@@ -1644,7 +1644,7 @@ mod tests {
         assert!(
             task.workspace
                 .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("task-")),
+                .is_some_and(|name| name.to_string_lossy().starts_with("session-")),
             "path: {}",
             task.workspace.display()
         );
@@ -1685,10 +1685,7 @@ mod tests {
             .into_iter()
             .find(|task| task.label == "rewrite-the-lexer")
             .expect("prompt-derived label");
-        assert_eq!(
-            task.branch,
-            format!("forge/rewrite-the-lexer-{operation_id}")
-        );
+        assert_eq!(task.branch, format!("forge/session-{operation_id}"));
 
         handle
             .command(SupervisorCommand::FinalizeCreation { operation_id })
