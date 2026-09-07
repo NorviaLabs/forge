@@ -356,10 +356,20 @@ impl RepositorySupervisor {
 
         if control.task(primary_session_id).await.is_err() {
             let workspace = cfg.workspace_root().to_path_buf();
-            if let Some(stale) = control.tasks().await?.into_iter().find(|task| {
-                task.lifecycle == SessionLifecycle::Active && same_path(&task.workspace, &workspace)
+            for stale in control.tasks().await?.into_iter().filter(|task| {
+                task.ownership == WorktreeOwnership::Primary
+                    && same_path(&task.workspace, &workspace)
             }) {
-                control.mark_unavailable(stale.session_id).await?;
+                match stale.lifecycle {
+                    SessionLifecycle::Active => {
+                        control.mark_unavailable(stale.session_id).await?;
+                        control.forget_unavailable_primary(stale.session_id).await?;
+                    }
+                    SessionLifecycle::Unavailable => {
+                        control.forget_unavailable_primary(stale.session_id).await?
+                    }
+                    SessionLifecycle::Archived | SessionLifecycle::Removed => {}
+                }
             }
             let branch = worktrees
                 .iter()
