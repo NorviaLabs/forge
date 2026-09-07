@@ -974,14 +974,16 @@ impl Overlay {
         first_prompt: &str,
     ) -> Result<OverlayAction, String> {
         let label = label.trim();
-        if label.is_empty() {
-            return Err("Label is required.".into());
-        }
-        if label.chars().count() > 80 {
-            return Err("Label must be 80 characters or fewer.".into());
-        }
-        if label.contains('/') {
-            return Err("Label cannot contain `/`.".into());
+        // New tasks may start unnamed — the label derives from the first
+        // prompt (supervisor, or TUI rename when no prompt was supplied).
+        // The length and `/` rules only apply to a label the user typed.
+        if !label.is_empty() {
+            if label.chars().count() > 80 {
+                return Err("Label must be 80 characters or fewer.".into());
+            }
+            if label.contains('/') {
+                return Err("Label cannot contain `/`.".into());
+            }
         }
         match mode {
             TaskInputMode::New => Ok(OverlayAction::CreateTask {
@@ -991,6 +993,9 @@ impl Overlay {
                     .map(str::to_string),
             }),
             TaskInputMode::Attach => {
+                if label.is_empty() {
+                    return Err("Label is required.".into());
+                }
                 let branch = branch.trim();
                 if branch.is_empty() {
                     return Err(
@@ -3896,8 +3901,27 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_task_form_explains_itself_instead_of_doing_nothing() {
+    fn an_empty_new_task_form_submits_an_unnamed_task() {
         let mut overlay = Overlay::task_input(TaskInputMode::New);
+        // New tasks may start unnamed: the empty form is the same as the
+        // one-key instant create, and the label derives from the first
+        // prompt instead.
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::CreateTask {
+                label: String::new(),
+                first_prompt: None,
+            }
+        );
+    }
+
+    #[test]
+    fn attach_still_requires_a_label() {
+        let mut overlay = Overlay::task_input(TaskInputMode::Attach);
+        handle_overlay_key(&mut overlay, Key::Tab);
+        handle_overlay_key(&mut overlay, Key::Paste("feature/x".into()));
+        handle_overlay_key(&mut overlay, Key::Tab);
+        handle_overlay_key(&mut overlay, Key::Paste("/tmp/somewhere".into()));
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::None
@@ -3906,13 +3930,6 @@ mod tests {
             panic!("expected the task input overlay");
         };
         assert_eq!(error.as_deref(), Some("Label is required."));
-
-        // Typing an answer clears the complaint.
-        handle_overlay_key(&mut overlay, Key::Char('a'));
-        let Overlay::TaskInput { error, .. } = &overlay else {
-            panic!("expected the task input overlay");
-        };
-        assert!(error.is_none());
     }
 
     #[test]
