@@ -14,8 +14,8 @@ jobs:
         run: |
           set -euxo pipefail
           echo "=== direct session runtime ==="
-          rg -n '\bsession_runtime\b' crates/forge-tui/src crates/forge-cli/src || true
+          grep -RIn 'session_runtime' crates/forge-tui/src crates/forge-cli/src || true
           echo "=== primary/sibling guards ==="
-          grep -RInE 'require_primary_task|selected_is_sibling|SelectedRuntime|Primary|Sibling' crates/forge-tui/src || true
+          grep -RInE 'require_primary_task|selected_is_sibling|SelectedRuntime::Primary|SelectedRuntime::Sibling' crates/forge-tui/src || true
           echo "=== supervisor commands already routed ==="
           grep -RIn 'SupervisorCommand::' crates/forge-tui/src || true
