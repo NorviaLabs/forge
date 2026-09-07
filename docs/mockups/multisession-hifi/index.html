@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Forge — Multisession hi-fi mocks</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="mock-shell">
+    <header class="mock-toolbar">
+      <div>
+        <div class="eyebrow">FORGE / DESIGN STUDY</div>
+        <h1>Multisession experience</h1>
+      </div>
+      <nav class="screen-tabs" aria-label="Mock screens">
+        <button data-screen="workspace" class="active">1 Workspace</button>
+        <button data-screen="switcher">2 Task switcher</button>
+        <button data-screen="attention">3 Needs attention</button>
+        <button data-screen="new-task">4 New task</button>
+      </nav>
+    </header>
+
+    <section class="terminal-frame" aria-label="Forge terminal mock">
+      <div class="terminal-titlebar">
+        <div class="window-dots"><i></i><i></i><i></i></div>
+        <span>forge — ~/src/forge</span>
+        <span class="terminal-size">142 × 43</span>
+      </div>
+
+      <div class="terminal" id="terminal">
+        <section class="screen active" data-screen-panel="workspace">
+          <div class="statusbar">
+            <div><strong>FORGE</strong><span>~/src/forge</span><span class="branch"> main</span></div>
+            <div><span>4 sessions</span><span>GPT-5.6 Sol</span><span>High</span></div>
+          </div>
+
+          <div class="task-strip focused">
+            <div class="strip-label">● TASKS</div>
+            <button class="task-chip selected" data-task="main"><span class="state idle">[ ]</span><b>1 main</b><small>main · ready</small></button>
+            <span class="dot">·</span>
+            <button class="task-chip" data-task="auth"><span class="state run">[>]</span><b>2 auth-refresh</b><small>forge/auth-refresh-17 · running</small></button>
+            <span class="dot">·</span>
+            <button class="task-chip attention" data-task="parser"><span class="state wait">[?]</span><b>3 parser-fix</b><small>forge/parser-fix-21 · needs you</small><em>!</em></button>
+            <span class="dot">·</span>
+            <button class="task-chip" data-task="api"><span class="state done">[✓]</span><b>api-cleanup</b><small>forge/api-cleanup-22 · stopped</small></button>
+            <span class="strip-more">+2 more</span>
+          </div>
+
+          <div class="workbench">
+            <aside class="files">
+              <div class="pane-title">&gt; FILES <span>auth-refresh</span></div>
+              <div class="file-search">⌕  src/auth</div>
+              <ul class="tree">
+                <li>▾ src</li>
+                <li class="indent selected">● auth.rs <span>M</span></li>
+                <li class="indent">○ api.rs</li>
+                <li class="indent">○ main.rs</li>
+                <li>▸ tests</li>
+                <li>○ Cargo.toml</li>
+                <li>○ README.md</li>
+              </ul>
+            </aside>
+
+            <section class="workspace">
+              <div class="pane-title">&gt; CHAT <span>src/auth.rs</span></div>
+              <div class="editor">
+                <div class="ln">117</div><pre>pub async fn refresh_token(</pre>
+                <div class="ln">118</div><pre>    session: &amp;Session,</pre>
+                <div class="ln">119</div><pre>    provider: &amp;dyn IdentityProvider,</pre>
+                <div class="ln">120</div><pre>) -&gt; Result&lt;Token, AuthError&gt; {</pre>
+                <div class="ln">121</div><pre class="add">+   let lease = session.refresh_lease().await?;</pre>
+                <div class="ln">122</div><pre class="add">+   lease.ensure_fresh().await?;</pre>
+                <div class="ln">123</div><pre>    provider.refresh(session).await</pre>
+                <div class="ln">124</div><pre>}</pre>
+              </div>
+            </section>
+
+            <aside class="sidebar">
+              <div class="pane-title">&gt; SIDEBAR <span>auth-refresh</span></div>
+              <div class="conversation">
+                <article class="user-msg"><div>You</div><p>Fix token refresh races and add focused tests.</p></article>
+                <article class="agent-msg"><div>Agent</div><p>I found the race around refresh-lease ownership. I’m tightening the lease boundary and running the auth tests.</p></article>
+                <div class="activity-line"><span class="state run">[>]</span><span>cargo test auth::refresh</span><small>18s</small></div>
+                <div class="activity-line quiet"><span>[✓]</span><span>Read src/auth.rs</span><small>1.2s</small></div>
+              </div>
+              <div class="composer">
+                <div class="composer-rule"></div>
+                <div class="prompt">&gt; Ask about this task…</div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="footer">
+            <div><span class="kbd">←→</span> select task · <span class="kbd">Enter</span> switch · <span class="kbd">n</span> new · <span class="kbd">⇧⌃T</span> all tasks</div>
+            <div><span class="chip">OpenAI / GPT-5.6 Sol</span><span class="chip">High</span></div>
+          </div>
+        </section>
+
+        <section class="screen" data-screen-panel="switcher">
+          <div class="statusbar dimmed">
+            <div><strong>FORGE</strong><span>~/src/forge</span><span> main</span></div>
+            <div><span>4 sessions</span><span>GPT-5.6 Sol</span><span>High</span></div>
+          </div>
+          <div class="underlay">
+            <div class="ghost-line"></div><div class="ghost-line short"></div>
+            <div class="ghost-columns"><i></i><i></i><i></i></div>
+          </div>
+
+          <div class="overlay task-switcher">
+            <div class="overlay-header">
+              <div>
+                <div class="overlay-title">Tasks</div>
+                <div class="overlay-subtitle">Switch, inspect, or manage sessions in this repository</div>
+              </div>
+              <div class="scope">Repository · 6</div>
+            </div>
+
+            <div class="switcher-search">
+              <span>⌕</span><input id="task-search" placeholder="Search label, branch, worktree, or session id" />
+              <kbd>/</kbd>
+            </div>
+
+            <div class="switcher-body">
+              <div class="task-list" id="task-list">
+                <div class="group-label warning">NEEDS YOU <span>1</span></div>
+                <button class="task-row selected" data-row-task="parser">
+                  <span class="marker wait">[?]</span>
+                  <span class="row-main"><b>parser-fix</b><small>forge/parser-fix-21</small></span>
+                  <span class="row-meta"><b>approval</b><small>12s ago</small></span>
+                </button>
+
+                <div class="group-label">WORKING <span>2</span></div>
+                <button class="task-row" data-row-task="auth">
+                  <span class="marker run">[>]</span>
+                  <span class="slot">2</span>
+                  <span class="row-main"><b>auth-refresh</b><small>forge/auth-refresh-17</small></span>
+                  <span class="row-meta"><b>running tests</b><small>38s ago</small></span>
+                </button>
+                <button class="task-row" data-row-task="index">
+                  <span class="marker run">[>]</span>
+                  <span class="row-main"><b>index-cache</b><small>forge/index-cache-24</small></span>
+                  <span class="row-meta"><b>editing</b><small>1m ago</small></span>
+                </button>
+
+                <div class="group-label">READY <span>2</span></div>
+                <button class="task-row" data-row-task="main">
+                  <span class="marker idle">[ ]</span>
+                  <span class="slot">1</span>
+                  <span class="row-main"><b>main</b><small>main</small></span>
+                  <span class="row-meta"><b>ready</b><small>now</small></span>
+                </button>
+                <button class="task-row" data-row-task="api">
+                  <span class="marker done">[✓]</span>
+                  <span class="row-main"><b>api-cleanup</b><small>forge/api-cleanup-22</small></span>
+                  <span class="row-meta"><b>stopped</b><small>7m ago</small></span>
+                </button>
+
+                <div class="group-label muted">UNAVAILABLE <span>1</span></div>
+                <button class="task-row" data-row-task="billing">
+                  <span class="marker err">[!]</span>
+                  <span class="row-main"><b>billing-retry</b><small>forge/billing-retry-18</small></span>
+                  <span class="row-meta"><b>branch drift</b><small>23m ago</small></span>
+                </button>
+              </div>
+
+              <aside class="task-preview" id="task-preview">
+                <div class="preview-kicker">NEEDS YOU</div>
+                <h2>parser-fix</h2>
+                <div class="preview-status"><span class="marker wait">[?]</span> Waiting for approval</div>
+
+                <dl>
+                  <div><dt>Branch</dt><dd>forge/parser-fix-21</dd></div>
+                  <div><dt>Worktree</dt><dd>~/.forge/local/worktrees/task-21-parser-fix</dd></div>
+                  <div><dt>Model</dt><dd>OpenAI · GPT-5.6 Sol · High</dd></div>
+                  <div><dt>Session</dt><dd>8ab62b5e…21d3</dd></div>
+                </dl>
+
+                <div class="preview-section">
+                  <div class="section-label">LATEST TURN</div>
+                  <p>Parser tests expose one generated-file edit outside the expected set. The agent is asking permission before overwriting it.</p>
+                </div>
+
+                <div class="approval-card">
+                  <div><span class="marker wait">[?]</span><b>Approval required</b></div>
+                  <p>Write generated grammar snapshot<br><code>tests/fixtures/parser.snap</code></p>
+                  <div class="approval-actions"><span>[A] Approve once</span><span>[D] Deny</span></div>
+                </div>
+
+                <div class="preview-section">
+                  <div class="section-label">RECENT ACTIVITY</div>
+                  <ul class="recent">
+                    <li><span>[✓]</span><b>cargo test parser</b><small>42 passed · 1 changed snapshot</small></li>
+                    <li><span>[✓]</span><b>Edited src/parser.rs</b><small>+18 −7</small></li>
+                    <li><span>[✓]</span><b>Read tests/parser.rs</b><small>3.4s</small></li>
+                  </ul>
+                </div>
+              </aside>
+            </div>
+
+            <div class="overlay-footer">
+              <div><span><kbd>↑↓</kbd> move</span><span><kbd>Enter</kbd> switch</span><span><kbd>r</kbd> rename</span><span><kbd>p</kbd> pin</span><span><kbd>x</kbd> archive</span></div>
+              <div><span><kbd>n</kbd> new</span><span><kbd>a</kbd> attach</span><span><kbd>Esc</kbd> close</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" data-screen-panel="attention">
+          <div class="statusbar">
+            <div><strong>FORGE</strong><span>~/src/forge</span><span> forge/auth-refresh-17</span></div>
+            <div><span class="attention-text">1 needs you</span><span>4 sessions</span><span>GPT-5.6 Sol</span></div>
+          </div>
+
+          <div class="task-strip">
+            <div class="strip-label">TASKS</div>
+            <button class="task-chip" data-task="main"><span class="state idle">[ ]</span><b>1 main</b><small>main · ready</small></button>
+            <span class="dot">·</span>
+            <button class="task-chip selected" data-task="auth"><span class="state run">[>]</span><b>2 auth-refresh</b><small>forge/auth-refresh-17 · running</small></button>
+            <span class="dot">·</span>
+            <button class="task-chip attention pulse" data-task="parser"><span class="state wait">[?]</span><b>3 parser-fix</b><small>approval</small><em>!</em></button>
+            <span class="dot">·</span>
+            <button class="task-chip" data-task="api"><span class="state done">[✓]</span><b>api-cleanup</b><small>stopped</small></button>
+          </div>
+
+          <div class="workbench simplified">
+            <section class="workspace attention-workspace">
+              <div class="pane-title">&gt; CHAT <span>auth-refresh</span></div>
+              <div class="center-conversation">
+                <article><b>You</b><p>Fix token refresh races and add focused tests.</p></article>
+                <article><b>Agent</b><p>The lease fix is in place. Running the focused suite now.</p></article>
+                <div class="activity-line"><span class="state run">[>]</span><span>cargo test auth::refresh</span><small>38s</small></div>
+              </div>
+            </section>
+            <aside class="sidebar">
+              <div class="pane-title">&gt; SIDEBAR</div>
+              <div class="attention-summary">
+                <div class="section-label">BACKGROUND</div>
+                <button class="attention-card">
+                  <div><span class="marker wait">[?]</span><b>parser-fix</b><small>needs you</small></div>
+                  <p>Approve generated snapshot write</p>
+                  <span class="jump">Enter to switch →</span>
+                </button>
+              </div>
+              <div class="composer"><div class="composer-rule"></div><div class="prompt">&gt; Ask about this task…</div></div>
+            </aside>
+          </div>
+
+          <div class="toast">
+            <span class="marker wait">[?]</span>
+            <div><b>parser-fix needs you</b><small>Approval required · tests/fixtures/parser.snap</small></div>
+            <kbd>⇧⌃T</kbd>
+          </div>
+
+          <div class="footer">
+            <div>Current task keeps running · background attention never steals focus</div>
+            <div><span class="chip">OpenAI / GPT-5.6 Sol</span><span class="chip">High</span></div>
+          </div>
+        </section>
+
+        <section class="screen" data-screen-panel="new-task">
+          <div class="statusbar dimmed">
+            <div><strong>FORGE</strong><span>~/src/forge</span><span> main</span></div>
+            <div><span>4 sessions</span><span>GPT-5.6 Sol</span><span>High</span></div>
+          </div>
+          <div class="underlay">
+            <div class="ghost-columns"><i></i><i></i><i></i></div>
+          </div>
+
+          <div class="overlay create-task">
+            <div class="overlay-header">
+              <div>
+                <div class="overlay-title">New task</div>
+                <div class="overlay-subtitle">Create an isolated Forge-managed worktree</div>
+              </div>
+              <div class="scope">from main@9c5907c</div>
+            </div>
+
+            <div class="form-grid">
+              <label>
+                <span>Label <em>optional</em></span>
+                <input value="" placeholder="Named automatically from the first prompt" />
+                <small>Leave blank for instant creation; Forge names it from your first prompt.</small>
+              </label>
+
+              <label>
+                <span>First prompt <em>optional</em></span>
+                <textarea placeholder="Describe the task to start immediately…">Investigate why resume can bind to the wrong worktree and add regression tests.</textarea>
+                <small>With a first prompt, Forge creates the worktree then asks for trust before the turn runs.</small>
+              </label>
+
+              <div class="derived">
+                <div class="section-label">WILL CREATE</div>
+                <dl>
+                  <div><dt>Task label</dt><dd>investigate-why-resume-can-bind-to-the</dd></div>
+                  <div><dt>Branch</dt><dd>forge/investigate-why-resume-can-bind-to-the-25</dd></div>
+                  <div><dt>Worktree</dt><dd>~/.forge/local/worktrees/task-25-investigate-why-resume…</dd></div>
+                  <div><dt>Base</dt><dd>current worktree · main · 9c5907c</dd></div>
+                </dl>
+              </div>
+
+              <div class="create-note">
+                <span class="marker idle">[ ]</span>
+                <p><b>One session per worktree.</b> Model and conversation state stay task-local; provider authentication remains global.</p>
+              </div>
+            </div>
+
+            <div class="overlay-footer">
+              <div><span><kbd>Tab</kbd> next field</span><span><kbd>⌘V</kbd> paste</span></div>
+              <div><span><kbd>Enter</kbd> create</span><span><kbd>Esc</kbd> cancel</span></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <footer class="notes">
+      <p><b>Intent:</b> persistent glanceability without turning Forge into a dashboard. The task strip is the ambient surface; the switcher is the dense management surface.</p>
+      <p>Use the numbered controls above to inspect the four states.</p>
+    </footer>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>
