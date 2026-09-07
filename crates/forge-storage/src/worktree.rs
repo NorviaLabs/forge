@@ -504,13 +504,9 @@ mod tests {
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let worktree =
-            create_session_worktree(repo.path(), base.path(), 13).unwrap();
+        let worktree = create_session_worktree(repo.path(), base.path(), 13).unwrap();
         assert_eq!(worktree.branch, "forge/session-13");
-        assert_eq!(
-            worktree.path,
-            base.path().join("session-13")
-        );
+        assert_eq!(worktree.path, base.path().join("session-13"));
     }
 
     #[test]
