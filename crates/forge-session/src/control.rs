@@ -380,6 +380,31 @@ impl RepositoryControl {
         Ok(())
     }
 
+    pub async fn forget_unavailable_primary(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), RepositoryTaskError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM prompt_queue WHERE session_id = ? AND EXISTS (\
+             SELECT 1 FROM tasks WHERE session_id = ? AND ownership = 'primary' \
+             AND lifecycle = 'unavailable')",
+        )
+        .bind(session_id.to_string())
+        .bind(session_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "DELETE FROM tasks WHERE session_id = ? AND ownership = 'primary' \
+             AND lifecycle = 'unavailable'",
+        )
+        .bind(session_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// Mark a managed creation complete once trust has been granted, handing
     /// back the queued first prompt so the caller can enqueue it *after* the
     /// trust gate rather than before it.
@@ -1061,6 +1086,38 @@ mod tests {
         assert_eq!(
             control.task(replacement_id).await.unwrap().lifecycle,
             SessionLifecycle::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_unavailable_primary_preserves_managed_tasks() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let mut primary = new_task(&dir.path().join("primary"), "primary", Some(1));
+        primary.ownership = WorktreeOwnership::Primary;
+        let primary_id = primary.session_id;
+        let managed = new_task(&dir.path().join("managed"), "managed", Some(2));
+        let managed_id = managed.session_id;
+        control.register_task(primary, None).await.unwrap();
+        control.register_task(managed, None).await.unwrap();
+        control.reconcile_worktrees(&[]).await.unwrap();
+
+        control
+            .forget_unavailable_primary(primary_id)
+            .await
+            .unwrap();
+        control
+            .forget_unavailable_primary(managed_id)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            control.task(primary_id).await,
+            Err(RepositoryTaskError::NotFound(id)) if id == primary_id
+        ));
+        assert_eq!(
+            control.task(managed_id).await.unwrap().lifecycle,
+            SessionLifecycle::Unavailable
         );
     }
 
