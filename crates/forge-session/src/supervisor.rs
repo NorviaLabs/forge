@@ -226,6 +226,7 @@ struct SupervisorState {
     model: Arc<dyn ModelClient>,
     control: Arc<RepositoryControl>,
     actors: RwLock<HashMap<SessionId, Arc<TaskActor>>>,
+    unavailable_tasks: RwLock<Vec<RepositoryTask>>,
     permits: Arc<Semaphore>,
     events: broadcast::Sender<SupervisorEvent>,
     lease: RepositoryLease,
@@ -388,6 +389,13 @@ impl RepositorySupervisor {
                 .await?;
         }
 
+        let unavailable_tasks = control
+            .tasks()
+            .await?
+            .into_iter()
+            .filter(|task| task.lifecycle == SessionLifecycle::Unavailable)
+            .collect();
+
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.apply_provider_env(&connect_credentials());
         let mut session_tasks = tokio::task::JoinSet::new();
@@ -414,13 +422,15 @@ impl RepositorySupervisor {
                 })??,
             );
         }
-        Self::spawn(
+        Self::spawn_with_unavailable_tasks(
             control,
             lease,
             sessions,
+            unavailable_tasks,
             DEFAULT_MAX_CONCURRENCY,
             cfg.clone(),
             model,
+            None,
         )
         .await
     }
@@ -439,6 +449,12 @@ impl RepositorySupervisor {
         let control = Arc::new(RepositoryControl::open(&control_dir).await?);
         let worktrees = forge_storage::list_worktree_records(storage.main_worktree())?;
         control.reconcile_worktrees(&worktrees).await?;
+        let unavailable_tasks = control
+            .tasks()
+            .await?
+            .into_iter()
+            .filter(|task| task.lifecycle == SessionLifecycle::Unavailable)
+            .collect();
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.apply_provider_env(&connect_credentials());
@@ -514,13 +530,15 @@ impl RepositorySupervisor {
             .await?;
             sessions.push((task, opened.session));
         }
-        Self::spawn(
+        Self::spawn_with_unavailable_tasks(
             control,
             lease,
             sessions,
+            unavailable_tasks,
             DEFAULT_MAX_CONCURRENCY,
             cfg.clone(),
             model,
+            None,
         )
         .await
     }
@@ -548,6 +566,29 @@ impl RepositorySupervisor {
         model: Arc<dyn ModelClient>,
         trust_store: Option<PathBuf>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
+        Self::spawn_with_unavailable_tasks(
+            control,
+            lease,
+            sessions,
+            Vec::new(),
+            max_concurrency,
+            cfg,
+            model,
+            trust_store,
+        )
+        .await
+    }
+
+    async fn spawn_with_unavailable_tasks(
+        control: Arc<RepositoryControl>,
+        lease: RepositoryLease,
+        sessions: Vec<(RepositoryTask, AgentSession)>,
+        unavailable_tasks: Vec<RepositoryTask>,
+        max_concurrency: usize,
+        cfg: Config,
+        model: Arc<dyn ModelClient>,
+        trust_store: Option<PathBuf>,
+    ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let (events, _) = broadcast::channel(512);
         let actors = sessions
             .into_iter()
@@ -558,6 +599,7 @@ impl RepositorySupervisor {
             model,
             control,
             actors: RwLock::new(actors),
+            unavailable_tasks: RwLock::new(unavailable_tasks),
             permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
             events: events.clone(),
             lease,
@@ -1177,9 +1219,22 @@ async fn publish_actor(
 
 async fn snapshots(state: &SupervisorState) -> Vec<TaskRuntimeSnapshot> {
     let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
-    let mut snapshots = Vec::with_capacity(actors.len());
+    let unavailable_tasks = state.unavailable_tasks.read().await.clone();
+    let mut snapshots = Vec::with_capacity(actors.len() + unavailable_tasks.len());
     for task_actor in actors {
         snapshots.push(task_actor.snapshot.read().await.clone());
+    }
+    for task in unavailable_tasks {
+        snapshots.push(TaskRuntimeSnapshot {
+            session: SessionSnapshot {
+                session_id: task.session_id,
+                lifecycle: TaskLifecycle::Interrupted,
+                workspace_root: task.workspace.clone(),
+                ..SessionSnapshot::default()
+            },
+            transcript: TranscriptSnapshot::default(),
+            task,
+        });
     }
     snapshots.sort_by_key(|snapshot| {
         (
