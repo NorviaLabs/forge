@@ -350,10 +350,10 @@ impl TuiApp {
                 // apply the pick, fall back to a safe effort default for
                 // the new model if the previous one doesn't fit, and close.
                 //
-                // Model choice is per-session, so a pick made while a sibling is
+                // Model choice is per-session, so a pick made while a supervised Session is
                 // selected must reach that actor, not the primary session.
                 // Provider authentication stays global and is unaffected.
-                if let SelectedRuntime::Sibling(session_id) = self.selected_runtime() {
+                if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
                     let route_id = profile_id
                         .as_deref()
                         .map(super::connect::route_id_for_profile)

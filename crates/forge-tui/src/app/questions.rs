@@ -364,9 +364,9 @@ impl TuiApp {
             QuestionSubmit::Dismiss => None,
         };
         let dismissed = answers.is_none();
-        // Same ownership rule as approvals: a sibling's question was asked by
+        // Same ownership rule as approvals: a supervised Session's question was asked by
         // a supervisor-owned actor, so the answers go back through it.
-        if let SelectedRuntime::Sibling(session_id) = self.selected_runtime() {
+        if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
             if self
                 .selected_snapshot()
                 .is_some_and(|snapshot| snapshot.session.pending_question.is_some())

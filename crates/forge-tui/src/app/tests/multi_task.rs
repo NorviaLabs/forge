@@ -180,13 +180,50 @@ async fn a_task_never_visited_before_starts_from_a_clean_view() {
 }
 
 #[tokio::test]
-async fn without_a_supervisor_the_primary_is_always_the_selected_runtime() {
+async fn without_a_supervisor_the_session_is_direct_owned() {
     let (_dir, mut app) = focus_test_app().await;
-    assert_eq!(app.selected_runtime(), SelectedRuntime::Primary);
-    assert!(!app.selected_is_sibling());
+    assert_eq!(app.selected_runtime(), SelectedRuntime::Direct);
+    assert!(!app.selected_is_supervised());
     assert!(app.selected_snapshot().is_none());
-    // Primary-only actions must stay reachable in single-task mode.
-    assert!(app.require_primary_task("/clear"));
+    // Direct-only actions must stay reachable in single-task mode.
+    assert!(app.require_direct_session("/clear"));
+}
+
+#[tokio::test]
+async fn supervisor_snapshot_makes_the_selected_session_supervised() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let session = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.selected_runtime(),
+        SelectedRuntime::Supervised(session.session_id)
+    );
+    assert!(app.selected_is_supervised());
+    assert_eq!(
+        app.selected_snapshot()
+            .map(|snapshot| snapshot.task.session_id),
+        Some(session.session_id)
+    );
+    assert!(
+        !app.require_direct_session("/clear"),
+        "direct-only operations must refuse a supervisor-owned Session"
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
