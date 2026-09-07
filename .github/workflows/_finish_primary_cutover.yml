@@ -1,0 +1,188 @@
+name: Finish primary supervisor cutover
+on:
+  push:
+    branches:
+      - refactor/multisession-09-primary-supervisor-cutover
+permissions:
+  contents: write
+jobs:
+  finish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/multisession-09-primary-supervisor-cutover
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - name: Wire repository launch through the supervisor
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Share one terminal/event-loop path between direct and supervised startup.
+          p = Path("crates/forge-tui/src/app/shell.rs")
+          s = p.read_text()
+          sig = '''async fn run_tui_inner(
+              session: AgentSession,
+              runtime: TuiRuntimeConfig,
+              launch: TuiLaunch,
+          ) -> Result<ExitSummary, TuiError> {
+              enable_raw_mode()?;
+          '''
+          repl = '''async fn run_tui_inner(
+              session: AgentSession,
+              runtime: TuiRuntimeConfig,
+              launch: TuiLaunch,
+          ) -> Result<ExitSummary, TuiError> {
+              let app = TuiApp::new_with_startup_resume_picker(session, runtime, launch.startup_items.clone());
+              run_tui_app_inner(app, launch).await
+          }
+
+          pub async fn run_tui_supervised(
+              initial: SessionRuntimeSnapshot,
+              runtime: TuiRuntimeConfig,
+              handle: SupervisorHandle,
+              launch: TuiLaunch,
+          ) -> Result<ExitSummary, TuiError> {
+              let app = TuiApp::new_supervised(initial, runtime, handle);
+              run_tui_app_inner(app, launch).await
+          }
+
+          async fn run_tui_app_inner(
+              mut app: TuiApp,
+              launch: TuiLaunch,
+          ) -> Result<ExitSummary, TuiError> {
+              enable_raw_mode()?;
+          '''
+          assert sig in s
+          s = s.replace(sig, repl, 1)
+          old_ctor = '''    let mut app = TuiApp::new_with_startup_resume_picker(session, runtime, launch.startup_items);
+              if let Some(handle) = launch.supervisor {
+          '''
+          assert old_ctor in s
+          s = s.replace(old_ctor, '''    if let Some(handle) = launch.supervisor {
+          ''', 1)
+          old_summary = '''    let summary = ExitSummary {
+                  exit_code: app.exit.code(),
+                  session_id: app.session_runtime.session_id.to_string(),
+                  token_usage: (app.session_runtime.token_usage.total_api_tokens() > 0)
+                      .then(|| format_exit_token_usage(&app.session_runtime.token_usage)),
+              };
+          '''
+          new_summary = '''    let usage = app.selected_token_usage_report();
+              let summary = ExitSummary {
+                  exit_code: app.exit.code(),
+                  session_id: app.selected_session_id.to_string(),
+                  token_usage: (usage.api.total_api_tokens() > 0)
+                      .then(|| format_exit_token_usage(&usage.api)),
+              };
+          '''
+          assert old_summary in s
+          s = s.replace(old_summary, new_summary, 1)
+          p.write_text(s)
+
+          p = Path("crates/forge-tui/src/app/mod.rs")
+          s = p.read_text()
+          old = 'pub use shell::{run_tui, run_tui_with_launch, run_tui_with_resume_picker, TuiLaunch};'
+          new = 'pub use shell::{run_tui, run_tui_supervised, run_tui_with_launch, run_tui_with_resume_picker, TuiLaunch};'
+          assert old in s
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path("crates/forge-tui/src/lib.rs")
+          s = p.read_text()
+          old = '''    resume_session_items, run_tui, run_tui_with_launch, run_tui_with_resume_picker, ExitSummary,
+              TuiApp, TuiError, TuiLaunch, TuiRuntimeConfig,
+          '''
+          new = '''    resume_session_items, run_tui, run_tui_supervised, run_tui_with_launch,
+              run_tui_with_resume_picker, ExitSummary, TuiApp, TuiError, TuiLaunch, TuiRuntimeConfig,
+          '''
+          assert old in s
+          p.write_text(s.replace(old, new, 1))
+
+          # Repository startup consumes the primary AgentSession into the supervisor.
+          p = Path("crates/forge-cli/src/main.rs")
+          s = p.read_text()
+          s = s.replace(
+              '    decide_launch, resume_session_items, run_setup, run_tui_with_launch, ExitCode, SetupRequest,\n',
+              '    decide_launch, resume_session_items, run_setup, run_tui_supervised, run_tui_with_launch,\n    ExitCode, SetupRequest,\n',
+              1,
+          )
+          old = '''    let supervisor = match bootstrap {
+                  Some(bootstrap) => match bootstrap
+                      .open_siblings(&cfg, opened.session.session_id)
+                      .await
+                  {
+                      Ok((_supervisor, handle)) => Some(handle),
+                      Err(error) => {
+                          startup_notices.push(format!("multi-task mode unavailable: {error}"));
+                          None
+                      }
+                  },
+                  None => None,
+              };
+          '''
+          new = '''    let primary_session_id = opened.session.session_id;
+              let supervised = match bootstrap {
+                  Some(bootstrap) => match bootstrap.open_with_primary(&cfg, opened.session).await {
+                      Ok((supervisor, handle)) => {
+                          let initial = supervisor
+                              .snapshot(primary_session_id)
+                              .await
+                              .ok_or_else(|| anyhow::anyhow!("primary session missing from supervisor"))?;
+                          Some((initial, handle))
+                      }
+                      Err(error) => {
+                          return Err(anyhow::anyhow!("repository supervisor startup failed: {error}"));
+                      }
+                  },
+                  None => None,
+              };
+          '''
+          assert old in s
+          s = s.replace(old, new, 1)
+          old_run = '''    let summary = run_tui_with_launch(
+                  opened.session,
+                  runtime,
+                  TuiLaunch {
+                      startup_items: None,
+                      onboarding_connect: decision.require_connect,
+                      ready_placeholder: decision.show_ready_placeholder,
+                      supervisor,
+                  },
+              )
+              .await
+              .map_err(|e| anyhow::anyhow!(e))?;
+          '''
+          new_run = '''    let launch = TuiLaunch {
+                  startup_items: None,
+                  onboarding_connect: decision.require_connect,
+                  ready_placeholder: decision.show_ready_placeholder,
+                  supervisor: None,
+              };
+              let summary = match supervised {
+                  Some((initial, handle)) => run_tui_supervised(initial, runtime, handle, launch).await,
+                  None => run_tui_with_launch(opened.session, runtime, launch).await,
+              }
+              .map_err(|e| anyhow::anyhow!(e))?;
+          '''
+          assert old_run in s
+          s = s.replace(old_run, new_run, 1)
+          p.write_text(s)
+          PY
+          cargo fmt --all
+          git diff --check
+          cargo check --workspace --all-targets --locked
+          cargo test -p forge-session --lib --locked
+          cargo test -p forge-tui --lib --locked app::tests::multi_task
+          cargo test -p forge-cli --locked
+          git rm .github/workflows/_finish_primary_cutover.yml .github/workflows/_inventory_primary_cutover.yml .github/workflows/_validate_primary_api.yml
+          git add -A
+          git commit -m "refactor: move repository primary Session into supervisor"
+          git push origin HEAD:refactor/multisession-09-primary-supervisor-cutover
