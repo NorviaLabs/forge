@@ -1,0 +1,21 @@
+name: Multisession primary inventory
+on:
+  push:
+    branches:
+      - scratch/multisession-primary-inventory
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: scratch/multisession-primary-inventory
+      - name: Inventory direct primary coupling
+        run: |
+          set -euxo pipefail
+          echo "=== direct session runtime ==="
+          rg -n '\bsession_runtime\b' crates/forge-tui/src crates/forge-cli/src || true
+          echo "=== primary/sibling guards ==="
+          rg -n 'require_primary_task|selected_is_sibling|SelectedRuntime|Primary|Sibling' crates/forge-tui/src || true
+          echo "=== supervisor commands already routed ==="
+          rg -n 'SupervisorCommand::' crates/forge-tui/src || true
