@@ -707,6 +707,24 @@ pub const SHELL_KIND_LABEL: &str = "Shell";
 /// of being guessed.
 pub fn tool_kind_label(tool_name: &str) -> &str {
     let lower = tool_name.to_ascii_lowercase();
+    // Exact identities first: substring rules below would misroute these
+    // (`list_agents` contains neither file nor task verbs; `send_message`
+    // contains neither `agent` nor `task`).
+    match lower.as_str() {
+        "spawn_agent" => return "Spawn Agent",
+        "send_message" => return "Send Message",
+        "followup_task" => return "Followup Task",
+        "wait_agent" => return "Wait Agent",
+        "list_agents" => return "List Agents",
+        "interrupt_agent" => return "Interrupt Agent",
+        "ask_user_question" => return "Question",
+        "request_unconfined_retry" => return "Retry",
+        "load_skill" => return "Skill",
+        "background_run" => return "Task",
+        "view_image" => return "View Image",
+        "ls" => return "List Files",
+        _ => {}
+    }
     // Match on the canonical tool identity, not substrings in output.
     if lower.contains("read") || lower == "r" {
         "Read"
@@ -5217,6 +5235,18 @@ mod verification_tests {
         assert_eq!(tool_kind_label("run_tests"), "Check");
         assert_eq!(tool_kind_label("web_fetch"), "Web");
         assert_eq!(tool_kind_label("update_plan"), "Plan");
+        assert_eq!(tool_kind_label("ls"), "List Files");
+        assert_eq!(tool_kind_label("view_image"), "View Image");
+        assert_eq!(tool_kind_label("background_run"), "Task");
+        assert_eq!(tool_kind_label("ask_user_question"), "Question");
+        assert_eq!(tool_kind_label("request_unconfined_retry"), "Retry");
+        assert_eq!(tool_kind_label("load_skill"), "Skill");
+        assert_eq!(tool_kind_label("spawn_agent"), "Spawn Agent");
+        assert_eq!(tool_kind_label("send_message"), "Send Message");
+        assert_eq!(tool_kind_label("followup_task"), "Followup Task");
+        assert_eq!(tool_kind_label("wait_agent"), "Wait Agent");
+        assert_eq!(tool_kind_label("list_agents"), "List Agents");
+        assert_eq!(tool_kind_label("interrupt_agent"), "Interrupt Agent");
         assert_eq!(tool_kind_label("mcp__custom_tool"), "mcp__custom_tool");
     }
 
