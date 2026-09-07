@@ -27,7 +27,7 @@ use forge_core::{
     LoopError, ModelResponseApplication, ModelStepAccumulator, PendingHitlExecution,
     PendingToolApplication,
 };
-use forge_session::{SessionSnapshot, TranscriptSnapshot};
+use forge_session::{SessionRuntimeSnapshot, SessionSnapshot, SupervisorHandle, TranscriptSnapshot};
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelStreamEvent, ProgressDocument,
 };
