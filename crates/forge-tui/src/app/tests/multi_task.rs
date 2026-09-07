@@ -195,8 +195,8 @@ async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
     app.focus_block(FocusBlock::TaskStrip);
     let help = app.help_text();
     assert!(
-        help.contains("Ctrl+Shift+T"),
-        "task strip help should name the real switcher binding: {help}"
+        help.contains("F3"),
+        "session strip help should name the real switcher binding: {help}"
     );
     assert!(
         !help.contains("• Ctrl+T  Open session switcher"),
@@ -328,10 +328,10 @@ async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
         .unwrap();
 
     // One keypress: no form, no modal. The task is registered unnamed and
-    // prompt-less, with the id-only branch/path naming.
+    // prompt-less, with stable id-only session branch/path naming.
     let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
     assert!(
-        task.branch.starts_with("forge/task-"),
+        task.branch.starts_with("forge/session-"),
         "branch: {}",
         task.branch
     );

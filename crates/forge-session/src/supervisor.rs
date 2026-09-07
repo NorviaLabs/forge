@@ -721,11 +721,10 @@ async fn execute_command(
             // Branch from the *initiating* worktree's committed HEAD, not the
             // main worktree's — launching Forge from a linked worktree must
             // fork the work that worktree is actually on.
-            let worktree = forge_storage::create_task_worktree(
+            let worktree = forge_storage::create_session_worktree(
                 &state.cfg.resolved_workspace,
                 &base_dir,
                 pending.operation_id,
-                &label,
             )?;
             state
                 .control
@@ -1636,9 +1635,9 @@ mod tests {
             .expect("unnamed task row");
         assert!(task.workspace.exists());
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
-        // The id-only naming: `task-{id}` path, `forge/task-{id}` branch.
+        // The id-only naming: `session-{id}` path, `forge/session-{id}` branch.
         assert!(
-            task.branch.starts_with("forge/task-"),
+            task.branch.starts_with("forge/session-"),
             "branch: {}",
             task.branch
         );
@@ -1867,7 +1866,7 @@ mod tests {
 
         let base = TempDir::new().unwrap();
         let linked =
-            forge_storage::create_task_worktree(repo.path(), base.path(), 1, "linked").unwrap();
+            forge_storage::create_session_worktree(repo.path(), base.path(), 1).unwrap();
 
         let main_worktree = handle
             .command(SupervisorCommand::AttachWorktree {
