@@ -287,7 +287,7 @@ impl TuiApp {
                     .await
                 {
                     self.overlay = None;
-                    self.set_feedback(FeedbackSeverity::Info, "attaching worktree…");
+                    self.set_feedback(FeedbackSeverity::Ok, "worktree attached");
                 }
             }
             OverlayAction::FinalizeTaskCreation { operation_id } => {
