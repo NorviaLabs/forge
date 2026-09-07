@@ -227,6 +227,24 @@ impl SupervisorHandle {
     pub fn subscribe(&self) -> broadcast::Receiver<SupervisorEvent> {
         self.events.subscribe()
     }
+
+    /// Queue a command from synchronous UI code without blocking the terminal
+    /// owner. Failures in command execution are still published as supervisor
+    /// events; this only reports whether the command entered the actor queue.
+    pub fn try_command(
+        &self,
+        command: SupervisorCommand,
+    ) -> Result<(), RepositorySupervisorError> {
+        let (reply, _response) = oneshot::channel();
+        self.commands
+            .try_send(CommandEnvelope { command, reply })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Closed(_) => RepositorySupervisorError::Closed,
+                mpsc::error::TrySendError::Full(_) => {
+                    RepositorySupervisorError::Command("supervisor command queue is full".into())
+                }
+            })
+    }
 }
 
 struct SessionActor {
