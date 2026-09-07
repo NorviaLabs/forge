@@ -94,18 +94,42 @@ fn ctx_label(pct: f64) -> &'static str {
 
 fn lifecycle_label(life: TurnLifecycle) -> (&'static str, Style) {
     match life {
-        TurnLifecycle::Working => ("run", theme::info()),
-        TurnLifecycle::Waiting => ("wait", theme::warn()),
+        TurnLifecycle::Working => ("running", theme::info()),
+        TurnLifecycle::Waiting => ("waiting", theme::warn()),
         TurnLifecycle::Failed => ("err", theme::danger()),
-        TurnLifecycle::Cancelled | TurnLifecycle::Interrupted => ("stop", theme::dim()),
+        TurnLifecycle::Cancelled | TurnLifecycle::Interrupted => ("stopped", theme::dim()),
         TurnLifecycle::Ready | TurnLifecycle::Completed => ("ready", theme::ok()),
     }
 }
 
+/// Pulsing dot for the `running` state, stepped once per event-loop tick
+/// via `BusyState::tick`. The glyph never changes — only its brightness —
+/// so the row keeps a fixed width and reads calm next to the live turn line.
+/// The pattern follows OpenCode/Gemini: one dot breathing on a ~800ms cycle
+/// (two ticks bright, two ticks dim at the 200ms event-loop cadence).
+fn running_dot_bright(state: &throbber_widgets_tui::ThrobberState) -> bool {
+    (state.index() % 4) < 2
+}
+
+fn running_dot_style(
+    base: ratatui::style::Style,
+    state: &throbber_widgets_tui::ThrobberState,
+) -> ratatui::style::Style {
+    if running_dot_bright(state) {
+        base
+    } else {
+        // Pulse in brightness within the same hue: dimming the base color
+        // via the terminal DIM modifier rather than swapping to the muted
+        // gray. The gray swap is low-contrast against light backgrounds,
+        // so the dot read as static in `forge-light`.
+        base.remove_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::DIM)
+    }
+}
+
 /// Horizontal inset applied to the content row so the footer's text aligns.
-/// (DESIGN-006 retired the animated footer "Working" meter: the live turn
-/// line above the composer owns busy motion; the footer keeps the static
-/// state word for every lifecycle.)
+/// (The live turn line above the composer owns phase detail; the footer
+/// keeps the state word for every lifecycle, animated only while running.)
 /// with the composer's left/right edges above it, rather than running flush
 /// to the terminal border. Kept to 1 cell — the 76-col MIN_WIDTH floor must
 /// still fit the full model label plus every chip.
@@ -182,9 +206,9 @@ impl Widget for FooterBar<'_> {
             // Degrade in order: the token unit label drops first. The chips
             // never drop.
             //
-            // DESIGN-006: the live turn line owns the busy state, so the
-            // footer carries no animated duplicate — just the static state
-            // word beside context and usage.
+            // The live turn line owns phase detail; the footer keeps the
+            // state word beside context and usage, animated only while
+            // running (one fixed-width spinner cell, so width never shifts).
             let labeled = self.activity_line(true);
             if fits(&labeled) {
                 labeled
@@ -276,13 +300,20 @@ impl FooterBar<'_> {
         use ratatui::text::Span;
         let m = self.model;
         let dim = m.dimmed;
-        // Static state word for every lifecycle, including Working: the live
-        // turn line above the composer owns busy motion (DESIGN-006).
+        // State word for every lifecycle; `running` breathes through one
+        // fixed-width dot (bright/dim only, never a new glyph) so the row
+        // never shifts width.
         let (label, dot_style) = lifecycle_label(m.lifecycle);
-        let mut right: Vec<Span<'static>> = vec![
-            Span::styled(label, dot_style.add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-        ];
+        let label_style = dot_style.add_modifier(Modifier::BOLD);
+        let mut right: Vec<Span<'static>> = Vec::new();
+        if m.lifecycle == TurnLifecycle::Working {
+            right.push(Span::styled(
+                "●",
+                running_dot_style(label_style, &m.throbber),
+            ));
+            right.push(Span::raw(" "));
+        }
+        right.extend([Span::styled(label, label_style), Span::raw(" ")]);
         if let Some(detail) = m
             .lifecycle_detail
             .as_deref()
@@ -420,17 +451,76 @@ fn truncate_middle(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
-    /// DESIGN-006: no animated busy meter in the footer — the live turn line
-    /// owns busy motion. A busy footer shows the same static state word as
-    /// every other lifecycle, with identical output on every frame.
+    /// Only `running` breathes: one fixed-width `●` beside the state word,
+    /// alternating bright and dim on the event-loop tick. The glyph row is
+    /// identical on every frame — only the dot's style pulses — while every
+    /// other lifecycle renders fully static output.
     #[test]
-    fn busy_footer_carries_no_animation() {
+    fn busy_footer_pulses_only_while_running() {
         let m = model(TurnLifecycle::Working, 0.34);
         let first = rendered(&m, 90);
-        let second = rendered(&m, 90);
-        assert_eq!(first, second, "footer frames must be static");
-        assert!(first.contains("run"), "{first:?}");
+        let mut advanced = m.clone();
+        advanced.throbber.calc_next();
+        advanced.throbber.calc_next();
+        let second = rendered(&advanced, 90);
+        assert_eq!(first, second, "running text must not shift width");
+        assert!(first.contains("running"), "{first:?}");
         assert!(!first.contains("Working"), "{first:?}");
+        assert!(
+            !first.contains('◐')
+                && !first.contains('◑')
+                && !first.contains('◒')
+                && !first.contains('◓'),
+            "{first:?}"
+        );
+        assert_eq!(
+            running_dot_style(theme::info().add_modifier(Modifier::BOLD), &m.throbber),
+            theme::info().add_modifier(Modifier::BOLD),
+            "pulse starts bright"
+        );
+        assert_ne!(
+            activity_styled(&m)[0].style,
+            activity_styled(&advanced)[0].style,
+            "dot brightness must pulse"
+        );
+        // The dim phase stays in the same hue (terminal DIM on the base
+        // color), never the muted gray — the gray is low-contrast against
+        // light backgrounds, so the dot read as static in `forge-light`.
+        assert_eq!(
+            activity_styled(&advanced)[0].style,
+            theme::info()
+                .remove_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::DIM),
+            "dim phase must keep its hue"
+        );
+
+        for life in [
+            TurnLifecycle::Ready,
+            TurnLifecycle::Completed,
+            TurnLifecycle::Waiting,
+            TurnLifecycle::Failed,
+            TurnLifecycle::Cancelled,
+            TurnLifecycle::Interrupted,
+        ] {
+            let m = model(life, 0.34);
+            assert_eq!(rendered(&m, 90), rendered(&m, 90));
+        }
+    }
+
+    #[test]
+    fn footer_state_labels() {
+        for (life, label) in [
+            (TurnLifecycle::Working, "running"),
+            (TurnLifecycle::Waiting, "waiting"),
+            (TurnLifecycle::Failed, "err"),
+            (TurnLifecycle::Cancelled, "stopped"),
+            (TurnLifecycle::Interrupted, "stopped"),
+            (TurnLifecycle::Ready, "ready"),
+            (TurnLifecycle::Completed, "ready"),
+        ] {
+            let out = rendered(&model(life, 0.34), 90);
+            assert!(out.contains(label), "{life:?}: {out:?}");
+        }
     }
 
     fn model(lifecycle: TurnLifecycle, ctx_pct: f64) -> FooterModel {
@@ -452,6 +542,10 @@ mod tests {
         let mut buf = Buffer::empty(area);
         FooterBar { model: m }.render(area, &mut buf);
         (0..area.width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    fn activity_styled(m: &FooterModel) -> Vec<ratatui::text::Span<'static>> {
+        FooterBar { model: m }.activity_line(true).spans.to_vec()
     }
 
     #[test]
@@ -525,7 +619,7 @@ mod tests {
     fn renders_state_and_context_on_the_right() {
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 90);
-        assert!(out.contains("run"), "{out:?}");
+        assert!(out.contains("running"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
         assert!(out.contains("0 tokens"), "{out:?}");
         assert!(!out.contains('⚑'), "{out:?}");
@@ -564,7 +658,7 @@ mod tests {
             out.trim_end().ends_with("Enter confirm · Esc cancel"),
             "{out:?}"
         );
-        assert!(!out.contains("run"), "{out:?}");
+        assert!(!out.contains("running"), "{out:?}");
         assert!(!out.contains("openai/gpt-5.6-luna"), "chips yield: {out:?}");
     }
 
@@ -672,7 +766,7 @@ mod tests {
         let out = rendered(&m, 76);
         assert!(out.contains("Medium"), "{out:?}");
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
-        assert!(out.contains("run"), "{out:?}");
+        assert!(out.contains("running"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
         assert!(out.contains("0 tokens"), "{out:?}");
     }
