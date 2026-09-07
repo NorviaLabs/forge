@@ -116,6 +116,12 @@ pub enum SupervisorCommand {
         decision: HitlDecision,
         actor: String,
     },
+    ResolveApprovalWithFeedback {
+        session_id: SessionId,
+        decision: HitlDecision,
+        actor: String,
+        feedback: Option<String>,
+    },
     ResolveQuestion {
         session_id: SessionId,
         answers: Option<AskUserQuestionResult>,
@@ -1045,6 +1051,21 @@ async fn execute_command(
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
             session.resolve_hitl(decision, &decision_actor).await?;
+            refresh_actor(&state, &task_actor, &session).await?;
+            drop(session);
+            start_continue_driver(state, session_id).await?;
+        }
+        SupervisorCommand::ResolveApprovalWithFeedback {
+            session_id,
+            decision,
+            actor: decision_actor,
+            feedback,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session
+                .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
+                .await?;
             refresh_actor(&state, &task_actor, &session).await?;
             drop(session);
             start_continue_driver(state, session_id).await?;
