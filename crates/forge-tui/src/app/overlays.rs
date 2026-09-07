@@ -65,7 +65,7 @@ impl TuiApp {
                 text.push_str("• ←/→  Select session slot\n");
                 text.push_str("• Enter  Switch session\n");
                 text.push_str("• n  New session — instant, named from its first prompt\n");
-                text.push_str("• Ctrl+Shift+T or /tasks  Open session switcher\n");
+                text.push_str("• F3 or /sessions  Open session switcher\n");
                 text.push_str("• s / c  Stop / continue the selected session\n");
                 text.push_str("• p  Pin  ·  x  Archive\n");
                 text.push_str("• Esc  Return to previous block\n");

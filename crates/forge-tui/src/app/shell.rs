@@ -364,10 +364,7 @@ async fn run_tui_inner(
             .command(forge_session::SupervisorCommand::Refresh)
             .await
             .map_err(|error| TuiError::Other(error.to_string()))?;
-        app.set_feedback(
-            FeedbackSeverity::Info,
-            "Multi-task mode · Ctrl+Shift+T or /tasks",
-        );
+        app.set_feedback(FeedbackSeverity::Info, "Multi-task mode · F3 or /sessions");
     }
     app.terminal_events = Some(TerminalEventSource::spawn());
     app.onboarding_connect = launch.onboarding_connect;

@@ -815,6 +815,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             is_skill: false,
         },
         PaletteItem {
+            cmd: "/sessions".into(),
+            desc: "Switch, create, attach, and manage repository sessions".into(),
+            is_skill: false,
+        },
+        PaletteItem {
             cmd: "/terminal".into(),
             desc: "Open the terminal panel (Ctrl+`)".into(),
             is_skill: false,
