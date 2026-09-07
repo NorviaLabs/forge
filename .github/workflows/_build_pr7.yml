@@ -1,0 +1,43 @@
+name: Build PR7 keyboard contract
+on:
+  push:
+    branches:
+      - refactor/multisession-07-keyboard-contract
+permissions:
+  contents: write
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/multisession-07-keyboard-contract
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - name: Apply and validate keyboard contract
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git cherry-pick b6047cf12bfc4a5d64b79d4dc24c2702486cc05a
+          git cherry-pick f99d0d7e1d5f01e61d81c3253984c9a27c051480
+          git cherry-pick 8322f1e4f5e28de3368b91c21f70cb14136eb426
+          git cherry-pick cf178f3b3ad65f90cb18a179bff1e755dd3e134b
+          git cherry-pick f95e183b347d7b30cc02cfed0617ae1ed5e48168
+          git cherry-pick 5a3b6d361a52e3aed80482cb62e81e2060874e19
+          git cherry-pick 49cf4007597a83be2885e9a6eaa1000565ba189f
+          git cherry-pick 3b77c6b69ee362a90dbe48163c64e543f729ccd8
+          git cherry-pick 4f5abda068ca1a3ee96b3e1a7775ab80e18aeb6d
+          git cherry-pick 61890654ca12c0780f2b14d4fea1c33be5a6a6b4
+          cargo fmt --all
+          git diff --check
+          cargo check --workspace --all-targets --locked
+          cargo test -p forge-tui --lib --locked
+          git rm .github/workflows/_build_pr7.yml
+          git add -A
+          git commit -m "chore: validate PR7 keyboard contract"
+          git push origin HEAD:refactor/multisession-07-keyboard-contract
