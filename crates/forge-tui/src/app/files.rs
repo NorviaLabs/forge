@@ -652,7 +652,7 @@ impl TuiApp {
             "image/webp" => "webp",
             _ => "img",
         };
-        let workspace = self.session_runtime.workspace_root();
+        let workspace = self.session_view.workspace_root();
         let dir = LocalRuntimeStorage::new(workspace)
             .path_for(RuntimeDataKind::Attachment)
             .map_err(|err| format!("cannot initialize pasted-image storage: {err}"))?;
