@@ -579,6 +579,7 @@ impl RepositorySupervisor {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_with_unavailable_tasks(
         control: Arc<RepositoryControl>,
         lease: RepositoryLease,
