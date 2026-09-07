@@ -548,6 +548,41 @@ impl RepositoryControl {
             .collect())
     }
 
+    pub async fn cancel_queued_prompt_at(
+        &self,
+        session_id: SessionId,
+        one_based: usize,
+    ) -> Result<Option<(u64, String)>, RepositorySessionError> {
+        let Some(offset) = one_based.checked_sub(1) else {
+            return Ok(None);
+        };
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT queue_id, text FROM prompt_queue WHERE session_id = ? \
+             AND status = 'queued' ORDER BY queue_id LIMIT 1 OFFSET ?",
+        )
+        .bind(session_id.to_string())
+        .bind(offset as i64)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        let queue_id = row.get::<i64, _>("queue_id") as u64;
+        let text = row.get::<String, _>("text");
+        let updated = sqlx::query(
+            "UPDATE prompt_queue SET status = 'cancelled', updated_at = ? \
+             WHERE queue_id = ? AND status = 'queued'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(queue_id as i64)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok((updated.rows_affected() == 1).then_some((queue_id, text)))
+    }
+
     pub async fn claim_next_prompt(
         &self,
         session_id: SessionId,
