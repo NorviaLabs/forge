@@ -9,7 +9,7 @@ pub(crate) const WORKSPACE_HISTORY_LIMIT: usize = 32;
 pub(crate) const UI_STATE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TaskChromeItem {
+pub(crate) struct SessionChromeItem {
     pub(crate) session_id: uuid::Uuid,
     pub(crate) slot: Option<u8>,
     pub(crate) label: String,
@@ -28,13 +28,13 @@ pub(crate) struct TaskChromeItem {
 ///
 /// Deliberately excluded, and why:
 /// - the interactive terminal and bottom panel — the terminal is independent
-///   of the selected task by design;
+///   of the selected session by design;
 /// - provider credentials and the connect model — authentication is global,
 ///   only the *model choice* is per-task;
 /// - the explorer tree and its dialogs — those are rooted at a workspace path,
 ///   and file paths still resolve against the primary workspace, so carrying
 ///   them per task would show one task's tree against another's files.
-pub(crate) struct TaskLocalViewState {
+pub(crate) struct SessionViewState {
     pub(crate) input: InputModel,
     pub(crate) workspace_navigation: WorkspaceNavigation,
     pub(crate) source_viewer: SourceViewer,
@@ -70,7 +70,7 @@ pub(crate) struct TaskLocalViewState {
     pub(crate) provider: String,
 }
 
-impl Default for TaskLocalViewState {
+impl Default for SessionViewState {
     fn default() -> Self {
         Self {
             input: InputModel::default(),
@@ -121,7 +121,8 @@ pub(crate) struct SupervisorUiState {
     pub(crate) events: tokio::sync::broadcast::Receiver<forge_session::SupervisorEvent>,
     #[allow(dead_code)]
     pub(crate) current_session_id: uuid::Uuid,
-    pub(crate) snapshots: std::collections::HashMap<uuid::Uuid, forge_session::TaskRuntimeSnapshot>,
+    pub(crate) snapshots:
+        std::collections::HashMap<uuid::Uuid, forge_session::SessionRuntimeSnapshot>,
 }
 
 /// Center-pane content. Conversation isn't a variant here — it's always
@@ -375,7 +376,7 @@ pub(crate) enum FocusBlock {
 impl FocusBlock {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::TaskStrip => "TASKS",
+            Self::TaskStrip => "SESSIONS",
             Self::Search => "SEARCH",
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
@@ -530,7 +531,7 @@ pub(crate) enum SemanticCommand {
     PasteClipboardImage,
     ToggleToolDetails,
     ReturnToLatest,
-    OpenTaskSwitcher,
+    OpenSessionSwitcher,
     /// Step effort one level (`Alt+,` back, `Alt+.` forward)
     /// within the current model's valid options — see
     /// [`crate::effort::ReasoningEffort::step`].
@@ -1449,12 +1450,12 @@ pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";
 
 pub struct TuiApp {
     pub(crate) session: AgentSession,
-    /// Repository task chrome. The current session is represented here first;
+    /// Repository session chrome. The current session is represented here first;
     /// supervisor roster events can add siblings without changing render code.
-    pub(crate) task_chrome: Vec<TaskChromeItem>,
+    pub(crate) session_chrome: Vec<SessionChromeItem>,
     pub(crate) task_strip_selection: usize,
-    pub(crate) selected_task_id: uuid::Uuid,
-    pub(crate) task_view_states: std::collections::HashMap<uuid::Uuid, TaskLocalViewState>,
+    pub(crate) selected_session_id: uuid::Uuid,
+    pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) supervisor: Option<SupervisorUiState>,
     /// Per-frame view of `session`, refreshed at the top of `draw`. Render
     /// paths read this instead of the live session, so what they need stops

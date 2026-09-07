@@ -2,7 +2,7 @@
 //!
 //! `TuiApp` owns exactly one `AgentSession` — the primary. Every other task in
 //! the repository lives inside the supervisor, reachable only as an immutable
-//! [`forge_session::TaskRuntimeSnapshot`] plus a command channel. Almost every
+//! [`forge_session::SessionRuntimeSnapshot`] plus a command channel. Almost every
 //! interaction path in this crate predates that split and reads or mutates
 //! `self.session` unconditionally, which is silently wrong while a sibling is
 //! selected: an approval meant for the sibling would resolve the primary's.
@@ -12,7 +12,7 @@
 
 use super::*;
 
-/// The runtime behind the currently selected task.
+/// The runtime behind the currently selected session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectedRuntime {
     /// The session `TuiApp` owns and drives directly.
@@ -23,8 +23,8 @@ pub(crate) enum SelectedRuntime {
 
 impl TuiApp {
     pub(crate) fn selected_runtime(&self) -> SelectedRuntime {
-        if self.supervisor.is_some() && self.selected_task_id != self.session.session_id {
-            SelectedRuntime::Sibling(self.selected_task_id)
+        if self.supervisor.is_some() && self.selected_session_id != self.session.session_id {
+            SelectedRuntime::Sibling(self.selected_session_id)
         } else {
             SelectedRuntime::Primary
         }
@@ -34,9 +34,9 @@ impl TuiApp {
         matches!(self.selected_runtime(), SelectedRuntime::Sibling(_))
     }
 
-    /// The supervisor's latest view of the selected task, or `None` when the
+    /// The supervisor's latest view of the selected session, or `None` when the
     /// primary is selected (its state is read from `session_view` instead).
-    pub(crate) fn selected_snapshot(&self) -> Option<&forge_session::TaskRuntimeSnapshot> {
+    pub(crate) fn selected_snapshot(&self) -> Option<&forge_session::SessionRuntimeSnapshot> {
         match self.selected_runtime() {
             SelectedRuntime::Primary => None,
             SelectedRuntime::Sibling(session_id) => self
@@ -46,13 +46,13 @@ impl TuiApp {
         }
     }
 
-    /// The label of the selected task, for messages that name it.
-    pub(crate) fn selected_task_label(&self) -> String {
-        self.task_chrome
+    /// The label of the selected session, for messages that name it.
+    pub(crate) fn selected_session_label(&self) -> String {
+        self.session_chrome
             .iter()
-            .find(|task| task.session_id == self.selected_task_id)
+            .find(|task| task.session_id == self.selected_session_id)
             .map(|task| task.label.clone())
-            .unwrap_or_else(|| "the selected task".into())
+            .unwrap_or_else(|| "the selected session".into())
     }
 
     /// Gate an action that only the primary session can perform today.
@@ -64,7 +64,7 @@ impl TuiApp {
         if !self.selected_is_sibling() {
             return true;
         }
-        let label = self.selected_task_label();
+        let label = self.selected_session_label();
         self.set_feedback(
             FeedbackSeverity::Warn,
             format!(

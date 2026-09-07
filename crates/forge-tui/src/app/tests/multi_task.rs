@@ -20,7 +20,7 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     app.conversation_view.scroll = 7;
     app.conversation_view.follow = false;
 
-    app.save_task_view_state(first);
+    app.save_session_view_state(first);
 
     // The app is left blank for whoever is selected next — nothing of the
     // saved task may bleed through.
@@ -34,7 +34,7 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     assert_eq!(app.conversation_view.scroll, 0);
     assert!(app.conversation_view.follow);
 
-    app.restore_task_view_state(first);
+    app.restore_session_view_state(first);
 
     assert_eq!(app.input.text, "half-written prompt");
     assert_eq!(app.stream.preview, "streamed answer");
@@ -96,9 +96,9 @@ async fn a_task_never_visited_before_starts_from_a_clean_view() {
     // is that a first switch does not blank it.
     let model_before = app.runtime.model_label.clone();
     app.input.set_text("primary draft".to_string());
-    app.save_task_view_state(app.session.session_id);
+    app.save_session_view_state(app.session.session_id);
 
-    app.restore_task_view_state(uuid::Uuid::new_v4());
+    app.restore_session_view_state(uuid::Uuid::new_v4());
     assert!(app.input.text.is_empty());
     assert_eq!(app.runtime.model_label, model_before);
 }
@@ -123,7 +123,7 @@ async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
         "task strip help should name the real switcher binding: {help}"
     );
     assert!(
-        !help.contains("• Ctrl+T  Open task switcher"),
+        !help.contains("• Ctrl+T  Open session switcher"),
         "help must not advertise removed Ctrl+T turn expansion: {help}"
     );
     assert!(
@@ -229,13 +229,13 @@ async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHan
     (dir, app, handle)
 }
 
-async fn wait_for_chrome_task(
+async fn wait_for_chrome_session(
     app: &mut TuiApp,
-    mut matches: impl FnMut(&TaskChromeItem) -> bool,
-) -> TaskChromeItem {
+    mut matches: impl FnMut(&SessionChromeItem) -> bool,
+) -> SessionChromeItem {
     for _ in 0..300 {
         app.poll_supervisor_events();
-        if let Some(task) = app.task_chrome.iter().find(|task| matches(task)) {
+        if let Some(task) = app.session_chrome.iter().find(|task| matches(task)) {
             return task.clone();
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -253,7 +253,7 @@ async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
 
     // One keypress: no form, no modal. The task is registered unnamed and
     // prompt-less, with the id-only branch/path naming.
-    let task = wait_for_chrome_task(&mut app, |task| task.label.is_empty()).await;
+    let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
     assert!(
         task.branch.starts_with("forge/task-"),
         "branch: {}",
@@ -284,7 +284,7 @@ async fn the_first_prompt_names_an_unnamed_task() {
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
-    let task = wait_for_chrome_task(&mut app, |task| task.label.is_empty()).await;
+    let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
 
     // The strip opens on the primary row; move right onto the new task,
     // then select it. Typing the first prompt both names it and runs it —
@@ -298,7 +298,7 @@ async fn the_first_prompt_names_an_unnamed_task() {
     app.input.set_text("rewrite the lexer".to_string());
     app.submit_composer_message().await.unwrap();
 
-    let named = wait_for_chrome_task(&mut app, |task| task.label == "rewrite-the-lexer").await;
+    let named = wait_for_chrome_session(&mut app, |task| task.label == "rewrite-the-lexer").await;
     assert_eq!(named.session_id, task.session_id);
     handle
         .command(forge_session::SupervisorCommand::Shutdown)

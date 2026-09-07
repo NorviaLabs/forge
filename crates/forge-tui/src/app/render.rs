@@ -64,13 +64,13 @@ impl TuiApp {
         // One read of the active session per frame. Sibling sessions are
         // immutable supervisor snapshots; selecting one must not be undone by
         // the primary-session refresh that happens on every draw.
-        if self.selected_task_id == self.session.session_id {
+        if self.selected_session_id == self.session.session_id {
             self.session_view = SessionSnapshot::capture(&self.session);
             self.transcript_view.refresh(&self.session);
         } else if let Some(snapshot) = self
             .supervisor
             .as_ref()
-            .and_then(|supervisor| supervisor.snapshots.get(&self.selected_task_id))
+            .and_then(|supervisor| supervisor.snapshots.get(&self.selected_session_id))
         {
             self.session_view = snapshot.session.clone();
             self.transcript_view = snapshot.transcript.clone();
@@ -241,7 +241,7 @@ impl TuiApp {
             // task is always `task 1` even with the primary row ahead of it.
             let mut unnamed = 0usize;
             let strip_items: Vec<TaskStripItem> = self
-                .task_chrome
+                .session_chrome
                 .iter()
                 .enumerate()
                 .map(|(index, task)| TaskStripItem {
