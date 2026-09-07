@@ -38,7 +38,10 @@ pub struct SetupRequest {
 
 enum Screen {
     Theme(Box<Overlay>),
-    Trust { selected: usize },
+    Trust {
+        selected: usize,
+        error: Option<String>,
+    },
 }
 
 pub fn run_setup(request: SetupRequest) -> io::Result<SetupResult> {
@@ -78,7 +81,10 @@ fn run_setup_loop(
     let mut screen = if request.run_theme {
         Screen::Theme(Box::new(Overlay::theme_open(DEFAULT_THEME_ID)))
     } else {
-        Screen::Trust { selected: 0 }
+        Screen::Trust {
+            selected: 0,
+            error: None,
+        }
     };
 
     loop {
@@ -105,21 +111,30 @@ fn run_setup_loop(
                         continue;
                     }
                     if request.run_trust {
-                        screen = Screen::Trust { selected: 0 };
+                        screen = Screen::Trust {
+                            selected: 0,
+                            error: None,
+                        };
                     } else {
                         return Ok(SetupResult::Completed);
                     }
                 }
                 _ => {}
             },
-            Screen::Trust { selected } => match mapped {
+            Screen::Trust { selected, error } => match mapped {
                 Key::Esc => return Ok(SetupResult::Canceled),
                 Key::Up | Key::Down => *selected = 1 - *selected,
-                Key::Enter => {
+                Key::Char('y') => *selected = 0,
+                Key::Char('n') => *selected = 1,
+                Key::Enter | Key::Char(' ') => {
                     if *selected == 1 {
                         return Ok(SetupResult::Canceled);
                     }
                     if grant_trust(&request.cwd).is_err() {
+                        *error = Some(
+                            "Could not save trust decision; check permissions and try again."
+                                .into(),
+                        );
                         continue;
                     }
                     return Ok(SetupResult::Completed);
@@ -163,7 +178,9 @@ fn draw_setup(
     theme::fill(area, buf, theme::canvas());
     match screen {
         Screen::Theme(overlay) => draw_theme_setup(area, buf, overlay),
-        Screen::Trust { selected } => draw_trust_setup(area, buf, display, wide, *selected),
+        Screen::Trust { selected, error } => {
+            draw_trust_setup(area, buf, display, wide, *selected, error.as_deref())
+        }
     }
 }
 
@@ -212,6 +229,7 @@ fn draw_trust_setup(
     display: &str,
     wide: bool,
     selected: usize,
+    error: Option<&str>,
 ) {
     let mut lines = vec![
         Line::from(Span::styled("Trust this folder?", theme::brand())),
@@ -245,6 +263,9 @@ fn draw_trust_setup(
         ),
         theme::muted(),
     )));
+    if let Some(error) = error {
+        lines.push(Line::from(Span::styled(error, theme::error_callout())));
+    }
     // Sized to what it holds, with a column of inset on each side. It used to
     // take 70% of the height whatever it contained — twenty-eight rows for ten
     // rows of content — with text flush against the border.
