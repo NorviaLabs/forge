@@ -113,6 +113,24 @@ impl TuiApp {
         }
     }
 
+    pub(crate) fn try_session_command(
+        &mut self,
+        command: forge_session::SupervisorCommand,
+    ) -> bool {
+        let result = self
+            .supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.handle.try_command(command));
+        match result {
+            Some(Ok(())) => true,
+            Some(Err(error)) => {
+                self.set_feedback(FeedbackSeverity::Error, error.to_string());
+                false
+            }
+            None => false,
+        }
+    }
+
     /// The label of the selected Session, for messages that name it.
     pub(crate) fn selected_session_label(&self) -> String {
         self.session_chrome
