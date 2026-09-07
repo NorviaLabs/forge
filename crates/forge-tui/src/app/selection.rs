@@ -48,6 +48,71 @@ impl TuiApp {
         }
     }
 
+    pub(crate) fn selected_details(
+        &self,
+    ) -> Option<&forge_session::SessionDetailsSnapshot> {
+        self.selected_snapshot().and_then(|snapshot| snapshot.details.as_ref())
+    }
+
+    pub(crate) fn selected_queue_messages(&self) -> Vec<String> {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| {
+                    session
+                        .queue()
+                        .visible()
+                        .map(|item| item.text.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_snapshot()
+                .map(|snapshot| {
+                    let mut queued: Vec<String> = snapshot
+                        .queued_prompts
+                        .iter()
+                        .map(|(_, text)| text.clone())
+                        .collect();
+                    if let Some(details) = snapshot.details.as_ref() {
+                        queued.extend(details.queue.iter().map(|item| item.text.clone()));
+                    }
+                    queued
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_background_tasks(&self) -> Vec<forge_core::BackgroundTaskHandle> {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.background().list().cloned().collect())
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.background.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_token_usage_report(&self) -> forge_core::TokenUsageReport {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .expect("direct runtime must exist in direct mode")
+                .token_usage_report(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .expect("supervised runtime details must exist for an active session")
+                .token_usage_report
+                .clone(),
+        }
+    }
+
     /// The label of the selected Session, for messages that name it.
     pub(crate) fn selected_session_label(&self) -> String {
         self.session_chrome
