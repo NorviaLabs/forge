@@ -651,7 +651,7 @@ impl TuiApp {
                 }
                 let approved = matches!(decision, HitlDecision::Approve);
                 if self
-                    .send_task_command(forge_session::SupervisorCommand::ResolveApproval {
+                    .send_session_command(forge_session::SupervisorCommand::ResolveApproval {
                         session_id,
                         decision,
                         actor: "tui".into(),

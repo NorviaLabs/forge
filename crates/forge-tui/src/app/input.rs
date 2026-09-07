@@ -148,20 +148,20 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
-        let count = self.task_chrome.len();
+        let count = self.session_chrome.len();
         // One-key task start, before the empty-strip guard: creating the
         // first task is exactly when the strip has nothing to select yet.
         // The task starts unnamed and prompt-less; its name comes from the
         // first prompt typed in it (see `enqueue_user_message`).
         if matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty()) {
             let created = self
-                .send_task_command(forge_session::SupervisorCommand::CreateTask {
+                .send_session_command(forge_session::SupervisorCommand::CreateSession {
                     label: String::new(),
                     first_prompt: None,
                 })
                 .await;
             if created {
-                self.set_feedback(FeedbackSeverity::Info, "creating task…");
+                self.set_feedback(FeedbackSeverity::Info, "creating session…");
             }
             return Ok(true);
         }
@@ -186,11 +186,11 @@ impl TuiApp {
                 Ok(true)
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
-                let item = self.task_chrome[self.task_strip_selection].clone();
+                let item = self.session_chrome[self.task_strip_selection].clone();
                 if item.session_id != self.session.session_id {
                     if self.supervisor.is_some() {
                         if !self
-                            .send_task_command(forge_session::SupervisorCommand::SelectTask {
+                            .send_session_command(forge_session::SupervisorCommand::SelectSession {
                                 session_id: Some(item.session_id),
                             })
                             .await
@@ -203,10 +203,10 @@ impl TuiApp {
                             .and_then(|supervisor| supervisor.snapshots.get(&item.session_id))
                             .cloned()
                         {
-                            self.save_task_view_state(self.selected_task_id);
-                            self.restore_task_view_state(item.session_id);
-                            self.selected_task_id = item.session_id;
-                            for task in &mut self.task_chrome {
+                            self.save_session_view_state(self.selected_session_id);
+                            self.restore_session_view_state(item.session_id);
+                            self.selected_session_id = item.session_id;
+                            for task in &mut self.session_chrome {
                                 task.selected = task.session_id == item.session_id;
                             }
                             self.session_view = snapshot.session.clone();
@@ -215,22 +215,22 @@ impl TuiApp {
                         }
                         self.set_feedback(
                             FeedbackSeverity::Info,
-                            format!("task selected · {}", item.label),
+                            format!("session selected · {}", item.label),
                         );
                     }
                 } else {
-                    self.save_task_view_state(self.selected_task_id);
-                    self.restore_task_view_state(item.session_id);
-                    self.selected_task_id = item.session_id;
+                    self.save_session_view_state(self.selected_session_id);
+                    self.restore_session_view_state(item.session_id);
+                    self.selected_session_id = item.session_id;
                     self.session_view = SessionSnapshot::capture(&self.session);
                     self.transcript_view = TranscriptSnapshot::capture(&self.session);
                     self.sync_selected_workspace();
-                    self.set_feedback(FeedbackSeverity::Info, "primary task selected");
+                    self.set_feedback(FeedbackSeverity::Info, "primary session selected");
                 }
                 Ok(true)
             }
             KeyCode::Char('s') if key.modifiers.is_empty() => {
-                let session_id = self.task_chrome[self.task_strip_selection].session_id;
+                let session_id = self.session_chrome[self.task_strip_selection].session_id;
                 if session_id == self.session.session_id {
                     self.set_feedback(
                         FeedbackSeverity::Info,
@@ -238,12 +238,14 @@ impl TuiApp {
                     );
                     return Ok(true);
                 }
-                self.send_task_command(forge_session::SupervisorCommand::StopTurn { session_id })
-                    .await;
+                self.send_session_command(forge_session::SupervisorCommand::StopTurn {
+                    session_id,
+                })
+                .await;
                 Ok(true)
             }
             KeyCode::Char('c') if key.modifiers.is_empty() => {
-                let session_id = self.task_chrome[self.task_strip_selection].session_id;
+                let session_id = self.session_chrome[self.task_strip_selection].session_id;
                 if session_id == self.session.session_id {
                     self.set_feedback(
                         FeedbackSeverity::Info,
@@ -251,15 +253,15 @@ impl TuiApp {
                     );
                     return Ok(true);
                 }
-                self.send_task_command(forge_session::SupervisorCommand::ContinueTurn {
+                self.send_session_command(forge_session::SupervisorCommand::ContinueTurn {
                     session_id,
                 })
                 .await;
                 Ok(true)
             }
             KeyCode::Char('p') if key.modifiers.is_empty() => {
-                let task = self.task_chrome[self.task_strip_selection].clone();
-                self.send_task_command(forge_session::SupervisorCommand::PinTask {
+                let task = self.session_chrome[self.task_strip_selection].clone();
+                self.send_session_command(forge_session::SupervisorCommand::PinSession {
                     session_id: task.session_id,
                     slot: task.slot.or(Some(1)),
                     swap: true,
@@ -268,7 +270,7 @@ impl TuiApp {
                 Ok(true)
             }
             KeyCode::Char('x') if key.modifiers.is_empty() => {
-                let session_id = self.task_chrome[self.task_strip_selection].session_id;
+                let session_id = self.session_chrome[self.task_strip_selection].session_id;
                 if session_id == self.session.session_id {
                     self.set_feedback(
                         FeedbackSeverity::Warn,
@@ -276,7 +278,7 @@ impl TuiApp {
                     );
                     return Ok(true);
                 }
-                self.send_task_command(forge_session::SupervisorCommand::ArchiveTask {
+                self.send_session_command(forge_session::SupervisorCommand::ArchiveSession {
                     session_id,
                 })
                 .await;
@@ -291,9 +293,9 @@ impl TuiApp {
     /// Moving rather than cloning keeps this correct for the state that holds
     /// buffers (an open editor, a rendered stream preview) and guarantees the
     /// two tasks never share a live copy of anything.
-    fn take_task_view_state(&mut self) -> TaskLocalViewState {
-        let blank = TaskLocalViewState::default();
-        TaskLocalViewState {
+    fn take_session_view_state(&mut self) -> SessionViewState {
+        let blank = SessionViewState::default();
+        SessionViewState {
             input: std::mem::replace(&mut self.input, blank.input),
             workspace_navigation: std::mem::take(&mut self.workspace_navigation),
             source_viewer: std::mem::replace(&mut self.source_viewer, blank.source_viewer),
@@ -334,7 +336,7 @@ impl TuiApp {
         }
     }
 
-    fn install_task_view_state(&mut self, state: TaskLocalViewState) {
+    fn install_session_view_state(&mut self, state: SessionViewState) {
         self.input = state.input;
         self.workspace_navigation = state.workspace_navigation;
         self.source_viewer = state.source_viewer;
@@ -379,12 +381,12 @@ impl TuiApp {
         self.normalize_focus();
     }
 
-    pub(super) fn save_task_view_state(&mut self, session_id: uuid::Uuid) {
-        let state = self.take_task_view_state();
-        self.task_view_states.insert(session_id, state);
+    pub(super) fn save_session_view_state(&mut self, session_id: uuid::Uuid) {
+        let state = self.take_session_view_state();
+        self.session_view_states.insert(session_id, state);
     }
 
-    /// Keep workspace-owned UI state aligned with the selected task. The
+    /// Keep workspace-owned UI state aligned with the selected session. The
     /// primary session is the only live session held by the TUI; sibling
     /// sessions expose their immutable snapshot, but their filesystem still
     /// needs to become the root for the explorer and repository chrome.
@@ -405,20 +407,20 @@ impl TuiApp {
         self.repo_header_state.refresh_rx = None;
     }
 
-    pub(super) fn restore_task_view_state(&mut self, session_id: uuid::Uuid) {
+    pub(super) fn restore_session_view_state(&mut self, session_id: uuid::Uuid) {
         let state = self
-            .task_view_states
+            .session_view_states
             .remove(&session_id)
             .unwrap_or_else(|| {
                 // First visit: a blank view, but seeded with the model that is
                 // already showing so the footer does not flicker to empty.
-                TaskLocalViewState {
+                SessionViewState {
                     model_label: self.runtime.model_label.clone(),
                     provider: self.runtime.provider.clone(),
                     ..Default::default()
                 }
             });
-        self.install_task_view_state(state);
+        self.install_session_view_state(state);
     }
 
     /// Send a supervisor command and report the outcome in the feedback strip.
@@ -427,7 +429,7 @@ impl TuiApp {
     /// of a running task — is operator error, not a TUI failure. Returning it
     /// as `TuiError` would tear the session down over a typo, so failures
     /// surface as feedback and the caller learns only whether it worked.
-    pub(super) async fn send_task_command(
+    pub(super) async fn send_session_command(
         &mut self,
         command: forge_session::SupervisorCommand,
     ) -> bool {
@@ -842,7 +844,7 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.selected_task_id != self.session.session_id {
+        if self.selected_session_id != self.session.session_id {
             if let Some(handle) = self
                 .supervisor
                 .as_ref()
@@ -853,15 +855,15 @@ impl TuiApp {
                 // with the very first message instead of showing an
                 // id-only placeholder.
                 let unnamed = self
-                    .task_chrome
+                    .session_chrome
                     .iter()
-                    .find(|task| task.session_id == self.selected_task_id)
+                    .find(|task| task.session_id == self.selected_session_id)
                     .is_some_and(|task| task.label.is_empty());
                 if unnamed {
                     let label = forge_storage::label_from_prompt(&line);
                     let _ = handle
-                        .command(forge_session::SupervisorCommand::RenameTask {
-                            session_id: self.selected_task_id,
+                        .command(forge_session::SupervisorCommand::RenameSession {
+                            session_id: self.selected_session_id,
                             label,
                         })
                         .await;
@@ -869,13 +871,13 @@ impl TuiApp {
                 self.record_submitted_line(&line).await;
                 handle
                     .command(forge_session::SupervisorCommand::SubmitPrompt {
-                        session_id: self.selected_task_id,
+                        session_id: self.selected_session_id,
                         text: line,
                     })
                     .await
                     .map_err(|error| TuiError::Other(error.to_string()))?;
-                self.set_feedback(FeedbackSeverity::Info, "prompt queued for selected task");
-                self.push_toast("sent to selected task");
+                self.set_feedback(FeedbackSeverity::Info, "prompt queued for selected session");
+                self.push_toast("sent to selected session");
                 return Ok(());
             }
         }
