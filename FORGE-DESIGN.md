@@ -233,27 +233,27 @@ Rules:
 
 ### 5.3 Status indicators (colour never travels alone)
 
-`crates/forge-tui/src/status_glyph.rs` defines one compact ASCII vocabulary used everywhere. Each marker is exactly three cells, with no emoji or Nerd Font dependency, so every state stays legible in monochrome via glyph shape plus an adjacent text label at call sites:
+`crates/forge-tui/src/status_glyph.rs` defines one compact vocabulary used everywhere. Each marker is exactly three cells, with no emoji or Nerd Font dependency, so every state stays legible in monochrome via glyph shape plus an adjacent text label at call sites:
 
 | Indicator | Meaning |
 |---|---|
 | `[ ]` | Pending / queued |
 | `[>]` | Active work (the only orange element; never focus, selection, or completed success) |
-| `[x]` | Complete (neutral in history; green only for a confirmed successful result glyph) |
+| `[✓]` | Complete (neutral in history; green only for a confirmed successful result glyph) |
 | `[!]` | Failed |
 | `[-]` | Cancelled |
 | `[?]` | Warning / needs attention |
 | `[|]` | Blocked |
 
-Git status is single letters from the same module: `M` `A` `D` `?` `!` `U` (modified / added / deleted / untracked / ignored / conflicted), bold and semantically coloured. The `✓` tick survives only where it marks a reviewed file and a status-bar outcome; `✗` only for a failed status outcome. Animation is restrained and never changes layout width.
+Git status is single letters from the same module: `M` `A` `D` `?` `!` `U` (modified / added / deleted / untracked / ignored / conflicted), bold and semantically coloured. The `✓` tick lives inside the `[✓]` completion marker as well as reviewed files and status-bar outcomes; `✗` only for a failed status outcome. Animation is restrained and never changes layout width.
 
 ### 5.4 Limited-colour fallback
 
 Every semantic state must include a textual or symbolic cue:
 
-- Lifecycle: the §5.3 bracket markers (`[ ]` `[>]` `[x]` `[!]` `[-]` `[?]` `[|]`)
+- Lifecycle: the §5.3 bracket markers (`[ ]` `[>]` `[✓]` `[!]` `[-]` `[?]` `[|]`)
 - Git: single letters (`M` `A` `D` `?` `!` `U`)
-- Success: `[x]` (green only for a confirmed result) or `✓` for reviewed/status outcomes
+- Success: `[✓]` (green only for a confirmed result) or `✓` for reviewed/status outcomes
 - Failure: `[!]` or `✗` for a failed status outcome
 - Focus: stronger/thicker border plus the `>` title marker
 - Selection: neutral background plus the `>` pointer, never tint alone
@@ -504,10 +504,7 @@ answer, and outcome colours stay reserved for result state.
 Implementation: `crates/forge-tui/src/conversation.rs`.
 
 Planning checklists use the lifecycle grammar: `[ ]` pending, `[>]` active
-(orange, bold — the only orange element), `[x]` completed in neutral muted.
-While a turn runs, the active `[>]` marker breathes with the footer's running
-dot (bold ↔ dim in the same hue on the event-loop tick, glyph fixed); settled
-history renders the bright frame.
+(orange, bold — the only orange element), `[✓]` completed in neutral muted.
 The active task has bold text; other tasks are muted. Wrapped text aligns
 after the checkbox. The heading reports completed tasks, and the pinned
 summary retains the count and current task when the checklist scrolls away.
