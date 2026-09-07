@@ -436,7 +436,7 @@ mod tests {
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let wt = create_worktree(repo.path(), base.path(), 1).unwrap();
+        let wt = create_worktree(repo.path(), base.path(), 1, "cleanup-me").unwrap();
         assert!(wt.path.exists());
 
         remove_worktree(repo.path(), &wt.path).unwrap();
