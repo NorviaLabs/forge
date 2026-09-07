@@ -679,12 +679,12 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// ASCII lifecycle marker (2026 grammar, DESIGN-008): completed work is
-    /// `[x]`, failure `[!]`, and an unparsed result `[?]` — never a bare
+    /// Lifecycle marker (2026 grammar, DESIGN-008): completed work is
+    /// `[✓]`, failure `[!]`, and an unparsed result `[?]` — never a bare
     /// `?`, which reads as punctuation rather than state.
     pub fn glyph(&self) -> &'static str {
         match self {
-            Self::Passed { .. } => "[x]",
+            Self::Passed { .. } => "[✓]",
             Self::Failed { .. } => "[!]",
             Self::Unparsed { .. } => "[?]",
         }
