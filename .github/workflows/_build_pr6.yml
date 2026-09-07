@@ -93,6 +93,8 @@ jobs:
               s = s.replace('"forge/Scheduler-fairness-13"', '"forge/session-13"')
               s = s.replace('join("task-13-Scheduler-fairness")', 'join("session-13")')
               s = s.replace('"forge/rewrite-the-lexer-1"', '"forge/session-1"')
+              s = s.replace('format!("forge/rewrite-the-lexer-{operation_id}")', 'format!("forge/session-{operation_id}")')
+              s = s.replace('starts_with("task-")', 'starts_with("session-")')
               s = s.replace('ends_with("task-1")', 'ends_with("session-1")')
               s = s.replace('join("task-1")', 'join("session-1")')
               s = s.replace('`task-{id}` path, `forge/task-{id}` branch', '`session-{id}` path, `forge/session-{id}` branch')
