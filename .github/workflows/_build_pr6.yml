@@ -92,10 +92,15 @@ jobs:
               s = s.replace('join("task-8")', 'join("session-8")')
               s = s.replace('"forge/Scheduler-fairness-13"', '"forge/session-13"')
               s = s.replace('join("task-13-Scheduler-fairness")', 'join("session-13")')
+              s = s.replace('"forge/rewrite-the-lexer-1"', '"forge/session-1"')
+              s = s.replace('ends_with("task-1")', 'ends_with("session-1")')
+              s = s.replace('join("task-1")', 'join("session-1")')
               s = s.replace('`task-{id}` path, `forge/task-{id}` branch', '`session-{id}` path, `forge/session-{id}` branch')
               s = s.replace('id-only branch/path naming', 'stable session-id branch/path naming')
               s = s.replace('unnamed_task_worktrees_get_an_id_only_name_and_branch', 'managed_session_worktrees_get_stable_id_only_identity')
               s = s.replace('task_worktree_uses_the_initiating_head_and_user_facing_names', 'session_worktree_uses_initiating_head_and_stable_identity')
+              s = s.replace('an_unnamed_task_with_a_prompt_takes_its_label_from_the_prompt', 'an_unnamed_session_with_a_prompt_takes_its_display_label_from_the_prompt')
+              s = s.replace('a_prompt_less_task_skips_the_trust_modal_and_is_ready_immediately', 'a_prompt_less_session_skips_trust_and_is_ready_immediately')
               p.write_text(s)
 
           for p in [
