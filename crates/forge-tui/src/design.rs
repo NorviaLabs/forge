@@ -24,7 +24,7 @@ pub const PLAN_ITEM_GAP_H: u16 = 0;
 /// Completed-item metadata indent (expanded detail only).
 pub const PLAN_META_INDENT: u16 = 4;
 /// Composer horizontal padding; same text origin as chat.
-pub const COMPOSER_PAD_X: u16 = 1;
+pub const COMPOSER_PAD_X: u16 = 2;
 /// Composer top rule height; no side/bottom border.
 pub const COMPOSER_RULE_H: u16 = 1;
 /// Composer vertical padding rows.
@@ -32,7 +32,7 @@ pub const COMPOSER_PAD_Y: u16 = 0;
 /// Max composer input rows.
 pub const MAX_COMPOSER_INPUT_H: u16 = 10;
 /// Footer height; no separate separator row.
-pub const FOOTER_H: u16 = 1;
+pub const FOOTER_H: u16 = 2;
 /// Modal inner horizontal padding (inside 1-col border).
 pub const MODAL_PAD_X: u16 = 2;
 /// Modal inner vertical padding (omitted at height < 24).
@@ -63,7 +63,7 @@ mod tests {
         assert_eq!(TRANSCRIPT_MAX_W, 88);
         assert_eq!(TURN_GAP_H, 1);
         assert_eq!(MAX_COMPOSER_INPUT_H, 10);
-        assert_eq!(FOOTER_H, 1);
+        assert_eq!(FOOTER_H, 2);
         assert_eq!(MODAL_PAD_X, 2);
         assert_eq!(TREE_INDENT_W, 2);
         assert_eq!(FILES_VISIBLE_FRAME_W, 116);

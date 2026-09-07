@@ -140,7 +140,7 @@ impl TuiApp {
         // DESIGN-012: the footer is a single content row with no separator.
         // The focused footer's hint shares that row (replacing the
         // right-side activity while focused), never adds another.
-        let hint_h: u16 = 1;
+        let hint_h: u16 = crate::design::FOOTER_H;
         // An open file or `/diff` occupies the center workspace pane. Anything
         // else (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
