@@ -113,6 +113,152 @@ impl TuiApp {
         }
     }
 
+    pub(crate) fn selected_journal_dir(&self) -> PathBuf {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.journal_dir().to_path_buf())
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.journal_dir.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_active_model(&self) -> String {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.active_model.clone())
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.active_model.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_active_route_id(&self) -> String {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.active_route_id.clone())
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.active_route_id.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_max_turns(&self) -> u32 {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map_or(0, AgentSession::max_turns),
+            SelectedRuntime::Supervised(_) => {
+                self.selected_details().map_or(0, |details| details.max_turns)
+            }
+        }
+    }
+
+    pub(crate) fn selected_image_input_supported(&self) -> bool {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .is_some_and(AgentSession::image_input_supported),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .is_some_and(|details| details.image_input_supported),
+        }
+    }
+
+    pub(crate) fn selected_thinking_enabled(&self) -> bool {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .is_some_and(AgentSession::thinking_enabled),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .is_some_and(|details| details.thinking_enabled),
+        }
+    }
+
+    pub(crate) fn selected_loaded_skill_names(&self) -> Vec<String> {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(AgentSession::loaded_skill_names)
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.skills.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_tool_names(&self) -> Vec<String> {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(AgentSession::list_tools)
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.tools.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_context_state(&self) -> forge_core::SessionContextState {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.context_state().clone())
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.context_state.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_compaction_telemetry(&self) -> forge_core::CompactionTelemetry {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.compaction_telemetry().clone())
+                .unwrap_or_default(),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.compaction.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn selected_session_pattern_allow_count(&self) -> usize {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map_or(0, AgentSession::session_pattern_allow_count),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map_or(0, |details| details.session_pattern_allow_count),
+        }
+    }
+
     pub(crate) fn try_session_command(
         &mut self,
         command: forge_session::SupervisorCommand,
