@@ -32,12 +32,8 @@ fn composer_input_height(
         + crate::widgets::input::COMPOSER_RULE_H
 }
 
-fn queued_messages_for_render(session: &AgentSession) -> Vec<String> {
-    session
-        .queue()
-        .visible()
-        .map(|item| item.text.clone())
-        .collect()
+fn queued_messages_for_render(app: &TuiApp) -> Vec<String> {
+    app.selected_queue_messages()
 }
 
 impl TuiApp {
@@ -64,9 +60,9 @@ impl TuiApp {
         // One read of the active session per frame. Sibling sessions are
         // immutable supervisor snapshots; selecting one must not be undone by
         // the primary-session refresh that happens on every draw.
-        if self.selected_session_id == self.session_runtime.session_id {
-            self.session_view = SessionSnapshot::capture(&self.session_runtime);
-            self.transcript_view.refresh(&self.session_runtime);
+        if let Some(session) = self.session_runtime.as_ref() {
+            self.session_view = SessionSnapshot::capture(session);
+            self.transcript_view.refresh(session);
         } else if let Some(snapshot) = self
             .supervisor
             .as_ref()
@@ -120,7 +116,7 @@ impl TuiApp {
             )
         };
         let panel_h = if self.bottom_panel.open { 16 } else { 0 };
-        let queued_messages = queued_messages_for_render(&self.session_runtime);
+        let queued_messages = queued_messages_for_render(self);
         let queue_h = if queued_messages.is_empty() {
             0
         } else {
@@ -430,14 +426,16 @@ impl TuiApp {
             status: self.session_view.lifecycle,
             theme_id: crate::theme::active(),
             pending_hitl: self
-                .session_runtime
-                .pending_hitl()
+                .session_view
+                .pending_hitl
+                .as_ref()
                 .map(|payload| payload.call_id.clone()),
             approval_menu_selected: self.approval_menu_selected(),
             approval_focused: self.focus.block() == FocusBlock::Approval,
             pending_question: self
-                .session_runtime
-                .pending_question()
+                .session_view
+                .pending_question
+                .as_ref()
                 .map(|payload| payload.call_id.clone()),
             question_idx: self.question_menu_indexes().0,
             question_option_idx: self.question_menu_indexes().1,
