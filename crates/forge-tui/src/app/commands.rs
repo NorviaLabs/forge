@@ -62,7 +62,10 @@ impl TuiApp {
                 })
                 .collect();
             self.overlay = Some(Overlay::session_switcher(items));
-            self.set_feedback(FeedbackSeverity::Info, "Sessions · Enter switch · Esc close");
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                "Sessions · Enter switch · Esc close",
+            );
             return;
         }
         let sessions = match recent_resume_sessions(
@@ -91,7 +94,10 @@ impl TuiApp {
             });
         }
         self.overlay = Some(Overlay::resume_picker(items));
-        self.set_feedback(FeedbackSeverity::Info, "Sessions · Enter switch · Esc close");
+        self.set_feedback(
+            FeedbackSeverity::Info,
+            "Sessions · Enter switch · Esc close",
+        );
     }
 
     /// Filtered slash suggestions for the current textbox (empty if not in slash mode).

@@ -1862,8 +1862,7 @@ mod tests {
                 .await;
 
         let base = TempDir::new().unwrap();
-        let linked =
-            forge_storage::create_session_worktree(repo.path(), base.path(), 1).unwrap();
+        let linked = forge_storage::create_session_worktree(repo.path(), base.path(), 1).unwrap();
 
         let main_worktree = handle
             .command(SupervisorCommand::AttachWorktree {
