@@ -10,7 +10,8 @@ use forge_core::{AgentSession, LoopError};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{RepositoryRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_types::{
-    AskUserQuestionResult, HitlDecision, ModelStreamEvent, SessionId, TaskLifecycle,
+    AskUserQuestionResult, BackgroundTaskId, HitlDecision, ModelStreamEvent, SessionId,
+    TaskLifecycle, ToolCall,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -18,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     connect_credentials, open_session_with_model, resolve_journal_dir, NewRepositorySession,
     RepositoryControl, RepositoryLease, RepositorySession, RepositorySessionError,
-    SessionLifecycle, SessionSnapshot, SessionTarget, SupervisorTurnState, TranscriptSnapshot,
-    WorktreeOwnership,
+    SessionDetailsSnapshot, SessionLifecycle, SessionSnapshot, SessionTarget, SupervisorTurnState,
+    TranscriptSnapshot, WorktreeOwnership,
 };
 
 const DEFAULT_MAX_CONCURRENCY: usize = 4;
@@ -30,6 +31,8 @@ pub struct SessionRuntimeSnapshot {
     pub task: RepositorySession,
     pub session: SessionSnapshot,
     pub transcript: TranscriptSnapshot,
+    pub details: Option<SessionDetailsSnapshot>,
+    pub queued_prompts: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +130,46 @@ pub enum SupervisorCommand {
         route_id: String,
         reasoning_effort: Option<String>,
     },
+    SetThinking {
+        session_id: SessionId,
+        enabled: bool,
+    },
+    SetCapabilities {
+        session_id: SessionId,
+        image_input_supported: bool,
+        context_window: Option<(usize, usize)>,
+    },
+    CancelQueuedPrompt {
+        session_id: SessionId,
+        one_based: usize,
+    },
+    PollSession {
+        session_id: SessionId,
+    },
+    CancelBackgroundTask {
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+    },
+    ResolveBackgroundApproval {
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        decision: HitlDecision,
+    },
+    GrantEgressHost {
+        session_id: SessionId,
+        pattern: String,
+    },
+    AllowSessionPattern {
+        session_id: SessionId,
+        call: ToolCall,
+    },
+    ClearSessionApprovals {
+        session_id: SessionId,
+    },
+    ApplyProviderEnv {
+        pairs: Vec<(String, String)>,
+    },
+    ClearProviderEnv,
     Refresh,
     Shutdown,
 }
@@ -199,6 +242,8 @@ impl SessionActor {
             task,
             session: SessionSnapshot::capture(&session),
             transcript: TranscriptSnapshot::capture(&session),
+            details: Some(SessionDetailsSnapshot::capture(&session)),
+            queued_prompts: Vec::new(),
         };
         Self {
             session: Mutex::new(session),
@@ -662,6 +707,12 @@ impl RepositorySupervisor {
         snapshots(&self.state).await
     }
 
+    pub async fn snapshot(&self, session_id: SessionId) -> Option<SessionRuntimeSnapshot> {
+        let actor = self.state.actors.read().await.get(&session_id).cloned()?;
+        let snapshot = actor.snapshot.read().await.clone();
+        Some(snapshot)
+    }
+
     pub fn lease_owner(&self) -> &crate::LeaseOwner {
         self.state.lease.owner()
     }
@@ -1009,6 +1060,104 @@ async fn execute_command(
             session.set_reasoning_effort(reasoning_effort);
             refresh_actor(&state, &task_actor, &session).await?;
         }
+        SupervisorCommand::SetThinking { session_id, enabled } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.set_thinking_enabled(enabled);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::SetCapabilities {
+            session_id,
+            image_input_supported,
+            context_window,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.set_image_input_supported(image_input_supported);
+            if let Some((capacity, output)) = context_window {
+                session.set_context_window(capacity, output);
+            }
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::CancelQueuedPrompt {
+            session_id,
+            one_based,
+        } => {
+            state
+                .control
+                .cancel_queued_prompt_at(session_id, one_based)
+                .await?;
+            publish_actor(&state, session_id).await?;
+        }
+        SupervisorCommand::PollSession { session_id } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.poll_background_tasks().await?;
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::CancelBackgroundTask {
+            session_id,
+            task_id,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.cancel_background_task(task_id);
+            session.poll_background_tasks().await?;
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::ResolveBackgroundApproval {
+            session_id,
+            task_id,
+            decision,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.resolve_subagent_hitl(task_id, decision);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::GrantEgressHost {
+            session_id,
+            pattern,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let session = task_actor.session.lock().await;
+            session.grant_egress_host(&pattern);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::AllowSessionPattern { session_id, call } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session
+                .allow_suggested_pattern_for_session(&call)
+                .ok_or_else(|| {
+                    RepositorySupervisorError::Command(
+                        "this call has no reusable approval pattern".into(),
+                    )
+                })?;
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::ClearSessionApprovals { session_id } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.clear_session_pattern_allows();
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::ApplyProviderEnv { pairs } => {
+            state.model.apply_provider_env(&pairs);
+            let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+            for task_actor in actors {
+                let session = task_actor.session.lock().await;
+                session.apply_provider_env(&pairs);
+            }
+        }
+        SupervisorCommand::ClearProviderEnv => {
+            state.model.clear_provider_env();
+            let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+            for task_actor in actors {
+                let session = task_actor.session.lock().await;
+                session.clear_provider_env();
+            }
+        }
         SupervisorCommand::Refresh => {
             let _ = state
                 .events
@@ -1270,10 +1419,16 @@ async fn refresh_actor(
     session: &AgentSession,
 ) -> Result<(), RepositorySupervisorError> {
     let task = state.control.session(session.session_id).await?;
+    let queued_prompts = state.control.queued_prompts(session.session_id).await?;
+    let details = SessionDetailsSnapshot::capture(session);
+    let mut session_snapshot = SessionSnapshot::capture(session);
+    session_snapshot.queue_len = queued_prompts.len() + details.queue.len();
     let snapshot = SessionRuntimeSnapshot {
         task,
-        session: SessionSnapshot::capture(session),
+        session: session_snapshot,
         transcript: TranscriptSnapshot::capture(session),
+        details: Some(details),
+        queued_prompts,
     };
     *task_actor.snapshot.write().await = snapshot.clone();
     let _ = state
@@ -1288,8 +1443,15 @@ async fn publish_actor(
 ) -> Result<(), RepositorySupervisorError> {
     let task_actor = actor(state, session_id).await?;
     let task = state.control.session(session_id).await?;
+    let queued_prompts = state.control.queued_prompts(session_id).await?;
     let mut snapshot = task_actor.snapshot.write().await;
     snapshot.task = task;
+    snapshot.queued_prompts = queued_prompts;
+    let inner_queue = snapshot
+        .details
+        .as_ref()
+        .map_or(0, |details| details.queue.len());
+    snapshot.session.queue_len = snapshot.queued_prompts.len() + inner_queue;
     let _ = state
         .events
         .send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
@@ -1312,6 +1474,8 @@ async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
                 ..SessionSnapshot::default()
             },
             transcript: TranscriptSnapshot::default(),
+            details: None,
+            queued_prompts: Vec::new(),
             task,
         });
     }
