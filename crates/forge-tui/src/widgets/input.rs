@@ -445,7 +445,7 @@ fn composer_geometry(
 ) -> Option<ComposerGeometry> {
     // DESIGN-012: one top rule, then text. The text keeps its 1-column
     // inset — the same text origin convention as the chat pane.
-    let text_w = area.width.saturating_sub(TEXT_INSET);
+    let text_w = area.width.saturating_sub(TEXT_INSET * 2);
     let text_h = area.height.saturating_sub(COMPOSER_RULE_H);
     if text_w == 0 || text_h == 0 {
         return None;
@@ -463,7 +463,7 @@ fn composer_geometry(
     let raw_text_area = Rect::new(
         input_area.x.saturating_add(TEXT_INSET),
         input_area.y,
-        input_area.width.saturating_sub(TEXT_INSET),
+        input_area.width.saturating_sub(TEXT_INSET * 2),
         input_area.height,
     );
 

@@ -996,17 +996,30 @@ impl ConversationRenderInternals for ConversationModel {
                         }
                     }
                     if p.expanded {
-                        for item in p.items {
-                            for wrapped in wrap(&item, width.saturating_sub(2 + rail_extra)) {
-                                let mut item_line = Line::from(Span::styled(
-                                    format!("{INDENT_UNIT}{wrapped}"),
-                                    theme::muted(),
-                                ));
-                                if rail {
-                                    prefix_line_rail(&mut item_line);
-                                }
-                                lines.push(item_line);
+                        let rendered_items: Vec<String> = p
+                            .items
+                            .iter()
+                            .flat_map(|item| {
+                                wrap(item, width.saturating_sub(2 + rail_extra)).into_iter()
+                            })
+                            .collect();
+                        let visible = rendered_items.len();
+                        let shown = rendered_items.iter().take(7);
+                        for wrapped in shown {
+                            let mut item_line = Line::from(Span::styled(
+                                format!("{INDENT_UNIT}{wrapped}"),
+                                theme::muted(),
+                            ));
+                            if rail {
+                                prefix_line_rail(&mut item_line);
                             }
+                            lines.push(item_line);
+                        }
+                        if visible > 7 {
+                            lines.push(Line::from(Span::styled(
+                                format!("{INDENT_UNIT}... {} more lines", visible - 7),
+                                theme::dim(),
+                            )));
                         }
                     }
                 }
@@ -2164,12 +2177,8 @@ pub(super) fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
 /// Spelled `Ctrl+O` — a chord is written without spaces around the plus — and
 /// unbracketed. It is rendered dim, beside a tool name at full text weight, so
 /// it stops competing with the label it sits next to.
-fn activity_detail_label(expanded: bool) -> &'static str {
-    if expanded {
-        "  Ctrl+O to collapse"
-    } else {
-        "  Ctrl+O"
-    }
+fn activity_detail_label(_expanded: bool) -> &'static str {
+    ""
 }
 
 /// Collapsed-line rendering for command-execution activity groups (see
@@ -3126,7 +3135,7 @@ mod tests {
         assert!(text.contains("--short"), "{text}");
         assert!(!text.contains('│'), "{text}");
         assert!(text.contains("5 output lines"), "{text}");
-        assert!(text.contains("Ctrl+O"), "{text}");
+        assert!(!text.contains("Ctrl+O"), "{text}");
     }
 
     #[test]
@@ -3140,7 +3149,7 @@ mod tests {
         // equality with the original string.
         assert!(text.contains("--test-threads=1 --nocapture"), "{text}");
         assert!(text.contains("git status --short"), "{text}");
-        assert!(text.contains("Ctrl+O to collapse"), "{text}");
+        assert!(!text.contains("Ctrl+O to collapse"), "{text}");
     }
 
     #[test]
@@ -3282,8 +3291,8 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if !group.items.is_empty() && group.count_label.contains("2")
         )));
-        assert_eq!(activity_detail_label(true), "  Ctrl+O to collapse");
-        assert_eq!(activity_detail_label(false), "  Ctrl+O");
+        assert_eq!(activity_detail_label(true), "");
+        assert_eq!(activity_detail_label(false), "");
     }
 
     #[test]
@@ -5573,11 +5582,14 @@ pub(super) fn render_verification_card(
     }
 
     // Only when there is more to see than what is already shown.
-    if !p.expanded && p.detail.lines().count() > p.evidence.len() {
-        out.push(Line::from(vec![
-            Span::raw(INDENT_UNIT),
-            Span::styled("    Ctrl+O for full output".to_string(), theme::dim()),
-        ]));
+    if !p.expanded {
+        let remaining = p.detail.lines().count().saturating_sub(p.evidence.len());
+        if remaining > 0 {
+            out.push(Line::from(vec![
+                Span::raw(INDENT_UNIT),
+                Span::styled(format!("    ... {remaining} more lines"), theme::dim()),
+            ]));
+        }
     }
     out
 }
@@ -5682,7 +5694,7 @@ mod verification_card_tests {
             &["OK"],
             "line\nline\nline\nOK",
         );
-        assert!(text_of(&render_verification_card(&more, 80)).contains("Ctrl+O"));
+        assert!(text_of(&render_verification_card(&more, 80)).contains("... 3 more lines"));
     }
 
     #[test]
