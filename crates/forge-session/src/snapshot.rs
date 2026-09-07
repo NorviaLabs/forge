@@ -24,7 +24,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use forge_core::{AgentSession, TurnEvent};
+use forge_core::{
+    AgentSession, BackgroundTaskHandle, CompactionTelemetry, QueuedTask, SessionContextState,
+    TokenUsageReport, TurnEvent,
+};
 use forge_model::SharedMessages;
 use forge_types::{HitlPayload, Message, QuestionPayload, SessionId, TaskLifecycle};
 
@@ -110,6 +113,52 @@ impl Default for SessionSnapshot {
             completion_tokens: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
+        }
+    }
+}
+
+/// Detail needed by operator actions and expanded status surfaces.
+///
+/// Kept separate from `SessionSnapshot`: the cheap frame snapshot is captured
+/// frequently in legacy direct mode, while these vectors/reports are only
+/// refreshed at supervisor actor checkpoints.
+#[derive(Debug, Clone)]
+pub struct SessionDetailsSnapshot {
+    pub journal_dir: PathBuf,
+    pub active_model: String,
+    pub active_route_id: String,
+    pub reasoning_effort: Option<String>,
+    pub thinking_enabled: bool,
+    pub image_input_supported: bool,
+    pub max_turns: u32,
+    pub token_usage_report: TokenUsageReport,
+    pub tools: Vec<String>,
+    pub skills: Vec<String>,
+    pub context_state: SessionContextState,
+    pub compaction: CompactionTelemetry,
+    pub queue: Vec<QueuedTask>,
+    pub background: Vec<BackgroundTaskHandle>,
+    pub session_pattern_allow_count: usize,
+}
+
+impl SessionDetailsSnapshot {
+    pub fn capture(session: &AgentSession) -> Self {
+        Self {
+            journal_dir: session.journal_dir().to_path_buf(),
+            active_model: session.active_model.clone(),
+            active_route_id: session.active_route_id.clone(),
+            reasoning_effort: session.reasoning_effort().map(str::to_string),
+            thinking_enabled: session.thinking_enabled(),
+            image_input_supported: session.image_input_supported(),
+            max_turns: session.max_turns(),
+            token_usage_report: session.token_usage_report(),
+            tools: session.list_tools(),
+            skills: session.loaded_skill_names(),
+            context_state: session.context_state().clone(),
+            compaction: session.compaction_telemetry().clone(),
+            queue: session.queue().visible().cloned().collect(),
+            background: session.background().list().cloned().collect(),
+            session_pattern_allow_count: session.session_pattern_allow_count(),
         }
     }
 }
