@@ -329,7 +329,22 @@ impl RepositoryBootstrap {
         cfg: &Config,
         primary_session_id: SessionId,
     ) -> Result<(RepositorySupervisor, SupervisorHandle), RepositorySupervisorError> {
-        RepositorySupervisor::open_siblings_with(self, cfg, primary_session_id).await
+        RepositorySupervisor::open_from_bootstrap(self, cfg, primary_session_id, None).await
+    }
+
+    /// Adopt the already-open primary session into the supervisor actor set,
+    /// then discover and open its sibling sessions. This is the migration path
+    /// for the TUI: repository ownership is still acquired before opening the
+    /// primary, but once opened the primary is no longer special to the
+    /// supervisor.
+    pub async fn open_with_primary(
+        self,
+        cfg: &Config,
+        primary: AgentSession,
+    ) -> Result<(RepositorySupervisor, SupervisorHandle), RepositorySupervisorError> {
+        let primary_session_id = primary.session_id;
+        RepositorySupervisor::open_from_bootstrap(self, cfg, primary_session_id, Some(primary))
+            .await
     }
 }
 
@@ -339,13 +354,14 @@ impl RepositorySupervisor {
         primary_session_id: SessionId,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let bootstrap = RepositoryBootstrap::acquire(cfg).await?;
-        Self::open_siblings_with(bootstrap, cfg, primary_session_id).await
+        Self::open_from_bootstrap(bootstrap, cfg, primary_session_id, None).await
     }
 
-    async fn open_siblings_with(
+    async fn open_from_bootstrap(
         bootstrap: RepositoryBootstrap,
         cfg: &Config,
         primary_session_id: SessionId,
+        primary: Option<AgentSession>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let RepositoryBootstrap {
             lease,
@@ -409,6 +425,13 @@ impl RepositorySupervisor {
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.apply_provider_env(&connect_credentials());
+
+        let mut sessions = Vec::new();
+        if let Some(primary) = primary {
+            let primary_record = control.session(primary_session_id).await?;
+            sessions.push((primary_record, primary));
+        }
+
         let mut session_tasks = tokio::task::JoinSet::new();
         for task in control.sessions().await?.into_iter().filter(|task| {
             task.session_id != primary_session_id && task.lifecycle == SessionLifecycle::Active
@@ -425,7 +448,6 @@ impl RepositorySupervisor {
                     .map(|opened| (task, opened.session))
             });
         }
-        let mut sessions = Vec::new();
         while let Some(result) = session_tasks.join_next().await {
             sessions.push(
                 result.map_err(|error| {
@@ -452,7 +474,7 @@ impl RepositorySupervisor {
 
     pub async fn open_with_primary(
         cfg: &Config,
-        primary: Option<AgentSession>,
+        mut primary: Option<AgentSession>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let storage = RepositoryRuntimeStorage::new(cfg.workspace_root())?;
         let control_dir = storage.path_for(RuntimeDataKind::Control)?;
@@ -471,7 +493,7 @@ impl RepositorySupervisor {
         model.apply_provider_env(&connect_credentials());
         let mut tasks = control.sessions().await?;
         if tasks.is_empty() {
-            let opened = match primary {
+            let opened = match primary.take() {
                 Some(session) => crate::OpenedSession {
                     session,
                     notices: Vec::new(),
@@ -523,11 +545,20 @@ impl RepositorySupervisor {
             .await;
         }
 
+        let primary_session_id = primary.as_ref().map(|session| session.session_id);
         let mut sessions = Vec::new();
-        for task in tasks
-            .into_iter()
-            .filter(|task| task.lifecycle == SessionLifecycle::Active)
-        {
+        if let Some(primary) = primary.take() {
+            let record = tasks
+                .iter()
+                .find(|session| session.session_id == primary.session_id)
+                .cloned()
+                .ok_or(RepositorySessionError::NotFound(primary.session_id))?;
+            sessions.push((record, primary));
+        }
+        for task in tasks.into_iter().filter(|task| {
+            task.lifecycle == SessionLifecycle::Active
+                && Some(task.session_id) != primary_session_id
+        }) {
             let mut task_cfg = cfg.clone();
             task_cfg.resolved_workspace = task.workspace.clone();
             task_cfg.workspace_root = Some(task.workspace.display().to_string());
