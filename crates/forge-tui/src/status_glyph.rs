@@ -1,6 +1,6 @@
 //! 2026 design-system state markers and text roles.
 //!
-//! ASCII lifecycle grammar (`[ ] [>] [x] [!] [-] [?] [|`), each exactly
+//! Lifecycle grammar (`[ ] [>] [✓] [!] [-] [?] [|`), each exactly
 //! three cells in supported monospace fonts. No emoji or Nerd Font
 //! dependency; every state stays legible in monochrome via glyph shape plus
 //! an adjacent text label at call sites.
@@ -29,12 +29,12 @@ pub enum Lifecycle {
 }
 
 impl Lifecycle {
-    /// Three-cell ASCII marker.
+    /// Three-cell marker.
     pub fn marker(self) -> &'static str {
         match self {
             Self::Pending => "[ ]",
             Self::Active => "[>]",
-            Self::Complete => "[x]",
+            Self::Complete => "[✓]",
             Self::Failed => "[!]",
             Self::Cancelled => "[-]",
             Self::Warning => "[?]",
@@ -133,7 +133,7 @@ pub fn status_indicator(status: Status, _millis: u128) -> Span<'static> {
         return Span::styled(code, style);
     }
     match status {
-        Status::Success => Span::styled("[x]", theme::tool_success_style()),
+        Status::Success => Span::styled("[✓]", theme::tool_success_style()),
         Status::Warning => Span::styled("[?]", theme::warn().add_modifier(Modifier::BOLD)),
         Status::Error => Span::styled("[!]", theme::danger().add_modifier(Modifier::BOLD)),
         Status::Info => Span::styled("[|]", theme::info().add_modifier(Modifier::BOLD)),
@@ -150,7 +150,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lifecycle_markers_are_three_ascii_cells() {
+    fn lifecycle_markers_are_three_cells() {
         for state in [
             Lifecycle::Pending,
             Lifecycle::Active,
@@ -161,13 +161,16 @@ mod tests {
             Lifecycle::Blocked,
         ] {
             let marker = state.marker();
-            assert_eq!(marker.len(), 3, "{state:?} marker must be 3 cells");
-            assert!(marker.is_ascii(), "{state:?} marker must be ASCII");
+            assert_eq!(
+                marker.chars().count(),
+                3,
+                "{state:?} marker must be 3 cells"
+            );
             assert!(marker.starts_with('[') && marker.ends_with(']'));
         }
         assert_eq!(Lifecycle::Pending.marker(), "[ ]");
         assert_eq!(Lifecycle::Active.marker(), "[>]");
-        assert_eq!(Lifecycle::Complete.marker(), "[x]");
+        assert_eq!(Lifecycle::Complete.marker(), "[✓]");
         assert_eq!(Lifecycle::Failed.marker(), "[!]");
         assert_eq!(Lifecycle::Cancelled.marker(), "[-]");
         assert_eq!(Lifecycle::Warning.marker(), "[?]");
@@ -195,13 +198,13 @@ mod tests {
     }
 
     #[test]
-    fn status_indicators_use_ascii_grammar_without_animation() {
+    fn status_indicators_use_grammar_without_animation() {
         // `millis` must not change settled markers.
         assert_eq!(
             status_indicator(Status::Success, 0).content,
             status_indicator(Status::Success, 9999).content
         );
-        assert_eq!(status_indicator(Status::Success, 0).content, "[x]");
+        assert_eq!(status_indicator(Status::Success, 0).content, "[✓]");
         assert_eq!(status_indicator(Status::Warning, 0).content, "[?]");
         assert_eq!(status_indicator(Status::Error, 0).content, "[!]");
     }

@@ -5540,7 +5540,7 @@ mod verification_card_tests {
         assert!(out.contains("31 passed"), "{out}");
         assert!(out.contains("Ran 31 tests"), "{out}");
         assert!(out.contains("OK"), "{out}");
-        assert!(out.starts_with(&format!("{INDENT_UNIT}[x]")), "{out:?}");
+        assert!(out.starts_with(&format!("{INDENT_UNIT}[✓]")), "{out:?}");
     }
 
     #[test]
@@ -5555,7 +5555,7 @@ mod verification_card_tests {
         );
         let out = text_of(&render_verification_card(&p, 80));
         assert!(
-            !out.contains("[x]"),
+            !out.contains("[✓]"),
             "an unchecked run must not look checked: {out}"
         );
         assert!(out.contains("[?]"), "{out}");
