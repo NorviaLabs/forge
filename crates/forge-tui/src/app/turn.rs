@@ -36,7 +36,10 @@ impl TuiApp {
                 let Some(completed) = completed else {
                     return Err(LoopError::Cancelled);
                 };
-                return self.session.finish_tool_application(completed).await;
+                return self
+                    .session_runtime
+                    .finish_tool_application(completed)
+                    .await;
             }
             // Foreground execution owns only its detached tool data. The full TUI
             // application keeps ticking around it: input, file watching, background
@@ -56,7 +59,7 @@ impl TuiApp {
         mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<ApplyOutcome, LoopError> {
         let mut application = self
-            .session
+            .session_runtime
             .begin_model_response_application(response)
             .await?;
         loop {
@@ -110,7 +113,7 @@ impl TuiApp {
         if !self.thinking_enabled && matches!(event, ModelStreamEvent::ThinkingDelta { .. }) {
             return None;
         }
-        observe_stream_event(&mut self.session, event, None, acc);
+        observe_stream_event(&mut self.session_runtime, event, None, acc);
         match event {
             ModelStreamEvent::TextDelta { text } => {
                 self.close_thinking_timer();
@@ -138,7 +141,7 @@ impl TuiApp {
 
     fn persist_turn_thinking_duration(&mut self, secs: f64) {
         if let Some(m) = self
-            .session
+            .session_runtime
             .messages
             .iter_mut()
             .rev()
@@ -167,7 +170,7 @@ impl TuiApp {
         // reported no usage, so the summary omits a rate rather than printing
         // a confident zero.
         let produced = self
-            .session
+            .session_runtime
             .token_usage_report()
             .api
             .completion_tokens
@@ -181,13 +184,13 @@ impl TuiApp {
         // is the presentation key (rebuilt on resume; restored turns carry
         // no ephemeral timing).
         let user_ordinal = self
-            .session
+            .session_runtime
             .messages
             .iter()
             .filter(|m| m.role == forge_types::MessageRole::User)
             .count()
             .saturating_sub(1) as u64;
-        let session_id = self.session.session_id.to_string();
+        let session_id = self.session_runtime.session_id.to_string();
         if let Some(existing) = self
             .turn_summaries
             .iter_mut()
@@ -278,7 +281,7 @@ impl TuiApp {
     fn record_interrupted_stream(&mut self, error: &str) {
         let text = self.stream.preview.trim_end().to_string();
         if !text.is_empty() {
-            self.session.messages.push(Message {
+            self.session_runtime.messages.push(Message {
                 outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: format!("{text}\n\n[Interrupted: {error}]"),
@@ -306,9 +309,9 @@ impl TuiApp {
     /// claim success (or clear the composer's caller-held text) until the
     /// queue store durably accepts the item.
     pub(super) async fn enqueue_user_message(&mut self, line: String) {
-        match self.session.enqueue_task(&line).await {
+        match self.session_runtime.enqueue_task(&line).await {
             Ok(_item) => {
-                let n = self.session.queue().len();
+                let n = self.session_runtime.queue().len();
                 self.task_selection.ensure_queue();
                 self.push_toast(format!("queued #{n}"));
                 self.set_feedback(
@@ -341,11 +344,11 @@ impl TuiApp {
             );
             return;
         }
-        if self.session.pending_hitl().is_some() {
+        if self.session_runtime.pending_hitl().is_some() {
             self.set_feedback(FeedbackSeverity::Warn, "resolve HITL before dequeuing");
             return;
         }
-        if self.session.pending_question().is_some() {
+        if self.session_runtime.pending_question().is_some() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "answer the question before dequeuing",
@@ -360,19 +363,22 @@ impl TuiApp {
             self.report_error(&msg);
             return;
         }
-        match self.session.promote_next_queued().await {
+        match self.session_runtime.promote_next_queued().await {
             Ok(Some(_task_id)) => {
                 self.clamp_queue_selection();
                 self.push_activity(
                     ActivityKind::System,
                     FeedbackSeverity::Info,
-                    format!("queue dequeue · {} left", self.session.queue().len()),
+                    format!(
+                        "queue dequeue · {} left",
+                        self.session_runtime.queue().len()
+                    ),
                 );
                 self.set_feedback(
                     FeedbackSeverity::Info,
                     format!(
                         "sending dequeued · {} remaining",
-                        self.session.queue().len()
+                        self.session_runtime.queue().len()
                     ),
                 );
                 // Start the turn the same way as a normal Enter send (no dispatch
@@ -408,7 +414,7 @@ impl TuiApp {
     /// Cancel a queued message by 0-based visible-position index.
     async fn cancel_queued_at(&mut self, index: usize) {
         let one_based = index + 1;
-        match self.session.cancel_queued_at(one_based).await {
+        match self.session_runtime.cancel_queued_at(one_based).await {
             Ok(Some(item)) => {
                 let preview: String = item.text.chars().take(48).collect();
                 self.push_toast(format!("cancelled #{one_based}"));
@@ -416,7 +422,7 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!(
                         "cancelled queued #{one_based} · {} left",
-                        self.session.queue().len()
+                        self.session_runtime.queue().len()
                     ),
                 );
                 self.push_activity(
@@ -436,12 +442,13 @@ impl TuiApp {
     }
 
     fn clamp_queue_selection(&mut self) {
-        self.task_selection.clamp_queue(self.session.queue().len());
+        self.task_selection
+            .clamp_queue(self.session_runtime.queue().len());
     }
 
     pub(super) fn move_queue_selection(&mut self, delta: i32) {
         self.task_selection
-            .move_queue(self.session.queue().len(), delta);
+            .move_queue(self.session_runtime.queue().len(), delta);
     }
 
     pub(super) async fn cancel_selected_queue(&mut self) {
@@ -453,11 +460,11 @@ impl TuiApp {
     }
 
     pub(super) async fn edit_last_queued_message(&mut self) {
-        let len = self.session.queue().len();
+        let len = self.session_runtime.queue().len();
         if len == 0 {
             return;
         }
-        match self.session.cancel_queued_at(len).await {
+        match self.session_runtime.cancel_queued_at(len).await {
             Ok(Some(item)) => {
                 self.input.set_text(item.text);
                 self.focus.transition_to(FocusBlock::Composer);
@@ -473,15 +480,15 @@ impl TuiApp {
     /// each task that newly reached a terminal state this tick.
     pub(super) async fn poll_background_tasks(&mut self) -> Result<(), TuiError> {
         let running_before: std::collections::HashSet<_> = self
-            .session
+            .session_runtime
             .background()
             .list()
             .filter(|t| !t.status.is_terminal())
             .map(|t| t.id)
             .collect();
-        self.session.poll_background_tasks().await?;
+        self.session_runtime.poll_background_tasks().await?;
         for id in running_before {
-            if let Some(task) = self.session.background().get(id) {
+            if let Some(task) = self.session_runtime.background().get(id) {
                 if task.status.is_terminal() {
                     self.push_toast(format!(
                         "background task #{} finished: {}",
@@ -495,12 +502,12 @@ impl TuiApp {
 
     fn clamp_tasks_selection(&mut self) {
         self.task_selection
-            .clamp_tasks(self.session.background().list().count());
+            .clamp_tasks(self.session_runtime.background().list().count());
     }
 
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
         self.task_selection
-            .move_tasks(self.session.background().list().count(), delta);
+            .move_tasks(self.session_runtime.background().list().count(), delta);
     }
 
     /// Cancel the background task at the currently selected row. Rows are
@@ -510,13 +517,18 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut ids: Vec<_> = self.session.background().list().map(|t| t.id).collect();
+        let mut ids: Vec<_> = self
+            .session_runtime
+            .background()
+            .list()
+            .map(|t| t.id)
+            .collect();
         ids.sort_by_key(|id| id.0);
         let Some(id) = ids.get(idx).copied() else {
             self.clamp_tasks_selection();
             return;
         };
-        if self.session.cancel_background_task(id) {
+        if self.session_runtime.cancel_background_task(id) {
             self.set_feedback(FeedbackSeverity::Ok, format!("cancelling task #{}", id.0));
             self.push_activity(
                 ActivityKind::System,
@@ -540,7 +552,12 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut ids: Vec<_> = self.session.background().list().map(|t| t.id).collect();
+        let mut ids: Vec<_> = self
+            .session_runtime
+            .background()
+            .list()
+            .map(|t| t.id)
+            .collect();
         ids.sort_by_key(|id| id.0);
         let Some(id) = ids.get(idx).copied() else {
             return;
@@ -550,7 +567,7 @@ impl TuiApp {
             HitlDecision::Deny => "deny",
             _ => "deny",
         };
-        if self.session.resolve_subagent_hitl(id, decision) {
+        if self.session_runtime.resolve_subagent_hitl(id, decision) {
             self.set_feedback(
                 FeedbackSeverity::Ok,
                 format!("{verb} sent to task #{}", id.0),
@@ -601,7 +618,7 @@ impl TuiApp {
 
         if let Some(ref line) = line {
             if let Err(e) = self
-                .session
+                .session_runtime
                 .append_user_message_with_attachments(line, attachments)
                 .await
             {
@@ -618,7 +635,7 @@ impl TuiApp {
                 .map_err(|error| TuiError::Other(error.to_string()))?;
         }
 
-        let max_turns = self.session.max_turns();
+        let max_turns = self.session_runtime.max_turns();
         let mut outcome_err: Option<String> = None;
         let mut turn_cancelled = false;
         let mut turn_thought_secs = 0.0f64;
@@ -629,7 +646,7 @@ impl TuiApp {
         // cost the whole turn. Counted per step and reset on success.
         let mut model_retries = 0usize;
         'turns: for turn in 0..max_turns {
-            if let Some(pending) = self.session.begin_auto_context_compaction() {
+            if let Some(pending) = self.session_runtime.begin_auto_context_compaction() {
                 let completed = self
                     .execute_context_compaction_responsive(pending, terminal.as_deref_mut())
                     .await?;
@@ -641,13 +658,20 @@ impl TuiApp {
                 // Automatic compaction is opportunistic. A failed checkpoint
                 // leaves the old context installed and the model turn remains
                 // valid, matching AgentSession's non-interactive path.
-                let _ = self.session.finish_context_compaction(completed).await;
+                let _ = self
+                    .session_runtime
+                    .finish_context_compaction(completed)
+                    .await;
             }
             // Model controls remain live while a turn is running. The request
             // already in flight is immutable, so changes made during its
             // stream apply to this turn's next continuation.
             self.sync_effort_to_session();
-            let req = match self.session.prepare_model_step_after_compaction(turn).await {
+            let req = match self
+                .session_runtime
+                .prepare_model_step_after_compaction(turn)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     outcome_err = Some(e.to_string());
@@ -655,7 +679,7 @@ impl TuiApp {
                 }
             };
 
-            let model = self.session.model_client();
+            let model = self.session_runtime.model_client();
             let (tx, provider_rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
             let (stream_tx, mut rx) = tokio::sync::mpsc::channel(STREAM_EVENT_BUFFER_CAPACITY);
             let relay = tokio::task::spawn_blocking(move || {
@@ -726,7 +750,7 @@ impl TuiApp {
                     self.timing.thinking_started = None;
                     self.timing.thought_secs = None;
                     self.exit.set_code(ExitCode::Canceled);
-                    let _ = self.session.mark_cancelled().await;
+                    let _ = self.session_runtime.mark_cancelled().await;
                     return Ok(());
                 }
 
@@ -859,7 +883,7 @@ impl TuiApp {
                             continue;
                         }
                         ApplyOutcome::YieldToQueue(_response) => {
-                            self.session
+                            self.session_runtime
                                 .yield_current_turn_for_queue()
                                 .await
                                 .map_err(|e| TuiError::Other(format!("queue handoff: {e}")))?;
@@ -885,7 +909,7 @@ impl TuiApp {
         }
 
         let turn_limit_reached = outcome_err.is_none()
-            && self.session.active_task.lifecycle == forge_types::TaskLifecycle::Working;
+            && self.session_runtime.active_task.lifecycle == forge_types::TaskLifecycle::Working;
         let interrupted_partial = outcome_err
             .as_ref()
             .filter(|_| !self.stream.preview.trim().is_empty())
@@ -933,7 +957,7 @@ impl TuiApp {
             self.timing.thought_secs = None;
             if was_cancel {
                 self.exit.set_code(ExitCode::Canceled);
-                if let Err(err) = self.session.mark_cancelled().await {
+                if let Err(err) = self.session_runtime.mark_cancelled().await {
                     self.report_error(&err.to_string());
                 }
             } else {
@@ -947,12 +971,12 @@ impl TuiApp {
                 // queue's dispatch gate (which only checks lifecycle) never
                 // reopens, even across a provider switch, until the process
                 // is restarted.
-                if let Err(err) = self.session.mark_model_call_failed(&e).await {
+                if let Err(err) = self.session_runtime.mark_model_call_failed(&e).await {
                     self.report_error(&err.to_string());
                 }
             }
             // Leave queue intact so the operator can fix and continue.
-        } else if self.session.pending_hitl().is_some() {
+        } else if self.session_runtime.pending_hitl().is_some() {
             self.stream.clear_preview();
             self.stream.thinking.clear();
             self.timing.started = None;
@@ -963,7 +987,7 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
-        } else if self.session.pending_question().is_some() {
+        } else if self.session_runtime.pending_question().is_some() {
             self.stream.clear_preview();
             self.stream.thinking.clear();
             self.timing.started = None;
@@ -990,21 +1014,24 @@ impl TuiApp {
             }
             self.clear_error_chrome();
             self.tool_detail.collapse();
-            if self.session.queue().is_empty() {
+            if self.session_runtime.queue().is_empty() {
                 self.feedback = FeedbackModel::default();
                 self.status_state.message.clear();
             } else {
                 self.push_toast(format!(
                     "{} queued · sending next",
-                    self.session.queue().len()
+                    self.session_runtime.queue().len()
                 ));
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    format!("{} in queue — sending next", self.session.queue().len()),
+                    format!(
+                        "{} in queue — sending next",
+                        self.session_runtime.queue().len()
+                    ),
                 );
             }
             self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
-            if !self.session.queue().is_empty() {
+            if !self.session_runtime.queue().is_empty() {
                 self.dequeue_and_send_next().await;
             }
         }

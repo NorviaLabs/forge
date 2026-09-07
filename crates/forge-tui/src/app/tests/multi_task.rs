@@ -96,7 +96,7 @@ async fn a_task_never_visited_before_starts_from_a_clean_view() {
     // is that a first switch does not blank it.
     let model_before = app.runtime.model_label.clone();
     app.input.set_text("primary draft".to_string());
-    app.save_session_view_state(app.session.session_id);
+    app.save_session_view_state(app.session_runtime.session_id);
 
     app.restore_session_view_state(uuid::Uuid::new_v4());
     assert!(app.input.text.is_empty());
@@ -223,7 +223,7 @@ async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHan
     app.supervisor = Some(SupervisorUiState {
         handle: handle.clone(),
         events: handle.subscribe(),
-        current_session_id: app.session.session_id,
+        current_session_id: app.session_runtime.session_id,
         snapshots: Default::default(),
     });
     (dir, app, handle)

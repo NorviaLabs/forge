@@ -172,17 +172,17 @@ impl TuiApp {
     }
 
     pub(super) fn remembered_approval_count(&self) -> usize {
-        self.session.session_pattern_allow_count()
+        self.session_runtime.session_pattern_allow_count()
     }
 
     pub(super) fn clear_session_approvals(&mut self) {
-        self.session.clear_session_pattern_allows();
+        self.session_runtime.clear_session_pattern_allows();
         self.approval_session.menu = ApprovalMenuState::default();
     }
 
     #[cfg(test)]
     pub(super) fn is_approval_pattern_remembered(&self, payload: &HitlPayload) -> bool {
-        self.session
+        self.session_runtime
             .session_pattern_allows(&tool_call_for_payload(payload))
     }
 
@@ -195,7 +195,7 @@ impl TuiApp {
 
     /// Reset menu selection when the pending HITL call changes or clears.
     pub(super) fn sync_approval_menu(&mut self) {
-        match self.session.pending_hitl() {
+        match self.session_runtime.pending_hitl() {
             None => {
                 self.approval_session.menu = ApprovalMenuState::default();
             }
@@ -220,7 +220,7 @@ impl TuiApp {
     /// render, so a draw can't move focus). After the user Tabs away, the
     /// transition is over and this must not re-grab focus.
     pub(super) fn sync_approval_focus(&mut self) {
-        let Some(payload) = self.session.pending_hitl() else {
+        let Some(payload) = self.session_runtime.pending_hitl() else {
             self.approval_session.focus_claimed_for = None;
             return;
         };
@@ -233,7 +233,7 @@ impl TuiApp {
     }
 
     fn approval_menu_kinds(&self) -> Vec<ApprovalMenuKind> {
-        let Some(payload) = self.session.pending_hitl() else {
+        let Some(payload) = self.session_runtime.pending_hitl() else {
             return Vec::new();
         };
         if payload.denied_host.is_some() {
@@ -263,7 +263,7 @@ impl TuiApp {
     }
 
     pub(super) fn approval_menu_rows(&self) -> Vec<crate::conversation::ApprovalMenuRow> {
-        let Some(payload) = self.session.pending_hitl() else {
+        let Some(payload) = self.session_runtime.pending_hitl() else {
             return Vec::new();
         };
         if let Some(host) = payload.denied_host.as_deref() {
@@ -382,7 +382,7 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
-        if self.session.pending_hitl().is_none() {
+        if self.session_runtime.pending_hitl().is_none() {
             return Ok(false);
         }
         if self.focus.block() != FocusBlock::Approval {
@@ -461,7 +461,7 @@ impl TuiApp {
             working_directory: approval.working_directory,
             environment_delta: approval.environment_delta,
             workspace_identity: self.repository_or_workspace_id(),
-            session_id: self.session.session_id.to_string(),
+            session_id: self.session_runtime.session_id.to_string(),
         })
     }
 
@@ -503,7 +503,7 @@ impl TuiApp {
                     .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
             }
             ApprovalMenuKind::AllowPattern | ApprovalMenuKind::AllowPatternAlways => {
-                let Some(payload) = self.session.pending_hitl().cloned() else {
+                let Some(payload) = self.session_runtime.pending_hitl().cloned() else {
                     return;
                 };
                 if payload.denied_host.is_none()
@@ -530,7 +530,7 @@ impl TuiApp {
             // Nothing is decided yet: the refusal waits for the note, so the
             // operator can still change their mind by clearing the composer.
             ApprovalMenuKind::DenyWithNote => {
-                let Some(payload) = self.session.pending_hitl().cloned() else {
+                let Some(payload) = self.session_runtime.pending_hitl().cloned() else {
                     return;
                 };
                 self.approval_session.awaiting_denial_note = Some(payload.call_id);
@@ -542,7 +542,7 @@ impl TuiApp {
                 return;
             }
         }
-        if let Some(payload) = self.session.pending_hitl() {
+        if let Some(payload) = self.session_runtime.pending_hitl() {
             self.busy_state.start(BusyPhase::Tool {
                 name: payload.tool.clone(),
             });
@@ -558,7 +558,7 @@ impl TuiApp {
             return false;
         };
         let still_pending = self
-            .session
+            .session_runtime
             .pending_hitl()
             .is_some_and(|payload| payload.call_id == waiting_for);
         if !still_pending {
@@ -577,7 +577,7 @@ impl TuiApp {
         self.approval_session.awaiting_denial_note = None;
         let note = note.trim();
         let feedback = (!note.is_empty()).then_some(note);
-        self.session
+        self.session_runtime
             .resolve_hitl_with_feedback(HitlDecision::Deny, "tui", feedback)
             .await?;
         self.push_toast(if feedback.is_some() {
@@ -664,7 +664,7 @@ impl TuiApp {
             }
         }
 
-        let Some(payload) = self.session.pending_hitl().cloned() else {
+        let Some(payload) = self.session_runtime.pending_hitl().cloned() else {
             return Ok(());
         };
 
@@ -677,7 +677,7 @@ impl TuiApp {
         // is `#[non_exhaustive]`; anything that is not an explicit approval
         // refuses, so an unrecognised variant can never reach a grant.
         if !matches!(decision, HitlDecision::Approve) {
-            self.session.resolve_hitl(decision, "tui").await?;
+            self.session_runtime.resolve_hitl(decision, "tui").await?;
             self.push_toast("denied");
             self.resume_turn_after_hitl();
             self.enter_chat_composer();
@@ -696,7 +696,7 @@ impl TuiApp {
                     );
                 }
             }
-            self.session.grant_egress_host(&pattern);
+            self.session_runtime.grant_egress_host(&pattern);
             self.apply_approved_hitl(terminal).await?;
             self.push_toast(if grant == ApprovalGrant::Always {
                 format!("always allowed {pattern}")
@@ -718,7 +718,10 @@ impl TuiApp {
             // is pattern-eligible, which now includes "a pattern exists that
             // would match it again", so this is `Some`. Refuse rather than
             // record an unusable grant if that ever stops holding.
-            let Some(pattern) = self.session.allow_suggested_pattern_for_session(&call) else {
+            let Some(pattern) = self
+                .session_runtime
+                .allow_suggested_pattern_for_session(&call)
+            else {
                 self.set_feedback(
                     FeedbackSeverity::Warn,
                     "this call has no session pattern to remember; use Run once or Don't run",
@@ -757,7 +760,7 @@ impl TuiApp {
         &mut self,
         _terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let pending = self.session.prepare_approved_hitl("tui").await?;
+        let pending = self.session_runtime.prepare_approved_hitl("tui").await?;
         if let Some(pending) = pending {
             self.start_approved_hitl(pending);
             return Ok(());
@@ -786,7 +789,7 @@ impl TuiApp {
                 handle.abort();
             }
             if !self.exit.is_requested() {
-                Box::pin(self.session.mark_cancelled()).await?;
+                Box::pin(self.session_runtime.mark_cancelled()).await?;
                 self.busy_state.stop();
                 self.enter_chat_composer();
             }
@@ -808,7 +811,7 @@ impl TuiApp {
         let Some(completed) = completed else {
             return Ok(());
         };
-        Box::pin(self.session.finish_hitl_execution(completed)).await?;
+        Box::pin(self.session_runtime.finish_hitl_execution(completed)).await?;
         self.resume_turn_after_hitl();
         self.enter_chat_composer();
         Ok(())
@@ -831,8 +834,11 @@ impl TuiApp {
         self.timing.started = Some(Instant::now());
         if self.timing.turn_started.is_none() {
             self.timing.turn_started = Some(Instant::now());
-            self.timing.completion_tokens_at_start =
-                self.session.token_usage_report().api.completion_tokens;
+            self.timing.completion_tokens_at_start = self
+                .session_runtime
+                .token_usage_report()
+                .api
+                .completion_tokens;
         }
         self.stream.clear_preview();
         self.stream.thinking.clear();
@@ -845,7 +851,7 @@ impl TuiApp {
         if self.pending_interaction.has_hitl_decision() {
             return Ok(());
         }
-        let Some(payload) = self.session.pending_hitl().cloned() else {
+        let Some(payload) = self.session_runtime.pending_hitl().cloned() else {
             return Ok(());
         };
         if payload.sandbox_escalation {
@@ -860,7 +866,7 @@ impl TuiApp {
         // rule cannot auto-approve the exception the operator wrote.
         let identity_allowed = self
             .session_pattern_call_for_payload(&payload)
-            .is_some_and(|call| self.session.grant_covers(&call));
+            .is_some_and(|call| self.session_runtime.grant_covers(&call));
         if !identity_allowed {
             return Ok(());
         }

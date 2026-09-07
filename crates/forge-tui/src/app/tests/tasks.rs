@@ -29,7 +29,7 @@ async fn wait_for_task_status(
 ) {
     for _ in 0..300 {
         app.poll_background_tasks().await.unwrap();
-        if let Some(task) = app.session.background().get(id) {
+        if let Some(task) = app.session_runtime.background().get(id) {
             if matches_status(&task.status) {
                 return;
             }
@@ -77,11 +77,11 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     // This test is about approving from the sidebar, so it needs a prompt to
     // approve. Shell is not gated by default; add bash to HITL for this
     // scenario.
-    app.session
+    app.session_runtime
         .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
 
     let id = app
-        .session
+        .session_runtime
         .spawn_subagent(forge_core::SubagentSpec {
             role: "risky-runner".into(),
             prompt: "run the risky command".into(),
@@ -107,7 +107,7 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
         .unwrap();
 
     wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
-    let task = app.session.background().get(id).unwrap();
+    let task = app.session_runtime.background().get(id).unwrap();
     match &task.status {
         forge_core::BackgroundTaskStatus::Succeeded { summary } => {
             assert_eq!(summary, "finished after tui approval");
@@ -120,11 +120,11 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
 async fn sidebar_down_then_cancel_targets_the_selected_row() {
     let (_dir, mut app) = focus_test_app().await;
     let first = app
-        .session
+        .session_runtime
         .spawn_background_shell("sleep 5".into(), "first".into())
         .await
         .unwrap();
-    app.session
+    app.session_runtime
         .spawn_background_shell("sleep 5".into(), "second".into())
         .await
         .unwrap();
@@ -143,7 +143,7 @@ async fn sidebar_down_then_cancel_targets_the_selected_row() {
     // transition to `Cancelled` happens asynchronously once the spawned job
     // reacts and `poll_background_tasks` drains the result.
     let second_id = app
-        .session
+        .session_runtime
         .background()
         .list()
         .find(|t| t.label == "second")
@@ -152,7 +152,7 @@ async fn sidebar_down_then_cancel_targets_the_selected_row() {
     for _ in 0..200 {
         app.poll_background_tasks().await.unwrap();
         if app
-            .session
+            .session_runtime
             .background()
             .get(second_id)
             .is_some_and(|t| t.status.is_terminal())
@@ -162,9 +162,9 @@ async fn sidebar_down_then_cancel_targets_the_selected_row() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let first_task = app.session.background().get(first).unwrap();
+    let first_task = app.session_runtime.background().get(first).unwrap();
     assert_eq!(first_task.status, forge_core::BackgroundTaskStatus::Running);
-    let second_task = app.session.background().get(second_id).unwrap();
+    let second_task = app.session_runtime.background().get(second_id).unwrap();
     assert_eq!(
         second_task.status,
         forge_core::BackgroundTaskStatus::Cancelled
@@ -175,7 +175,7 @@ async fn sidebar_down_then_cancel_targets_the_selected_row() {
 async fn cancel_key_is_a_no_op_outside_the_sidebar() {
     let (_dir, mut app) = focus_test_app().await;
     let id = app
-        .session
+        .session_runtime
         .spawn_background_shell("sleep 5".into(), "job".into())
         .await
         .unwrap();
@@ -186,7 +186,7 @@ async fn cancel_key_is_a_no_op_outside_the_sidebar() {
         .unwrap();
 
     assert_eq!(
-        app.session.background().get(id).unwrap().status,
+        app.session_runtime.background().get(id).unwrap().status,
         forge_core::BackgroundTaskStatus::Running
     );
 }
@@ -195,7 +195,7 @@ async fn cancel_key_is_a_no_op_outside_the_sidebar() {
 async fn poll_background_tasks_keeps_finished_job_in_session_state() {
     let (_dir, mut app) = focus_test_app().await;
     let id = app
-        .session
+        .session_runtime
         .spawn_background_shell("echo done".into(), "echo".into())
         .await
         .unwrap();
@@ -203,7 +203,7 @@ async fn poll_background_tasks_keeps_finished_job_in_session_state() {
     for _ in 0..200 {
         app.poll_background_tasks().await.unwrap();
         if app
-            .session
+            .session_runtime
             .background()
             .get(id)
             .is_some_and(|t| t.status.is_terminal())
@@ -213,7 +213,7 @@ async fn poll_background_tasks_keeps_finished_job_in_session_state() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let task = app.session.background().get(id).unwrap();
+    let task = app.session_runtime.background().get(id).unwrap();
     assert!(matches!(
         task.status,
         forge_core::BackgroundTaskStatus::Succeeded { .. }

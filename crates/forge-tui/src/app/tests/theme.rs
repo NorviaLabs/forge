@@ -76,7 +76,7 @@ async fn theme_picker_dock_keeps_conversation_visible() {
 
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "visible under theme dock"));
     app.handle_theme_command(None);
@@ -205,7 +205,7 @@ async fn light_theme_representative_layout_snapshot() {
     app.conversation_view.splash_dismissed = true;
     app.workspace_files.visible = true;
     app.handle_theme_command(Some("light"));
-    app.session.messages.push(Message {
+    app.session_runtime.messages.push(Message {
         outcome: Default::default(),
         role: MessageRole::User,
         content: "Please review this change.\n\nIt spans multiple lines.".into(),
@@ -216,7 +216,7 @@ async fn light_theme_representative_layout_snapshot() {
         tool_calls: vec![],
         attachments: Vec::new(),
     });
-    app.session.messages.push(Message {
+    app.session_runtime.messages.push(Message {
         outcome: Default::default(),
         role: MessageRole::Assistant,
         content: "Here is a concise review of your change.".into(),

@@ -355,7 +355,7 @@ async fn run_tui_inner(
     if let Some(handle) = launch.supervisor {
         let refresh = handle.clone();
         app.supervisor = Some(SupervisorUiState {
-            current_session_id: app.session.session_id,
+            current_session_id: app.session_runtime.session_id,
             events: handle.subscribe(),
             handle,
             snapshots: std::collections::HashMap::new(),
@@ -383,15 +383,18 @@ async fn run_tui_inner(
     app.persist_selection();
 
     if let Some(session_id) = app.startup_resume.session_id {
-        let path = app.session.journal_dir().join(format!("{session_id}.db"));
+        let path = app
+            .session_runtime
+            .journal_dir()
+            .join(format!("{session_id}.db"));
         let _ = std::fs::remove_file(path);
     }
 
     let summary = ExitSummary {
         exit_code: app.exit.code(),
-        session_id: app.session.session_id.to_string(),
-        token_usage: (app.session.token_usage.total_api_tokens() > 0)
-            .then(|| format_exit_token_usage(&app.session.token_usage)),
+        session_id: app.session_runtime.session_id.to_string(),
+        token_usage: (app.session_runtime.token_usage.total_api_tokens() > 0)
+            .then(|| format_exit_token_usage(&app.session_runtime.token_usage)),
     };
 
     drop(guard);

@@ -75,7 +75,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
         .unwrap();
     app.connect.profile = Some("openai".into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
-    app.session.set_active_model("openai/gpt-4.1-mini");
+    app.session_runtime.set_active_model("openai/gpt-4.1-mini");
 
     app.dispatch_line("/disconnect").await.unwrap();
 
@@ -147,7 +147,7 @@ async fn successful_connect_hands_off_to_model_picker() {
         .unwrap();
     app.connect.profile = Some("openai".into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
-    app.session.set_active_model("openai/gpt-4.1-mini");
+    app.session_runtime.set_active_model("openai/gpt-4.1-mini");
 
     app.open_model_picker_after_connect("openai");
     let Some(Overlay::ConnectModel {
@@ -286,7 +286,7 @@ async fn model_switch_test_app(cred_dir: &tempfile::TempDir) -> TuiApp {
         .set_api_key("openai", "sk-test-openai-credential")
         .unwrap();
     app.connect.profile = Some("openai".into());
-    app.session.set_active_model("openai/gpt-5.6");
+    app.session_runtime.set_active_model("openai/gpt-5.6");
     app
 }
 
@@ -301,7 +301,7 @@ async fn selecting_the_current_model_is_a_no_op_and_keeps_the_same_route() {
 
     assert_eq!(app.connect.profile.as_deref(), Some("openai"));
     assert_eq!(app.runtime.model_label, "openai/gpt-5.6");
-    assert_eq!(app.session.active_model, "openai/gpt-5.6");
+    assert_eq!(app.session_runtime.active_model, "openai/gpt-5.6");
 }
 
 #[tokio::test]
@@ -338,7 +338,7 @@ async fn switching_to_another_model_updates_label_route_and_session_together() {
 
     assert_eq!(app.connect.profile.as_deref(), Some("openai"));
     assert_eq!(app.runtime.model_label, "openai/gpt-5.6-luna");
-    assert_eq!(app.session.active_model, "openai/gpt-5.6-luna");
+    assert_eq!(app.session_runtime.active_model, "openai/gpt-5.6-luna");
 }
 
 #[tokio::test]
@@ -444,7 +444,10 @@ async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
     assert_eq!(restarted.connect.profile.as_deref(), Some("openai"));
     assert_eq!(restarted.runtime.model_label, "openai/gpt-5.6-luna");
     assert_eq!(restarted.reasoning_effort.value, ReasoningEffort::High);
-    assert_eq!(restarted.session.active_model, "openai/gpt-5.6-luna");
+    assert_eq!(
+        restarted.session_runtime.active_model,
+        "openai/gpt-5.6-luna"
+    );
 }
 
 /// Regression (#346): a restart must restore the *route*, not just the model.
@@ -468,7 +471,7 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
     app.persist_selection();
-    let expected_route = app.session.active_route_id.clone();
+    let expected_route = app.session_runtime.active_route_id.clone();
     assert!(
         !expected_route.is_empty(),
         "the picker must set a route, or this test proves nothing"
@@ -499,12 +502,12 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     let restarted = restarted.restore_saved_auth();
 
     assert_eq!(
-        restarted.session.active_route_id, expected_route,
+        restarted.session_runtime.active_route_id, expected_route,
         "restart must restore the route; without it transport_for_route falls \
          back to OpenAI-compat and every call goes over the wrong wire"
     );
     assert_eq!(
-        restarted.session.build_model_request().route_id,
+        restarted.session_runtime.build_model_request().route_id,
         Some(expected_route),
         "the restored route must reach the request that is actually sent"
     );
@@ -519,7 +522,7 @@ async fn first_request_after_switching_models_uses_the_new_complete_id() {
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
 
-    let request = app.session.build_model_request();
+    let request = app.session_runtime.build_model_request();
     assert_eq!(request.model, "openai/gpt-5.6-luna");
 }
 
@@ -1071,9 +1074,9 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
 
     app.open_connect_picker();
     assert!(app.catalog_fetch.refresh_rx.is_some());
-    app.session
+    app.session_runtime
         .set_active_model("missing-test-provider/missing-test-model");
-    app.session.set_image_input_supported(true);
+    app.session_runtime.set_image_input_supported(true);
 
     // The real worker thread does credential-less (and, in a sandboxed test
     // environment, possibly unreachable) network I/O, so its completion time
@@ -1090,7 +1093,7 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
     assert!(app.catalog_fetch.refresh_rx.is_none());
     assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
     assert!(
-        !app.session.image_input_supported(),
+        !app.session_runtime.image_input_supported(),
         "completed refresh must reapply active-model capabilities from cache"
     );
 }
@@ -1362,11 +1365,11 @@ async fn connecting_lands_on_the_profiles_declared_model_not_the_alphabetical_fi
     app.apply_default_model_for_profile("openai_codex", "connected");
 
     assert_eq!(
-        app.session.active_model, declared,
+        app.session_runtime.active_model, declared,
         "connect must land on the declared default"
     );
     assert!(
-        !app.session.active_model.ends_with("gpt-5.4"),
+        !app.session_runtime.active_model.ends_with("gpt-5.4"),
         "and specifically not on the alphabetical first"
     );
 }

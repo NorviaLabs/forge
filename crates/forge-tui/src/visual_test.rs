@@ -408,7 +408,8 @@ mod tests {
             "fn main() {\n    println!(\"hi\");\n}\n",
         )
         .unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
@@ -442,7 +443,8 @@ mod tests {
         let mut file = fs::File::create(workspace.join("image.bin")).unwrap();
         file.write_all(&[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
             .unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
@@ -470,7 +472,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.txt"), "line1\nline2\nline3\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
@@ -493,7 +496,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.txt"), "foo bar\nfoo baz\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
@@ -523,7 +527,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.txt"), "1\n2\n3\n4\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
@@ -539,7 +544,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.txt"), "first\nsecond\nthird\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
         app.source_viewer.focused = true;
@@ -562,7 +568,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.txt"), "first\nsecond\nthird\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.source_viewer.open(&workspace, &workspace.join("x.txt"));
         app.source_viewer.focused = false;
@@ -626,7 +633,8 @@ mod tests {
             .unwrap();
         fs::write(workspace.join("tracked.txt"), "changed").unwrap();
 
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
@@ -684,7 +692,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("a.txt"), "hello").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
@@ -712,7 +721,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.txt"), "searchable content\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
@@ -737,7 +747,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.txt"), "alpha\nbeta\nsearchable gamma\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
@@ -764,7 +775,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("x.rs"), "fn main() {}\n").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.rs"));
 
@@ -787,7 +799,8 @@ mod tests {
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("a.txt"), "hello").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.session_runtime =
+            crate::app::DirectSessionSlot::some(rebuild_session(dir.path(), &workspace).await);
         app.runtime.cwd = workspace.clone();
         // Create an explorer whose root cannot be read.
         app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
