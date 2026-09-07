@@ -227,7 +227,16 @@ impl TuiApp {
         for key in env_keys {
             std::env::remove_var(key);
         }
-        self.session_runtime.clear_provider_env();
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => {
+                if let Some(session) = self.session_runtime.as_ref() {
+                    session.clear_provider_env();
+                }
+            }
+            SelectedRuntime::Supervised(_) => {
+                self.try_session_command(forge_session::SupervisorCommand::ClearProviderEnv);
+            }
+        }
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
         self.pending_turn.clear();
@@ -253,7 +262,21 @@ impl TuiApp {
         self.connect.profile = None;
         self.runtime.provider.clear();
         self.runtime.model_label.clear();
-        self.session_runtime.set_active_model(String::new());
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => {
+                if let Some(session) = self.session_runtime.as_mut() {
+                    session.set_active_model(String::new());
+                }
+            }
+            SelectedRuntime::Supervised(session_id) => {
+                self.try_session_command(forge_session::SupervisorCommand::SetModel {
+                    session_id,
+                    model_id: String::new(),
+                    route_id: String::new(),
+                    reasoning_effort: Some(self.reasoning_effort.value.to_string()),
+                });
+            }
+        }
         self.sync_model_capabilities();
         self.feedback = FeedbackModel::default();
         self.status_state.message = "disconnected".into();
@@ -339,7 +362,18 @@ impl TuiApp {
             // Refresh and inject provider credentials into the client only.
             let _ = svc.ensure_oauth_fresh(&profile.id);
             if let Ok(pairs) = svc.provider_env_for_profile(&profile.id) {
-                self.session_runtime.apply_provider_env(&pairs);
+                match self.selected_runtime() {
+                    SelectedRuntime::Direct => {
+                        if let Some(session) = self.session_runtime.as_ref() {
+                            session.apply_provider_env(&pairs);
+                        }
+                    }
+                    SelectedRuntime::Supervised(_) => {
+                        self.try_session_command(
+                            forge_session::SupervisorCommand::ApplyProviderEnv { pairs },
+                        );
+                    }
+                }
             }
             self.connect.profile = Some(profile.id.clone());
             // The route decides the *transport*, and `transport_for_route(None)`
@@ -348,8 +382,26 @@ impl TuiApp {
             // wrong wire, and every call fails until the user re-picks the model
             // — which is the only other path that sets it. The route follows the
             // profile, not the model, so it is restored either way below.
-            self.session_runtime
-                .set_active_route_id(route_id_for_profile(&profile.id));
+            let restored_route = route_id_for_profile(&profile.id);
+            match self.selected_runtime() {
+                SelectedRuntime::Direct => {
+                    if let Some(session) = self.session_runtime.as_mut() {
+                        session.set_active_route_id(restored_route.clone());
+                    }
+                }
+                SelectedRuntime::Supervised(session_id) => {
+                    let active_model = self
+                        .selected_details()
+                        .map(|details| details.active_model.clone())
+                        .unwrap_or_else(|| self.runtime.model_label.clone());
+                    self.try_session_command(forge_session::SupervisorCommand::SetModel {
+                        session_id,
+                        model_id: active_model,
+                        route_id: restored_route,
+                        reasoning_effort: Some(self.reasoning_effort.value.to_string()),
+                    });
+                }
+            }
             // Only switch the active model when it still looks like the forge default
             // (don't clobber an explicit --model / test runtime label).
             let cur = self.runtime.model_label.as_str();
@@ -385,10 +437,25 @@ impl TuiApp {
                         effort: self.reasoning_effort.value.to_string(),
                     });
                 }
-            } else if self.session_runtime.active_model.is_empty() {
-                self.session_runtime
-                    .set_active_model(self.runtime.model_label.clone());
-                self.sync_model_capabilities();
+            } else {
+                let active_model_empty = match self.selected_runtime() {
+                    SelectedRuntime::Direct => self
+                        .session_runtime
+                        .as_ref()
+                        .is_none_or(|session| session.active_model.is_empty()),
+                    SelectedRuntime::Supervised(_) => self
+                        .selected_details()
+                        .is_none_or(|details| details.active_model.is_empty()),
+                };
+                if active_model_empty {
+                    self.apply_selection(&ModelSelection {
+                        route_id: route_id_for_profile(&profile.id),
+                        provider: "native".into(),
+                        model: self.runtime.model_label.clone(),
+                        profile_id: Some(profile.id.clone()),
+                        effort: self.reasoning_effort.value.to_string(),
+                    });
+                }
             }
             self.status_state.message =
                 format!("restored {} · {}", profile.id, self.runtime.model_label);
@@ -460,15 +527,38 @@ impl TuiApp {
     /// so the copies can't drift the way the picker's Enter-key bug once let
     /// a discarded selection produce a mismatched model id.
     pub(super) fn sync_model_capabilities(&mut self) {
+        let model = match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.active_model.clone())
+                .unwrap_or_else(|| self.runtime.model_label.clone()),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.active_model.clone())
+                .filter(|model| !model.is_empty())
+                .unwrap_or_else(|| self.runtime.model_label.clone()),
+        };
         let cache = forge_connect::ModelCatalogCache::user_default();
-        let supported = cache.model_accepts_image_input(&self.session_runtime.active_model);
-        self.session_runtime.set_image_input_supported(supported);
-        // Use one fixed context budget across providers. Keep the catalog's
-        // output limit when available so reply headroom remains provider-aware.
+        let supported = cache.model_accepts_image_input(&model);
         let output = cache
-            .model_limits(&self.session_runtime.active_model)
+            .model_limits(&model)
             .and_then(|limits| (limits.output > 0).then_some(limits.output));
-        self.session_runtime.set_context_window(500_000, output);
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => {
+                if let Some(session) = self.session_runtime.as_mut() {
+                    session.set_image_input_supported(supported);
+                    session.set_context_window(500_000, output);
+                }
+            }
+            SelectedRuntime::Supervised(session_id) => {
+                self.try_session_command(forge_session::SupervisorCommand::SetCapabilities {
+                    session_id,
+                    image_input_supported: supported,
+                    context_window: Some((500_000, output.unwrap_or(0))),
+                });
+            }
+        }
     }
 
     pub(super) fn apply_selection(&mut self, selection: &ModelSelection) {
@@ -478,14 +568,28 @@ impl TuiApp {
             selection.provider.clone()
         };
         self.runtime.model_label = selection.model.clone();
-        self.session_runtime.set_active_model(&selection.model);
-        self.session_runtime
-            .set_active_route_id(&selection.route_id);
-        self.sync_model_capabilities();
-        self.connect.profile = selection.profile_id.clone();
         if let Ok(effort) = selection.effort.parse::<ReasoningEffort>() {
             self.reasoning_effort.value = effort;
         }
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => {
+                if let Some(session) = self.session_runtime.as_mut() {
+                    session.set_active_model(&selection.model);
+                    session.set_active_route_id(&selection.route_id);
+                    session.set_reasoning_effort(Some(self.reasoning_effort.value.to_string()));
+                }
+            }
+            SelectedRuntime::Supervised(session_id) => {
+                self.try_session_command(forge_session::SupervisorCommand::SetModel {
+                    session_id,
+                    model_id: selection.model.clone(),
+                    route_id: selection.route_id.clone(),
+                    reasoning_effort: Some(self.reasoning_effort.value.to_string()),
+                });
+            }
+        }
+        self.sync_model_capabilities();
+        self.connect.profile = selection.profile_id.clone();
     }
 
     pub(super) fn persist_selection(&self) {
@@ -963,7 +1067,18 @@ impl TuiApp {
                 // reads the injected map ahead of the process environment, so
                 // exporting these as well changed nothing for the client — it
                 // only made every child process inherit them.
-                self.session_runtime.apply_provider_env(&pairs);
+                match self.selected_runtime() {
+                    SelectedRuntime::Direct => {
+                        if let Some(session) = self.session_runtime.as_ref() {
+                            session.apply_provider_env(&pairs);
+                        }
+                    }
+                    SelectedRuntime::Supervised(_) => {
+                        self.try_session_command(
+                            forge_session::SupervisorCommand::ApplyProviderEnv { pairs },
+                        );
+                    }
+                }
             }
             Ok(_) => {}
             Err(_e) => {
