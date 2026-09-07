@@ -48,6 +48,24 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
 }
 
 #[tokio::test]
+async fn selecting_a_task_rebinds_workspace_owned_views() {
+    let (dir, mut app) = focus_test_app().await;
+    let linked = dir.path().join("linked-worktree");
+    std::fs::create_dir_all(&linked).unwrap();
+    app.session_view.workspace_root = linked.canonicalize().unwrap();
+
+    app.sync_selected_workspace();
+
+    let linked = linked.canonicalize().unwrap();
+    assert_eq!(app.runtime.cwd, linked);
+    assert_eq!(
+        app.workspace_files.explorer.root_path(),
+        Some(app.runtime.cwd.as_path())
+    );
+    assert_eq!(app.repo_header_state.cwd, app.runtime.cwd);
+}
+
+#[tokio::test]
 async fn a_task_never_visited_before_starts_from_a_clean_view() {
     let (_dir, mut app) = focus_test_app().await;
     // Whatever model the host's restored auth put in the footer — the point

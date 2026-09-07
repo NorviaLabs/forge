@@ -195,6 +195,7 @@ impl TuiApp {
                             }
                             self.session_view = snapshot.session.clone();
                             self.transcript_view = snapshot.transcript.clone();
+                            self.sync_selected_workspace();
                         }
                         self.set_feedback(
                             FeedbackSeverity::Info,
@@ -205,6 +206,9 @@ impl TuiApp {
                     self.save_task_view_state(self.selected_task_id);
                     self.restore_task_view_state(item.session_id);
                     self.selected_task_id = item.session_id;
+                    self.session_view = SessionSnapshot::capture(&self.session);
+                    self.transcript_view = TranscriptSnapshot::capture(&self.session);
+                    self.sync_selected_workspace();
                     self.set_feedback(FeedbackSeverity::Info, "primary task selected");
                 }
                 Ok(true)
@@ -362,6 +366,20 @@ impl TuiApp {
     pub(super) fn save_task_view_state(&mut self, session_id: uuid::Uuid) {
         let state = self.take_task_view_state();
         self.task_view_states.insert(session_id, state);
+    }
+
+    /// Keep workspace-owned UI state aligned with the selected task. The
+    /// primary session is the only live session held by the TUI; sibling
+    /// sessions expose their immutable snapshot, but their filesystem still
+    /// needs to become the root for the explorer and repository chrome.
+    pub(super) fn sync_selected_workspace(&mut self) {
+        let workspace = self.session_view.workspace_root().to_path_buf();
+        self.runtime.cwd = workspace.clone();
+        self.workspace_files.explorer = FileExplorer::new(Some(workspace), self.runtime.file_icons);
+        self.repo_header_state.cwd = self.runtime.cwd.clone();
+        self.repo_header_state.cache = chrome::load_repo_header(&self.runtime.cwd);
+        self.repo_header_state.refreshed_at = Instant::now();
+        self.repo_header_state.refresh_rx = None;
     }
 
     pub(super) fn restore_task_view_state(&mut self, session_id: uuid::Uuid) {
