@@ -22,6 +22,7 @@ use crate::{
 };
 
 const DEFAULT_MAX_CONCURRENCY: usize = 4;
+const ATTACH_SESSION_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct TaskRuntimeSnapshot {
@@ -699,8 +700,18 @@ async fn execute_command(
             task_cfg.workspace_root = Some(workspace.display().to_string());
             let (journal_dir, _) = resolve_journal_dir(&task_cfg);
             task_cfg.journal.path = journal_dir.display().to_string();
-            let opened =
-                open_session_with_model(&task_cfg, SessionTarget::New, state.model.clone()).await?;
+            let opened = tokio::time::timeout(
+                ATTACH_SESSION_INIT_TIMEOUT,
+                open_session_with_model(&task_cfg, SessionTarget::New, state.model.clone()),
+            )
+            .await
+            .map_err(|_| {
+                RepositorySupervisorError::Command(format!(
+                    "attaching `{}` timed out after {} seconds",
+                    workspace.display(),
+                    ATTACH_SESSION_INIT_TIMEOUT.as_secs()
+                ))
+            })??;
             let task = NewRepositoryTask {
                 session_id: opened.session.session_id,
                 label,
