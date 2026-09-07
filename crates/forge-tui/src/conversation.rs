@@ -793,15 +793,16 @@ impl ConversationRenderInternals for ConversationModel {
             }
             let in_latest_turn = total_turns == 0 || turn_index == total_turns;
             let railed = is_railed_block(&block);
-            if !railed && gap && !lines.is_empty() {
+            if !is_turn_start && !railed && gap && !lines.is_empty() {
                 // Major blocks read as boundaries: separate them from the
-                // preceding tool trail with a single blank line.
+                // preceding tool trail with a single blank line. Turn starts
+                // have their own separator treatment below.
                 ensure_blank_line(&mut lines);
             }
             if is_turn_start && seen_any_block {
-                if gap {
-                    ensure_blank_line(&mut lines);
-                }
+                // A turn boundary is represented by one rule and one row of
+                // breathing room, rather than stacking the generic block gap
+                // with whitespace on both sides of the rule.
                 lines.push(Line::from(Span::styled(
                     "─".repeat(width),
                     theme::border_muted(),
