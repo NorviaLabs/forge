@@ -58,11 +58,17 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     assert_eq!(app.conversation_view.scroll, 7);
     assert!(!app.conversation_view.follow);
     assert_eq!(app.diff_explorer_was_visible, Some(true));
-    assert_eq!(app.pending_editor_path.as_deref(), Some(std::path::Path::new("pending.rs")));
+    assert_eq!(
+        app.pending_editor_path.as_deref(),
+        Some(std::path::Path::new("pending.rs"))
+    );
     assert!(app.pending_editor_home);
     assert!(app.external_editor.requested);
     assert!(app.cancellation.is_requested());
-    assert_eq!(app.progress_state.description.as_deref(), Some("building index"));
+    assert_eq!(
+        app.progress_state.description.as_deref(),
+        Some("building index")
+    );
 }
 
 #[tokio::test]
