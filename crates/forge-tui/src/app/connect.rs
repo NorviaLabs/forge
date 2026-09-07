@@ -555,7 +555,7 @@ impl TuiApp {
                 self.try_session_command(forge_session::SupervisorCommand::SetCapabilities {
                     session_id,
                     image_input_supported: supported,
-                    context_window: Some((500_000, output.unwrap_or(0))),
+                    context_window: Some((500_000, output)),
                 });
             }
         }
