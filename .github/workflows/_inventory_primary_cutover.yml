@@ -1,0 +1,23 @@
+name: Inventory primary cutover
+on:
+  push:
+    branches:
+      - refactor/multisession-09-primary-supervisor-cutover
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/multisession-09-primary-supervisor-cutover
+      - name: Inventory
+        run: |
+          set -eux
+          echo "=== session_runtime refs ==="
+          grep -R -n "session_runtime" crates/forge-tui/src crates/forge-cli/src || true
+          echo "=== require_direct_session refs ==="
+          grep -R -n "require_direct_session" crates/forge-tui/src || true
+          echo "=== open_siblings refs ==="
+          grep -R -n "open_siblings" crates || true
+          echo "=== SessionSnapshot capture refs ==="
+          grep -R -n "SessionSnapshot::capture" crates/forge-tui/src || true
