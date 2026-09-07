@@ -118,9 +118,9 @@ async fn codex_edit_binding_restores_most_recent_queued_message() {
         .unwrap();
 
     assert_eq!(app.input.text, "last");
-    assert_eq!(app.session.queue().len(), 1);
+    assert_eq!(app.session_runtime.queue().len(), 1);
     assert_eq!(
-        app.session
+        app.session_runtime
             .queue()
             .visible()
             .next()
@@ -203,9 +203,9 @@ async fn resume_command_replaces_active_conversation_in_app() {
         .await
         .unwrap();
 
-    assert_eq!(app.session.session_id, previous_id);
+    assert_eq!(app.session_runtime.session_id, previous_id);
     assert!(app
-        .session
+        .session_runtime
         .messages
         .iter()
         .any(|message| message.content == "restored conversation"));
@@ -411,11 +411,11 @@ async fn compact_reports_the_before_and_after_size_and_the_surviving_objective()
     let mut app = TuiApp::new(session, test_runtime_config());
     // A conversation large enough that a checkpoint plus a tail is smaller.
     for i in 0..40 {
-        app.session.messages.push(Message::new(
+        app.session_runtime.messages.push(Message::new(
             MessageRole::User,
             format!("q{i} {}", "x".repeat(10_000)),
         ));
-        app.session.messages.push(Message::new(
+        app.session_runtime.messages.push(Message::new(
             MessageRole::Assistant,
             format!("a{i} {}", "y".repeat(10_000)),
         ));
@@ -424,7 +424,12 @@ async fn compact_reports_the_before_and_after_size_and_the_surviving_objective()
     app.dispatch_line("/compact").await.unwrap();
 
     assert!(!app.busy_state.is_active());
-    let record = app.session.compaction_telemetry().last.clone().unwrap();
+    let record = app
+        .session_runtime
+        .compaction_telemetry()
+        .last
+        .clone()
+        .unwrap();
     assert!(record.succeeded());
     assert_eq!(
         app.status_state.message,
@@ -458,14 +463,17 @@ async fn a_failed_compact_says_the_context_is_unchanged_rather_than_claiming_suc
     // The fixture model answers with prose, not a checkpoint.
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(session, test_runtime_config());
-    let before = app.session.messages.len();
+    let before = app.session_runtime.messages.len();
 
     app.dispatch_line("/compact").await.unwrap();
 
     assert!(!app.busy_state.is_active());
-    assert_eq!(app.session.messages.len(), before);
-    assert_eq!(app.session.compaction_telemetry().compaction_count, 0);
-    assert_eq!(app.session.compaction_telemetry().failure_count, 1);
+    assert_eq!(app.session_runtime.messages.len(), before);
+    assert_eq!(
+        app.session_runtime.compaction_telemetry().compaction_count,
+        0
+    );
+    assert_eq!(app.session_runtime.compaction_telemetry().failure_count, 1);
     assert_eq!(app.status_state.message, "context unchanged");
     assert!(app.banner_state.items.is_empty());
     assert!(app
@@ -493,7 +501,10 @@ async fn enter_while_busy_enqueues_user_message() {
     );
     // Input routing keys off the authoritative session lifecycle, not the
     // UI `busy` flag — a real task must be Working for Enter to enqueue.
-    app.session.append_user_message("first").await.unwrap();
+    app.session_runtime
+        .append_user_message("first")
+        .await
+        .unwrap();
     app.busy_state.activate();
     for c in "queued later".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
@@ -503,10 +514,10 @@ async fn enter_while_busy_enqueues_user_message() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.session.queue().len(), 1);
+    assert_eq!(app.session_runtime.queue().len(), 1);
     assert!(!app.pending_turn.has_prompt());
     assert_eq!(
-        app.session
+        app.session_runtime
             .queue()
             .visible()
             .next()
@@ -538,7 +549,7 @@ async fn typing_while_busy_updates_input_buffer() {
             .unwrap();
     }
     assert_eq!(app.input.text, "next");
-    assert_eq!(app.session.queue().len(), 0);
+    assert_eq!(app.session_runtime.queue().len(), 0);
 }
 
 #[tokio::test]
@@ -780,14 +791,17 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
         },
     );
     // Simulate a message enqueued while processing.
-    app.session.enqueue_task("from queue").await.unwrap();
+    app.session_runtime
+        .enqueue_task("from queue")
+        .await
+        .unwrap();
     app.busy_state.stop();
     assert!(!app.pending_turn.has_prompt());
     // Empty Enter = user action to dequeue + send
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.session.queue().is_empty());
+    assert!(app.session_runtime.queue().is_empty());
     // Promotion already appended the message and started the task; the
     // turn continues via `PendingTurnState`, not a re-appended prompt
     // (that would double-append).
@@ -795,7 +809,7 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     assert!(app.pending_turn.continue_requested());
     assert!(app.busy_state.is_active());
     assert!(app
-        .session
+        .session_runtime
         .messages
         .iter()
         .any(|m| m.content == "from queue"));
@@ -823,9 +837,9 @@ async fn ctrl_backspace_cancels_selected_queue_message() {
     app.handle_key(press(KeyCode::Backspace, KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_eq!(app.session.queue().len(), 1);
+    assert_eq!(app.session_runtime.queue().len(), 1);
     assert_eq!(
-        app.session
+        app.session_runtime
             .queue()
             .visible()
             .next()
@@ -1037,7 +1051,7 @@ async fn drain_pending_prompt_sends_separate_thinking_flag() {
     assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
     assert!(app.stream.thinking.is_empty());
     assert!(app
-        .session
+        .session_runtime
         .messages
         .iter()
         .all(|message| message.thinking.is_none()));
@@ -1067,10 +1081,10 @@ async fn model_command_applies_provider_id_to_session() {
         .unwrap();
     app.connect.profile = Some("openai".into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
-    app.session.set_active_model("openai/gpt-4.1-mini");
+    app.session_runtime.set_active_model("openai/gpt-4.1-mini");
     app.apply_model_selection("native", "openai/gpt-4.1-mini", None);
     assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
-    assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
+    assert_eq!(app.session_runtime.active_model, "openai/gpt-4.1-mini");
     assert!(!app.pending_turn.has_prompt());
 }
 
@@ -1106,7 +1120,8 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
         .unwrap();
     app.connect.profile = Some("openai_codex".into());
     app.runtime.model_label = "openai-codex/gpt-5.6-sol".into();
-    app.session.set_active_model("openai-codex/gpt-5.6-sol");
+    app.session_runtime
+        .set_active_model("openai-codex/gpt-5.6-sol");
 
     app.dispatch_line("/model").await.unwrap();
 
@@ -1133,12 +1148,12 @@ async fn app_dispatch_user_message() {
     app.dispatch_line("hi").await.unwrap();
     app.drain_pending_prompt(None).await.unwrap();
     assert!(
-        app.session
+        app.session_runtime
             .messages
             .iter()
             .any(|m| m.content.contains("hello tui") || m.content == "hi"),
         "messages={:?}",
-        app.session
+        app.session_runtime
             .messages
             .iter()
             .map(|m| m.content.as_str())
@@ -1183,16 +1198,16 @@ async fn clear_hides_existing_chat_without_deleting_context() {
     );
     app.dispatch_line("hi").await.unwrap();
     app.drain_pending_prompt(None).await.unwrap();
-    let message_count = app.session.messages.len();
-    let event_count = app.session.events.len();
+    let message_count = app.session_runtime.messages.len();
+    let event_count = app.session_runtime.events.len();
     assert!(message_count > 0);
 
     app.dispatch_line("/clear").await.unwrap();
 
     assert_eq!(app.conversation_view.message_start, message_count);
     assert_eq!(app.conversation_view.event_start, event_count);
-    assert_eq!(app.session.messages.len(), message_count);
-    assert_eq!(app.session.events.len(), event_count);
+    assert_eq!(app.session_runtime.messages.len(), message_count);
+    assert_eq!(app.session_runtime.events.len(), event_count);
     assert!(app.banner_state.items.is_empty());
     assert!(app.feedback.is_empty());
     assert_eq!(app.conversation_view.scroll, 0);
@@ -1760,7 +1775,7 @@ async fn send_with_image_is_blocked_when_model_cannot_see() {
     let (_dir, mut app) = focus_test_app().await;
     app.runtime.provider = "mock".into();
     app.runtime.model_label = "mock".into();
-    app.session.set_image_input_supported(false);
+    app.session_runtime.set_image_input_supported(false);
     app.attach_image_bytes(&forge_types::sample_png_bytes());
     app.input.set_text("compare this");
     app.submit_composer_message().await.unwrap();
@@ -1775,7 +1790,7 @@ async fn send_with_image_is_allowed_when_model_can_see() {
     let (_dir, mut app) = focus_test_app().await;
     app.runtime.provider = "mock".into();
     app.runtime.model_label = "mock".into();
-    app.session.set_image_input_supported(true);
+    app.session_runtime.set_image_input_supported(true);
     app.attach_image_bytes(&forge_types::sample_png_bytes());
     app.dispatch_line("compare this").await.unwrap();
     assert!(

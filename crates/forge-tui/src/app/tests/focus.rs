@@ -669,9 +669,9 @@ async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
 #[tokio::test]
 async fn contextual_hint_omits_queue_information_while_waiting() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session.enqueue_task("next task").await.unwrap();
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
-    app.session.active_task.wait_reason = Some(forge_types::WaitReason::Approval {
+    app.session_runtime.enqueue_task("next task").await.unwrap();
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
+    app.session_runtime.active_task.wait_reason = Some(forge_types::WaitReason::Approval {
         request_id: "request".into(),
         payload: forge_types::HitlPayload {
             call_id: "request".into(),

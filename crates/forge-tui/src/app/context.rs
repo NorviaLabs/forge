@@ -60,7 +60,7 @@ impl TuiApp {
         // A failed compaction is not a failed session: the previous context is
         // still valid and still installed, so report and carry on.
         let pending = self
-            .session
+            .session_runtime
             .begin_context_compaction(forge_core::CompactionTrigger::Manual);
         let Some(completed) =
             Box::pin(self.execute_context_compaction_responsive(pending, terminal.as_deref_mut()))
@@ -71,7 +71,11 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "compaction cancelled");
             return Ok(());
         };
-        let record = match self.session.finish_context_compaction(completed).await {
+        let record = match self
+            .session_runtime
+            .finish_context_compaction(completed)
+            .await
+        {
             Ok(record) => record,
             Err(error) => {
                 self.busy_state.stop();
@@ -97,8 +101,8 @@ impl TuiApp {
         let before_pct = record.utilization_before * 100.0;
         let after_pct = record.utilization_after * 100.0;
         self.conversation_view.context_reset_snapshot = Some((before_pct, after_pct));
-        self.conversation_view.message_start = self.session.messages.len();
-        self.conversation_view.event_start = self.session.events.len();
+        self.conversation_view.message_start = self.session_runtime.messages.len();
+        self.conversation_view.event_start = self.session_runtime.events.len();
 
         let summary = format!(
             "Context compacted · {} → {}",
@@ -109,7 +113,7 @@ impl TuiApp {
         // One line of the checkpoint — the current objective — so the operator
         // can see what state survived. The checkpoint itself stays out of the
         // transcript.
-        if let Some(checkpoint) = self.session.context_state().checkpoint.as_ref() {
+        if let Some(checkpoint) = self.session_runtime.context_state().checkpoint.as_ref() {
             self.banner_state.items.push(ChatItem::ContextHandoff {
                 before_pct,
                 after_pct,

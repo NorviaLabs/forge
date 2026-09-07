@@ -175,10 +175,10 @@ async fn menu_allow_once_approves_without_remembering() {
         .unwrap();
     flush_queued_hitl(&mut app).await;
 
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
     assert!(app.remembered_approval_count() == 0);
     assert!(app
-        .session
+        .session_runtime
         .messages
         .iter()
         .any(|message| message.content == "ok"));
@@ -196,10 +196,10 @@ async fn shortcut_key_approves_without_arrowing() {
         .unwrap();
     flush_queued_hitl(&mut app).await;
 
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
     assert_eq!(app.remembered_approval_count(), 0);
     assert!(app
-        .session
+        .session_runtime
         .messages
         .iter()
         .any(|message| message.content == "ok"));
@@ -217,9 +217,9 @@ async fn shortcut_key_denies_without_arrowing() {
         .unwrap();
     flush_queued_hitl(&mut app).await;
 
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
     assert!(
-        !app.session
+        !app.session_runtime
             .messages
             .iter()
             .any(|message| message.content == "ok"),
@@ -244,7 +244,7 @@ async fn a_shortcut_for_an_absent_row_is_ignored() {
             .await
             .unwrap();
         assert!(
-            app.session.pending_hitl().is_some(),
+            app.session_runtime.pending_hitl().is_some(),
             "an unoffered shortcut must leave the prompt open"
         );
     }
@@ -329,7 +329,7 @@ async fn shell_approval_offers_a_generalized_pattern() {
         .and_then(|row| row.detail.as_deref());
     assert_eq!(pattern, Some("bash(git push *)"));
     assert!(app
-        .approval_identity_for_payload(app.session.pending_hitl().unwrap())
+        .approval_identity_for_payload(app.session_runtime.pending_hitl().unwrap())
         .is_some());
 }
 
@@ -367,7 +367,7 @@ async fn unrecognized_line_preserves_text_and_keeps_pending() {
 
     // The operator's text survives so they can edit it into a valid message.
     assert_eq!(app.input.text, "run the tests instead");
-    assert!(app.session.pending_hitl().is_some());
+    assert!(app.session_runtime.pending_hitl().is_some());
     assert!(
         app.feedback.text.contains("Esc don't run"),
         "{}",
@@ -386,14 +386,14 @@ async fn menu_esc_denies_and_records_tool_denial() {
         .unwrap();
     flush_queued_hitl(&mut app).await;
 
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
     assert!(app
-        .session
+        .session_runtime
         .messages
         .iter()
         .any(|message| message.content.contains("HITL denied")));
     assert!(!app
-        .session
+        .session_runtime
         .messages
         .iter()
         .any(|message| message.content == "ok"));
@@ -413,7 +413,7 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
         .unwrap();
     flush_queued_hitl(&mut app).await;
 
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
     assert_eq!(app.remembered_approval_count(), 1);
 
     // The same argv auto-approves without presenting another prompt.
@@ -423,7 +423,7 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
     );
     app.drain_auto_hitl().await.unwrap();
     flush_queued_hitl(&mut app).await;
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
 
     // A sibling in the same family also auto-approves.
     set_pending_hitl(
@@ -432,11 +432,11 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
     );
     app.drain_auto_hitl().await.unwrap();
     flush_queued_hitl(&mut app).await;
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
 
     // A different family still gates.
     set_pending_hitl(&mut app, bash_hitl_payload("call-4", "git status"));
-    assert!(app.session.pending_hitl().is_some());
+    assert!(app.session_runtime.pending_hitl().is_some());
 }
 
 #[tokio::test]
@@ -449,7 +449,7 @@ async fn menu_enter_on_allow_once_approves() {
         .await
         .unwrap();
     flush_queued_hitl(&mut app).await;
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
     // Run once must not remember the invocation.
     assert!(app.remembered_approval_count() == 0);
 }
@@ -468,7 +468,7 @@ async fn menu_down_to_allow_pattern_and_enter() {
         .await
         .unwrap();
     flush_queued_hitl(&mut app).await;
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
     assert_eq!(app.remembered_approval_count(), 1);
 }
 
@@ -487,7 +487,7 @@ async fn approval_duplicate_confirmation_is_idempotent() {
     flush_queued_hitl(&mut app).await;
 
     let successful_tool_messages = app
-        .session
+        .session_runtime
         .messages
         .iter()
         .filter(|message| message.content == "ok")
@@ -530,7 +530,7 @@ async fn tab_away_from_approval_keeps_it_pending() {
         .await
         .unwrap();
     assert_ne!(app.focus.block(), FocusBlock::Approval);
-    assert!(app.session.pending_hitl().is_some());
+    assert!(app.session_runtime.pending_hitl().is_some());
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -617,7 +617,7 @@ async fn approving_a_slow_command_returns_before_the_command_finishes() {
         .await
         .unwrap();
     assert!(
-        app.session.pending_hitl().is_some(),
+        app.session_runtime.pending_hitl().is_some(),
         "the command should still be pending until the event loop drains it"
     );
     assert!(
@@ -632,7 +632,7 @@ async fn approving_a_slow_command_returns_before_the_command_finishes() {
         "draining approval must not wait for the approved command"
     );
     assert!(
-        app.session.pending_hitl().is_none(),
+        app.session_runtime.pending_hitl().is_none(),
         "the approval card must clear as soon as the operator decides"
     );
     let rendered = render_app_text(&mut app, 100, 30);
@@ -669,7 +669,7 @@ async fn interrupting_an_approved_command_clears_the_card_and_recovers() {
         "interrupt must abort the approved command"
     );
     assert!(
-        app.session.pending_hitl().is_none(),
+        app.session_runtime.pending_hitl().is_none(),
         "the approval card must not stay pending after interrupt"
     );
     assert!(
@@ -754,7 +754,7 @@ async fn denying_a_network_prompt_refuses_instead_of_granting_the_host() {
         "a refused call must not start executing"
     );
     assert!(
-        app.session.pending_hitl().is_none(),
+        app.session_runtime.pending_hitl().is_none(),
         "the refusal must resolve the pending approval"
     );
 }
@@ -772,7 +772,7 @@ async fn escaping_a_network_prompt_refuses_instead_of_granting_the_host() {
 
     assert_eq!(app.status_state.message, "Action denied");
     assert!(app.pending_approved_tool.is_none());
-    assert!(app.session.pending_hitl().is_none());
+    assert!(app.session_runtime.pending_hitl().is_none());
 }
 
 /// Approving a network prompt still grants and runs — the refusal guard must
@@ -902,7 +902,7 @@ async fn a_git_remember_row_describes_the_subcommand_it_grants() {
 #[tokio::test]
 async fn a_deny_rule_stops_the_auto_approve_that_an_allow_rule_would_permit() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session
+    app.session_runtime
         .set_governance(forge_governance::Governance::default().with_pattern_rules(
             forge_governance::parse_pattern_rules(&["bash(cargo test *)"]),
             forge_governance::parse_pattern_rules(&["bash"]),
@@ -915,7 +915,7 @@ async fn a_deny_rule_stops_the_auto_approve_that_an_allow_rule_would_permit() {
     app.drain_auto_hitl().await.unwrap();
 
     assert!(
-        app.session.pending_hitl().is_some(),
+        app.session_runtime.pending_hitl().is_some(),
         "a deny carve-out must survive a broader allow rule"
     );
     assert!(
@@ -929,7 +929,7 @@ async fn a_deny_rule_stops_the_auto_approve_that_an_allow_rule_would_permit() {
 #[tokio::test]
 async fn a_persisted_allow_rule_auto_approves_without_a_deny_rule() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session
+    app.session_runtime
         .set_governance(forge_governance::Governance::default().with_pattern_rules(
             forge_governance::parse_pattern_rules(&["bash(cargo test *)"]),
             vec![],
@@ -943,7 +943,7 @@ async fn a_persisted_allow_rule_auto_approves_without_a_deny_rule() {
     flush_queued_hitl(&mut app).await;
 
     assert!(
-        app.session.pending_hitl().is_none(),
+        app.session_runtime.pending_hitl().is_none(),
         "an always-allow rule must clear the prompt without asking"
     );
 }
@@ -951,7 +951,7 @@ async fn a_persisted_allow_rule_auto_approves_without_a_deny_rule() {
 #[tokio::test]
 async fn sandbox_retry_cannot_be_auto_approved_by_a_command_grant() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session.set_governance(
+    app.session_runtime.set_governance(
         forge_governance::Governance::default()
             .with_pattern_rules(forge_governance::parse_pattern_rules(&["bash(*)"]), vec![]),
     );
@@ -959,7 +959,7 @@ async fn sandbox_retry_cannot_be_auto_approved_by_a_command_grant() {
     payload.sandbox_escalation = true;
     set_pending_hitl(&mut app, payload);
     app.drain_auto_hitl().await.unwrap();
-    assert!(app.session.pending_hitl().is_some());
+    assert!(app.session_runtime.pending_hitl().is_some());
     assert!(!app.pending_interaction.has_hitl_decision());
     assert_eq!(app.approval_menu_shortcuts(), vec!["y", "n", "N"]);
 }

@@ -33,7 +33,7 @@ impl TuiApp {
     }
 
     pub(super) fn repository_or_workspace_id(&self) -> String {
-        self.session
+        self.session_runtime
             .workspace_root()
             .canonicalize()
             .unwrap_or_else(|_| self.session_view.workspace_root().to_path_buf())

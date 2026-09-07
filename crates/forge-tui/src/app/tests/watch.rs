@@ -13,7 +13,7 @@ async fn file_change_event_refreshes_git_status() {
     assert!(!app.workspace_files.explorer.git_status.loading);
 
     app.file_watch
-        .inject_change(app.session.workspace_root().join("changed.txt"));
+        .inject_change(app.session_runtime.workspace_root().join("changed.txt"));
     app.poll_file_changes();
 
     assert!(app.workspace_files.explorer.git_status.loading);
@@ -139,7 +139,7 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     fs::write(dir.path().join("added-while-focused.txt"), "new\n").unwrap();
 
     app.file_watch
-        .inject_change(app.session.workspace_root().join("changed.txt"));
+        .inject_change(app.session_runtime.workspace_root().join("changed.txt"));
     app.poll_file_changes();
 
     assert!(app.workspace_files.explorer.git_status.loading);

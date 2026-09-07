@@ -65,7 +65,7 @@ impl TuiApp {
             supervisor: None,
             session_view: SessionSnapshot::capture(&session),
             transcript_view: TranscriptSnapshot::capture(&session),
-            session,
+            session_runtime: DirectSessionSlot::some(session),
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),
             onboarding_connect: false,
