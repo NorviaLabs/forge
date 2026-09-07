@@ -8,10 +8,12 @@
 //! frames: eight seconds in which a stalled renderer and a hung provider
 //! looked exactly alike.
 //!
-//! The line sits where the answer is about to appear: `[>]` in the activity
-//! token, the evidence-backed phase in bold primary, elapsed time secondary.
-//! Motion comes from the elapsed tick alone — no per-letter shimmer, no
-//! character counter, no duplicate busy state in the footer.
+//! The line sits where the answer is about to appear: a braille spinner in
+//! the activity token (fixed width, stepped once per event-loop tick), the
+//! evidence-backed phase in bold primary, elapsed time secondary.
+//! Motion comes from the elapsed tick plus the spinner alone — no
+//! per-letter shimmer, no character counter, no duplicate busy state
+//! in the footer.
 
 use crate::theme;
 use crate::widgets::status::BusyPhase;
@@ -64,12 +66,15 @@ fn elapsed(model: &TurnLineModel) -> String {
 
 /// Build the line, right-aligning the interrupt hint to `width`.
 ///
-/// Pure in the model: the same phase and elapsed second always render the
-/// same line, so settled frames stay cacheable and only the elapsed tick
-/// invalidates chrome. `_millis` is retained for call-site compatibility.
-pub fn turn_line(model: &TurnLineModel, width: usize, _millis: u128) -> Line<'static> {
+/// The leading marker is a braille spinner frame (`⣾⣽⣻⢿⡿⣟⣯⣷`),
+/// stepped once per 200ms event-loop tick. Every frame is one cell wide in
+/// the activity token, so the row never shifts width.
+pub fn turn_line(model: &TurnLineModel, width: usize, millis: u128) -> Line<'static> {
+    const FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+    let frame = FRAMES[(millis / 200 % FRAMES.len() as u128) as usize];
+    let marker_style = theme::activity().add_modifier(Modifier::BOLD);
     let mut spans = vec![
-        Span::styled("[>]", theme::activity().add_modifier(Modifier::BOLD)),
+        Span::styled(frame, marker_style),
         Span::raw(" "),
         Span::styled(
             model.verb.clone(),
@@ -110,7 +115,7 @@ mod tests {
     #[test]
     fn the_line_names_the_phase_and_counts_up() {
         let rendered = text(&turn_line(&model(), 80, 0));
-        assert!(rendered.contains("[>]"), "{rendered}");
+        assert!(rendered.contains("⣾"), "{rendered}");
         assert!(rendered.contains("Thinking"), "{rendered}");
         assert!(rendered.contains("3.0s"), "{rendered}");
     }
@@ -118,9 +123,31 @@ mod tests {
     #[test]
     fn the_marker_uses_the_activity_token() {
         let line = turn_line(&model(), 80, 0);
+        assert_eq!(line.spans[0].content.as_ref(), "⣾");
         assert_eq!(
             line.spans[0].style,
             theme::activity().add_modifier(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn the_marker_pulses_without_changing_width() {
+        let first = turn_line(&model(), 80, 0);
+        let second = turn_line(&model(), 80, 200);
+        assert_eq!(first.width(), second.width());
+        assert_ne!(
+            first.spans[0].content, second.spans[0].content,
+            "spinner must advance"
+        );
+        assert_eq!(
+            first.spans[0].style,
+            theme::activity().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(second.spans[0].style, first.spans[0].style);
+        assert_eq!(
+            turn_line(&model(), 80, 1600).spans[0].content,
+            first.spans[0].content,
+            "spinner must cycle every 8 ticks"
         );
     }
 
@@ -184,9 +211,10 @@ mod tests {
         let b = text(&turn_line(&stalled, 80, 0));
         assert_ne!(a, b, "the elapsed tick must move the line");
         // Same inputs, same line — no hidden clock inside the renderer.
+        // (Same 200ms tick: 0 and 199 share a spinner frame.)
         assert_eq!(
             text(&turn_line(&model(), 80, 0)),
-            text(&turn_line(&model(), 80, 999))
+            text(&turn_line(&model(), 80, 199))
         );
     }
 

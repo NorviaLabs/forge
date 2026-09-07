@@ -293,7 +293,13 @@ pub(super) fn render_plan_checklist(
         };
         let marker_span = lifecycle_marker(lifecycle);
         let (marker, marker_style, text_style) = match item.status {
-            PlanStepStatus::Completed => ("[x]", theme::muted(), theme::muted()),
+            PlanStepStatus::Completed => (
+                "[✓]",
+                theme::muted(),
+                theme::muted()
+                    .add_modifier(Modifier::ITALIC)
+                    .add_modifier(Modifier::CROSSED_OUT),
+            ),
             PlanStepStatus::InProgress => (
                 "[>]",
                 theme::activity().add_modifier(Modifier::BOLD),
@@ -301,7 +307,9 @@ pub(super) fn render_plan_checklist(
             ),
             PlanStepStatus::Pending => ("[ ]", theme::muted(), theme::muted()),
         };
-        debug_assert_eq!(marker, marker_span.content.as_ref());
+        debug_assert!(
+            marker == marker_span.content.as_ref() || item.status == PlanStepStatus::Completed
+        );
         let mut wrapped = wrap(&item.step, body_width).into_iter();
         if let Some(first) = wrapped.next() {
             lines.push(rail_line(vec![
@@ -883,12 +891,16 @@ impl ConversationRenderInternals for ConversationModel {
                     if p.category.is_some() {
                         // The accent bar marks live structure; history gets
                         // the quiet separator weight instead (DESIGN-007).
+                        // Uncategorized tool rows keep the same 2-cell slot
+                        // as blank space so labels align with grouped rows.
                         let bar = if in_latest_turn {
                             theme::accent_style()
                         } else {
                             theme::metadata_style()
                         };
                         spans.push(Span::styled("  ", bar));
+                    } else {
+                        spans.push(Span::styled("  ", theme::metadata_style()));
                     }
                     spans.push(Span::styled(p.label, label_style));
                     spans.push(Span::styled("  ", theme::metadata_style()));
@@ -3476,7 +3488,7 @@ mod tests {
                         .to_string()
                 })
                 .collect::<Vec<_>>();
-            assert!(rendered.iter().any(|line| line == "  [x] Inspect code"));
+            assert!(rendered.iter().any(|line| line == "  [✓] Inspect code"));
             assert!(rendered
                 .iter()
                 .any(|line| line.starts_with("  [>] Implement")));
@@ -3533,7 +3545,7 @@ mod tests {
             "header counts completion: {text:?}"
         );
         assert!(
-            text.iter().any(|l| l == "  [x] Inspect code"),
+            text.iter().any(|l| l == "  [✓] Inspect code"),
             "completed checks off: {text:?}"
         );
         assert!(
@@ -3548,9 +3560,9 @@ mod tests {
             text.iter().any(|l| l.contains("read src/lib.rs")),
             "step evidence shown: {text:?}"
         );
-        // No emoji progress bars or decorative symbols: only the ASCII
-        // lifecycle markers plus the established `·` separator vocabulary.
-        const BANNED: [char; 12] = ['✓', '✗', '•', '●', '○', '◌', '■', '⚑', '✅', '█', '░', '…'];
+        // Done rows intentionally carry `✓`; other decorative symbols stay
+        // banned from plan rows.
+        const BANNED: [char; 11] = ['✗', '•', '●', '○', '◌', '■', '⚑', '✅', '█', '░', '…'];
         for line in &text {
             assert!(
                 !line.chars().any(|c| BANNED.contains(&c)),
@@ -3569,6 +3581,25 @@ mod tests {
                 .any(|s| s.content.contains("Implement fix")
                     && s.style == theme::text().add_modifier(Modifier::BOLD)),
             "in-progress step bold primary: {active:?}"
+        );
+        // Completed step text is muted italic + struck through; the tick
+        // marker keeps the done state legible without colour.
+        let done = lines
+            .iter()
+            .find(|l| line_text(l).contains("Inspect code"))
+            .unwrap();
+        let want = theme::muted()
+            .add_modifier(Modifier::ITALIC)
+            .add_modifier(Modifier::CROSSED_OUT);
+        assert!(
+            done.spans
+                .iter()
+                .any(|s| s.content.contains("Inspect code") && s.style == want),
+            "completed step italic strikethrough: {done:?}"
+        );
+        assert!(
+            line_text(done) == "  [✓] Inspect code",
+            "completed marker is the tick: {done:?}"
         );
     }
 

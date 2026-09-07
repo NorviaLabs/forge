@@ -1331,8 +1331,13 @@ async fn a_running_turn_paints_a_live_line_in_the_transcript() {
         rendered.contains(crate::widgets::turn_line::INTERRUPT_HINT),
         "the interrupt was not advertised:\n{rendered}"
     );
-    // DESIGN-006: the live row carries `[>]` + phase + elapsed — no volume.
-    assert!(rendered.contains("[>]"), "no live marker:\n{rendered}");
+    // DESIGN-006: the live row carries a braille spinner + phase + elapsed — no volume.
+    assert!(
+        ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+            .iter()
+            .any(|frame| rendered.contains(frame)),
+        "no live marker:\n{rendered}"
+    );
     assert!(!rendered.contains("chars"), "volume leaked:\n{rendered}");
 }
 
