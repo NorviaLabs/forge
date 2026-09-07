@@ -64,6 +64,7 @@ impl TuiApp {
             FocusBlock::TaskStrip => {
                 text.push_str("• ←/→  Select task slot\n");
                 text.push_str("• Enter  Switch task\n");
+                text.push_str("• n  New task — unnamed, named from its first prompt\n");
                 text.push_str("• Ctrl+Shift+T or /tasks  Open task switcher\n");
                 text.push_str("• s / c  Stop / continue the selected task\n");
                 text.push_str("• p  Pin  ·  x  Archive\n");
