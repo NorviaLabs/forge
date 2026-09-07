@@ -152,6 +152,9 @@ pub enum SupervisorCommand {
     PollSession {
         session_id: SessionId,
     },
+    CompactContext {
+        session_id: SessionId,
+    },
     CancelBackgroundTask {
         session_id: SessionId,
         task_id: BackgroundTaskId,
@@ -1132,6 +1135,17 @@ async fn execute_command(
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
             session.poll_background_tasks().await?;
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::CompactContext { session_id } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            let pending =
+                session.begin_context_compaction(forge_core::CompactionTrigger::Manual);
+            let completed = pending.execute().await.ok_or_else(|| {
+                RepositorySupervisorError::Command("context compaction was cancelled".into())
+            })?;
+            session.finish_context_compaction(completed).await?;
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::CancelBackgroundTask {
