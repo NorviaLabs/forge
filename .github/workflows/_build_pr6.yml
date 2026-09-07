@@ -26,8 +26,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # Remaining top-level multisession identifiers. Do not touch
-          # AgentSession task/queue/background-task concepts.
           replacements = {
               "TaskStrip": "SessionStrip",
               "TaskRename": "SessionRename",
@@ -82,7 +80,6 @@ jobs:
           s = s.replace("prompt, so the strip/branch stay readable", "prompt, so the Sessions strip stays readable")
           p.write_text(s)
 
-          # Update explicit identity assertions/copy left by the old task naming.
           for p in [
               Path("crates/forge-storage/src/worktree.rs"),
               Path("crates/forge-session/src/supervisor.rs"),
@@ -92,11 +89,15 @@ jobs:
               s = s.replace('"forge/task-"', '"forge/session-"')
               s = s.replace('"forge/task-7"', '"forge/session-7"')
               s = s.replace('join("task-7")', 'join("session-7")')
+              s = s.replace('join("task-8")', 'join("session-8")')
+              s = s.replace('"forge/Scheduler-fairness-13"', '"forge/session-13"')
+              s = s.replace('join("task-13-Scheduler-fairness")', 'join("session-13")')
               s = s.replace('`task-{id}` path, `forge/task-{id}` branch', '`session-{id}` path, `forge/session-{id}` branch')
               s = s.replace('id-only branch/path naming', 'stable session-id branch/path naming')
+              s = s.replace('unnamed_task_worktrees_get_an_id_only_name_and_branch', 'managed_session_worktrees_get_stable_id_only_identity')
+              s = s.replace('task_worktree_uses_the_initiating_head_and_user_facing_names', 'session_worktree_uses_initiating_head_and_stable_identity')
               p.write_text(s)
 
-          # User-facing multisession copy only.
           for p in [
               Path("crates/forge-tui/src/app/commands.rs"),
               Path("crates/forge-tui/src/app/overlays.rs"),
