@@ -81,9 +81,15 @@ pub fn create_task_worktree(
     label: &str,
 ) -> Result<SubagentWorktree, WorktreeError> {
     std::fs::create_dir_all(base_dir)?;
+    // An unnamed task gets an id-only name; a named one keeps the
+    // label-derived slug so `forge/task-7` style names stay readable.
+    // `sanitize_label` already makes the slug safe to interpolate.
     let slug = sanitize_label(label);
-    let name = format!("task-{id}-{slug}");
-    let branch = format!("forge/{slug}-{id}");
+    let (name, branch) = if label.trim().is_empty() {
+        (format!("task-{id}"), format!("forge/task-{id}"))
+    } else {
+        (format!("task-{id}-{slug}"), format!("forge/{slug}-{id}"))
+    };
     let path = base_dir.join(&name);
     let output = Command::new("git")
         .arg("-C")
@@ -98,6 +104,16 @@ pub fn create_task_worktree(
         ));
     }
     Ok(SubagentWorktree { path, branch })
+}
+
+/// Derive a task label from a prompt's opening words: "rewrite the lexer"
+/// becomes `rewrite-the-lexer`. Used to name an unnamed task from its first
+/// prompt, so the strip/branch stay readable instead of showing an empty
+/// or id-only name. Falls back to `task` for prompts that sanitize to
+/// nothing (punctuation-only, etc.), matching [`sanitize_label`].
+pub fn label_from_prompt(prompt: &str) -> String {
+    let words: Vec<&str> = prompt.split_whitespace().take(8).collect();
+    sanitize_label(&words.join(" "))
 }
 
 /// Reduce arbitrary (possibly model-authored) text to a safe path component
@@ -347,6 +363,37 @@ mod tests {
         assert_eq!(sanitize_label("---"), "task");
         let long = "a".repeat(100);
         assert_eq!(sanitize_label(&long).len(), 40);
+    }
+
+    #[test]
+    fn label_from_prompt_uses_the_opening_words() {
+        assert_eq!(label_from_prompt("rewrite the lexer"), "rewrite-the-lexer");
+        assert_eq!(
+            label_from_prompt("fix the login bug and then run the tests"),
+            "fix-the-login-bug-and-then-run-the"
+        );
+        // Eight words max, then sanitize caps the length.
+        assert_eq!(label_from_prompt("!!! ???"), "task");
+        assert_eq!(label_from_prompt("  "), "task");
+        let long = format!("word {}", "a".repeat(200));
+        assert_eq!(label_from_prompt(&long).len(), 40);
+    }
+
+    #[test]
+    fn unnamed_task_worktrees_get_an_id_only_name_and_branch() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+
+        let wt = create_task_worktree(repo.path(), base.path(), 7, "").unwrap();
+        assert_eq!(wt.path, base.path().join("task-7"));
+        assert_eq!(wt.branch, "forge/task-7");
+
+        // Unnamed tasks never collide: the id is the differentiator.
+        let other = create_task_worktree(repo.path(), base.path(), 8, "").unwrap();
+        assert_eq!(other.path, base.path().join("task-8"));
+        assert_ne!(wt.path, other.path);
+        assert_ne!(wt.branch, other.branch);
     }
 
     #[test]

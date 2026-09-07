@@ -664,6 +664,18 @@ async fn execute_command(
             label,
             first_prompt,
         } => {
+            // An empty label is legal: the task starts unnamed and is named
+            // from its first prompt. A prompt supplied here (the form path)
+            // is used directly; the TUI renames an unnamed task when the
+            // operator types its first message instead.
+            let label = if label.trim().is_empty() {
+                first_prompt
+                    .as_deref()
+                    .map(forge_storage::label_from_prompt)
+                    .unwrap_or_default()
+            } else {
+                label
+            };
             let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
             let base_dir = storage.path_for(RuntimeDataKind::Worktree)?;
             let pending = state
@@ -729,15 +741,40 @@ async fn execute_command(
                 .await?;
             let actor = Arc::new(TaskActor::new(task.clone(), opened.session));
             state.actors.write().await.insert(task.session_id, actor);
-            // The first prompt stays parked on the pending operation until
-            // `FinalizeCreation`; queueing it here would be rejected by the
-            // `awaiting_trust` guard, and bypassing that guard would run a
-            // model turn in a worktree the operator has not confirmed.
-            let _ = state.events.send(SupervisorEvent::TrustRequired {
-                operation_id: pending.operation_id,
-                label: task.label,
-                workspace: task.workspace,
-            });
+            if first_prompt.is_some() {
+                // A parked prompt runs as soon as the operator confirms
+                // trust, so the creation pauses on the trust modal. The
+                // prompt stays parked on the pending operation until
+                // `FinalizeCreation`; queueing it here would be rejected by
+                // the `awaiting_trust` guard, and bypassing that guard
+                // would run a model turn in a worktree the operator has not
+                // confirmed.
+                let _ = state.events.send(SupervisorEvent::TrustRequired {
+                    operation_id: pending.operation_id,
+                    label: task.label,
+                    workspace: task.workspace,
+                });
+            } else {
+                // Prompt-less creation is one keypress and nothing can run
+                // until the operator types in the task, so no modal: record
+                // the trust grant now and finalize immediately. A failure to
+                // persist rolls the creation back rather than leaving a task
+                // that looks trusted but is not recorded.
+                let completed = state
+                    .control
+                    .complete_creation(pending.operation_id)
+                    .await?;
+                if let Some(session_id) = completed.session_id {
+                    let workspace = state.control.task(session_id).await?.workspace;
+                    if let Err(error) = state.grant_trust(&workspace) {
+                        let _ = rollback_creation(&state, pending.operation_id).await;
+                        let _ = state
+                            .events
+                            .send(SupervisorEvent::Roster(snapshots(&state).await));
+                        return Err(error);
+                    }
+                }
+            }
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
@@ -1523,6 +1560,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_prompt_less_task_skips_the_trust_modal_and_is_ready_immediately() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateTask {
+                label: String::new(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+
+        // One-key creation must not park on a modal: no TrustRequired ever
+        // fires, the task is registered, and its worktree is trusted before
+        // the operator can type anything in it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
+                Ok(Ok(SupervisorEvent::TrustRequired { .. })) => {
+                    panic!("prompt-less creation must not park on trust")
+                }
+                Ok(Ok(_)) => continue,
+                _ => break,
+            }
+        }
+        let task = control
+            .tasks()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label.is_empty())
+            .expect("unnamed task row");
+        assert!(task.workspace.exists());
+        assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
+        // The id-only naming: `task-{id}` path, `forge/task-{id}` branch.
+        assert!(
+            task.branch.starts_with("forge/task-"),
+            "branch: {}",
+            task.branch
+        );
+        assert!(
+            task.workspace
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("task-")),
+            "path: {}",
+            task.workspace.display()
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unnamed_task_with_a_prompt_takes_its_label_from_the_prompt() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateTask {
+                label: String::new(),
+                first_prompt: Some("rewrite the lexer".into()),
+            })
+            .await
+            .unwrap();
+
+        // A prompt still parks on trust (the form path), but the empty
+        // label is derived from the prompt before the worktree is created.
+        let operation_id = loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
+                _ => continue,
+            }
+        };
+        let task = control
+            .tasks()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "rewrite-the-lexer")
+            .expect("prompt-derived label");
+        assert_eq!(
+            task.branch,
+            format!("forge/rewrite-the-lexer-{operation_id}")
+        );
+
+        handle
+            .command(SupervisorCommand::FinalizeCreation { operation_id })
+            .await
+            .unwrap();
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn cancelling_trust_removes_the_worktree_and_the_task_row() {
         let repo = TempDir::new().unwrap();
         forge_test_support::init_repo_with_commit(repo.path());
@@ -1588,16 +1728,6 @@ mod tests {
             })
             .await
             .unwrap();
-        let operation_id = loop {
-            match events.recv().await.unwrap() {
-                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
-                _ => continue,
-            }
-        };
-        handle
-            .command(SupervisorCommand::FinalizeCreation { operation_id })
-            .await
-            .unwrap();
         let task = control
             .tasks()
             .await
@@ -1650,22 +1780,11 @@ mod tests {
             git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
                 .await;
 
-        let mut events = handle.subscribe();
         handle
             .command(SupervisorCommand::CreateTask {
                 label: "dirty-cleanup".into(),
                 first_prompt: None,
             })
-            .await
-            .unwrap();
-        let operation_id = loop {
-            match events.recv().await.unwrap() {
-                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
-                _ => continue,
-            }
-        };
-        handle
-            .command(SupervisorCommand::FinalizeCreation { operation_id })
             .await
             .unwrap();
         let task = control

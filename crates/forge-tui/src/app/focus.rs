@@ -194,9 +194,9 @@ impl TuiApp {
                     _ => "Hit Enter ⏎ to change effort".into(),
                 })
             }
-            FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => {
-                Some("←→ select · Enter switch · s stop · c continue · p pin · x archive".into())
-            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => Some(
+                "←→ select · Enter switch · n new · s stop · c continue · p pin · x archive".into(),
+            ),
             // No `/`-to-search binding exists: `/` typed here falls through
             // to the composer. Search is one ⇧Tab away (proven by
             // `tab_cycles_visible_blocks_and_skips_hidden_ones`), and Esc
