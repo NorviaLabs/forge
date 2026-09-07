@@ -195,7 +195,7 @@ async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
     app.focus_block(FocusBlock::TaskStrip);
     let help = app.help_text();
     assert!(
-        help.contains("F3"),
+        help.contains("Ctrl+Shift+T"),
         "session strip help should name the real switcher binding: {help}"
     );
     assert!(
