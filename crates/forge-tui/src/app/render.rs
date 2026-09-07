@@ -317,6 +317,7 @@ impl TuiApp {
             compact: false,
             stream_wait,
             stream_thought_secs: self.timing.thought_secs,
+            pulse_dim: crate::conversation::plan_pulse_dim(self.busy_state.throbber()),
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
         let all_messages = self.transcript_view.messages();
@@ -430,6 +431,7 @@ impl TuiApp {
                 .map(|payload| payload.call_id.clone()),
             question_idx: self.question_menu_indexes().0,
             question_option_idx: self.question_menu_indexes().1,
+            pulse_dim: crate::conversation::plan_pulse_dim(self.busy_state.throbber()),
         };
         // A complete cache already contains every settled line. Keep it
         // complete while scrolling instead of rebuilding a smaller tail, but
@@ -466,6 +468,7 @@ impl TuiApp {
                     busy: false,
                     stream_wait: None,
                     stream_thought_secs: None,
+                    pulse_dim: opts.pulse_dim,
                     ..opts.clone()
                 },
             )
