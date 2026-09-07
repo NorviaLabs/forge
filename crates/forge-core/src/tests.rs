@@ -320,19 +320,13 @@ async fn missing_original_retry_arguments_fail_closed() {
     assert!(session.pending_hitl().is_none());
 }
 
-/// Manual smoke check: opens a harmless local page in Safari through the real
+/// Manual smoke check: opens Google in the default browser through the real
 /// shell/sandbox/approval path. Kept out of unattended test runs.
 #[cfg(target_os = "macos")]
 #[tokio::test]
-#[ignore = "opens Safari; run explicitly on an interactive macOS desktop"]
+#[ignore = "opens Google in the default browser; run explicitly on an interactive macOS desktop"]
 async fn browser_handoff_retries_the_exact_command_after_approval() {
     let dir = tempdir().unwrap();
-    let page = dir.path().join("sandbox-browser-check.html");
-    std::fs::write(
-        &page,
-        "<!doctype html><title>Forge sandbox check</title><p>Forge browser handoff check</p>",
-    )
-    .unwrap();
     let mut tools = ToolRegistry::new();
     for tool in forge_tools::default_builtins() {
         tools.register(tool);
@@ -345,10 +339,10 @@ async fn browser_handoff_retries_the_exact_command_after_approval() {
     .await
     .unwrap();
     session
-        .append_user_message("open the local check page")
+        .append_user_message("open Google in the default browser")
         .await
         .unwrap();
-    let command = format!("/usr/bin/open -g -a Safari '{}'", page.display());
+    let command = "/usr/bin/open https://google.com".to_string();
     let start = session
         .begin_model_response_application(tool_call_response(vec![ToolCall {
             id: "browser-handoff".into(),
