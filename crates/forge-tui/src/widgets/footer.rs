@@ -107,7 +107,9 @@ fn lifecycle_label(life: TurnLifecycle) -> (&'static str, Style) {
 /// so the row keeps a fixed width and reads calm next to the live turn line.
 /// The pattern follows OpenCode/Gemini: one dot breathing on a ~800ms cycle
 /// (two ticks bright, two ticks dim at the 200ms event-loop cadence).
-fn running_dot_bright(state: &throbber_widgets_tui::ThrobberState) -> bool {
+/// The plan checklist's active `[>]` marker shares this rhythm via
+/// [`crate::conversation::plan_pulse_dim`].
+pub(crate) fn running_dot_bright(state: &throbber_widgets_tui::ThrobberState) -> bool {
     (state.index() % 4) < 2
 }
 
