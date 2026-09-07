@@ -121,19 +121,19 @@ jobs:
                       );
                   }
 
-                  let (_dir, mut app) = app().await;
-                  app.overlay = Some(Overlay::Help);
-                  app.handle_key(press(KeyCode::F(3))).await.unwrap();
+                  let (_dir, mut help_app) = app().await;
+                  help_app.overlay = Some(Overlay::Help);
+                  help_app.handle_key(press(KeyCode::F(3))).await.unwrap();
                   assert!(matches!(
-                      app.overlay,
+                      help_app.overlay,
                       Some(Overlay::ResumePicker { .. } | Overlay::SessionSwitcher { .. })
                   ));
 
-                  let (_dir, mut app) = app().await;
-                  app.enter_transient(TransientOwner::JumpToLine);
-                  app.handle_key(press(KeyCode::F(3))).await.unwrap();
+                  let (_dir, mut transient_app) = app().await;
+                  transient_app.enter_transient(TransientOwner::JumpToLine);
+                  transient_app.handle_key(press(KeyCode::F(3))).await.unwrap();
                   assert!(matches!(
-                      app.overlay,
+                      transient_app.overlay,
                       Some(Overlay::ResumePicker { .. } | Overlay::SessionSwitcher { .. })
                   ));
               }
