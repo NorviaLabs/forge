@@ -417,8 +417,7 @@ impl TuiApp {
     /// needs to become the root for the explorer and repository chrome.
     pub(super) fn sync_selected_workspace(&mut self) {
         let workspace = self.session_view.workspace_root().to_path_buf();
-        let already_bound =
-            self.workspace_files.explorer.root_path() == Some(workspace.as_path());
+        let already_bound = self.workspace_files.explorer.root_path() == Some(workspace.as_path());
         self.runtime.cwd = workspace.clone();
         if !already_bound {
             let diff_source = self.diff_view_is_open().then_some(self.diff_view.source);
