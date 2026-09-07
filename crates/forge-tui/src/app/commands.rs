@@ -206,12 +206,7 @@ impl TuiApp {
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleToolDetails)
             }
-            KeyCode::Char('t')
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
-            {
-                Some(SemanticCommand::OpenSessionSwitcher)
-            }
+            KeyCode::F(3) if key.modifiers.is_empty() => Some(SemanticCommand::OpenSessionSwitcher),
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleFiles)
             }
@@ -873,7 +868,7 @@ impl TuiApp {
                         }
                     }
                 }
-                Ok(SlashCommand::Tasks) => {
+                Ok(SlashCommand::Sessions) => {
                     self.open_session_switcher();
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
@@ -1402,11 +1397,11 @@ mod tests {
             app.semantic_command_for_global_key(key(KeyCode::Char('c'), ALT)),
             None
         );
-        // F3 no longer opens a side-channel footer focus — reaching the
-        // footer's controls is an ordinary Tab stop now (FocusBlock::Footer).
+        // F3 is the global Sessions key. Footer controls remain an ordinary
+        // Tab stop; F3 no longer means footer focus.
         assert_eq!(
             app.semantic_command_for_global_key(key(KeyCode::F(3), NONE)),
-            None
+            Some(SemanticCommand::OpenSessionSwitcher)
         );
     }
 

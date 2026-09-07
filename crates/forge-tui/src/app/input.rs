@@ -1482,6 +1482,25 @@ impl TuiApp {
             return Ok(());
         }
 
+        // F3 is Forge-reserved session navigation. Intercept it before
+        // context menus, HITL/questions, overlays, editor/transient input, or
+        // the embedded PTY can consume it. Destructive confirmations retain
+        // keyboard ownership until the operator resolves or cancels them.
+        if key.code == KeyCode::F(3) && key.modifiers.is_empty() {
+            let atomic_session_confirmation = matches!(
+                self.overlay,
+                Some(Overlay::SessionConfirm { .. } | Overlay::TrustSession { .. })
+            );
+            if !atomic_session_confirmation {
+                if matches!(self.overlay, Some(Overlay::SessionSwitcher { .. })) {
+                    self.dismiss_overlay();
+                } else {
+                    self.open_session_switcher();
+                }
+                return Ok(());
+            }
+        }
+
         if self.context_menu.is_some() {
             self.handle_context_menu_key(key);
             return Ok(());
@@ -1814,6 +1833,78 @@ mod tests {
             terminal_key_bytes(press(KeyCode::Backspace)),
             Some(vec![0x7f])
         );
+    }
+
+    #[tokio::test]
+    async fn f3_is_reserved_for_sessions_and_never_encoded_for_the_pty() {
+        let (_dir, app) = app().await;
+        let f3 = press(KeyCode::F(3));
+        assert_eq!(terminal_key_bytes(f3), None);
+        assert_eq!(
+            app.semantic_command_for_global_key(f3),
+            Some(SemanticCommand::OpenSessionSwitcher)
+        );
+
+        let old = press_with(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.semantic_command_for_global_key(old), None);
+        assert_eq!(terminal_key_bytes(old), Some(vec![20]));
+    }
+
+    #[tokio::test]
+    async fn f3_opens_sessions_before_every_focused_surface_can_consume_it() {
+        for block in FocusBlock::ORDER {
+            let (_dir, mut app) = app().await;
+            app.focus.set_navigation(block);
+            app.handle_key(press(KeyCode::F(3))).await.unwrap();
+            assert!(
+                matches!(
+                    app.overlay,
+                    Some(Overlay::ResumePicker { .. } | Overlay::SessionSwitcher { .. })
+                ),
+                "F3 should open Sessions from {block:?}"
+            );
+        }
+
+        let (_dir, mut help_app) = app().await;
+        help_app.overlay = Some(Overlay::Help);
+        help_app.handle_key(press(KeyCode::F(3))).await.unwrap();
+        assert!(matches!(
+            help_app.overlay,
+            Some(Overlay::ResumePicker { .. } | Overlay::SessionSwitcher { .. })
+        ));
+
+        let (_dir, mut transient_app) = app().await;
+        transient_app.enter_transient(TransientOwner::JumpToLine);
+        transient_app
+            .handle_key(press(KeyCode::F(3)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            transient_app.overlay,
+            Some(Overlay::ResumePicker { .. } | Overlay::SessionSwitcher { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn f3_does_not_escape_atomic_confirmations() {
+        let (_dir, mut app) = app().await;
+        app.explorer_dialog.show(ExplorerDialog::DirtyExit);
+        app.handle_key(press(KeyCode::F(3))).await.unwrap();
+        assert!(app.explorer_dialog.is_open());
+        assert!(app.overlay.is_none());
+
+        app.explorer_dialog.clear();
+        app.overlay = Some(Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::Archive,
+            session_id: uuid::Uuid::new_v4().to_string(),
+            label: "session".into(),
+            detail: "archive this session".into(),
+        });
+        app.handle_key(press(KeyCode::F(3))).await.unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::SessionConfirm { .. })));
     }
 
     #[tokio::test]
