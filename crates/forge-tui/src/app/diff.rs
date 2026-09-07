@@ -24,6 +24,7 @@ impl TuiApp {
             self.status_state.message = "Not a git repository".into();
             return;
         }
+        self.workspace_files.explorer.refresh_git_status();
         self.workspace_navigation.navigate_to(WorkspaceView::Diff);
         self.focus_block(FocusBlock::Workspace);
         self.refresh_diff_entries();

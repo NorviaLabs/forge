@@ -66,6 +66,30 @@ async fn selecting_a_task_rebinds_workspace_owned_views() {
 }
 
 #[tokio::test]
+async fn switching_tasks_discards_the_previous_worktree_diff_cache() {
+    let (dir, mut app) = focus_test_app().await;
+    app.diff_view = crate::diff_view::DiffView::new(crate::diff_view::DiffSource::WorkingTree);
+    app.diff_view.entries.push(crate::diff_view::DiffEntry {
+        path: "old.txt".into(),
+        marker: "M",
+        untracked: false,
+    });
+    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
+
+    let linked = dir.path().join("linked-worktree");
+    std::fs::create_dir_all(&linked).unwrap();
+    app.session_view.workspace_root = linked.canonicalize().unwrap();
+    app.sync_selected_workspace();
+
+    assert!(app.diff_view.entries.is_empty());
+    assert!(app.diff_view.loaded_for.is_none());
+    assert!(matches!(
+        app.diff_view.patch,
+        crate::diff_view::PatchState::Loading
+    ));
+}
+
+#[tokio::test]
 async fn a_task_never_visited_before_starts_from_a_clean_view() {
     let (_dir, mut app) = focus_test_app().await;
     // Whatever model the host's restored auth put in the footer — the point
