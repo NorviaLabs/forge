@@ -137,7 +137,7 @@ pub enum SupervisorCommand {
     SetCapabilities {
         session_id: SessionId,
         image_input_supported: bool,
-        context_window: Option<(usize, usize)>,
+        context_window: Option<(usize, Option<usize>)>,
     },
     CancelQueuedPrompt {
         session_id: SessionId,
