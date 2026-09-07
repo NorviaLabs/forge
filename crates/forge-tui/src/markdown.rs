@@ -400,7 +400,7 @@ impl MdRenderer {
                     )));
                 }
                 Event::TaskListMarker(checked) => {
-                    let mark = if checked { "[x]" } else { "[ ]" };
+                    let mark = if checked { "[✓]" } else { "[ ]" };
                     self.inline.push(Span::styled(
                         mark.to_string(),
                         theme::text().add_modifier(Modifier::BOLD),
