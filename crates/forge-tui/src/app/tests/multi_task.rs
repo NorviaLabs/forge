@@ -71,7 +71,6 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     );
 }
 
-
 #[tokio::test]
 async fn terminal_and_explorer_follow_the_session_worktree() {
     if !crate::interactive_terminal::pty_allocation_available() {
