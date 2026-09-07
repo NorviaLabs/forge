@@ -366,7 +366,7 @@ async fn run_tui_inner(
             .map_err(|error| TuiError::Other(error.to_string()))?;
         app.set_feedback(
             FeedbackSeverity::Info,
-            "Multi-task mode · Ctrl+Shift+T or /tasks",
+            "Multi-session mode · Ctrl+Shift+T or /tasks",
         );
     }
     app.terminal_events = Some(TerminalEventSource::spawn());

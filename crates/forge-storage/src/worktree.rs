@@ -74,22 +74,18 @@ pub fn main_worktree(workspace: &Path) -> Result<PathBuf, WorktreeError> {
 
 /// Create a user-visible managed task worktree and branch from
 /// `source_worktree`'s committed `HEAD`.
-pub fn create_task_worktree(
+pub fn create_session_worktree(
     source_worktree: &Path,
     base_dir: &Path,
     id: u64,
-    label: &str,
+    _label: &str,
 ) -> Result<SubagentWorktree, WorktreeError> {
     std::fs::create_dir_all(base_dir)?;
-    // An unnamed task gets an id-only name; a named one keeps the
-    // label-derived slug so `forge/task-7` style names stay readable.
-    // `sanitize_label` already makes the slug safe to interpolate.
-    let slug = sanitize_label(label);
-    let (name, branch) = if label.trim().is_empty() {
-        (format!("task-{id}"), format!("forge/task-{id}"))
-    } else {
-        (format!("task-{id}-{slug}"), format!("forge/{slug}-{id}"))
-    };
+    // Session display labels are mutable UX metadata. Git identity is
+    // deliberately immutable and id-only so renaming a session never
+    // renames its branch or worktree directory.
+    let name = format!("session-{id}");
+    let branch = format!("forge/session-{id}");
     let path = base_dir.join(&name);
     let output = Command::new("git")
         .arg("-C")
@@ -106,12 +102,12 @@ pub fn create_task_worktree(
     Ok(SubagentWorktree { path, branch })
 }
 
-/// Derive a task label from a prompt's opening words: "rewrite the lexer"
-/// becomes `rewrite-the-lexer`. Used to name an unnamed task from its first
-/// prompt, so the strip/branch stay readable instead of showing an empty
+/// Derive a session display label from a prompt's opening words: "rewrite the lexer"
+/// becomes `rewrite-the-lexer`. Used to name an unnamed session from its first
+/// prompt, so the Sessions strip stays readable instead of showing an empty
 /// or id-only name. Falls back to `task` for prompts that sanitize to
 /// nothing (punctuation-only, etc.), matching [`sanitize_label`].
-pub fn label_from_prompt(prompt: &str) -> String {
+pub fn session_label_from_prompt(prompt: &str) -> String {
     let words: Vec<&str> = prompt.split_whitespace().take(8).collect();
     sanitize_label(&words.join(" "))
 }
@@ -366,32 +362,35 @@ mod tests {
     }
 
     #[test]
-    fn label_from_prompt_uses_the_opening_words() {
-        assert_eq!(label_from_prompt("rewrite the lexer"), "rewrite-the-lexer");
+    fn session_label_from_prompt_uses_the_opening_words() {
         assert_eq!(
-            label_from_prompt("fix the login bug and then run the tests"),
+            session_label_from_prompt("rewrite the lexer"),
+            "rewrite-the-lexer"
+        );
+        assert_eq!(
+            session_label_from_prompt("fix the login bug and then run the tests"),
             "fix-the-login-bug-and-then-run-the"
         );
         // Eight words max, then sanitize caps the length.
-        assert_eq!(label_from_prompt("!!! ???"), "task");
-        assert_eq!(label_from_prompt("  "), "task");
+        assert_eq!(session_label_from_prompt("!!! ???"), "task");
+        assert_eq!(session_label_from_prompt("  "), "task");
         let long = format!("word {}", "a".repeat(200));
-        assert_eq!(label_from_prompt(&long).len(), 40);
+        assert_eq!(session_label_from_prompt(&long).len(), 40);
     }
 
     #[test]
-    fn unnamed_task_worktrees_get_an_id_only_name_and_branch() {
+    fn managed_session_worktrees_get_stable_id_only_identity() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let wt = create_task_worktree(repo.path(), base.path(), 7, "").unwrap();
-        assert_eq!(wt.path, base.path().join("task-7"));
-        assert_eq!(wt.branch, "forge/task-7");
+        let wt = create_session_worktree(repo.path(), base.path(), 7, "").unwrap();
+        assert_eq!(wt.path, base.path().join("session-7"));
+        assert_eq!(wt.branch, "forge/session-7");
 
         // Unnamed tasks never collide: the id is the differentiator.
-        let other = create_task_worktree(repo.path(), base.path(), 8, "").unwrap();
-        assert_eq!(other.path, base.path().join("task-8"));
+        let other = create_session_worktree(repo.path(), base.path(), 8, "").unwrap();
+        assert_eq!(other.path, base.path().join("session-8"));
         assert_ne!(wt.path, other.path);
         assert_ne!(wt.branch, other.branch);
     }
@@ -463,7 +462,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let wt = create_task_worktree(repo.path(), base.path(), 1, "cleanup-me").unwrap();
+        let wt = create_session_worktree(repo.path(), base.path(), 1, "cleanup-me").unwrap();
 
         let error = remove_clean_worktree_if_branch(repo.path(), &wt.path, "forge/other-branch")
             .unwrap_err();
@@ -495,7 +494,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let linked = create_task_worktree(repo.path(), base.path(), 4, "linked").unwrap();
+        let linked = create_session_worktree(repo.path(), base.path(), 4, "linked").unwrap();
 
         assert_eq!(
             main_worktree(&linked.path).unwrap().canonicalize().unwrap(),
@@ -504,18 +503,15 @@ mod tests {
     }
 
     #[test]
-    fn task_worktree_uses_the_initiating_head_and_user_facing_names() {
+    fn session_worktree_uses_initiating_head_and_stable_identity() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
         let worktree =
-            create_task_worktree(repo.path(), base.path(), 13, "Scheduler fairness").unwrap();
-        assert_eq!(worktree.branch, "forge/Scheduler-fairness-13");
-        assert_eq!(
-            worktree.path,
-            base.path().join("task-13-Scheduler-fairness")
-        );
+            create_session_worktree(repo.path(), base.path(), 13, "Scheduler fairness").unwrap();
+        assert_eq!(worktree.branch, "forge/session-13");
+        assert_eq!(worktree.path, base.path().join("session-13"));
     }
 
     #[test]
@@ -523,7 +519,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let worktree = create_task_worktree(repo.path(), base.path(), 5, "dirty").unwrap();
+        let worktree = create_session_worktree(repo.path(), base.path(), 5, "dirty").unwrap();
         std::fs::write(worktree.path.join("uncommitted.txt"), "keep me").unwrap();
 
         assert!(matches!(

@@ -888,7 +888,7 @@ impl TuiApp {
                     .find(|task| task.session_id == self.selected_session_id)
                     .is_some_and(|task| task.label.is_empty());
                 if unnamed {
-                    let label = forge_storage::label_from_prompt(&line);
+                    let label = forge_storage::session_label_from_prompt(&line);
                     let _ = handle
                         .command(forge_session::SupervisorCommand::RenameSession {
                             session_id: self.selected_session_id,
@@ -1188,7 +1188,7 @@ impl TuiApp {
 
     async fn handle_active_block_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         match self.focus.block() {
-            FocusBlock::TaskStrip => self.handle_task_strip_key(key).await,
+            FocusBlock::SessionStrip => self.handle_task_strip_key(key).await,
             FocusBlock::Search | FocusBlock::Files => self.handle_file_explorer_key(key).await,
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
             FocusBlock::Sidebar => self.handle_sidebar_key(key).await,

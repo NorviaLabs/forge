@@ -192,7 +192,7 @@ async fn without_a_supervisor_the_primary_is_always_the_selected_runtime() {
 #[tokio::test]
 async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
     let (_dir, mut app) = focus_test_app().await;
-    app.focus_block(FocusBlock::TaskStrip);
+    app.focus_block(FocusBlock::SessionStrip);
     let help = app.help_text();
     assert!(
         help.contains("Ctrl+Shift+T"),
@@ -322,16 +322,16 @@ async fn wait_for_chrome_session(
 #[tokio::test]
 async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.focus_block(FocusBlock::TaskStrip);
+    app.focus_block(FocusBlock::SessionStrip);
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
 
     // One keypress: no form, no modal. The task is registered unnamed and
-    // prompt-less, with the id-only branch/path naming.
+    // prompt-less, with the stable session-id branch/path naming.
     let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
     assert!(
-        task.branch.starts_with("forge/task-"),
+        task.branch.starts_with("forge/session-"),
         "branch: {}",
         task.branch
     );
@@ -356,7 +356,7 @@ async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
 #[tokio::test]
 async fn the_first_prompt_names_an_unnamed_task() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.focus_block(FocusBlock::TaskStrip);
+    app.focus_block(FocusBlock::SessionStrip);
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();

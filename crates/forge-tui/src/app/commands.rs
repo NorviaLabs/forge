@@ -62,7 +62,10 @@ impl TuiApp {
                 })
                 .collect();
             self.overlay = Some(Overlay::session_switcher(items));
-            self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                "Sessions · Enter switch · Esc close",
+            );
             return;
         }
         let sessions = match recent_resume_sessions(
@@ -72,14 +75,14 @@ impl TuiApp {
         ) {
             Ok(sessions) => sessions,
             Err(error) => {
-                self.report_error(&format!("Could not list tasks: {error}"));
+                self.report_error(&format!("Could not list sessions: {error}"));
                 return;
             }
         };
         let current = ResumeSessionItem {
             id: self.session_runtime.session_id.to_string(),
             modified: "current".into(),
-            title: Some("Active task · current worktree".into()),
+            title: Some("Active session · current worktree".into()),
         };
         let mut items = vec![current];
         for session in sessions {
@@ -91,7 +94,10 @@ impl TuiApp {
             });
         }
         self.overlay = Some(Overlay::resume_picker(items));
-        self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
+        self.set_feedback(
+            FeedbackSeverity::Info,
+            "Sessions · Enter switch · Esc close",
+        );
     }
 
     /// Filtered slash suggestions for the current textbox (empty if not in slash mode).
@@ -811,7 +817,7 @@ impl TuiApp {
                             self.render_cache.conversation = None;
                             self.set_feedback(
                                 FeedbackSeverity::Ok,
-                                "forked session · ready for a new task",
+                                "forked session · ready for a new session",
                             );
                             self.push_toast(format!("forked {session_id}"));
                         }

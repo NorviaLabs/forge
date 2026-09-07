@@ -16,6 +16,6 @@ pub use input::{composer_cursor_position, composer_text_area_width, InputBar, In
 pub use panel::background_focused;
 pub use queued_messages::QueuedMessages;
 pub use status::{session_chrome_rows, BusyPhase, StatusBar, StatusModel, TurnLifecycle};
-pub use task_strip::{TaskStrip, TaskStripItem};
+pub use task_strip::{SessionStrip, SessionStripItem};
 pub use toasts::ToastStack;
 pub use turn_line::{phase_verb, turn_line, TurnLineModel};

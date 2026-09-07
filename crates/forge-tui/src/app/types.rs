@@ -377,7 +377,7 @@ impl FileWatchState {
 /// component-specific selection state remains with the component itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FocusBlock {
-    TaskStrip,
+    SessionStrip,
     /// The explorer's search row. Nested visually inside the same bordered
     /// box as `Files` (no standalone layout region), but a real Tab stop of
     /// its own so Tab has one consistent meaning everywhere instead of
@@ -401,7 +401,7 @@ pub(crate) enum FocusBlock {
 impl FocusBlock {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::TaskStrip => "SESSIONS",
+            Self::SessionStrip => "SESSIONS",
             Self::Search => "SEARCH",
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
@@ -422,7 +422,7 @@ impl FocusBlock {
     // while a decision is pending. Footer follows Composer — the natural
     // next stop after typing is the row of dials right below it.
     pub(crate) const ORDER: [Self; 9] = [
-        Self::TaskStrip,
+        Self::SessionStrip,
         Self::Search,
         Self::Files,
         Self::Workspace,
@@ -680,7 +680,7 @@ pub(crate) struct FocusAvailability {
 impl FocusAvailability {
     pub(crate) fn contains(self, block: FocusBlock) -> bool {
         match block {
-            FocusBlock::TaskStrip => self.task_strip,
+            FocusBlock::SessionStrip => self.task_strip,
             FocusBlock::Search => self.search,
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => true,

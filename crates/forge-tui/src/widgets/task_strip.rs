@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskStripState {
+pub enum SessionStripState {
     Idle,
     Running,
     Waiting,
@@ -18,7 +18,7 @@ pub enum TaskStripState {
     Unavailable,
 }
 
-impl From<TaskLifecycle> for TaskStripState {
+impl From<TaskLifecycle> for SessionStripState {
     fn from(value: TaskLifecycle) -> Self {
         match value {
             TaskLifecycle::Ready => Self::Idle,
@@ -34,38 +34,38 @@ impl From<TaskLifecycle> for TaskStripState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskStripItem {
+pub struct SessionStripItem {
     pub slot: Option<u8>,
     pub label: String,
     pub branch: String,
-    pub state: TaskStripState,
+    pub state: SessionStripState,
     pub secondary: Option<String>,
     pub selected: bool,
     pub focused: bool,
     pub attention: bool,
 }
 
-pub struct TaskStrip<'a> {
-    pub items: &'a [TaskStripItem],
+pub struct SessionStrip<'a> {
+    pub items: &'a [SessionStripItem],
     pub overflow: usize,
     pub focused: bool,
 }
 
-impl<'a> TaskStrip<'a> {
-    fn state_status(state: TaskStripState) -> Status {
+impl<'a> SessionStrip<'a> {
+    fn state_status(state: SessionStripState) -> Status {
         match state {
-            TaskStripState::Idle => Status::Info,
-            TaskStripState::Running => Status::Info,
-            TaskStripState::Waiting => Status::Warning,
-            TaskStripState::Completed => Status::Success,
-            TaskStripState::Failed | TaskStripState::Interrupted | TaskStripState::Unavailable => {
-                Status::Error
-            }
+            SessionStripState::Idle => Status::Info,
+            SessionStripState::Running => Status::Info,
+            SessionStripState::Waiting => Status::Warning,
+            SessionStripState::Completed => Status::Success,
+            SessionStripState::Failed
+            | SessionStripState::Interrupted
+            | SessionStripState::Unavailable => Status::Error,
         }
     }
 }
 
-impl Widget for TaskStrip<'_> {
+impl Widget for SessionStrip<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
             return;
@@ -193,26 +193,26 @@ mod tests {
     #[test]
     fn lifecycle_states_map_to_non_colliding_semantic_statuses() {
         assert_eq!(
-            TaskStrip::<'static>::state_status(TaskStripState::Completed),
+            SessionStrip::<'static>::state_status(SessionStripState::Completed),
             Status::Success
         );
         assert_eq!(
-            TaskStrip::<'static>::state_status(TaskStripState::Waiting),
+            SessionStrip::<'static>::state_status(SessionStripState::Waiting),
             Status::Warning
         );
         assert_eq!(
-            TaskStrip::<'static>::state_status(TaskStripState::Failed),
+            SessionStrip::<'static>::state_status(SessionStripState::Failed),
             Status::Error
         );
     }
 
     #[test]
     fn strip_renders_slots_labels_and_overflow() {
-        let items = vec![TaskStripItem {
+        let items = vec![SessionStripItem {
             slot: Some(1),
             label: "parser-fix".into(),
             branch: "forge/parser-fix-1".into(),
-            state: TaskStripState::Running,
+            state: SessionStripState::Running,
             secondary: Some("M".into()),
             selected: true,
             focused: true,
@@ -223,7 +223,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(
-                    TaskStrip {
+                    SessionStrip {
                         items: &items,
                         overflow: 3,
                         focused: true,
@@ -246,11 +246,11 @@ mod tests {
     #[test]
     fn narrow_strip_truncates_and_reports_hidden_tasks() {
         let items = (0..4)
-            .map(|index| TaskStripItem {
+            .map(|index| SessionStripItem {
                 slot: Some(index + 1),
                 label: format!("task-with-a-very-long-name-{index}"),
                 branch: "feature/long-branch-name".into(),
-                state: TaskStripState::Running,
+                state: SessionStripState::Running,
                 secondary: None,
                 selected: index == 2,
                 focused: index == 2,
@@ -262,7 +262,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(
-                    TaskStrip {
+                    SessionStrip {
                         items: &items,
                         overflow: 0,
                         focused: true,

@@ -61,10 +61,10 @@ impl TuiApp {
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
         match self.focus.block() {
-            FocusBlock::TaskStrip => {
-                text.push_str("• ←/→  Select task slot\n");
-                text.push_str("• Enter  Switch task\n");
-                text.push_str("• n  New task — unnamed, named from its first prompt\n");
+            FocusBlock::SessionStrip => {
+                text.push_str("• ←/→  Select session slot\n");
+                text.push_str("• Enter  Switch session\n");
+                text.push_str("• n  New session — unnamed, named from its first prompt\n");
                 text.push_str("• Ctrl+Shift+T or /tasks  Open session switcher\n");
                 text.push_str("• s / c  Stop / continue the selected session\n");
                 text.push_str("• p  Pin  ·  x  Archive\n");
@@ -172,7 +172,7 @@ impl TuiApp {
                 };
                 self.task_strip_selection = index;
                 self.overlay = None;
-                self.focus_block(FocusBlock::TaskStrip);
+                self.focus_block(FocusBlock::SessionStrip);
                 self.handle_task_strip_key(crossterm::event::KeyEvent::new(
                     crossterm::event::KeyCode::Enter,
                     crossterm::event::KeyModifiers::NONE,
@@ -188,23 +188,23 @@ impl TuiApp {
             OverlayAction::Toast(message) => {
                 self.set_feedback(FeedbackSeverity::Warn, message);
             }
-            OverlayAction::OpenTaskInput(mode) => {
+            OverlayAction::OpenSessionInput(mode) => {
                 self.overlay = Some(Overlay::session_input(mode));
             }
-            OverlayAction::OpenTaskRename { session_id, label } => {
-                self.overlay = Some(Overlay::TaskRename {
+            OverlayAction::OpenSessionRename { session_id, label } => {
+                self.overlay = Some(Overlay::SessionRename {
                     session_id,
                     label,
                     error: None,
                 });
             }
-            OverlayAction::OpenTaskConfirm {
+            OverlayAction::OpenSessionConfirm {
                 kind,
                 session_id,
                 label,
                 detail,
             } => {
-                self.overlay = Some(Overlay::TaskConfirm {
+                self.overlay = Some(Overlay::SessionConfirm {
                     kind,
                     session_id,
                     label,

@@ -38,7 +38,7 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    assert_eq!(app.focus.block(), FocusBlock::SessionStrip);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -722,7 +722,7 @@ async fn footer_focus_hint_is_relevant_to_the_selected_chip() {
 async fn navigation_hints_match_the_active_chrome_surface() {
     let (_dir, mut app) = focus_test_app().await;
 
-    app.focus_block(FocusBlock::TaskStrip);
+    app.focus_block(FocusBlock::SessionStrip);
     assert_eq!(
         app.contextual_hint().as_deref(),
         Some("←→ select · Enter switch · n new · s stop · c continue · p pin · x archive")

@@ -703,7 +703,7 @@ async fn execute_command(
             let label = if label.trim().is_empty() {
                 first_prompt
                     .as_deref()
-                    .map(forge_storage::label_from_prompt)
+                    .map(forge_storage::session_label_from_prompt)
                     .unwrap_or_default()
             } else {
                 label
@@ -721,7 +721,7 @@ async fn execute_command(
             // Branch from the *initiating* worktree's committed HEAD, not the
             // main worktree's — launching Forge from a linked worktree must
             // fork the work that worktree is actually on.
-            let worktree = forge_storage::create_task_worktree(
+            let worktree = forge_storage::create_session_worktree(
                 &state.cfg.resolved_workspace,
                 &base_dir,
                 pending.operation_id,
@@ -1596,7 +1596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_prompt_less_task_skips_the_trust_modal_and_is_ready_immediately() {
+    async fn a_prompt_less_session_skips_trust_and_is_ready_immediately() {
         let repo = TempDir::new().unwrap();
         forge_test_support::init_repo_with_commit(repo.path());
         let scratch = TempDir::new().unwrap();
@@ -1636,16 +1636,16 @@ mod tests {
             .expect("unnamed task row");
         assert!(task.workspace.exists());
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
-        // The id-only naming: `task-{id}` path, `forge/task-{id}` branch.
+        // The id-only naming: `session-{id}` path, `forge/session-{id}` branch.
         assert!(
-            task.branch.starts_with("forge/task-"),
+            task.branch.starts_with("forge/session-"),
             "branch: {}",
             task.branch
         );
         assert!(
             task.workspace
                 .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("task-")),
+                .is_some_and(|name| name.to_string_lossy().starts_with("session-")),
             "path: {}",
             task.workspace.display()
         );
@@ -1653,7 +1653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unnamed_task_with_a_prompt_takes_its_label_from_the_prompt() {
+    async fn an_unnamed_session_with_a_prompt_takes_its_display_label_from_the_prompt() {
         let repo = TempDir::new().unwrap();
         forge_test_support::init_repo_with_commit(repo.path());
         let scratch = TempDir::new().unwrap();
@@ -1686,10 +1686,7 @@ mod tests {
             .into_iter()
             .find(|task| task.label == "rewrite-the-lexer")
             .expect("prompt-derived label");
-        assert_eq!(
-            task.branch,
-            format!("forge/rewrite-the-lexer-{operation_id}")
-        );
+        assert_eq!(task.branch, format!("forge/session-{operation_id}"));
 
         handle
             .command(SupervisorCommand::FinalizeCreation { operation_id })
@@ -1867,7 +1864,7 @@ mod tests {
 
         let base = TempDir::new().unwrap();
         let linked =
-            forge_storage::create_task_worktree(repo.path(), base.path(), 1, "linked").unwrap();
+            forge_storage::create_session_worktree(repo.path(), base.path(), 1, "linked").unwrap();
 
         let main_worktree = handle
             .command(SupervisorCommand::AttachWorktree {

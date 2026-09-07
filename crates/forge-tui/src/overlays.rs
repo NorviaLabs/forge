@@ -210,18 +210,18 @@ pub enum Overlay {
         items: Vec<String>,
         draft: String,
     },
-    TaskRename {
+    SessionRename {
         session_id: String,
         label: String,
         error: Option<String>,
     },
-    TaskConfirm {
+    SessionConfirm {
         kind: SessionConfirmKind,
         session_id: String,
         label: String,
         detail: String,
     },
-    TaskInput {
+    SessionInput {
         mode: SessionInputMode,
         field: usize,
         label: String,
@@ -909,7 +909,7 @@ impl Overlay {
     }
 
     pub fn session_input(mode: SessionInputMode) -> Self {
-        Self::TaskInput {
+        Self::SessionInput {
             mode,
             field: 0,
             label: String::new(),
@@ -974,7 +974,7 @@ impl Overlay {
         first_prompt: &str,
     ) -> Result<OverlayAction, String> {
         let label = label.trim();
-        // New tasks may start unnamed — the label derives from the first
+        // New sessions may start unnamed — the label derives from the first
         // prompt (supervisor, or TUI rename when no prompt was supplied).
         // The length and `/` rules only apply to a label the user typed.
         if !label.is_empty() {
@@ -1492,12 +1492,12 @@ pub enum OverlayAction {
     },
     /// Explain, without leaving the overlay, why a key did nothing here.
     Toast(String),
-    OpenTaskInput(SessionInputMode),
-    OpenTaskRename {
+    OpenSessionInput(SessionInputMode),
+    OpenSessionRename {
         session_id: String,
         label: String,
     },
-    OpenTaskConfirm {
+    OpenSessionConfirm {
         kind: SessionConfirmKind,
         session_id: String,
         label: String,
@@ -1608,21 +1608,21 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         // Switcher actions are checked before the filter's catch-all `Char`
         // arm below, so they cannot be typed into the search box.
         Key::Char('n') if matches!(overlay, Overlay::SessionSwitcher { .. }) => {
-            OverlayAction::OpenTaskInput(SessionInputMode::New)
+            OverlayAction::OpenSessionInput(SessionInputMode::New)
         }
         Key::Char('a') if matches!(overlay, Overlay::SessionSwitcher { .. }) => {
-            OverlayAction::OpenTaskInput(SessionInputMode::Attach)
+            OverlayAction::OpenSessionInput(SessionInputMode::Attach)
         }
         Key::Char('r') if matches!(overlay, Overlay::SessionSwitcher { .. }) => overlay
             .session_switcher_selection()
-            .map(|item| OverlayAction::OpenTaskRename {
+            .map(|item| OverlayAction::OpenSessionRename {
                 session_id: item.session_id.clone(),
                 label: item.label.clone(),
             })
             .unwrap_or(OverlayAction::None),
         Key::Char('x') if matches!(overlay, Overlay::SessionSwitcher { .. }) => overlay
             .session_switcher_selection()
-            .map(|item| OverlayAction::OpenTaskConfirm {
+            .map(|item| OverlayAction::OpenSessionConfirm {
                 kind: SessionConfirmKind::Archive,
                 session_id: item.session_id.clone(),
                 label: item.label.clone(),
@@ -1635,7 +1635,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Char('d') if matches!(overlay, Overlay::SessionSwitcher { .. }) => {
             match overlay.session_switcher_selection() {
                 Some(item) if item.managed && item.group == SessionSwitcherGroup::Archived => {
-                    OverlayAction::OpenTaskConfirm {
+                    OverlayAction::OpenSessionConfirm {
                         kind: SessionConfirmKind::Cleanup,
                         session_id: item.session_id.clone(),
                         label: item.label.clone(),
@@ -1795,8 +1795,8 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Char(c) if matches!(overlay, Overlay::TaskRename { .. }) => {
-            if let Overlay::TaskRename { label, error, .. } = overlay {
+        Key::Char(c) if matches!(overlay, Overlay::SessionRename { .. }) => {
+            if let Overlay::SessionRename { label, error, .. } = overlay {
                 if !c.is_control() && c != '\n' {
                     label.push(c);
                     *error = None;
@@ -1804,22 +1804,22 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Paste(ref data) if matches!(overlay, Overlay::TaskRename { .. }) => {
-            if let Overlay::TaskRename { label, error, .. } = overlay {
+        Key::Paste(ref data) if matches!(overlay, Overlay::SessionRename { .. }) => {
+            if let Overlay::SessionRename { label, error, .. } = overlay {
                 label.extend(data.chars().filter(|c| !c.is_control()));
                 *error = None;
             }
             OverlayAction::None
         }
-        Key::Backspace if matches!(overlay, Overlay::TaskRename { .. }) => {
-            if let Overlay::TaskRename { label, error, .. } = overlay {
+        Key::Backspace if matches!(overlay, Overlay::SessionRename { .. }) => {
+            if let Overlay::SessionRename { label, error, .. } = overlay {
                 label.pop();
                 *error = None;
             }
             OverlayAction::None
         }
-        Key::Char(c) if matches!(overlay, Overlay::TaskInput { .. }) => {
-            if let Overlay::TaskInput {
+        Key::Char(c) if matches!(overlay, Overlay::SessionInput { .. }) => {
+            if let Overlay::SessionInput {
                 mode,
                 field,
                 label,
@@ -1843,8 +1843,8 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Paste(ref data) if matches!(overlay, Overlay::TaskInput { .. }) => {
-            if let Overlay::TaskInput {
+        Key::Paste(ref data) if matches!(overlay, Overlay::SessionInput { .. }) => {
+            if let Overlay::SessionInput {
                 mode,
                 field,
                 label,
@@ -1866,8 +1866,8 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Backspace if matches!(overlay, Overlay::TaskInput { .. }) => {
-            if let Overlay::TaskInput {
+        Key::Backspace if matches!(overlay, Overlay::SessionInput { .. }) => {
+            if let Overlay::SessionInput {
                 mode,
                 field,
                 label,
@@ -1886,14 +1886,14 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Tab if matches!(overlay, Overlay::TaskInput { .. }) => {
-            if let Overlay::TaskInput { mode, field, .. } = overlay {
+        Key::Tab if matches!(overlay, Overlay::SessionInput { .. }) => {
+            if let Overlay::SessionInput { mode, field, .. } = overlay {
                 *field = (*field + 1) % mode.fields().len();
             }
             OverlayAction::None
         }
-        Key::BackTab if matches!(overlay, Overlay::TaskInput { .. }) => {
-            if let Overlay::TaskInput { mode, field, .. } = overlay {
+        Key::BackTab if matches!(overlay, Overlay::SessionInput { .. }) => {
+            if let Overlay::SessionInput { mode, field, .. } = overlay {
                 let count = mode.fields().len();
                 *field = (*field + count - 1) % count;
             }
@@ -2046,7 +2046,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 .get(*selected)
                 .map(|item| OverlayAction::SelectSession(item.session_id.clone()))
                 .unwrap_or(OverlayAction::None),
-            Overlay::TaskInput {
+            Overlay::SessionInput {
                 mode,
                 field,
                 label,
@@ -2072,7 +2072,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 }
             }
-            Overlay::TaskRename {
+            Overlay::SessionRename {
                 session_id,
                 label,
                 error,
@@ -2091,7 +2091,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 }
             }
-            Overlay::TaskConfirm {
+            Overlay::SessionConfirm {
                 kind, session_id, ..
             } => match kind {
                 SessionConfirmKind::Archive => OverlayAction::ArchiveSession {
@@ -3416,7 +3416,7 @@ impl Widget for OverlayWidget<'_> {
                     List::new(rows).render(list_area, buf);
                 }
             }
-            Overlay::TaskRename { label, error, .. } => {
+            Overlay::SessionRename { label, error, .. } => {
                 let r = centered_rect(64, 30, area);
                 clear_modal(r, buf);
                 let error = error
@@ -3435,7 +3435,7 @@ impl Widget for OverlayWidget<'_> {
                 )
                 .render(r, buf);
             }
-            Overlay::TaskConfirm {
+            Overlay::SessionConfirm {
                 kind,
                 label,
                 detail,
@@ -3459,7 +3459,7 @@ impl Widget for OverlayWidget<'_> {
                 )
                 .render(r, buf);
             }
-            Overlay::TaskInput {
+            Overlay::SessionInput {
                 mode,
                 field,
                 label,
@@ -3903,7 +3903,7 @@ mod tests {
     #[test]
     fn an_empty_new_task_form_submits_an_unnamed_task() {
         let mut overlay = Overlay::session_input(SessionInputMode::New);
-        // New tasks may start unnamed: the empty form is the same as the
+        // New sessions may start unnamed: the empty form is the same as the
         // one-key instant create, and the label derives from the first
         // prompt instead.
         assert_eq!(
@@ -3926,7 +3926,7 @@ mod tests {
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::None
         );
-        let Overlay::TaskInput { error, .. } = &overlay else {
+        let Overlay::SessionInput { error, .. } = &overlay else {
             panic!("expected the task input overlay");
         };
         assert_eq!(error.as_deref(), Some("Label is required."));
@@ -3942,7 +3942,7 @@ mod tests {
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::None
         );
-        let Overlay::TaskInput { error, field, .. } = &overlay else {
+        let Overlay::SessionInput { error, field, .. } = &overlay else {
             panic!("expected the task input overlay");
         };
         assert!(error.as_ref().unwrap().starts_with("Branch"));
@@ -4017,7 +4017,7 @@ mod tests {
             true,
         )]);
         let action = handle_overlay_key(&mut overlay, Key::Char('x'));
-        let OverlayAction::OpenTaskConfirm { kind, label, .. } = action else {
+        let OverlayAction::OpenSessionConfirm { kind, label, .. } = action else {
             panic!("archive should open a confirmation, got {action:?}");
         };
         assert_eq!(kind, SessionConfirmKind::Archive);
@@ -4053,7 +4053,7 @@ mod tests {
         )]);
         assert!(matches!(
             handle_overlay_key(&mut managed, Key::Char('d')),
-            OverlayAction::OpenTaskConfirm {
+            OverlayAction::OpenSessionConfirm {
                 kind: SessionConfirmKind::Cleanup,
                 ..
             }
@@ -4063,7 +4063,7 @@ mod tests {
     #[test]
     fn renaming_a_task_rejects_an_empty_label_and_accepts_a_trimmed_one() {
         let session_id = uuid::Uuid::new_v4().to_string();
-        let mut overlay = Overlay::TaskRename {
+        let mut overlay = Overlay::SessionRename {
             session_id: session_id.clone(),
             label: String::new(),
             error: None,

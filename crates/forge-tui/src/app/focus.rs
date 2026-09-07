@@ -194,7 +194,7 @@ impl TuiApp {
                     _ => "Hit Enter ⏎ to change effort".into(),
                 })
             }
-            FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => Some(
+            FocusMode::Navigation if self.focus.block() == FocusBlock::SessionStrip => Some(
                 "←→ select · Enter switch · n new · s stop · c continue · p pin · x archive".into(),
             ),
             // No `/`-to-search binding exists: `/` typed here falls through

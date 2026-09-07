@@ -240,11 +240,11 @@ impl TuiApp {
             // unnamed tasks, not by strip position, so the first unnamed
             // task is always `task 1` even with the primary row ahead of it.
             let mut unnamed = 0usize;
-            let strip_items: Vec<TaskStripItem> = self
+            let strip_items: Vec<SessionStripItem> = self
                 .session_chrome
                 .iter()
                 .enumerate()
-                .map(|(index, task)| TaskStripItem {
+                .map(|(index, task)| SessionStripItem {
                     slot: task.slot,
                     label: if task.label.is_empty() {
                         unnamed += 1;
@@ -261,10 +261,10 @@ impl TuiApp {
                 })
                 .collect();
             frame.render_widget(
-                TaskStrip {
+                SessionStrip {
                     items: &strip_items,
                     overflow: 0,
-                    focused: self.focus.block() == FocusBlock::TaskStrip,
+                    focused: self.focus.block() == FocusBlock::SessionStrip,
                 },
                 regions.task_strip,
             );
