@@ -47,7 +47,7 @@ impl TuiApp {
                         // prompt names them; the branch column carries the id
                         // (`forge/task-7`) so rows stay distinguishable.
                         label: if snapshot.task.label.is_empty() {
-                            "task".into()
+                            "session".into()
                         } else {
                             snapshot.task.label.clone()
                         },
@@ -62,7 +62,7 @@ impl TuiApp {
                 })
                 .collect();
             self.overlay = Some(Overlay::session_switcher(items));
-            self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
+            self.set_feedback(FeedbackSeverity::Info, "Sessions · Enter switch · Esc close");
             return;
         }
         let sessions = match recent_resume_sessions(
@@ -72,14 +72,14 @@ impl TuiApp {
         ) {
             Ok(sessions) => sessions,
             Err(error) => {
-                self.report_error(&format!("Could not list tasks: {error}"));
+                self.report_error(&format!("Could not list sessions: {error}"));
                 return;
             }
         };
         let current = ResumeSessionItem {
             id: self.session_runtime.session_id.to_string(),
             modified: "current".into(),
-            title: Some("Active task · current worktree".into()),
+            title: Some("Active session · current worktree".into()),
         };
         let mut items = vec![current];
         for session in sessions {
@@ -91,7 +91,7 @@ impl TuiApp {
             });
         }
         self.overlay = Some(Overlay::resume_picker(items));
-        self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
+        self.set_feedback(FeedbackSeverity::Info, "Sessions · Enter switch · Esc close");
     }
 
     /// Filtered slash suggestions for the current textbox (empty if not in slash mode).
