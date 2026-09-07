@@ -1460,14 +1460,6 @@ impl DirectSessionSlot {
     pub(crate) fn some(session: AgentSession) -> Self {
         Self(Some(session))
     }
-
-    pub(crate) fn none() -> Self {
-        Self(None)
-    }
-
-    pub(crate) fn is_direct(&self) -> bool {
-        self.0.is_some()
-    }
 }
 
 impl std::ops::Deref for DirectSessionSlot {
