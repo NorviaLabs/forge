@@ -43,6 +43,24 @@ jobs:
           assert old in s, "global Ctrl+Shift+T Sessions binding not found"
           s = s.replace(old, new, 1)
           s = s.replace("SlashCommand::Tasks", "SlashCommand::Sessions")
+          # The old footer-specific F3 regression must now assert the global
+          # Sessions binding instead of "unbound".
+          old = """        // F3 no longer opens a side-channel footer focus — reaching the
+                  // footer's controls is an ordinary Tab stop now (FocusBlock::Footer).
+                  assert_eq!(
+                      app.semantic_command_for_global_key(key(KeyCode::F(3), NONE)),
+                      None
+                  );
+          """
+          new = """        // F3 is the global Sessions key. Footer controls remain an ordinary
+                  // Tab stop; F3 no longer means footer focus.
+                  assert_eq!(
+                      app.semantic_command_for_global_key(key(KeyCode::F(3), NONE)),
+                      Some(SemanticCommand::OpenSessionSwitcher)
+                  );
+          """
+          assert old in s, "stale F3 global-binding assertion not found"
+          s = s.replace(old, new, 1)
           p.write_text(s)
 
           # F3 owns global Sessions navigation before focused surfaces and PTY
@@ -243,7 +261,10 @@ jobs:
           cargo fmt --all
           git diff --check
           cargo check --workspace --all-targets --locked
-          cargo test -p forge-tui --lib --locked
+          cargo test -p forge-tui --lib --locked app::commands::tests::global_key_bindings_map_to_their_commands
+          cargo test -p forge-tui --lib --locked f3_
+          cargo test -p forge-tui --lib --locked commands::tests
+          cargo test -p forge-tui --lib --locked app::tests::multi_task::the_task_strip_help_advertises_the_binding_that_is_actually_wired
           git rm .github/workflows/_build_pr7.yml
           git add -A
           git commit -m "feat(tui): make F3 the global Sessions key"
