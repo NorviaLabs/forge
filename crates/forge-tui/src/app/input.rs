@@ -374,8 +374,15 @@ impl TuiApp {
     /// needs to become the root for the explorer and repository chrome.
     pub(super) fn sync_selected_workspace(&mut self) {
         let workspace = self.session_view.workspace_root().to_path_buf();
+        let diff_source = self.diff_view_is_open().then_some(self.diff_view.source);
         self.runtime.cwd = workspace.clone();
         self.workspace_files.explorer = FileExplorer::new(Some(workspace), self.runtime.file_icons);
+        if let Some(source) = diff_source {
+            // The diff cache is rooted in the selected worktree. Do not let
+            // the old task's entries or patch survive a task switch while the
+            // replacement Git status is loading.
+            self.diff_view = crate::diff_view::DiffView::new(source);
+        }
         self.repo_header_state.cwd = self.runtime.cwd.clone();
         self.repo_header_state.cache = chrome::load_repo_header(&self.runtime.cwd);
         self.repo_header_state.refreshed_at = Instant::now();
