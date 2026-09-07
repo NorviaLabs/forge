@@ -653,6 +653,10 @@ pub struct ConversationViewOpts {
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
     /// When thinking just finished (answer streaming), show its elapsed time.
     pub stream_thought_secs: Option<f64>,
+    /// Dim half of the shared running pulse (event-loop tick). When true and
+    /// `busy`, the active plan `[>]` marker renders dim rather than bright so
+    /// it breathes with the footer's running dot. History stays bright.
+    pub pulse_dim: bool,
 }
 
 /// What a verification command concluded, as read from its own output.
