@@ -49,6 +49,7 @@ struct PendingTerminalCommand {
 }
 
 pub(crate) struct InteractiveTerminal {
+    #[cfg(test)]
     cwd: std::path::PathBuf,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -103,6 +104,7 @@ impl InteractiveTerminal {
             })
             .map_err(other)?;
         Ok(Self {
+            #[cfg(test)]
             cwd: cwd.to_path_buf(),
             master: pty.master,
             writer,
@@ -121,6 +123,7 @@ impl InteractiveTerminal {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn cwd(&self) -> &Path {
         &self.cwd
     }
