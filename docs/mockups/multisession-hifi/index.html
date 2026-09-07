@@ -102,6 +102,20 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
 .replay-create{border:1px solid var(--border);background:#1b1b1b;color:var(--text2);padding:5px 7px;border-radius:4px;cursor:pointer;font-size:9px}
 .replay-create:hover{background:#242424;color:var(--text)}
 
+/* Session abstraction + keyboard contract */
+.binding-grid{display:grid;grid-template-columns:190px 100px 1fr;gap:1px;background:var(--border2);border:1px solid var(--border2);border-radius:6px;overflow:hidden;margin:18px}
+.binding-grid>div{background:#151515;padding:11px 12px;font-size:10px;line-height:1.45}
+.binding-grid .head{background:#1b1b1b;color:var(--muted);font-size:9px;font-weight:700;letter-spacing:.08em}
+.binding-grid .surface{color:var(--text);font-weight:600}.binding-grid .key{color:var(--accent);font-weight:700}.binding-grid .blocked{color:var(--warning)}
+.keyboard-intro{padding:22px 18px 0}.keyboard-intro h2{font-size:14px;margin:0 0 7px}.keyboard-intro p{margin:0;color:var(--text2);font-size:10px;line-height:1.6;max-width:900px}
+.scope-map{margin:16px 18px;border:1px solid var(--border2);background:#151515;border-radius:6px;padding:13px 14px}
+.scope-map .scope-line{display:flex;gap:8px;align-items:center;font-size:10px;color:var(--text2);line-height:1.8}
+.scope-map .scope-line b{color:var(--text);min-width:90px}
+.scope-map .arrow{color:var(--muted)}
+.session-terminal{margin:18px;border:1px solid var(--border2);border-radius:5px;background:#0f0f0f;padding:12px 14px;font-size:10px;line-height:1.7;color:#c8c8c8}
+.session-terminal .prompt-line{color:var(--success)}
+.session-terminal .term-note{color:var(--muted)}
+
   </style>
 </head>
 <body>
@@ -113,9 +127,9 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
       </div>
       <nav class="screen-tabs" aria-label="Mock screens">
         <button data-screen="workspace" class="active">1 Workspace</button>
-        <button data-screen="switcher">2 Task switcher</button>
+        <button data-screen="switcher">2 Session switcher</button>
         <button data-screen="attention">3 Needs attention</button>
-        <button data-screen="new-task">4 Instant create</button>
+        <button data-screen="new-task">4 Instant create</button><button data-screen="keyboard">5 Keyboard</button>
       </nav>
     </header>
 
@@ -134,7 +148,7 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
           </div>
 
           <div class="task-strip focused">
-            <div class="strip-label">● TASKS</div>
+            <div class="strip-label">● SESSIONS</div>
             <button class="task-chip selected" data-task="main"><span class="state idle">[ ]</span><b>1 main</b><small>main · ready</small></button>
             <span class="dot">·</span>
             <button class="task-chip" data-task="auth"><span class="state run">[>]</span><b>2 auth-refresh</b><small>forge/auth-refresh-17 · running</small></button>
@@ -184,13 +198,13 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
               </div>
               <div class="composer">
                 <div class="composer-rule"></div>
-                <div class="prompt">&gt; Ask about this task…</div>
+                <div class="prompt">&gt; Ask about this session…</div>
               </div>
             </aside>
           </div>
 
           <div class="footer">
-            <div><span class="kbd">←→</span> select task · <span class="kbd">Enter</span> switch · <span class="kbd">n</span> new · <span class="kbd">⇧⌃T</span> all tasks</div>
+            <div><span class="kbd">←→</span> select task · <span class="kbd">Enter</span> switch · <span class="kbd">n</span> new · <span class="kbd">F3</span> sessions</div>
             <div><span class="chip">OpenAI / GPT-5.6 Sol</span><span class="chip">High</span></div>
           </div>
         </section>
@@ -208,7 +222,7 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
           <div class="overlay task-switcher">
             <div class="overlay-header">
               <div>
-                <div class="overlay-title">Tasks</div>
+                <div class="overlay-title">Sessions</div>
                 <div class="overlay-subtitle">Switch, inspect, or manage sessions in this repository</div>
               </div>
               <div class="scope">Repository · 6</div>
@@ -310,7 +324,7 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
           </div>
 
           <div class="task-strip">
-            <div class="strip-label">TASKS</div>
+            <div class="strip-label">SESSIONS</div>
             <button class="task-chip" data-task="main"><span class="state idle">[ ]</span><b>1 main</b><small>main · ready</small></button>
             <span class="dot">·</span>
             <button class="task-chip selected" data-task="auth"><span class="state run">[>]</span><b>2 auth-refresh</b><small>forge/auth-refresh-17 · running</small></button>
@@ -339,18 +353,18 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
                   <span class="jump">Enter to switch →</span>
                 </button>
               </div>
-              <div class="composer"><div class="composer-rule"></div><div class="prompt">&gt; Ask about this task…</div></div>
+              <div class="composer"><div class="composer-rule"></div><div class="prompt">&gt; Ask about this session…</div></div>
             </aside>
           </div>
 
           <div class="toast">
             <span class="marker wait">[?]</span>
             <div><b>parser-fix needs you</b><small>Approval required · tests/fixtures/parser.snap</small></div>
-            <kbd>⇧⌃T</kbd>
+            <kbd>F3</kbd>
           </div>
 
           <div class="footer">
-            <div>Current task keeps running · background attention never steals focus</div>
+            <div>Current session keeps running · background attention never steals focus</div>
             <div><span class="chip">OpenAI / GPT-5.6 Sol</span><span class="chip">High</span></div>
           </div>
         </section>
@@ -358,26 +372,26 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
         <section class="screen" data-screen-panel="new-task">
           <div class="statusbar">
             <div><strong>FORGE</strong><span>~/src/forge</span><span class="branch"> main</span></div>
-            <div><span data-create-status>creating task</span><span>GPT-5.6 Sol</span><span>High</span></div>
+            <div><span data-create-status>creating session</span><span>GPT-5.6 Sol</span><span>High</span></div>
           </div>
 
           <div class="task-strip focused">
-            <div class="strip-label">● TASKS</div>
+            <div class="strip-label">● SESSIONS</div>
             <button class="task-chip" data-task="main"><span class="state idle">[ ]</span><b>1 main</b><small>main · ready</small></button>
             <span class="dot">·</span>
             <button class="task-chip" data-task="auth"><span class="state run">[>]</span><b>2 auth-refresh</b><small>forge/auth-refresh-17 · running</small></button>
             <span class="dot">·</span>
             <button class="task-chip attention" data-task="parser"><span class="state wait">[?]</span><b>3 parser-fix</b><small>approval</small><em>!</em></button>
             <span class="dot">·</span>
-            <button class="task-chip provisional selected" data-create-chip><span class="state run">[>]</span><b>task 1</b><small>forge/task-25 · creating worktree</small></button>
+            <button class="task-chip provisional selected" data-create-chip><span class="state run">[>]</span><b>session 1</b><small>forge/task-25 · creating worktree</small></button>
           </div>
 
           <div class="workbench creation-workbench">
             <section class="workspace">
-              <div class="pane-title">&gt; CHAT <span>task 1</span></div>
+              <div class="pane-title">&gt; CHAT <span>session 1</span></div>
               <div class="empty-task" data-create-empty>
                 <div class="big-state">[>]</div>
-                <h2>Creating isolated task…</h2>
+                <h2>Creating isolated session…</h2>
                 <p>Forge is creating branch <b>forge/task-25</b> and binding a new session to its managed worktree.</p>
 
                 <div class="creation-steps">
@@ -401,11 +415,11 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
             </section>
 
             <aside class="sidebar creation-side">
-              <div class="pane-title">&gt; SIDEBAR <span>task 1</span></div>
+              <div class="pane-title">&gt; SIDEBAR <span>session 1</span></div>
               <div class="creation-detail">
                 <div class="section-label">TASK IDENTITY</div>
                 <dl>
-                  <div><dt>Display</dt><dd>task 1 <span class="muted">· temporary</span></dd></div>
+                  <div><dt>Display</dt><dd>session 1 <span class="muted">· temporary</span></dd></div>
                   <div><dt>Branch</dt><dd>forge/task-25</dd></div>
                   <div><dt>Worktree</dt><dd>~/.forge/local/worktrees/task-25</dd></div>
                   <div><dt>Base</dt><dd>current worktree · main@9c5907c</dd></div>
@@ -413,7 +427,7 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
 
                 <div class="creation-callout">
                   <b>No modal, no naming ceremony.</b><br>
-                  The first prompt renames the Forge task label. Git branch/worktree identity stays stable.
+                  The first prompt renames the Forge session label. Git branch/worktree identity stays stable.
                 </div>
               </div>
 
@@ -427,20 +441,74 @@ h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.02em}
 
           <div class="creation-toast" data-create-toast>
             <span class="marker run">[>]</span>
-            <div><b>Creating task 1</b><small>main@9c5907c → forge/task-25</small></div>
+            <div><b>Creating session 1</b><small>main@9c5907c → forge/task-25</small></div>
             <button class="replay-create" data-replay-create>Replay n</button>
           </div>
 
           <div class="footer">
-            <div><span class="kbd">n</span> creates instantly · first prompt names task · <span class="kbd">⇧⌃T</span> advanced/attach</div>
+            <div><span class="kbd">n</span> creates instantly · first prompt names session · <span class="kbd">F3</span> advanced/attach</div>
             <div><span class="chip">OpenAI / GPT-5.6 Sol</span><span class="chip">High</span></div>
+          </div>
+        </section>
+        <section class="screen" data-screen-panel="keyboard">
+          <div class="statusbar">
+            <div><strong>FORGE</strong><span>~/src/forge</span><span> forge/auth-refresh-17</span></div>
+            <div><span>keyboard contract</span><span>F3 Sessions</span><span>F4 Model</span></div>
+          </div>
+
+          <div class="task-strip">
+            <div class="strip-label">SESSIONS</div>
+            <button class="task-chip" data-task="main"><span class="state idle">[ ]</span><b>1 main</b><small>main · ready</small></button>
+            <span class="dot">·</span>
+            <button class="task-chip selected" data-task="auth"><span class="state run">[>]</span><b>2 auth-refresh</b><small>forge/auth-refresh-17 · running</small></button>
+            <span class="dot">·</span>
+            <button class="task-chip attention" data-task="parser"><span class="state wait">[?]</span><b>3 parser-fix</b><small>approval</small><em>!</em></button>
+          </div>
+
+          <div class="keyboard-intro">
+            <h2>F3 is reserved by Forge for Sessions</h2>
+            <p>Multisession navigation must work from every non-atomic input surface. Local text/navigation keys keep their existing meaning; only F3 crosses surfaces. Atomic dirty-buffer and destructive confirmations keep keyboard ownership until resolved.</p>
+          </div>
+
+          <div class="binding-grid">
+            <div class="head">INPUT SURFACE</div><div class="head">F3</div><div class="head">BEHAVIOR</div>
+            <div class="surface">Conversation / composer</div><div class="key">F3</div><div>Open Sessions; preserve draft and cursor.</div>
+            <div class="surface">File browser</div><div class="key">F3</div><div>Open Sessions; preserve tree expansion and selected file. Plain <b>n</b> still creates a file.</div>
+            <div class="surface">File search</div><div class="key">F3</div><div>Open Sessions; preserve search query and selection.</div>
+            <div class="surface">Editor / viewer</div><div class="key">F3</div><div>Open Sessions; preserve buffer, Vim mode, cursor and viewport. Dirty buffer stays with its session.</div>
+            <div class="surface">Diff</div><div class="key">F3</div><div>Open Sessions; preserve diff source, file, hunk and scroll. Plain <b>n</b> remains next file.</div>
+            <div class="surface">Embedded terminal</div><div class="key">F3</div><div>Forge intercepts before PTY input. Each session owns its terminal and cwd.</div>
+            <div class="surface">Approval / question</div><div class="key">F3</div><div>Switch away without resolving; waiting session remains marked <span class="wait">[?]</span>.</div>
+            <div class="surface">Picker / overlay</div><div class="key">F3</div><div>Replace current non-destructive picker with Sessions; returning restores picker state.</div>
+            <div class="surface">Dirty/destructive confirm</div><div class="blocked">blocked</div><div>Resolve or cancel first. Atomic filesystem/editor decisions cannot be abandoned mid-confirmation.</div>
+          </div>
+
+          <div class="scope-map">
+            <div class="section-label">SESSION OWNS</div>
+            <div class="scope-line"><b>Workspace</b><span class="arrow">→</span><span>worktree + branch + file browser/search + editor/viewer/diff</span></div>
+            <div class="scope-line"><b>Interaction</b><span class="arrow">→</span><span>conversation + composer draft + focus + overlays + approvals</span></div>
+            <div class="scope-line"><b>Execution</b><span class="arrow">→</span><span>root agent + current task/turn + queue + background jobs + subagents</span></div>
+            <div class="scope-line"><b>Terminal</b><span class="arrow">→</span><span>PTY rooted in this session's worktree; restored when switching back</span></div>
+            <div class="scope-line"><b>Global</b><span class="arrow">→</span><span>repository supervisor + provider credentials + theme + Sessions switcher</span></div>
+          </div>
+
+          <div class="session-terminal">
+            <div class="term-note">Session 2 · auth-refresh · terminal cwd follows session</div>
+            <div class="prompt-line">~/.../forge/auth-refresh-17 $ git branch --show-current</div>
+            <div>forge/auth-refresh-17</div>
+            <div class="prompt-line">~/.../forge/auth-refresh-17 $ _</div>
+          </div>
+
+          <div class="footer">
+            <div><span class="kbd">F1</span> help · <span class="kbd">F3</span> sessions · <span class="kbd">F4</span> model</div>
+            <div>plain keys remain local to the focused surface</div>
           </div>
         </section>
       </div>
     </section>
 
     <footer class="notes">
-      <p><b>Intent:</b> persistent glanceability without turning Forge into a dashboard. The task strip is the ambient surface; the switcher is the dense management surface.</p>
+      <p><b>Intent:</b> persistent glanceability without turning Forge into a dashboard. The session strip is the ambient surface; the switcher is the dense management surface.</p>
       <p>Use the numbered controls above to inspect the four states.</p>
     </footer>
   </main>
@@ -506,12 +574,12 @@ function setCreationState(state){
     chip?.classList.remove('ready');
     if(chip){chip.querySelector('.state').textContent='[>]';chip.querySelector('small').textContent='forge/task-25 · creating worktree';}
     empty?.classList.remove('ready');
-    if(empty){empty.querySelector('.big-state').textContent='[>]';empty.querySelector('h2').textContent='Creating isolated task…';empty.querySelector('p').textContent='Forge is creating branch forge/task-25 and binding a new session to its managed worktree.';}
+    if(empty){empty.querySelector('.big-state').textContent='[>]';empty.querySelector('h2').textContent='Creating isolated session…';empty.querySelector('p').textContent='Forge is creating branch forge/task-25 and binding a new session to its managed worktree.';}
     composer?.classList.remove('ready');composer?.classList.add('pending');
     if(composer){composer.querySelector('.prompt').textContent='> Composer unlocks when the worktree is ready';composer.querySelector('.composer-helper').textContent='Prompt submission is held until the session/worktree binding exists.';}
     toast?.classList.remove('ready');
-    if(toast){toast.querySelector('b').textContent='Creating task 1';toast.querySelector('small').textContent='main@9c5907c → forge/task-25';toast.querySelector('.marker').textContent='[>]';}
-    if(status)status.textContent='creating task';
+    if(toast){toast.querySelector('b').textContent='Creating session 1';toast.querySelector('small').textContent='main@9c5907c → forge/task-25';toast.querySelector('.marker').textContent='[>]';}
+    if(status)status.textContent='creating session';
     step2?.classList.remove('done');step2?.classList.add('active');
     if(step2)step2.querySelector('.step-marker').textContent='[>]';
     step3?.classList.remove('done','active');step3?.classList.add('pending');
@@ -520,11 +588,11 @@ function setCreationState(state){
     chip?.classList.add('ready');
     if(chip){chip.querySelector('.state').textContent='[ ]';chip.querySelector('small').textContent='forge/task-25 · ready';}
     empty?.classList.add('ready');
-    if(empty){empty.querySelector('.big-state').textContent='[✓]';empty.querySelector('h2').textContent='Task ready';empty.querySelector('p').textContent='The worktree and session binding are ready. Start typing; the first prompt names the task without renaming the Git branch.';}
+    if(empty){empty.querySelector('.big-state').textContent='[✓]';empty.querySelector('h2').textContent='Session ready';empty.querySelector('p').textContent='The worktree and session binding are ready. Start typing; the first prompt names the session without renaming the Git branch.';}
     composer?.classList.remove('pending');composer?.classList.add('ready');
-    if(composer){composer.querySelector('.prompt').textContent='> Describe this task…';composer.querySelector('.composer-helper').textContent='First prompt renames “task 1” in Forge. Git branch remains forge/task-25.';}
+    if(composer){composer.querySelector('.prompt').textContent='> Describe this task…';composer.querySelector('.composer-helper').textContent='First prompt renames “session 1” in Forge. Git branch remains forge/task-25.';}
     toast?.classList.add('ready');
-    if(toast){toast.querySelector('b').textContent='task 1 is ready';toast.querySelector('small').textContent='forge/task-25 · managed worktree created';toast.querySelector('.marker').textContent='[✓]';}
+    if(toast){toast.querySelector('b').textContent='session 1 is ready';toast.querySelector('small').textContent='forge/task-25 · managed worktree created';toast.querySelector('.marker').textContent='[✓]';}
     if(status)status.textContent='5 sessions';
     step2?.classList.remove('active');step2?.classList.add('done');
     if(step2)step2.querySelector('.step-marker').textContent='[✓]';
