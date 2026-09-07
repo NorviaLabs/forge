@@ -59,12 +59,12 @@ function setCreationState(state){
     chip?.classList.remove('ready');
     if(chip){chip.querySelector('.state').textContent='[>]';chip.querySelector('small').textContent='forge/task-25 · creating worktree';}
     empty?.classList.remove('ready');
-    if(empty){empty.querySelector('.big-state').textContent='[>]';empty.querySelector('h2').textContent='Creating isolated task…';empty.querySelector('p').textContent='Forge is creating branch forge/task-25 and binding a new session to its managed worktree.';}
+    if(empty){empty.querySelector('.big-state').textContent='[>]';empty.querySelector('h2').textContent='Creating isolated session…';empty.querySelector('p').textContent='Forge is creating branch forge/task-25 and binding a new session to its managed worktree.';}
     composer?.classList.remove('ready');composer?.classList.add('pending');
     if(composer){composer.querySelector('.prompt').textContent='> Composer unlocks when the worktree is ready';composer.querySelector('.composer-helper').textContent='Prompt submission is held until the session/worktree binding exists.';}
     toast?.classList.remove('ready');
-    if(toast){toast.querySelector('b').textContent='Creating task 1';toast.querySelector('small').textContent='main@9c5907c → forge/task-25';toast.querySelector('.marker').textContent='[>]';}
-    if(status)status.textContent='creating task';
+    if(toast){toast.querySelector('b').textContent='Creating session 1';toast.querySelector('small').textContent='main@9c5907c → forge/task-25';toast.querySelector('.marker').textContent='[>]';}
+    if(status)status.textContent='creating session';
     step2?.classList.remove('done');step2?.classList.add('active');
     if(step2)step2.querySelector('.step-marker').textContent='[>]';
     step3?.classList.remove('done','active');step3?.classList.add('pending');
@@ -73,11 +73,11 @@ function setCreationState(state){
     chip?.classList.add('ready');
     if(chip){chip.querySelector('.state').textContent='[ ]';chip.querySelector('small').textContent='forge/task-25 · ready';}
     empty?.classList.add('ready');
-    if(empty){empty.querySelector('.big-state').textContent='[✓]';empty.querySelector('h2').textContent='Task ready';empty.querySelector('p').textContent='The worktree and session binding are ready. Start typing; the first prompt names the task without renaming the Git branch.';}
+    if(empty){empty.querySelector('.big-state').textContent='[✓]';empty.querySelector('h2').textContent='Session ready';empty.querySelector('p').textContent='The worktree and session binding are ready. Start typing; the first prompt names the session without renaming the Git branch.';}
     composer?.classList.remove('pending');composer?.classList.add('ready');
-    if(composer){composer.querySelector('.prompt').textContent='> Describe this task…';composer.querySelector('.composer-helper').textContent='First prompt renames “task 1” in Forge. Git branch remains forge/task-25.';}
+    if(composer){composer.querySelector('.prompt').textContent='> Describe this task…';composer.querySelector('.composer-helper').textContent='First prompt renames “session 1” in Forge. Git branch remains forge/task-25.';}
     toast?.classList.add('ready');
-    if(toast){toast.querySelector('b').textContent='task 1 is ready';toast.querySelector('small').textContent='forge/task-25 · managed worktree created';toast.querySelector('.marker').textContent='[✓]';}
+    if(toast){toast.querySelector('b').textContent='session 1 is ready';toast.querySelector('small').textContent='forge/task-25 · managed worktree created';toast.querySelector('.marker').textContent='[✓]';}
     if(status)status.textContent='5 sessions';
     step2?.classList.remove('active');step2?.classList.add('done');
     if(step2)step2.querySelector('.step-marker').textContent='[✓]';
