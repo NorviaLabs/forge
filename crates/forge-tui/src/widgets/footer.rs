@@ -150,10 +150,8 @@ impl Widget for FooterBar<'_> {
         theme::fill(area, buf, theme::canvas());
         let m = self.model;
 
-        // DESIGN-012: the footer is a single content row with no separator
-        // of its own — the composer's top rule already bounds the zone.
-        // Extra height (shouldn't happen; layout reserves one row) is left
-        // as canvas.
+        // The first row carries interactive controls; the second row is
+        // reserved for background execution status.
         let content_area = Rect::new(area.x, area.y, area.width, 1.min(area.height));
         // Inset the content row so text aligns with the composer's edges
         // instead of running flush to the terminal border.
@@ -165,6 +163,15 @@ impl Widget for FooterBar<'_> {
         );
         if area.width == 0 {
             return;
+        }
+
+        if area.height > 1 {
+            buf.set_string(
+                area.x + PAD,
+                area.y + 1,
+                "background · shell · agents · subagents",
+                theme::dim(),
+            );
         }
 
         // A blocking hint (HITL/dialog) takes over the whole row for this
