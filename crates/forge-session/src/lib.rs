@@ -35,12 +35,11 @@ use std::sync::Arc;
 use forge_config::Config;
 use forge_core::{AgentSession, LoopConfig};
 use forge_governance::{parse_pattern_rules, Governance};
-use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
+use forge_mcp::McpManager;
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{RuntimeDataKind, RuntimeStorage};
 use forge_tools::ToolRegistry;
-use forge_types::{SessionId, SideEffectClass};
-use serde_json::json;
+use forge_types::SessionId;
 
 /// Which session to open: a new one, an existing one, or a fork.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -149,32 +148,6 @@ async fn open_session_with_model(
     model: Arc<dyn ModelClient>,
 ) -> anyhow::Result<OpenedSession> {
     let mut tools = ToolRegistry::new();
-    register_static_mcp(
-        &mut tools,
-        "demo",
-        vec![StaticMcpTool {
-            server_id: "demo".into(),
-            tool_name: "echo".into(),
-            description: "Echo text (static MCP demo)".into(),
-            schema: json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            }),
-            side_effect_class: SideEffectClass::Meta,
-            handler: Box::new(|args| forge_types::ToolOutput {
-                outcome: Default::default(),
-                content: args
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                is_error: false,
-                exit_code: None,
-                attachments: Vec::new(),
-            }),
-        }],
-    );
 
     let mut notices = cfg.refused_key_notices();
     if !cfg.mcp.servers.is_empty() {
@@ -245,6 +218,7 @@ async fn open_session_with_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::TempDir;
 
     /// Exercises the exact composition `open_session` wires at startup —

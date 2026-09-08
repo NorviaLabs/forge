@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use forge_types::{ModelResponse, ModelStreamEvent, ToolCall, Usage};
 use futures::StreamExt;
@@ -8,6 +9,24 @@ use super::{process_sse_lines, NativeModelClient};
 use crate::normalize::tools_to_openai_functions;
 use crate::prompt_cache::{usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
+
+/// Application identity sent on OpenCode calls, replacing the HTTP library's
+/// default user-agent string.
+const OPENCODE_USER_AGENT: &str = concat!("forge/", env!("CARGO_PKG_VERSION"));
+
+/// Session id used when an OpenCode request arrives with no active conversation
+/// thread id to forward (non-agent callers). Sticky for the process lifetime so
+/// consecutive calls from the same process stay routed to the same upstream
+/// cache slot.
+static FALLBACK_OPENCODE_SESSION: OnceLock<String> = OnceLock::new();
+
+/// The `x-opencode-session` value for a request: the Forge session (thread) id
+/// when the caller has one, otherwise a generated process-stable identifier.
+fn opencode_session_id(req: &ModelRequest) -> &str {
+    req.session_id.as_deref().unwrap_or_else(|| {
+        FALLBACK_OPENCODE_SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
+    })
+}
 
 struct Route {
     base_url: String,
@@ -73,10 +92,9 @@ pub(super) async fn complete(
         request = request.bearer_auth(api_key);
     }
     if route.opencode_session {
-        request = request.header("User-Agent", "forge");
-        if let Some(session_id) = req.session_id.as_deref() {
-            request = request.header("x-opencode-session", session_id);
-        }
+        request = request
+            .header("User-Agent", OPENCODE_USER_AGENT)
+            .header("x-opencode-session", opencode_session_id(&req));
     }
     let response = request
         .send()
@@ -156,7 +174,7 @@ async fn complete_responses(
 ) -> Result<ModelResponse, ModelError> {
     let aliases = crate::native::codex::tool_aliases(&req);
     let body = crate::native::codex::request_body(client, &req, &route.model, &aliases);
-    let response = client
+    let mut request = client
         .http
         .post(format!(
             "{}/responses",
@@ -166,7 +184,11 @@ async fn complete_responses(
         .bearer_auth(route.api_key.ok_or(ModelError::MissingApiKey)?)
         .header("Accept", "text/event-stream")
         .header("OpenAI-Beta", "responses=experimental")
-        .header("User-Agent", "forge")
+        .header("User-Agent", OPENCODE_USER_AGENT);
+    if route.opencode_session {
+        request = request.header("x-opencode-session", opencode_session_id(&req));
+    }
+    let response = request
         .send()
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
@@ -779,8 +801,47 @@ mod tests {
         assert_eq!(response.text, "hello");
 
         let raw_request = request_rx.await.unwrap().to_ascii_lowercase();
-        assert!(raw_request.contains("user-agent: forge"));
+        assert!(raw_request.contains(&format!("user-agent: forge/{}", env!("CARGO_PKG_VERSION"))));
         assert!(raw_request.contains("x-opencode-session: session-123"));
+    }
+
+    #[tokio::test]
+    async fn opencode_route_sends_session_header_when_context_has_none() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[
+            ("OPENCODE_API_BASE".into(), base_url),
+            ("OPENCODE_API_KEY".into(), "opencode-secret".into()),
+        ]);
+        let mut request = request("opencode-go/gpt-test");
+        request.route_id = Some("opencode-go".into());
+
+        let response = client.complete(request).await.unwrap();
+        assert_eq!(response.text, "hello");
+
+        let raw_request = request_rx.await.unwrap().to_ascii_lowercase();
+        assert!(raw_request.contains(&format!("user-agent: forge/{}", env!("CARGO_PKG_VERSION"))));
+        assert!(raw_request.contains("x-opencode-session:"), "{raw_request}");
+    }
+
+    #[test]
+    fn fallback_opencode_session_is_stable_within_the_process() {
+        let first = opencode_session_id(&request("opencode-go/gpt-test")).to_string();
+        let second = opencode_session_id(&request("opencode-go/gpt-test")).to_string();
+        assert_eq!(first, second);
+        assert!(!first.is_empty());
+        // A provided thread id always wins over the generated fallback.
+        let mut with_thread = request("opencode-go/gpt-test");
+        with_thread.session_id = Some("thread-7".into());
+        assert_eq!(opencode_session_id(&with_thread), "thread-7");
     }
 
     #[tokio::test]
@@ -802,6 +863,7 @@ mod tests {
         ]);
         let mut request = request("opencode-zen/muse-spark-1.3-contributor");
         request.route_id = Some("opencode-zen".into());
+        request.session_id = Some("session-muse".into());
 
         let response = client.complete(request).await.unwrap();
         assert_eq!(response.text, "hello");
@@ -811,6 +873,12 @@ mod tests {
         assert!(raw_request.starts_with("POST /responses HTTP/1.1"));
         assert!(raw_request.contains("\"model\":\"muse-spark-1.3-contributor\""));
         assert!(!raw_request.contains("/chat/completions"));
+        assert!(raw_request
+            .to_ascii_lowercase()
+            .contains(&format!("user-agent: forge/{}", env!("CARGO_PKG_VERSION"))));
+        assert!(raw_request
+            .to_ascii_lowercase()
+            .contains("x-opencode-session: session-muse"));
     }
 
     #[tokio::test]
