@@ -1099,6 +1099,24 @@ mod tests {
     }
 
     #[test]
+    fn chained_segments_all_contribute_to_command_access() {
+        // Every `;`-separated segment runs, so every segment's executable
+        // must be discovered. Missing the second segment would leave the
+        // sandbox profile blind to half the command.
+        let ws = workspace();
+        let first = ws.path().join("first-tool");
+        let second = ws.path().join("second-tool");
+        std::fs::write(&first, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&second, b"#!/bin/sh\n").unwrap();
+        let found = discover_command_executables(
+            &format!("{}; {}", first.display(), second.display()),
+            ws.path(),
+        );
+        assert!(found.iter().any(|p| p == &first), "first segment missing");
+        assert!(found.iter().any(|p| p == &second), "second segment missing");
+    }
+
+    #[test]
     fn policy_marks_git_and_forge_readonly() {
         let ws = workspace();
         let p = SandboxPolicy::for_workspace(ws.path());
