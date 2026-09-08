@@ -1558,9 +1558,9 @@ async fn run_one(
             session
                 .append_user_message_with_attachments(text, attachments)
                 .await?;
-            session.run_agent_turns(Some(stream_sender)).await
+            session.run_agent_turns_in_scope(Some(stream_sender)).await
         }
-        None => session.run_agent_turns(Some(stream_sender)).await,
+        None => session.run_agent_turns_in_scope(Some(stream_sender)).await,
     };
     drop(permit);
     *task_actor
@@ -1714,8 +1714,9 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use forge_config::Config;
-    use forge_model::MockModelClient;
-    use forge_types::ModelResponse;
+    use forge_model::{MockModelClient, ModelError, ModelRequest};
+    use forge_types::{AskUserQuestionAnswerItem, ModelResponse};
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn text_response(text: &str) -> ModelResponse {
@@ -1727,13 +1728,90 @@ mod tests {
         }
     }
 
+    struct SlowModel;
+
+    impl ModelClient for SlowModel {
+        fn complete<'life0, 'async_trait>(
+            &'life0 self,
+            _request: ModelRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ModelResponse, ModelError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                Ok(text_response("should be cancelled"))
+            })
+        }
+    }
+
     async fn scripted_session(cfg: &Config, text: &str) -> AgentSession {
-        let model: Arc<dyn ModelClient> =
-            Arc::new(MockModelClient::script(vec![text_response(text)]));
+        scripted_session_with(cfg, vec![text_response(text)]).await
+    }
+
+    async fn scripted_session_with(cfg: &Config, responses: Vec<ModelResponse>) -> AgentSession {
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(responses));
         open_session_with_model(cfg, SessionTarget::New, model)
             .await
             .unwrap()
             .session
+    }
+
+    fn approval_then_question_script(label: &str) -> Vec<ModelResponse> {
+        vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: format!("{label}-approval"),
+                    name: "git".into(),
+                    arguments: json!({"subcommand": "reset", "args": ["--hard", "HEAD"]}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: format!("{label}-question"),
+                    name: "ask_user_question".into(),
+                    arguments: json!({
+                        "questions": [{
+                            "id": "choice",
+                            "header": "Choice",
+                            "question": "Continue?",
+                            "options": [
+                                {"label": "Yes (Recommended)", "description": "Continue."},
+                                {"label": "No", "description": "Stop."}
+                            ]
+                        }]
+                    }),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response(&format!("{label} interaction complete")),
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: format!("{label}-background"),
+                    name: "background_run".into(),
+                    arguments: json!({
+                        "command": "sleep 30",
+                        "label": format!("{label} background")
+                    }),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response(&format!("{label} background started")),
+        ]
     }
 
     fn task_for(
@@ -2022,6 +2100,299 @@ mod tests {
                 .count(),
             1
         );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_and_managed_actors_share_hitl_question_and_continue_commands() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        let managed_workspace = temp.path().join("managed");
+        std::fs::create_dir_all(&managed_workspace).unwrap();
+
+        let primary_session =
+            scripted_session_with(&cfg, approval_then_question_script("primary")).await;
+        let primary_id = primary_session.session_id;
+        let mut primary_task = task_for(primary_id, "primary", &cfg.resolved_workspace);
+        primary_task.ownership = WorktreeOwnership::Primary;
+
+        let mut managed_cfg = cfg.clone();
+        managed_cfg.resolved_workspace = managed_workspace.clone();
+        managed_cfg.workspace_root = Some(managed_workspace.display().to_string());
+        let managed_session =
+            scripted_session_with(&managed_cfg, approval_then_question_script("managed")).await;
+        let managed_id = managed_session.session_id;
+        let managed_task = task_for(managed_id, "managed", &managed_workspace);
+
+        for task in [&primary_task, &managed_task] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![
+                (primary_task, primary_session),
+                (managed_task, managed_session),
+            ],
+            2,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        for session_id in [primary_id, managed_id] {
+            handle
+                .command(SupervisorCommand::SubmitPrompt {
+                    session_id,
+                    text: "exercise interaction routing".into(),
+                })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.session.pending_hitl.is_some()
+            })
+            .await;
+            assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+            handle
+                .command(SupervisorCommand::ResolveApproval {
+                    session_id,
+                    decision: HitlDecision::Deny,
+                    actor: "test".into(),
+                    feedback: Some("use a safer approach".into()),
+                })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.session.pending_question.is_some()
+            })
+            .await;
+            assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+            handle
+                .command(SupervisorCommand::ResolveQuestion {
+                    session_id,
+                    answers: Some(AskUserQuestionResult {
+                        answers: vec![AskUserQuestionAnswerItem {
+                            id: "choice".into(),
+                            selected: vec!["Yes (Recommended)".into()],
+                            custom: None,
+                        }],
+                    }),
+                    actor: "test".into(),
+                })
+                .await
+                .unwrap();
+        }
+        for (session_id, label) in [(primary_id, "primary"), (managed_id, "managed")] {
+            let done = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.task.turn_state == SupervisorTurnState::Completed
+            })
+            .await;
+            assert!(done.transcript.messages().iter().any(|message| message
+                .content
+                .contains(&format!("{label} interaction complete"))));
+        }
+
+        for session_id in [primary_id, managed_id] {
+            handle
+                .command(SupervisorCommand::SubmitPrompt {
+                    session_id,
+                    text: "start a background job".into(),
+                })
+                .await
+                .unwrap();
+        }
+        let mut background_ids = Vec::new();
+        for session_id in [primary_id, managed_id] {
+            let started = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.task.turn_state == SupervisorTurnState::Completed
+                    && snapshot
+                        .details
+                        .as_ref()
+                        .is_some_and(|details| !details.background.is_empty())
+            })
+            .await;
+            let task_id = started.details.as_ref().unwrap().background[0].id;
+            background_ids.push((session_id, task_id));
+        }
+        for (session_id, task_id) in background_ids {
+            handle
+                .command(SupervisorCommand::CancelBackgroundTask {
+                    session_id,
+                    task_id,
+                })
+                .await
+                .unwrap();
+            let settled = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.details.as_ref().is_some_and(|details| {
+                    details
+                        .background
+                        .iter()
+                        .find(|task| task.id == task_id)
+                        .is_some_and(|task| task.status.is_terminal())
+                })
+            })
+            .await;
+            let status = &settled
+                .details
+                .as_ref()
+                .unwrap()
+                .background
+                .iter()
+                .find(|task| task.id == task_id)
+                .unwrap()
+                .status;
+            assert!(
+                matches!(status, forge_core::BackgroundTaskStatus::Cancelled)
+                    || matches!(
+                        status,
+                        forge_core::BackgroundTaskStatus::Failed { error }
+                            if error.contains("sandbox unavailable")
+                    ),
+                "unexpected background terminal state: {status:?}"
+            );
+        }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_and_managed_running_turns_share_stop_command() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        let managed_workspace = temp.path().join("managed");
+        std::fs::create_dir_all(&managed_workspace).unwrap();
+
+        let primary_session =
+            open_session_with_model(&cfg, SessionTarget::New, Arc::new(SlowModel))
+                .await
+                .unwrap()
+                .session;
+        let primary_id = primary_session.session_id;
+        let mut primary_task = task_for(primary_id, "primary", &cfg.resolved_workspace);
+        primary_task.ownership = WorktreeOwnership::Primary;
+
+        let mut managed_cfg = cfg.clone();
+        managed_cfg.resolved_workspace = managed_workspace.clone();
+        managed_cfg.workspace_root = Some(managed_workspace.display().to_string());
+        let managed_session =
+            open_session_with_model(&managed_cfg, SessionTarget::New, Arc::new(SlowModel))
+                .await
+                .unwrap()
+                .session;
+        let managed_id = managed_session.session_id;
+        let managed_task = task_for(managed_id, "managed", &managed_workspace);
+
+        for task in [&primary_task, &managed_task] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![
+                (primary_task, primary_session),
+                (managed_task, managed_session),
+            ],
+            2,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        for session_id in [primary_id, managed_id] {
+            handle
+                .command(SupervisorCommand::SubmitPrompt {
+                    session_id,
+                    text: "wait until cancelled".into(),
+                })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let snapshot = supervisor.snapshot(session_id).await.unwrap();
+                if snapshot.task.turn_state == SupervisorTurnState::Running {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "turn never started");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            handle
+                .command(SupervisorCommand::StopTurn { session_id })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let cancelled = loop {
+                let snapshot = supervisor.snapshot(session_id).await.unwrap();
+                if snapshot.task.turn_state == SupervisorTurnState::Cancelled {
+                    break snapshot;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "turn did not cancel; last state: {:?}",
+                    snapshot.task.turn_state
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            };
+            assert_eq!(cancelled.session.lifecycle, TaskLifecycle::Cancelled);
+        }
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
