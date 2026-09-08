@@ -316,6 +316,38 @@ async fn busy_phase_reuses_cached_transcript_lines() {
     );
 }
 
+/// The throbber tick drives the footer running dot, and used to sit on the
+/// conversation render key as the plan-marker pulse. Every other tick
+/// therefore rebuilt the whole transcript — an O(transcript) synchronous
+/// walk on the UI thread every ~400ms while any turn ran, which froze the
+/// TUI on large sessions. The settled transcript does not depend on the
+/// animation phase any more than it depends on the busy phase; the pulse is
+/// baked into the cached lines and the live chrome animates separately.
+#[tokio::test]
+async fn throbber_pulse_reuses_cached_transcript_lines() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session_runtime.messages.push(forge_types::Message::new(
+        forge_types::MessageRole::Assistant,
+        "cached transcript body",
+    ));
+    draw_app(&mut app, 100, 30);
+    let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    app.busy_state.activate();
+    app.busy_state.set_phase(crate::widgets::BusyPhase::Model);
+    for _ in 0..8 {
+        app.busy_state.tick();
+        draw_app(&mut app, 100, 30);
+    }
+    let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "a throbber tick must not rebuild historical transcript lines"
+    );
+}
+
 /// Streamed reasoning is painted directly below the settled transcript, which
 /// is a separate line list the preview never sees — the boundary blank every
 /// other major block gets was missing at the seam, so thoughts hugged the row

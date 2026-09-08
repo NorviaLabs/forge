@@ -237,7 +237,6 @@ impl TuiApp {
         for item in &mut self.session_chrome {
             item.selected = item.session_id == self.selected_session_id;
         }
-        self.render_cache.conversation = None;
     }
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
