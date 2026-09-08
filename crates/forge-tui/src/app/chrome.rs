@@ -160,7 +160,7 @@ impl TuiApp {
                     label,
                     workspace,
                 } => {
-                    self.overlay = Some(Overlay::TrustTask {
+                    self.overlay = Some(Overlay::TrustSession {
                         operation_id,
                         label,
                         workspace: workspace.display().to_string(),

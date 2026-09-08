@@ -62,9 +62,9 @@ impl TuiApp {
         text.push_str("Active block\n");
         match self.focus.block() {
             FocusBlock::TaskStrip => {
-                text.push_str("• ←/→  Select task slot\n");
-                text.push_str("• Enter  Switch task\n");
-                text.push_str("• n  New task — unnamed, named from its first prompt\n");
+                text.push_str("• ←/→  Select session slot\n");
+                text.push_str("• Enter  Switch session\n");
+                text.push_str("• n  New session — instant, named from its first prompt\n");
                 text.push_str("• Ctrl+Shift+T or /tasks  Open session switcher\n");
                 text.push_str("• s / c  Stop / continue the selected session\n");
                 text.push_str("• p  Pin  ·  x  Archive\n");
@@ -188,23 +188,23 @@ impl TuiApp {
             OverlayAction::Toast(message) => {
                 self.set_feedback(FeedbackSeverity::Warn, message);
             }
-            OverlayAction::OpenTaskInput(mode) => {
+            OverlayAction::OpenSessionInput(mode) => {
                 self.overlay = Some(Overlay::session_input(mode));
             }
-            OverlayAction::OpenTaskRename { session_id, label } => {
-                self.overlay = Some(Overlay::TaskRename {
+            OverlayAction::OpenSessionRename { session_id, label } => {
+                self.overlay = Some(Overlay::SessionRename {
                     session_id,
                     label,
                     error: None,
                 });
             }
-            OverlayAction::OpenTaskConfirm {
+            OverlayAction::OpenSessionConfirm {
                 kind,
                 session_id,
                 label,
                 detail,
             } => {
-                self.overlay = Some(Overlay::TaskConfirm {
+                self.overlay = Some(Overlay::SessionConfirm {
                     kind,
                     session_id,
                     label,
@@ -238,11 +238,11 @@ impl TuiApp {
                     })
                     .await
                 {
-                    self.set_feedback(FeedbackSeverity::Ok, "task archived");
+                    self.set_feedback(FeedbackSeverity::Ok, "session archived");
                 }
                 self.overlay = None;
             }
-            OverlayAction::CleanupTaskWorktree { session_id } => {
+            OverlayAction::CleanupSessionWorktree { session_id } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
@@ -272,7 +272,7 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");
                 }
             }
-            OverlayAction::AttachTask {
+            OverlayAction::AttachSession {
                 workspace,
                 label,
                 branch,
@@ -293,27 +293,27 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Ok, "worktree attached");
                 }
             }
-            OverlayAction::FinalizeTaskCreation { operation_id } => {
+            OverlayAction::FinalizeSessionCreation { operation_id } => {
                 if self
                     .send_session_command(forge_session::SupervisorCommand::FinalizeCreation {
                         operation_id,
                     })
                     .await
                 {
-                    self.set_feedback(FeedbackSeverity::Ok, "task worktree trusted");
+                    self.set_feedback(FeedbackSeverity::Ok, "session worktree trusted");
                 }
                 // The overlay closes either way: on failure the supervisor has
                 // already rolled the creation back, so there is nothing left
                 // to trust.
                 self.overlay = None;
             }
-            OverlayAction::CancelTaskCreation { operation_id } => {
+            OverlayAction::CancelSessionCreation { operation_id } => {
                 self.send_session_command(forge_session::SupervisorCommand::CancelCreation {
                     operation_id,
                 })
                 .await;
                 self.overlay = None;
-                self.set_feedback(FeedbackSeverity::Info, "task creation cancelled");
+                self.set_feedback(FeedbackSeverity::Info, "session creation cancelled");
             }
             OverlayAction::BeginOnboarding => {
                 self.open_connect_picker();
@@ -350,7 +350,7 @@ impl TuiApp {
                 // apply the pick, fall back to a safe effort default for
                 // the new model if the previous one doesn't fit, and close.
                 //
-                // Model choice is per-task, so a pick made while a sibling is
+                // Model choice is per-session, so a pick made while a sibling is
                 // selected must reach that actor, not the primary session.
                 // Provider authentication stays global and is unaffected.
                 if let SelectedRuntime::Sibling(session_id) = self.selected_runtime() {
