@@ -182,7 +182,7 @@ Implemented:
 - attention badge rendering
 - task-strip left/right/Home/End navigation
 - task-strip stop/continue/pin/archive shortcuts
-- `/tasks`
+- `/sessions`
 - task switcher overlay backed by supervisor roster snapshots
 - switcher search by label/branch/workspace/session ID
 - `n` New and `a` Attach entry points
@@ -196,8 +196,8 @@ Implemented:
 Current shortcut implementation preserves the existing last-turn expansion binding:
 
 - `Ctrl+T` remains last-turn expansion.
-- `Ctrl+Shift+T` opens the task switcher.
-- `/tasks` is the discoverable command.
+- `F3` opens the task switcher.
+- `/sessions` is the discoverable command.
 
 The help copy still says `Ctrl+T` opens the task switcher and must be corrected or the binding must be remapped deliberately.
 
@@ -288,7 +288,7 @@ flow's confirmation step.
 
 ### 10. Help binding — fixed
 
-The task-strip help now reads `Ctrl+Shift+T or /tasks`, and the unimplemented
+The task-strip help now reads `F3 or /sessions`, and the unimplemented
 `Alt+1…9` pinned-slot line was removed. Guarded by
 `app::tests::multi_task::the_task_strip_help_advertises_the_binding_that_is_actually_wired`.
 

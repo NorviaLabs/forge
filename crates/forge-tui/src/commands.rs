@@ -19,7 +19,7 @@ pub enum SlashCommand {
     Continue,
     Fork,
     ResumeList,
-    Tasks,
+    Sessions,
     Resume {
         session_id: Uuid,
     },
@@ -117,11 +117,11 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 Ok(SlashCommand::Fork)
             }
         }
-        "tasks" => {
+        "sessions" | "tasks" => {
             if parts.next().is_some() {
-                Err(CommandError::Usage("/tasks".into()))
+                Err(CommandError::Usage("/sessions".into()))
             } else {
-                Ok(SlashCommand::Tasks)
+                Ok(SlashCommand::Sessions)
             }
         }
         "resume" => match parts.next() {
@@ -231,7 +231,7 @@ mod tests {
             SlashCommand::Thinking { enabled: None },
             SlashCommand::Connect,
             SlashCommand::Help,
-            SlashCommand::Tasks,
+            SlashCommand::Sessions,
             SlashCommand::Quit,
             SlashCommand::Clear,
             SlashCommand::Refresh,
@@ -245,9 +245,16 @@ mod tests {
     }
 
     #[test]
-    fn tasks_opens_the_repository_task_switcher() {
-        assert_eq!(parse_slash("/tasks").unwrap().unwrap(), SlashCommand::Tasks);
-        assert!(parse_slash("/tasks now").unwrap().is_err());
+    fn sessions_opens_the_repository_session_switcher() {
+        assert_eq!(
+            parse_slash("/sessions").unwrap().unwrap(),
+            SlashCommand::Sessions
+        );
+        assert_eq!(
+            parse_slash("/tasks").unwrap().unwrap(),
+            SlashCommand::Sessions
+        );
+        assert!(parse_slash("/sessions now").unwrap().is_err());
     }
 
     #[test]
