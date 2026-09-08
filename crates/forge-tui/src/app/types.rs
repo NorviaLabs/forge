@@ -788,9 +788,6 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) pending_question: Option<String>,
     pub(crate) question_idx: usize,
     pub(crate) question_option_idx: usize,
-    /// Dim half of the shared running pulse (throbber tick parity), so the
-    /// cached transcript rebuilds as the active plan marker breathes.
-    pub(crate) pulse_dim: bool,
 }
 
 pub(crate) struct ConversationRenderCache {
