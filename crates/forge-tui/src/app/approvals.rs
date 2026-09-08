@@ -631,10 +631,10 @@ impl TuiApp {
         grant: ApprovalGrant,
         terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        // A sibling's approval belongs to the supervisor's actor, not to the
+        // A supervised Session's approval belongs to its actor, not to the
         // session this app owns. Resolving it here would answer the primary's
         // prompt instead — so hand the decision back the way it arrived.
-        if let SelectedRuntime::Sibling(session_id) = self.selected_runtime() {
+        if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
             if self
                 .selected_snapshot()
                 .is_some_and(|snapshot| snapshot.session.pending_hitl.is_some())

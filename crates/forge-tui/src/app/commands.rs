@@ -643,23 +643,23 @@ impl TuiApp {
             // and are not reachable from here yet, so refuse rather than act
             // on the primary's list under a sibling's name.
             SemanticCommand::CancelSelectedQueueMessage => {
-                if self.require_primary_task("cancelling a queued message") {
+                if self.require_direct_session("cancelling a queued message") {
                     self.cancel_selected_queue().await
                 }
             }
             SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
             SemanticCommand::CancelSelectedBackgroundTask => {
-                if self.require_primary_task("cancelling a background task") {
+                if self.require_direct_session("cancelling a background task") {
                     self.cancel_selected_task().await
                 }
             }
             SemanticCommand::ApproveSelectedBackgroundTask => {
-                if self.require_primary_task("approving a background task") {
+                if self.require_direct_session("approving a background task") {
                     self.resolve_selected_task_hitl(HitlDecision::Approve)
                 }
             }
             SemanticCommand::DenySelectedBackgroundTask => {
-                if self.require_primary_task("denying a background task") {
+                if self.require_direct_session("denying a background task") {
                     self.resolve_selected_task_hitl(HitlDecision::Deny)
                 }
             }
@@ -772,7 +772,7 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Fork) => {
-                    if !self.require_primary_task("/fork") {
+                    if !self.require_direct_session("/fork") {
                         return Ok(());
                     }
                     match self.session_runtime.fork().await {
@@ -875,7 +875,7 @@ impl TuiApp {
                     // Resume rebinds the session this app owns. A task's
                     // session/worktree binding is immutable, so this can only
                     // ever mean the primary — never the selected sibling.
-                    if !self.require_primary_task("/resume") {
+                    if !self.require_direct_session("/resume") {
                         return Ok(());
                     }
                     match self.session_runtime.resume_session(session_id).await {
@@ -952,9 +952,9 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Clear) => {
                     // The clear marks index into the primary session's own
-                    // message/event vectors; applying them while a sibling is
+                    // message/event vectors; applying them while a supervised Session is
                     // shown would hide the wrong transcript.
-                    if !self.require_primary_task("/clear") {
+                    if !self.require_direct_session("/clear") {
                         return Ok(());
                     }
                     // Hide everything currently in the transcript without deleting session
@@ -1014,12 +1014,12 @@ impl TuiApp {
                     });
                 }
                 Ok(SlashCommand::Effort) => {
-                    if self.require_primary_task("changing effort") {
+                    if self.require_direct_session("changing effort") {
                         self.open_connect_picker_compact(ConnectModelColumn::Effort);
                     }
                 }
                 Ok(SlashCommand::Thinking { enabled }) => {
-                    if self.require_primary_task("changing thinking") {
+                    if self.require_direct_session("changing thinking") {
                         self.thinking_enabled = enabled.unwrap_or(!self.thinking_enabled);
                         self.sync_effort_to_session();
                         let label = if self.thinking_enabled { "on" } else { "off" };
