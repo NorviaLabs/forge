@@ -511,6 +511,19 @@ impl TuiApp {
             .then(|| self.reasoning_effort.value.transport_value())
             .filter(|v| !v.is_empty())
             .map(str::to_string);
+        if self.selected_is_supervised() {
+            self.try_session_command(forge_session::SupervisorCommand::SetModel {
+                session_id: self.selected_session_id,
+                model_id: self.runtime.model_label.clone(),
+                route_id: self.selected_active_route_id(),
+                reasoning_effort: value,
+            });
+            self.try_session_command(forge_session::SupervisorCommand::SetThinking {
+                session_id: self.selected_session_id,
+                enabled: self.thinking_enabled,
+            });
+            return;
+        }
         self.session_runtime.set_reasoning_effort(value);
         self.session_runtime
             .set_thinking_enabled(self.thinking_enabled);
@@ -976,7 +989,7 @@ impl TuiApp {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
-                    self.session_runtime.set_active_model(m);
+                    self.set_selected_model(m.to_string());
                     self.sync_model_capabilities();
                 }
                 if let Some(pid) = self.connect.profile.clone() {
@@ -1043,7 +1056,7 @@ impl TuiApp {
         self.runtime.model_label = out.model.clone();
         self.runtime.provider = "native".into();
         self.connect.auth_suspended = false;
-        self.session_runtime.set_active_model(out.model.clone());
+        self.set_selected_model(out.model.clone());
         self.sync_model_capabilities();
         self.apply_connect_credentials(&out.profile_id);
         self.connect.oauth_pending = None;
@@ -1181,7 +1194,7 @@ impl TuiApp {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
-                    self.session_runtime.set_active_model(m);
+                    self.set_selected_model(m.to_string());
                     self.sync_model_capabilities();
                 }
                 if let Some(pid) = self.connect.profile.clone() {

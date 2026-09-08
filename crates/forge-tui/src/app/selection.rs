@@ -1,7 +1,7 @@
 //! Which runtime owns the Session an operator action addresses.
 //!
-//! Forge has two runtime ownership modes during the multisession migration:
-//! a legacy directly-owned AgentSession for single-session workspaces, and
+//! Forge has two runtime ownership modes: a directly-owned AgentSession for
+//! single-session workspaces, and
 //! repository-supervised Session actors addressed through snapshots + commands.
 //!
 //! Routing must depend on ownership, not on whether a Session happens to be the
@@ -20,7 +20,81 @@ pub(crate) enum SelectedRuntime {
 }
 
 impl TuiApp {
+    pub(crate) fn selected_pending_hitl(&self) -> Option<&forge_types::HitlPayload> {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .and_then(AgentSession::pending_hitl),
+            SelectedRuntime::Supervised(_) => self.session_view.pending_hitl.as_ref(),
+        }
+    }
+
+    pub(crate) fn selected_pending_question(&self) -> Option<&forge_types::QuestionPayload> {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .and_then(AgentSession::pending_question),
+            SelectedRuntime::Supervised(_) => self.session_view.pending_question.as_ref(),
+        }
+    }
+
+    pub(crate) fn selected_message_len(&self) -> usize {
+        self.session_runtime.as_ref().map_or_else(
+            || self.transcript_view.messages().len(),
+            |session| session.messages.len(),
+        )
+    }
+
+    pub(crate) fn selected_event_len(&self) -> usize {
+        self.session_runtime.as_ref().map_or_else(
+            || self.transcript_view.events().len(),
+            |session| session.events.len(),
+        )
+    }
+    pub(crate) fn set_selected_model(&mut self, model: String) {
+        if self.selected_is_supervised() {
+            self.try_session_command(forge_session::SupervisorCommand::SetModel {
+                session_id: self.selected_session_id,
+                model_id: model,
+                route_id: self.selected_active_route_id(),
+                reasoning_effort: self
+                    .selected_details()
+                    .and_then(|details| details.reasoning_effort.clone()),
+            });
+        } else {
+            self.session_runtime.set_active_model(model);
+        }
+    }
+
+    pub(crate) fn selected_input_route(&self, line: &str) -> input_route::InputRoute {
+        if !self.selected_is_supervised() {
+            return input_route::classify_input(
+                &self.session_runtime.active_task,
+                self.overlay.is_some(),
+                line,
+            );
+        }
+        use input_route::InputRoute;
+        if self.session_view.pending_question.is_some() && self.overlay.is_none() {
+            InputRoute::AnswerClarification
+        } else if self.session_view.lifecycle == forge_types::TaskLifecycle::Waiting {
+            InputRoute::RejectStaleResponse
+        } else if self.busy_state.is_active() {
+            InputRoute::QueueFutureTask
+        } else {
+            InputRoute::StartNewTask
+        }
+    }
     pub(crate) fn selected_runtime(&self) -> SelectedRuntime {
+        if self
+            .session_runtime
+            .as_ref()
+            .is_some_and(|session| session.session_id == self.selected_session_id)
+        {
+            return SelectedRuntime::Direct;
+        }
         if self
             .supervisor
             .as_ref()
@@ -48,10 +122,9 @@ impl TuiApp {
         }
     }
 
-    pub(crate) fn selected_details(
-        &self,
-    ) -> Option<&forge_session::SessionDetailsSnapshot> {
-        self.selected_snapshot().and_then(|snapshot| snapshot.details.as_ref())
+    pub(crate) fn selected_details(&self) -> Option<&forge_session::SessionDetailsSnapshot> {
+        self.selected_snapshot()
+            .and_then(|snapshot| snapshot.details.as_ref())
     }
 
     pub(crate) fn selected_queue_messages(&self) -> Vec<String> {
@@ -84,12 +157,18 @@ impl TuiApp {
         }
     }
 
-    pub(crate) fn selected_background_tasks(&self) -> Vec<forge_core::BackgroundTaskHandle> {
+    pub(crate) fn selected_background_tasks(&self) -> Vec<forge_session::BackgroundTaskSnapshot> {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
                 .session_runtime
                 .as_ref()
-                .map(|session| session.background().list().cloned().collect())
+                .map(|session| {
+                    session
+                        .background()
+                        .list()
+                        .map(forge_session::BackgroundTaskSnapshot::capture)
+                        .collect()
+                })
                 .unwrap_or_default(),
             SelectedRuntime::Supervised(_) => self
                 .selected_details()
@@ -127,20 +206,6 @@ impl TuiApp {
         }
     }
 
-    pub(crate) fn selected_active_model(&self) -> String {
-        match self.selected_runtime() {
-            SelectedRuntime::Direct => self
-                .session_runtime
-                .as_ref()
-                .map(|session| session.active_model.clone())
-                .unwrap_or_default(),
-            SelectedRuntime::Supervised(_) => self
-                .selected_details()
-                .map(|details| details.active_model.clone())
-                .unwrap_or_default(),
-        }
-    }
-
     pub(crate) fn selected_active_route_id(&self) -> String {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
@@ -155,18 +220,6 @@ impl TuiApp {
         }
     }
 
-    pub(crate) fn selected_max_turns(&self) -> u32 {
-        match self.selected_runtime() {
-            SelectedRuntime::Direct => self
-                .session_runtime
-                .as_ref()
-                .map_or(0, AgentSession::max_turns),
-            SelectedRuntime::Supervised(_) => {
-                self.selected_details().map_or(0, |details| details.max_turns)
-            }
-        }
-    }
-
     pub(crate) fn selected_image_input_supported(&self) -> bool {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
@@ -176,18 +229,6 @@ impl TuiApp {
             SelectedRuntime::Supervised(_) => self
                 .selected_details()
                 .is_some_and(|details| details.image_input_supported),
-        }
-    }
-
-    pub(crate) fn selected_thinking_enabled(&self) -> bool {
-        match self.selected_runtime() {
-            SelectedRuntime::Direct => self
-                .session_runtime
-                .as_ref()
-                .is_some_and(AgentSession::thinking_enabled),
-            SelectedRuntime::Supervised(_) => self
-                .selected_details()
-                .is_some_and(|details| details.thinking_enabled),
         }
     }
 
@@ -215,34 +256,6 @@ impl TuiApp {
             SelectedRuntime::Supervised(_) => self
                 .selected_details()
                 .map(|details| details.tools.clone())
-                .unwrap_or_default(),
-        }
-    }
-
-    pub(crate) fn selected_context_state(&self) -> forge_core::SessionContextState {
-        match self.selected_runtime() {
-            SelectedRuntime::Direct => self
-                .session_runtime
-                .as_ref()
-                .map(|session| session.context_state().clone())
-                .unwrap_or_default(),
-            SelectedRuntime::Supervised(_) => self
-                .selected_details()
-                .map(|details| details.context_state.clone())
-                .unwrap_or_default(),
-        }
-    }
-
-    pub(crate) fn selected_compaction_telemetry(&self) -> forge_core::CompactionTelemetry {
-        match self.selected_runtime() {
-            SelectedRuntime::Direct => self
-                .session_runtime
-                .as_ref()
-                .map(|session| session.compaction_telemetry().clone())
-                .unwrap_or_default(),
-            SelectedRuntime::Supervised(_) => self
-                .selected_details()
-                .map(|details| details.compaction.clone())
                 .unwrap_or_default(),
         }
     }
@@ -284,22 +297,5 @@ impl TuiApp {
             .find(|session| session.session_id == self.selected_session_id)
             .map(|session| session.label.clone())
             .unwrap_or_else(|| "the selected session".into())
-    }
-
-    /// Gate an operation that has not yet been routed through the supervisor.
-    ///
-    /// This is intentionally about runtime ownership, not primary-vs-sibling
-    /// identity. As migration progresses these gates disappear operation by
-    /// operation until repository mode no longer needs direct ownership.
-    pub(crate) fn require_direct_session(&mut self, action: &str) -> bool {
-        if !self.selected_is_supervised() {
-            return true;
-        }
-        let label = self.selected_session_label();
-        self.set_feedback(
-            FeedbackSeverity::Warn,
-            format!("{action} is not available for supervised session '{label}' yet"),
-        );
-        false
     }
 }

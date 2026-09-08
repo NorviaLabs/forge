@@ -43,7 +43,10 @@ impl TuiApp {
         }
         let _ = supervisor;
         if closed {
-            self.supervisor = None;
+            self.set_feedback(
+                FeedbackSeverity::Error,
+                "repository supervisor disconnected",
+            );
         }
         for event in events {
             match event {
@@ -98,7 +101,8 @@ impl TuiApp {
                     }
                     if snapshot.task.session_id == self.selected_session_id {
                         self.session_view = snapshot.session.clone();
-                        self.transcript_view = snapshot.transcript;
+                        self.transcript_view = snapshot.transcript.clone();
+                        self.sync_supervised_presentation(&snapshot);
                     }
                     if let Some(task) = self
                         .session_chrome
@@ -138,6 +142,22 @@ impl TuiApp {
                     self.apply_supervisor_stream_event(&event);
                 }
                 forge_session::SupervisorEvent::Selected(Some(session_id)) => {
+                    if let Some(snapshot) = self
+                        .supervisor
+                        .as_ref()
+                        .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+                        .cloned()
+                    {
+                        if session_id != self.selected_session_id {
+                            self.save_session_view_state(self.selected_session_id);
+                            self.restore_session_view_state(session_id);
+                            self.selected_session_id = session_id;
+                        }
+                        self.session_view = snapshot.session.clone();
+                        self.transcript_view = snapshot.transcript.clone();
+                        self.sync_supervised_presentation(&snapshot);
+                        self.sync_selected_workspace();
+                    }
                     self.task_strip_selection = self
                         .session_chrome
                         .iter()
@@ -151,7 +171,7 @@ impl TuiApp {
                     self.set_feedback(
                         FeedbackSeverity::Error,
                         format!(
-                            "task {}: {message}",
+                            "Session {}: {message}",
                             session_id.map_or_else(|| "unknown".into(), |id| id.to_string())
                         ),
                     );
@@ -166,7 +186,10 @@ impl TuiApp {
                         label,
                         workspace: workspace.display().to_string(),
                     });
-                    self.set_feedback(FeedbackSeverity::Warn, "trust required before task can run");
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "trust required before the Session can run",
+                    );
                 }
                 _ => {}
             }
@@ -192,6 +215,29 @@ impl TuiApp {
             }
             _ => {}
         }
+    }
+
+    pub(super) fn sync_supervised_presentation(&mut self, snapshot: &SessionRuntimeSnapshot) {
+        if snapshot.task.turn_state == forge_session::SupervisorTurnState::Running {
+            if !self.busy_state.is_active() {
+                self.stream.clear_preview();
+                self.stream.thinking.clear();
+                self.busy_state.start(BusyPhase::Model);
+            }
+        } else {
+            self.busy_state.stop();
+            self.stream.clear_preview();
+            self.stream.thinking.clear();
+            self.cancellation.take_requested();
+        }
+        if let Some(details) = snapshot.details.as_ref() {
+            self.runtime.model_label = details.active_model.clone();
+            self.thinking_enabled = details.thinking_enabled;
+        }
+        for item in &mut self.session_chrome {
+            item.selected = item.session_id == self.selected_session_id;
+        }
+        self.render_cache.conversation = None;
     }
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
@@ -374,9 +420,9 @@ impl TuiApp {
             resource: self.workspace_resource_label(),
             activity: None,
             progress_description: self.header_progress_description(),
-            failure_category: self.header_failure_category(transcript),
-            waiting_detail: self.header_waiting_detail(),
-            incomplete_checks: self.header_incomplete_checks(transcript),
+            failure_category: self.header_failure_category(session_view, transcript),
+            waiting_detail: self.header_waiting_detail(session_view),
+            incomplete_checks: self.header_incomplete_checks(session_view, transcript),
         }
     }
 
@@ -385,8 +431,12 @@ impl TuiApp {
     /// Deliberately narrow: only for `Completed`. A turn that actually failed
     /// reports through [`Self::header_failure_category`] instead, so this can
     /// never be used to soften a genuine failure into a footnote.
-    fn header_incomplete_checks(&self, transcript: &TranscriptSnapshot) -> Option<String> {
-        if self.session_view.lifecycle != forge_types::TaskLifecycle::Completed {
+    fn header_incomplete_checks(
+        &self,
+        session_view: &SessionSnapshot,
+        transcript: &TranscriptSnapshot,
+    ) -> Option<String> {
+        if session_view.lifecycle != forge_types::TaskLifecycle::Completed {
             return None;
         }
         // Events are session-cumulative — only a resume clears them — so an
@@ -485,9 +535,9 @@ impl TuiApp {
             .flatten()
     }
 
-    fn header_waiting_detail(&self) -> Option<String> {
-        if self.session_view.is_awaiting_approval()
-            || self.session_view.lifecycle == forge_types::TaskLifecycle::Waiting
+    fn header_waiting_detail(&self, session_view: &SessionSnapshot) -> Option<String> {
+        if session_view.is_awaiting_approval()
+            || session_view.lifecycle == forge_types::TaskLifecycle::Waiting
         {
             return Some("Approval required".into());
         }
@@ -506,8 +556,12 @@ impl TuiApp {
     /// survives a resume. Removing it is tracked as a follow-up for the
     /// persistence phase (extending the durable status event to carry the
     /// failure category), not dropped silently.
-    fn header_failure_category(&self, transcript: &TranscriptSnapshot) -> Option<String> {
-        if self.session_view.lifecycle != forge_types::TaskLifecycle::Failed {
+    fn header_failure_category(
+        &self,
+        session_view: &SessionSnapshot,
+        transcript: &TranscriptSnapshot,
+    ) -> Option<String> {
+        if session_view.lifecycle != forge_types::TaskLifecycle::Failed {
             return None;
         }
         // Prefer the latest structured turn_failed event category.

@@ -366,6 +366,19 @@ impl RepositoryControl {
     /// `ADD COLUMN IF NOT EXISTS`, so read `table_info` and add only what a
     /// pre-existing control database is actually missing.
     async fn add_missing_columns(&self) -> Result<(), RepositorySessionError> {
+        let columns = sqlx::query("PRAGMA table_info(prompt_queue)")
+            .fetch_all(&self.pool)
+            .await?;
+        if !columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "attachments")
+        {
+            sqlx::query(
+                "ALTER TABLE prompt_queue ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
         let existing: Vec<String> = sqlx::query("PRAGMA table_info(pending_operations)")
             .fetch_all(&self.pool)
             .await?
@@ -497,6 +510,64 @@ impl RepositoryControl {
         session_id: SessionId,
         text: &str,
     ) -> Result<u64, RepositorySessionError> {
+        self.enqueue_prompt_with_attachments(session_id, text, "[]")
+            .await
+    }
+
+    /// Replace the active conversation binding without changing its Git identity.
+    /// The old journal and queued prompts remain available for later resume.
+    pub(crate) async fn replace_active_session(
+        &self,
+        previous: SessionId,
+        next: SessionId,
+    ) -> Result<(), RepositorySessionError> {
+        let previous_record = self.session(previous).await?;
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE tasks SET lifecycle = 'archived', archived_at = ?, slot = NULL WHERE session_id = ?")
+            .bind(&now)
+            .bind(previous.to_string())
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO tasks \
+             (session_id, label, workspace, branch, ownership, lifecycle, turn_state, slot, \
+              model_id, route_id, reasoning_effort, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, 'active', 'idle', ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(session_id) DO UPDATE SET \
+              label = excluded.label, workspace = excluded.workspace, branch = excluded.branch, \
+              ownership = excluded.ownership, lifecycle = 'active', turn_state = 'idle', \
+              slot = excluded.slot, model_id = excluded.model_id, route_id = excluded.route_id, \
+              reasoning_effort = excluded.reasoning_effort, archived_at = NULL, \
+              updated_at = excluded.updated_at",
+        )
+        .bind(next.to_string())
+        .bind(&previous_record.label)
+        .bind(previous_record.workspace.display().to_string())
+        .bind(&previous_record.branch)
+        .bind(previous_record.ownership.as_str())
+        .bind(previous_record.slot.map(i64::from))
+        .bind(&previous_record.model_id)
+        .bind(&previous_record.route_id)
+        .bind(&previous_record.reasoning_effort)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE repository_state SET selected_session_id = ? WHERE id = 1")
+            .bind(next.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn enqueue_prompt_with_attachments(
+        &self,
+        session_id: SessionId,
+        text: &str,
+        attachments: &str,
+    ) -> Result<u64, RepositorySessionError> {
         let task = self.session(session_id).await?;
         if task.lifecycle == SessionLifecycle::Archived {
             return Err(RepositorySessionError::Archived(session_id));
@@ -514,13 +585,14 @@ impl RepositoryControl {
         }
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
-            "INSERT INTO prompt_queue (session_id, text, status, created_at, updated_at) \
-             VALUES (?, ?, 'queued', ?, ?)",
+            "INSERT INTO prompt_queue (session_id, text, status, created_at, updated_at, attachments) \
+             VALUES (?, ?, 'queued', ?, ?, ?)",
         )
         .bind(session_id.to_string())
         .bind(text)
         .bind(&now)
         .bind(&now)
+        .bind(attachments)
         .execute(&self.pool)
         .await?;
         Ok(result.last_insert_rowid() as u64)
@@ -546,6 +618,17 @@ impl RepositoryControl {
                 )
             })
             .collect())
+    }
+
+    pub(crate) async fn prompt_attachments(
+        &self,
+        queue_id: u64,
+    ) -> Result<String, RepositorySessionError> {
+        let row = sqlx::query("SELECT attachments FROM prompt_queue WHERE queue_id = ?")
+            .bind(queue_id as i64)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.get("attachments"))
     }
 
     pub async fn cancel_queued_prompt_at(

@@ -37,7 +37,7 @@ impl TuiApp {
     }
 
     pub(super) fn sync_question_menu(&mut self) {
-        match self.session_view.pending_question.as_ref() {
+        match self.selected_pending_question().cloned() {
             None => self.question_session.menu = QuestionMenuState::default(),
             Some(payload) => {
                 if self.question_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
@@ -49,7 +49,7 @@ impl TuiApp {
                         custom: vec![None; payload.questions.len()],
                     };
                 }
-                let n = self.question_row_count(payload);
+                let n = self.question_row_count(&payload);
                 if n > 0 {
                     self.question_session.menu.option_idx =
                         self.question_session.menu.option_idx.min(n - 1);
@@ -66,7 +66,7 @@ impl TuiApp {
     }
 
     pub(super) fn sync_question_focus(&mut self) {
-        let Some(payload) = self.session_view.pending_question.as_ref() else {
+        let Some(payload) = self.selected_pending_question() else {
             return;
         };
         if self.question_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
@@ -92,7 +92,7 @@ impl TuiApp {
     }
 
     pub(super) fn question_presentation(&self) -> Option<QuestionPendingPresentation> {
-        let payload = self.session_view.pending_question.as_ref()?;
+        let payload = self.selected_pending_question()?;
         let idx = self.question_session.menu.question_idx;
         let question = payload.questions.get(idx)?;
         let chosen = self
@@ -143,14 +143,14 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
-        if self.session_view.pending_question.as_ref().is_none() {
+        if self.selected_pending_question().is_none() {
             return Ok(false);
         }
         if self.focus.block() != FocusBlock::Approval {
             return Ok(false);
         }
         self.sync_question_menu();
-        let Some(payload) = self.session_view.pending_question.as_ref().cloned() else {
+        let Some(payload) = self.selected_pending_question().cloned() else {
             return Ok(false);
         };
         let rows = self.question_row_count(&payload).max(1);
@@ -309,7 +309,7 @@ impl TuiApp {
     }
 
     pub(super) fn apply_clarification_text(&mut self, text: &str) {
-        let Some(payload) = self.session_view.pending_question.as_ref().cloned() else {
+        let Some(payload) = self.selected_pending_question().cloned() else {
             return;
         };
         self.sync_question_menu();
@@ -342,7 +342,7 @@ impl TuiApp {
 
     fn queue_question_submit(&mut self, submit: QuestionSubmit) {
         self.pending_interaction.request_question_submit(submit);
-        if let Some(payload) = self.session_view.pending_question.as_ref() {
+        if let Some(payload) = self.selected_pending_question() {
             self.busy_state.start(BusyPhase::Tool {
                 name: payload.tool.clone(),
             });

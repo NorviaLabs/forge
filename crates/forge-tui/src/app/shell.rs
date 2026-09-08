@@ -330,6 +330,26 @@ async fn run_tui_inner(
     runtime: TuiRuntimeConfig,
     launch: TuiLaunch,
 ) -> Result<ExitSummary, TuiError> {
+    let app =
+        TuiApp::new_with_startup_resume_picker(session, runtime, launch.startup_items.clone());
+    run_tui_app_inner(app, launch).await
+}
+
+pub async fn run_tui_supervised(
+    initial: SessionRuntimeSnapshot,
+    runtime: TuiRuntimeConfig,
+    handle: SupervisorHandle,
+    launch: TuiLaunch,
+) -> Result<ExitSummary, TuiError> {
+    let app = TuiApp::new_supervised(initial, runtime, handle.clone());
+    handle
+        .command(forge_session::SupervisorCommand::Refresh)
+        .await
+        .map_err(|error| TuiError::Other(error.to_string()))?;
+    run_tui_app_inner(app, launch).await
+}
+
+async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSummary, TuiError> {
     enable_raw_mode()?;
     // Ensure the terminal is restored on panic, returned errors and normal exit.
     let guard = TerminalGuard::install();
@@ -351,11 +371,10 @@ async fn run_tui_inner(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = TuiApp::new_with_startup_resume_picker(session, runtime, launch.startup_items);
     if let Some(handle) = launch.supervisor {
         let refresh = handle.clone();
         app.supervisor = Some(SupervisorUiState {
-            current_session_id: app.session_runtime.session_id,
+            current_session_id: app.selected_session_id,
             events: handle.subscribe(),
             handle,
             snapshots: std::collections::HashMap::new(),
@@ -364,7 +383,7 @@ async fn run_tui_inner(
             .command(forge_session::SupervisorCommand::Refresh)
             .await
             .map_err(|error| TuiError::Other(error.to_string()))?;
-        app.set_feedback(FeedbackSeverity::Info, "Multi-task mode · F3 or /sessions");
+        app.set_feedback(FeedbackSeverity::Info, "Sessions · F3 or /sessions");
     }
     app.terminal_events = Some(TerminalEventSource::spawn());
     app.onboarding_connect = launch.onboarding_connect;
@@ -380,18 +399,24 @@ async fn run_tui_inner(
     app.persist_selection();
 
     if let Some(session_id) = app.startup_resume.session_id {
-        let path = app
-            .session_runtime
-            .journal_dir()
-            .join(format!("{session_id}.db"));
+        let path = app.selected_journal_dir().join(format!("{session_id}.db"));
         let _ = std::fs::remove_file(path);
     }
 
+    if let Some(supervisor) = app.supervisor.as_ref() {
+        supervisor
+            .handle
+            .command(forge_session::SupervisorCommand::Shutdown)
+            .await
+            .map_err(|error| TuiError::Other(error.to_string()))?;
+        app.poll_supervisor_events();
+    }
+    let usage = app.selected_token_usage_report();
     let summary = ExitSummary {
         exit_code: app.exit.code(),
-        session_id: app.session_runtime.session_id.to_string(),
-        token_usage: (app.session_runtime.token_usage.total_api_tokens() > 0)
-            .then(|| format_exit_token_usage(&app.session_runtime.token_usage)),
+        session_id: app.selected_session_id.to_string(),
+        token_usage: (usage.api.total_api_tokens() > 0)
+            .then(|| format_exit_token_usage(&usage.api)),
     };
 
     drop(guard);
