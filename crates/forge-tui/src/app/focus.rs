@@ -18,8 +18,8 @@ impl TuiApp {
             // FocusAvailability for that case).
             sidebar: true,
             bottom_panel: self.bottom_panel.open,
-            approval: self.session_view.pending_hitl.is_some()
-                || self.session_view.pending_question.is_some(),
+            approval: self.selected_pending_hitl().is_some()
+                || self.selected_pending_question().is_some(),
         }
     }
 
@@ -148,10 +148,10 @@ impl TuiApp {
         if self.explorer_dialog.is_open() {
             return Some("Enter confirm · Esc cancel".into());
         }
-        if self.session_view.pending_question.is_some() {
+        if self.selected_pending_question().is_some() {
             return Some("Waiting · question · ↑↓  Enter  Esc skip".into());
         }
-        if self.session_view.pending_hitl.is_some() {
+        if self.selected_pending_hitl().is_some() {
             // State only. The card carries its own key hint a few rows above,
             // and printing the same keys twice on one screen reads as noise.
             return Some("Waiting for approval".into());

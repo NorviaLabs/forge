@@ -10,8 +10,8 @@ use forge_session::{
     SessionTarget,
 };
 use forge_tui::{
-    decide_launch, resume_session_items, run_setup, run_tui_with_launch, ExitCode, SetupRequest,
-    SetupResult, TuiLaunch, TuiRuntimeConfig,
+    decide_launch, resume_session_items, run_setup, run_tui_supervised, run_tui_with_launch,
+    ExitCode, SetupRequest, SetupResult, TuiLaunch, TuiRuntimeConfig,
 };
 use forge_types::SessionId;
 use tracing_subscriber::EnvFilter;
@@ -371,19 +371,6 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
                 .is_some()
                 && forge_connect::has_connected_profile()
         });
-    let supervisor = match bootstrap {
-        Some(bootstrap) => match bootstrap
-            .open_siblings(&cfg, opened.session.session_id)
-            .await
-        {
-            Ok((_supervisor, handle)) => Some(handle),
-            Err(error) => {
-                startup_notices.push(format!("multi-task mode unavailable: {error}"));
-                None
-            }
-        },
-        None => None,
-    };
     let runtime = TuiRuntimeConfig {
         model_label: last
             .as_ref()
@@ -399,17 +386,24 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         file_icons: cfg.tui.file_icons,
         theme_id: cfg.tui.theme.clone(),
     };
-    let summary = run_tui_with_launch(
-        opened.session,
-        runtime,
-        TuiLaunch {
-            startup_items: None,
-            onboarding_connect: decision.require_connect,
-            ready_placeholder: decision.show_ready_placeholder,
-            supervisor,
-        },
-    )
-    .await
+    let launch = TuiLaunch {
+        startup_items: None,
+        onboarding_connect: decision.require_connect,
+        ready_placeholder: decision.show_ready_placeholder,
+        supervisor: None,
+    };
+    let summary = match bootstrap {
+        Some(bootstrap) => {
+            let session_id = opened.session.session_id;
+            let (supervisor, handle) = bootstrap.open_with_primary(&cfg, opened.session).await?;
+            let initial = supervisor
+                .snapshot(session_id)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("primary session missing from supervisor"))?;
+            run_tui_supervised(initial, runtime, handle, launch).await
+        }
+        None => run_tui_with_launch(opened.session, runtime, launch).await,
+    }
     .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(token_usage) = summary.token_usage {
         println!("{token_usage}");

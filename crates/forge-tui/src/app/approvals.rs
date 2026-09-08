@@ -183,9 +183,9 @@ impl TuiApp {
                 }
             }
             SelectedRuntime::Supervised(session_id) => {
-                self.try_session_command(
-                    forge_session::SupervisorCommand::ClearSessionApprovals { session_id },
-                );
+                self.try_session_command(forge_session::SupervisorCommand::ClearSessionApprovals {
+                    session_id,
+                });
             }
         }
         self.approval_session.menu = ApprovalMenuState::default();
@@ -206,7 +206,7 @@ impl TuiApp {
 
     /// Reset menu selection when the pending HITL call changes or clears.
     pub(super) fn sync_approval_menu(&mut self) {
-        match self.session_view.pending_hitl.as_ref() {
+        match self.selected_pending_hitl() {
             None => {
                 self.approval_session.menu = ApprovalMenuState::default();
             }
@@ -231,7 +231,7 @@ impl TuiApp {
     /// render, so a draw can't move focus). After the user Tabs away, the
     /// transition is over and this must not re-grab focus.
     pub(super) fn sync_approval_focus(&mut self) {
-        let Some(payload) = self.session_view.pending_hitl.as_ref() else {
+        let Some(payload) = self.selected_pending_hitl() else {
             self.approval_session.focus_claimed_for = None;
             return;
         };
@@ -244,7 +244,7 @@ impl TuiApp {
     }
 
     fn approval_menu_kinds(&self) -> Vec<ApprovalMenuKind> {
-        let Some(payload) = self.session_view.pending_hitl.as_ref() else {
+        let Some(payload) = self.selected_pending_hitl() else {
             return Vec::new();
         };
         if payload.denied_host.is_some() {
@@ -274,7 +274,7 @@ impl TuiApp {
     }
 
     pub(super) fn approval_menu_rows(&self) -> Vec<crate::conversation::ApprovalMenuRow> {
-        let Some(payload) = self.session_view.pending_hitl.as_ref() else {
+        let Some(payload) = self.selected_pending_hitl() else {
             return Vec::new();
         };
         if let Some(host) = payload.denied_host.as_deref() {
@@ -393,7 +393,7 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
-        if self.session_view.pending_hitl.as_ref().is_none() {
+        if self.selected_pending_hitl().is_none() {
             return Ok(false);
         }
         if self.focus.block() != FocusBlock::Approval {
@@ -514,7 +514,7 @@ impl TuiApp {
                     .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
             }
             ApprovalMenuKind::AllowPattern | ApprovalMenuKind::AllowPatternAlways => {
-                let Some(payload) = self.session_view.pending_hitl.as_ref().cloned() else {
+                let Some(payload) = self.selected_pending_hitl().cloned() else {
                     return;
                 };
                 if payload.denied_host.is_none()
@@ -541,7 +541,7 @@ impl TuiApp {
             // Nothing is decided yet: the refusal waits for the note, so the
             // operator can still change their mind by clearing the composer.
             ApprovalMenuKind::DenyWithNote => {
-                let Some(payload) = self.session_view.pending_hitl.as_ref().cloned() else {
+                let Some(payload) = self.selected_pending_hitl().cloned() else {
                     return;
                 };
                 self.approval_session.awaiting_denial_note = Some(payload.call_id);
@@ -553,7 +553,7 @@ impl TuiApp {
                 return;
             }
         }
-        if let Some(payload) = self.session_view.pending_hitl.as_ref() {
+        if let Some(payload) = self.selected_pending_hitl() {
             self.busy_state.start(BusyPhase::Tool {
                 name: payload.tool.clone(),
             });
@@ -569,8 +569,9 @@ impl TuiApp {
             return false;
         };
         let still_pending = self
-            .session_runtime
-            .pending_hitl()
+            .session_view
+            .pending_hitl
+            .as_ref()
             .is_some_and(|payload| payload.call_id == waiting_for);
         if !still_pending {
             self.approval_session.awaiting_denial_note = None;
@@ -595,14 +596,12 @@ impl TuiApp {
                     .await?;
             }
             SelectedRuntime::Supervised(session_id) => {
-                self.try_session_command(
-                    forge_session::SupervisorCommand::ResolveApprovalWithFeedback {
-                        session_id,
-                        decision: HitlDecision::Deny,
-                        actor: "tui".into(),
-                        feedback: feedback.map(str::to_string),
-                    },
-                );
+                self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
+                    session_id,
+                    decision: HitlDecision::Deny,
+                    actor: "tui".into(),
+                    feedback: feedback.map(str::to_string),
+                });
             }
         }
         self.push_toast(if feedback.is_some() {
@@ -657,7 +656,7 @@ impl TuiApp {
         terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
         if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
-            let Some(payload) = self.session_view.pending_hitl.clone() else {
+            let Some(payload) = self.selected_pending_hitl().cloned() else {
                 return Ok(());
             };
             let approved = matches!(decision, HitlDecision::Approve);
@@ -699,10 +698,7 @@ impl TuiApp {
                         return Ok(());
                     };
                     self.try_session_command(
-                        forge_session::SupervisorCommand::AllowSessionPattern {
-                            session_id,
-                            call,
-                        },
+                        forge_session::SupervisorCommand::AllowSessionPattern { session_id, call },
                     );
                     if grant == ApprovalGrant::Always {
                         if let Err(error) = forge_config::append_user_allow_rule(&pattern) {
@@ -726,12 +722,13 @@ impl TuiApp {
                 session_id,
                 decision,
                 actor: "tui".into(),
+                feedback: None,
             });
             self.enter_chat_composer();
             return Ok(());
         }
 
-        let Some(payload) = self.session_view.pending_hitl.as_ref().cloned() else {
+        let Some(payload) = self.selected_pending_hitl().cloned() else {
             return Ok(());
         };
 
@@ -918,7 +915,7 @@ impl TuiApp {
         if self.pending_interaction.has_hitl_decision() {
             return Ok(());
         }
-        let Some(payload) = self.session_view.pending_hitl.as_ref().cloned() else {
+        let Some(payload) = self.selected_pending_hitl().cloned() else {
             return Ok(());
         };
         if payload.sandbox_escalation {
@@ -931,13 +928,13 @@ impl TuiApp {
         // "always" grant stop working the moment the session restarted.
         // `grant_covers` also honours a `deny` carve-out, so a broad allow
         // rule cannot auto-approve the exception the operator wrote.
-        let identity_allowed = self
-            .session_pattern_call_for_payload(&payload)
-            .is_some_and(|call| {
-                self.session_runtime
-                    .as_ref()
-                    .is_some_and(|session| session.grant_covers(&call))
-            });
+        let identity_allowed =
+            self.session_pattern_call_for_payload(&payload)
+                .is_some_and(|call| {
+                    self.session_runtime
+                        .as_ref()
+                        .is_some_and(|session| session.grant_covers(&call))
+                });
         if !identity_allowed {
             return Ok(());
         }

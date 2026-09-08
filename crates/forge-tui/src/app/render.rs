@@ -244,7 +244,7 @@ impl TuiApp {
                     slot: task.slot,
                     label: if task.label.is_empty() {
                         unnamed += 1;
-                        format!("task {unnamed}")
+                        format!("session {unnamed}")
                     } else {
                         task.label.clone()
                     },
@@ -499,7 +499,7 @@ impl TuiApp {
             }
             self.sync_approval_menu();
             self.sync_question_menu();
-            if let Some(payload) = self.session_view.pending_hitl.clone() {
+            if let Some(payload) = self.selected_pending_hitl().cloned() {
                 let rows = self.approval_menu_rows();
                 let selected = self.approval_menu_selected();
                 let approval_focused = self.focus.block() == FocusBlock::Approval;

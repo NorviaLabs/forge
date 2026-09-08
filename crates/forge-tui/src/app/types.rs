@@ -1497,10 +1497,6 @@ impl DirectSessionSlot {
     pub(crate) fn as_mut(&mut self) -> Option<&mut AgentSession> {
         self.0.as_mut()
     }
-
-    pub(crate) fn is_some(&self) -> bool {
-        self.0.is_some()
-    }
 }
 
 impl std::ops::Deref for DirectSessionSlot {

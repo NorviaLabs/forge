@@ -134,10 +134,11 @@ pub struct SessionDetailsSnapshot {
     pub token_usage_report: TokenUsageReport,
     pub tools: Vec<String>,
     pub skills: Vec<String>,
+    pub skill_descriptions: Vec<(String, String)>,
     pub context_state: SessionContextState,
     pub compaction: CompactionTelemetry,
     pub queue: Vec<QueuedTask>,
-    pub background: Vec<BackgroundTaskHandle>,
+    pub background: Vec<BackgroundTaskSnapshot>,
     pub session_pattern_allow_count: usize,
 }
 
@@ -145,6 +146,11 @@ impl SessionDetailsSnapshot {
     pub fn capture(session: &AgentSession) -> Self {
         Self {
             journal_dir: session.journal_dir().to_path_buf(),
+            skill_descriptions: session
+                .loaded_skills()
+                .into_iter()
+                .map(|skill| (skill.name, skill.description))
+                .collect(),
             active_model: session.active_model.clone(),
             active_route_id: session.active_route_id.clone(),
             reasoning_effort: session.reasoning_effort().map(str::to_string),
@@ -157,8 +163,44 @@ impl SessionDetailsSnapshot {
             context_state: session.context_state().clone(),
             compaction: session.compaction_telemetry().clone(),
             queue: session.queue().visible().cloned().collect(),
-            background: session.background().list().cloned().collect(),
+            background: session
+                .background()
+                .list()
+                .map(BackgroundTaskSnapshot::capture)
+                .collect(),
             session_pattern_allow_count: session.session_pattern_allow_count(),
+        }
+    }
+}
+
+/// Background presentation data, with no cancellation token or shared mutable state.
+#[derive(Debug, Clone)]
+pub struct BackgroundTaskSnapshot {
+    pub id: forge_types::BackgroundTaskId,
+    pub label: String,
+    pub kind: forge_core::BackgroundTaskKind,
+    pub status: forge_core::BackgroundTaskStatus,
+    pub child_session_id: Option<SessionId>,
+    pub latest_message: Option<String>,
+    pub worktree_path: Option<PathBuf>,
+    pub worktree_branch: Option<String>,
+}
+
+impl BackgroundTaskSnapshot {
+    pub fn capture(task: &BackgroundTaskHandle) -> Self {
+        Self {
+            id: task.id,
+            label: task.label.clone(),
+            kind: task.kind.clone(),
+            status: task.status.clone(),
+            child_session_id: task.child_session_id,
+            latest_message: task
+                .latest_message
+                .lock()
+                .ok()
+                .and_then(|message| message.clone()),
+            worktree_path: task.worktree_path.clone(),
+            worktree_branch: task.worktree_branch.clone(),
         }
     }
 }

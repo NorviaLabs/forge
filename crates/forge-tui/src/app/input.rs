@@ -187,7 +187,11 @@ impl TuiApp {
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
                 let item = self.session_chrome[self.task_strip_selection].clone();
-                if item.session_id != self.session_runtime.session_id {
+                if !self
+                    .session_runtime
+                    .as_ref()
+                    .is_some_and(|session| session.session_id == item.session_id)
+                {
                     if self.supervisor.is_some() {
                         if !self
                             .send_session_command(forge_session::SupervisorCommand::SelectSession {
@@ -231,10 +235,14 @@ impl TuiApp {
             }
             KeyCode::Char('s') if key.modifiers.is_empty() => {
                 let session_id = self.session_chrome[self.task_strip_selection].session_id;
-                if session_id == self.session_runtime.session_id {
+                if self
+                    .session_runtime
+                    .as_ref()
+                    .is_some_and(|session| session.session_id == session_id)
+                {
                     self.set_feedback(
                         FeedbackSeverity::Info,
-                        "use Esc or Ctrl+C to stop the primary task",
+                        "use Esc or Ctrl+C to stop the selected Session",
                     );
                     return Ok(true);
                 }
@@ -246,10 +254,14 @@ impl TuiApp {
             }
             KeyCode::Char('c') if key.modifiers.is_empty() => {
                 let session_id = self.session_chrome[self.task_strip_selection].session_id;
-                if session_id == self.session_runtime.session_id {
+                if self
+                    .session_runtime
+                    .as_ref()
+                    .is_some_and(|session| session.session_id == session_id)
+                {
                     self.set_feedback(
                         FeedbackSeverity::Info,
-                        "primary task is controlled by the composer",
+                        "the selected Session is controlled by the composer",
                     );
                     return Ok(true);
                 }
@@ -271,10 +283,14 @@ impl TuiApp {
             }
             KeyCode::Char('x') if key.modifiers.is_empty() => {
                 let session_id = self.session_chrome[self.task_strip_selection].session_id;
-                if session_id == self.session_runtime.session_id {
+                if self
+                    .session_runtime
+                    .as_ref()
+                    .is_some_and(|session| session.session_id == session_id)
+                {
                     self.set_feedback(
                         FeedbackSeverity::Warn,
-                        "the primary task cannot be archived",
+                        "the primary Session cannot be archived",
                     );
                     return Ok(true);
                 }
@@ -411,10 +427,9 @@ impl TuiApp {
         self.session_view_states.insert(session_id, state);
     }
 
-    /// Keep workspace-owned UI state aligned with the selected session. The
-    /// primary session is the only live session held by the TUI; sibling
-    /// sessions expose their immutable snapshot, but their filesystem still
-    /// needs to become the root for the explorer and repository chrome.
+    /// Keep workspace-owned UI state aligned with the selected Session. In
+    /// repository mode every runtime is actor-owned, while its immutable
+    /// snapshot supplies the filesystem root for explorer and repository UI.
     pub(super) fn sync_selected_workspace(&mut self) {
         let workspace = self.session_view.workspace_root().to_path_buf();
         let already_bound = self.workspace_files.explorer.root_path() == Some(workspace.as_path());
@@ -466,7 +481,7 @@ impl TuiApp {
             .as_ref()
             .map(|supervisor| supervisor.handle.clone())
         else {
-            self.set_feedback(FeedbackSeverity::Warn, "multi-task mode is unavailable");
+            self.set_feedback(FeedbackSeverity::Warn, "Sessions are unavailable");
             return false;
         };
         match handle.command(command).await {
@@ -822,7 +837,7 @@ impl TuiApp {
 
         let line = self.input.take();
         if line.trim().is_empty() && !self.attachment.has_images() {
-            if !self.busy_state.is_active() && !self.session_runtime.queue().is_empty() {
+            if !self.busy_state.is_active() && !self.selected_queue_messages().is_empty() {
                 self.dequeue_and_send_next().await;
             }
             return Ok(());
@@ -872,49 +887,7 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.selected_session_id != self.session_runtime.session_id {
-            if let Some(handle) = self
-                .supervisor
-                .as_ref()
-                .map(|supervisor| supervisor.handle.clone())
-            {
-                // An unnamed task takes its name from its first prompt, so
-                // the strip and the branch-facing label become readable
-                // with the very first message instead of showing an
-                // id-only placeholder.
-                let unnamed = self
-                    .session_chrome
-                    .iter()
-                    .find(|task| task.session_id == self.selected_session_id)
-                    .is_some_and(|task| task.label.is_empty());
-                if unnamed {
-                    let label = forge_storage::label_from_prompt(&line);
-                    let _ = handle
-                        .command(forge_session::SupervisorCommand::RenameSession {
-                            session_id: self.selected_session_id,
-                            label,
-                        })
-                        .await;
-                }
-                self.record_submitted_line(&line).await;
-                handle
-                    .command(forge_session::SupervisorCommand::SubmitPrompt {
-                        session_id: self.selected_session_id,
-                        text: line,
-                    })
-                    .await
-                    .map_err(|error| TuiError::Other(error.to_string()))?;
-                self.set_feedback(FeedbackSeverity::Info, "prompt queued for selected session");
-                self.push_toast("sent to selected session");
-                return Ok(());
-            }
-        }
-
-        let route = input_route::classify_input(
-            &self.session_runtime.active_task,
-            self.overlay.is_some(),
-            &line,
-        );
+        let route = self.selected_input_route(&line);
         let consumed = !matches!(route, input_route::InputRoute::RejectStaleResponse);
         if consumed {
             self.record_submitted_line(&line).await;
@@ -929,7 +902,7 @@ impl TuiApp {
                 self.enqueue_user_message(line).await;
             }
             input_route::InputRoute::AnswerClarification => {
-                if self.session_runtime.pending_question().is_some() {
+                if self.selected_pending_question().is_some() {
                     self.apply_clarification_text(&line);
                 } else {
                     self.set_feedback(FeedbackSeverity::Warn, "nothing pending to answer");
@@ -1220,7 +1193,7 @@ impl TuiApp {
         // While an approval is pending the composer is not the answer input;
         // typing must neither move focus off the approval card nor accumulate
         // text behind the waiting state.
-        if self.session_runtime.pending_hitl().is_some() {
+        if self.selected_pending_hitl().is_some() {
             return Ok(false);
         }
         // Control surfaces own their own keystrokes. Falling through to the
@@ -1506,15 +1479,11 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.session_runtime.pending_question().is_some()
-            && self.handle_question_menu_key(key).await?
-        {
+        if self.selected_pending_question().is_some() && self.handle_question_menu_key(key).await? {
             return Ok(());
         }
 
-        if self.session_runtime.pending_hitl().is_some()
-            && self.handle_approval_menu_key(key).await?
-        {
+        if self.selected_pending_hitl().is_some() && self.handle_approval_menu_key(key).await? {
             return Ok(());
         }
 

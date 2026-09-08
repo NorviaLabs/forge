@@ -109,13 +109,26 @@ impl TuiApp {
         // Filter by text after leading `/`
         let filter = t.trim_start_matches('/');
         let mut items = filter_palette(filter);
+        let skills = match self.selected_details() {
+            Some(details) => details.skill_descriptions.clone(),
+            None => self
+                .session_runtime
+                .as_ref()
+                .map(|session| {
+                    session
+                        .loaded_skills()
+                        .into_iter()
+                        .map(|skill| (skill.name, skill.description))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
         items.extend(
-            self.session_runtime
-                .loaded_skills()
+            skills
                 .into_iter()
-                .map(|skill| PaletteItem {
-                    cmd: format!("/{}", skill.name),
-                    desc: truncate_skill_description(&skill.description),
+                .map(|(name, description)| PaletteItem {
+                    cmd: format!("/{name}"),
+                    desc: truncate_skill_description(&description),
                     is_skill: true,
                 })
                 .filter(|item| {
@@ -463,6 +476,11 @@ impl TuiApp {
                 if self.busy_state.is_active() {
                     if !self.cancellation.is_requested() {
                         self.cancellation.request();
+                        if self.selected_is_supervised() {
+                            self.try_session_command(forge_session::SupervisorCommand::StopTurn {
+                                session_id: self.selected_session_id,
+                            });
+                        }
                         self.push_toast("interrupt requested");
                     }
                 }
@@ -638,30 +656,16 @@ impl TuiApp {
                 }
             }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
-            // The sidebar lists the primary session's own queue and
-            // background tasks. A sibling's are held by its supervisor actor
-            // and are not reachable from here yet, so refuse rather than act
-            // on the primary's list under a sibling's name.
-            SemanticCommand::CancelSelectedQueueMessage => {
-                if self.require_direct_session("cancelling a queued message") {
-                    self.cancel_selected_queue().await
-                }
-            }
+            // Queue and background-task operations resolve against whichever
+            // Session is selected; supervised mutations are actor commands.
+            SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
             SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
-            SemanticCommand::CancelSelectedBackgroundTask => {
-                if self.require_direct_session("cancelling a background task") {
-                    self.cancel_selected_task().await
-                }
-            }
+            SemanticCommand::CancelSelectedBackgroundTask => self.cancel_selected_task().await,
             SemanticCommand::ApproveSelectedBackgroundTask => {
-                if self.require_direct_session("approving a background task") {
-                    self.resolve_selected_task_hitl(HitlDecision::Approve)
-                }
+                self.resolve_selected_task_hitl(HitlDecision::Approve)
             }
             SemanticCommand::DenySelectedBackgroundTask => {
-                if self.require_direct_session("denying a background task") {
-                    self.resolve_selected_task_hitl(HitlDecision::Deny)
-                }
+                self.resolve_selected_task_hitl(HitlDecision::Deny)
             }
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy_state.is_active() {
@@ -669,7 +673,12 @@ impl TuiApp {
                         self.exit.request_with_code(ExitCode::Canceled);
                     } else {
                         self.cancellation.request();
-                        let queued = self.session_runtime.queue().len();
+                        if self.selected_is_supervised() {
+                            self.try_session_command(forge_session::SupervisorCommand::StopTurn {
+                                session_id: self.selected_session_id,
+                            });
+                        }
+                        let queued = self.selected_queue_messages().len();
                         self.push_toast(match queued {
                             0 => "interrupt requested · Ctrl+C again to quit".into(),
                             count => format!(
@@ -716,10 +725,9 @@ impl TuiApp {
             .and_then(|token| token.strip_prefix('/'))
         {
             let is_skill = self
-                .session_runtime
-                .loaded_skills()
+                .selected_loaded_skill_names()
                 .iter()
-                .any(|skill| skill.name == skill_name);
+                .any(|name| name == skill_name);
             if is_skill {
                 let request = line.strip_prefix('/').unwrap_or(line).trim().to_string();
                 Some(format!(
@@ -756,8 +764,8 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Continue) => {
                     let session = recent_resume_sessions(
-                        self.session_runtime.journal_dir(),
-                        self.session_runtime.session_id,
+                        &self.selected_journal_dir(),
+                        self.selected_session_id,
                         1,
                     )?
                     .first()
@@ -772,7 +780,11 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Fork) => {
-                    if !self.require_direct_session("/fork") {
+                    if self.selected_is_supervised() {
+                        self.send_session_command(forge_session::SupervisorCommand::ForkSession {
+                            session_id: self.selected_session_id,
+                        })
+                        .await;
                         return Ok(());
                     }
                     match self.session_runtime.fork().await {
@@ -834,8 +846,8 @@ impl TuiApp {
                 Ok(SlashCommand::Model) => self.handle_model_command().await,
                 Ok(SlashCommand::ResumeList) => {
                     match recent_resume_sessions(
-                        self.session_runtime.journal_dir(),
-                        self.session_runtime.session_id,
+                        &self.selected_journal_dir(),
+                        self.selected_session_id,
                         10,
                     ) {
                         Ok(sessions) if sessions.is_empty() => {
@@ -848,7 +860,7 @@ impl TuiApp {
                         Ok(sessions) => {
                             self.status_state.message =
                                 format!("{} resumable sessions", sessions.len());
-                            let journal_dir = self.session_runtime.journal_dir().to_path_buf();
+                            let journal_dir = self.selected_journal_dir();
                             let mut items = Vec::with_capacity(sessions.len());
                             for session in sessions {
                                 let timestamp: chrono::DateTime<chrono::Local> =
@@ -872,10 +884,16 @@ impl TuiApp {
                     self.open_session_switcher();
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
-                    // Resume rebinds the session this app owns. A task's
-                    // session/worktree binding is immutable, so this can only
-                    // ever mean the primary — never the selected sibling.
-                    if !self.require_direct_session("/resume") {
+                    // Resume replaces the conversation bound to the selected
+                    // workspace without changing that Session's Git identity.
+                    if self.selected_is_supervised() {
+                        self.send_session_command(
+                            forge_session::SupervisorCommand::ResumeSession {
+                                current_session_id: self.selected_session_id,
+                                session_id,
+                            },
+                        )
+                        .await;
                         return Ok(());
                     }
                     match self.session_runtime.resume_session(session_id).await {
@@ -909,7 +927,7 @@ impl TuiApp {
                                 );
                             } else {
                                 self.status_state.message = "session resumed".into();
-                                let queued = self.session_runtime.queue().len();
+                                let queued = self.selected_queue_messages().len();
                                 self.set_feedback(
                                     FeedbackSeverity::Ok,
                                     match queued {
@@ -951,21 +969,15 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Clear) => {
-                    // The clear marks index into the primary session's own
-                    // message/event vectors; applying them while a supervised Session is
-                    // shown would hide the wrong transcript.
-                    if !self.require_direct_session("/clear") {
-                        return Ok(());
-                    }
                     // Hide everything currently in the transcript without deleting session
                     // context, so subsequent model turns still see the full conversation.
-                    self.conversation_view.message_start = self.session_runtime.messages.len();
-                    self.conversation_view.event_start = self.session_runtime.events.len();
+                    self.conversation_view.message_start = self.selected_message_len();
+                    self.conversation_view.event_start = self.selected_event_len();
                     self.banner_state.items.clear();
                     // The cleared viewport hides every finished turn; drop
                     // this session's completion records with it (DESIGN-005).
                     self.turn_summaries.retain(|record| {
-                        record.key.session != self.session_runtime.session_id.to_string()
+                        record.key.session != self.selected_session_id.to_string()
                     });
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
@@ -1014,17 +1026,13 @@ impl TuiApp {
                     });
                 }
                 Ok(SlashCommand::Effort) => {
-                    if self.require_direct_session("changing effort") {
-                        self.open_connect_picker_compact(ConnectModelColumn::Effort);
-                    }
+                    self.open_connect_picker_compact(ConnectModelColumn::Effort);
                 }
                 Ok(SlashCommand::Thinking { enabled }) => {
-                    if self.require_direct_session("changing thinking") {
-                        self.thinking_enabled = enabled.unwrap_or(!self.thinking_enabled);
-                        self.sync_effort_to_session();
-                        let label = if self.thinking_enabled { "on" } else { "off" };
-                        self.set_feedback(FeedbackSeverity::Info, format!("thinking: {label}"));
-                    }
+                    self.thinking_enabled = enabled.unwrap_or(!self.thinking_enabled);
+                    self.sync_effort_to_session();
+                    let label = if self.thinking_enabled { "on" } else { "off" };
+                    self.set_feedback(FeedbackSeverity::Info, format!("thinking: {label}"));
                 }
                 Ok(SlashCommand::Terminal) => {
                     // Open rather than toggle: the user asked for the terminal
@@ -1051,7 +1059,7 @@ impl TuiApp {
         self.clear_error_chrome();
 
         if self.attachment.has_images() {
-            if !self.session_runtime.image_input_supported() {
+            if !self.selected_image_input_supported() {
                 self.input.set_text(line);
                 self.set_feedback(
                     FeedbackSeverity::Warn,
@@ -1060,11 +1068,7 @@ impl TuiApp {
                 return Ok(());
             }
             if matches!(
-                input_route::classify_input(
-                    &self.session_runtime.active_task,
-                    self.overlay.is_some(),
-                    line
-                ),
+                self.selected_input_route(line),
                 input_route::InputRoute::QueueFutureTask
             ) {
                 self.input.set_text(line);
@@ -1122,7 +1126,7 @@ impl TuiApp {
                     self.apply_connect_credentials(&p.id);
                     if let Some(m) = p.default_model() {
                         self.runtime.model_label = m.to_string();
-                        self.session_runtime.set_active_model(m);
+                        self.set_selected_model(m.to_string());
                         self.sync_model_capabilities();
                     }
                     self.refresh_connection_ui();
@@ -1145,11 +1149,8 @@ impl TuiApp {
         self.timing.started = Some(Instant::now());
         if self.timing.turn_started.is_none() {
             self.timing.turn_started = Some(Instant::now());
-            self.timing.completion_tokens_at_start = self
-                .session_runtime
-                .token_usage_report()
-                .api
-                .completion_tokens;
+            self.timing.completion_tokens_at_start =
+                self.selected_token_usage_report().api.completion_tokens;
         }
         // Counters are per user turn, not per model step: a turn that runs
         // three tools reports one summary covering all of it.

@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use forge_config::Config;
-use forge_core::{AgentSession, BackgroundTaskId, LoopError, ToolCall};
+use forge_core::{AgentSession, LoopError};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{RepositoryRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_types::{
-    AskUserQuestionResult, HitlDecision, ModelStreamEvent, SessionId, TaskLifecycle,
+    AskUserQuestionResult, BackgroundTaskId, HitlDecision, ModelStreamEvent, SessionId,
+    TaskLifecycle, ToolCall,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -31,7 +32,7 @@ pub struct SessionRuntimeSnapshot {
     pub session: SessionSnapshot,
     pub transcript: TranscriptSnapshot,
     pub details: Option<SessionDetailsSnapshot>,
-    pub queued_prompts: Vec<(i64, String)>,
+    pub queued_prompts: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +105,19 @@ pub enum SupervisorCommand {
         session_id: SessionId,
         text: String,
     },
+    SubmitPromptWithAttachments {
+        session_id: SessionId,
+        text: String,
+        attachments: Vec<forge_types::ImageRef>,
+    },
     ContinueTurn {
+        session_id: SessionId,
+    },
+    ForkSession {
+        session_id: SessionId,
+    },
+    ResumeSession {
+        current_session_id: SessionId,
         session_id: SessionId,
     },
     StopTurn {
@@ -192,7 +205,7 @@ pub enum RepositorySupervisorError {
     Storage(#[from] forge_storage::StorageError),
     #[error("git worktree lookup failed: {0}")]
     Worktree(#[from] forge_storage::WorktreeError),
-    #[error("task `{0}` has no live session actor")]
+    #[error("Session `{0}` has no live actor")]
     NoActor(SessionId),
     #[error("supervisor command channel closed")]
     Closed,
@@ -234,10 +247,7 @@ impl SupervisorHandle {
     /// Queue a command from synchronous UI code without blocking the terminal
     /// owner. Failures in command execution are still published as supervisor
     /// events; this only reports whether the command entered the actor queue.
-    pub fn try_command(
-        &self,
-        command: SupervisorCommand,
-    ) -> Result<(), RepositorySupervisorError> {
+    pub fn try_command(&self, command: SupervisorCommand) -> Result<(), RepositorySupervisorError> {
         let (reply, _response) = oneshot::channel();
         self.commands
             .try_send(CommandEnvelope { command, reply })
@@ -328,7 +338,7 @@ pub struct RepositorySupervisor {
 /// it has to be held before a competing process can write session state. This
 /// type lets the CLI acquire ownership first, open its primary session second,
 /// and only then hand both to the supervisor — see
-/// [`RepositoryBootstrap::open_siblings`].
+/// [`RepositoryBootstrap::open_with_primary`].
 pub struct RepositoryBootstrap {
     lease: RepositoryLease,
     control: Arc<RepositoryControl>,
@@ -399,10 +409,9 @@ impl RepositoryBootstrap {
     }
 
     /// Adopt the already-open primary session into the supervisor actor set,
-    /// then discover and open its sibling sessions. This is the migration path
-    /// for the TUI: repository ownership is still acquired before opening the
-    /// primary, but once opened the primary is no longer special to the
-    /// supervisor.
+    /// then discover and open the other repository Sessions. Repository
+    /// ownership is acquired before opening the primary, and the session is
+    /// moved here rather than reopened from its journal.
     pub async fn open_with_primary(
         self,
         cfg: &Config,
@@ -747,11 +756,67 @@ impl RepositorySupervisor {
 }
 
 async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<CommandEnvelope>) {
-    while let Some(envelope) = receiver.recv().await {
+    let mut poll = tokio::time::interval(std::time::Duration::from_millis(200));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut deferred = std::collections::VecDeque::new();
+    loop {
+        let envelope = match deferred.pop_front() {
+            Some(envelope) => envelope,
+            None => tokio::select! {
+                envelope = receiver.recv() => match envelope {
+                    Some(envelope) => envelope,
+                    None => break,
+                },
+                _ = poll.tick() => {
+                    let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+                    for task_actor in actors {
+                        if let Ok(mut session) = task_actor.session.try_lock() {
+                            if session.background().list().any(|task| !task.status.is_terminal()) {
+                                let _ = session.poll_background_tasks().await;
+                                let _ = refresh_actor(&state, &task_actor, &session).await;
+                            }
+                        }
+                    }
+                    continue;
+                }
+            },
+        };
         let shutdown = matches!(envelope.command, SupervisorCommand::Shutdown);
-        let result = execute_command(state.clone(), envelope.command)
-            .await
-            .map_err(|error| error.to_string());
+        let command = execute_command(state.clone(), envelope.command);
+        tokio::pin!(command);
+        // Keep stop requests reachable while an earlier mutation waits for a
+        // running actor. Other commands retain their FIFO order.
+        let result = loop {
+            tokio::select! {
+                result = &mut command => break result.map_err(|error| error.to_string()),
+                next = receiver.recv(), if !shutdown => {
+                    if let Some(next) = next {
+                        if let SupervisorCommand::StopTurn { session_id } = next.command {
+                            let cancelled = actor(&state, session_id).await
+                                .is_ok_and(|actor| actor.request_cancel());
+                            if cancelled {
+                                let _ = next.reply.send(Ok(()));
+                            } else {
+                                deferred.push_back(next);
+                            }
+                        } else {
+                            if matches!(next.command, SupervisorCommand::Shutdown) {
+                                for actor in state.actors.read().await.values() {
+                                    actor.request_cancel();
+                                }
+                            }
+                            deferred.push_back(next);
+                        }
+                    }
+                }
+            }
+        };
+        if let Err(message) = &result {
+            let _ = state.events.send(SupervisorEvent::Error {
+                session_id: None,
+                message: message.clone(),
+            });
+        }
         let _ = envelope.reply.send(result);
         if shutdown {
             break;
@@ -900,50 +965,38 @@ async fn execute_command(
             .await
             .map_err(|_| {
                 RepositorySupervisorError::Command(format!(
-                    "timed out initializing attached worktree `{}`",
-                    workspace.display()
+                    "attaching `{}` timed out after {} seconds",
+                    workspace.display(),
+                    ATTACH_SESSION_INIT_TIMEOUT.as_secs()
                 ))
             })??;
-            let task = state
-                .control
-                .attach_worktree(
-                    NewRepositorySession {
-                        session_id: opened.session.session_id,
-                        label,
-                        workspace,
-                        branch,
-                        ownership: WorktreeOwnership::Attached,
-                        slot: None,
-                        model_id: opened.session.active_model.clone(),
-                        route_id: opened.session.active_route_id.clone(),
-                        reasoning_effort: None,
-                    },
-                    None,
-                )
-                .await?;
+            let task = NewRepositorySession {
+                session_id: opened.session.session_id,
+                label,
+                workspace,
+                branch,
+                ownership: WorktreeOwnership::Attached,
+                slot: None,
+                model_id: opened.session.active_model.clone(),
+                route_id: opened.session.active_route_id.clone(),
+                reasoning_effort: None,
+            };
+            state.control.register_session(task.clone(), None).await?;
+            let actor_task = state.control.session(task.session_id).await?;
             state.actors.write().await.insert(
                 task.session_id,
-                Arc::new(SessionActor::new(task.clone(), opened.session)),
+                Arc::new(SessionActor::new(actor_task, opened.session)),
             );
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::ArchiveSession { session_id } => {
-            let task = state.control.session(session_id).await?;
-            if task.ownership == WorktreeOwnership::Primary {
-                return Err(RepositorySupervisorError::Command(
-                    "the primary session cannot be archived".into(),
-                ));
-            }
-            state.control.archive_session(session_id).await?;
-            state.actors.write().await.remove(&session_id);
-            let _ = state
-                .events
-                .send(SupervisorEvent::Roster(snapshots(&state).await));
+            state.control.archive(session_id).await?;
+            publish_actor(&state, session_id).await?;
         }
         SupervisorCommand::RenameSession { session_id, label } => {
-            state.control.rename_session(session_id, &label).await?;
+            state.control.rename(session_id, &label).await?;
             publish_actor(&state, session_id).await?;
         }
         SupervisorCommand::PinSession {
@@ -951,74 +1004,178 @@ async fn execute_command(
             slot,
             swap,
         } => {
-            state.control.pin_session(session_id, slot, swap).await?;
-            publish_actor(&state, session_id).await?;
+            state.control.assign_slot(session_id, slot, swap).await?;
+            let _ = state
+                .events
+                .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::RemoveManagedWorktree { session_id } => {
             let task = state.control.session(session_id).await?;
-            if task.ownership != WorktreeOwnership::Managed {
+            if task.ownership != WorktreeOwnership::Managed
+                || task.lifecycle != SessionLifecycle::Archived
+            {
                 return Err(RepositorySupervisorError::Command(
-                    "only Forge-managed worktrees can be removed".into(),
+                    "only archived managed Sessions can remove a worktree".into(),
                 ));
             }
-            let actors = state.actors.read().await;
-            if actors.contains_key(&session_id) {
-                return Err(RepositorySupervisorError::Command(
-                    "archive the session before removing its worktree".into(),
-                ));
+            let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
+            let worktrees = forge_storage::list_worktree_records(storage.main_worktree())?;
+            if worktrees
+                .iter()
+                .any(|worktree| same_path(&worktree.path, &task.workspace))
+            {
+                forge_storage::remove_clean_worktree_if_branch(
+                    storage.main_worktree(),
+                    &task.workspace,
+                    &task.branch,
+                )?;
+            } else if task.workspace.exists() {
+                return Err(RepositorySupervisorError::Command(format!(
+                    "{} is no longer a registered worktree; refusing to remove it",
+                    task.workspace.display()
+                )));
             }
-            drop(actors);
-            forge_storage::remove_clean_worktree(&state.cfg.resolved_workspace, &task.workspace)?;
-            state.control.remove_session(session_id).await?;
+            state.control.mark_worktree_removed(session_id).await?;
+            state.actors.write().await.remove(&session_id);
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::FinalizeCreation { operation_id } => {
-            finalize_creation(&state, operation_id).await?;
+            let completed = state.control.complete_creation(operation_id).await?;
+            // Trust is what the operator actually confirmed, so persist it
+            // before the task can run. A managed worktree normally inherits
+            // trust from the repository root, but the grant must be recorded
+            // explicitly so the task keeps working if that changes.
+            if let Some(session_id) = completed.session_id {
+                let workspace = state.control.session(session_id).await?.workspace;
+                if let Err(error) = state.grant_trust(&workspace) {
+                    // Persisting failed: roll the creation back rather than
+                    // leave a task that looks trusted but is not recorded.
+                    let _ = rollback_creation(&state, operation_id).await;
+                    let _ = state
+                        .events
+                        .send(SupervisorEvent::Roster(snapshots(&state).await));
+                    return Err(error);
+                }
+                if let Some(text) = completed.first_prompt {
+                    state.control.enqueue_prompt(session_id, &text).await?;
+                    state
+                        .control
+                        .set_turn_state(session_id, SupervisorTurnState::Queued)
+                        .await?;
+                    publish_actor(&state, session_id).await?;
+                    start_prompt_driver(state.clone(), session_id).await?;
+                }
+            }
+            let _ = state
+                .events
+                .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::CancelCreation { operation_id } => {
             rollback_creation(&state, operation_id).await?;
+            let _ = state
+                .events
+                .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::TrustWorkspace { workspace } => {
             state.grant_trust(&workspace)?;
         }
         SupervisorCommand::SubmitPrompt { session_id, text } => {
-            submit_prompt(&state, session_id, text).await?;
+            if state.control.session(session_id).await?.label.is_empty() {
+                state
+                    .control
+                    .rename(session_id, &forge_storage::label_from_prompt(&text))
+                    .await?;
+            }
+            state.control.enqueue_prompt(session_id, &text).await?;
+            state
+                .control
+                .set_turn_state(session_id, SupervisorTurnState::Queued)
+                .await?;
+            publish_actor(&state, session_id).await?;
+            start_prompt_driver(state, session_id).await?;
+        }
+        SupervisorCommand::SubmitPromptWithAttachments {
+            session_id,
+            text,
+            attachments,
+        } => {
+            if state.control.session(session_id).await?.label.is_empty() {
+                state
+                    .control
+                    .rename(session_id, &forge_storage::label_from_prompt(&text))
+                    .await?;
+            }
+            let attachments = serde_json::to_string(&attachments)
+                .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
+            state
+                .control
+                .enqueue_prompt_with_attachments(session_id, &text, &attachments)
+                .await?;
+            publish_actor(&state, session_id).await?;
+            start_prompt_driver(state, session_id).await?;
         }
         SupervisorCommand::ContinueTurn { session_id } => {
-            continue_turn(&state, session_id).await?;
+            start_continue_driver(state, session_id).await?;
+        }
+        SupervisorCommand::ForkSession { session_id } => {
+            replace_conversation(&state, session_id, None).await?;
+        }
+        SupervisorCommand::ResumeSession {
+            current_session_id,
+            session_id,
+        } => {
+            if state.actors.read().await.contains_key(&session_id) {
+                state.control.set_selected(Some(session_id)).await?;
+                let _ = state
+                    .events
+                    .send(SupervisorEvent::Selected(Some(session_id)));
+            } else {
+                replace_conversation(&state, current_session_id, Some(session_id)).await?;
+            }
         }
         SupervisorCommand::StopTurn { session_id } => {
             let actor = actor(&state, session_id).await?;
             if !actor.request_cancel() {
-                state.control.mark_turn_stopped(session_id).await?;
-                refresh_actor_from_state(&state, &actor).await?;
+                let mut session = actor.session.lock().await;
+                session.mark_cancelled().await?;
+                state
+                    .control
+                    .set_turn_state(session_id, SupervisorTurnState::Cancelled)
+                    .await?;
+                refresh_actor(&state, &actor, &session).await?;
             }
         }
         SupervisorCommand::ResolveApproval {
             session_id,
             decision,
-            actor: approval_actor,
+            actor: decision_actor,
             feedback,
         } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
-            session.resolve_hitl_with_feedback(decision, approval_actor, feedback).await?;
+            session
+                .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
+                .await?;
             refresh_actor(&state, &task_actor, &session).await?;
+            drop(session);
+            start_continue_driver(state, session_id).await?;
         }
         SupervisorCommand::ResolveQuestion {
             session_id,
             answers,
-            actor: question_actor,
+            actor: answer_actor,
         } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
-            session.resolve_question(answers, question_actor).await?;
+            session.resolve_question(answers, &answer_actor).await?;
             refresh_actor(&state, &task_actor, &session).await?;
+            drop(session);
+            start_continue_driver(state, session_id).await?;
         }
         SupervisorCommand::SelectSession { session_id } => {
-            state.control.select_session(session_id).await?;
+            state.control.set_selected(session_id).await?;
             let _ = state.events.send(SupervisorEvent::Selected(session_id));
         }
         SupervisorCommand::SetModel {
@@ -1028,17 +1185,11 @@ async fn execute_command(
             reasoning_effort,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            {
-                let mut session = task_actor.session.lock().await;
-                session.set_active_model(model_id.clone());
-                session.set_active_route_id(route_id.clone());
-                session.set_reasoning_effort(reasoning_effort.clone());
-                refresh_actor(&state, &task_actor, &session).await?;
-            }
-            state
-                .control
-                .set_model(session_id, &model_id, &route_id, reasoning_effort.as_deref())
-                .await?;
+            let mut session = task_actor.session.lock().await;
+            session.set_active_model(model_id);
+            session.set_active_route_id(route_id);
+            session.set_reasoning_effort(reasoning_effort);
+            refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::SetThinking {
             session_id,
@@ -1081,8 +1232,7 @@ async fn execute_command(
         SupervisorCommand::CompactContext { session_id } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
-            let pending =
-                session.begin_context_compaction(forge_core::CompactionTrigger::Manual);
+            let pending = session.begin_context_compaction(forge_core::CompactionTrigger::Manual);
             let completed = pending.execute().await;
             session.finish_context_compaction(completed).await?;
             refresh_actor(&state, &task_actor, &session).await?;
@@ -1112,25 +1262,26 @@ async fn execute_command(
             pattern,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let session = task_actor.session.lock().await;
             session.grant_egress_host(&pattern);
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::AllowSessionPattern { session_id, call } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
-            session.allow_session_pattern(&call);
+            session.allow_suggested_pattern_for_session(&call);
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::ClearSessionApprovals { session_id } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
-            session.clear_session_approvals();
+            session.clear_session_pattern_allows();
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::ApplyProviderEnv { pairs } => {
-            for (key, value) in pairs {
-                state.model.set_provider_env(&key, &value);
+            state.model.apply_provider_env(&pairs);
+            for actor in state.actors.read().await.values() {
+                actor.session.lock().await.apply_provider_env(&pairs);
             }
         }
         SupervisorCommand::ClearProviderEnv => {
@@ -1141,13 +1292,339 @@ async fn execute_command(
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
-        SupervisorCommand::Shutdown => {}
+        SupervisorCommand::Shutdown => {
+            let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+            for task_actor in &actors {
+                task_actor.request_cancel();
+            }
+            for task_actor in actors {
+                while task_actor.driving.load(Ordering::Acquire) {
+                    task_actor.request_cancel();
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let session = task_actor.session.lock().await;
+                refresh_actor(&state, &task_actor, &session).await?;
+            }
+        }
     }
     Ok(())
 }
 
-async fn actor(
+/// Check an attach target against Git's own worktree list before Forge binds
+/// a session to it. Everything here is a settled product rule: attached
+/// worktrees must belong to *this* repository, the repository's main worktree
+/// is not attachable as a second task, and the branch recorded on the task is
+/// the one Git actually has checked out (bindings are immutable, so a wrong
+/// branch here means a permanently unavailable task).
+fn validate_attach_target(
+    state: &SupervisorState,
+    workspace: &std::path::Path,
+    branch: &str,
+) -> Result<PathBuf, RepositorySupervisorError> {
+    let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
+    let main = storage.main_worktree().to_path_buf();
+    let canonical = workspace.canonicalize().map_err(|error| {
+        RepositorySupervisorError::Command(format!("{}: {error}", workspace.display()))
+    })?;
+    if same_path(&canonical, &main) {
+        return Err(RepositorySupervisorError::Command(
+            "the repository's main worktree is already the primary Session".into(),
+        ));
+    }
+    let records = forge_storage::list_worktree_records(&main)?;
+    let Some(record) = records
+        .iter()
+        .find(|record| same_path(&record.path, &canonical))
+    else {
+        return Err(RepositorySupervisorError::Command(format!(
+            "{} is not a worktree of this repository",
+            canonical.display()
+        )));
+    };
+    match record.branch.as_deref() {
+        Some(actual) if actual == branch => Ok(record.path.clone()),
+        Some(actual) => Err(RepositorySupervisorError::Command(format!(
+            "{} has `{actual}` checked out, not `{branch}`",
+            canonical.display()
+        ))),
+        None => Err(RepositorySupervisorError::Worktree(
+            forge_storage::WorktreeError::DetachedHead,
+        )),
+    }
+}
+
+/// Undo a managed creation: drop the provisional task row and actor, then
+/// remove the worktree if Git will let go of it cleanly. A worktree holding
+/// uncommitted work is left in place — losing work is worse than an orphan.
+async fn rollback_creation(
     state: &Arc<SupervisorState>,
+    operation_id: u64,
+) -> Result<(), RepositorySupervisorError> {
+    let (workspace, session_id) = state
+        .control
+        .cancel_creation(operation_id, "cancelled by operator")
+        .await?;
+    if let Some(session_id) = session_id {
+        state.actors.write().await.remove(&session_id);
+    }
+    if let Some(workspace) = workspace {
+        let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
+        if workspace.is_dir() {
+            let _ = forge_storage::remove_clean_worktree(storage.main_worktree(), &workspace);
+        }
+    }
+    Ok(())
+}
+
+async fn replace_conversation(
+    state: &Arc<SupervisorState>,
+    previous: SessionId,
+    resume: Option<SessionId>,
+) -> Result<(), RepositorySupervisorError> {
+    let old_actor = actor(state, previous).await?;
+    if old_actor.driving.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Command(
+            "stop the turn before replacing its conversation".into(),
+        ));
+    }
+    let session = old_actor.session.lock().await;
+    if session.pending_hitl().is_some()
+        || session.pending_question().is_some()
+        || session
+            .background()
+            .list()
+            .any(|task| !task.status.is_terminal())
+    {
+        return Err(RepositorySupervisorError::Command(
+            "resolve pending interactions and background jobs before replacing the conversation"
+                .into(),
+        ));
+    }
+    let replacement = if let Some(session_id) = resume {
+        if let Ok(record) = state.control.session(session_id).await {
+            if !same_path(&record.workspace, session.workspace_root()) {
+                return Err(RepositorySupervisorError::Command(
+                    "resume this Session from its own worktree".into(),
+                ));
+            }
+        }
+        let mut cfg = state.cfg.clone();
+        cfg.resolved_workspace = session.workspace_root().to_path_buf();
+        cfg.workspace_root = Some(cfg.resolved_workspace.display().to_string());
+        cfg.journal.path = session.journal_dir().display().to_string();
+        open_session_with_model(
+            &cfg,
+            SessionTarget::Resume(session_id),
+            session.model_client(),
+        )
+        .await?
+        .session
+    } else {
+        session.fork().await?
+    };
+    let next = replacement.session_id;
+    state.control.replace_active_session(previous, next).await?;
+    let record = state.control.session(next).await?;
+    drop(session);
+    let mut actors = state.actors.write().await;
+    actors.remove(&previous);
+    actors.insert(next, Arc::new(SessionActor::new(record, replacement)));
+    drop(actors);
+    let mut archived = state.unavailable_tasks.write().await;
+    archived.retain(|task| task.session_id != next && task.session_id != previous);
+    archived.push(state.control.session(previous).await?);
+    drop(archived);
+    let _ = state
+        .events
+        .send(SupervisorEvent::Roster(snapshots(state).await));
+    let _ = state.events.send(SupervisorEvent::Selected(Some(next)));
+    Ok(())
+}
+
+async fn start_prompt_driver(
+    state: Arc<SupervisorState>,
+    session_id: SessionId,
+) -> Result<(), RepositorySupervisorError> {
+    let task_actor = actor(&state, session_id).await?;
+    if task_actor.driving.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    tokio::spawn(async move {
+        loop {
+            if let Err(error) = drive_prompts(state.clone(), task_actor.clone()).await {
+                let _ = state.events.send(SupervisorEvent::Error {
+                    session_id: Some(session_id),
+                    message: error.to_string(),
+                });
+                task_actor.driving.store(false, Ordering::Release);
+                break;
+            }
+            task_actor.driving.store(false, Ordering::Release);
+            let lifecycle = task_actor.snapshot.read().await.session.lifecycle;
+            let queued = state
+                .control
+                .queued_prompts(session_id)
+                .await
+                .unwrap_or_default();
+            if matches!(lifecycle, TaskLifecycle::Waiting | TaskLifecycle::Cancelled)
+                || queued.is_empty()
+                || task_actor.driving.swap(true, Ordering::AcqRel)
+            {
+                break;
+            }
+        }
+    });
+    Ok(())
+}
+
+async fn start_continue_driver(
+    state: Arc<SupervisorState>,
+    session_id: SessionId,
+) -> Result<(), RepositorySupervisorError> {
+    let task_actor = actor(&state, session_id).await?;
+    if task_actor.driving.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    tokio::spawn(async move {
+        if let Err(error) = run_one(state.clone(), task_actor.clone(), None).await {
+            let _ = state.events.send(SupervisorEvent::Error {
+                session_id: Some(session_id),
+                message: error.to_string(),
+            });
+        }
+        task_actor.driving.store(false, Ordering::Release);
+        let _ = start_prompt_driver(state, session_id).await;
+    });
+    Ok(())
+}
+
+async fn drive_prompts(
+    state: Arc<SupervisorState>,
+    task_actor: Arc<SessionActor>,
+) -> Result<(), RepositorySupervisorError> {
+    let session_id = task_actor.snapshot.read().await.task.session_id;
+    loop {
+        let waiting = task_actor.snapshot.read().await.session.lifecycle == TaskLifecycle::Waiting;
+        if waiting {
+            break;
+        }
+        let Some(prompt) = state.control.claim_next_prompt(session_id).await? else {
+            break;
+        };
+        let should_continue = run_one(state.clone(), task_actor.clone(), Some(prompt)).await?;
+        if !should_continue {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn run_one(
+    state: Arc<SupervisorState>,
+    task_actor: Arc<SessionActor>,
+    prompt: Option<(u64, String)>,
+) -> Result<bool, RepositorySupervisorError> {
+    let session_id = task_actor.snapshot.read().await.task.session_id;
+    let permit = state
+        .permits
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| RepositorySupervisorError::Closed)?;
+    state
+        .control
+        .set_turn_state(session_id, SupervisorTurnState::Running)
+        .await?;
+    publish_actor(&state, session_id).await?;
+
+    let mut session = task_actor.session.lock().await;
+    let cancel = session.begin_turn_cancellation_scope();
+    *task_actor
+        .running_cancel
+        .lock()
+        .expect("turn cancel lock poisoned") = Some(cancel);
+    let (stream_sender, stream_receiver) = std::sync::mpsc::channel();
+    let events = state.events.clone();
+    let stream_forwarder = tokio::task::spawn_blocking(move || {
+        while let Ok(event) = stream_receiver.recv() {
+            let _ = events.send(SupervisorEvent::Stream { session_id, event });
+        }
+    });
+    let result = match prompt.as_ref() {
+        Some((queue_id, text)) => {
+            let attachments =
+                serde_json::from_str(&state.control.prompt_attachments(*queue_id).await?)
+                    .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
+            session
+                .append_user_message_with_attachments(text, attachments)
+                .await?;
+            session.run_agent_turns(Some(stream_sender)).await
+        }
+        None => session.run_agent_turns(Some(stream_sender)).await,
+    };
+    drop(permit);
+    *task_actor
+        .running_cancel
+        .lock()
+        .expect("turn cancel lock poisoned") = None;
+    stream_forwarder
+        .await
+        .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
+
+    let turn_state = match &result {
+        Ok(_) if session.active_task.lifecycle == TaskLifecycle::Waiting => {
+            SupervisorTurnState::Waiting
+        }
+        Ok(_) => SupervisorTurnState::Completed,
+        Err(LoopError::Cancelled) => {
+            session.mark_cancelled().await?;
+            SupervisorTurnState::Cancelled
+        }
+        Err(error) => {
+            session.mark_model_call_failed(&error.to_string()).await?;
+            SupervisorTurnState::Failed
+        }
+    };
+    if let Some((queue_id, _)) = prompt {
+        let queue_status = match turn_state {
+            SupervisorTurnState::Completed => "completed",
+            SupervisorTurnState::Waiting => "waiting",
+            SupervisorTurnState::Cancelled => "cancelled",
+            SupervisorTurnState::Failed => "failed",
+            _ => "completed",
+        };
+        state.control.finish_prompt(queue_id, queue_status).await?;
+    }
+    state.control.set_turn_state(session_id, turn_state).await?;
+    refresh_actor(&state, &task_actor, &session).await?;
+    let message = match turn_state {
+        SupervisorTurnState::Waiting => "Session needs input",
+        SupervisorTurnState::Completed => "Session completed",
+        SupervisorTurnState::Failed => "Session failed",
+        SupervisorTurnState::Cancelled => "Session stopped",
+        _ => "Session updated",
+    };
+    if matches!(
+        turn_state,
+        SupervisorTurnState::Waiting
+            | SupervisorTurnState::Completed
+            | SupervisorTurnState::Failed
+            | SupervisorTurnState::Cancelled
+    ) {
+        let _ = state.events.send(SupervisorEvent::Attention {
+            session_id,
+            state: turn_state,
+            message: message.into(),
+        });
+    }
+    Ok(!matches!(
+        turn_state,
+        SupervisorTurnState::Waiting | SupervisorTurnState::Cancelled
+    ))
+}
+
+async fn actor(
+    state: &SupervisorState,
     session_id: SessionId,
 ) -> Result<Arc<SessionActor>, RepositorySupervisorError> {
     state
@@ -1159,15 +1636,56 @@ async fn actor(
         .ok_or(RepositorySupervisorError::NoActor(session_id))
 }
 
-async fn snapshots(state: &Arc<SupervisorState>) -> Vec<SessionRuntimeSnapshot> {
-    let actors: Vec<Arc<SessionActor>> = state.actors.read().await.values().cloned().collect();
-    let mut snapshots = Vec::with_capacity(actors.len() + state.unavailable_tasks.read().await.len());
-    for actor in actors {
-        snapshots.push(actor.snapshot.read().await.clone());
+async fn refresh_actor(
+    state: &SupervisorState,
+    task_actor: &SessionActor,
+    session: &AgentSession,
+) -> Result<(), RepositorySupervisorError> {
+    let task = state.control.session(session.session_id).await?;
+    let snapshot = SessionRuntimeSnapshot {
+        task,
+        session: SessionSnapshot::capture(session),
+        transcript: TranscriptSnapshot::capture(session),
+        details: Some(SessionDetailsSnapshot::capture(session)),
+        queued_prompts: state.control.queued_prompts(session.session_id).await?,
+    };
+    *task_actor.snapshot.write().await = snapshot.clone();
+    let _ = state
+        .events
+        .send(SupervisorEvent::SessionUpdated(Box::new(snapshot)));
+    Ok(())
+}
+
+async fn publish_actor(
+    state: &SupervisorState,
+    session_id: SessionId,
+) -> Result<(), RepositorySupervisorError> {
+    let task_actor = actor(state, session_id).await?;
+    let task = state.control.session(session_id).await?;
+    let mut snapshot = task_actor.snapshot.write().await;
+    snapshot.task = task;
+    snapshot.queued_prompts = state.control.queued_prompts(session_id).await?;
+    let _ = state
+        .events
+        .send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
+    Ok(())
+}
+
+async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
+    let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+    let unavailable_tasks = state.unavailable_tasks.read().await.clone();
+    let mut snapshots = Vec::with_capacity(actors.len() + unavailable_tasks.len());
+    for task_actor in actors {
+        snapshots.push(task_actor.snapshot.read().await.clone());
     }
-    for task in state.unavailable_tasks.read().await.iter().cloned() {
+    for task in unavailable_tasks {
         snapshots.push(SessionRuntimeSnapshot {
-            session: SessionSnapshot::unavailable(task.session_id, task.workspace.clone()),
+            session: SessionSnapshot {
+                session_id: task.session_id,
+                lifecycle: TaskLifecycle::Interrupted,
+                workspace_root: task.workspace.clone(),
+                ..SessionSnapshot::default()
+            },
             transcript: TranscriptSnapshot::default(),
             details: None,
             queued_prompts: Vec::new(),
@@ -1176,6 +1694,7 @@ async fn snapshots(state: &Arc<SupervisorState>) -> Vec<SessionRuntimeSnapshot> 
     }
     snapshots.sort_by_key(|snapshot| {
         (
+            snapshot.task.lifecycle != SessionLifecycle::Active,
             snapshot.task.slot.unwrap_or(u8::MAX),
             snapshot.task.created_at,
         )
@@ -1183,470 +1702,293 @@ async fn snapshots(state: &Arc<SupervisorState>) -> Vec<SessionRuntimeSnapshot> 
     snapshots
 }
 
-async fn publish_actor(
-    state: &Arc<SupervisorState>,
-    session_id: SessionId,
-) -> Result<(), RepositorySupervisorError> {
-    let task_actor = actor(state, session_id).await?;
-    let session = task_actor.session.lock().await;
-    refresh_actor(state, &task_actor, &session).await
-}
-
-async fn refresh_actor_from_state(
-    state: &Arc<SupervisorState>,
-    task_actor: &Arc<SessionActor>,
-) -> Result<(), RepositorySupervisorError> {
-    let session = task_actor.session.lock().await;
-    refresh_actor(state, task_actor, &session).await
-}
-
-async fn refresh_actor(
-    state: &Arc<SupervisorState>,
-    task_actor: &Arc<SessionActor>,
-    session: &AgentSession,
-) -> Result<(), RepositorySupervisorError> {
-    let session_id = session.session_id;
-    let task = state.control.session(session_id).await?;
-    let queued_prompts = state.control.queued_prompts(session_id).await?;
-    let mut snapshot = task_actor.snapshot.write().await;
-    snapshot.task = task;
-    snapshot.session = SessionSnapshot::capture(session);
-    snapshot.transcript = TranscriptSnapshot::capture(session);
-    snapshot.details = Some(SessionDetailsSnapshot::capture(session));
-    snapshot.queued_prompts = queued_prompts
-        .into_iter()
-        .map(|item| (item.id, item.text))
-        .collect();
-    let _ = state
-        .events
-        .send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
-    Ok(())
-}
-
-async fn submit_prompt(
-    state: &Arc<SupervisorState>,
-    session_id: SessionId,
-    text: String,
-) -> Result<(), RepositorySupervisorError> {
-    state.control.enqueue_prompt(session_id, &text).await?;
-    start_or_queue(state, session_id).await
-}
-
-async fn continue_turn(
-    state: &Arc<SupervisorState>,
-    session_id: SessionId,
-) -> Result<(), RepositorySupervisorError> {
-    let task = state.control.session(session_id).await?;
-    if matches!(
-        task.turn_state,
-        SupervisorTurnState::WaitingApproval | SupervisorTurnState::WaitingQuestion
-    ) {
-        return Ok(());
+fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
     }
-    start_or_queue(state, session_id).await
-}
-
-async fn start_or_queue(
-    state: &Arc<SupervisorState>,
-    session_id: SessionId,
-) -> Result<(), RepositorySupervisorError> {
-    let task_actor = actor(state, session_id).await?;
-    if task_actor
-        .driving
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Ok(());
-    }
-    let state = state.clone();
-    tokio::spawn(async move {
-        let _ = drive_session(state.clone(), task_actor.clone(), session_id).await;
-        task_actor.driving.store(false, Ordering::Release);
-    });
-    Ok(())
-}
-
-async fn drive_session(
-    state: Arc<SupervisorState>,
-    task_actor: Arc<SessionActor>,
-    session_id: SessionId,
-) -> Result<(), RepositorySupervisorError> {
-    let _permit = state.permits.acquire().await.map_err(|_| {
-        RepositorySupervisorError::Command("repository concurrency limiter closed".into())
-    })?;
-    loop {
-        let task = state.control.session(session_id).await?;
-        if task.lifecycle != SessionLifecycle::Active {
-            return Ok(());
-        }
-        if matches!(
-            task.turn_state,
-            SupervisorTurnState::WaitingApproval | SupervisorTurnState::WaitingQuestion
-        ) {
-            refresh_actor_from_state(&state, &task_actor).await?;
-            return Ok(());
-        }
-        let Some(prompt) = state.control.claim_next_prompt(session_id).await? else {
-            if task.turn_state == SupervisorTurnState::Running {
-                state.control.mark_turn_stopped(session_id).await?;
-            }
-            refresh_actor_from_state(&state, &task_actor).await?;
-            return Ok(());
-        };
-        {
-            let session = task_actor.session.lock().await;
-            if session.pending_hitl().is_some() || session.pending_question().is_some() {
-                refresh_actor(&state, &task_actor, &session).await?;
-                return Ok(());
-            }
-        }
-        state.control.mark_turn_running(session_id).await?;
-        refresh_actor_from_state(&state, &task_actor).await?;
-
-        let cancel = CancellationToken::new();
-        {
-            let mut running = task_actor
-                .running_cancel
-                .lock()
-                .expect("turn cancel lock poisoned");
-            *running = Some(cancel.clone());
-        }
-        let stream = state.events.clone();
-        let result = {
-            let mut session = task_actor.session.lock().await;
-            session
-                .run_turn_streaming_with_cancel(&prompt.text, cancel, |event| {
-                    let _ = stream.send(SupervisorEvent::Stream {
-                        session_id,
-                        event: event.clone(),
-                    });
-                })
-                .await
-        };
-        {
-            let mut running = task_actor
-                .running_cancel
-                .lock()
-                .expect("turn cancel lock poisoned");
-            *running = None;
-        }
-        match result {
-            Ok(_) => {
-                state.control.complete_prompt(prompt.id).await?;
-                state.control.mark_turn_stopped(session_id).await?;
-                refresh_actor_from_state(&state, &task_actor).await?;
-            }
-            Err(error) if error.is_hitl_pending() => {
-                state.control.requeue_prompt(prompt.id).await?;
-                state.control.mark_waiting_approval(session_id).await?;
-                refresh_actor_from_state(&state, &task_actor).await?;
-                let _ = state.events.send(SupervisorEvent::Attention {
-                    session_id,
-                    state: SupervisorTurnState::WaitingApproval,
-                    message: "approval required".into(),
-                });
-                return Ok(());
-            }
-            Err(error) if error.is_question_pending() => {
-                state.control.requeue_prompt(prompt.id).await?;
-                state.control.mark_waiting_question(session_id).await?;
-                refresh_actor_from_state(&state, &task_actor).await?;
-                let _ = state.events.send(SupervisorEvent::Attention {
-                    session_id,
-                    state: SupervisorTurnState::WaitingQuestion,
-                    message: "question requires an answer".into(),
-                });
-                return Ok(());
-            }
-            Err(error) if error.is_cancelled() => {
-                state.control.requeue_prompt(prompt.id).await?;
-                state.control.mark_turn_stopped(session_id).await?;
-                refresh_actor_from_state(&state, &task_actor).await?;
-                return Ok(());
-            }
-            Err(error) => {
-                state.control.complete_prompt(prompt.id).await?;
-                state.control.mark_turn_stopped(session_id).await?;
-                refresh_actor_from_state(&state, &task_actor).await?;
-                let _ = state.events.send(SupervisorEvent::Error {
-                    session_id: Some(session_id),
-                    message: error.to_string(),
-                });
-            }
-        }
-    }
-}
-
-async fn finalize_creation(
-    state: &Arc<SupervisorState>,
-    operation_id: u64,
-) -> Result<(), RepositorySupervisorError> {
-    let pending = state.control.pending_creation(operation_id).await?;
-    let workspace = pending.workspace.clone().ok_or_else(|| {
-        RepositorySupervisorError::Command("pending task has no worktree".into())
-    })?;
-    state.grant_trust(&workspace)?;
-    let completed = state.control.complete_creation(operation_id).await?;
-    if let Some(session_id) = completed.session_id {
-        if let Some(prompt) = completed.first_prompt {
-            submit_prompt(state, session_id, prompt).await?;
-        }
-    }
-    let _ = state
-        .events
-        .send(SupervisorEvent::Roster(snapshots(state).await));
-    Ok(())
-}
-
-async fn rollback_creation(
-    state: &Arc<SupervisorState>,
-    operation_id: u64,
-) -> Result<(), RepositorySupervisorError> {
-    let pending = state.control.pending_creation(operation_id).await?;
-    state
-        .control
-        .cancel_creation(operation_id, "operator rejected worktree trust")
-        .await?;
-    if let Some(session_id) = pending.session_id {
-        state.actors.write().await.remove(&session_id);
-    }
-    if let Some(workspace) = pending.workspace {
-        if workspace.is_dir() {
-            forge_storage::remove_clean_worktree(&state.cfg.resolved_workspace, &workspace)?;
-        }
-    }
-    let _ = state
-        .events
-        .send(SupervisorEvent::Roster(snapshots(state).await));
-    Ok(())
-}
-
-fn validate_attach_target(
-    state: &Arc<SupervisorState>,
-    workspace: &std::path::Path,
-    branch: &str,
-) -> Result<PathBuf, RepositorySupervisorError> {
-    let workspace = workspace
-        .canonicalize()
-        .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
-    let records = forge_storage::list_worktree_records(&state.cfg.resolved_workspace)?;
-    let record = records
-        .iter()
-        .find(|record| same_path(&record.path, &workspace))
-        .ok_or_else(|| {
-            RepositorySupervisorError::Command(format!(
-                "{} is not a worktree in this repository",
-                workspace.display()
-            ))
-        })?;
-    let actual_branch = record.branch.as_deref().ok_or_else(|| {
-        RepositorySupervisorError::Command("detached worktrees cannot be attached".into())
-    })?;
-    if actual_branch != branch {
-        return Err(RepositorySupervisorError::Command(format!(
-            "worktree branch is `{actual_branch}`, not `{branch}`"
-        )));
-    }
-    let main = forge_storage::RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?
-        .main_worktree()
-        .to_path_buf();
-    if same_path(&workspace, &main) {
-        return Err(RepositorySupervisorError::Command(
-            "the main worktree is already the primary task".into(),
-        ));
-    }
-    Ok(workspace)
-}
-
-fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a.canonicalize().ok() == b.canonicalize().ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    use forge_model::{ModelError, ModelRequest, ModelResponse, ModelStream};
-    use forge_types::ModelStreamEvent;
-    use futures::stream;
+    use super::*;
+    use chrono::Utc;
+    use forge_config::Config;
+    use forge_model::MockModelClient;
+    use forge_types::ModelResponse;
     use tempfile::TempDir;
 
-    use super::*;
-
-    struct MockModel {
-        calls: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl ModelClient for MockModel {
-        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelError> {
-            Ok(ModelResponse {
-                content: "done".into(),
-                ..Default::default()
-            })
-        }
-
-        async fn stream(&self, _request: ModelRequest) -> Result<ModelStream, ModelError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::pin(stream::iter(vec![
-                Ok(ModelStreamEvent::TextDelta {
-                    text: "done".into(),
-                }),
-                Ok(ModelStreamEvent::Done {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                    cached_input_tokens: 0,
-                }),
-            ])))
+    fn text_response(text: &str) -> ModelResponse {
+        ModelResponse {
+            text: text.into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
         }
     }
 
-    fn git(dir: &std::path::Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {:?} failed", args);
-    }
-
-    fn setup_repo() -> TempDir {
-        let dir = TempDir::new().unwrap();
-        git(dir.path(), &["init", "-q", "--initial-branch=main"]);
-        git(dir.path(), &["config", "user.email", "forge@example.com"]);
-        git(dir.path(), &["config", "user.name", "Forge Test"]);
-        std::fs::write(dir.path().join("README.md"), "test\n").unwrap();
-        git(dir.path(), &["add", "."]);
-        git(dir.path(), &["commit", "-qm", "initial"]);
-        dir
-    }
-
-    fn test_config(dir: &TempDir) -> Config {
-        let mut cfg = Config::default();
-        cfg.resolved_workspace = dir.path().canonicalize().unwrap();
-        cfg.workspace_root = Some(cfg.resolved_workspace.display().to_string());
-        cfg
-    }
-
-    async fn seeded_supervisor(
-        dir: &TempDir,
-        model: Arc<dyn ModelClient>,
-    ) -> (RepositorySupervisor, SupervisorHandle, SessionId) {
-        let cfg = test_config(dir);
-        let storage = RepositoryRuntimeStorage::new(&cfg.resolved_workspace).unwrap();
-        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
-        let lease = RepositoryLease::acquire(&control_dir, &cfg.resolved_workspace).unwrap();
-        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
-        let mut session =
-            forge_core::AgentSession::new_for_test(cfg.resolved_workspace.clone(), model.clone())
-                .await
-                .unwrap();
-        session.set_active_model("mock/model".into());
-        let branch = "main".to_string();
-        let task = control
-            .register_session(
-                NewRepositorySession {
-                    session_id: session.session_id,
-                    label: "primary".into(),
-                    workspace: cfg.resolved_workspace.clone(),
-                    branch,
-                    ownership: WorktreeOwnership::Primary,
-                    slot: Some(1),
-                    model_id: "mock/model".into(),
-                    route_id: "native".into(),
-                    reasoning_effort: None,
-                },
-                None,
-            )
+    async fn scripted_session(cfg: &Config, text: &str) -> AgentSession {
+        let model: Arc<dyn ModelClient> =
+            Arc::new(MockModelClient::script(vec![text_response(text)]));
+        open_session_with_model(cfg, SessionTarget::New, model)
             .await
-            .unwrap();
-        let id = session.session_id;
-        let (supervisor, handle) = RepositorySupervisor::spawn(
-            control,
-            lease,
-            vec![(task, session)],
-            4,
-            cfg,
-            model,
-        )
-        .await
-        .unwrap();
-        (supervisor, handle, id)
+            .unwrap()
+            .session
     }
 
-    async fn wait_for<F>(mut events: broadcast::Receiver<SupervisorEvent>, predicate: F)
-    where
-        F: Fn(&SupervisorEvent) -> bool,
-    {
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-        tokio::pin!(timeout);
-        loop {
-            tokio::select! {
-                _ = &mut timeout => panic!("timed out waiting for supervisor state"),
-                Ok(event) = events.recv() => {
-                    if predicate(&event) {
-                        return;
+    fn task_for(
+        session_id: SessionId,
+        label: &str,
+        workspace: &std::path::Path,
+    ) -> RepositorySession {
+        RepositorySession {
+            session_id,
+            label: label.into(),
+            workspace: workspace.to_path_buf(),
+            branch: format!("forge/{label}"),
+            ownership: WorktreeOwnership::Managed,
+            lifecycle: SessionLifecycle::Active,
+            turn_state: SupervisorTurnState::Idle,
+            slot: None,
+            model_id: "mock".into(),
+            route_id: "native".into(),
+            reasoning_effort: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived_at: None,
+        }
+    }
+
+    async fn wait_for_task_state(
+        handle: &SupervisorHandle,
+        session_id: SessionId,
+        predicate: impl Fn(&SessionRuntimeSnapshot) -> bool,
+    ) -> SessionRuntimeSnapshot {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut events = handle.subscribe();
+        while std::time::Instant::now() < deadline {
+            handle.command(SupervisorCommand::Refresh).await.unwrap();
+            match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
+                Ok(Ok(SupervisorEvent::SessionUpdated(snapshot))) => {
+                    if snapshot.task.session_id == session_id && predicate(&snapshot) {
+                        return *snapshot;
                     }
                 }
+                Ok(Ok(SupervisorEvent::Roster(roster))) => {
+                    if let Some(snapshot) = roster.into_iter().find(|snapshot| {
+                        snapshot.task.session_id == session_id && predicate(snapshot)
+                    }) {
+                        return snapshot;
+                    }
+                }
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
             }
         }
+        panic!("timed out waiting for supervisor state");
     }
 
     #[tokio::test]
     async fn actors_process_submissions_and_broadcast_stream_and_attention() {
-        let dir = setup_repo();
-        let model = Arc::new(MockModel {
-            calls: AtomicUsize::new(0),
-        });
-        let (_supervisor, handle, session_id) = seeded_supervisor(&dir, model.clone()).await;
-        let events = handle.subscribe();
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let first_workspace = temp.path().join("first");
+        let second_workspace = temp.path().join("second");
+        std::fs::create_dir_all(&first_workspace).unwrap();
+        std::fs::create_dir_all(&second_workspace).unwrap();
+
+        let mut first_cfg = Config {
+            resolved_workspace: first_workspace.clone(),
+            workspace_root: Some(first_workspace.display().to_string()),
+            ..Default::default()
+        };
+        first_cfg.journal.path = temp.path().join("journals").display().to_string();
+        let first_session = scripted_session(&first_cfg, "first answer").await;
+        let first_id = first_session.session_id;
+        let mut first_task = task_for(first_id, "first", &first_workspace);
+        first_task.ownership = WorktreeOwnership::Primary;
+
+        let mut second_cfg = first_cfg.clone();
+        second_cfg.resolved_workspace = second_workspace.clone();
+        second_cfg.workspace_root = Some(second_workspace.display().to_string());
+        let second_session = scripted_session(&second_cfg, "second answer").await;
+        let second_id = second_session.session_id;
+        let second_task = task_for(second_id, "second", &second_workspace);
+
+        for task in [&first_task, &second_task] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![text_response(
+            "shared answer",
+        )]));
+        let (_supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(first_task, first_session), (second_task, second_session)],
+            1,
+            first_cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
         handle
             .command(SupervisorCommand::SubmitPrompt {
-                session_id,
-                text: "hello".into(),
+                session_id: first_id,
+                text: "run first".into(),
             })
             .await
             .unwrap();
-        wait_for(events, |event| {
-            matches!(
-                event,
-                SupervisorEvent::Stream {
-                    session_id: id,
-                    event: ModelStreamEvent::TextDelta { .. },
-                } if *id == session_id
-            )
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: second_id,
+                text: "run second".into(),
+            })
+            .await
+            .unwrap();
+        // Queue a follow-up for both while their first turn may still be
+        // driving. Primary and managed Sessions use the exact same command
+        // and actor queue.
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: first_id,
+                text: "run first again".into(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: second_id,
+                text: "run second again".into(),
+            })
+            .await
+            .unwrap();
+
+        let first_done = wait_for_task_state(&handle, first_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+                && snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .filter(|message| message.role == forge_types::MessageRole::User)
+                    .count()
+                    == 2
         })
         .await;
-        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        let second_done = wait_for_task_state(&handle, second_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+                && snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .filter(|message| message.role == forge_types::MessageRole::User)
+                    .count()
+                    == 2
+        })
+        .await;
+
+        assert!(first_done
+            .transcript
+            .messages()
+            .iter()
+            .any(|message| message.content.contains("first answer")));
+        assert!(second_done
+            .transcript
+            .messages()
+            .iter()
+            .any(|message| message.content.contains("second answer")));
+
+        for session_id in [first_id, second_id] {
+            handle
+                .command(SupervisorCommand::SetModel {
+                    session_id,
+                    model_id: "mock-v2".into(),
+                    route_id: "native-v2".into(),
+                    reasoning_effort: Some("high".into()),
+                })
+                .await
+                .unwrap();
+            let changed = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot
+                    .details
+                    .as_ref()
+                    .is_some_and(|details| details.active_model == "mock-v2")
+            })
+            .await;
+            let details = changed.details.as_ref().unwrap();
+            assert_eq!(details.active_route_id, "native-v2");
+            assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
+        }
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]
-    async fn primary_session_can_be_adopted_into_the_actor_roster() {
-        let dir = setup_repo();
-        let cfg = test_config(&dir);
-        let model: Arc<dyn ModelClient> = Arc::new(MockModel {
-            calls: AtomicUsize::new(0),
-        });
-        let storage = RepositoryRuntimeStorage::new(&cfg.resolved_workspace).unwrap();
-        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+    async fn open_with_primary_adopts_exactly_one_primary_actor() {
+        let temp = TempDir::new().unwrap();
+        for args in [
+            &["init", "-q", "--initial-branch=main"][..],
+            &["config", "user.email", "forge@example.com"][..],
+            &["config", "user.name", "Forge Test"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(temp.path().join("tracked.txt"), "one\n").unwrap();
+        for args in [
+            &["add", "tracked.txt"][..],
+            &["commit", "-q", "-m", "init"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+
+        let mut cfg = Config {
+            resolved_workspace: temp.path().to_path_buf(),
+            workspace_root: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
         let bootstrap = RepositoryBootstrap::acquire(&cfg).await.unwrap();
-        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
-        let mut primary = AgentSession::new_for_test(cfg.resolved_workspace.clone(), model)
-            .await
-            .unwrap();
-        primary.set_active_model("mock/model".into());
+        let primary = scripted_session(&cfg, "one answer").await;
         let primary_id = primary.session_id;
-        control
+        bootstrap
+            .control
             .register_session(
                 NewRepositorySession {
                     session_id: primary_id,
                     label: "main".into(),
-                    workspace: cfg.resolved_workspace.clone(),
+                    workspace: temp.path().to_path_buf(),
                     branch: "main".into(),
                     ownership: WorktreeOwnership::Primary,
                     slot: Some(1),
-                    model_id: "mock/model".into(),
+                    model_id: "mock".into(),
                     route_id: "native".into(),
                     reasoning_effort: None,
                 },
@@ -1654,11 +1996,434 @@ mod tests {
             )
             .await
             .unwrap();
-        drop(control);
 
-        let (supervisor, _handle) = bootstrap.open_with_primary(&cfg, primary).await.unwrap();
-        let snapshot = supervisor.snapshot(primary_id).await.unwrap();
-        assert_eq!(snapshot.task.session_id, primary_id);
-        assert_eq!(snapshot.task.ownership, WorktreeOwnership::Primary);
+        let (supervisor, handle) = bootstrap.open_with_primary(&cfg, primary).await.unwrap();
+        let snapshots = supervisor.snapshots().await;
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].task.session_id, primary_id);
+        assert_eq!(snapshots[0].task.ownership, WorktreeOwnership::Primary);
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: primary_id,
+                text: "run once".into(),
+            })
+            .await
+            .unwrap();
+        let done = wait_for_task_state(&handle, primary_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert_eq!(
+            done.transcript
+                .messages()
+                .iter()
+                .filter(|message| message.role == forge_types::MessageRole::User)
+                .count(),
+            1
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// A supervisor rooted in a real repository, with trust redirected at a
+    /// temporary store so granting it never touches the developer's own.
+    async fn git_backed_supervisor(
+        workspace: &std::path::Path,
+        trust_store: &std::path::Path,
+        journal: &std::path::Path,
+    ) -> (Config, Arc<RepositoryControl>, SupervisorHandle) {
+        let storage = RepositoryRuntimeStorage::new(workspace).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, workspace).unwrap();
+
+        let mut cfg = Config {
+            resolved_workspace: workspace.to_path_buf(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = journal.display().to_string();
+        let model: Arc<dyn ModelClient> =
+            Arc::new(MockModelClient::script(vec![text_response("done")]));
+        let (_supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg.clone(),
+            model,
+            Some(trust_store.to_path_buf()),
+        )
+        .await
+        .unwrap();
+        (cfg, control, handle)
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_runs_only_after_trust_finalizes_the_creation() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "parser".into(),
+                first_prompt: Some("rewrite the lexer".into()),
+            })
+            .await
+            .unwrap();
+
+        let operation_id = loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
+                _ => continue,
+            }
+        };
+
+        // Awaiting trust: the task exists but nothing is queued against it.
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "parser")
+            .expect("provisional task row");
+        assert!(control
+            .queued_prompts(task.session_id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        handle
+            .command(SupervisorCommand::FinalizeCreation { operation_id })
+            .await
+            .unwrap();
+
+        wait_for_task_state(&handle, task.session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_prompt_less_task_skips_the_trust_modal_and_is_ready_immediately() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: String::new(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+
+        // One-key creation must not park on a modal: no TrustRequired ever
+        // fires, the task is registered, and its worktree is trusted before
+        // the operator can type anything in it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
+                Ok(Ok(SupervisorEvent::TrustRequired { .. })) => {
+                    panic!("prompt-less creation must not park on trust")
+                }
+                Ok(Ok(_)) => continue,
+                _ => break,
+            }
+        }
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label.is_empty())
+            .expect("unnamed task row");
+        assert!(task.workspace.exists());
+        assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
+        // The id-only naming: `session-{id}` path, `forge/session-{id}` branch.
+        assert!(
+            task.branch.starts_with("forge/session-"),
+            "branch: {}",
+            task.branch
+        );
+        assert!(
+            task.workspace
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("session-")),
+            "path: {}",
+            task.workspace.display()
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unnamed_task_with_a_prompt_takes_its_label_from_the_prompt() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: String::new(),
+                first_prompt: Some("rewrite the lexer".into()),
+            })
+            .await
+            .unwrap();
+
+        // A prompt still parks on trust (the form path), but the empty
+        // label is derived from the prompt before the worktree is created.
+        let operation_id = loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
+                _ => continue,
+            }
+        };
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "rewrite-the-lexer")
+            .expect("prompt-derived label");
+        assert_eq!(task.branch, format!("forge/session-{operation_id}"));
+
+        handle
+            .command(SupervisorCommand::FinalizeCreation { operation_id })
+            .await
+            .unwrap();
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_trust_removes_the_worktree_and_the_task_row() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "parser".into(),
+                first_prompt: Some("rewrite the lexer".into()),
+            })
+            .await
+            .unwrap();
+        let operation_id = loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::TrustRequired { operation_id, .. } => break operation_id,
+                _ => continue,
+            }
+        };
+        let workspace = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "parser")
+            .expect("provisional task row")
+            .workspace;
+
+        handle
+            .command(SupervisorCommand::CancelCreation { operation_id })
+            .await
+            .unwrap();
+
+        assert!(!workspace.exists(), "cancelled worktree should be removed");
+        assert!(control
+            .sessions()
+            .await
+            .unwrap()
+            .iter()
+            .all(|task| task.label != "parser"));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn archived_cleanup_removes_only_the_checkout_and_retires_the_task_actor() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "cleanup".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "cleanup")
+            .expect("created task");
+        assert!(task.workspace.exists());
+
+        handle
+            .command(SupervisorCommand::ArchiveSession {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+
+        assert!(!task.workspace.exists());
+        assert_eq!(
+            control.session(task.session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Removed
+        );
+        loop {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::Roster(roster)
+                    if roster
+                        .iter()
+                        .all(|snapshot| snapshot.task.session_id != task.session_id) =>
+                {
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dirty_archived_cleanup_preserves_the_worktree_and_task_binding() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "dirty-cleanup".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "dirty-cleanup")
+            .expect("created task");
+        std::fs::write(task.workspace.join("uncommitted.txt"), "keep me").unwrap();
+
+        handle
+            .command(SupervisorCommand::ArchiveSession {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        let error = handle
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("dirty"), "unexpected cleanup error: {error}");
+        assert!(task.workspace.exists());
+        assert_eq!(
+            control.session(task.session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Archived
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn attach_refuses_the_main_worktree_a_foreign_path_and_a_wrong_branch() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, _control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let base = TempDir::new().unwrap();
+        let linked = forge_storage::create_session_worktree(repo.path(), base.path(), 1).unwrap();
+
+        let main_worktree = handle
+            .command(SupervisorCommand::AttachWorktree {
+                workspace: repo.path().to_path_buf(),
+                label: "main".into(),
+                branch: "main".into(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            main_worktree.contains("main worktree"),
+            "unexpected error: {main_worktree}"
+        );
+
+        let foreign = handle
+            .command(SupervisorCommand::AttachWorktree {
+                workspace: scratch.path().to_path_buf(),
+                label: "elsewhere".into(),
+                branch: "whatever".into(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            foreign.contains("not a worktree of this repository"),
+            "unexpected error: {foreign}"
+        );
+
+        let drifted = handle
+            .command(SupervisorCommand::AttachWorktree {
+                workspace: linked.path.clone(),
+                label: "linked".into(),
+                branch: "forge/not-the-branch".into(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            drifted.contains(&linked.branch),
+            "unexpected error: {drifted}"
+        );
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 }
