@@ -698,7 +698,7 @@ impl TuiApp {
     pub(super) fn handle_theme_command(&mut self, name: Option<&str>) {
         if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
             let theme_id = forge_config::normalize_theme_id(name);
-            if crate::theme::registry().contains(&theme_id) {
+            if crate::theme::with_registry(|registry| registry.contains(&theme_id)) {
                 self.apply_theme(theme_id, true);
             } else {
                 self.set_feedback(

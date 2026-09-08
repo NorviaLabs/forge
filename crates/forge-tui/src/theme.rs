@@ -62,6 +62,12 @@ pub fn registry() -> ThemeRegistry {
     THEME_REGISTRY.with(|registry_slot| registry_slot.borrow().clone())
 }
 
+/// Borrow the registry for a read without cloning every loaded theme.
+/// Prefer this over `registry()` for one-off lookups on hot paths.
+pub fn with_registry<T>(f: impl FnOnce(&ThemeRegistry) -> T) -> T {
+    THEME_REGISTRY.with(|registry_slot| f(&registry_slot.borrow()))
+}
+
 fn active_palette() -> Palette {
     ACTIVE_THEME_ID.with(|active| {
         let active = active.borrow();
