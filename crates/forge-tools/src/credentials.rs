@@ -64,6 +64,14 @@ pub fn host_identity_env(grant: Option<&EgressGrant>, config_dir: &Path) -> Vec<
 /// Environment that keeps XDG-aware command-line clients out of the host's
 /// mutable config, cache, and state trees. The caller applies this to every
 /// confined spawn, rather than maintaining a list of supported CLIs.
+///
+/// Also points git at a spawn-local global config, for the same reason: git
+/// reads `~/.gitconfig` on startup, which lives outside the sandbox, so a
+/// confined `git status` aborts with "unable to access .../.gitconfig"
+/// before it ever reaches the repository. The empty config written here lets
+/// a confined git start; a host grant later overrides it with the projected
+/// HTTPS-identity config (same path, `host_identity_env`), and without a
+/// grant git just runs with no global configuration.
 pub fn isolated_config_env(config_dir: &Path) -> Vec<(String, String)> {
     let mut env = Vec::new();
     for (var, dir) in [
@@ -73,6 +81,20 @@ pub fn isolated_config_env(config_dir: &Path) -> Vec<(String, String)> {
     ] {
         let _ = std::fs::create_dir_all(&dir);
         env.push((var.into(), dir.to_string_lossy().into_owned()));
+    }
+    let gitconfig = config_dir.join("gitconfig");
+    if std::fs::write(
+        &gitconfig,
+        "# Written by Forge for a confined spawn.\n\
+         # Keeps git from reading the host's ~/.gitconfig.\n",
+    )
+    .is_ok()
+    {
+        env.push((
+            "GIT_CONFIG_GLOBAL".into(),
+            gitconfig.to_string_lossy().into_owned(),
+        ));
+        env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
     }
     env
 }
@@ -370,6 +392,25 @@ mod tests {
             assert!(value.starts_with(dir.path().to_str().unwrap()));
         }
         assert!(dir.path().join("xdg-config").is_dir());
+    }
+
+    /// A confined git must not read the host's `~/.gitconfig` (it is outside
+    /// the sandbox), so the isolated env points git at a writable spawn-local
+    /// global config instead.
+    #[test]
+    fn isolated_config_points_git_at_a_spawn_local_global_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = isolated_config_env(dir.path());
+        let global = env
+            .iter()
+            .find(|(candidate, _)| candidate == "GIT_CONFIG_GLOBAL")
+            .map(|(_, value)| value)
+            .expect("a confined git needs a readable global config");
+        assert!(global.starts_with(dir.path().to_str().unwrap()));
+        assert!(std::path::Path::new(global).is_file());
+        assert!(env
+            .iter()
+            .any(|(name, value)| name == "GIT_CONFIG_NOSYSTEM" && value == "1"));
     }
 
     #[test]
