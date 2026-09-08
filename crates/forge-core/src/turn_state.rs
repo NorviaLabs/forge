@@ -54,6 +54,22 @@ impl TurnState {
         self.calls.push(call);
     }
 
+    /// Drop an operator-approved HITL call (and any identical re-issue of it)
+    /// from the turn's call list.
+    ///
+    /// A call that paused for human approval and was then approved and
+    /// executed is ordinary tool feedback for the agent, not work the turn
+    /// must still verify succeeded. Without this, the completion evaluator
+    /// treats the approved call as a required operation and marks the whole
+    /// turn Failed when its re-execution fails (a genuine command error, or a
+    /// repeat sandbox denial), even though the tool result was already
+    /// delivered to the agent and the turn continued.
+    pub(crate) fn retire_resolved_hitl_call(&mut self, call: &ToolCall) {
+        let shape = call_shape(call);
+        self.calls
+            .retain(|candidate| call_shape(candidate) != shape);
+    }
+
     pub(crate) fn record_failed_confined_bash(&mut self, call: ToolCall) {
         if call.name == "bash" && !self.failed_unconfined_call_matches(&call) {
             self.failed_confined_bash.insert(call.id.clone(), call);
