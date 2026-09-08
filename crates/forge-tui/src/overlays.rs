@@ -3748,6 +3748,37 @@ mod tests {
     }
 
     #[test]
+    fn session_switcher_filtered_selection_tracks_visible_row() {
+        // Rename/archive act on `session_switcher_selection`, so the cursor
+        // must follow the filtered (visible) rows, never a hidden one.
+        let item = |label: &str| SessionSwitcherItem {
+            session_id: format!("id-{label}"),
+            label: label.into(),
+            branch: format!("forge/{label}"),
+            workspace: format!("/tmp/{label}"),
+            state: "idle".into(),
+            attention: false,
+            group: SessionSwitcherGroup::Active,
+            managed: true,
+        };
+        let mut overlay = Overlay::session_switcher(vec![
+            item("Bug Hunt"),
+            item("Performance"),
+            item("Security"),
+        ]);
+        for c in "sec".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        // Only "Security" survives the filter; Down must wrap onto it and
+        // the selection (rename target) must be that visible row.
+        handle_overlay_key(&mut overlay, Key::Down);
+        let selected = overlay
+            .session_switcher_selection()
+            .expect("filtered row selected");
+        assert_eq!(selected.label, "Security");
+    }
+
+    #[test]
     fn picker_scrollbar_only_narrows_overflowing_lists() {
         let fitting = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
