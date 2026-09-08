@@ -450,8 +450,6 @@ pub struct ToolsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    #[serde(default = "default_agent_max_live_agents")]
-    pub max_live_agents: usize,
     #[serde(default = "default_agent_max_depth")]
     pub max_depth: usize,
     #[serde(default = "default_agent_min_wait_ms")]
@@ -460,10 +458,6 @@ pub struct AgentConfig {
     pub default_wait_ms: u64,
     #[serde(default = "default_agent_max_wait_ms")]
     pub max_wait_ms: u64,
-}
-
-fn default_agent_max_live_agents() -> usize {
-    4
 }
 
 fn default_agent_max_depth() -> usize {
@@ -485,7 +479,6 @@ fn default_agent_max_wait_ms() -> u64 {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_live_agents: default_agent_max_live_agents(),
             max_depth: default_agent_max_depth(),
             min_wait_ms: default_agent_min_wait_ms(),
             default_wait_ms: default_agent_default_wait_ms(),
@@ -707,7 +700,6 @@ struct ToolsConfigFile {
 
 #[derive(Debug, Default, Deserialize)]
 struct AgentConfigFile {
-    max_live_agents: Option<usize>,
     max_depth: Option<usize>,
     min_wait_ms: Option<u64>,
     default_wait_ms: Option<u64>,
@@ -802,9 +794,6 @@ impl ConfigFile {
 }
 
 fn apply_agent_file(dst: &mut AgentConfig, src: AgentConfigFile) {
-    if let Some(value) = src.max_live_agents {
-        dst.max_live_agents = value.max(1);
-    }
     if let Some(value) = src.max_depth {
         dst.max_depth = value;
     }
@@ -927,7 +916,7 @@ mod tests {
         let path = dir.path().join("forge.toml");
         std::fs::write(
             &path,
-            "[tools.agents]\nmax_live_agents = 7\nmax_depth = 3\nmin_wait_ms = 250\ndefault_wait_ms = 10\nmax_wait_ms = 100\n",
+            "[tools.agents]\nmax_depth = 3\nmin_wait_ms = 250\ndefault_wait_ms = 10\nmax_wait_ms = 100\n",
         )
         .unwrap();
         let cfg = Config::load(ConfigOverrides {
@@ -935,7 +924,6 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.tools.agents.max_live_agents, 7);
         assert_eq!(cfg.tools.agents.max_depth, 3);
         assert_eq!(cfg.tools.agents.min_wait_ms, 250);
         assert_eq!(cfg.tools.agents.default_wait_ms, 250);

@@ -30,7 +30,6 @@ pub struct AgentActivity {
 impl From<AgentCoordinatorConfig> for forge_config::AgentConfig {
     fn from(config: AgentCoordinatorConfig) -> Self {
         Self {
-            max_live_agents: config.max_live_agents,
             max_depth: config.max_depth,
             min_wait_ms: config.min_wait.as_millis() as u64,
             default_wait_ms: config.default_wait.as_millis() as u64,
@@ -58,7 +57,6 @@ impl AgentStatus {
 impl From<&forge_config::AgentConfig> for AgentCoordinatorConfig {
     fn from(config: &forge_config::AgentConfig) -> Self {
         Self {
-            max_live_agents: config.max_live_agents,
             max_depth: config.max_depth,
             min_wait: Duration::from_millis(config.min_wait_ms),
             default_wait: Duration::from_millis(config.default_wait_ms),
@@ -78,7 +76,6 @@ pub struct AgentSnapshot {
 
 #[derive(Debug, Clone, Copy)]
 pub struct AgentCoordinatorConfig {
-    pub max_live_agents: usize,
     pub max_depth: usize,
     pub min_wait: Duration,
     pub default_wait: Duration,
@@ -88,7 +85,6 @@ pub struct AgentCoordinatorConfig {
 impl Default for AgentCoordinatorConfig {
     fn default() -> Self {
         Self {
-            max_live_agents: 4,
             max_depth: 2,
             min_wait: Duration::from_millis(100),
             default_wait: Duration::from_secs(10),
@@ -110,8 +106,6 @@ pub enum AgentCoordinatorError {
     RootInterrupt,
     #[error("cannot interrupt the requesting agent")]
     SelfInterrupt,
-    #[error("maximum live agent limit ({0}) reached")]
-    LiveLimit(usize),
     #[error("maximum agent nesting depth ({0}) reached")]
     DepthLimit(usize),
     #[error("agent `{0}` is currently running or waiting")]
@@ -247,17 +241,6 @@ impl AgentCoordinator {
         let depth = parent.depth + 1;
         if depth > self.config.max_depth {
             return Err(AgentCoordinatorError::DepthLimit(self.config.max_depth));
-        }
-        let live = state
-            .records
-            .values()
-            .filter(|record| !record.snapshot.status.is_terminal())
-            .count()
-            .saturating_sub(1);
-        if live >= self.config.max_live_agents {
-            return Err(AgentCoordinatorError::LiveLimit(
-                self.config.max_live_agents,
-            ));
         }
         state.records.insert(
             child_id,
@@ -583,7 +566,6 @@ mod tests {
         let coordinator = AgentCoordinator::with_config(
             root,
             AgentCoordinatorConfig {
-                max_live_agents: 2,
                 max_depth: 1,
                 ..Default::default()
             },

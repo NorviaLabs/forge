@@ -256,7 +256,6 @@ file_icons = "unicode"
 path = ".forge/sessions"
 
 [tools.agents]
-max_live_agents = 4
 max_depth = 2
 min_wait_ms = 100
 default_wait_ms = 10000
@@ -269,7 +268,7 @@ Agent orchestration is enabled by default. The model can use `spawn_agent`,
 parent model, governance, and workspace policy. `spawn_agent` can narrow a
 child's tools with `tool_allowlist` and its model steps with `max_turns`.
 
-`max_live_agents` and `max_depth` bound nested work. `send_message` queues a
+`max_depth` bounds nested work. `send_message` queues a
 mailbox message without waking its target; `followup_task` wakes an idle or
 completed descendant. Agent IDs are opaque session identifiers, and operations
 are limited to descendants of the calling agent. Child journals, statuses,
