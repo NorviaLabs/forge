@@ -371,7 +371,7 @@ impl TuiApp {
                 .selected_snapshot()
                 .is_some_and(|snapshot| snapshot.session.pending_question.is_some())
             {
-                self.send_task_command(forge_session::SupervisorCommand::ResolveQuestion {
+                self.send_session_command(forge_session::SupervisorCommand::ResolveQuestion {
                     session_id,
                     answers,
                     actor: "tui".into(),

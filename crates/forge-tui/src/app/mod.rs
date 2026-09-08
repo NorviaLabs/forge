@@ -61,7 +61,7 @@ use crate::layout::{
 use crate::overlays::{
     centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalOverlayState,
     ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction,
-    OverlayWidget, PaletteItem, ResumeSessionItem, TaskSwitcherGroup, TaskSwitcherItem,
+    OverlayWidget, PaletteItem, ResumeSessionItem, SessionSwitcherGroup, SessionSwitcherItem,
 };
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
