@@ -1448,8 +1448,40 @@ pub(crate) const COMPOSER_OPENER: &str = "What does this project do?";
 /// Composer placeholder once a turn has run.
 pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";
 
+/// Direct AgentSession ownership exists only for legacy single-session workspaces.
+///
+/// Repository multisession mode leaves this slot empty: the repository
+/// supervisor owns every AgentSession, including the primary. Deref keeps
+/// the legacy single-session implementation mechanically unchanged while
+/// supervised paths migrate onto snapshots and commands.
+pub(crate) struct DirectSessionSlot(Option<AgentSession>);
+
+impl DirectSessionSlot {
+    pub(crate) fn some(session: AgentSession) -> Self {
+        Self(Some(session))
+    }
+}
+
+impl std::ops::Deref for DirectSessionSlot {
+    type Target = AgentSession;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("direct session access is unavailable in supervised repository mode")
+    }
+}
+
+impl std::ops::DerefMut for DirectSessionSlot {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_mut()
+            .expect("direct session access is unavailable in supervised repository mode")
+    }
+}
+
 pub struct TuiApp {
-    pub(crate) session: AgentSession,
+    pub(crate) session_runtime: DirectSessionSlot,
     /// Repository session chrome. The current session is represented here first;
     /// supervisor roster events can add siblings without changing render code.
     pub(crate) session_chrome: Vec<SessionChromeItem>,

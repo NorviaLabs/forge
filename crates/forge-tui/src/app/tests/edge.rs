@@ -51,7 +51,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
         .unwrap();
     assert_eq!(app.input.text, "x");
     assert!(app.feedback.text.contains("Retry or Continue"));
-    assert!(app.session.messages.iter().any(|message| {
+    assert!(app.session_runtime.messages.iter().any(|message| {
         message.role == MessageRole::Assistant
             && message.content.contains(&expected)
             && message.content.contains("Interrupted")
@@ -61,7 +61,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
     // the header sticks on "Working" forever and the message queue's
     // dispatch gate (which only checks this lifecycle) never reopens.
     assert_eq!(
-        app.session.active_task.lifecycle,
+        app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Failed
     );
 }
@@ -98,7 +98,7 @@ async fn failed_turn_does_not_open_a_turn_limit_continuation() {
     app.drain_pending_prompt(None).await.unwrap();
 
     assert_eq!(
-        app.session.active_task.lifecycle,
+        app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Failed
     );
     assert!(
@@ -145,7 +145,7 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
     app.drain_pending_prompt(None).await.unwrap();
     assert!(!app.busy_state.is_active());
     assert_eq!(
-        app.session.active_task.lifecycle,
+        app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Failed,
         "a request that errors before any ModelResponse must still fail the turn, \
          not leave the session stuck on Working"
@@ -157,11 +157,11 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
     app.dispatch_line("second message").await.unwrap();
     app.drain_pending_prompt(None).await.unwrap();
     assert!(
-        app.session.queue().is_empty(),
+        app.session_runtime.queue().is_empty(),
         "the second message must have been sent, not queued behind the stuck turn"
     );
     assert_eq!(
-        app.session.active_task.lifecycle,
+        app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Completed
     );
 }
@@ -295,17 +295,17 @@ async fn a_transient_provider_failure_is_retried() {
     app.drain_pending_prompt(None).await.unwrap();
 
     assert_ne!(
-        app.session.active_task.lifecycle,
+        app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Failed,
         "a retryable failure must not end the turn"
     );
     assert!(
-        app.session
+        app.session_runtime
             .messages
             .iter()
             .any(|message| message.content.contains("second attempt answer")),
         "the retried step's answer never landed: {:?}",
-        app.session.messages
+        app.session_runtime.messages
     );
 }
 
@@ -339,7 +339,7 @@ async fn a_failure_after_partial_output_is_never_retried() {
     app.drain_pending_prompt(None).await.unwrap();
 
     let transcript = app
-        .session
+        .session_runtime
         .messages
         .iter()
         .map(|message| message.content.clone())

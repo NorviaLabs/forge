@@ -65,16 +65,19 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
             return;
         }
-        let sessions =
-            match recent_resume_sessions(self.session.journal_dir(), self.session.session_id, 32) {
-                Ok(sessions) => sessions,
-                Err(error) => {
-                    self.report_error(&format!("Could not list tasks: {error}"));
-                    return;
-                }
-            };
+        let sessions = match recent_resume_sessions(
+            self.session_runtime.journal_dir(),
+            self.session_runtime.session_id,
+            32,
+        ) {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                self.report_error(&format!("Could not list tasks: {error}"));
+                return;
+            }
+        };
         let current = ResumeSessionItem {
-            id: self.session.session_id.to_string(),
+            id: self.session_runtime.session_id.to_string(),
             modified: "current".into(),
             title: Some("Active task · current worktree".into()),
         };
@@ -101,7 +104,7 @@ impl TuiApp {
         let filter = t.trim_start_matches('/');
         let mut items = filter_palette(filter);
         items.extend(
-            self.session
+            self.session_runtime
                 .loaded_skills()
                 .into_iter()
                 .map(|skill| PaletteItem {
@@ -665,7 +668,7 @@ impl TuiApp {
                         self.exit.request_with_code(ExitCode::Canceled);
                     } else {
                         self.cancellation.request();
-                        let queued = self.session.queue().len();
+                        let queued = self.session_runtime.queue().len();
                         self.push_toast(match queued {
                             0 => "interrupt requested · Ctrl+C again to quit".into(),
                             count => format!(
@@ -712,7 +715,7 @@ impl TuiApp {
             .and_then(|token| token.strip_prefix('/'))
         {
             let is_skill = self
-                .session
+                .session_runtime
                 .loaded_skills()
                 .iter()
                 .any(|skill| skill.name == skill_name);
@@ -752,8 +755,8 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Continue) => {
                     let session = recent_resume_sessions(
-                        self.session.journal_dir(),
-                        self.session.session_id,
+                        self.session_runtime.journal_dir(),
+                        self.session_runtime.session_id,
                         1,
                     )?
                     .first()
@@ -771,12 +774,12 @@ impl TuiApp {
                     if !self.require_primary_task("/fork") {
                         return Ok(());
                     }
-                    match self.session.fork().await {
+                    match self.session_runtime.fork().await {
                         Ok(session) => {
                             let session_id = session.session_id;
-                            let old_session_id = self.session.session_id;
+                            let old_session_id = self.session_runtime.session_id;
                             self.session_view_states.remove(&old_session_id);
-                            self.session = session;
+                            self.session_runtime = DirectSessionSlot::some(session);
                             self.selected_session_id = session_id;
                             self.session_chrome
                                 .retain(|task| task.session_id == session_id);
@@ -792,14 +795,15 @@ impl TuiApp {
                                         .unwrap_or("primary")
                                         .to_string(),
                                     branch: "HEAD".into(),
-                                    lifecycle: self.session.active_task.lifecycle,
+                                    lifecycle: self.session_runtime.active_task.lifecycle,
                                     selected: true,
                                     secondary: None,
                                     attention: false,
                                 });
                             }
-                            self.session_view = SessionSnapshot::capture(&self.session);
-                            self.transcript_view = TranscriptSnapshot::capture(&self.session);
+                            self.session_view = SessionSnapshot::capture(&self.session_runtime);
+                            self.transcript_view =
+                                TranscriptSnapshot::capture(&self.session_runtime);
                             self.conversation_view.message_start = 0;
                             self.conversation_view.event_start = 0;
                             self.conversation_view.scroll = 0;
@@ -829,8 +833,8 @@ impl TuiApp {
                 Ok(SlashCommand::Model) => self.handle_model_command().await,
                 Ok(SlashCommand::ResumeList) => {
                     match recent_resume_sessions(
-                        self.session.journal_dir(),
-                        self.session.session_id,
+                        self.session_runtime.journal_dir(),
+                        self.session_runtime.session_id,
                         10,
                     ) {
                         Ok(sessions) if sessions.is_empty() => {
@@ -843,7 +847,7 @@ impl TuiApp {
                         Ok(sessions) => {
                             self.status_state.message =
                                 format!("{} resumable sessions", sessions.len());
-                            let journal_dir = self.session.journal_dir().to_path_buf();
+                            let journal_dir = self.session_runtime.journal_dir().to_path_buf();
                             let mut items = Vec::with_capacity(sessions.len());
                             for session in sessions {
                                 let timestamp: chrono::DateTime<chrono::Local> =
@@ -873,25 +877,28 @@ impl TuiApp {
                     if !self.require_primary_task("/resume") {
                         return Ok(());
                     }
-                    match self.session.resume_session(session_id).await {
+                    match self.session_runtime.resume_session(session_id).await {
                         Ok(_report) => {
                             self.overlay = None;
                             self.busy_state.stop();
-                            self.selected_session_id = self.session.session_id;
-                            self.session_view = SessionSnapshot::capture(&self.session);
-                            self.transcript_view = TranscriptSnapshot::capture(&self.session);
+                            self.selected_session_id = self.session_runtime.session_id;
+                            self.session_view = SessionSnapshot::capture(&self.session_runtime);
+                            self.transcript_view =
+                                TranscriptSnapshot::capture(&self.session_runtime);
                             self.exit
-                                .set_code(match self.session.active_task.lifecycle {
+                                .set_code(match self.session_runtime.active_task.lifecycle {
                                     forge_types::TaskLifecycle::Failed => ExitCode::Failed,
                                     forge_types::TaskLifecycle::Waiting => ExitCode::AwaitingHitl,
                                     forge_types::TaskLifecycle::Cancelled => ExitCode::Canceled,
                                     _ => ExitCode::Success,
                                 });
                             // Stale Working with no live runtime becomes Interrupted.
-                            if let Err(error) = self.session.mark_interrupted_if_stale().await {
+                            if let Err(error) =
+                                self.session_runtime.mark_interrupted_if_stale().await
+                            {
                                 self.report_error(&error.to_string());
                             }
-                            if self.session.active_task.lifecycle
+                            if self.session_runtime.active_task.lifecycle
                                 == forge_types::TaskLifecycle::Interrupted
                             {
                                 self.status_state.message = "session interrupted".into();
@@ -901,7 +908,7 @@ impl TuiApp {
                                 );
                             } else {
                                 self.status_state.message = "session resumed".into();
-                                let queued = self.session.queue().len();
+                                let queued = self.session_runtime.queue().len();
                                 self.set_feedback(
                                     FeedbackSeverity::Ok,
                                     match queued {
@@ -951,13 +958,14 @@ impl TuiApp {
                     }
                     // Hide everything currently in the transcript without deleting session
                     // context, so subsequent model turns still see the full conversation.
-                    self.conversation_view.message_start = self.session.messages.len();
-                    self.conversation_view.event_start = self.session.events.len();
+                    self.conversation_view.message_start = self.session_runtime.messages.len();
+                    self.conversation_view.event_start = self.session_runtime.events.len();
                     self.banner_state.items.clear();
                     // The cleared viewport hides every finished turn; drop
                     // this session's completion records with it (DESIGN-005).
-                    self.turn_summaries
-                        .retain(|record| record.key.session != self.session.session_id.to_string());
+                    self.turn_summaries.retain(|record| {
+                        record.key.session != self.session_runtime.session_id.to_string()
+                    });
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_state.message.clear();
@@ -1042,7 +1050,7 @@ impl TuiApp {
         self.clear_error_chrome();
 
         if self.attachment.has_images() {
-            if !self.session.image_input_supported() {
+            if !self.session_runtime.image_input_supported() {
                 self.input.set_text(line);
                 self.set_feedback(
                     FeedbackSeverity::Warn,
@@ -1052,7 +1060,7 @@ impl TuiApp {
             }
             if matches!(
                 input_route::classify_input(
-                    &self.session.active_task,
+                    &self.session_runtime.active_task,
                     self.overlay.is_some(),
                     line
                 ),
@@ -1113,7 +1121,7 @@ impl TuiApp {
                     self.apply_connect_credentials(&p.id);
                     if let Some(m) = p.default_model() {
                         self.runtime.model_label = m.to_string();
-                        self.session.set_active_model(m);
+                        self.session_runtime.set_active_model(m);
                         self.sync_model_capabilities();
                     }
                     self.refresh_connection_ui();
@@ -1136,8 +1144,11 @@ impl TuiApp {
         self.timing.started = Some(Instant::now());
         if self.timing.turn_started.is_none() {
             self.timing.turn_started = Some(Instant::now());
-            self.timing.completion_tokens_at_start =
-                self.session.token_usage_report().api.completion_tokens;
+            self.timing.completion_tokens_at_start = self
+                .session_runtime
+                .token_usage_report()
+                .api
+                .completion_tokens;
         }
         // Counters are per user turn, not per model step: a turn that runs
         // three tools reports one summary covering all of it.
@@ -1203,7 +1214,7 @@ mod tests {
 
         app.dispatch_line("/thinking off").await.unwrap();
         assert!(!app.thinking_enabled);
-        assert!(!app.session.build_model_request().thinking_enabled);
+        assert!(!app.session_runtime.build_model_request().thinking_enabled);
 
         app.dispatch_line("/effort").await.unwrap();
         assert!(matches!(
@@ -1810,7 +1821,7 @@ mod tests {
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );
-        app.session
+        app.session_runtime
             .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
 
         app.pending_turn.queue("push it".into(), Vec::new());
@@ -1819,7 +1830,7 @@ mod tests {
             !app.busy_state.is_active(),
             "drain_pending_prompt exits (busy=false) once a tool call needs approval"
         );
-        assert!(app.session.pending_hitl().is_some());
+        assert!(app.session_runtime.pending_hitl().is_some());
 
         app.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Once)
             .await
@@ -1845,7 +1856,7 @@ mod tests {
             "the turn must reach a terminal state, not stay stuck on Working forever"
         );
         assert_ne!(
-            app.session.active_task.lifecycle,
+            app.session_runtime.active_task.lifecycle,
             forge_types::TaskLifecycle::Working,
             "a Working lifecycle with busy=false is exactly the misleading stuck state this fixes"
         );
@@ -1853,7 +1864,7 @@ mod tests {
         // follow-up model call happened — proof the turn actually resumed
         // rather than the session silently going idle after approval.
         assert!(
-            app.session
+            app.session_runtime
                 .messages
                 .iter()
                 .any(|m| m.content.contains("pushed")),

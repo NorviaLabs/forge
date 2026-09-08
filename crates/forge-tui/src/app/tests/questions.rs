@@ -74,9 +74,9 @@ async fn enter_on_an_option_submits_the_answer() {
         .unwrap();
     assert!(app.pending_interaction.has_question_submit());
     app.drain_pending_question(None).await.unwrap();
-    assert!(app.session.pending_question().is_none());
+    assert!(app.session_runtime.pending_question().is_none());
     let tool_msg = app
-        .session
+        .session_runtime
         .messages
         .iter()
         .rev()
@@ -101,7 +101,7 @@ async fn composer_text_answers_as_other() {
     assert!(app.pending_interaction.has_question_submit());
     app.drain_pending_question(None).await.unwrap();
     let tool_msg = app
-        .session
+        .session_runtime
         .messages
         .iter()
         .rev()

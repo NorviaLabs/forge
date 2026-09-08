@@ -57,7 +57,7 @@ impl TuiApp {
                     let primary = self
                         .session_chrome
                         .iter()
-                        .find(|task| task.session_id == self.session.session_id)
+                        .find(|task| task.session_id == self.session_runtime.session_id)
                         .cloned();
                     self.session_chrome = roster
                         .into_iter()
@@ -95,7 +95,7 @@ impl TuiApp {
                             .snapshots
                             .insert(snapshot.task.session_id, snapshot.clone());
                     }
-                    if snapshot.task.session_id == self.session.session_id {
+                    if snapshot.task.session_id == self.session_runtime.session_id {
                         self.session_view = snapshot.session.clone();
                         self.transcript_view = snapshot.transcript;
                     }
@@ -127,12 +127,12 @@ impl TuiApp {
                     {
                         task.attention = true;
                     }
-                    if session_id != self.session.session_id {
+                    if session_id != self.session_runtime.session_id {
                         self.push_toast(message);
                     }
                 }
                 forge_session::SupervisorEvent::Stream { session_id, event }
-                    if session_id == self.session.session_id =>
+                    if session_id == self.session_runtime.session_id =>
                 {
                     self.apply_supervisor_stream_event(&event);
                 }
@@ -305,8 +305,8 @@ impl TuiApp {
     /// for a command that runs between frames is not the same thing.
     pub fn refresh_status_model(&self) -> StatusModel {
         self.status_model_from(
-            &SessionSnapshot::capture(&self.session),
-            &TranscriptSnapshot::capture(&self.session),
+            &SessionSnapshot::capture(&self.session_runtime),
+            &TranscriptSnapshot::capture(&self.session_runtime),
             self.is_provider_connected(),
         )
     }
@@ -637,7 +637,7 @@ impl TuiApp {
         // a workspace to ask about, the generic prompt otherwise — and
         // overriding that would throw away context the launcher had and this
         // does not.
-        if self.session.messages.is_empty() {
+        if self.session_runtime.messages.is_empty() {
             return;
         }
         if self.input.hint != crate::app::types::COMPOSER_WORKING {
@@ -668,7 +668,7 @@ impl TuiApp {
         // opened, so the group reads as one block.
         let id = self.session_view.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
-        let journal = self.session.journal_dir().display().to_string();
+        let journal = self.session_runtime.journal_dir().display().to_string();
         let at = rows
             .iter()
             .position(|row| matches!(row, StatusRow::Gap))
@@ -691,7 +691,7 @@ impl TuiApp {
             ],
         );
 
-        let usage = self.session.token_usage_report();
+        let usage = self.session_runtime.token_usage_report();
         rows.push(StatusRow::Gap);
         rows.push(StatusRow::Heading("Context".into()));
         rows.push(StatusRow::field_with_note(
@@ -726,13 +726,13 @@ impl TuiApp {
 
         rows.push(StatusRow::Gap);
         rows.push(StatusRow::Heading("Capabilities".into()));
-        let mut tools = self.session.list_tools();
+        let mut tools = self.session_runtime.list_tools();
         tools.sort();
         // `tools` used to name both the count and the list, the same key
         // meaning two different things on two lines. They are separate fields
         // now, and the list is its own section.
         rows.push(StatusRow::field("Tools", m.tools_visible.to_string()));
-        let skills = self.session.loaded_skill_names();
+        let skills = self.session_runtime.loaded_skill_names();
         // No skills *list* section: the overlay is height-capped, and the count
         // plus `/skills to browse` already gets you there.
         rows.push(StatusRow::field_with_note(
@@ -798,7 +798,7 @@ impl TuiApp {
     pub(super) fn context_report_rows(&self) -> Vec<StatusRow> {
         use crate::overlays::thousands;
 
-        let usage = self.session.token_usage_report();
+        let usage = self.session_runtime.token_usage_report();
         let capacity = usage.context_capacity.max(1) as f64;
         let pct = |n: usize| (n as f64 / capacity) * 100.0;
 

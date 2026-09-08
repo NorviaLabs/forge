@@ -61,7 +61,7 @@ impl TuiApp {
     /// pointer (mirrors the wheel guard's precedence in `dispatch_mouse_scroll`).
     fn pointer_blocked(&self) -> bool {
         self.explorer_dialog.is_open()
-            || self.session.pending_hitl().is_some()
+            || self.session_runtime.pending_hitl().is_some()
             || self.overlay.is_some()
     }
 
@@ -281,7 +281,7 @@ impl TuiApp {
         // surface is active the wheel must not scroll a pane the user cannot
         // see (or the transcript hidden beneath an overlay).
         if self.explorer_dialog.is_open()
-            || self.session.pending_hitl().is_some()
+            || self.session_runtime.pending_hitl().is_some()
             || self.overlay.is_some()
             || matches!(
                 self.focus.mode(),

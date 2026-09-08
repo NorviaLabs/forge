@@ -20,7 +20,7 @@ async fn external_editor_keybind_sets_flag() {
         },
     );
     assert!(!app.external_editor.requested);
-    let path = app.session.workspace_root().join("fake.txt");
+    let path = app.session_runtime.workspace_root().join("fake.txt");
     fs::write(&path, "hello").unwrap();
     app.open_file_in_editor(&path);
     app.handle_key(press(KeyCode::Char('e'), KeyModifiers::ALT))
@@ -44,7 +44,7 @@ async fn edtui_editor_keeps_plain_e_and_uses_alt_e_for_external_editor() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    let path = app.session.workspace_root().join("fake.txt");
+    let path = app.session_runtime.workspace_root().join("fake.txt");
     fs::write(&path, "hello").unwrap();
     app.open_file_in_editor(&path);
     app.editor_session = Some(crate::editor_session::EditorSession::new("hello"));
