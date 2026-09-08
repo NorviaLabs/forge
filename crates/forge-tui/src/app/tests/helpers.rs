@@ -264,16 +264,16 @@ pub(crate) fn direct_hitl_payload(call_id: &str, path: &str) -> HitlPayload {
 /// does) — appropriate here since these tests simulate "there's a pending
 /// approval" without driving a real tool call through governance.
 pub(crate) fn set_pending_hitl(app: &mut TuiApp, payload: HitlPayload) {
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
-    app.session.active_task.wait_reason = Some(forge_types::WaitReason::Approval {
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
+    app.session_runtime.active_task.wait_reason = Some(forge_types::WaitReason::Approval {
         request_id: payload.call_id.clone(),
         payload,
     });
 }
 
 pub(crate) fn set_pending_question(app: &mut TuiApp, payload: forge_types::QuestionPayload) {
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
-    app.session.active_task.wait_reason = Some(forge_types::WaitReason::Question {
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
+    app.session_runtime.active_task.wait_reason = Some(forge_types::WaitReason::Question {
         request_id: payload.call_id.clone(),
         payload,
     });
@@ -387,12 +387,12 @@ pub(crate) fn lock_highlight_cache() -> std::sync::MutexGuard<'static, ()> {
 /// assistant messages (not one letting them share a single long message) keep
 /// fenced blocks as distinct highlight-cache measurements.
 pub(crate) fn push_code_transcript(app: &mut TuiApp, marker: &str) {
-    app.session.messages.push(forge_types::Message::new(
+    app.session_runtime.messages.push(forge_types::Message::new(
         forge_types::MessageRole::User,
         format!("Please do all {CACHED_BLOCKS} steps of {marker}."),
     ));
     for i in 0..CACHED_BLOCKS {
-        app.session.messages.push(forge_types::Message::new(
+        app.session_runtime.messages.push(forge_types::Message::new(
             forge_types::MessageRole::Assistant,
             format!(
                 "Step {i} for {marker}.\n\n```rust\n\

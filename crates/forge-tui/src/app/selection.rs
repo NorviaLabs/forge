@@ -4,7 +4,7 @@
 //! the repository lives inside the supervisor, reachable only as an immutable
 //! [`forge_session::SessionRuntimeSnapshot`] plus a command channel. Almost every
 //! interaction path in this crate predates that split and reads or mutates
-//! `self.session` unconditionally, which is silently wrong while a sibling is
+//! `self.session_runtime` unconditionally, which is silently wrong while a sibling is
 //! selected: an approval meant for the sibling would resolve the primary's.
 //!
 //! This module is the single place that answers "who am I acting on?", so a
@@ -23,7 +23,8 @@ pub(crate) enum SelectedRuntime {
 
 impl TuiApp {
     pub(crate) fn selected_runtime(&self) -> SelectedRuntime {
-        if self.supervisor.is_some() && self.selected_session_id != self.session.session_id {
+        if self.supervisor.is_some() && self.selected_session_id != self.session_runtime.session_id
+        {
             SelectedRuntime::Sibling(self.selected_session_id)
         } else {
             SelectedRuntime::Primary

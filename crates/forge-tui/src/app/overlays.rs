@@ -113,7 +113,7 @@ impl TuiApp {
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Approval => {
-                if self.session.pending_question().is_some() {
+                if self.session_runtime.pending_question().is_some() {
                     text.push_str("• ↑/↓  Select an answer\n");
                     text.push_str("• ←/→  Switch questions\n");
                     text.push_str("• Space  Toggle a multi-select option\n");

@@ -227,7 +227,7 @@ impl TuiApp {
         for key in env_keys {
             std::env::remove_var(key);
         }
-        self.session.clear_provider_env();
+        self.session_runtime.clear_provider_env();
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
         self.pending_turn.clear();
@@ -253,7 +253,7 @@ impl TuiApp {
         self.connect.profile = None;
         self.runtime.provider.clear();
         self.runtime.model_label.clear();
-        self.session.set_active_model(String::new());
+        self.session_runtime.set_active_model(String::new());
         self.sync_model_capabilities();
         self.feedback = FeedbackModel::default();
         self.status_state.message = "disconnected".into();
@@ -339,7 +339,7 @@ impl TuiApp {
             // Refresh and inject provider credentials into the client only.
             let _ = svc.ensure_oauth_fresh(&profile.id);
             if let Ok(pairs) = svc.provider_env_for_profile(&profile.id) {
-                self.session.apply_provider_env(&pairs);
+                self.session_runtime.apply_provider_env(&pairs);
             }
             self.connect.profile = Some(profile.id.clone());
             // The route decides the *transport*, and `transport_for_route(None)`
@@ -348,7 +348,7 @@ impl TuiApp {
             // wrong wire, and every call fails until the user re-picks the model
             // — which is the only other path that sets it. The route follows the
             // profile, not the model, so it is restored either way below.
-            self.session
+            self.session_runtime
                 .set_active_route_id(route_id_for_profile(&profile.id));
             // Only switch the active model when it still looks like the forge default
             // (don't clobber an explicit --model / test runtime label).
@@ -385,8 +385,8 @@ impl TuiApp {
                         effort: self.reasoning_effort.value.to_string(),
                     });
                 }
-            } else if self.session.active_model.is_empty() {
-                self.session
+            } else if self.session_runtime.active_model.is_empty() {
+                self.session_runtime
                     .set_active_model(self.runtime.model_label.clone());
                 self.sync_model_capabilities();
             }
@@ -444,8 +444,9 @@ impl TuiApp {
             .then(|| self.reasoning_effort.value.transport_value())
             .filter(|v| !v.is_empty())
             .map(str::to_string);
-        self.session.set_reasoning_effort(value);
-        self.session.set_thinking_enabled(self.thinking_enabled);
+        self.session_runtime.set_reasoning_effort(value);
+        self.session_runtime
+            .set_thinking_enabled(self.thinking_enabled);
     }
 
     /// Re-read the active model's cached models.dev metadata: whether it
@@ -460,14 +461,14 @@ impl TuiApp {
     /// a discarded selection produce a mismatched model id.
     pub(super) fn sync_model_capabilities(&mut self) {
         let cache = forge_connect::ModelCatalogCache::user_default();
-        let supported = cache.model_accepts_image_input(&self.session.active_model);
-        self.session.set_image_input_supported(supported);
+        let supported = cache.model_accepts_image_input(&self.session_runtime.active_model);
+        self.session_runtime.set_image_input_supported(supported);
         // Use one fixed context budget across providers. Keep the catalog's
         // output limit when available so reply headroom remains provider-aware.
         let output = cache
-            .model_limits(&self.session.active_model)
+            .model_limits(&self.session_runtime.active_model)
             .and_then(|limits| (limits.output > 0).then_some(limits.output));
-        self.session.set_context_window(500_000, output);
+        self.session_runtime.set_context_window(500_000, output);
     }
 
     pub(super) fn apply_selection(&mut self, selection: &ModelSelection) {
@@ -477,8 +478,9 @@ impl TuiApp {
             selection.provider.clone()
         };
         self.runtime.model_label = selection.model.clone();
-        self.session.set_active_model(&selection.model);
-        self.session.set_active_route_id(&selection.route_id);
+        self.session_runtime.set_active_model(&selection.model);
+        self.session_runtime
+            .set_active_route_id(&selection.route_id);
         self.sync_model_capabilities();
         self.connect.profile = selection.profile_id.clone();
         if let Ok(effort) = selection.effort.parse::<ReasoningEffort>() {
@@ -870,7 +872,7 @@ impl TuiApp {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
-                    self.session.set_active_model(m);
+                    self.session_runtime.set_active_model(m);
                     self.sync_model_capabilities();
                 }
                 if let Some(pid) = self.connect.profile.clone() {
@@ -937,7 +939,7 @@ impl TuiApp {
         self.runtime.model_label = out.model.clone();
         self.runtime.provider = "native".into();
         self.connect.auth_suspended = false;
-        self.session.set_active_model(out.model.clone());
+        self.session_runtime.set_active_model(out.model.clone());
         self.sync_model_capabilities();
         self.apply_connect_credentials(&out.profile_id);
         self.connect.oauth_pending = None;
@@ -961,7 +963,7 @@ impl TuiApp {
                 // reads the injected map ahead of the process environment, so
                 // exporting these as well changed nothing for the client — it
                 // only made every child process inherit them.
-                self.session.apply_provider_env(&pairs);
+                self.session_runtime.apply_provider_env(&pairs);
             }
             Ok(_) => {}
             Err(_e) => {
@@ -1064,7 +1066,7 @@ impl TuiApp {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
-                    self.session.set_active_model(m);
+                    self.session_runtime.set_active_model(m);
                     self.sync_model_capabilities();
                 }
                 if let Some(pid) = self.connect.profile.clone() {

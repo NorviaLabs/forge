@@ -285,7 +285,7 @@ async fn header_status_follows_session_lifecycle() {
 
     // A real task must actually be started for the authoritative lifecycle
     // to read Working — `busy` alone is UI activity detail, not lifecycle.
-    app.session
+    app.session_runtime
         .append_user_message("do something")
         .await
         .unwrap();
@@ -304,25 +304,25 @@ async fn header_status_follows_session_lifecycle() {
 
     app.busy_state.stop();
     app.busy_state.set_phase(BusyPhase::Idle);
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Completed
     );
 
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Failed;
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Failed;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Failed
     );
 
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Cancelled;
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Cancelled;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Cancelled
     );
 
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Interrupted;
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Interrupted;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Interrupted
@@ -476,12 +476,12 @@ async fn toggling_files_on_a_wide_terminal_still_works() {
 #[tokio::test]
 async fn a_long_unfinished_check_name_degrades_to_a_count() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
-    app.session.events.push(forge_core::TurnEvent {
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
+    app.session_runtime.events.push(forge_core::TurnEvent {
         kind: "turn_incomplete_checks".into(),
         detail: "python -m pytest tests/test_help.py --verbose --tb=short".into(),
     });
-    app.session_view = SessionSnapshot::capture(&app.session);
+    app.session_view = SessionSnapshot::capture(&app.session_runtime);
 
     let label = app.refresh_status_model().status_label().0;
     assert!(label.contains("1 check didn't finish"), "{label}");
@@ -531,9 +531,9 @@ async fn header_status_switches_with_selected_session() {
         .0
         .contains("Completed"));
 
-    app.session.resume_session(id_b).await.unwrap();
+    app.session_runtime.resume_session(id_b).await.unwrap();
     assert_eq!(
-        app.session.active_task.lifecycle,
+        app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Interrupted
     );
     assert!(app
@@ -542,9 +542,9 @@ async fn header_status_switches_with_selected_session() {
         .0
         .contains("Interrupted"));
 
-    app.session.resume_session(id_a).await.unwrap();
+    app.session_runtime.resume_session(id_a).await.unwrap();
     assert_eq!(
-        app.session.active_task.lifecycle,
+        app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Completed
     );
     assert!(app
@@ -1228,7 +1228,7 @@ async fn status_model_does_not_serve_a_stale_snapshot_between_frames() {
     let (_dir, mut app) = focus_test_app().await;
     draw_app(&mut app, 100, 30);
 
-    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Failed;
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Failed;
 
     assert_eq!(
         app.refresh_status_model().status,
@@ -1354,10 +1354,10 @@ async fn an_idle_app_paints_no_turn_line() {
 #[tokio::test]
 async fn a_finished_turn_is_closed_by_a_summary() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "first request"));
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::Assistant, "first answer"));
     app.timing.turn_started = Some(Instant::now() - Duration::from_secs(7));
@@ -1374,10 +1374,10 @@ async fn a_finished_turn_is_closed_by_a_summary() {
     // DESIGN-005: the next finished turn keeps its own summary under its
     // own answer — it neither replaces the previous turn's line nor inherits
     // it. Each completion sits directly beneath its answer.
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "second request"));
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::Assistant, "second answer"));
     app.timing.turn_started = Some(Instant::now() - Duration::from_secs(2));

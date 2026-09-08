@@ -141,7 +141,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
 async fn cache_hit_shares_transcript_lines_without_copying() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.session.messages.push(forge_types::Message::new(
+    app.session_runtime.messages.push(forge_types::Message::new(
         forge_types::MessageRole::Assistant,
         "cached transcript body",
     ));
@@ -163,10 +163,10 @@ async fn cache_hit_shares_transcript_lines_without_copying() {
 async fn scrolling_within_a_render_bucket_reuses_transcript_lines() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "show the history"));
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::Assistant, numbered_lines(400)));
 
@@ -203,10 +203,10 @@ async fn scrolling_within_a_render_bucket_reuses_transcript_lines() {
 async fn scrolling_past_a_render_bucket_rebuilds_transcript_lines() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "show the history"));
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::Assistant, numbered_lines(400)));
 
@@ -240,10 +240,10 @@ async fn scrolling_past_a_render_bucket_rebuilds_transcript_lines() {
 async fn complete_transcript_clamps_overscroll_and_allows_downward_scroll() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "show the history"));
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::Assistant, numbered_lines(50)));
 
@@ -275,14 +275,14 @@ async fn complete_transcript_clamps_overscroll_and_allows_downward_scroll() {
 async fn same_length_message_changes_invalidate_transcript_cache() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.session.messages.push(forge_types::Message::new(
+    app.session_runtime.messages.push(forge_types::Message::new(
         forge_types::MessageRole::Assistant,
         "old text",
     ));
     draw_app(&mut app, 100, 30);
     let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
 
-    app.session.messages.last_mut().unwrap().content = "new text".into();
+    app.session_runtime.messages.last_mut().unwrap().content = "new text".into();
     draw_app(&mut app, 100, 30);
     let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
 
@@ -296,7 +296,7 @@ async fn same_length_message_changes_invalidate_transcript_cache() {
 async fn busy_phase_reuses_cached_transcript_lines() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.session.messages.push(forge_types::Message::new(
+    app.session_runtime.messages.push(forge_types::Message::new(
         forge_types::MessageRole::Assistant,
         "cached transcript body",
     ));
@@ -326,10 +326,10 @@ async fn streamed_thinking_is_separated_from_the_settled_tool_trail() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
     app.pending_turn.clear();
-    app.session
+    app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "fix the failing test"));
-    app.session.messages.push(Message {
+    app.session_runtime.messages.push(Message {
         outcome: forge_types::ExecutionOutcome::Success,
         role: MessageRole::Tool,
         content: "src/lib.rs".into(),
