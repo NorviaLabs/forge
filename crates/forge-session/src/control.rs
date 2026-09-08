@@ -1025,6 +1025,32 @@ impl RepositoryControl {
         Ok(())
     }
 
+    /// Persist the operator's model selection on the task row so a later
+    /// restart can restore it. Archived tasks are immutable.
+    pub async fn set_session_model(
+        &self,
+        session_id: SessionId,
+        model_id: &str,
+        route_id: &str,
+        reasoning_effort: Option<&str>,
+    ) -> Result<(), RepositorySessionError> {
+        let result = sqlx::query(
+            "UPDATE tasks SET model_id = ?, route_id = ?, reasoning_effort = ?, updated_at = ? \
+             WHERE session_id = ? AND lifecycle <> 'archived'",
+        )
+        .bind(model_id)
+        .bind(route_id)
+        .bind(reasoning_effort)
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(RepositorySessionError::NotFound(session_id));
+        }
+        Ok(())
+    }
+
     pub async fn reconcile_worktrees(
         &self,
         worktrees: &[WorktreeRecord],
@@ -1528,6 +1554,33 @@ mod tests {
             control.register_session(duplicate, None).await,
             Err(RepositorySessionError::WorkspaceInUse { session_id, .. }) if session_id == first_id
         ));
+    }
+
+    #[tokio::test]
+    async fn a_set_model_write_round_trips_on_the_task_row() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let task = new_task(&dir.path().join("a"), "a", None);
+        let session_id = task.session_id;
+        control.register_session(task, None).await.unwrap();
+
+        control
+            .set_session_model(session_id, "claude-sonnet-4-6", "native-v2", Some("high"))
+            .await
+            .unwrap();
+        let stored = control.session(session_id).await.unwrap();
+        assert_eq!(stored.model_id, "claude-sonnet-4-6");
+        assert_eq!(stored.route_id, "native-v2");
+        assert_eq!(stored.reasoning_effort.as_deref(), Some("high"));
+
+        control
+            .set_session_model(session_id, "mock", "native", None)
+            .await
+            .unwrap();
+        let stored = control.session(session_id).await.unwrap();
+        assert_eq!(stored.model_id, "mock");
+        assert_eq!(stored.route_id, "native");
+        assert_eq!(stored.reasoning_effort, None);
     }
 
     #[tokio::test]
