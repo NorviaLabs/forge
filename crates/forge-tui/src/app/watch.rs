@@ -94,8 +94,8 @@ impl TuiApp {
     pub(super) fn maybe_note_workspace_changed_from_recent_tools(&mut self) {
         // Only the latest assistant step matters — older writes already refreshed the tree.
         let mutated = self
-            .session_runtime
-            .messages
+            .transcript_view
+            .messages()
             .iter()
             .rev()
             .find(|message| message.role == MessageRole::Assistant)

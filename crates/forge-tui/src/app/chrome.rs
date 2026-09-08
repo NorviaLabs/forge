@@ -43,7 +43,10 @@ impl TuiApp {
         }
         let _ = supervisor;
         if closed {
-            self.supervisor = None;
+            self.set_feedback(
+                FeedbackSeverity::Error,
+                "repository supervisor disconnected",
+            );
         }
         for event in events {
             match event {
@@ -54,11 +57,12 @@ impl TuiApp {
                             .map(|snapshot| (snapshot.task.session_id, snapshot.clone()))
                             .collect();
                     }
-                    let primary = self
-                        .session_chrome
-                        .iter()
-                        .find(|task| task.session_id == self.session_runtime.session_id)
-                        .cloned();
+                    let direct = self.session_runtime.as_ref().and_then(|session| {
+                        self.session_chrome
+                            .iter()
+                            .find(|item| item.session_id == session.session_id)
+                            .cloned()
+                    });
                     self.session_chrome = roster
                         .into_iter()
                         .map(|snapshot| SessionChromeItem {
@@ -72,7 +76,7 @@ impl TuiApp {
                             attention: false,
                         })
                         .collect();
-                    if let Some(primary) = primary {
+                    if let Some(primary) = direct {
                         if !self
                             .session_chrome
                             .iter()
@@ -95,9 +99,10 @@ impl TuiApp {
                             .snapshots
                             .insert(snapshot.task.session_id, snapshot.clone());
                     }
-                    if snapshot.task.session_id == self.session_runtime.session_id {
+                    if snapshot.task.session_id == self.selected_session_id {
                         self.session_view = snapshot.session.clone();
-                        self.transcript_view = snapshot.transcript;
+                        self.transcript_view = snapshot.transcript.clone();
+                        self.sync_supervised_presentation(&snapshot);
                     }
                     if let Some(task) = self
                         .session_chrome
@@ -127,16 +132,32 @@ impl TuiApp {
                     {
                         task.attention = true;
                     }
-                    if session_id != self.session_runtime.session_id {
+                    if session_id != self.selected_session_id {
                         self.push_toast(message);
                     }
                 }
                 forge_session::SupervisorEvent::Stream { session_id, event }
-                    if session_id == self.session_runtime.session_id =>
+                    if session_id == self.selected_session_id =>
                 {
                     self.apply_supervisor_stream_event(&event);
                 }
                 forge_session::SupervisorEvent::Selected(Some(session_id)) => {
+                    if let Some(snapshot) = self
+                        .supervisor
+                        .as_ref()
+                        .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+                        .cloned()
+                    {
+                        if session_id != self.selected_session_id {
+                            self.save_session_view_state(self.selected_session_id);
+                            self.restore_session_view_state(session_id);
+                            self.selected_session_id = session_id;
+                        }
+                        self.session_view = snapshot.session.clone();
+                        self.transcript_view = snapshot.transcript.clone();
+                        self.sync_supervised_presentation(&snapshot);
+                        self.sync_selected_workspace();
+                    }
                     self.task_strip_selection = self
                         .session_chrome
                         .iter()
@@ -150,7 +171,7 @@ impl TuiApp {
                     self.set_feedback(
                         FeedbackSeverity::Error,
                         format!(
-                            "task {}: {message}",
+                            "Session {}: {message}",
                             session_id.map_or_else(|| "unknown".into(), |id| id.to_string())
                         ),
                     );
@@ -165,7 +186,10 @@ impl TuiApp {
                         label,
                         workspace: workspace.display().to_string(),
                     });
-                    self.set_feedback(FeedbackSeverity::Warn, "trust required before task can run");
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "trust required before the Session can run",
+                    );
                 }
                 _ => {}
             }
@@ -191,6 +215,29 @@ impl TuiApp {
             }
             _ => {}
         }
+    }
+
+    pub(super) fn sync_supervised_presentation(&mut self, snapshot: &SessionRuntimeSnapshot) {
+        if snapshot.task.turn_state == forge_session::SupervisorTurnState::Running {
+            if !self.busy_state.is_active() {
+                self.stream.clear_preview();
+                self.stream.thinking.clear();
+                self.busy_state.start(BusyPhase::Model);
+            }
+        } else {
+            self.busy_state.stop();
+            self.stream.clear_preview();
+            self.stream.thinking.clear();
+            self.cancellation.take_requested();
+        }
+        if let Some(details) = snapshot.details.as_ref() {
+            self.runtime.model_label = details.active_model.clone();
+            self.thinking_enabled = details.thinking_enabled;
+        }
+        for item in &mut self.session_chrome {
+            item.selected = item.session_id == self.selected_session_id;
+        }
+        self.render_cache.conversation = None;
     }
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
@@ -304,9 +351,16 @@ impl TuiApp {
     /// would report whatever was true when the screen was last painted, which
     /// for a command that runs between frames is not the same thing.
     pub fn refresh_status_model(&self) -> StatusModel {
+        if let Some(session) = self.session_runtime.as_ref() {
+            return self.status_model_from(
+                &SessionSnapshot::capture(session),
+                &TranscriptSnapshot::capture(session),
+                self.is_provider_connected(),
+            );
+        }
         self.status_model_from(
-            &SessionSnapshot::capture(&self.session_runtime),
-            &TranscriptSnapshot::capture(&self.session_runtime),
+            &self.session_view,
+            &self.transcript_view,
             self.is_provider_connected(),
         )
     }
@@ -366,9 +420,9 @@ impl TuiApp {
             resource: self.workspace_resource_label(),
             activity: None,
             progress_description: self.header_progress_description(),
-            failure_category: self.header_failure_category(transcript),
-            waiting_detail: self.header_waiting_detail(),
-            incomplete_checks: self.header_incomplete_checks(transcript),
+            failure_category: self.header_failure_category(session_view, transcript),
+            waiting_detail: self.header_waiting_detail(session_view),
+            incomplete_checks: self.header_incomplete_checks(session_view, transcript),
         }
     }
 
@@ -377,8 +431,12 @@ impl TuiApp {
     /// Deliberately narrow: only for `Completed`. A turn that actually failed
     /// reports through [`Self::header_failure_category`] instead, so this can
     /// never be used to soften a genuine failure into a footnote.
-    fn header_incomplete_checks(&self, transcript: &TranscriptSnapshot) -> Option<String> {
-        if self.session_view.lifecycle != forge_types::TaskLifecycle::Completed {
+    fn header_incomplete_checks(
+        &self,
+        session_view: &SessionSnapshot,
+        transcript: &TranscriptSnapshot,
+    ) -> Option<String> {
+        if session_view.lifecycle != forge_types::TaskLifecycle::Completed {
             return None;
         }
         // Events are session-cumulative — only a resume clears them — so an
@@ -477,9 +535,9 @@ impl TuiApp {
             .flatten()
     }
 
-    fn header_waiting_detail(&self) -> Option<String> {
-        if self.session_view.is_awaiting_approval()
-            || self.session_view.lifecycle == forge_types::TaskLifecycle::Waiting
+    fn header_waiting_detail(&self, session_view: &SessionSnapshot) -> Option<String> {
+        if session_view.is_awaiting_approval()
+            || session_view.lifecycle == forge_types::TaskLifecycle::Waiting
         {
             return Some("Approval required".into());
         }
@@ -498,8 +556,12 @@ impl TuiApp {
     /// survives a resume. Removing it is tracked as a follow-up for the
     /// persistence phase (extending the durable status event to carry the
     /// failure category), not dropped silently.
-    fn header_failure_category(&self, transcript: &TranscriptSnapshot) -> Option<String> {
-        if self.session_view.lifecycle != forge_types::TaskLifecycle::Failed {
+    fn header_failure_category(
+        &self,
+        session_view: &SessionSnapshot,
+        transcript: &TranscriptSnapshot,
+    ) -> Option<String> {
+        if session_view.lifecycle != forge_types::TaskLifecycle::Failed {
             return None;
         }
         // Prefer the latest structured turn_failed event category.
@@ -637,7 +699,7 @@ impl TuiApp {
         // a workspace to ask about, the generic prompt otherwise — and
         // overriding that would throw away context the launcher had and this
         // does not.
-        if self.session_runtime.messages.is_empty() {
+        if self.transcript_view.messages().is_empty() {
             return;
         }
         if self.input.hint != crate::app::types::COMPOSER_WORKING {
@@ -668,7 +730,7 @@ impl TuiApp {
         // opened, so the group reads as one block.
         let id = self.session_view.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
-        let journal = self.session_runtime.journal_dir().display().to_string();
+        let journal = self.selected_journal_dir().display().to_string();
         let at = rows
             .iter()
             .position(|row| matches!(row, StatusRow::Gap))
@@ -691,7 +753,7 @@ impl TuiApp {
             ],
         );
 
-        let usage = self.session_runtime.token_usage_report();
+        let usage = self.selected_token_usage_report();
         rows.push(StatusRow::Gap);
         rows.push(StatusRow::Heading("Context".into()));
         rows.push(StatusRow::field_with_note(
@@ -726,13 +788,13 @@ impl TuiApp {
 
         rows.push(StatusRow::Gap);
         rows.push(StatusRow::Heading("Capabilities".into()));
-        let mut tools = self.session_runtime.list_tools();
+        let mut tools = self.selected_tool_names();
         tools.sort();
         // `tools` used to name both the count and the list, the same key
         // meaning two different things on two lines. They are separate fields
         // now, and the list is its own section.
         rows.push(StatusRow::field("Tools", m.tools_visible.to_string()));
-        let skills = self.session_runtime.loaded_skill_names();
+        let skills = self.selected_loaded_skill_names();
         // No skills *list* section: the overlay is height-capped, and the count
         // plus `/skills to browse` already gets you there.
         rows.push(StatusRow::field_with_note(
@@ -798,7 +860,7 @@ impl TuiApp {
     pub(super) fn context_report_rows(&self) -> Vec<StatusRow> {
         use crate::overlays::thousands;
 
-        let usage = self.session_runtime.token_usage_report();
+        let usage = self.selected_token_usage_report();
         let capacity = usage.context_capacity.max(1) as f64;
         let pct = |n: usize| (n as f64 / capacity) * 100.0;
 

@@ -1,5 +1,4 @@
-//! Repository multi-task behaviour: per-task view state and the guards that
-//! keep a primary-only action from running against a sibling.
+//! Repository Session behaviour: actor ownership and per-Session view state.
 
 use super::prelude::*;
 
@@ -181,12 +180,10 @@ async fn a_task_never_visited_before_starts_from_a_clean_view() {
 
 #[tokio::test]
 async fn without_a_supervisor_the_session_is_direct_owned() {
-    let (_dir, mut app) = focus_test_app().await;
+    let (_dir, app) = focus_test_app().await;
     assert_eq!(app.selected_runtime(), SelectedRuntime::Direct);
     assert!(!app.selected_is_supervised());
     assert!(app.selected_snapshot().is_none());
-    // Direct-only actions must stay reachable in single-task mode.
-    assert!(app.require_direct_session("/clear"));
 }
 
 #[tokio::test]
@@ -215,11 +212,49 @@ async fn supervisor_snapshot_makes_the_selected_session_supervised() {
             .map(|snapshot| snapshot.task.session_id),
         Some(session.session_id)
     );
-    assert!(
-        !app.require_direct_session("/clear"),
-        "direct-only operations must refuse a supervisor-owned Session"
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn supervised_primary_has_no_direct_runtime_and_runs_one_turn() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+    assert!(app.session_runtime.as_ref().is_none());
+    assert_eq!(
+        app.selected_runtime(),
+        SelectedRuntime::Supervised(primary_id)
     );
 
+    app.input.set_text("run primary once");
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.poll_supervisor_events();
+        let users = app
+            .selected_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .filter(|message| message.role == forge_types::MessageRole::User)
+                    .count()
+            })
+            .unwrap_or_default();
+        if users == 1 && app.session_view.lifecycle == forge_types::TaskLifecycle::Completed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "primary turn did not complete exactly once"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
@@ -277,26 +312,16 @@ async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHan
     }
 
     let session = session_for_workspace(dir.path()).await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: dir.path().to_path_buf(),
-            version: "test".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.into(),
-        },
-    );
-    app.connect.profile = None;
-    app.connect.store = CredentialStore::new(
-        tempfile::TempDir::new()
-            .unwrap()
-            .path()
-            .join("empty-creds.toml"),
-    );
-
+    let session_id = session.session_id;
+    let runtime = TuiRuntimeConfig {
+        model_label: "mock".into(),
+        provider: "mock".into(),
+        cwd: dir.path().to_path_buf(),
+        version: "test".into(),
+        startup_notices: Vec::new(),
+        file_icons: FileIconMode::Unicode,
+        theme_id: forge_config::DEFAULT_THEME_ID.into(),
+    };
     let storage = forge_session::RepositoryRuntimeStorage::new(dir.path()).unwrap();
     let control_dir =
         forge_storage::RuntimeStorage::path_for(&storage, forge_storage::RuntimeDataKind::Control)
@@ -322,10 +347,28 @@ async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHan
                 thinking: None,
             },
         ]));
-    let (_supervisor, handle) = forge_session::RepositorySupervisor::spawn_with_trust_store(
+    control
+        .register_session(
+            forge_session::NewRepositorySession {
+                session_id,
+                label: "main".into(),
+                workspace: dir.path().to_path_buf(),
+                branch: "main".into(),
+                ownership: forge_session::WorktreeOwnership::Primary,
+                slot: Some(1),
+                model_id: "mock".into(),
+                route_id: "native".into(),
+                reasoning_effort: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let record = control.session(session_id).await.unwrap();
+    let (supervisor, handle) = forge_session::RepositorySupervisor::spawn_with_trust_store(
         control,
         lease,
-        Vec::new(),
+        vec![(record, session)],
         2,
         cfg,
         model,
@@ -333,12 +376,12 @@ async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHan
     )
     .await
     .unwrap();
-    app.supervisor = Some(SupervisorUiState {
-        handle: handle.clone(),
-        events: handle.subscribe(),
-        current_session_id: app.session_runtime.session_id,
-        snapshots: Default::default(),
-    });
+    let initial = supervisor.snapshot(session_id).await.unwrap();
+    let mut app = TuiApp::new_supervised(initial, runtime, handle.clone());
+    app.connect.profile = None;
+    app.runtime.provider = "mock".into();
+    app.connect.store = CredentialStore::new(dir.path().join("empty-creds.toml"));
+    assert!(app.session_runtime.as_ref().is_none());
     (dir, app, handle)
 }
 
@@ -380,8 +423,8 @@ async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
     // The strip renders the positional fallback instead of a hole.
     let text = render_app_text(&mut app, 120, 30);
     assert!(
-        text.contains("task 1"),
-        "strip should fall back to `task 1`: {text}"
+        text.contains("session 1"),
+        "strip should fall back to `session 1`: {text}"
     );
 
     handle
@@ -410,6 +453,7 @@ async fn the_first_prompt_names_an_unnamed_task() {
         .unwrap();
     app.input.set_text("rewrite the lexer".to_string());
     app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
 
     let named = wait_for_chrome_session(&mut app, |task| task.label == "rewrite-the-lexer").await;
     assert_eq!(named.session_id, task.session_id);
