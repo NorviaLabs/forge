@@ -65,8 +65,8 @@ impl TuiApp {
                 text.push_str("• ←/→  Select task slot\n");
                 text.push_str("• Enter  Switch task\n");
                 text.push_str("• n  New task — unnamed, named from its first prompt\n");
-                text.push_str("• Ctrl+Shift+T or /tasks  Open task switcher\n");
-                text.push_str("• s / c  Stop / continue the selected task\n");
+                text.push_str("• Ctrl+Shift+T or /tasks  Open session switcher\n");
+                text.push_str("• s / c  Stop / continue the selected session\n");
                 text.push_str("• p  Pin  ·  x  Archive\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
@@ -96,7 +96,7 @@ impl TuiApp {
             }
             FocusBlock::Sidebar => {
                 text.push_str("• Up/Down  Select a background task\n");
-                text.push_str("• x / a / d  Cancel / approve / deny selected task\n");
+                text.push_str("• x / a / d  Cancel / approve / deny selected session\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Composer => {
@@ -157,17 +157,17 @@ impl TuiApp {
             OverlayAction::Close => {
                 self.dismiss_overlay();
             }
-            OverlayAction::SelectTask(id) => {
+            OverlayAction::SelectSession(id) => {
                 let Ok(session_id) = id.parse::<uuid::Uuid>() else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
                 let Some(index) = self
-                    .task_chrome
+                    .session_chrome
                     .iter()
                     .position(|task| task.session_id == session_id)
                 else {
-                    self.set_feedback(FeedbackSeverity::Warn, "task is no longer available");
+                    self.set_feedback(FeedbackSeverity::Warn, "session is no longer available");
                     return Ok(());
                 };
                 self.task_strip_selection = index;
@@ -189,7 +189,7 @@ impl TuiApp {
                 self.set_feedback(FeedbackSeverity::Warn, message);
             }
             OverlayAction::OpenTaskInput(mode) => {
-                self.overlay = Some(Overlay::task_input(mode));
+                self.overlay = Some(Overlay::session_input(mode));
             }
             OverlayAction::OpenTaskRename { session_id, label } => {
                 self.overlay = Some(Overlay::TaskRename {
@@ -211,13 +211,13 @@ impl TuiApp {
                     detail,
                 });
             }
-            OverlayAction::RenameTask { session_id, label } => {
-                let Some(session_id) = parse_task_session_id(&session_id) else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+            OverlayAction::RenameSession { session_id, label } => {
+                let Some(session_id) = parse_repository_session_id(&session_id) else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
                 if self
-                    .send_task_command(forge_session::SupervisorCommand::RenameTask {
+                    .send_session_command(forge_session::SupervisorCommand::RenameSession {
                         session_id,
                         label: label.clone(),
                     })
@@ -227,13 +227,15 @@ impl TuiApp {
                 }
                 self.overlay = None;
             }
-            OverlayAction::ArchiveTask { session_id } => {
-                let Some(session_id) = parse_task_session_id(&session_id) else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+            OverlayAction::ArchiveSession { session_id } => {
+                let Some(session_id) = parse_repository_session_id(&session_id) else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
                 if self
-                    .send_task_command(forge_session::SupervisorCommand::ArchiveTask { session_id })
+                    .send_session_command(forge_session::SupervisorCommand::ArchiveSession {
+                        session_id,
+                    })
                     .await
                 {
                     self.set_feedback(FeedbackSeverity::Ok, "task archived");
@@ -241,12 +243,12 @@ impl TuiApp {
                 self.overlay = None;
             }
             OverlayAction::CleanupTaskWorktree { session_id } => {
-                let Some(session_id) = parse_task_session_id(&session_id) else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid task session id");
+                let Some(session_id) = parse_repository_session_id(&session_id) else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
                 if self
-                    .send_task_command(forge_session::SupervisorCommand::RemoveManagedWorktree {
+                    .send_session_command(forge_session::SupervisorCommand::RemoveManagedWorktree {
                         session_id,
                     })
                     .await
@@ -255,19 +257,19 @@ impl TuiApp {
                 }
                 self.overlay = None;
             }
-            OverlayAction::CreateTask {
+            OverlayAction::CreateSession {
                 label,
                 first_prompt,
             } => {
                 if self
-                    .send_task_command(forge_session::SupervisorCommand::CreateTask {
+                    .send_session_command(forge_session::SupervisorCommand::CreateSession {
                         label,
                         first_prompt,
                     })
                     .await
                 {
                     self.overlay = None;
-                    self.set_feedback(FeedbackSeverity::Info, "creating task worktree…");
+                    self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");
                 }
             }
             OverlayAction::AttachTask {
@@ -280,7 +282,7 @@ impl TuiApp {
                 // the repository is settled by the supervisor.
                 let workspace = Overlay::normalize_workspace_path(&workspace, &self.runtime.cwd);
                 if self
-                    .send_task_command(forge_session::SupervisorCommand::AttachWorktree {
+                    .send_session_command(forge_session::SupervisorCommand::AttachWorktree {
                         workspace,
                         label,
                         branch,
@@ -293,7 +295,7 @@ impl TuiApp {
             }
             OverlayAction::FinalizeTaskCreation { operation_id } => {
                 if self
-                    .send_task_command(forge_session::SupervisorCommand::FinalizeCreation {
+                    .send_session_command(forge_session::SupervisorCommand::FinalizeCreation {
                         operation_id,
                     })
                     .await
@@ -306,7 +308,7 @@ impl TuiApp {
                 self.overlay = None;
             }
             OverlayAction::CancelTaskCreation { operation_id } => {
-                self.send_task_command(forge_session::SupervisorCommand::CancelCreation {
+                self.send_session_command(forge_session::SupervisorCommand::CancelCreation {
                     operation_id,
                 })
                 .await;
@@ -357,7 +359,7 @@ impl TuiApp {
                         .map(super::connect::route_id_for_profile)
                         .unwrap_or_default();
                     if self
-                        .send_task_command(forge_session::SupervisorCommand::SetModel {
+                        .send_session_command(forge_session::SupervisorCommand::SetModel {
                             session_id,
                             model_id: model.clone(),
                             route_id,
@@ -367,7 +369,7 @@ impl TuiApp {
                     {
                         self.set_feedback(
                             FeedbackSeverity::Ok,
-                            format!("{} · model {model}", self.selected_task_label()),
+                            format!("{} · model {model}", self.selected_session_label()),
                         );
                     }
                     self.overlay = None;
@@ -525,6 +527,6 @@ impl TuiApp {
 
 /// Parse a switcher row's session id. The overlay carries it as a string so
 /// the overlay module stays free of a `uuid` dependency.
-fn parse_task_session_id(value: &str) -> Option<uuid::Uuid> {
+fn parse_repository_session_id(value: &str) -> Option<uuid::Uuid> {
     value.parse::<uuid::Uuid>().ok()
 }

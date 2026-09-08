@@ -16,17 +16,18 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    connect_credentials, open_session_with_model, resolve_journal_dir, NewRepositoryTask,
-    RepositoryControl, RepositoryLease, RepositoryTask, RepositoryTaskError, SessionLifecycle,
-    SessionSnapshot, SessionTarget, SupervisorTurnState, TranscriptSnapshot, WorktreeOwnership,
+    connect_credentials, open_session_with_model, resolve_journal_dir, NewRepositorySession,
+    RepositoryControl, RepositoryLease, RepositorySession, RepositorySessionError,
+    SessionLifecycle, SessionSnapshot, SessionTarget, SupervisorTurnState, TranscriptSnapshot,
+    WorktreeOwnership,
 };
 
 const DEFAULT_MAX_CONCURRENCY: usize = 4;
 const ATTACH_SESSION_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
-pub struct TaskRuntimeSnapshot {
-    pub task: RepositoryTask,
+pub struct SessionRuntimeSnapshot {
+    pub task: RepositorySession,
     pub session: SessionSnapshot,
     pub transcript: TranscriptSnapshot,
 }
@@ -34,10 +35,10 @@ pub struct TaskRuntimeSnapshot {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum SupervisorEvent {
-    Roster(Vec<TaskRuntimeSnapshot>),
+    Roster(Vec<SessionRuntimeSnapshot>),
     /// Boxed: a snapshot is an order of magnitude larger than every other
     /// variant, and this event is broadcast on every turn transition.
-    TaskUpdated(Box<TaskRuntimeSnapshot>),
+    SessionUpdated(Box<SessionRuntimeSnapshot>),
     Stream {
         session_id: SessionId,
         event: ModelStreamEvent,
@@ -62,7 +63,7 @@ pub enum SupervisorEvent {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum SupervisorCommand {
-    CreateTask {
+    CreateSession {
         label: String,
         first_prompt: Option<String>,
     },
@@ -71,14 +72,14 @@ pub enum SupervisorCommand {
         label: String,
         branch: String,
     },
-    ArchiveTask {
+    ArchiveSession {
         session_id: SessionId,
     },
-    RenameTask {
+    RenameSession {
         session_id: SessionId,
         label: String,
     },
-    PinTask {
+    PinSession {
         session_id: SessionId,
         slot: Option<u8>,
         swap: bool,
@@ -117,7 +118,7 @@ pub enum SupervisorCommand {
         answers: Option<AskUserQuestionResult>,
         actor: String,
     },
-    SelectTask {
+    SelectSession {
         session_id: Option<SessionId>,
     },
     SetModel {
@@ -134,7 +135,7 @@ pub enum SupervisorCommand {
 #[non_exhaustive]
 pub enum RepositorySupervisorError {
     #[error(transparent)]
-    Control(#[from] RepositoryTaskError),
+    Control(#[from] RepositorySessionError),
     #[error(transparent)]
     Loop(#[from] LoopError),
     #[error("session assembly failed: {0}")]
@@ -185,16 +186,16 @@ impl SupervisorHandle {
     }
 }
 
-struct TaskActor {
+struct SessionActor {
     session: Mutex<AgentSession>,
-    snapshot: RwLock<TaskRuntimeSnapshot>,
+    snapshot: RwLock<SessionRuntimeSnapshot>,
     driving: AtomicBool,
     running_cancel: StdMutex<Option<CancellationToken>>,
 }
 
-impl TaskActor {
-    fn new(task: RepositoryTask, session: AgentSession) -> Self {
-        let snapshot = TaskRuntimeSnapshot {
+impl SessionActor {
+    fn new(task: RepositorySession, session: AgentSession) -> Self {
+        let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
             transcript: TranscriptSnapshot::capture(&session),
@@ -225,8 +226,8 @@ struct SupervisorState {
     cfg: Config,
     model: Arc<dyn ModelClient>,
     control: Arc<RepositoryControl>,
-    actors: RwLock<HashMap<SessionId, Arc<TaskActor>>>,
-    unavailable_tasks: RwLock<Vec<RepositoryTask>>,
+    actors: RwLock<HashMap<SessionId, Arc<SessionActor>>>,
+    unavailable_tasks: RwLock<Vec<RepositorySession>>,
     permits: Arc<Semaphore>,
     events: broadcast::Sender<SupervisorEvent>,
     lease: RepositoryLease,
@@ -354,9 +355,9 @@ impl RepositorySupervisor {
         let worktrees = forge_storage::list_worktree_records(&main_worktree)?;
         control.reconcile_worktrees(&worktrees).await?;
 
-        if control.task(primary_session_id).await.is_err() {
+        if control.session(primary_session_id).await.is_err() {
             let workspace = cfg.workspace_root().to_path_buf();
-            for stale in control.tasks().await?.into_iter().filter(|task| {
+            for stale in control.sessions().await?.into_iter().filter(|task| {
                 task.ownership == WorktreeOwnership::Primary
                     && same_path(&task.workspace, &workspace)
             }) {
@@ -377,8 +378,8 @@ impl RepositorySupervisor {
                 .and_then(|worktree| worktree.branch.clone())
                 .ok_or(forge_storage::WorktreeError::DetachedHead)?;
             control
-                .register_task(
-                    NewRepositoryTask {
+                .register_session(
+                    NewRepositorySession {
                         session_id: primary_session_id,
                         label: branch
                             .rsplit('/')
@@ -400,7 +401,7 @@ impl RepositorySupervisor {
         }
 
         let unavailable_tasks = control
-            .tasks()
+            .sessions()
             .await?
             .into_iter()
             .filter(|task| task.lifecycle == SessionLifecycle::Unavailable)
@@ -409,7 +410,7 @@ impl RepositorySupervisor {
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.apply_provider_env(&connect_credentials());
         let mut session_tasks = tokio::task::JoinSet::new();
-        for task in control.tasks().await?.into_iter().filter(|task| {
+        for task in control.sessions().await?.into_iter().filter(|task| {
             task.session_id != primary_session_id && task.lifecycle == SessionLifecycle::Active
         }) {
             let mut task_cfg = cfg.clone();
@@ -460,7 +461,7 @@ impl RepositorySupervisor {
         let worktrees = forge_storage::list_worktree_records(storage.main_worktree())?;
         control.reconcile_worktrees(&worktrees).await?;
         let unavailable_tasks = control
-            .tasks()
+            .sessions()
             .await?
             .into_iter()
             .filter(|task| task.lifecycle == SessionLifecycle::Unavailable)
@@ -468,7 +469,7 @@ impl RepositorySupervisor {
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.apply_provider_env(&connect_credentials());
-        let mut tasks = control.tasks().await?;
+        let mut tasks = control.sessions().await?;
         if tasks.is_empty() {
             let opened = match primary {
                 Some(session) => crate::OpenedSession {
@@ -490,8 +491,8 @@ impl RepositorySupervisor {
                 .unwrap_or("primary")
                 .to_string();
             control
-                .register_task(
-                    NewRepositoryTask {
+                .register_session(
+                    NewRepositorySession {
                         session_id: opened.session.session_id,
                         label,
                         workspace,
@@ -505,12 +506,12 @@ impl RepositorySupervisor {
                     None,
                 )
                 .await?;
-            tasks = control.tasks().await?;
+            tasks = control.sessions().await?;
             let task = tasks
                 .iter()
                 .find(|task| task.session_id == opened.session.session_id)
                 .cloned()
-                .ok_or(RepositoryTaskError::NotFound(opened.session.session_id))?;
+                .ok_or(RepositorySessionError::NotFound(opened.session.session_id))?;
             return Self::spawn(
                 control,
                 lease,
@@ -556,7 +557,7 @@ impl RepositorySupervisor {
     pub async fn spawn(
         control: Arc<RepositoryControl>,
         lease: RepositoryLease,
-        sessions: Vec<(RepositoryTask, AgentSession)>,
+        sessions: Vec<(RepositorySession, AgentSession)>,
         max_concurrency: usize,
         cfg: Config,
         model: Arc<dyn ModelClient>,
@@ -570,7 +571,7 @@ impl RepositorySupervisor {
     pub async fn spawn_with_trust_store(
         control: Arc<RepositoryControl>,
         lease: RepositoryLease,
-        sessions: Vec<(RepositoryTask, AgentSession)>,
+        sessions: Vec<(RepositorySession, AgentSession)>,
         max_concurrency: usize,
         cfg: Config,
         model: Arc<dyn ModelClient>,
@@ -593,8 +594,8 @@ impl RepositorySupervisor {
     async fn spawn_with_unavailable_tasks(
         control: Arc<RepositoryControl>,
         lease: RepositoryLease,
-        sessions: Vec<(RepositoryTask, AgentSession)>,
-        unavailable_tasks: Vec<RepositoryTask>,
+        sessions: Vec<(RepositorySession, AgentSession)>,
+        unavailable_tasks: Vec<RepositorySession>,
         max_concurrency: usize,
         cfg: Config,
         model: Arc<dyn ModelClient>,
@@ -603,7 +604,7 @@ impl RepositorySupervisor {
         let (events, _) = broadcast::channel(512);
         let actors = sessions
             .into_iter()
-            .map(|(task, session)| (task.session_id, Arc::new(TaskActor::new(task, session))))
+            .map(|(task, session)| (task.session_id, Arc::new(SessionActor::new(task, session))))
             .collect();
         let state = Arc::new(SupervisorState {
             cfg,
@@ -626,7 +627,7 @@ impl RepositorySupervisor {
         Ok((supervisor, handle))
     }
 
-    pub async fn snapshots(&self) -> Vec<TaskRuntimeSnapshot> {
+    pub async fn snapshots(&self) -> Vec<SessionRuntimeSnapshot> {
         snapshots(&self.state).await
     }
 
@@ -660,7 +661,7 @@ async fn execute_command(
     command: SupervisorCommand,
 ) -> Result<(), RepositorySupervisorError> {
     match command {
-        SupervisorCommand::CreateTask {
+        SupervisorCommand::CreateSession {
             label,
             first_prompt,
         } => {
@@ -706,7 +707,7 @@ async fn execute_command(
             task_cfg.journal.path = journal_dir.display().to_string();
             let opened =
                 open_session_with_model(&task_cfg, SessionTarget::New, state.model.clone()).await?;
-            let task = RepositoryTask {
+            let task = RepositorySession {
                 session_id: opened.session.session_id,
                 label,
                 workspace: worktree.path,
@@ -724,8 +725,8 @@ async fn execute_command(
             };
             state
                 .control
-                .register_task(
-                    NewRepositoryTask {
+                .register_session(
+                    NewRepositorySession {
                         session_id: task.session_id,
                         label: task.label.clone(),
                         workspace: task.workspace.clone(),
@@ -739,7 +740,7 @@ async fn execute_command(
                     Some(pending.operation_id),
                 )
                 .await?;
-            let actor = Arc::new(TaskActor::new(task.clone(), opened.session));
+            let actor = Arc::new(SessionActor::new(task.clone(), opened.session));
             state.actors.write().await.insert(task.session_id, actor);
             if first_prompt.is_some() {
                 // A parked prompt runs as soon as the operator confirms
@@ -765,7 +766,7 @@ async fn execute_command(
                     .complete_creation(pending.operation_id)
                     .await?;
                 if let Some(session_id) = completed.session_id {
-                    let workspace = state.control.task(session_id).await?.workspace;
+                    let workspace = state.control.session(session_id).await?.workspace;
                     if let Err(error) = state.grant_trust(&workspace) {
                         let _ = rollback_creation(&state, pending.operation_id).await;
                         let _ = state
@@ -802,7 +803,7 @@ async fn execute_command(
                     ATTACH_SESSION_INIT_TIMEOUT.as_secs()
                 ))
             })??;
-            let task = NewRepositoryTask {
+            let task = NewRepositorySession {
                 session_id: opened.session.session_id,
                 label,
                 workspace,
@@ -813,25 +814,25 @@ async fn execute_command(
                 route_id: opened.session.active_route_id.clone(),
                 reasoning_effort: None,
             };
-            state.control.register_task(task.clone(), None).await?;
-            let actor_task = state.control.task(task.session_id).await?;
+            state.control.register_session(task.clone(), None).await?;
+            let actor_task = state.control.session(task.session_id).await?;
             state.actors.write().await.insert(
                 task.session_id,
-                Arc::new(TaskActor::new(actor_task, opened.session)),
+                Arc::new(SessionActor::new(actor_task, opened.session)),
             );
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
-        SupervisorCommand::ArchiveTask { session_id } => {
+        SupervisorCommand::ArchiveSession { session_id } => {
             state.control.archive(session_id).await?;
             publish_actor(&state, session_id).await?;
         }
-        SupervisorCommand::RenameTask { session_id, label } => {
+        SupervisorCommand::RenameSession { session_id, label } => {
             state.control.rename(session_id, &label).await?;
             publish_actor(&state, session_id).await?;
         }
-        SupervisorCommand::PinTask {
+        SupervisorCommand::PinSession {
             session_id,
             slot,
             swap,
@@ -842,7 +843,7 @@ async fn execute_command(
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::RemoveManagedWorktree { session_id } => {
-            let task = state.control.task(session_id).await?;
+            let task = state.control.session(session_id).await?;
             if task.ownership != WorktreeOwnership::Managed
                 || task.lifecycle != SessionLifecycle::Archived
             {
@@ -880,7 +881,7 @@ async fn execute_command(
             // trust from the repository root, but the grant must be recorded
             // explicitly so the task keeps working if that changes.
             if let Some(session_id) = completed.session_id {
-                let workspace = state.control.task(session_id).await?.workspace;
+                let workspace = state.control.session(session_id).await?.workspace;
                 if let Err(error) = state.grant_trust(&workspace) {
                     // Persisting failed: roll the creation back rather than
                     // leave a task that looks trusted but is not recorded.
@@ -961,7 +962,7 @@ async fn execute_command(
             drop(session);
             start_continue_driver(state, session_id).await?;
         }
-        SupervisorCommand::SelectTask { session_id } => {
+        SupervisorCommand::SelectSession { session_id } => {
             state.control.set_selected(session_id).await?;
             let _ = state.events.send(SupervisorEvent::Selected(session_id));
         }
@@ -1102,7 +1103,7 @@ async fn start_continue_driver(
 
 async fn drive_prompts(
     state: Arc<SupervisorState>,
-    task_actor: Arc<TaskActor>,
+    task_actor: Arc<SessionActor>,
 ) -> Result<(), RepositorySupervisorError> {
     let session_id = task_actor.snapshot.read().await.task.session_id;
     loop {
@@ -1123,7 +1124,7 @@ async fn drive_prompts(
 
 async fn run_one(
     state: Arc<SupervisorState>,
-    task_actor: Arc<TaskActor>,
+    task_actor: Arc<SessionActor>,
     prompt: Option<(u64, String)>,
 ) -> Result<bool, RepositorySupervisorError> {
     let session_id = task_actor.snapshot.read().await.task.session_id;
@@ -1223,7 +1224,7 @@ async fn run_one(
 async fn actor(
     state: &SupervisorState,
     session_id: SessionId,
-) -> Result<Arc<TaskActor>, RepositorySupervisorError> {
+) -> Result<Arc<SessionActor>, RepositorySupervisorError> {
     state
         .actors
         .read()
@@ -1235,11 +1236,11 @@ async fn actor(
 
 async fn refresh_actor(
     state: &SupervisorState,
-    task_actor: &TaskActor,
+    task_actor: &SessionActor,
     session: &AgentSession,
 ) -> Result<(), RepositorySupervisorError> {
-    let task = state.control.task(session.session_id).await?;
-    let snapshot = TaskRuntimeSnapshot {
+    let task = state.control.session(session.session_id).await?;
+    let snapshot = SessionRuntimeSnapshot {
         task,
         session: SessionSnapshot::capture(session),
         transcript: TranscriptSnapshot::capture(session),
@@ -1247,7 +1248,7 @@ async fn refresh_actor(
     *task_actor.snapshot.write().await = snapshot.clone();
     let _ = state
         .events
-        .send(SupervisorEvent::TaskUpdated(Box::new(snapshot)));
+        .send(SupervisorEvent::SessionUpdated(Box::new(snapshot)));
     Ok(())
 }
 
@@ -1256,16 +1257,16 @@ async fn publish_actor(
     session_id: SessionId,
 ) -> Result<(), RepositorySupervisorError> {
     let task_actor = actor(state, session_id).await?;
-    let task = state.control.task(session_id).await?;
+    let task = state.control.session(session_id).await?;
     let mut snapshot = task_actor.snapshot.write().await;
     snapshot.task = task;
     let _ = state
         .events
-        .send(SupervisorEvent::TaskUpdated(Box::new(snapshot.clone())));
+        .send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
     Ok(())
 }
 
-async fn snapshots(state: &SupervisorState) -> Vec<TaskRuntimeSnapshot> {
+async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
     let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
     let unavailable_tasks = state.unavailable_tasks.read().await.clone();
     let mut snapshots = Vec::with_capacity(actors.len() + unavailable_tasks.len());
@@ -1273,7 +1274,7 @@ async fn snapshots(state: &SupervisorState) -> Vec<TaskRuntimeSnapshot> {
         snapshots.push(task_actor.snapshot.read().await.clone());
     }
     for task in unavailable_tasks {
-        snapshots.push(TaskRuntimeSnapshot {
+        snapshots.push(SessionRuntimeSnapshot {
             session: SessionSnapshot {
                 session_id: task.session_id,
                 lifecycle: TaskLifecycle::Interrupted,
@@ -1328,8 +1329,12 @@ mod tests {
             .session
     }
 
-    fn task_for(session_id: SessionId, label: &str, workspace: &std::path::Path) -> RepositoryTask {
-        RepositoryTask {
+    fn task_for(
+        session_id: SessionId,
+        label: &str,
+        workspace: &std::path::Path,
+    ) -> RepositorySession {
+        RepositorySession {
             session_id,
             label: label.into(),
             workspace: workspace.to_path_buf(),
@@ -1350,13 +1355,13 @@ mod tests {
     async fn wait_for_task_state(
         handle: &SupervisorHandle,
         session_id: SessionId,
-        predicate: impl Fn(&TaskRuntimeSnapshot) -> bool,
-    ) -> TaskRuntimeSnapshot {
+        predicate: impl Fn(&SessionRuntimeSnapshot) -> bool,
+    ) -> SessionRuntimeSnapshot {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut events = handle.subscribe();
         while std::time::Instant::now() < deadline {
             match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
-                Ok(Ok(SupervisorEvent::TaskUpdated(snapshot))) => {
+                Ok(Ok(SupervisorEvent::SessionUpdated(snapshot))) => {
                     if snapshot.task.session_id == session_id && predicate(&snapshot) {
                         return *snapshot;
                     }
@@ -1402,8 +1407,8 @@ mod tests {
 
         for task in [&first_task, &second_task] {
             control
-                .register_task(
-                    NewRepositoryTask {
+                .register_session(
+                    NewRepositorySession {
                         session_id: task.session_id,
                         label: task.label.clone(),
                         workspace: task.workspace.clone(),
@@ -1518,7 +1523,7 @@ mod tests {
 
         let mut events = handle.subscribe();
         handle
-            .command(SupervisorCommand::CreateTask {
+            .command(SupervisorCommand::CreateSession {
                 label: "parser".into(),
                 first_prompt: Some("rewrite the lexer".into()),
             })
@@ -1534,7 +1539,7 @@ mod tests {
 
         // Awaiting trust: the task exists but nothing is queued against it.
         let task = control
-            .tasks()
+            .sessions()
             .await
             .unwrap()
             .into_iter()
@@ -1571,7 +1576,7 @@ mod tests {
 
         let mut events = handle.subscribe();
         handle
-            .command(SupervisorCommand::CreateTask {
+            .command(SupervisorCommand::CreateSession {
                 label: String::new(),
                 first_prompt: None,
             })
@@ -1592,7 +1597,7 @@ mod tests {
             }
         }
         let task = control
-            .tasks()
+            .sessions()
             .await
             .unwrap()
             .into_iter()
@@ -1628,7 +1633,7 @@ mod tests {
 
         let mut events = handle.subscribe();
         handle
-            .command(SupervisorCommand::CreateTask {
+            .command(SupervisorCommand::CreateSession {
                 label: String::new(),
                 first_prompt: Some("rewrite the lexer".into()),
             })
@@ -1644,7 +1649,7 @@ mod tests {
             }
         };
         let task = control
-            .tasks()
+            .sessions()
             .await
             .unwrap()
             .into_iter()
@@ -1674,7 +1679,7 @@ mod tests {
 
         let mut events = handle.subscribe();
         handle
-            .command(SupervisorCommand::CreateTask {
+            .command(SupervisorCommand::CreateSession {
                 label: "parser".into(),
                 first_prompt: Some("rewrite the lexer".into()),
             })
@@ -1687,7 +1692,7 @@ mod tests {
             }
         };
         let workspace = control
-            .tasks()
+            .sessions()
             .await
             .unwrap()
             .into_iter()
@@ -1702,7 +1707,7 @@ mod tests {
 
         assert!(!workspace.exists(), "cancelled worktree should be removed");
         assert!(control
-            .tasks()
+            .sessions()
             .await
             .unwrap()
             .iter()
@@ -1722,14 +1727,14 @@ mod tests {
 
         let mut events = handle.subscribe();
         handle
-            .command(SupervisorCommand::CreateTask {
+            .command(SupervisorCommand::CreateSession {
                 label: "cleanup".into(),
                 first_prompt: None,
             })
             .await
             .unwrap();
         let task = control
-            .tasks()
+            .sessions()
             .await
             .unwrap()
             .into_iter()
@@ -1738,7 +1743,7 @@ mod tests {
         assert!(task.workspace.exists());
 
         handle
-            .command(SupervisorCommand::ArchiveTask {
+            .command(SupervisorCommand::ArchiveSession {
                 session_id: task.session_id,
             })
             .await
@@ -1752,7 +1757,7 @@ mod tests {
 
         assert!(!task.workspace.exists());
         assert_eq!(
-            control.task(task.session_id).await.unwrap().lifecycle,
+            control.session(task.session_id).await.unwrap().lifecycle,
             SessionLifecycle::Removed
         );
         loop {
@@ -1781,14 +1786,14 @@ mod tests {
                 .await;
 
         handle
-            .command(SupervisorCommand::CreateTask {
+            .command(SupervisorCommand::CreateSession {
                 label: "dirty-cleanup".into(),
                 first_prompt: None,
             })
             .await
             .unwrap();
         let task = control
-            .tasks()
+            .sessions()
             .await
             .unwrap()
             .into_iter()
@@ -1797,7 +1802,7 @@ mod tests {
         std::fs::write(task.workspace.join("uncommitted.txt"), "keep me").unwrap();
 
         handle
-            .command(SupervisorCommand::ArchiveTask {
+            .command(SupervisorCommand::ArchiveSession {
                 session_id: task.session_id,
             })
             .await
@@ -1813,7 +1818,7 @@ mod tests {
         assert!(error.contains("dirty"), "unexpected cleanup error: {error}");
         assert!(task.workspace.exists());
         assert_eq!(
-            control.task(task.session_id).await.unwrap().lifecycle,
+            control.session(task.session_id).await.unwrap().lifecycle,
             SessionLifecycle::Archived
         );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();

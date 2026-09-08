@@ -55,39 +55,39 @@ impl TuiApp {
                             .collect();
                     }
                     let primary = self
-                        .task_chrome
+                        .session_chrome
                         .iter()
                         .find(|task| task.session_id == self.session.session_id)
                         .cloned();
-                    self.task_chrome = roster
+                    self.session_chrome = roster
                         .into_iter()
-                        .map(|snapshot| TaskChromeItem {
+                        .map(|snapshot| SessionChromeItem {
                             session_id: snapshot.task.session_id,
                             slot: snapshot.task.slot,
                             label: snapshot.task.label,
                             branch: snapshot.task.branch,
                             lifecycle: snapshot.session.lifecycle,
-                            selected: snapshot.task.session_id == self.selected_task_id,
+                            selected: snapshot.task.session_id == self.selected_session_id,
                             secondary: Some(snapshot.task.turn_state.label().into()),
                             attention: false,
                         })
                         .collect();
                     if let Some(primary) = primary {
                         if !self
-                            .task_chrome
+                            .session_chrome
                             .iter()
                             .any(|task| task.session_id == primary.session_id)
                         {
-                            self.task_chrome.insert(0, primary);
+                            self.session_chrome.insert(0, primary);
                         }
                     }
                     self.task_strip_selection = self
-                        .task_chrome
+                        .session_chrome
                         .iter()
-                        .position(|task| task.session_id == self.selected_task_id)
+                        .position(|task| task.session_id == self.selected_session_id)
                         .unwrap_or(0);
                 }
-                forge_session::SupervisorEvent::TaskUpdated(snapshot) => {
+                forge_session::SupervisorEvent::SessionUpdated(snapshot) => {
                     let snapshot = *snapshot;
                     let lifecycle = snapshot.session.lifecycle;
                     if let Some(supervisor) = self.supervisor.as_mut() {
@@ -100,7 +100,7 @@ impl TuiApp {
                         self.transcript_view = snapshot.transcript;
                     }
                     if let Some(task) = self
-                        .task_chrome
+                        .session_chrome
                         .iter_mut()
                         .find(|task| task.session_id == snapshot.task.session_id)
                     {
@@ -121,7 +121,7 @@ impl TuiApp {
                     ..
                 } => {
                     if let Some(task) = self
-                        .task_chrome
+                        .session_chrome
                         .iter_mut()
                         .find(|task| task.session_id == session_id)
                     {
@@ -138,7 +138,7 @@ impl TuiApp {
                 }
                 forge_session::SupervisorEvent::Selected(Some(session_id)) => {
                     self.task_strip_selection = self
-                        .task_chrome
+                        .session_chrome
                         .iter()
                         .position(|task| task.session_id == session_id)
                         .unwrap_or(self.task_strip_selection);

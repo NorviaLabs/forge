@@ -19,15 +19,15 @@ mod supervisor;
 pub use forge_storage::RepositoryRuntimeStorage;
 
 pub use control::{
-    CompletedCreation, LeaseOwner, NewRepositoryTask, PendingCreation, RepositoryControl,
-    RepositoryLease, RepositoryTask, RepositoryTaskError, SessionLifecycle, StaleCreation,
+    CompletedCreation, LeaseOwner, NewRepositorySession, PendingCreation, RepositoryControl,
+    RepositoryLease, RepositorySession, RepositorySessionError, SessionLifecycle, StaleCreation,
     SupervisorTurnState, WorktreeOwnership,
 };
 pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
 pub use snapshot::{SessionSnapshot, TranscriptSnapshot};
 pub use supervisor::{
-    RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError, SupervisorCommand,
-    SupervisorEvent, SupervisorHandle, TaskRuntimeSnapshot,
+    RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError, SessionRuntimeSnapshot,
+    SupervisorCommand, SupervisorEvent, SupervisorHandle,
 };
 
 use std::sync::Arc;

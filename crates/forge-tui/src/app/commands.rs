@@ -18,9 +18,9 @@ fn truncate_skill_description(desc: &str) -> String {
 }
 
 impl TuiApp {
-    pub(super) fn open_task_switcher(&mut self) {
+    pub(super) fn open_session_switcher(&mut self) {
         if let Some(supervisor) = self.supervisor.as_ref() {
-            let selected_task_id = self.selected_task_id;
+            let selected_session_id = self.selected_session_id;
             let items = supervisor
                 .snapshots
                 .values()
@@ -29,19 +29,19 @@ impl TuiApp {
                     // "Needs you" is a turn that stopped for a reason the
                     // operator has to answer; a task the operator is already
                     // looking at is never in it.
-                    let attention = snapshot.task.session_id != selected_task_id
+                    let attention = snapshot.task.session_id != selected_session_id
                         && matches!(
                             snapshot.task.turn_state,
                             SupervisorTurnState::Waiting | SupervisorTurnState::Failed
                         );
                     let group = match snapshot.task.lifecycle {
-                        SessionLifecycle::Archived => TaskSwitcherGroup::Archived,
-                        SessionLifecycle::Unavailable => TaskSwitcherGroup::Unavailable,
-                        SessionLifecycle::Removed => TaskSwitcherGroup::Removed,
-                        SessionLifecycle::Active if attention => TaskSwitcherGroup::Attention,
-                        SessionLifecycle::Active => TaskSwitcherGroup::Active,
+                        SessionLifecycle::Archived => SessionSwitcherGroup::Archived,
+                        SessionLifecycle::Unavailable => SessionSwitcherGroup::Unavailable,
+                        SessionLifecycle::Removed => SessionSwitcherGroup::Removed,
+                        SessionLifecycle::Active if attention => SessionSwitcherGroup::Attention,
+                        SessionLifecycle::Active => SessionSwitcherGroup::Active,
                     };
-                    TaskSwitcherItem {
+                    SessionSwitcherItem {
                         session_id: snapshot.task.session_id.to_string(),
                         // Unnamed tasks show a placeholder until their first
                         // prompt names them; the branch column carries the id
@@ -61,7 +61,7 @@ impl TuiApp {
                     }
                 })
                 .collect();
-            self.overlay = Some(Overlay::task_switcher(items));
+            self.overlay = Some(Overlay::session_switcher(items));
             self.set_feedback(FeedbackSeverity::Info, "Tasks · Enter switch · Esc close");
             return;
         }
@@ -201,7 +201,7 @@ impl TuiApp {
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.modifiers.contains(KeyModifiers::SHIFT) =>
             {
-                Some(SemanticCommand::OpenTaskSwitcher)
+                Some(SemanticCommand::OpenSessionSwitcher)
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleFiles)
@@ -617,7 +617,7 @@ impl TuiApp {
                 self.paste_clipboard_image();
             }
             SemanticCommand::ToggleToolDetails => self.tool_detail.toggle(),
-            SemanticCommand::OpenTaskSwitcher => self.open_task_switcher(),
+            SemanticCommand::OpenSessionSwitcher => self.open_session_switcher(),
             SemanticCommand::StepReasoningEffort(forward) => {
                 let stepped = self
                     .reasoning_effort
@@ -775,13 +775,13 @@ impl TuiApp {
                         Ok(session) => {
                             let session_id = session.session_id;
                             let old_session_id = self.session.session_id;
-                            self.task_view_states.remove(&old_session_id);
+                            self.session_view_states.remove(&old_session_id);
                             self.session = session;
-                            self.selected_task_id = session_id;
-                            self.task_chrome
+                            self.selected_session_id = session_id;
+                            self.session_chrome
                                 .retain(|task| task.session_id == session_id);
-                            if self.task_chrome.is_empty() {
-                                self.task_chrome.push(TaskChromeItem {
+                            if self.session_chrome.is_empty() {
+                                self.session_chrome.push(SessionChromeItem {
                                     session_id,
                                     slot: Some(1),
                                     label: self
@@ -864,7 +864,7 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Tasks) => {
-                    self.open_task_switcher();
+                    self.open_session_switcher();
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
                     // Resume rebinds the session this app owns. A task's
@@ -877,7 +877,7 @@ impl TuiApp {
                         Ok(_report) => {
                             self.overlay = None;
                             self.busy_state.stop();
-                            self.selected_task_id = self.session.session_id;
+                            self.selected_session_id = self.session.session_id;
                             self.session_view = SessionSnapshot::capture(&self.session);
                             self.transcript_view = TranscriptSnapshot::capture(&self.session);
                             self.exit

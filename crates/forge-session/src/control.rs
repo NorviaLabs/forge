@@ -1,4 +1,4 @@
-//! Repository-wide task roster, lifecycle state and exclusive ownership.
+//! Repository-wide session roster, lifecycle state and exclusive ownership.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -28,12 +28,12 @@ impl WorktreeOwnership {
         }
     }
 
-    fn parse(value: &str) -> Result<Self, RepositoryTaskError> {
+    fn parse(value: &str) -> Result<Self, RepositorySessionError> {
         match value {
             "primary" => Ok(Self::Primary),
             "managed" => Ok(Self::Managed),
             "attached" => Ok(Self::Attached),
-            value => Err(RepositoryTaskError::InvalidStoredValue {
+            value => Err(RepositorySessionError::InvalidStoredValue {
                 field: "ownership",
                 value: value.into(),
             }),
@@ -51,13 +51,13 @@ pub enum SessionLifecycle {
 }
 
 impl SessionLifecycle {
-    fn parse(value: &str) -> Result<Self, RepositoryTaskError> {
+    fn parse(value: &str) -> Result<Self, RepositorySessionError> {
         match value {
             "active" => Ok(Self::Active),
             "archived" => Ok(Self::Archived),
             "unavailable" => Ok(Self::Unavailable),
             "removed" => Ok(Self::Removed),
-            value => Err(RepositoryTaskError::InvalidStoredValue {
+            value => Err(RepositorySessionError::InvalidStoredValue {
                 field: "lifecycle",
                 value: value.into(),
             }),
@@ -96,7 +96,7 @@ impl SupervisorTurnState {
         self.label()
     }
 
-    fn parse(value: &str) -> Result<Self, RepositoryTaskError> {
+    fn parse(value: &str) -> Result<Self, RepositorySessionError> {
         match value {
             "idle" => Ok(Self::Idle),
             "queued" => Ok(Self::Queued),
@@ -106,7 +106,7 @@ impl SupervisorTurnState {
             "failed" => Ok(Self::Failed),
             "cancelled" => Ok(Self::Cancelled),
             "interrupted" => Ok(Self::Interrupted),
-            value => Err(RepositoryTaskError::InvalidStoredValue {
+            value => Err(RepositorySessionError::InvalidStoredValue {
                 field: "turn_state",
                 value: value.into(),
             }),
@@ -119,7 +119,7 @@ impl SupervisorTurnState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepositoryTask {
+pub struct RepositorySession {
     pub session_id: SessionId,
     pub label: String,
     pub workspace: PathBuf,
@@ -137,7 +137,7 @@ pub struct RepositoryTask {
 }
 
 #[derive(Debug, Clone)]
-pub struct NewRepositoryTask {
+pub struct NewRepositorySession {
     pub session_id: SessionId,
     pub label: String,
     pub workspace: PathBuf,
@@ -189,7 +189,7 @@ pub struct RepositoryLease {
 }
 
 impl RepositoryLease {
-    pub fn acquire(control_dir: &Path, workspace: &Path) -> Result<Self, RepositoryTaskError> {
+    pub fn acquire(control_dir: &Path, workspace: &Path) -> Result<Self, RepositorySessionError> {
         std::fs::create_dir_all(control_dir)?;
         let path = control_dir.join("owner.lock");
         let mut file = OpenOptions::new()
@@ -204,7 +204,7 @@ impl RepositoryLease {
             let mut text = String::new();
             file.read_to_string(&mut text)?;
             let owner = serde_json::from_str(&text).ok();
-            return Err(RepositoryTaskError::AlreadyOwned {
+            return Err(RepositorySessionError::AlreadyOwned {
                 path,
                 owner,
                 source: error.into(),
@@ -235,12 +235,12 @@ impl Drop for RepositoryLease {
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum RepositoryTaskError {
-    #[error("repository task database error: {0}")]
+pub enum RepositorySessionError {
+    #[error("repository session database error: {0}")]
     Database(#[from] sqlx::Error),
-    #[error("repository task storage error: {0}")]
+    #[error("repository session storage error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("repository task serialization error: {0}")]
+    #[error("repository session serialization error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("another Forge process already owns this repository group ({}). \
              Close it, or run Forge from a different repository.", describe_owner(.owner))]
@@ -249,7 +249,7 @@ pub enum RepositoryTaskError {
         owner: Option<LeaseOwner>,
         source: std::io::Error,
     },
-    #[error("worktree {} is already bound to a live task", .workspace.display())]
+    #[error("worktree {} is already bound to a live session", .workspace.display())]
     WorkspaceInUse {
         workspace: PathBuf,
         session_id: SessionId,
@@ -258,15 +258,15 @@ pub enum RepositoryTaskError {
     InvalidStoredValue { field: &'static str, value: String },
     #[error("stored session id is invalid: {0}")]
     InvalidSessionId(String),
-    #[error("task `{0}` was not found")]
+    #[error("session `{0}` was not found")]
     NotFound(SessionId),
-    #[error("task `{0}` must be stopped before it can be archived")]
+    #[error("session `{0}` must be stopped before it can be archived")]
     MustStopBeforeArchive(SessionId),
-    #[error("task `{0}` must be trusted before it can run")]
+    #[error("session `{0}` must be trusted before it can run")]
     TrustRequired(SessionId),
-    #[error("task `{0}` is archived")]
+    #[error("session `{0}` is archived")]
     Archived(SessionId),
-    #[error("slot {slot} is already assigned to task `{session_id}`")]
+    #[error("slot {slot} is already assigned to session `{session_id}`")]
     SlotOccupied { slot: u8, session_id: SessionId },
 }
 
@@ -276,7 +276,7 @@ pub struct RepositoryControl {
 }
 
 impl RepositoryControl {
-    pub async fn open(control_dir: &Path) -> Result<Self, RepositoryTaskError> {
+    pub async fn open(control_dir: &Path) -> Result<Self, RepositorySessionError> {
         std::fs::create_dir_all(control_dir)?;
         let path = control_dir.join("tasks.db");
         let options = SqliteConnectOptions::new()
@@ -297,7 +297,7 @@ impl RepositoryControl {
         &self.path
     }
 
-    async fn migrate(&self) -> Result<(), RepositoryTaskError> {
+    async fn migrate(&self) -> Result<(), RepositorySessionError> {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS repository_state (
@@ -365,7 +365,7 @@ impl RepositoryControl {
     /// Columns added after the first schema shipped. SQLite has no
     /// `ADD COLUMN IF NOT EXISTS`, so read `table_info` and add only what a
     /// pre-existing control database is actually missing.
-    async fn add_missing_columns(&self) -> Result<(), RepositoryTaskError> {
+    async fn add_missing_columns(&self) -> Result<(), RepositorySessionError> {
         let existing: Vec<String> = sqlx::query("PRAGMA table_info(pending_operations)")
             .fetch_all(&self.pool)
             .await?
@@ -383,7 +383,7 @@ impl RepositoryControl {
     pub async fn forget_unavailable_primary(
         &self,
         session_id: SessionId,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             "DELETE FROM prompt_queue WHERE session_id = ? AND EXISTS (\
@@ -411,7 +411,7 @@ impl RepositoryControl {
     pub async fn complete_creation(
         &self,
         operation_id: u64,
-    ) -> Result<CompletedCreation, RepositoryTaskError> {
+    ) -> Result<CompletedCreation, RepositorySessionError> {
         let row = sqlx::query(
             "SELECT session_id, first_prompt FROM pending_operations WHERE operation_id = ? \
              AND status IN ('worktree_created', 'awaiting_trust')",
@@ -434,7 +434,7 @@ impl RepositoryControl {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryTaskError::InvalidStoredValue {
+            return Err(RepositorySessionError::InvalidStoredValue {
                 field: "pending_operation",
                 value: operation_id.to_string(),
             });
@@ -449,7 +449,7 @@ impl RepositoryControl {
         &self,
         operation_id: u64,
         error: &str,
-    ) -> Result<(Option<PathBuf>, Option<SessionId>), RepositoryTaskError> {
+    ) -> Result<(Option<PathBuf>, Option<SessionId>), RepositorySessionError> {
         let row = sqlx::query(
             "SELECT target_workspace, session_id, status FROM pending_operations \
              WHERE operation_id = ?",
@@ -457,7 +457,7 @@ impl RepositoryControl {
         .bind(operation_id as i64)
         .fetch_optional(&self.pool)
         .await?
-        .ok_or(RepositoryTaskError::InvalidStoredValue {
+        .ok_or(RepositorySessionError::InvalidStoredValue {
             field: "pending_operation",
             value: operation_id.to_string(),
         })?;
@@ -496,10 +496,10 @@ impl RepositoryControl {
         &self,
         session_id: SessionId,
         text: &str,
-    ) -> Result<u64, RepositoryTaskError> {
-        let task = self.task(session_id).await?;
+    ) -> Result<u64, RepositorySessionError> {
+        let task = self.session(session_id).await?;
         if task.lifecycle == SessionLifecycle::Archived {
-            return Err(RepositoryTaskError::Archived(session_id));
+            return Err(RepositorySessionError::Archived(session_id));
         }
         let awaiting_trust = sqlx::query(
             "SELECT 1 FROM pending_operations WHERE session_id = ? \
@@ -510,7 +510,7 @@ impl RepositoryControl {
         .await?
         .is_some();
         if awaiting_trust {
-            return Err(RepositoryTaskError::TrustRequired(session_id));
+            return Err(RepositorySessionError::TrustRequired(session_id));
         }
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
@@ -529,7 +529,7 @@ impl RepositoryControl {
     pub async fn queued_prompts(
         &self,
         session_id: SessionId,
-    ) -> Result<Vec<(u64, String)>, RepositoryTaskError> {
+    ) -> Result<Vec<(u64, String)>, RepositorySessionError> {
         let rows = sqlx::query(
             "SELECT queue_id, text FROM prompt_queue WHERE session_id = ? \
              AND status = 'queued' ORDER BY queue_id",
@@ -551,7 +551,7 @@ impl RepositoryControl {
     pub async fn claim_next_prompt(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<(u64, String)>, RepositoryTaskError> {
+    ) -> Result<Option<(u64, String)>, RepositorySessionError> {
         let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
             "SELECT queue_id, text FROM prompt_queue WHERE session_id = ? \
@@ -581,7 +581,7 @@ impl RepositoryControl {
         &self,
         queue_id: u64,
         status: &str,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         sqlx::query("UPDATE prompt_queue SET status = ?, updated_at = ? WHERE queue_id = ?")
             .bind(status)
             .bind(Utc::now().to_rfc3339())
@@ -600,7 +600,7 @@ impl RepositoryControl {
         label: &str,
         source_workspace: &Path,
         first_prompt: Option<&str>,
-    ) -> Result<PendingCreation, RepositoryTaskError> {
+    ) -> Result<PendingCreation, RepositorySessionError> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "INSERT INTO pending_operations \
@@ -625,7 +625,7 @@ impl RepositoryControl {
     /// Managed creations that were interrupted before trust was resolved.
     /// A restart must surface these rather than leave an orphan worktree and
     /// a task row that can never accept a prompt.
-    pub async fn stale_creations(&self) -> Result<Vec<StaleCreation>, RepositoryTaskError> {
+    pub async fn stale_creations(&self) -> Result<Vec<StaleCreation>, RepositorySessionError> {
         let rows = sqlx::query(
             "SELECT operation_id, label, target_workspace, session_id FROM pending_operations \
              WHERE kind = 'create_managed' AND status IN ('pending', 'worktree_created', \
@@ -655,7 +655,7 @@ impl RepositoryControl {
         operation_id: u64,
         target_workspace: &Path,
         branch: &str,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         sqlx::query(
             "UPDATE pending_operations SET status = 'worktree_created', \
              target_workspace = ?, branch = ?, updated_at = ? WHERE operation_id = ?",
@@ -669,11 +669,11 @@ impl RepositoryControl {
         Ok(())
     }
 
-    pub async fn register_task(
+    pub async fn register_session(
         &self,
-        task: NewRepositoryTask,
+        task: NewRepositorySession,
         operation_id: Option<u64>,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         let now = Utc::now().to_rfc3339();
         let mut transaction = self.pool.begin().await?;
         // The unique index below would also catch this, but as an opaque
@@ -685,7 +685,7 @@ impl RepositoryControl {
                 .fetch_optional(&mut *transaction)
                 .await?
         {
-            return Err(RepositoryTaskError::WorkspaceInUse {
+            return Err(RepositorySessionError::WorkspaceInUse {
                 workspace: task.workspace,
                 session_id: parse_session_id(row.get::<String, _>("session_id"))?,
             });
@@ -724,7 +724,10 @@ impl RepositoryControl {
         Ok(())
     }
 
-    pub async fn mark_unavailable(&self, session_id: SessionId) -> Result<(), RepositoryTaskError> {
+    pub async fn mark_unavailable(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
             "UPDATE tasks SET lifecycle = 'unavailable', slot = NULL, updated_at = ? \
              WHERE session_id = ? AND lifecycle = 'active'",
@@ -734,12 +737,12 @@ impl RepositoryControl {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryTaskError::NotFound(session_id));
+            return Err(RepositorySessionError::NotFound(session_id));
         }
         Ok(())
     }
 
-    pub async fn tasks(&self) -> Result<Vec<RepositoryTask>, RepositoryTaskError> {
+    pub async fn sessions(&self) -> Result<Vec<RepositorySession>, RepositorySessionError> {
         let rows = sqlx::query(
             "SELECT * FROM tasks ORDER BY \
              CASE lifecycle WHEN 'active' THEN 0 WHEN 'unavailable' THEN 1 ELSE 2 END, \
@@ -747,23 +750,26 @@ impl RepositoryControl {
         )
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(parse_task).collect()
+        rows.iter().map(parse_session).collect()
     }
 
-    pub async fn task(&self, session_id: SessionId) -> Result<RepositoryTask, RepositoryTaskError> {
+    pub async fn session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<RepositorySession, RepositorySessionError> {
         let row = sqlx::query("SELECT * FROM tasks WHERE session_id = ?")
             .bind(session_id.to_string())
             .fetch_optional(&self.pool)
             .await?
-            .ok_or(RepositoryTaskError::NotFound(session_id))?;
-        parse_task(&row)
+            .ok_or(RepositorySessionError::NotFound(session_id))?;
+        parse_session(&row)
     }
 
     pub async fn set_turn_state(
         &self,
         session_id: SessionId,
         state: SupervisorTurnState,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
             "UPDATE tasks SET turn_state = ?, updated_at = ? WHERE session_id = ? \
              AND lifecycle <> 'archived'",
@@ -774,15 +780,15 @@ impl RepositoryControl {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryTaskError::NotFound(session_id));
+            return Err(RepositorySessionError::NotFound(session_id));
         }
         Ok(())
     }
 
-    pub async fn archive(&self, session_id: SessionId) -> Result<(), RepositoryTaskError> {
-        let task = self.task(session_id).await?;
+    pub async fn archive(&self, session_id: SessionId) -> Result<(), RepositorySessionError> {
+        let task = self.session(session_id).await?;
         if !task.turn_state.archive_allowed() {
-            return Err(RepositoryTaskError::MustStopBeforeArchive(session_id));
+            return Err(RepositorySessionError::MustStopBeforeArchive(session_id));
         }
         let now = Utc::now().to_rfc3339();
         sqlx::query(
@@ -804,7 +810,7 @@ impl RepositoryControl {
     pub async fn mark_worktree_removed(
         &self,
         session_id: SessionId,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
             "UPDATE tasks SET lifecycle = 'removed', slot = NULL, updated_at = ? \
              WHERE session_id = ? AND lifecycle IN ('archived', 'removed')",
@@ -814,7 +820,7 @@ impl RepositoryControl {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryTaskError::NotFound(session_id));
+            return Err(RepositorySessionError::NotFound(session_id));
         }
         Ok(())
     }
@@ -822,7 +828,7 @@ impl RepositoryControl {
     pub async fn set_selected(
         &self,
         session_id: Option<SessionId>,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         sqlx::query("UPDATE repository_state SET selected_session_id = ? WHERE id = 1")
             .bind(session_id.map(|id| id.to_string()))
             .execute(&self.pool)
@@ -830,7 +836,7 @@ impl RepositoryControl {
         Ok(())
     }
 
-    pub async fn selected(&self) -> Result<Option<SessionId>, RepositoryTaskError> {
+    pub async fn selected(&self) -> Result<Option<SessionId>, RepositorySessionError> {
         let value = sqlx::query("SELECT selected_session_id FROM repository_state WHERE id = 1")
             .fetch_one(&self.pool)
             .await?
@@ -843,7 +849,7 @@ impl RepositoryControl {
         session_id: SessionId,
         slot: Option<u8>,
         swap: bool,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         let mut transaction = self.pool.begin().await?;
         if let Some(slot) = slot {
             let occupant = sqlx::query(
@@ -857,7 +863,7 @@ impl RepositoryControl {
             if let Some(row) = occupant {
                 let occupant = parse_session_id(row.get::<String, _>("session_id"))?;
                 if !swap {
-                    return Err(RepositoryTaskError::SlotOccupied {
+                    return Err(RepositorySessionError::SlotOccupied {
                         slot,
                         session_id: occupant,
                     });
@@ -878,7 +884,7 @@ impl RepositoryControl {
         .execute(&mut *transaction)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryTaskError::NotFound(session_id));
+            return Err(RepositorySessionError::NotFound(session_id));
         }
         transaction.commit().await?;
         Ok(())
@@ -888,7 +894,7 @@ impl RepositoryControl {
         &self,
         session_id: SessionId,
         label: &str,
-    ) -> Result<(), RepositoryTaskError> {
+    ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query("UPDATE tasks SET label = ?, updated_at = ? WHERE session_id = ?")
             .bind(label)
             .bind(Utc::now().to_rfc3339())
@@ -896,7 +902,7 @@ impl RepositoryControl {
             .execute(&self.pool)
             .await?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryTaskError::NotFound(session_id));
+            return Err(RepositorySessionError::NotFound(session_id));
         }
         Ok(())
     }
@@ -904,16 +910,16 @@ impl RepositoryControl {
     pub async fn reconcile_worktrees(
         &self,
         worktrees: &[WorktreeRecord],
-    ) -> Result<(), RepositoryTaskError> {
-        let tasks = self.tasks().await?;
+    ) -> Result<(), RepositorySessionError> {
+        let sessions = self.sessions().await?;
         let now = Utc::now().to_rfc3339();
         let mut transaction = self.pool.begin().await?;
-        let active_workspaces: Vec<_> = tasks
+        let active_workspaces: Vec<_> = sessions
             .iter()
             .filter(|task| task.lifecycle == SessionLifecycle::Active)
             .map(|task| (task.session_id, task.workspace.clone()))
             .collect();
-        for task in tasks.into_iter().filter(|task| {
+        for task in sessions.into_iter().filter(|task| {
             matches!(
                 task.lifecycle,
                 SessionLifecycle::Active | SessionLifecycle::Unavailable
@@ -970,21 +976,23 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn parse_session_id(value: String) -> Result<SessionId, RepositoryTaskError> {
-    SessionId::parse_str(&value).map_err(|_| RepositoryTaskError::InvalidSessionId(value))
+fn parse_session_id(value: String) -> Result<SessionId, RepositorySessionError> {
+    SessionId::parse_str(&value).map_err(|_| RepositorySessionError::InvalidSessionId(value))
 }
 
-fn parse_timestamp(value: String) -> Result<DateTime<Utc>, RepositoryTaskError> {
+fn parse_timestamp(value: String) -> Result<DateTime<Utc>, RepositorySessionError> {
     DateTime::parse_from_rfc3339(&value)
         .map(|value| value.with_timezone(&Utc))
-        .map_err(|_| RepositoryTaskError::InvalidStoredValue {
+        .map_err(|_| RepositorySessionError::InvalidStoredValue {
             field: "timestamp",
             value,
         })
 }
 
-fn parse_task(row: &sqlx::sqlite::SqliteRow) -> Result<RepositoryTask, RepositoryTaskError> {
-    Ok(RepositoryTask {
+fn parse_session(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<RepositorySession, RepositorySessionError> {
+    Ok(RepositorySession {
         session_id: parse_session_id(row.get("session_id"))?,
         label: row.get("label"),
         workspace: PathBuf::from(row.get::<String, _>("workspace")),
@@ -1012,8 +1020,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn new_task(workspace: &Path, label: &str, slot: Option<u8>) -> NewRepositoryTask {
-        NewRepositoryTask {
+    fn new_task(workspace: &Path, label: &str, slot: Option<u8>) -> NewRepositorySession {
+        NewRepositorySession {
             session_id: SessionId::new_v4(),
             label: label.into(),
             workspace: workspace.to_path_buf(),
@@ -1032,16 +1040,19 @@ mod tests {
         let control = RepositoryControl::open(dir.path()).await.unwrap();
         let first = new_task(&dir.path().join("a"), "a", Some(1));
         let first_id = first.session_id;
-        control.register_task(first, None).await.unwrap();
+        control.register_session(first, None).await.unwrap();
 
         let same_workspace = new_task(&dir.path().join("a"), "b", Some(2));
-        assert!(control.register_task(same_workspace, None).await.is_err());
+        assert!(control
+            .register_session(same_workspace, None)
+            .await
+            .is_err());
         let same_slot = new_task(&dir.path().join("b"), "b", Some(1));
-        assert!(control.register_task(same_slot, None).await.is_err());
+        assert!(control.register_session(same_slot, None).await.is_err());
 
         control.archive(first_id).await.unwrap();
         control
-            .register_task(
+            .register_session(
                 new_task(&dir.path().join("a"), "replacement", Some(1)),
                 None,
             )
@@ -1057,18 +1068,18 @@ mod tests {
         let control = RepositoryControl::open(dir.path()).await.unwrap();
         let first = new_task(&workspace, "first", Some(1));
         let first_id = first.session_id;
-        control.register_task(first, None).await.unwrap();
+        control.register_session(first, None).await.unwrap();
 
         control.reconcile_worktrees(&[]).await.unwrap();
         assert_eq!(
-            control.task(first_id).await.unwrap().lifecycle,
+            control.session(first_id).await.unwrap().lifecycle,
             SessionLifecycle::Unavailable
         );
-        assert_eq!(control.task(first_id).await.unwrap().slot, None);
+        assert_eq!(control.session(first_id).await.unwrap().slot, None);
 
         let replacement = new_task(&workspace, "replacement", Some(1));
         let replacement_id = replacement.session_id;
-        control.register_task(replacement, None).await.unwrap();
+        control.register_session(replacement, None).await.unwrap();
         control
             .reconcile_worktrees(&[WorktreeRecord {
                 path: workspace.clone(),
@@ -1080,11 +1091,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            control.task(first_id).await.unwrap().lifecycle,
+            control.session(first_id).await.unwrap().lifecycle,
             SessionLifecycle::Unavailable
         );
         assert_eq!(
-            control.task(replacement_id).await.unwrap().lifecycle,
+            control.session(replacement_id).await.unwrap().lifecycle,
             SessionLifecycle::Active
         );
     }
@@ -1098,8 +1109,8 @@ mod tests {
         let primary_id = primary.session_id;
         let managed = new_task(&dir.path().join("managed"), "managed", Some(2));
         let managed_id = managed.session_id;
-        control.register_task(primary, None).await.unwrap();
-        control.register_task(managed, None).await.unwrap();
+        control.register_session(primary, None).await.unwrap();
+        control.register_session(managed, None).await.unwrap();
         control.reconcile_worktrees(&[]).await.unwrap();
 
         control
@@ -1112,11 +1123,11 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            control.task(primary_id).await,
-            Err(RepositoryTaskError::NotFound(id)) if id == primary_id
+            control.session(primary_id).await,
+            Err(RepositorySessionError::NotFound(id)) if id == primary_id
         ));
         assert_eq!(
-            control.task(managed_id).await.unwrap().lifecycle,
+            control.session(managed_id).await.unwrap().lifecycle,
             SessionLifecycle::Unavailable
         );
     }
@@ -1129,13 +1140,13 @@ mod tests {
         let control = RepositoryControl::open(dir.path()).await.unwrap();
         let task = new_task(&workspace, "cleanup", Some(1));
         let session_id = task.session_id;
-        control.register_task(task, None).await.unwrap();
+        control.register_session(task, None).await.unwrap();
         control.archive(session_id).await.unwrap();
 
         control.mark_worktree_removed(session_id).await.unwrap();
         control.mark_worktree_removed(session_id).await.unwrap();
         assert_eq!(
-            control.task(session_id).await.unwrap().lifecycle,
+            control.session(session_id).await.unwrap().lifecycle,
             SessionLifecycle::Removed
         );
     }
@@ -1146,7 +1157,7 @@ mod tests {
         let control = RepositoryControl::open(dir.path()).await.unwrap();
         let task = new_task(&dir.path().join("a"), "a", None);
         let session_id = task.session_id;
-        control.register_task(task, None).await.unwrap();
+        control.register_session(task, None).await.unwrap();
         for state in [
             SupervisorTurnState::Queued,
             SupervisorTurnState::Running,
@@ -1155,7 +1166,7 @@ mod tests {
             control.set_turn_state(session_id, state).await.unwrap();
             assert!(matches!(
                 control.archive(session_id).await,
-                Err(RepositoryTaskError::MustStopBeforeArchive(id)) if id == session_id
+                Err(RepositorySessionError::MustStopBeforeArchive(id)) if id == session_id
             ));
         }
         control
@@ -1173,17 +1184,17 @@ mod tests {
         let second = new_task(&dir.path().join("b"), "b", Some(2));
         let first_id = first.session_id;
         let second_id = second.session_id;
-        control.register_task(first, None).await.unwrap();
-        control.register_task(second, None).await.unwrap();
+        control.register_session(first, None).await.unwrap();
+        control.register_session(second, None).await.unwrap();
 
         assert!(matches!(
             control.assign_slot(second_id, Some(1), false).await,
-            Err(RepositoryTaskError::SlotOccupied { slot: 1, session_id })
+            Err(RepositorySessionError::SlotOccupied { slot: 1, session_id })
                 if session_id == first_id
         ));
         control.assign_slot(second_id, Some(1), true).await.unwrap();
-        assert_eq!(control.task(first_id).await.unwrap().slot, None);
-        assert_eq!(control.task(second_id).await.unwrap().slot, Some(1));
+        assert_eq!(control.session(first_id).await.unwrap().slot, None);
+        assert_eq!(control.session(second_id).await.unwrap().slot, Some(1));
     }
 
     #[tokio::test]
@@ -1202,7 +1213,7 @@ mod tests {
             .unwrap();
         let task = new_task(&target, "parser", None);
         control
-            .register_task(task, Some(pending.operation_id))
+            .register_session(task, Some(pending.operation_id))
             .await
             .unwrap();
 
@@ -1274,12 +1285,12 @@ mod tests {
         let task = new_task(&target, "parser", None);
         let session_id = task.session_id;
         control
-            .register_task(task, Some(pending.operation_id))
+            .register_session(task, Some(pending.operation_id))
             .await
             .unwrap();
         assert!(matches!(
             control.enqueue_prompt(session_id, "run it").await,
-            Err(RepositoryTaskError::TrustRequired(id)) if id == session_id
+            Err(RepositorySessionError::TrustRequired(id)) if id == session_id
         ));
         control
             .complete_creation(pending.operation_id)
@@ -1292,7 +1303,7 @@ mod tests {
         control.archive(session_id).await.unwrap();
         assert!(matches!(
             control.enqueue_prompt(session_id, "run it").await,
-            Err(RepositoryTaskError::Archived(id)) if id == session_id
+            Err(RepositorySessionError::Archived(id)) if id == session_id
         ));
     }
 
@@ -1314,7 +1325,7 @@ mod tests {
         let task = new_task(&target, "parser", None);
         let session_id = task.session_id;
         control
-            .register_task(task, Some(pending.operation_id))
+            .register_session(task, Some(pending.operation_id))
             .await
             .unwrap();
 
@@ -1322,7 +1333,7 @@ mod tests {
         assert!(control.queued_prompts(session_id).await.unwrap().is_empty());
         assert!(matches!(
             control.enqueue_prompt(session_id, "rewrite the lexer").await,
-            Err(RepositoryTaskError::TrustRequired(id)) if id == session_id
+            Err(RepositorySessionError::TrustRequired(id)) if id == session_id
         ));
 
         let completed = control
@@ -1364,7 +1375,7 @@ mod tests {
         let task = new_task(&target, "parser", None);
         let session_id = task.session_id;
         control
-            .register_task(task, Some(pending.operation_id))
+            .register_session(task, Some(pending.operation_id))
             .await
             .unwrap();
 
@@ -1380,8 +1391,8 @@ mod tests {
             .unwrap();
         assert!(control.stale_creations().await.unwrap().is_empty());
         assert!(matches!(
-            control.task(session_id).await,
-            Err(RepositoryTaskError::NotFound(id)) if id == session_id
+            control.session(session_id).await,
+            Err(RepositorySessionError::NotFound(id)) if id == session_id
         ));
     }
 
@@ -1392,12 +1403,12 @@ mod tests {
         let control = RepositoryControl::open(dir.path()).await.unwrap();
         let first = new_task(&workspace, "linked", None);
         let first_id = first.session_id;
-        control.register_task(first, None).await.unwrap();
+        control.register_session(first, None).await.unwrap();
 
         let duplicate = new_task(&workspace, "linked-again", None);
         assert!(matches!(
-            control.register_task(duplicate, None).await,
-            Err(RepositoryTaskError::WorkspaceInUse { session_id, .. }) if session_id == first_id
+            control.register_session(duplicate, None).await,
+            Err(RepositorySessionError::WorkspaceInUse { session_id, .. }) if session_id == first_id
         ));
     }
 
@@ -1446,11 +1457,11 @@ mod tests {
         let task = new_task(&workspace, "parser", None);
         let session_id = task.session_id;
         let branch = task.branch.clone();
-        control.register_task(task, None).await.unwrap();
+        control.register_session(task, None).await.unwrap();
 
         control.reconcile_worktrees(&[]).await.unwrap();
         assert_eq!(
-            control.task(session_id).await.unwrap().lifecycle,
+            control.session(session_id).await.unwrap().lifecycle,
             SessionLifecycle::Unavailable
         );
         control
@@ -1463,7 +1474,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            control.task(session_id).await.unwrap().lifecycle,
+            control.session(session_id).await.unwrap().lifecycle,
             SessionLifecycle::Active
         );
     }
@@ -1475,7 +1486,7 @@ mod tests {
         let error = RepositoryLease::acquire(dir.path(), Path::new("/repo")).unwrap_err();
         assert!(matches!(
             error,
-            RepositoryTaskError::AlreadyOwned { owner: Some(ref owner), .. }
+            RepositorySessionError::AlreadyOwned { owner: Some(ref owner), .. }
                 if owner.pid == std::process::id()
         ));
         drop(first);
