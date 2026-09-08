@@ -19,6 +19,12 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     });
     app.conversation_view.scroll = 7;
     app.conversation_view.follow = false;
+    app.diff_explorer_was_visible = Some(true);
+    app.pending_editor_path = Some(std::path::PathBuf::from("pending.rs"));
+    app.pending_editor_home = true;
+    app.external_editor.requested = true;
+    assert!(app.cancellation.request());
+    app.progress_state.description = Some("building index".into());
 
     app.save_session_view_state(first);
 
@@ -33,6 +39,12 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     assert!(app.banner_state.items.is_empty());
     assert_eq!(app.conversation_view.scroll, 0);
     assert!(app.conversation_view.follow);
+    assert!(app.diff_explorer_was_visible.is_none());
+    assert!(app.pending_editor_path.is_none());
+    assert!(!app.pending_editor_home);
+    assert!(!app.external_editor.requested);
+    assert!(!app.cancellation.is_requested());
+    assert!(app.progress_state.description.is_none());
 
     app.restore_session_view_state(first);
 
@@ -45,6 +57,18 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     assert_eq!(app.banner_state.items.len(), 1);
     assert_eq!(app.conversation_view.scroll, 7);
     assert!(!app.conversation_view.follow);
+    assert_eq!(app.diff_explorer_was_visible, Some(true));
+    assert_eq!(
+        app.pending_editor_path.as_deref(),
+        Some(std::path::Path::new("pending.rs"))
+    );
+    assert!(app.pending_editor_home);
+    assert!(app.external_editor.requested);
+    assert!(app.cancellation.is_requested());
+    assert_eq!(
+        app.progress_state.description.as_deref(),
+        Some("building index")
+    );
 }
 
 #[tokio::test]
