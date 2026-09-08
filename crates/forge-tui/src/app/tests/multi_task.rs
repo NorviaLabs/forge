@@ -72,6 +72,58 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
 }
 
 #[tokio::test]
+async fn terminal_and_explorer_follow_the_session_worktree() {
+    if !crate::interactive_terminal::pty_allocation_available() {
+        eprintln!("skipping: this host denies PTY allocation");
+        return;
+    }
+    let (dir, mut app) = focus_test_app().await;
+    let primary_id = uuid::Uuid::new_v4();
+    let primary = dir.path().canonicalize().unwrap();
+
+    app.session_view.workspace_root = primary.clone();
+    app.sync_selected_workspace();
+    app.open_bottom_panel();
+    assert_eq!(
+        app.interactive_terminal.as_ref().unwrap().cwd(),
+        primary.as_path()
+    );
+    app.save_session_view_state(primary_id);
+
+    let linked = dir.path().join("linked-terminal-worktree");
+    std::fs::create_dir_all(&linked).unwrap();
+    let linked = linked.canonicalize().unwrap();
+    let sibling_id = uuid::Uuid::new_v4();
+    app.session_view.workspace_root = linked.clone();
+    app.restore_session_view_state(sibling_id);
+    app.sync_selected_workspace();
+
+    assert_eq!(
+        app.workspace_files.explorer.root_path(),
+        Some(linked.as_path())
+    );
+    assert!(app.interactive_terminal.is_none());
+    app.open_bottom_panel();
+    assert_eq!(
+        app.interactive_terminal.as_ref().unwrap().cwd(),
+        linked.as_path()
+    );
+    app.save_session_view_state(sibling_id);
+
+    app.session_view.workspace_root = primary.clone();
+    app.restore_session_view_state(primary_id);
+    app.sync_selected_workspace();
+    assert_eq!(
+        app.workspace_files.explorer.root_path(),
+        Some(primary.as_path())
+    );
+    assert_eq!(
+        app.interactive_terminal.as_ref().unwrap().cwd(),
+        primary.as_path()
+    );
+}
+
+#[tokio::test]
 async fn selecting_a_task_rebinds_workspace_owned_views() {
     let (dir, mut app) = focus_test_app().await;
     let linked = dir.path().join("linked-worktree");
