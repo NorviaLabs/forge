@@ -63,7 +63,7 @@ impl TuiApp {
             self.workspace_files.visible = state.files_visibility.is_open();
             if let Some(ref name) = state.theme {
                 let theme_id = forge_config::normalize_theme_id(name);
-                if crate::theme::registry().contains(&theme_id) {
+                if crate::theme::with_registry(|registry| registry.contains(&theme_id)) {
                     self.apply_theme(theme_id, false);
                 }
             }

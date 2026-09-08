@@ -519,7 +519,7 @@ impl TuiApp {
             self.save_ui_state();
             #[cfg(not(test))]
             let _ = forge_config::persist_committed_theme(&theme_id);
-            let label = crate::theme::registry().display_name(&theme_id);
+            let label = crate::theme::with_registry(|registry| registry.display_name(&theme_id));
             self.set_feedback(FeedbackSeverity::Ok, format!("theme · {label}"));
         }
     }
