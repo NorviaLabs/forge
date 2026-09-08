@@ -1329,6 +1329,12 @@ impl AgentSession {
             pre_git,
             result,
         } = completed.execution;
+        // The operator already approved and disposed of this call via the
+        // approval flow. Drop it (and any identical re-issue) from the turn's
+        // required set so its outcome — even a failing one — is treated as
+        // ordinary tool feedback the agent already saw, not work the turn must
+        // still verify succeeded.
+        self.turn.retire_resolved_hitl_call(&call);
         self.turn.approved_retry_calls.remove(&call.id);
         let result_call = self
             .turn
