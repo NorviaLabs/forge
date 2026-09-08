@@ -311,6 +311,15 @@ impl TuiApp {
             editor_message: self.editor_message.take(),
             editor_viewport: std::mem::replace(&mut self.editor_viewport, blank.editor_viewport),
             diff_view: std::mem::take(&mut self.diff_view),
+            diff_explorer_was_visible: self.diff_explorer_was_visible.take(),
+            pending_editor_path: self.pending_editor_path.take(),
+            pending_editor_home: std::mem::take(&mut self.pending_editor_home),
+            external_editor: std::mem::replace(
+                &mut self.external_editor,
+                ExternalEditorState { requested: false },
+            ),
+            cancellation: std::mem::take(&mut self.cancellation),
+            progress_state: std::mem::take(&mut self.progress_state),
             stream: std::mem::take(&mut self.stream),
             activity: std::mem::take(&mut self.activity),
             banner_state: std::mem::take(&mut self.banner_state),
@@ -349,6 +358,12 @@ impl TuiApp {
         self.editor_message = state.editor_message;
         self.editor_viewport = state.editor_viewport;
         self.diff_view = state.diff_view;
+        self.diff_explorer_was_visible = state.diff_explorer_was_visible;
+        self.pending_editor_path = state.pending_editor_path;
+        self.pending_editor_home = state.pending_editor_home;
+        self.external_editor = state.external_editor;
+        self.cancellation = state.cancellation;
+        self.progress_state = state.progress_state;
         self.stream = state.stream;
         self.activity = state.activity;
         self.banner_state = state.banner_state;
