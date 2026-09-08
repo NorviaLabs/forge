@@ -311,6 +311,11 @@ impl TuiApp {
             editor_message: self.editor_message.take(),
             editor_viewport: std::mem::replace(&mut self.editor_viewport, blank.editor_viewport),
             diff_view: std::mem::take(&mut self.diff_view),
+            workspace_files: std::mem::replace(&mut self.workspace_files, blank.workspace_files),
+            file_watch: std::mem::replace(&mut self.file_watch, blank.file_watch),
+            bottom_panel: std::mem::take(&mut self.bottom_panel),
+            interactive_terminal: self.interactive_terminal.take(),
+            explorer_dialog: std::mem::take(&mut self.explorer_dialog),
             diff_explorer_was_visible: self.diff_explorer_was_visible.take(),
             pending_editor_path: self.pending_editor_path.take(),
             pending_editor_home: std::mem::take(&mut self.pending_editor_home),
@@ -358,6 +363,11 @@ impl TuiApp {
         self.editor_message = state.editor_message;
         self.editor_viewport = state.editor_viewport;
         self.diff_view = state.diff_view;
+        self.workspace_files = state.workspace_files;
+        self.file_watch = state.file_watch;
+        self.bottom_panel = state.bottom_panel;
+        self.interactive_terminal = state.interactive_terminal;
+        self.explorer_dialog = state.explorer_dialog;
         self.diff_explorer_was_visible = state.diff_explorer_was_visible;
         self.pending_editor_path = state.pending_editor_path;
         self.pending_editor_home = state.pending_editor_home;
@@ -407,16 +417,19 @@ impl TuiApp {
     /// needs to become the root for the explorer and repository chrome.
     pub(super) fn sync_selected_workspace(&mut self) {
         let workspace = self.session_view.workspace_root().to_path_buf();
-        let diff_source = self.diff_view_is_open().then_some(self.diff_view.source);
+        let already_bound = self.workspace_files.explorer.root_path() == Some(workspace.as_path());
         self.runtime.cwd = workspace.clone();
-        self.workspace_files.explorer = FileExplorer::new(Some(workspace), self.runtime.file_icons);
-        if let Some(source) = diff_source {
-            // The diff cache is rooted in the selected worktree. Do not let
-            // the old task's entries or patch survive a task switch while the
-            // replacement Git status is loading.
-            self.diff_view = crate::diff_view::DiffView::new(source);
+        if !already_bound {
+            let diff_source = self.diff_view_is_open().then_some(self.diff_view.source);
+            self.workspace_files.explorer =
+                FileExplorer::new(Some(workspace.clone()), self.runtime.file_icons);
+            self.file_watch = FileWatchState::new();
+            self.init_file_watcher();
+            if let Some(source) = diff_source {
+                self.diff_view = crate::diff_view::DiffView::new(source);
+            }
         }
-        self.repo_header_state.cwd = self.runtime.cwd.clone();
+        self.repo_header_state.cwd = workspace;
         self.repo_header_state.cache = chrome::load_repo_header(&self.runtime.cwd);
         self.repo_header_state.refreshed_at = Instant::now();
         self.repo_header_state.refresh_rx = None;

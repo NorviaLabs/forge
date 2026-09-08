@@ -49,6 +49,8 @@ struct PendingTerminalCommand {
 }
 
 pub(crate) struct InteractiveTerminal {
+    #[cfg(test)]
+    cwd: std::path::PathBuf,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -102,6 +104,8 @@ impl InteractiveTerminal {
             })
             .map_err(other)?;
         Ok(Self {
+            #[cfg(test)]
+            cwd: cwd.to_path_buf(),
             master: pty.master,
             writer,
             child,
@@ -117,6 +121,11 @@ impl InteractiveTerminal {
             hidden_status_marker: None,
             command_sequence: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     /// Drain output that the reader thread has made available.
