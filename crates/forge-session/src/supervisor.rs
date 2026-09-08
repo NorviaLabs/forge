@@ -398,16 +398,6 @@ impl RepositoryBootstrap {
         Ok(notices)
     }
 
-    /// Adopt an already-open primary session and start the supervisor over the
-    /// remaining sibling worktrees.
-    pub async fn open_siblings(
-        self,
-        cfg: &Config,
-        primary_session_id: SessionId,
-    ) -> Result<(RepositorySupervisor, SupervisorHandle), RepositorySupervisorError> {
-        RepositorySupervisor::open_from_bootstrap(self, cfg, primary_session_id, None).await
-    }
-
     /// Adopt the already-open primary session into the supervisor actor set,
     /// then discover and open the other repository Sessions. Repository
     /// ownership is acquired before opening the primary, and the session is
@@ -424,14 +414,6 @@ impl RepositoryBootstrap {
 }
 
 impl RepositorySupervisor {
-    pub async fn open_siblings(
-        cfg: &Config,
-        primary_session_id: SessionId,
-    ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
-        let bootstrap = RepositoryBootstrap::acquire(cfg).await?;
-        Self::open_from_bootstrap(bootstrap, cfg, primary_session_id, None).await
-    }
-
     async fn open_from_bootstrap(
         bootstrap: RepositoryBootstrap,
         cfg: &Config,
