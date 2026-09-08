@@ -287,7 +287,6 @@ pub struct TuiLaunch {
     pub startup_items: Option<Vec<ResumeSessionItem>>,
     pub onboarding_connect: bool,
     pub ready_placeholder: bool,
-    pub supervisor: Option<forge_session::SupervisorHandle>,
 }
 
 /// Run the full-screen TUI until quit.
@@ -371,20 +370,8 @@ async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSum
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    if let Some(handle) = launch.supervisor {
-        let refresh = handle.clone();
-        app.supervisor = Some(SupervisorUiState {
-            current_session_id: app.selected_session_id,
-            events: handle.subscribe(),
-            handle,
-            snapshots: std::collections::HashMap::new(),
-        });
-        refresh
-            .command(forge_session::SupervisorCommand::Refresh)
-            .await
-            .map_err(|error| TuiError::Other(error.to_string()))?;
-        app.set_feedback(FeedbackSeverity::Info, "Sessions · F3 or /sessions");
-    }
+    // Repository mode installs its supervisor state in `new_supervised`; the
+    // direct launcher deliberately has no runtime-ownership escape hatch.
     app.terminal_events = Some(TerminalEventSource::spawn());
     app.onboarding_connect = launch.onboarding_connect;
     if launch.ready_placeholder {
