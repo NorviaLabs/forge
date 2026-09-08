@@ -72,24 +72,19 @@ pub fn main_worktree(workspace: &Path) -> Result<PathBuf, WorktreeError> {
         .ok_or_else(|| WorktreeError::ListFailed("git returned no worktrees".into()))
 }
 
-/// Create a user-visible managed task worktree and branch from
+/// Create a user-visible managed session worktree and branch from
 /// `source_worktree`'s committed `HEAD`.
-pub fn create_task_worktree(
+///
+/// Git identity is deliberately independent of the mutable display label.
+/// Renaming a Forge session must never rename its branch or worktree.
+pub fn create_session_worktree(
     source_worktree: &Path,
     base_dir: &Path,
     id: u64,
-    label: &str,
 ) -> Result<SubagentWorktree, WorktreeError> {
     std::fs::create_dir_all(base_dir)?;
-    // An unnamed task gets an id-only name; a named one keeps the
-    // label-derived slug so `forge/task-7` style names stay readable.
-    // `sanitize_label` already makes the slug safe to interpolate.
-    let slug = sanitize_label(label);
-    let (name, branch) = if label.trim().is_empty() {
-        (format!("task-{id}"), format!("forge/task-{id}"))
-    } else {
-        (format!("task-{id}-{slug}"), format!("forge/{slug}-{id}"))
-    };
+    let name = format!("session-{id}");
+    let branch = format!("forge/session-{id}");
     let path = base_dir.join(&name);
     let output = Command::new("git")
         .arg("-C")
@@ -142,7 +137,7 @@ fn sanitize_label(label: &str) -> String {
 }
 
 /// Remove a clean worktree without deleting its branch. Unlike the subagent
-/// cleanup helper above, this never passes `--force`; user-task cleanup must
+/// cleanup helper above, this never passes `--force`; user-session cleanup must
 /// refuse uncommitted work rather than discarding it.
 pub fn remove_clean_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), WorktreeError> {
     remove_clean_worktree_inner(repo_root, worktree_path, None)
@@ -380,18 +375,18 @@ mod tests {
     }
 
     #[test]
-    fn unnamed_task_worktrees_get_an_id_only_name_and_branch() {
+    fn managed_session_worktrees_get_a_stable_id_only_name_and_branch() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let wt = create_task_worktree(repo.path(), base.path(), 7, "").unwrap();
-        assert_eq!(wt.path, base.path().join("task-7"));
-        assert_eq!(wt.branch, "forge/task-7");
+        let wt = create_session_worktree(repo.path(), base.path(), 7).unwrap();
+        assert_eq!(wt.path, base.path().join("session-7"));
+        assert_eq!(wt.branch, "forge/session-7");
 
-        // Unnamed tasks never collide: the id is the differentiator.
-        let other = create_task_worktree(repo.path(), base.path(), 8, "").unwrap();
-        assert_eq!(other.path, base.path().join("task-8"));
+        // Managed sessions never collide: the id is the differentiator.
+        let other = create_session_worktree(repo.path(), base.path(), 8).unwrap();
+        assert_eq!(other.path, base.path().join("session-8"));
         assert_ne!(wt.path, other.path);
         assert_ne!(wt.branch, other.branch);
     }
@@ -463,7 +458,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let wt = create_task_worktree(repo.path(), base.path(), 1, "cleanup-me").unwrap();
+        let wt = create_session_worktree(repo.path(), base.path(), 1).unwrap();
 
         let error = remove_clean_worktree_if_branch(repo.path(), &wt.path, "forge/other-branch")
             .unwrap_err();
@@ -495,7 +490,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let linked = create_task_worktree(repo.path(), base.path(), 4, "linked").unwrap();
+        let linked = create_session_worktree(repo.path(), base.path(), 4).unwrap();
 
         assert_eq!(
             main_worktree(&linked.path).unwrap().canonicalize().unwrap(),
@@ -504,18 +499,14 @@ mod tests {
     }
 
     #[test]
-    fn task_worktree_uses_the_initiating_head_and_user_facing_names() {
+    fn session_worktree_uses_stable_git_identity() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let worktree =
-            create_task_worktree(repo.path(), base.path(), 13, "Scheduler fairness").unwrap();
-        assert_eq!(worktree.branch, "forge/Scheduler-fairness-13");
-        assert_eq!(
-            worktree.path,
-            base.path().join("task-13-Scheduler-fairness")
-        );
+        let worktree = create_session_worktree(repo.path(), base.path(), 13).unwrap();
+        assert_eq!(worktree.branch, "forge/session-13");
+        assert_eq!(worktree.path, base.path().join("session-13"));
     }
 
     #[test]
@@ -523,7 +514,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let worktree = create_task_worktree(repo.path(), base.path(), 5, "dirty").unwrap();
+        let worktree = create_session_worktree(repo.path(), base.path(), 5).unwrap();
         std::fs::write(worktree.path.join("uncommitted.txt"), "keep me").unwrap();
 
         assert!(matches!(
