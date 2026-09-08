@@ -188,6 +188,143 @@ fn a_publish_policy_still_cannot_write_git_hooks() {
     assert!(!ws.path().join(".git/hooks/post-checkout").exists());
 }
 
+/// A managed session lives in a git *linked worktree*: its `.git` file points
+/// at a gitdir outside the sandbox root, where the object database and refs
+/// actually live. Before the linked metadata was reached by the policy, even
+/// a read-only `git status` failed with "not a git repository" and demanded an
+/// escalation. A git-writable spawn must read and write that metadata and
+/// still never install a hook into it.
+#[tokio::test]
+async fn a_confined_git_status_works_inside_a_linked_worktree() {
+    require_sandbox!();
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .expect("run git")
+    };
+    let init = git(&["init", "-q"]);
+    assert!(init.status.success(), "{init:?}");
+    std::fs::write(repo.path().join("file.txt"), "hi").unwrap();
+    assert!(git(&["add", "file.txt"]).status.success());
+    git(&["config", "user.email", "forge@test"]);
+    git(&["config", "user.name", "Forge Test"]);
+    let commit = git(&["commit", "-q", "-m", "init", "--no-verify"]);
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    // `git worktree add` is how Forge roots a managed session's isolated
+    // directory; the created `.git` file points outside it, at the repo's own
+    // `.git/worktrees/...`.
+    let base = tempfile::tempdir().unwrap();
+    let worktree = base.path().join("session-1");
+    let added = git(&[
+        "worktree",
+        "add",
+        "-q",
+        worktree.to_str().unwrap(),
+        "-b",
+        "forge/session-1",
+    ]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    std::fs::write(worktree.join("new.txt"), "untracked").unwrap();
+
+    let policy = SandboxPolicy::for_workspace(&worktree).with_git_writable();
+    let (program, args) = wrap_shell_command("sh", "git status --porcelain", &policy).unwrap();
+    // The tool layer points confined git at a spawn-local global config; the
+    // low-level wrapper is env-agnostic, so mirror that here. It must sit
+    // inside the sandbox, as the tool layer's identity dir does.
+    let config = worktree.join(".forge-host-identity").join("gitconfig");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "").unwrap();
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(&worktree)
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "confined git status in a linked worktree failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("new.txt"), "status output: {text}");
+}
+
+/// The same scenario through the real tool path: the agent runs `git status`
+/// in a managed session's linked worktree. The full spawn path must work —
+/// linked metadata reachable, and git pointed at a spawn-local global config
+/// instead of the host's `~/.gitconfig` — without an escalation.
+#[tokio::test]
+async fn the_real_tool_path_runs_git_status_inside_a_linked_worktree() {
+    require_sandbox!();
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .expect("run git")
+    };
+    assert!(git(&["init", "-q"]).status.success());
+    std::fs::write(repo.path().join("file.txt"), "hi").unwrap();
+    assert!(git(&["add", "file.txt"]).status.success());
+    git(&["config", "user.email", "forge@test"]);
+    git(&["config", "user.name", "Forge Test"]);
+    let commit = git(&["commit", "-q", "-m", "init", "--no-verify"]);
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let base = tempfile::tempdir().unwrap();
+    let worktree = base.path().join("session-1");
+    let added = git(&[
+        "worktree",
+        "add",
+        "-q",
+        worktree.to_str().unwrap(),
+        "-b",
+        "forge/session-1",
+    ]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    std::fs::write(worktree.join("new.txt"), "untracked").unwrap();
+
+    // Managed sessions carry a private session temp; the tool layer points
+    // TMPDIR and the spawn-local git config there.
+    let session_tmp = forge_tools::SessionTempDir::create("linked-git").unwrap();
+    let out = forge_tools::run_shell_command_with_egress_and_temp(
+        "git status --porcelain",
+        &worktree,
+        None,
+        Some(session_tmp.path()),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("confined git status must not escalate: {error}"));
+    assert!(!out.is_error, "confined git status failed: {}", out.content);
+    assert!(
+        out.content.contains("new.txt"),
+        "status output: {}",
+        out.content
+    );
+}
+
 /// HTTPS CLIs keep host tokens and caches under a config dir that is
 /// outside the workspace. A confined spawn that tries to refresh that
 /// cache is a filesystem denial, not a host denial.
