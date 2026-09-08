@@ -318,13 +318,13 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
                 match bootstrap.recover_interrupted_creations().await {
                     Ok(notices) => startup_notices.extend(notices),
                     Err(error) => {
-                        startup_notices.push(format!("task recovery incomplete: {error}"));
+                        startup_notices.push(format!("Session recovery incomplete: {error}"));
                     }
                 }
                 Some(bootstrap)
             }
             Err(error) => {
-                startup_notices.push(format!("multi-task mode unavailable: {error}"));
+                startup_notices.push(format!("Sessions unavailable: {error}"));
                 None
             }
         }
@@ -390,7 +390,6 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         startup_items: None,
         onboarding_connect: decision.require_connect,
         ready_placeholder: decision.show_ready_placeholder,
-        supervisor: None,
     };
     let summary = match bootstrap {
         Some(bootstrap) => {

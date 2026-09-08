@@ -112,9 +112,9 @@ Implemented symbols:
 - `SupervisorHandle`
 - `SupervisorCommand`
 - `SupervisorEvent`
-- `TaskRuntimeSnapshot`
+- `SessionRuntimeSnapshot`
 - `RepositorySupervisor::open`
-- `RepositorySupervisor::open_siblings`
+- `RepositoryBootstrap::open_with_primary`
 
 Supported commands include:
 
@@ -155,7 +155,13 @@ File:
 
 - `crates/forge-cli/src/main.rs`
 
-Git workspaces attempt to start a sibling supervisor through `RepositorySupervisor::open_siblings`. Non-Git workspaces continue with legacy single-session mode. The supervisor handle is passed into `TuiLaunch`.
+Repository workspaces acquire a bootstrap lease before opening the primary
+session, then pass that already-open runtime to
+`RepositoryBootstrap::open_with_primary`. The supervisor adopts it as the
+primary `SessionActor` and opens the remaining active Sessions from their
+journals. Non-Git workspaces continue with legacy single-session mode. The
+repository TUI receives an initial `SessionRuntimeSnapshot` and supervisor
+handle; the direct launcher has no supervisor compatibility field.
 
 ### TUI Task Chrome and Switcher
 
@@ -233,7 +239,7 @@ and `supervisor::tests::a_first_prompt_runs_only_after_trust_finalizes_the_creat
 ### 2. Exclusive lease is acquired too late in CLI startup — fixed
 
 New `RepositoryBootstrap::acquire` takes the lease and opens the control
-database before `open_session`; `RepositoryBootstrap::open_siblings` then
+database before `open_session`; `RepositoryBootstrap::open_with_primary`
 adopts the already-open primary. `RepositoryTaskError::AlreadyOwned` now
 renders the owning pid, start time and workspace instead of a `Debug` blob.
 
@@ -307,53 +313,34 @@ notice; the CLI calls it before opening the primary session.
 
 ## Remaining Gaps
 
-### 3. Primary TUI session is still directly owned by `TuiApp` (partly addressed)
+### 3. Primary runtime ownership — complete
 
-`pub(crate) session: AgentSession` remains, and the primary still executes
-turns directly while siblings execute under the supervisor. What changed is
-that the paths which were *silently wrong* for a sibling no longer are:
-`app/selection.rs` introduces `SelectedRuntime` (`Primary` / `Sibling(id)`)
-plus `selected_snapshot` and a `require_primary_task` guard, and
+Repository startup adopts the already-open primary into a `SessionActor`; it is
+not reopened from disk and is not retained by `TuiApp`. Primary and managed
+Sessions share the same prompt, streaming, queue, stop, HITL, question,
+continuation, model-setting, and background-task command paths.
 
-- approval decisions route to `SupervisorCommand::ResolveApproval`,
-- question answers route to `SupervisorCommand::ResolveQuestion`,
-- model picks route to `SupervisorCommand::SetModel`,
-- `/clear`, `/resume` and the sidebar queue/background actions refuse with a
-  message naming the task to switch back from.
+`TuiApp` selects a Session by ID and reads `SessionRuntimeSnapshot`,
+`TranscriptSnapshot`, and `SessionViewState`. Direct `AgentSession` access is
+retained only for the non-repository single-session launcher and its tests.
 
-Remembered ("session"/"always") approval grants are still primary-only and say
-so; there is no per-actor permission state yet.
+### 4. Remaining compatibility boundary
 
-Also fixed here: `send_task_command` no longer returns `TuiError`. A rejected
-supervisor command — a bad attach, an archive of a running task — is operator
-error and now surfaces as feedback instead of tearing down the TUI.
-
-### 4. Sibling snapshots are still not a complete session replacement
-
-Outstanding, in rough order of value:
-
-1. Per-actor permission state, so remembered approval grants work for a
-   sibling.
-2. Workspace-scoped file and editor paths, so the explorer, source viewer and
-   `/diff` follow the selected task's worktree. This is the blocker for
-   carrying explorer state per task (gap 5).
-3. `/status`, `/connect` presentation and queue/background listings sourced
-   from the selected task's snapshot rather than the primary session.
-4. Full actor-backed foreground execution for the primary, which is what
-   finally removes `TuiApp::session`.
+`DirectSessionSlot` remains intentionally as the explicit direct-mode owner.
+It is not populated by `new_supervised`, and no repository-mode command or
+render path falls back to it. The old sibling-opening compatibility APIs and temporary
+cutover validation workflows have been removed.
 
 ## Recommended Next Order
 
-1. Introduce per-actor permission state and lift the remembered-grant
-   restriction on sibling approvals.
-2. Make file, editor and diff paths resolve against the selected task's
-   workspace; then add explorer state to `TaskLocalViewState`.
-3. Source `/status` and the queue/background sidebar from the selected task's
-   snapshot.
-4. Move the primary onto a supervisor actor and delete `TuiApp::session`.
-5. Wire the attach flow's trust confirmation to
-   `SupervisorCommand::TrustWorkspace` for worktrees outside the trusted root.
-6. Re-run:
+1. Review and merge the stacked multisession PRs bottom-up through the
+   primary-supervisor cutover.
+2. Exercise the repository UI against a real disposable Git repository,
+   especially switching, terminal cwd, editor/diff state, resume, and exit
+   summary.
+3. Keep `DirectSessionSlot` isolated to the non-repository launcher until a
+   future removal no longer improves clarity.
+4. Re-run:
 
 ```sh
 CARGO_HOME="$HOME/.cargo" cargo fmt --all -- --check
@@ -361,5 +348,5 @@ CARGO_HOME="$HOME/.cargo" cargo clippy --workspace --all-targets --locked -- -D 
 CARGO_HOME="$HOME/.cargo" cargo test --workspace --all-targets --locked
 ```
 
-Do not commit or create a new branch unless the user explicitly requests it.
-Continue on `feat/issue-193-ux-mockups`.
+This handoff is historical; the current implementation continues on the
+multisession stack (`#562` and follow-up cleanup work).
