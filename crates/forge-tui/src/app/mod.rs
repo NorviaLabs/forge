@@ -27,7 +27,9 @@ use forge_core::{
     LoopError, ModelResponseApplication, ModelStepAccumulator, PendingHitlExecution,
     PendingToolApplication,
 };
-use forge_session::{SessionSnapshot, TranscriptSnapshot};
+use forge_session::{
+    SessionRuntimeSnapshot, SessionSnapshot, SupervisorHandle, TranscriptSnapshot,
+};
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelStreamEvent, ProgressDocument,
 };
@@ -116,7 +118,9 @@ pub use chrome::resume_session_items;
 /// from inside `chrome.rs`.
 #[cfg(test)]
 use chrome::{footer_limits_from_report, footer_usage_summary_with_cost};
-pub use shell::{run_tui, run_tui_with_launch, run_tui_with_resume_picker, TuiLaunch};
+pub use shell::{
+    run_tui, run_tui_supervised, run_tui_with_launch, run_tui_with_resume_picker, TuiLaunch,
+};
 
 #[cfg(test)]
 pub(crate) mod tests;

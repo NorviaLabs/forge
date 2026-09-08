@@ -293,8 +293,16 @@ impl AgentSession {
         self.reasoning_effort = effort;
     }
 
+    pub fn reasoning_effort(&self) -> Option<&str> {
+        self.reasoning_effort.as_deref()
+    }
+
     pub fn set_thinking_enabled(&mut self, enabled: bool) {
         self.thinking_enabled = enabled;
+    }
+
+    pub fn thinking_enabled(&self) -> bool {
+        self.thinking_enabled
     }
 
     /// Push provider credentials into the model client (OAuth tokens → worker env).

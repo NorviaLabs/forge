@@ -726,6 +726,18 @@ impl AgentSession {
         TurnCoordinator::run(self, stream_tx).await
     }
 
+    /// Drive a turn after the caller has already opened and retained the
+    /// cancellation scope with [`Self::begin_turn_cancellation_scope`].
+    ///
+    /// Actor owners use this entry point so a stop request arriving after the
+    /// scope is published cannot be discarded by a second token reset.
+    pub async fn run_agent_turns_in_scope(
+        &mut self,
+        stream_tx: Option<StreamEventTx>,
+    ) -> Result<ModelResponse, LoopError> {
+        TurnCoordinator::run(self, stream_tx).await
+    }
+
     /// `/compact`: run the compaction pipeline on demand.
     ///
     /// Identical to the automatic path in every respect but the trigger

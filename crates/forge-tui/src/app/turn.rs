@@ -309,9 +309,21 @@ impl TuiApp {
     /// claim success (or clear the composer's caller-held text) until the
     /// queue store durably accepts the item.
     pub(super) async fn enqueue_user_message(&mut self, line: String) {
+        if self.selected_is_supervised() {
+            if !self
+                .send_session_command(forge_session::SupervisorCommand::SubmitPrompt {
+                    session_id: self.selected_session_id,
+                    text: line.clone(),
+                })
+                .await
+            {
+                self.input.set_text(line);
+            }
+            return;
+        }
         match self.session_runtime.enqueue_task(&line).await {
             Ok(_item) => {
-                let n = self.session_runtime.queue().len();
+                let n = self.selected_queue_messages().len();
                 self.task_selection.ensure_queue();
                 self.push_toast(format!("queued #{n}"));
                 self.set_feedback(
@@ -337,6 +349,13 @@ impl TuiApp {
     /// — the queue store owns the atomic Queued->Promoting->Promoted pipeline;
     /// this only decides when to call it and how to kick off streaming.
     pub(super) async fn dequeue_and_send_next(&mut self) {
+        if self.selected_is_supervised() {
+            self.send_session_command(forge_session::SupervisorCommand::ContinueTurn {
+                session_id: self.selected_session_id,
+            })
+            .await;
+            return;
+        }
         if self.busy_state.is_active() || self.pending_turn.has_prompt() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
@@ -371,14 +390,14 @@ impl TuiApp {
                     FeedbackSeverity::Info,
                     format!(
                         "queue dequeue · {} left",
-                        self.session_runtime.queue().len()
+                        self.selected_queue_messages().len()
                     ),
                 );
                 self.set_feedback(
                     FeedbackSeverity::Info,
                     format!(
                         "sending dequeued · {} remaining",
-                        self.session_runtime.queue().len()
+                        self.selected_queue_messages().len()
                     ),
                 );
                 // Start the turn the same way as a normal Enter send (no dispatch
@@ -413,6 +432,16 @@ impl TuiApp {
 
     /// Cancel a queued message by 0-based visible-position index.
     async fn cancel_queued_at(&mut self, index: usize) {
+        if self.selected_is_supervised() {
+            self.send_session_command(forge_session::SupervisorCommand::CancelQueuedPrompt {
+                session_id: self.selected_session_id,
+                one_based: index + 1,
+            })
+            .await;
+            self.poll_supervisor_events();
+            self.clamp_queue_selection();
+            return;
+        }
         let one_based = index + 1;
         match self.session_runtime.cancel_queued_at(one_based).await {
             Ok(Some(item)) => {
@@ -422,7 +451,7 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!(
                         "cancelled queued #{one_based} · {} left",
-                        self.session_runtime.queue().len()
+                        self.selected_queue_messages().len()
                     ),
                 );
                 self.push_activity(
@@ -443,12 +472,12 @@ impl TuiApp {
 
     fn clamp_queue_selection(&mut self) {
         self.task_selection
-            .clamp_queue(self.session_runtime.queue().len());
+            .clamp_queue(self.selected_queue_messages().len());
     }
 
     pub(super) fn move_queue_selection(&mut self, delta: i32) {
         self.task_selection
-            .move_queue(self.session_runtime.queue().len(), delta);
+            .move_queue(self.selected_queue_messages().len(), delta);
     }
 
     pub(super) async fn cancel_selected_queue(&mut self) {
@@ -460,7 +489,23 @@ impl TuiApp {
     }
 
     pub(super) async fn edit_last_queued_message(&mut self) {
-        let len = self.session_runtime.queue().len();
+        if self.selected_is_supervised() {
+            let messages = self.selected_queue_messages();
+            if let Some(text) = messages.last() {
+                if self
+                    .send_session_command(forge_session::SupervisorCommand::CancelQueuedPrompt {
+                        session_id: self.selected_session_id,
+                        one_based: messages.len(),
+                    })
+                    .await
+                {
+                    self.input.set_text(text.clone());
+                    self.focus.transition_to(FocusBlock::Composer);
+                }
+            }
+            return;
+        }
+        let len = self.selected_queue_messages().len();
         if len == 0 {
             return;
         }
@@ -479,6 +524,9 @@ impl TuiApp {
     /// async since finishing a background task journals a result). Toasts
     /// each task that newly reached a terminal state this tick.
     pub(super) async fn poll_background_tasks(&mut self) -> Result<(), TuiError> {
+        if self.session_runtime.as_ref().is_none() {
+            return Ok(());
+        }
         let running_before: std::collections::HashSet<_> = self
             .session_runtime
             .background()
@@ -502,12 +550,12 @@ impl TuiApp {
 
     fn clamp_tasks_selection(&mut self) {
         self.task_selection
-            .clamp_tasks(self.session_runtime.background().list().count());
+            .clamp_tasks(self.selected_background_tasks().len());
     }
 
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
         self.task_selection
-            .move_tasks(self.session_runtime.background().list().count(), delta);
+            .move_tasks(self.selected_background_tasks().len(), delta);
     }
 
     /// Cancel the background task at the currently selected row. Rows are
@@ -518,9 +566,8 @@ impl TuiApp {
             return;
         };
         let mut ids: Vec<_> = self
-            .session_runtime
-            .background()
-            .list()
+            .selected_background_tasks()
+            .iter()
             .map(|t| t.id)
             .collect();
         ids.sort_by_key(|id| id.0);
@@ -528,6 +575,14 @@ impl TuiApp {
             self.clamp_tasks_selection();
             return;
         };
+        if self.selected_is_supervised() {
+            self.send_session_command(forge_session::SupervisorCommand::CancelBackgroundTask {
+                session_id: self.selected_session_id,
+                task_id: id,
+            })
+            .await;
+            return;
+        }
         if self.session_runtime.cancel_background_task(id) {
             self.set_feedback(FeedbackSeverity::Ok, format!("cancelling task #{}", id.0));
             self.push_activity(
@@ -553,9 +608,8 @@ impl TuiApp {
             return;
         };
         let mut ids: Vec<_> = self
-            .session_runtime
-            .background()
-            .list()
+            .selected_background_tasks()
+            .iter()
             .map(|t| t.id)
             .collect();
         ids.sort_by_key(|id| id.0);
@@ -567,6 +621,16 @@ impl TuiApp {
             HitlDecision::Deny => "deny",
             _ => "deny",
         };
+        if self.selected_is_supervised() {
+            self.try_session_command(
+                forge_session::SupervisorCommand::ResolveBackgroundApproval {
+                    session_id: self.selected_session_id,
+                    task_id: id,
+                    decision,
+                },
+            );
+            return;
+        }
         if self.session_runtime.resolve_subagent_hitl(id, decision) {
             self.set_feedback(
                 FeedbackSeverity::Ok,
@@ -599,6 +663,24 @@ impl TuiApp {
         mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<(), TuiError> {
         let (line, continuing, attachments) = self.pending_turn.take();
+        if self.selected_is_supervised() {
+            if let Some(text) = line {
+                self.send_session_command(
+                    forge_session::SupervisorCommand::SubmitPromptWithAttachments {
+                        session_id: self.selected_session_id,
+                        text,
+                        attachments,
+                    },
+                )
+                .await;
+            } else if continuing {
+                self.send_session_command(forge_session::SupervisorCommand::ContinueTurn {
+                    session_id: self.selected_session_id,
+                })
+                .await;
+            }
+            return Ok(());
+        }
         if line.is_none() && !continuing {
             return Ok(());
         }
@@ -1020,13 +1102,13 @@ impl TuiApp {
             } else {
                 self.push_toast(format!(
                     "{} queued · sending next",
-                    self.session_runtime.queue().len()
+                    self.selected_queue_messages().len()
                 ));
                 self.set_feedback(
                     FeedbackSeverity::Info,
                     format!(
                         "{} in queue — sending next",
-                        self.session_runtime.queue().len()
+                        self.selected_queue_messages().len()
                     ),
                 );
             }

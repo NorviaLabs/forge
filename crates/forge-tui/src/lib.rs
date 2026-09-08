@@ -36,8 +36,8 @@ mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{
-    resume_session_items, run_tui, run_tui_with_launch, run_tui_with_resume_picker, ExitSummary,
-    TuiApp, TuiError, TuiLaunch, TuiRuntimeConfig,
+    resume_session_items, run_tui, run_tui_supervised, run_tui_with_launch,
+    run_tui_with_resume_picker, ExitSummary, TuiApp, TuiError, TuiLaunch, TuiRuntimeConfig,
 };
 pub use commands::{parse_slash, CommandError, SlashCommand};
 pub use conversation::{

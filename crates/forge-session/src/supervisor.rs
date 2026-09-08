@@ -10,7 +10,8 @@ use forge_core::{AgentSession, LoopError};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{RepositoryRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_types::{
-    AskUserQuestionResult, HitlDecision, ModelStreamEvent, SessionId, TaskLifecycle,
+    AskUserQuestionResult, BackgroundTaskId, HitlDecision, ModelStreamEvent, SessionId,
+    TaskLifecycle, ToolCall,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -18,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     connect_credentials, open_session_with_model, resolve_journal_dir, NewRepositorySession,
     RepositoryControl, RepositoryLease, RepositorySession, RepositorySessionError,
-    SessionLifecycle, SessionSnapshot, SessionTarget, SupervisorTurnState, TranscriptSnapshot,
-    WorktreeOwnership,
+    SessionDetailsSnapshot, SessionLifecycle, SessionSnapshot, SessionTarget, SupervisorTurnState,
+    TranscriptSnapshot, WorktreeOwnership,
 };
 
 const DEFAULT_MAX_CONCURRENCY: usize = 4;
@@ -30,6 +31,8 @@ pub struct SessionRuntimeSnapshot {
     pub task: RepositorySession,
     pub session: SessionSnapshot,
     pub transcript: TranscriptSnapshot,
+    pub details: Option<SessionDetailsSnapshot>,
+    pub queued_prompts: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +105,19 @@ pub enum SupervisorCommand {
         session_id: SessionId,
         text: String,
     },
+    SubmitPromptWithAttachments {
+        session_id: SessionId,
+        text: String,
+        attachments: Vec<forge_types::ImageRef>,
+    },
     ContinueTurn {
+        session_id: SessionId,
+    },
+    ForkSession {
+        session_id: SessionId,
+    },
+    ResumeSession {
+        current_session_id: SessionId,
         session_id: SessionId,
     },
     StopTurn {
@@ -112,6 +127,7 @@ pub enum SupervisorCommand {
         session_id: SessionId,
         decision: HitlDecision,
         actor: String,
+        feedback: Option<String>,
     },
     ResolveQuestion {
         session_id: SessionId,
@@ -127,6 +143,49 @@ pub enum SupervisorCommand {
         route_id: String,
         reasoning_effort: Option<String>,
     },
+    SetThinking {
+        session_id: SessionId,
+        enabled: bool,
+    },
+    SetCapabilities {
+        session_id: SessionId,
+        image_input_supported: bool,
+        context_window: Option<(usize, Option<usize>)>,
+    },
+    CancelQueuedPrompt {
+        session_id: SessionId,
+        one_based: usize,
+    },
+    PollSession {
+        session_id: SessionId,
+    },
+    CompactContext {
+        session_id: SessionId,
+    },
+    CancelBackgroundTask {
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+    },
+    ResolveBackgroundApproval {
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        decision: HitlDecision,
+    },
+    GrantEgressHost {
+        session_id: SessionId,
+        pattern: String,
+    },
+    AllowSessionPattern {
+        session_id: SessionId,
+        call: ToolCall,
+    },
+    ClearSessionApprovals {
+        session_id: SessionId,
+    },
+    ApplyProviderEnv {
+        pairs: Vec<(String, String)>,
+    },
+    ClearProviderEnv,
     Refresh,
     Shutdown,
 }
@@ -146,7 +205,7 @@ pub enum RepositorySupervisorError {
     Storage(#[from] forge_storage::StorageError),
     #[error("git worktree lookup failed: {0}")]
     Worktree(#[from] forge_storage::WorktreeError),
-    #[error("task `{0}` has no live session actor")]
+    #[error("Session `{0}` has no live actor")]
     NoActor(SessionId),
     #[error("supervisor command channel closed")]
     Closed,
@@ -184,6 +243,21 @@ impl SupervisorHandle {
     pub fn subscribe(&self) -> broadcast::Receiver<SupervisorEvent> {
         self.events.subscribe()
     }
+
+    /// Queue a command from synchronous UI code without blocking the terminal
+    /// owner. Failures in command execution are still published as supervisor
+    /// events; this only reports whether the command entered the actor queue.
+    pub fn try_command(&self, command: SupervisorCommand) -> Result<(), RepositorySupervisorError> {
+        let (reply, _response) = oneshot::channel();
+        self.commands
+            .try_send(CommandEnvelope { command, reply })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Closed(_) => RepositorySupervisorError::Closed,
+                mpsc::error::TrySendError::Full(_) => {
+                    RepositorySupervisorError::Command("supervisor command queue is full".into())
+                }
+            })
+    }
 }
 
 struct SessionActor {
@@ -199,6 +273,8 @@ impl SessionActor {
             task,
             session: SessionSnapshot::capture(&session),
             transcript: TranscriptSnapshot::capture(&session),
+            details: Some(SessionDetailsSnapshot::capture(&session)),
+            queued_prompts: Vec::new(),
         };
         Self {
             session: Mutex::new(session),
@@ -262,7 +338,7 @@ pub struct RepositorySupervisor {
 /// it has to be held before a competing process can write session state. This
 /// type lets the CLI acquire ownership first, open its primary session second,
 /// and only then hand both to the supervisor — see
-/// [`RepositoryBootstrap::open_siblings`].
+/// [`RepositoryBootstrap::open_with_primary`].
 pub struct RepositoryBootstrap {
     lease: RepositoryLease,
     control: Arc<RepositoryControl>,
@@ -333,10 +409,9 @@ impl RepositoryBootstrap {
     }
 
     /// Adopt the already-open primary session into the supervisor actor set,
-    /// then discover and open its sibling sessions. This is the migration path
-    /// for the TUI: repository ownership is still acquired before opening the
-    /// primary, but once opened the primary is no longer special to the
-    /// supervisor.
+    /// then discover and open the other repository Sessions. Repository
+    /// ownership is acquired before opening the primary, and the session is
+    /// moved here rather than reopened from its journal.
     pub async fn open_with_primary(
         self,
         cfg: &Config,
@@ -662,6 +737,12 @@ impl RepositorySupervisor {
         snapshots(&self.state).await
     }
 
+    pub async fn snapshot(&self, session_id: SessionId) -> Option<SessionRuntimeSnapshot> {
+        let actor = self.state.actors.read().await.get(&session_id).cloned()?;
+        let snapshot = actor.snapshot.read().await.clone();
+        Some(snapshot)
+    }
+
     pub fn lease_owner(&self) -> &crate::LeaseOwner {
         self.state.lease.owner()
     }
@@ -675,11 +756,67 @@ impl RepositorySupervisor {
 }
 
 async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<CommandEnvelope>) {
-    while let Some(envelope) = receiver.recv().await {
+    let mut poll = tokio::time::interval(std::time::Duration::from_millis(200));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut deferred = std::collections::VecDeque::new();
+    loop {
+        let envelope = match deferred.pop_front() {
+            Some(envelope) => envelope,
+            None => tokio::select! {
+                envelope = receiver.recv() => match envelope {
+                    Some(envelope) => envelope,
+                    None => break,
+                },
+                _ = poll.tick() => {
+                    let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+                    for task_actor in actors {
+                        if let Ok(mut session) = task_actor.session.try_lock() {
+                            if session.background().list().any(|task| !task.status.is_terminal()) {
+                                let _ = session.poll_background_tasks().await;
+                                let _ = refresh_actor(&state, &task_actor, &session).await;
+                            }
+                        }
+                    }
+                    continue;
+                }
+            },
+        };
         let shutdown = matches!(envelope.command, SupervisorCommand::Shutdown);
-        let result = execute_command(state.clone(), envelope.command)
-            .await
-            .map_err(|error| error.to_string());
+        let command = execute_command(state.clone(), envelope.command);
+        tokio::pin!(command);
+        // Keep stop requests reachable while an earlier mutation waits for a
+        // running actor. Other commands retain their FIFO order.
+        let result = loop {
+            tokio::select! {
+                result = &mut command => break result.map_err(|error| error.to_string()),
+                next = receiver.recv(), if !shutdown => {
+                    if let Some(next) = next {
+                        if let SupervisorCommand::StopTurn { session_id } = next.command {
+                            let cancelled = actor(&state, session_id).await
+                                .is_ok_and(|actor| actor.request_cancel());
+                            if cancelled {
+                                let _ = next.reply.send(Ok(()));
+                            } else {
+                                deferred.push_back(next);
+                            }
+                        } else {
+                            if matches!(next.command, SupervisorCommand::Shutdown) {
+                                for actor in state.actors.read().await.values() {
+                                    actor.request_cancel();
+                                }
+                            }
+                            deferred.push_back(next);
+                        }
+                    }
+                }
+            }
+        };
+        if let Err(message) = &result {
+            let _ = state.events.send(SupervisorEvent::Error {
+                session_id: None,
+                message: message.clone(),
+            });
+        }
         let _ = envelope.reply.send(result);
         if shutdown {
             break;
@@ -878,7 +1015,7 @@ async fn execute_command(
                 || task.lifecycle != SessionLifecycle::Archived
             {
                 return Err(RepositorySupervisorError::Command(
-                    "only archived managed tasks can remove a worktree".into(),
+                    "only archived managed Sessions can remove a worktree".into(),
                 ));
             }
             let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
@@ -945,6 +1082,12 @@ async fn execute_command(
             state.grant_trust(&workspace)?;
         }
         SupervisorCommand::SubmitPrompt { session_id, text } => {
+            if state.control.session(session_id).await?.label.is_empty() {
+                state
+                    .control
+                    .rename(session_id, &forge_storage::label_from_prompt(&text))
+                    .await?;
+            }
             state.control.enqueue_prompt(session_id, &text).await?;
             state
                 .control
@@ -953,8 +1096,44 @@ async fn execute_command(
             publish_actor(&state, session_id).await?;
             start_prompt_driver(state, session_id).await?;
         }
+        SupervisorCommand::SubmitPromptWithAttachments {
+            session_id,
+            text,
+            attachments,
+        } => {
+            if state.control.session(session_id).await?.label.is_empty() {
+                state
+                    .control
+                    .rename(session_id, &forge_storage::label_from_prompt(&text))
+                    .await?;
+            }
+            let attachments = serde_json::to_string(&attachments)
+                .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
+            state
+                .control
+                .enqueue_prompt_with_attachments(session_id, &text, &attachments)
+                .await?;
+            publish_actor(&state, session_id).await?;
+            start_prompt_driver(state, session_id).await?;
+        }
         SupervisorCommand::ContinueTurn { session_id } => {
             start_continue_driver(state, session_id).await?;
+        }
+        SupervisorCommand::ForkSession { session_id } => {
+            replace_conversation(&state, session_id, None).await?;
+        }
+        SupervisorCommand::ResumeSession {
+            current_session_id,
+            session_id,
+        } => {
+            if state.actors.read().await.contains_key(&session_id) {
+                state.control.set_selected(Some(session_id)).await?;
+                let _ = state
+                    .events
+                    .send(SupervisorEvent::Selected(Some(session_id)));
+            } else {
+                replace_conversation(&state, current_session_id, Some(session_id)).await?;
+            }
         }
         SupervisorCommand::StopTurn { session_id } => {
             let actor = actor(&state, session_id).await?;
@@ -972,10 +1151,13 @@ async fn execute_command(
             session_id,
             decision,
             actor: decision_actor,
+            feedback,
         } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = task_actor.session.lock().await;
-            session.resolve_hitl(decision, &decision_actor).await?;
+            session
+                .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
+                .await?;
             refresh_actor(&state, &task_actor, &session).await?;
             drop(session);
             start_continue_driver(state, session_id).await?;
@@ -1009,6 +1191,102 @@ async fn execute_command(
             session.set_reasoning_effort(reasoning_effort);
             refresh_actor(&state, &task_actor, &session).await?;
         }
+        SupervisorCommand::SetThinking {
+            session_id,
+            enabled,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.set_thinking_enabled(enabled);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::SetCapabilities {
+            session_id,
+            image_input_supported,
+            context_window,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.set_image_input_supported(image_input_supported);
+            if let Some((capacity, output)) = context_window {
+                session.set_context_window(capacity, output);
+            }
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::CancelQueuedPrompt {
+            session_id,
+            one_based,
+        } => {
+            state
+                .control
+                .cancel_queued_prompt_at(session_id, one_based)
+                .await?;
+            publish_actor(&state, session_id).await?;
+        }
+        SupervisorCommand::PollSession { session_id } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.poll_background_tasks().await?;
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::CompactContext { session_id } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            let pending = session.begin_context_compaction(forge_core::CompactionTrigger::Manual);
+            let completed = pending.execute().await;
+            session.finish_context_compaction(completed).await?;
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::CancelBackgroundTask {
+            session_id,
+            task_id,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.cancel_background_task(task_id);
+            session.poll_background_tasks().await?;
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::ResolveBackgroundApproval {
+            session_id,
+            task_id,
+            decision,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.resolve_subagent_hitl(task_id, decision);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::GrantEgressHost {
+            session_id,
+            pattern,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let session = task_actor.session.lock().await;
+            session.grant_egress_host(&pattern);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::AllowSessionPattern { session_id, call } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.allow_suggested_pattern_for_session(&call);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::ClearSessionApprovals { session_id } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = task_actor.session.lock().await;
+            session.clear_session_pattern_allows();
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::ApplyProviderEnv { pairs } => {
+            state.model.apply_provider_env(&pairs);
+            for actor in state.actors.read().await.values() {
+                actor.session.lock().await.apply_provider_env(&pairs);
+            }
+        }
+        SupervisorCommand::ClearProviderEnv => {
+            state.model.clear_provider_env();
+        }
         SupervisorCommand::Refresh => {
             let _ = state
                 .events
@@ -1016,8 +1294,16 @@ async fn execute_command(
         }
         SupervisorCommand::Shutdown => {
             let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
-            for task_actor in actors {
+            for task_actor in &actors {
                 task_actor.request_cancel();
+            }
+            for task_actor in actors {
+                while task_actor.driving.load(Ordering::Acquire) {
+                    task_actor.request_cancel();
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                let session = task_actor.session.lock().await;
+                refresh_actor(&state, &task_actor, &session).await?;
             }
         }
     }
@@ -1042,7 +1328,7 @@ fn validate_attach_target(
     })?;
     if same_path(&canonical, &main) {
         return Err(RepositorySupervisorError::Command(
-            "the repository's main worktree is already the primary task".into(),
+            "the repository's main worktree is already the primary Session".into(),
         ));
     }
     let records = forge_storage::list_worktree_records(&main)?;
@@ -1090,6 +1376,71 @@ async fn rollback_creation(
     Ok(())
 }
 
+async fn replace_conversation(
+    state: &Arc<SupervisorState>,
+    previous: SessionId,
+    resume: Option<SessionId>,
+) -> Result<(), RepositorySupervisorError> {
+    let old_actor = actor(state, previous).await?;
+    if old_actor.driving.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Command(
+            "stop the turn before replacing its conversation".into(),
+        ));
+    }
+    let session = old_actor.session.lock().await;
+    if session.pending_hitl().is_some()
+        || session.pending_question().is_some()
+        || session
+            .background()
+            .list()
+            .any(|task| !task.status.is_terminal())
+    {
+        return Err(RepositorySupervisorError::Command(
+            "resolve pending interactions and background jobs before replacing the conversation"
+                .into(),
+        ));
+    }
+    let replacement = if let Some(session_id) = resume {
+        if let Ok(record) = state.control.session(session_id).await {
+            if !same_path(&record.workspace, session.workspace_root()) {
+                return Err(RepositorySupervisorError::Command(
+                    "resume this Session from its own worktree".into(),
+                ));
+            }
+        }
+        let mut cfg = state.cfg.clone();
+        cfg.resolved_workspace = session.workspace_root().to_path_buf();
+        cfg.workspace_root = Some(cfg.resolved_workspace.display().to_string());
+        cfg.journal.path = session.journal_dir().display().to_string();
+        open_session_with_model(
+            &cfg,
+            SessionTarget::Resume(session_id),
+            session.model_client(),
+        )
+        .await?
+        .session
+    } else {
+        session.fork().await?
+    };
+    let next = replacement.session_id;
+    state.control.replace_active_session(previous, next).await?;
+    let record = state.control.session(next).await?;
+    drop(session);
+    let mut actors = state.actors.write().await;
+    actors.remove(&previous);
+    actors.insert(next, Arc::new(SessionActor::new(record, replacement)));
+    drop(actors);
+    let mut archived = state.unavailable_tasks.write().await;
+    archived.retain(|task| task.session_id != next && task.session_id != previous);
+    archived.push(state.control.session(previous).await?);
+    drop(archived);
+    let _ = state
+        .events
+        .send(SupervisorEvent::Roster(snapshots(state).await));
+    let _ = state.events.send(SupervisorEvent::Selected(Some(next)));
+    Ok(())
+}
+
 async fn start_prompt_driver(
     state: Arc<SupervisorState>,
     session_id: SessionId,
@@ -1099,13 +1450,29 @@ async fn start_prompt_driver(
         return Ok(());
     }
     tokio::spawn(async move {
-        if let Err(error) = drive_prompts(state.clone(), task_actor.clone()).await {
-            let _ = state.events.send(SupervisorEvent::Error {
-                session_id: Some(session_id),
-                message: error.to_string(),
-            });
+        loop {
+            if let Err(error) = drive_prompts(state.clone(), task_actor.clone()).await {
+                let _ = state.events.send(SupervisorEvent::Error {
+                    session_id: Some(session_id),
+                    message: error.to_string(),
+                });
+                task_actor.driving.store(false, Ordering::Release);
+                break;
+            }
+            task_actor.driving.store(false, Ordering::Release);
+            let lifecycle = task_actor.snapshot.read().await.session.lifecycle;
+            let queued = state
+                .control
+                .queued_prompts(session_id)
+                .await
+                .unwrap_or_default();
+            if matches!(lifecycle, TaskLifecycle::Waiting | TaskLifecycle::Cancelled)
+                || queued.is_empty()
+                || task_actor.driving.swap(true, Ordering::AcqRel)
+            {
+                break;
+            }
         }
-        task_actor.driving.store(false, Ordering::Release);
     });
     Ok(())
 }
@@ -1184,11 +1551,16 @@ async fn run_one(
         }
     });
     let result = match prompt.as_ref() {
-        Some((_, text)) => {
-            session.append_user_message(text).await?;
-            session.run_agent_turns(Some(stream_sender)).await
+        Some((queue_id, text)) => {
+            let attachments =
+                serde_json::from_str(&state.control.prompt_attachments(*queue_id).await?)
+                    .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
+            session
+                .append_user_message_with_attachments(text, attachments)
+                .await?;
+            session.run_agent_turns_in_scope(Some(stream_sender)).await
         }
-        None => session.run_agent_turns(Some(stream_sender)).await,
+        None => session.run_agent_turns_in_scope(Some(stream_sender)).await,
     };
     drop(permit);
     *task_actor
@@ -1226,11 +1598,11 @@ async fn run_one(
     state.control.set_turn_state(session_id, turn_state).await?;
     refresh_actor(&state, &task_actor, &session).await?;
     let message = match turn_state {
-        SupervisorTurnState::Waiting => "Task needs input",
-        SupervisorTurnState::Completed => "Task completed",
-        SupervisorTurnState::Failed => "Task failed",
-        SupervisorTurnState::Cancelled => "Task stopped",
-        _ => "Task updated",
+        SupervisorTurnState::Waiting => "Session needs input",
+        SupervisorTurnState::Completed => "Session completed",
+        SupervisorTurnState::Failed => "Session failed",
+        SupervisorTurnState::Cancelled => "Session stopped",
+        _ => "Session updated",
     };
     if matches!(
         turn_state,
@@ -1274,6 +1646,8 @@ async fn refresh_actor(
         task,
         session: SessionSnapshot::capture(session),
         transcript: TranscriptSnapshot::capture(session),
+        details: Some(SessionDetailsSnapshot::capture(session)),
+        queued_prompts: state.control.queued_prompts(session.session_id).await?,
     };
     *task_actor.snapshot.write().await = snapshot.clone();
     let _ = state
@@ -1290,6 +1664,7 @@ async fn publish_actor(
     let task = state.control.session(session_id).await?;
     let mut snapshot = task_actor.snapshot.write().await;
     snapshot.task = task;
+    snapshot.queued_prompts = state.control.queued_prompts(session_id).await?;
     let _ = state
         .events
         .send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
@@ -1312,6 +1687,8 @@ async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
                 ..SessionSnapshot::default()
             },
             transcript: TranscriptSnapshot::default(),
+            details: None,
+            queued_prompts: Vec::new(),
             task,
         });
     }
@@ -1337,8 +1714,9 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use forge_config::Config;
-    use forge_model::MockModelClient;
-    use forge_types::ModelResponse;
+    use forge_model::{MockModelClient, ModelError, ModelRequest};
+    use forge_types::{AskUserQuestionAnswerItem, ModelResponse};
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn text_response(text: &str) -> ModelResponse {
@@ -1350,13 +1728,90 @@ mod tests {
         }
     }
 
+    struct SlowModel;
+
+    impl ModelClient for SlowModel {
+        fn complete<'life0, 'async_trait>(
+            &'life0 self,
+            _request: ModelRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ModelResponse, ModelError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                Ok(text_response("should be cancelled"))
+            })
+        }
+    }
+
     async fn scripted_session(cfg: &Config, text: &str) -> AgentSession {
-        let model: Arc<dyn ModelClient> =
-            Arc::new(MockModelClient::script(vec![text_response(text)]));
+        scripted_session_with(cfg, vec![text_response(text)]).await
+    }
+
+    async fn scripted_session_with(cfg: &Config, responses: Vec<ModelResponse>) -> AgentSession {
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(responses));
         open_session_with_model(cfg, SessionTarget::New, model)
             .await
             .unwrap()
             .session
+    }
+
+    fn approval_then_question_script(label: &str) -> Vec<ModelResponse> {
+        vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: format!("{label}-approval"),
+                    name: "git".into(),
+                    arguments: json!({"subcommand": "reset", "args": ["--hard", "HEAD"]}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: format!("{label}-question"),
+                    name: "ask_user_question".into(),
+                    arguments: json!({
+                        "questions": [{
+                            "id": "choice",
+                            "header": "Choice",
+                            "question": "Continue?",
+                            "options": [
+                                {"label": "Yes (Recommended)", "description": "Continue."},
+                                {"label": "No", "description": "Stop."}
+                            ]
+                        }]
+                    }),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response(&format!("{label} interaction complete")),
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: format!("{label}-background"),
+                    name: "background_run".into(),
+                    arguments: json!({
+                        "command": "sleep 30",
+                        "label": format!("{label} background")
+                    }),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response(&format!("{label} background started")),
+        ]
     }
 
     fn task_for(
@@ -1390,6 +1845,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut events = handle.subscribe();
         while std::time::Instant::now() < deadline {
+            handle.command(SupervisorCommand::Refresh).await.unwrap();
             match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
                 Ok(Ok(SupervisorEvent::SessionUpdated(snapshot))) => {
                     if snapshot.task.session_id == session_id && predicate(&snapshot) {
@@ -1426,7 +1882,8 @@ mod tests {
         first_cfg.journal.path = temp.path().join("journals").display().to_string();
         let first_session = scripted_session(&first_cfg, "first answer").await;
         let first_id = first_session.session_id;
-        let first_task = task_for(first_id, "first", &first_workspace);
+        let mut first_task = task_for(first_id, "first", &first_workspace);
+        first_task.ownership = WorktreeOwnership::Primary;
 
         let mut second_cfg = first_cfg.clone();
         second_cfg.resolved_workspace = second_workspace.clone();
@@ -1483,13 +1940,44 @@ mod tests {
             })
             .await
             .unwrap();
+        // Queue a follow-up for both while their first turn may still be
+        // driving. Primary and managed Sessions use the exact same command
+        // and actor queue.
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: first_id,
+                text: "run first again".into(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: second_id,
+                text: "run second again".into(),
+            })
+            .await
+            .unwrap();
 
         let first_done = wait_for_task_state(&handle, first_id, |snapshot| {
             snapshot.task.turn_state == SupervisorTurnState::Completed
+                && snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .filter(|message| message.role == forge_types::MessageRole::User)
+                    .count()
+                    == 2
         })
         .await;
         let second_done = wait_for_task_state(&handle, second_id, |snapshot| {
             snapshot.task.turn_state == SupervisorTurnState::Completed
+                && snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .filter(|message| message.role == forge_types::MessageRole::User)
+                    .count()
+                    == 2
         })
         .await;
 
@@ -1504,6 +1992,407 @@ mod tests {
             .iter()
             .any(|message| message.content.contains("second answer")));
 
+        for session_id in [first_id, second_id] {
+            handle
+                .command(SupervisorCommand::SetModel {
+                    session_id,
+                    model_id: "mock-v2".into(),
+                    route_id: "native-v2".into(),
+                    reasoning_effort: Some("high".into()),
+                })
+                .await
+                .unwrap();
+            let changed = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot
+                    .details
+                    .as_ref()
+                    .is_some_and(|details| details.active_model == "mock-v2")
+            })
+            .await;
+            let details = changed.details.as_ref().unwrap();
+            assert_eq!(details.active_route_id, "native-v2");
+            assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
+        }
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_with_primary_adopts_exactly_one_primary_actor() {
+        let temp = TempDir::new().unwrap();
+        for args in [
+            &["init", "-q", "--initial-branch=main"][..],
+            &["config", "user.email", "forge@example.com"][..],
+            &["config", "user.name", "Forge Test"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(temp.path().join("tracked.txt"), "one\n").unwrap();
+        for args in [
+            &["add", "tracked.txt"][..],
+            &["commit", "-q", "-m", "init"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+
+        let mut cfg = Config {
+            resolved_workspace: temp.path().to_path_buf(),
+            workspace_root: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let bootstrap = RepositoryBootstrap::acquire(&cfg).await.unwrap();
+        let primary = scripted_session(&cfg, "one answer").await;
+        let primary_id = primary.session_id;
+        bootstrap
+            .control
+            .register_session(
+                NewRepositorySession {
+                    session_id: primary_id,
+                    label: "main".into(),
+                    workspace: temp.path().to_path_buf(),
+                    branch: "main".into(),
+                    ownership: WorktreeOwnership::Primary,
+                    slot: Some(1),
+                    model_id: "mock".into(),
+                    route_id: "native".into(),
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (supervisor, handle) = bootstrap.open_with_primary(&cfg, primary).await.unwrap();
+        let snapshots = supervisor.snapshots().await;
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].task.session_id, primary_id);
+        assert_eq!(snapshots[0].task.ownership, WorktreeOwnership::Primary);
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: primary_id,
+                text: "run once".into(),
+            })
+            .await
+            .unwrap();
+        let done = wait_for_task_state(&handle, primary_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert_eq!(
+            done.transcript
+                .messages()
+                .iter()
+                .filter(|message| message.role == forge_types::MessageRole::User)
+                .count(),
+            1
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_and_managed_actors_share_hitl_question_and_continue_commands() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        let managed_workspace = temp.path().join("managed");
+        std::fs::create_dir_all(&managed_workspace).unwrap();
+
+        let primary_session =
+            scripted_session_with(&cfg, approval_then_question_script("primary")).await;
+        let primary_id = primary_session.session_id;
+        let mut primary_task = task_for(primary_id, "primary", &cfg.resolved_workspace);
+        primary_task.ownership = WorktreeOwnership::Primary;
+
+        let mut managed_cfg = cfg.clone();
+        managed_cfg.resolved_workspace = managed_workspace.clone();
+        managed_cfg.workspace_root = Some(managed_workspace.display().to_string());
+        let managed_session =
+            scripted_session_with(&managed_cfg, approval_then_question_script("managed")).await;
+        let managed_id = managed_session.session_id;
+        let managed_task = task_for(managed_id, "managed", &managed_workspace);
+
+        for task in [&primary_task, &managed_task] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![
+                (primary_task, primary_session),
+                (managed_task, managed_session),
+            ],
+            2,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        for session_id in [primary_id, managed_id] {
+            handle
+                .command(SupervisorCommand::SubmitPrompt {
+                    session_id,
+                    text: "exercise interaction routing".into(),
+                })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.session.pending_hitl.is_some()
+            })
+            .await;
+            assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+            handle
+                .command(SupervisorCommand::ResolveApproval {
+                    session_id,
+                    decision: HitlDecision::Deny,
+                    actor: "test".into(),
+                    feedback: Some("use a safer approach".into()),
+                })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.session.pending_question.is_some()
+            })
+            .await;
+            assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+            handle
+                .command(SupervisorCommand::ResolveQuestion {
+                    session_id,
+                    answers: Some(AskUserQuestionResult {
+                        answers: vec![AskUserQuestionAnswerItem {
+                            id: "choice".into(),
+                            selected: vec!["Yes (Recommended)".into()],
+                            custom: None,
+                        }],
+                    }),
+                    actor: "test".into(),
+                })
+                .await
+                .unwrap();
+        }
+        for (session_id, label) in [(primary_id, "primary"), (managed_id, "managed")] {
+            let done = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.task.turn_state == SupervisorTurnState::Completed
+            })
+            .await;
+            assert!(done.transcript.messages().iter().any(|message| message
+                .content
+                .contains(&format!("{label} interaction complete"))));
+        }
+
+        for session_id in [primary_id, managed_id] {
+            handle
+                .command(SupervisorCommand::SubmitPrompt {
+                    session_id,
+                    text: "start a background job".into(),
+                })
+                .await
+                .unwrap();
+        }
+        let mut background_ids = Vec::new();
+        for session_id in [primary_id, managed_id] {
+            let started = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.task.turn_state == SupervisorTurnState::Completed
+                    && snapshot
+                        .details
+                        .as_ref()
+                        .is_some_and(|details| !details.background.is_empty())
+            })
+            .await;
+            let task_id = started.details.as_ref().unwrap().background[0].id;
+            background_ids.push((session_id, task_id));
+        }
+        for (session_id, task_id) in background_ids {
+            handle
+                .command(SupervisorCommand::CancelBackgroundTask {
+                    session_id,
+                    task_id,
+                })
+                .await
+                .unwrap();
+            let settled = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.details.as_ref().is_some_and(|details| {
+                    details
+                        .background
+                        .iter()
+                        .find(|task| task.id == task_id)
+                        .is_some_and(|task| task.status.is_terminal())
+                })
+            })
+            .await;
+            let status = &settled
+                .details
+                .as_ref()
+                .unwrap()
+                .background
+                .iter()
+                .find(|task| task.id == task_id)
+                .unwrap()
+                .status;
+            assert!(
+                matches!(status, forge_core::BackgroundTaskStatus::Cancelled)
+                    || matches!(
+                        status,
+                        forge_core::BackgroundTaskStatus::Failed { error }
+                            if error.contains("sandbox unavailable")
+                    ),
+                "unexpected background terminal state: {status:?}"
+            );
+        }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_and_managed_running_turns_share_stop_command() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        let managed_workspace = temp.path().join("managed");
+        std::fs::create_dir_all(&managed_workspace).unwrap();
+
+        let primary_session =
+            open_session_with_model(&cfg, SessionTarget::New, Arc::new(SlowModel))
+                .await
+                .unwrap()
+                .session;
+        let primary_id = primary_session.session_id;
+        let mut primary_task = task_for(primary_id, "primary", &cfg.resolved_workspace);
+        primary_task.ownership = WorktreeOwnership::Primary;
+
+        let mut managed_cfg = cfg.clone();
+        managed_cfg.resolved_workspace = managed_workspace.clone();
+        managed_cfg.workspace_root = Some(managed_workspace.display().to_string());
+        let managed_session =
+            open_session_with_model(&managed_cfg, SessionTarget::New, Arc::new(SlowModel))
+                .await
+                .unwrap()
+                .session;
+        let managed_id = managed_session.session_id;
+        let managed_task = task_for(managed_id, "managed", &managed_workspace);
+
+        for task in [&primary_task, &managed_task] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![
+                (primary_task, primary_session),
+                (managed_task, managed_session),
+            ],
+            2,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        for session_id in [primary_id, managed_id] {
+            handle
+                .command(SupervisorCommand::SubmitPrompt {
+                    session_id,
+                    text: "wait until cancelled".into(),
+                })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let snapshot = supervisor.snapshot(session_id).await.unwrap();
+                if snapshot.task.turn_state == SupervisorTurnState::Running {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "turn never started");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            handle
+                .command(SupervisorCommand::StopTurn { session_id })
+                .await
+                .unwrap();
+        }
+        for session_id in [primary_id, managed_id] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let cancelled = loop {
+                let snapshot = supervisor.snapshot(session_id).await.unwrap();
+                if snapshot.task.turn_state == SupervisorTurnState::Cancelled {
+                    break snapshot;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "turn did not cancel; last state: {:?}",
+                    snapshot.task.turn_state
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            };
+            assert_eq!(cancelled.session.lifecycle, TaskLifecycle::Cancelled);
+        }
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
