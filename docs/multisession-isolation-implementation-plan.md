@@ -45,6 +45,13 @@ leave later queued prompts runnable. Forge does not replay an interrupted
 prompt automatically because the model or a tool may already have produced a
 side effect.
 
+Inactive session views continue to service their live operator terminal and
+filesystem watcher while they are saved away from the selected view. Terminal
+output is drained on the shared TUI tick, and watcher notifications use a
+bounded producer queue plus path coalescing. If churn exceeds those bounds,
+the selected view receives a full workspace refresh signal when it is next
+serviced instead of retaining an unbounded event backlog.
+
 ## Ordered implementation slices
 
 Each slice is completed and validated before the next one begins. Tests are

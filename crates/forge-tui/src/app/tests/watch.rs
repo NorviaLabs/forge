@@ -185,6 +185,45 @@ fn watcher_coalesces_duplicate_paths_and_waits_for_a_quiet_period() {
 }
 
 #[test]
+fn watcher_overflow_requests_a_bounded_full_refresh() {
+    let mut watch = FileWatchState::new();
+    for index in 0..(FileWatchState::EVENT_QUEUE_CAPACITY + 64) {
+        watch.inject_test_change(PathBuf::from(format!("generated/{index}.rs")), true, false);
+    }
+
+    let batch = watch.take_ready_batch().expect("overflow refresh");
+    assert!(batch.overflowed);
+    assert!(batch.tree_changed);
+    assert!(batch.paths.len() <= FileWatchState::EVENT_QUEUE_CAPACITY);
+    assert!(watch.take_ready_batch().is_none());
+}
+
+#[tokio::test]
+async fn inactive_saved_watcher_is_drained_without_refreshing_selected_view() {
+    let (_dir, mut app) = focus_test_app().await;
+    let session_id = app.selected_session_id;
+    app.save_session_view_state(session_id);
+    let other_session_id = uuid::Uuid::new_v4();
+    app.selected_session_id = other_session_id;
+    app.restore_session_view_state(other_session_id);
+    app.session_view_states
+        .get_mut(&session_id)
+        .expect("saved session view")
+        .file_watch
+        .inject_change(PathBuf::from("inactive.txt"));
+
+    app.poll_file_changes();
+
+    let batch = app
+        .session_view_states
+        .get_mut(&session_id)
+        .and_then(|state| state.file_watch.take_ready_batch())
+        .expect("saved watcher batch");
+    assert_eq!(batch.paths, vec![PathBuf::from("inactive.txt")]);
+    assert!(app.file_watch.take_ready_batch().is_none());
+}
+
+#[test]
 fn forge_runtime_paths_are_ignored_by_file_watcher_filter() {
     assert!(path_is_ignored_by_file_watcher(Path::new(
         ".forge/progress.json"
