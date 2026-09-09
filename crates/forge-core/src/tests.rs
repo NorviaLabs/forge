@@ -4293,6 +4293,17 @@ async fn git(dir: &std::path::Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
+async fn git_diff_cached(dir: &std::path::Path) -> String {
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(dir)
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "git diff --cached failed");
+    String::from_utf8(output.stdout).unwrap()
+}
+
 async fn init_repo(dir: &std::path::Path) {
     git(dir, &["init", "-q"]).await;
     git(dir, &["config", "user.email", "forge@example.com"]).await;
@@ -4949,6 +4960,111 @@ async fn git_add_then_commit_completes_with_verified_effect() {
         .unwrap();
     s.run_user_message("commit the change").await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    assert_eq!(
+        s.last_completion.as_ref().unwrap().reason,
+        CompletionReason::GitEffectVerified
+    );
+}
+
+// `git restore --staged` only removes a path from the index; the worktree
+// stays modified. Forge verified the *worktree* no longer differs from the
+// index (`git diff --name-only`), which stays non-empty after an unstage, so
+// a perfectly successful unstage was misreported as "repository effect did
+// not occur" and the whole turn Failed. The unstage's effect lives in the
+// index, so it must be verified against `HEAD` (`git diff --cached`), not the
+// worktree.
+#[tokio::test]
+async fn git_restore_staged_completes_with_verified_effect() {
+    let dir = tempdir().unwrap();
+    init_repo(dir.path()).await;
+    // Make a staged modification, leaving the worktree still modified so the
+    // worktree-vs-index diff stays non-empty after the unstage.
+    std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+    git(dir.path(), &["add", "a.txt"]).await;
+    assert!(
+        !git_diff_cached(dir.path()).await.trim().is_empty(),
+        "precondition: a change staged in the index"
+    );
+
+    let model = script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "1".into(),
+            name: "git".into(),
+            arguments: json!({"subcommand": "restore", "args": ["--staged", "a.txt"]}),
+        }]),
+        text_only("Unstaged the change."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("unstage a.txt").await.unwrap();
+
+    // The unstage actually happened and no longer differs from HEAD.
+    assert!(
+        git_diff_cached(dir.path()).await.trim().is_empty(),
+        "after restore --staged the index must match HEAD"
+    );
+    // The turn is the work and it succeeded — it must not be marked Failed
+    // just because the worktree is still (intentionally) modified.
+    assert_eq!(
+        s.active_task.lifecycle,
+        TaskLifecycle::Completed,
+        "unstage completed but turn lifecycle was {:?}",
+        s.active_task.lifecycle
+    );
+    assert_eq!(
+        s.last_completion.as_ref().unwrap().reason,
+        CompletionReason::GitEffectVerified
+    );
+}
+
+// `git restore --staged --worktree` rewrites both surfaces; both must be
+// verified, so a successful two-surface restore completes.
+#[tokio::test]
+async fn git_restore_staged_and_worktree_completes_with_verified_effect() {
+    let dir = tempdir().unwrap();
+    init_repo(dir.path()).await;
+    // Stage one change, then layer a worktree-only change on top so both the
+    // index and the worktree differ from HEAD before the restore.
+    std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+    git(dir.path(), &["add", "a.txt"]).await;
+    std::fs::write(dir.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    assert!(
+        !git_diff_cached(dir.path()).await.trim().is_empty(),
+        "precondition: index differs from HEAD"
+    );
+
+    let model = script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "1".into(),
+            name: "git".into(),
+            arguments: json!({
+                "subcommand": "restore",
+                "args": ["--staged", "--worktree", "a.txt"]
+            }),
+        }]),
+        text_only("Reverted both the staged and worktree changes."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("revert a.txt entirely").await.unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "one\n",
+        "worktree must be restored to HEAD"
+    );
+    assert!(
+        git_diff_cached(dir.path()).await.trim().is_empty(),
+        "index must be restored to HEAD"
+    );
+    assert_eq!(
+        s.active_task.lifecycle,
+        TaskLifecycle::Completed,
+        "two-surface restore completed but turn lifecycle was {:?}",
+        s.active_task.lifecycle
+    );
     assert_eq!(
         s.last_completion.as_ref().unwrap().reason,
         CompletionReason::GitEffectVerified
