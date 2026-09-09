@@ -951,11 +951,8 @@ async fn execute_command(
             // Branch from the *initiating* worktree's committed HEAD, not the
             // main worktree's — launching Forge from a linked worktree must
             // fork the work that worktree is actually on.
-            let worktree = forge_storage::create_session_worktree(
-                &state.cfg.resolved_workspace,
-                &base_dir,
-                pending.operation_id,
-            )?;
+            let worktree =
+                forge_storage::create_session_worktree(&state.cfg.resolved_workspace, &base_dir)?;
             state
                 .control
                 .mark_worktree_created(pending.operation_id, &worktree.path, &worktree.branch)
@@ -3324,18 +3321,22 @@ mod tests {
             .expect("unnamed task row");
         assert!(task.workspace.exists());
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
-        // The id-only naming: `session-{id}` path, `forge/session-{id}` branch.
-        assert!(
-            task.branch.starts_with("forge/session-"),
-            "branch: {}",
-            task.branch
-        );
+        // The generated identity is a UUID4 shared by the path and branch.
+        let branch_id = task
+            .branch
+            .strip_prefix("forge/session-")
+            .expect("session branch prefix");
+        assert_eq!(branch_id.parse::<SessionId>().unwrap().get_version_num(), 4);
         assert!(
             task.workspace
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("session-")),
             "path: {}",
             task.workspace.display()
+        );
+        assert_eq!(
+            task.workspace.file_name().unwrap().to_string_lossy(),
+            format!("session-{branch_id}")
         );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
@@ -3374,7 +3375,11 @@ mod tests {
             .into_iter()
             .find(|task| task.label == "rewrite-the-lexer")
             .expect("prompt-derived label");
-        assert_eq!(task.branch, format!("forge/session-{operation_id}"));
+        let branch_id = task
+            .branch
+            .strip_prefix("forge/session-")
+            .expect("session branch prefix");
+        assert_eq!(branch_id.parse::<SessionId>().unwrap().get_version_num(), 4);
 
         handle
             .command(SupervisorCommand::FinalizeCreation { operation_id })
@@ -3551,7 +3556,7 @@ mod tests {
                 .await;
 
         let base = TempDir::new().unwrap();
-        let linked = forge_storage::create_session_worktree(repo.path(), base.path(), 1).unwrap();
+        let linked = forge_storage::create_session_worktree(repo.path(), base.path()).unwrap();
 
         let main_worktree = handle
             .command(SupervisorCommand::AttachWorktree {
@@ -3724,7 +3729,7 @@ mod tests {
         let scratch = TempDir::new().unwrap();
         let base = scratch.path().join("worktrees");
         std::fs::create_dir_all(&base).unwrap();
-        let linked = forge_storage::create_session_worktree(repo.path(), &base, 7).unwrap();
+        let linked = forge_storage::create_session_worktree(repo.path(), &base).unwrap();
         let journal = scratch.path().join("journals");
 
         let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();

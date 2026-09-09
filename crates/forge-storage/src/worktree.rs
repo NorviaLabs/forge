@@ -19,6 +19,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use uuid::Uuid;
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WorktreeError {
@@ -77,14 +79,15 @@ pub fn main_worktree(workspace: &Path) -> Result<PathBuf, WorktreeError> {
 ///
 /// Git identity is deliberately independent of the mutable display label.
 /// Renaming a Forge session must never rename its branch or worktree.
+/// Each new path/branch identity is generated from a UUIDv4 rather than the
+/// lifecycle operation counter, so resetting that counter cannot reuse a name.
 pub fn create_session_worktree(
     source_worktree: &Path,
     base_dir: &Path,
-    id: u64,
 ) -> Result<SubagentWorktree, WorktreeError> {
     std::fs::create_dir_all(base_dir)?;
-    let name = format!("session-{id}");
-    let branch = format!("forge/session-{id}");
+    let name = format!("session-{}", Uuid::new_v4());
+    let branch = format!("forge/{name}");
     let path = base_dir.join(&name);
     let output = Command::new("git")
         .arg("-C")
@@ -375,20 +378,30 @@ mod tests {
     }
 
     #[test]
-    fn managed_session_worktrees_get_a_stable_id_only_name_and_branch() {
+    fn managed_session_worktrees_get_uuid4_names_and_branches() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let wt = create_session_worktree(repo.path(), base.path(), 7).unwrap();
-        assert_eq!(wt.path, base.path().join("session-7"));
-        assert_eq!(wt.branch, "forge/session-7");
+        let wt = create_session_worktree(repo.path(), base.path()).unwrap();
+        let name = wt.path.file_name().unwrap().to_str().unwrap();
+        let uuid = Uuid::parse_str(name.strip_prefix("session-").unwrap()).unwrap();
+        assert_eq!(uuid.get_version_num(), 4);
+        assert_eq!(wt.path, base.path().join(name));
+        assert_eq!(wt.branch, format!("forge/{name}"));
 
-        // Managed sessions never collide: the id is the differentiator.
-        let other = create_session_worktree(repo.path(), base.path(), 8).unwrap();
-        assert_eq!(other.path, base.path().join("session-8"));
+        // Managed sessions use independent UUID4 identities, so their
+        // worktrees and branches do not depend on a resettable operation id.
+        let other = create_session_worktree(repo.path(), base.path()).unwrap();
         assert_ne!(wt.path, other.path);
         assert_ne!(wt.branch, other.branch);
+        let other_name = other.path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            Uuid::parse_str(other_name.strip_prefix("session-").unwrap())
+                .unwrap()
+                .get_version_num(),
+            4
+        );
     }
 
     #[test]
@@ -458,7 +471,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let wt = create_session_worktree(repo.path(), base.path(), 1).unwrap();
+        let wt = create_session_worktree(repo.path(), base.path()).unwrap();
 
         let error = remove_clean_worktree_if_branch(repo.path(), &wt.path, "forge/other-branch")
             .unwrap_err();
@@ -490,7 +503,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let linked = create_session_worktree(repo.path(), base.path(), 4).unwrap();
+        let linked = create_session_worktree(repo.path(), base.path()).unwrap();
 
         assert_eq!(
             main_worktree(&linked.path).unwrap().canonicalize().unwrap(),
@@ -499,14 +512,17 @@ mod tests {
     }
 
     #[test]
-    fn session_worktree_uses_stable_git_identity() {
+    fn session_worktree_uses_uuid4_git_identity() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let worktree = create_session_worktree(repo.path(), base.path(), 13).unwrap();
-        assert_eq!(worktree.branch, "forge/session-13");
-        assert_eq!(worktree.path, base.path().join("session-13"));
+        let worktree = create_session_worktree(repo.path(), base.path()).unwrap();
+        let name = worktree.path.file_name().unwrap().to_str().unwrap();
+        let uuid = Uuid::parse_str(name.strip_prefix("session-").unwrap()).unwrap();
+        assert_eq!(uuid.get_version_num(), 4);
+        assert_eq!(worktree.branch, format!("forge/{name}"));
+        assert_eq!(worktree.path, base.path().join(name));
     }
 
     #[test]
@@ -514,7 +530,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
-        let worktree = create_session_worktree(repo.path(), base.path(), 5).unwrap();
+        let worktree = create_session_worktree(repo.path(), base.path()).unwrap();
         std::fs::write(worktree.path.join("uncommitted.txt"), "keep me").unwrap();
 
         assert!(matches!(
