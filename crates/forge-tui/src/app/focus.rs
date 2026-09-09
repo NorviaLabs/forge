@@ -172,9 +172,12 @@ impl TuiApp {
         {
             return Some("Backspace remove attachment · Ctrl+U clear draft".into());
         }
+        // Both halves read the selected session: a restored busy flag from a
+        // session that finished while unselected must never advertise its
+        // queue (or anyone else's) on the session now on screen.
         if self.focus.block() == FocusBlock::Composer
-            && self.busy_state.is_active()
-            && self.session_view.queue_len > 0
+            && self.selected_turn_running()
+            && !self.selected_queue_messages().is_empty()
         {
             return Some("Ctrl+↑↓ select queued · Ctrl+Backspace remove".into());
         }

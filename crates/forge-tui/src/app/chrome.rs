@@ -103,6 +103,27 @@ impl TuiApp {
                         self.session_view = snapshot.session.clone();
                         self.transcript_view = snapshot.transcript.clone();
                         self.sync_supervised_presentation(&snapshot);
+                    } else if let Some(saved) =
+                        self.session_view_states.get_mut(&snapshot.task.session_id)
+                    {
+                        // The session finished (or started) while unselected:
+                        // its saved view still carries the busy flag from
+                        // when it was last on screen. Reconcile it now so a
+                        // later switch restores the actor's state, not rot.
+                        // Mirrors `sync_supervised_presentation`, which owns
+                        // the live copy.
+                        if snapshot.task.turn_state == forge_session::SupervisorTurnState::Running {
+                            if !saved.busy_state.is_active() {
+                                saved.stream.clear_preview();
+                                saved.stream.thinking.clear();
+                                saved.busy_state.start(BusyPhase::Model);
+                            }
+                        } else {
+                            saved.busy_state.stop();
+                            saved.stream.clear_preview();
+                            saved.stream.thinking.clear();
+                            saved.cancellation.take_requested();
+                        }
                     }
                     if let Some(task) = self
                         .session_chrome
