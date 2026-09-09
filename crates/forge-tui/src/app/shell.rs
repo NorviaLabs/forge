@@ -7,6 +7,8 @@
 use super::*;
 pub(crate) struct TerminalEventSource {
     rx: tokio::sync::mpsc::UnboundedReceiver<io::Result<Event>>,
+    #[cfg(not(test))]
+    pending: std::collections::VecDeque<io::Result<Event>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -40,6 +42,8 @@ impl TerminalEventSource {
         });
         Self {
             rx,
+            #[cfg(not(test))]
+            pending: std::collections::VecDeque::new(),
             stop,
             task: Some(task),
         }
@@ -51,7 +55,17 @@ impl TerminalEventSource {
 
     #[cfg(not(test))]
     fn try_recv(&mut self) -> Result<io::Result<Event>, tokio::sync::mpsc::error::TryRecvError> {
+        if let Some(item) = self.pending.pop_front() {
+            return Ok(item);
+        }
         self.rx.try_recv()
+    }
+
+    /// Stash already-read events back at the head of the queue, preserving
+    /// order, so a lookahead that did not coalesce loses nothing.
+    #[cfg(not(test))]
+    fn push_front(&mut self, item: io::Result<Event>) {
+        self.pending.push_front(item);
     }
 
     pub(super) async fn shutdown(mut self) {
@@ -104,7 +118,20 @@ impl TuiApp {
 /// user pauses. Bracketed paste is still delivered as one `Event::Paste`; older
 /// terminals that emit a paste as key events are processed over successive
 /// frames without dropping any input.
+///
+/// Unbracketed multi-line pastes (tmux `paste-buffer`, terminals without
+/// DECSET 2004) arrive as plain `Enter` key events, and each one would submit
+/// the composer as its own turn. `coalesce_unbracketed_paste` folds a queued
+/// burst of printable keys plus `Enter` into a single `Event::Paste` so the
+/// whole payload lands as one pending composer message.
 const MAX_EVENTS_PER_FRAME: usize = 32;
+
+/// Minimum queued lines that mark an `Enter` burst as an unbracketed paste
+/// rather than deliberate submits. A lone `Enter` (or one newline between two
+/// typed fragments) keeps submitting; two or more queued `Enter` presses in
+/// the same drain mean the newlines arrived as fast as the reader thread
+/// could forward them, which typing cannot produce.
+const UNBRACKETED_PASTE_MIN_NEWLINES: usize = 2;
 
 pub(super) enum ForegroundWake {
     Input(Event),
@@ -137,26 +164,117 @@ pub(super) async fn drain_events<B: ratatui::backend::Backend>(
 ) -> Result<(), TuiError> {
     for _ in 0..MAX_EVENTS_PER_FRAME {
         #[cfg(test)]
-        let next = match app.test_events.pop_front() {
-            Some(event) => event,
-            None => break,
+        let next = coalesce_unbracketed_paste(&mut app.test_events);
+        #[cfg(not(test))]
+        let next = coalesce_channel_paste(app);
+        let Some(next) = next else {
+            break;
         };
         #[cfg(not(test))]
-        let next = {
-            let Some(events) = app.terminal_events.as_mut() else {
-                break;
-            };
-            match events.try_recv() {
-                Ok(event) => event?,
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    return Err(TuiError::Other("terminal event stream closed".into()));
-                }
-            }
-        };
+        let next = next?;
         dispatch_terminal_event(app, next, terminal.as_deref_mut()).await?;
     }
     Ok(())
+}
+
+/// Pop the next production terminal event, folding an already-queued burst of
+/// printable key events plus plain `Enter` presses into a single `Event::Paste`
+/// (see `coalesce_unbracketed_paste`). Only already-queued events are
+/// inspected, never blocking for more of a burst that is still arriving:
+/// `try_recv` either yields an event or reports the queue empty.
+#[cfg(not(test))]
+fn coalesce_channel_paste(app: &mut TuiApp) -> Option<io::Result<Event>> {
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    let mut queued: std::collections::VecDeque<Event> = std::collections::VecDeque::new();
+    let mut closed = false;
+    while let Some(events) = app.terminal_events.as_mut() {
+        match events.try_recv() {
+            Ok(Ok(event)) => queued.push_back(event),
+            Ok(Err(error)) => {
+                for event in queued.into_iter().rev() {
+                    if let Some(events) = app.terminal_events.as_mut() {
+                        events.push_front(Ok(event));
+                    }
+                }
+                return Some(Err(error));
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                closed = true;
+                break;
+            }
+        }
+        if queued.len() >= MAX_EVENTS_PER_FRAME {
+            break;
+        }
+    }
+    if queued.is_empty() {
+        return closed.then(|| {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "terminal event stream closed",
+            ))
+        });
+    }
+    let coalesced = coalesce_unbracketed_paste(&mut queued);
+    for event in queued.into_iter().rev() {
+        if let Some(events) = app.terminal_events.as_mut() {
+            events.push_front(Ok(event));
+        }
+    }
+    coalesced.map(Ok)
+}
+
+/// Fold a queued burst of printable key events plus plain `Enter` presses into
+/// a single `Event::Paste`, so a multi-line paste that arrives without
+/// bracketed-paste framing lands as one pending composer message instead of N
+/// separate submits. Only `Press` key events participate: plain `Enter`, and
+/// printable characters with no modifiers beyond `Shift` (shifted capitals
+/// arrive with `Shift` held and still insert as text). Anything else
+/// (modified chords, `Shift+Enter`, mouse, resize, a real bracketed `Paste`)
+/// stops the burst and is returned untouched on the next drain.
+fn coalesce_unbracketed_paste(queued: &mut std::collections::VecDeque<Event>) -> Option<Event> {
+    let mut end = 0usize;
+    let mut newlines = 0usize;
+    for event in queued.iter() {
+        let Event::Key(key) = event else {
+            break;
+        };
+        if key.kind != KeyEventKind::Press {
+            break;
+        }
+        // Mirror `printable_chat_char`: shifted capitals/symbols still
+        // insert as text, so they belong to the burst. Plain `Enter`
+        // submits, so only modifier-free `Enter` counts as a pasted
+        // newline — `Shift+Enter` inserts its own newline.
+        let non_shift_modifiers = key.modifiers & !(KeyModifiers::SHIFT | KeyModifiers::NONE);
+        match key.code {
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                newlines += 1;
+                end += 1;
+            }
+            KeyCode::Char(c) if !c.is_control() && non_shift_modifiers.is_empty() => {
+                end += 1;
+            }
+            _ => break,
+        }
+    }
+    if newlines < UNBRACKETED_PASTE_MIN_NEWLINES || end < 2 {
+        return queued.pop_front();
+    }
+    let mut pasted = String::new();
+    for _ in 0..end {
+        match queued.pop_front() {
+            Some(Event::Key(key)) => match key.code {
+                KeyCode::Enter => pasted.push('\n'),
+                KeyCode::Char(c) => pasted.push(c),
+                _ => {}
+            },
+            _ => break,
+        }
+    }
+    Some(Event::Paste(pasted))
 }
 
 /// Wait until terminal input actually arrives or a time-based UI service is due.
@@ -167,7 +285,7 @@ pub(super) async fn next_foreground_wake(
 ) -> Result<ForegroundWake, TuiError> {
     #[cfg(test)]
     {
-        if let Some(event) = app.test_events.pop_front() {
+        if let Some(event) = coalesce_unbracketed_paste(&mut app.test_events) {
             return Ok(ForegroundWake::Input(event));
         }
         ticker.tick().await;
@@ -471,8 +589,17 @@ async fn run_loop(
         if let Some(event) = wait_for_idle_event(app, input_wait).await? {
             // Any terminal input changes state directly or through the drained
             // queue; force the next frame rather than waiting for idle cadence.
+            // The idle wait already consumed the burst head from the channel,
+            // so return it to the lookahead before coalescing: otherwise the
+            // first Enter would submit a partial line and the rest of the
+            // burst would arrive as separate turns.
             frame_dirty = true;
-            dispatch_terminal_event(app, event, Some(terminal)).await?;
+            #[cfg(not(test))]
+            if let Some(events) = app.terminal_events.as_mut() {
+                events.push_front(Ok(event));
+            }
+            #[cfg(test)]
+            app.test_events.push_front(event);
             drain_events(app, Some(terminal)).await?;
             app.poll_interactive_terminal();
             // Next loop iteration draws once after all input and background polls.
