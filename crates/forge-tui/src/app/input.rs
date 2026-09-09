@@ -2040,6 +2040,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unbracketed_multiline_paste_arrives_as_one_pending_message() {
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+
+        fn key(code: KeyCode) -> Event {
+            Event::Key(event::KeyEvent::new(code, KeyModifiers::NONE))
+        }
+        for c in "line one".chars() {
+            app.test_events.push_back(key(KeyCode::Char(c)));
+        }
+        app.test_events.push_back(key(KeyCode::Enter));
+        for c in "line two".chars() {
+            app.test_events.push_back(key(KeyCode::Char(c)));
+        }
+        app.test_events.push_back(key(KeyCode::Enter));
+        for c in "line three".chars() {
+            app.test_events.push_back(key(KeyCode::Char(c)));
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        super::super::shell::drain_events(&mut app, Some(&mut terminal))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.input.text, "line one\nline two\nline three",
+            "embedded newlines from a fast paste burst must insert, not submit",
+        );
+        assert!(
+            !app.pending_turn.has_prompt(),
+            "no partial line may dispatch while the burst is still arriving",
+        );
+        assert!(
+            app.history.entries().is_empty(),
+            "no partial line may be recorded as its own user turn",
+        );
+    }
+
+    #[tokio::test]
+    async fn single_enter_still_submits_and_bracketed_paste_stays_intact() {
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut first) = app().await;
+        focus_composer(&mut first);
+        first.input.set_text("hello");
+
+        first.test_events.push_back(Event::Key(event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        super::super::shell::drain_events(&mut first, Some(&mut terminal))
+            .await
+            .unwrap();
+
+        assert!(
+            first.pending_turn.has_prompt(),
+            "a lone Enter must keep submitting the composer",
+        );
+
+        // Shift+Enter inserts its own newline behind the coalescer, so the
+        // burst boundary must stop there instead of swallowing it into a
+        // paste. The two plain Enters after the modified chord still arrive
+        // in the same drain, so they fold into a paste while the leading
+        // "ab" was already delivered as single keys.
+        let (_dir, mut modified) = app().await;
+        focus_composer(&mut modified);
+        for c in "ab".chars() {
+            modified
+                .test_events
+                .push_back(Event::Key(event::KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                )));
+        }
+        modified
+            .test_events
+            .push_back(Event::Key(event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::SHIFT,
+            )));
+        for c in "cd".chars() {
+            modified
+                .test_events
+                .push_back(Event::Key(event::KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                )));
+        }
+        modified
+            .test_events
+            .push_back(Event::Key(event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )));
+        for c in "ef".chars() {
+            modified
+                .test_events
+                .push_back(Event::Key(event::KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                )));
+        }
+        modified
+            .test_events
+            .push_back(Event::Key(event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        super::super::shell::drain_events(&mut modified, Some(&mut terminal))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            modified.input.text, "ab\ncd\nef\n",
+            "a modified Enter must keep its own newline instead of joining a paste",
+        );
+        assert!(
+            !modified.pending_turn.has_prompt(),
+            "no partial line before the modified chord may dispatch as its own turn",
+        );
+
+        let (_dir, mut second) = app().await;
+        focus_composer(&mut second);
+        second
+            .test_events
+            .push_back(Event::Paste("a\nb\nc".to_string()));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        super::super::shell::drain_events(&mut second, Some(&mut terminal))
+            .await
+            .unwrap();
+
+        assert_eq!(second.input.text, "a\nb\nc");
+        assert!(!second.pending_turn.has_prompt());
+    }
+
+    #[tokio::test]
     async fn bang_submission_opens_terminal_and_records_history() {
         if !crate::interactive_terminal::pty_allocation_available() {
             eprintln!("skipping: this host denies PTY allocation");
