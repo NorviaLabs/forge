@@ -451,7 +451,7 @@ async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
         .unwrap();
 
     // One keypress: no form, no modal. The task is registered unnamed and
-    // prompt-less, with stable id-only session branch/path naming.
+    // prompt-less, with UUID4-backed session branch/path naming.
     let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
     assert!(
         task.branch.starts_with("forge/session-"),
