@@ -1783,10 +1783,81 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use forge_config::Config;
+    use forge_core::LoopConfig;
     use forge_model::{MockModelClient, ModelError, ModelRequest};
-    use forge_types::{AskUserQuestionAnswerItem, ModelResponse};
+    use forge_tools::{Tool, ToolContext, ToolError, ToolRegistry};
+    use forge_types::{AskUserQuestionAnswerItem, ModelResponse, ToolOutput};
     use serde_json::json;
     use tempfile::TempDir;
+
+    /// Simulates a command the OS sandbox blocks while confined and that still
+    /// fails once HITL approval escalates it to an unconfined run — the shape
+    /// of a real `bash(git …)` call the sandbox refuses and that genuinely
+    /// cannot succeed. Its failure must be ordinary tool feedback, not a turn
+    /// failure.
+    struct EscalatingSandboxDeniedTool;
+
+    impl Tool for EscalatingSandboxDeniedTool {
+        fn name(&self) -> &str {
+            "escalating_sandbox_denied"
+        }
+        fn description(&self) -> &str {
+            "Simulate a command blocked by the sandbox that also fails unconfined"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+        fn side_effect_class(&self) -> forge_types::SideEffectClass {
+            forge_types::SideEffectClass::Exec
+        }
+        fn call<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 ToolContext,
+            _args: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ToolOutput, ToolError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                if ctx.unconfined_shell {
+                    return Ok(ToolOutput::failed_exit(
+                        "git failed even outside the sandbox",
+                        Some(1),
+                    ));
+                }
+                Err(ToolError::SandboxDenied {
+                    content: "Operation not permitted\nblocked by the sandbox".into(),
+                    reason:
+                        "blocked by the sandbox: filesystem access is confined to the workspace"
+                            .into(),
+                    denied_host: None,
+                })
+            })
+        }
+    }
+
+    async fn escalation_session(cfg: &Config, responses: Vec<ModelResponse>) -> AgentSession {
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(responses));
+        let loop_cfg = LoopConfig {
+            max_turns: 8,
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(EscalatingSandboxDeniedTool));
+        AgentSession::create(loop_cfg, model, tools).await.unwrap()
+    }
 
     fn text_response(text: &str) -> ModelResponse {
         ModelResponse {
@@ -2356,6 +2427,111 @@ mod tests {
                 "unexpected background terminal state: {status:?}"
             );
         }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn approved_sandbox_escalation_resumes_the_turn_instead_of_failing() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        let session = escalation_session(
+            &cfg,
+            vec![
+                ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "escalate-1".into(),
+                        name: "escalating_sandbox_denied".into(),
+                        arguments: json!({}),
+                    }],
+                    usage: None,
+                    thinking: None,
+                },
+                ModelResponse {
+                    text: "finished after approved escalation".into(),
+                    tool_calls: vec![],
+                    usage: None,
+                    thinking: None,
+                },
+            ],
+        )
+        .await;
+        let session_id = session.session_id;
+        let task = task_for(session_id, "escalate", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "exercise escalation".into(),
+            })
+            .await
+            .unwrap();
+        let waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_some()
+        })
+        .await;
+        assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+        let payload = waiting.session.pending_hitl.as_ref().unwrap();
+        assert!(
+            payload.sandbox_escalation,
+            "the sandbox denial must be flagged as an escalation"
+        );
+
+        handle
+            .command(SupervisorCommand::ResolveApproval {
+                session_id,
+                decision: HitlDecision::Approve,
+                actor: "test".into(),
+                feedback: None,
+            })
+            .await
+            .unwrap();
+
+        let done = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+                || snapshot.task.turn_state == SupervisorTurnState::Failed
+        })
+        .await;
+        assert_eq!(
+            done.task.turn_state,
+            SupervisorTurnState::Completed,
+            "approved escalation must resume the turn, not fail it: {:?}",
+            done.task.turn_state
+        );
+        assert!(done.transcript.messages().iter().any(|message| message
+            .content
+            .contains("finished after approved escalation")));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
