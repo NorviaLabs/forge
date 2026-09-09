@@ -3642,6 +3642,87 @@ async fn idle_session(dir: &std::path::Path) -> AgentSession {
     .unwrap()
 }
 
+/// Regression for the SIGABRT stack overflow on `write_file` evidence hashing
+/// (crashed at turn ~84 with 176+ messages in context): the 64 KiB hashing
+/// buffer lived inline in the `hash_file` future, nested inside the
+/// supervisor turn-driver chain, blowing the 2 MiB tokio worker stack.
+/// Drives the real turn (mock model) on a 512 KiB-stack thread in a child
+/// process — pre-fix the child dies with SIGABRT, post-fix it exits cleanly.
+/// (Discriminates in debug builds, where poll frames are fattest; the
+/// future-size guard in `helpers.rs` covers all profiles.)
+#[test]
+fn write_file_evidence_hashing_survives_small_stack() {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::write_file_evidence_hashing_small_stack_child",
+            "--nocapture",
+        ])
+        .status()
+        .expect("spawn child test binary");
+    assert!(
+        status.success(),
+        "child write_file turn on a 512 KiB stack aborted: {status}"
+    );
+}
+
+#[test]
+fn write_file_evidence_hashing_small_stack_child() {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(write_file_at_large_context());
+        })
+        .unwrap()
+        .join()
+        .expect("write_file turn panicked on a 512 KiB stack");
+}
+
+/// The crashing session shape through the real turn driver: 200 filler
+/// messages in context, then a `write_file` turn (mock model) that must hash
+/// pre/post evidence and verify the edit.
+async fn write_file_at_large_context() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "1".into(),
+            name: "write_file".into(),
+            arguments: json!({"path": "new.txt", "content": "hello\n"}),
+        }]),
+        text_only("Created new.txt."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    for i in 0..200 {
+        s.messages.push(Message::new(
+            MessageRole::User,
+            format!("filler context message {i} {}", "x".repeat(2000)),
+        ));
+    }
+    s.run_user_message("create new.txt").await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
+        "hello\n"
+    );
+    assert_eq!(
+        s.last_completion.as_ref().unwrap().reason,
+        CompletionReason::EditVerified
+    );
+}
+
+/// Same crash shape on the normal test stack: guards the fix's behavior
+/// (hash format, streaming, verification) at realistic context scale.
+#[tokio::test]
+async fn write_file_success_at_large_context_completes() {
+    write_file_at_large_context().await;
+}
+
 fn assistant_with_tool_call(name: &str) -> Message {
     let mut m = Message::new(MessageRole::Assistant, "calling");
     m.tool_calls = vec![ToolCall {
