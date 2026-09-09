@@ -171,6 +171,30 @@ impl ExecSessionStore {
     fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed) + 1
     }
+
+    async fn shutdown(&self) {
+        let sessions: Vec<_> = {
+            let mut sessions = self.sessions.lock().await;
+            std::mem::take(&mut *sessions).into_values().collect()
+        };
+        for session in sessions {
+            let mut session = session.lock().await;
+            terminate_process(&mut session.process).await;
+            session.running = false;
+        }
+    }
+}
+
+async fn terminate_process(process: &mut Process) {
+    match process {
+        Process::Pipe { child, .. } => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        Process::Pty(pty) => {
+            let _ = pty.child.kill();
+        }
+    }
 }
 
 fn output_for(session_id: u64, session: &Session, max_tokens: Option<usize>) -> Value {
@@ -658,6 +682,10 @@ impl Tool for ExecCommandTool {
         )
         .await
     }
+
+    async fn shutdown(&self) {
+        self.sessions.shutdown().await;
+    }
 }
 
 #[async_trait]
@@ -702,6 +730,10 @@ impl Tool for WriteStdinTool {
             self.sessions.sessions.lock().await.remove(&args.session_id);
         }
         result
+    }
+
+    async fn shutdown(&self) {
+        self.sessions.shutdown().await;
     }
 }
 
@@ -875,6 +907,28 @@ mod tests {
             .unwrap();
 
         let error = other_write_stdin
+            .call(&ctx, json!({"session_id": id, "yield_time_ms": 20}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unknown shell session"));
+    }
+
+    #[tokio::test]
+    async fn shutting_down_a_tool_registry_terminates_retained_shells() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf()).with_unconfined_shell();
+        let (exec_command, write_stdin) = unified_exec_tools();
+        let first = exec_command
+            .call(&ctx, json!({"cmd": "sleep 30", "yield_time_ms": 20}))
+            .await
+            .unwrap();
+        let id = serde_json::from_str::<Value>(&first.content).unwrap()["session_id"]
+            .as_u64()
+            .unwrap();
+
+        exec_command.shutdown().await;
+
+        let error = write_stdin
             .call(&ctx, json!({"session_id": id, "yield_time_ms": 20}))
             .await
             .unwrap_err();

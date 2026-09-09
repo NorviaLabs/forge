@@ -107,6 +107,13 @@ pub trait Tool: Send + Sync {
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError>;
 
+    /// Release any process handles that can outlive one tool call.
+    ///
+    /// Most tools are stateless. Session-scoped tools such as
+    /// `exec_command` override this hook so a repository session can retire
+    /// all of its child processes before its worktree is removed.
+    async fn shutdown(&self) {}
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: self.name().to_string(),

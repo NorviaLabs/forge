@@ -62,6 +62,7 @@ impl TuiApp {
             task_strip_selection: 0,
             selected_session_id: session.session_id,
             session_view_states: std::collections::HashMap::new(),
+            retiring_session_view_states: std::collections::HashMap::new(),
             supervisor: None,
             session_view: SessionSnapshot::capture(&session),
             transcript_view: TranscriptSnapshot::capture(&session),
@@ -239,6 +240,7 @@ impl TuiApp {
             task_strip_selection: 0,
             selected_session_id: session_id,
             session_view_states: std::collections::HashMap::new(),
+            retiring_session_view_states: std::collections::HashMap::new(),
             supervisor: Some(SupervisorUiState {
                 current_session_id: session_id,
                 events: handle.subscribe(),

@@ -215,6 +215,8 @@ pub enum RepositorySupervisorError {
     Closed,
     #[error("session actor is busy running a turn")]
     Contention,
+    #[error("session `{0}` is retiring its workspace resources")]
+    Retiring(SessionId),
     #[error("supervisor command failed: {0}")]
     Command(String),
 }
@@ -270,6 +272,7 @@ struct SessionActor {
     session: Mutex<AgentSession>,
     snapshot: RwLock<SessionRuntimeSnapshot>,
     driving: AtomicBool,
+    retiring: AtomicBool,
     running_cancel: StdMutex<Option<CancellationToken>>,
     /// The session's own model client, so provider-env updates reach a busy
     /// actor without waiting on its session lock.
@@ -296,6 +299,7 @@ impl SessionActor {
             session: Mutex::new(session),
             snapshot: RwLock::new(snapshot),
             driving: AtomicBool::new(false),
+            retiring: AtomicBool::new(false),
             running_cancel: StdMutex::new(None),
             model,
         }
@@ -312,6 +316,16 @@ impl SessionActor {
         } else {
             false
         }
+    }
+
+    fn begin_retirement(&self) -> bool {
+        self.retiring
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn finish_retirement(&self) {
+        self.retiring.store(false, Ordering::Release);
     }
 }
 
@@ -1003,6 +1017,11 @@ async fn execute_detached_command(
 fn try_session(
     task_actor: &SessionActor,
 ) -> Result<tokio::sync::MutexGuard<'_, AgentSession>, RepositorySupervisorError> {
+    if task_actor.retiring.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Command(
+            "session actor is retiring its workspace resources".into(),
+        ));
+    }
     task_actor
         .session
         .try_lock()
@@ -1194,7 +1213,19 @@ async fn execute_command(
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::ArchiveSession { session_id } => {
-            state.control.archive(session_id).await?;
+            let task_actor = retire_actor_resources(&state, session_id, false).await?;
+            if let Some(task_actor) = &task_actor {
+                let session = task_actor.session.lock().await;
+                if let Err(error) = refresh_actor(&state, task_actor, &session).await {
+                    task_actor.finish_retirement();
+                    return Err(error);
+                }
+            }
+            let result = state.control.archive(session_id).await;
+            if let Some(task_actor) = task_actor {
+                task_actor.finish_retirement();
+            }
+            result?;
             publish_actor(&state, session_id).await?;
         }
         SupervisorCommand::RenameSession { session_id, label } => {
@@ -1213,6 +1244,14 @@ async fn execute_command(
         }
         SupervisorCommand::RemoveManagedWorktree { session_id } => {
             let task = state.control.session(session_id).await?;
+            if task.lifecycle == SessionLifecycle::Removed {
+                // A process may have been restarted after the durable state
+                // was written but before the in-memory actor map was rebuilt.
+                // Removed is already the terminal cleanup state; discard any
+                // leftover actor without touching Git again.
+                state.actors.write().await.remove(&session_id);
+                return Ok(());
+            }
             if task.ownership != WorktreeOwnership::Managed
                 || task.lifecycle != SessionLifecycle::Archived
             {
@@ -1220,9 +1259,28 @@ async fn execute_command(
                     "only archived managed Sessions can remove a worktree".into(),
                 ));
             }
-            let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
-            let worktrees = forge_storage::list_worktree_records(storage.main_worktree())?;
-            if worktrees
+
+            let task_actor = retire_actor_resources(&state, session_id, false).await?;
+
+            let storage = match RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    if let Some(task_actor) = &task_actor {
+                        task_actor.finish_retirement();
+                    }
+                    return Err(error.into());
+                }
+            };
+            let worktrees = match forge_storage::list_worktree_records(storage.main_worktree()) {
+                Ok(worktrees) => worktrees,
+                Err(error) => {
+                    if let Some(task_actor) = &task_actor {
+                        task_actor.finish_retirement();
+                    }
+                    return Err(error.into());
+                }
+            };
+            let removal = if worktrees
                 .iter()
                 .any(|worktree| same_path(&worktree.path, &task.workspace))
             {
@@ -1230,18 +1288,45 @@ async fn execute_command(
                     storage.main_worktree(),
                     &task.workspace,
                     &task.branch,
-                )?;
+                )
             } else if task.workspace.exists() {
-                return Err(RepositorySupervisorError::Command(format!(
+                Err(forge_storage::WorktreeError::RemoveFailed(format!(
                     "{} is no longer a registered worktree; refusing to remove it",
                     task.workspace.display()
-                )));
+                )))
+            } else {
+                Ok(())
+            };
+            if let Err(error) = removal {
+                if let Some(task_actor) = &task_actor {
+                    task_actor.finish_retirement();
+                }
+                return Err(error.into());
             }
-            state.control.mark_worktree_removed(session_id).await?;
+            if let Err(error) = state.control.mark_worktree_removed(session_id).await {
+                if let Some(task_actor) = &task_actor {
+                    task_actor.finish_retirement();
+                }
+                return Err(error.into());
+            }
             state.actors.write().await.remove(&session_id);
+            drop(task_actor);
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
+            if state.control.selected().await.ok() == Some(Some(session_id)) {
+                let fallback = state.actors.read().await.keys().next().copied();
+                if let Err(error) = state.control.set_selected(fallback).await {
+                    let _ = state.events.send(SupervisorEvent::Error {
+                        session_id: Some(session_id),
+                        message: format!(
+                            "worktree removed but selection could not be updated: {error}"
+                        ),
+                    });
+                } else {
+                    let _ = state.events.send(SupervisorEvent::Selected(fallback));
+                }
+            }
         }
         SupervisorCommand::FinalizeCreation { operation_id } => {
             let completed = state.control.complete_creation(operation_id).await?;
@@ -1513,17 +1598,18 @@ async fn execute_command(
             let _ = state.events.send(SupervisorEvent::Selected(selected));
         }
         SupervisorCommand::Shutdown => {
-            let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
-            for task_actor in &actors {
-                task_actor.request_cancel();
-            }
-            for task_actor in actors {
-                while task_actor.driving.load(Ordering::Acquire) {
-                    task_actor.request_cancel();
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                let session = task_actor.session.lock().await;
-                refresh_actor(&state, &task_actor, &session).await?;
+            let session_ids: Vec<_> = state.actors.read().await.keys().copied().collect();
+            for session_id in session_ids {
+                let Some(task_actor) = wait_for_actor_retirement(&state, session_id, true).await?
+                else {
+                    continue;
+                };
+                let refresh = {
+                    let session = task_actor.session.lock().await;
+                    refresh_actor(&state, &task_actor, &session).await
+                };
+                task_actor.finish_retirement();
+                refresh?;
             }
         }
     }
@@ -1682,6 +1768,9 @@ async fn start_prompt_driver(
     session_id: SessionId,
 ) -> Result<(), RepositorySupervisorError> {
     let task_actor = actor(&state, session_id).await?;
+    if task_actor.retiring.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Retiring(session_id));
+    }
     if task_actor.driving.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
@@ -1718,6 +1807,9 @@ async fn start_continue_driver(
     session_id: SessionId,
 ) -> Result<(), RepositorySupervisorError> {
     let task_actor = actor(&state, session_id).await?;
+    if task_actor.retiring.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Retiring(session_id));
+    }
     if task_actor.driving.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
@@ -1740,6 +1832,9 @@ async fn drive_prompts(
 ) -> Result<(), RepositorySupervisorError> {
     let session_id = task_actor.snapshot.read().await.task.session_id;
     loop {
+        if task_actor.retiring.load(Ordering::Acquire) {
+            break;
+        }
         let waiting = task_actor.snapshot.read().await.session.lifecycle == TaskLifecycle::Waiting;
         if waiting {
             break;
@@ -1898,6 +1993,86 @@ async fn actor(
         .get(&session_id)
         .cloned()
         .ok_or(RepositorySupervisorError::NoActor(session_id))
+}
+
+/// Close the runtime handles owned by an actor before Git is allowed to
+/// remove its workspace. The retirement flag closes the race where a queued
+/// prompt or continuation tries to start while the actor is being drained.
+/// The actor remains in the map until the caller has completed its durable or
+/// filesystem mutation, so a failed cleanup can be retried safely.
+async fn retire_actor_resources(
+    state: &SupervisorState,
+    session_id: SessionId,
+    allow_pending_interaction: bool,
+) -> Result<Option<Arc<SessionActor>>, RepositorySupervisorError> {
+    let Some(task_actor) = state.actors.read().await.get(&session_id).cloned() else {
+        return Ok(None);
+    };
+    if !task_actor.begin_retirement() {
+        return Err(RepositorySupervisorError::Retiring(session_id));
+    }
+    task_actor.request_cancel();
+
+    let retirement = async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while task_actor.driving.load(Ordering::Acquire) {
+                task_actor.request_cancel();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            RepositorySupervisorError::Command(
+                "session turn did not stop before workspace retirement".into(),
+            )
+        })?;
+
+        let mut session = task_actor.session.lock().await;
+        if !allow_pending_interaction
+            && (session.pending_hitl().is_some() || session.pending_question().is_some())
+        {
+            return Err(RepositorySupervisorError::Command(
+                "resolve the pending interaction before retiring this workspace".into(),
+            ));
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            session.retire_resources(),
+        )
+        .await
+        .map_err(|_| {
+            RepositorySupervisorError::Command(
+                "session resources did not stop before workspace retirement".into(),
+            )
+        })?
+        .map_err(|error| {
+            RepositorySupervisorError::Command(format!(
+                "session resources did not stop before workspace retirement: {error}"
+            ))
+        })?;
+        Ok::<(), RepositorySupervisorError>(())
+    }
+    .await;
+    if let Err(error) = retirement {
+        task_actor.finish_retirement();
+        return Err(error);
+    }
+    Ok(Some(task_actor))
+}
+
+async fn wait_for_actor_retirement(
+    state: &SupervisorState,
+    session_id: SessionId,
+    allow_pending_interaction: bool,
+) -> Result<Option<Arc<SessionActor>>, RepositorySupervisorError> {
+    loop {
+        match retire_actor_resources(state, session_id, allow_pending_interaction).await {
+            Err(RepositorySupervisorError::Retiring(_)) => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
+    }
 }
 
 async fn refresh_actor(
@@ -3826,6 +4001,103 @@ mod tests {
                 _ => continue,
             }
         }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn archived_cleanup_drains_background_work_before_removing_the_checkout() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let worktree = forge_storage::create_session_worktree(repo.path(), scratch.path()).unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let control_dir = RepositoryRuntimeStorage::new(repo.path())
+            .unwrap()
+            .path_for(RuntimeDataKind::Control)
+            .unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let journal = scratch.path().join("journals");
+        let mut session_cfg = Config {
+            resolved_workspace: worktree.path.clone(),
+            workspace_root: Some(worktree.path.display().to_string()),
+            ..Default::default()
+        };
+        session_cfg.journal.path = journal.display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![]));
+        let mut opened = open_session_with_model(&session_cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap();
+        let session_id = opened.session.session_id;
+        opened
+            .session
+            .spawn_background_shell("sleep 30".into(), "retire me".into())
+            .await
+            .unwrap();
+        let mut task = task_for(session_id, "retire", &worktree.path);
+        task.branch = worktree.branch.clone();
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let mut supervisor_cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        supervisor_cfg.journal.path = journal.display().to_string();
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            vec![(task.clone(), opened.session)],
+            2,
+            supervisor_cfg,
+            model,
+            Some(trust_store),
+        )
+        .await
+        .unwrap();
+
+        let started = supervisor.snapshot(session_id).await.unwrap();
+        assert!(started.details.as_ref().is_some_and(|details| {
+            details
+                .background
+                .iter()
+                .any(|task| !task.status.is_terminal())
+        }));
+        handle
+            .command(SupervisorCommand::ArchiveSession { session_id })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree { session_id })
+            .await
+            .unwrap();
+
+        assert!(!task.workspace.exists());
+        assert_eq!(
+            control.session(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Removed
+        );
+        assert!(supervisor.snapshot(session_id).await.is_none());
+        // Cleanup is idempotent after the durable Removed transition.
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree { session_id })
+            .await
+            .unwrap();
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 

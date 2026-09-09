@@ -414,6 +414,18 @@ impl ToolRegistry {
         tool.call(ctx, prepared.args).await
     }
 
+    /// Release resources owned by tools in this session.
+    ///
+    /// Tool implementations are shared behind `Arc`s, so the registry cannot
+    /// rely on dropping the last reference at a particular call site. The
+    /// explicit hook gives session retirement a deterministic process boundary.
+    pub async fn shutdown(&self) {
+        let tools: Vec<_> = self.tools.values().cloned().collect();
+        for tool in tools {
+            tool.shutdown().await;
+        }
+    }
+
     /// Validate without executing or consuming retry budget.
     pub fn validate_call(&self, name: &str, args: &Value) -> Result<(), ToolValidationError> {
         let name = canonical_tool_name(name);
