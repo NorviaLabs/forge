@@ -326,6 +326,52 @@ impl SupervisorState {
             ))
         })
     }
+
+    /// The model selection a newly created session should inherit: the live
+    /// selection of the selected session, else the primary worktree's session,
+    /// else any open session, else the process config. The creating session is
+    /// whichever one the operator is on, which the supervisor tracks via
+    /// `selected()`; falling back to the primary keeps inheritance stable when
+    /// the operator has not switched sessions yet.
+    async fn inherited_model(&self) -> (String, String, Option<String>) {
+        let candidates: Vec<SessionId> = self.actors.read().await.keys().cloned().collect();
+        if candidates.is_empty() {
+            return (self.cfg.model.model.clone(), "native".into(), None);
+        }
+        let selected = self.control.selected().await.ok().flatten();
+        let primary = self
+            .control
+            .sessions()
+            .await
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .find(|task| task.ownership == WorktreeOwnership::Primary)
+                    .map(|task| task.session_id)
+            })
+            .ok()
+            .flatten();
+        let Some(id) = selected
+            .filter(|id| candidates.contains(id))
+            .or_else(|| primary.filter(|id| candidates.contains(id)))
+            .or_else(|| candidates.first().copied())
+        else {
+            return (self.cfg.model.model.clone(), "native".into(), None);
+        };
+        let actor = self
+            .actors
+            .read()
+            .await
+            .get(&id)
+            .cloned()
+            .expect("candidate id came from the actor map");
+        let session = actor.session.lock().await;
+        (
+            session.active_model.clone(),
+            session.active_route_id.clone(),
+            session.reasoning_effort().map(str::to_string),
+        )
+    }
 }
 
 pub struct RepositorySupervisor {
@@ -502,7 +548,10 @@ impl RepositorySupervisor {
             session_tasks.spawn(async move {
                 open_session_with_model(&task_cfg, SessionTarget::Resume(task.session_id), model)
                     .await
-                    .map(|opened| (task, opened.session))
+                    .map(|mut opened| {
+                        restore_task_model(&mut opened.session, &task);
+                        (task, opened.session)
+                    })
             });
         }
         while let Some(result) = session_tasks.join_next().await {
@@ -627,7 +676,9 @@ impl RepositorySupervisor {
                 model.clone(),
             )
             .await?;
-            sessions.push((task, opened.session));
+            let mut session = opened.session;
+            restore_task_model(&mut session, &task);
+            sessions.push((task, session));
         }
         Self::spawn_with_unavailable_tasks(
             control,
@@ -854,8 +905,18 @@ async fn execute_command(
             task_cfg.workspace_root = Some(worktree.path.display().to_string());
             let (journal_dir, _) = resolve_journal_dir(&task_cfg);
             task_cfg.journal.path = journal_dir.display().to_string();
-            let opened =
+            let mut opened =
                 open_session_with_model(&task_cfg, SessionTarget::New, state.model.clone()).await?;
+            // A fresh session must start on the model the operator is already
+            // using, not the process config default: config usually carries no
+            // model and the selection lives on the sessions. Inherit it from
+            // the selected/primary session before the task row is written.
+            let (model_id, route_id, reasoning_effort) = state.inherited_model().await;
+            if !model_id.is_empty() {
+                opened.session.set_active_model(model_id);
+                opened.session.set_active_route_id(route_id);
+                opened.session.set_reasoning_effort(reasoning_effort);
+            }
             let task = RepositorySession {
                 session_id: opened.session.session_id,
                 label,
@@ -867,7 +928,7 @@ async fn execute_command(
                 slot: None,
                 model_id: opened.session.active_model.clone(),
                 route_id: opened.session.active_route_id.clone(),
-                reasoning_effort: None,
+                reasoning_effort: opened.session.reasoning_effort().map(str::to_string),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 archived_at: None,
@@ -1171,6 +1232,17 @@ async fn execute_command(
             session.set_active_model(model_id);
             session.set_active_route_id(route_id);
             session.set_reasoning_effort(reasoning_effort);
+            // Persist the selection on the task row so a restart restores it
+            // instead of dropping back to a blank model.
+            state
+                .control
+                .set_session_model(
+                    session_id,
+                    &session.active_model,
+                    &session.active_route_id,
+                    session.reasoning_effort(),
+                )
+                .await?;
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::SetThinking {
@@ -1691,6 +1763,21 @@ fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
     }
 }
 
+/// Reapply the model/route/effort recorded on the task row after a restart
+/// reopens the session, so the operator's selection survives instead of
+/// falling back to an empty config default. A blank stored model means the
+/// row predates model persistence; leave whatever `cfg` produced in place.
+fn restore_task_model(session: &mut AgentSession, task: &RepositorySession) {
+    if task.model_id.is_empty() {
+        return;
+    }
+    session.set_active_model(task.model_id.clone());
+    if !task.route_id.is_empty() {
+        session.set_active_route_id(task.route_id.clone());
+    }
+    session.set_reasoning_effort(task.reasoning_effort.clone());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1898,7 +1985,7 @@ mod tests {
             "shared answer",
         )]));
         let (_supervisor, handle) = RepositorySupervisor::spawn(
-            control,
+            control.clone(),
             lease,
             vec![(first_task, first_session), (second_task, second_session)],
             1,
@@ -1994,6 +2081,12 @@ mod tests {
             let details = changed.details.as_ref().unwrap();
             assert_eq!(details.active_route_id, "native-v2");
             assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
+            // The selection must be persisted on the task row, not just held
+            // in the actor: a restart reopens from the row and would lose it.
+            let persisted = control.session(session_id).await.unwrap();
+            assert_eq!(persisted.model_id, "mock-v2");
+            assert_eq!(persisted.route_id, "native-v2");
+            assert_eq!(persisted.reasoning_effort.as_deref(), Some("high"));
         }
 
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
@@ -2777,6 +2870,220 @@ mod tests {
             "unexpected error: {drifted}"
         );
 
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_created_session_inherits_the_selected_sessions_model() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            model: forge_config::ModelConfig {
+                provider: forge_config::ModelProviderKind::Mock,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let primary = scripted_session(&cfg, "primary answer").await;
+        let primary_id = primary.session_id;
+        let mut primary_task = task_for(primary_id, "main", repo.path());
+        primary_task.ownership = WorktreeOwnership::Primary;
+        primary_task.slot = Some(1);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: primary_task.session_id,
+                    label: primary_task.label.clone(),
+                    workspace: primary_task.workspace.clone(),
+                    branch: primary_task.branch.clone(),
+                    ownership: primary_task.ownership,
+                    slot: primary_task.slot,
+                    model_id: primary_task.model_id.clone(),
+                    route_id: primary_task.route_id.clone(),
+                    reasoning_effort: primary_task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let model: Arc<dyn ModelClient> =
+            Arc::new(MockModelClient::script(vec![text_response("done")]));
+        let (_supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            vec![(primary_task, primary)],
+            2,
+            cfg,
+            model,
+            Some(trust_store.to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::SetModel {
+                session_id: primary_id,
+                model_id: "mock-v2".into(),
+                route_id: "native-v2".into(),
+                reasoning_effort: Some("high".into()),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "inherits".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "inherits")
+            .expect("created task row");
+        assert_eq!(task.model_id, "mock-v2");
+        assert_eq!(task.route_id, "native-v2");
+        assert_eq!(task.reasoning_effort.as_deref(), Some("high"));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restoring_a_task_reapplies_its_stored_model() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = Config {
+            resolved_workspace: dir.path().to_path_buf(),
+            workspace_root: Some(dir.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = dir.path().join("journal").display().to_string();
+        let mut session = scripted_session(&cfg, "resumed answer").await;
+        assert!(session.active_model.is_empty());
+
+        let task = task_for(session.session_id, "resumed", dir.path());
+        let mut stored = task.clone();
+        stored.model_id = "mock-v2".into();
+        stored.route_id = "native-v2".into();
+        stored.reasoning_effort = Some("high".into());
+        restore_task_model(&mut session, &stored);
+        assert_eq!(session.active_model, "mock-v2");
+        assert_eq!(session.active_route_id, "native-v2");
+        assert_eq!(session.reasoning_effort(), Some("high"));
+
+        // A row without a stored model leaves the in-memory selection alone.
+        let mut blank = task.clone();
+        blank.model_id = String::new();
+        blank.route_id = "native-v3".into();
+        blank.reasoning_effort = Some("low".into());
+        restore_task_model(&mut session, &blank);
+        assert_eq!(session.active_model, "mock-v2");
+    }
+
+    #[tokio::test]
+    async fn a_restart_restores_the_stored_model_of_an_open_session() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let base = scratch.path().join("worktrees");
+        std::fs::create_dir_all(&base).unwrap();
+        let linked = forge_storage::create_session_worktree(repo.path(), &base, 7).unwrap();
+        let journal = scratch.path().join("journals");
+
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            model: forge_config::ModelConfig {
+                provider: forge_config::ModelProviderKind::Mock,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.journal.path = journal.display().to_string();
+        let primary = scripted_session(&cfg, "primary answer").await;
+        let primary_id = primary.session_id;
+        let mut primary_task = task_for(primary_id, "main", repo.path());
+        primary_task.ownership = WorktreeOwnership::Primary;
+        primary_task.slot = Some(1);
+        primary_task.branch = "main".into();
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: primary_task.session_id,
+                    label: primary_task.label.clone(),
+                    workspace: primary_task.workspace.clone(),
+                    branch: primary_task.branch.clone(),
+                    ownership: primary_task.ownership,
+                    slot: primary_task.slot,
+                    model_id: primary_task.model_id.clone(),
+                    route_id: primary_task.route_id.clone(),
+                    reasoning_effort: primary_task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        // A managed session whose row records a model selection, as SetModel
+        // now persists it. Its journal lives in the shared dir so resume finds it.
+        let mut managed_cfg = Config {
+            resolved_workspace: linked.path.clone(),
+            workspace_root: Some(linked.path.display().to_string()),
+            model: forge_config::ModelConfig {
+                provider: forge_config::ModelProviderKind::Mock,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        managed_cfg.journal.path = journal.display().to_string();
+        let managed = scripted_session(&managed_cfg, "managed answer").await;
+        let managed_id = managed.session_id;
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: managed_id,
+                    label: "managed".into(),
+                    workspace: linked.path.clone(),
+                    branch: linked.branch.clone(),
+                    ownership: WorktreeOwnership::Managed,
+                    slot: None,
+                    model_id: "mock-v2".into(),
+                    route_id: "native-v2".into(),
+                    reasoning_effort: Some("high".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let bootstrap = RepositoryBootstrap::acquire(&cfg).await.unwrap();
+        let (supervisor, handle) = bootstrap.open_with_primary(&cfg, primary).await.unwrap();
+        let reopened = supervisor
+            .snapshots()
+            .await
+            .into_iter()
+            .find(|snapshot| snapshot.task.session_id == managed_id)
+            .expect("managed session reopened on restart");
+        let details = reopened.details.as_ref().unwrap();
+        assert_eq!(details.active_model, "mock-v2");
+        assert_eq!(details.active_route_id, "native-v2");
+        assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 }
