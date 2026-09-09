@@ -34,13 +34,22 @@ impl AgentSession {
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
+        self.start_fresh_attempt().await?;
+        Ok(())
+    }
+
+    /// Begin a brand-new attempt after a Ready or terminal outcome: fresh
+    /// task id, cleared turn-local bookkeeping, and any dangling tool calls
+    /// from the previous attempt reconciled so the next model request is
+    /// well-formed and cannot re-run a poisoned step.
+    pub(crate) async fn start_fresh_attempt(&mut self) -> Result<(), LoopError> {
         let next_id = TaskId(self.active_task.task_id.0 + 1);
         self.transition_to_new_task(next_id).await?;
         // Fresh turn-local bookkeeping — a prior turn's tool calls/evidence
         // must never leak into this one's decision.
         self.turn.reset();
         self.last_completion = None;
-        Ok(())
+        self.reconcile_dangling_tool_calls().await
     }
 
     /// Lightweight, side-effect-free record of a composer submission — slash
@@ -523,20 +532,47 @@ impl AgentSession {
     /// `Working`, an unhandled error here previously left the session stuck
     /// forever (every later message queuing, never sending) until the whole
     /// process was killed and restarted, even after switching to a healthy
-    /// provider. Mirrors `mark_cancelled`'s shape: a lifecycle-only
-    /// transition, no synthetic assistant message — the caller (the TUI)
-    /// already shows the error to the operator through its own error-banner
-    /// mechanism, so duplicating it into the transcript here would just be
-    /// noise.
+    /// provider. Mirrors `mark_cancelled`'s shape: a lifecycle transition
+    /// plus a durable `TURN_FAILED_MARKER` assistant message carrying the
+    /// failure reason, so the next prompt/continue has the context to take a
+    /// fresh, corrected action. The marker is hidden from the transcript view
+    /// (see forge-transcript) but visible to the model and survives resume —
+    /// unlike a live-only error banner, which is what the non-supervised TUI
+    /// still shows on top of this.
     pub async fn mark_model_call_failed(&mut self, detail: &str) -> Result<(), LoopError> {
         match self.active_task.lifecycle {
             TaskLifecycle::Working | TaskLifecycle::Waiting => {
                 self.transition(TaskLifecycle::Failed, TransitionReason::TurnFailure)
                     .await?;
+                let content = format!("{TURN_FAILED_MARKER}model call failed: {detail}");
+                self.messages.push(Message {
+                    outcome: Default::default(),
+                    role: MessageRole::Assistant,
+                    content: content.clone(),
+                    tool_call_id: None,
+                    name: None,
+                    thinking: None,
+                    thinking_duration_secs: None,
+                    tool_calls: vec![],
+                    attachments: Vec::new(),
+                });
                 self.events.push(TurnEvent {
                     kind: "turn_failed".into(),
                     detail: format!("model_call_failed: {detail}"),
                 });
+                let response = ModelResponse {
+                    text: content,
+                    tool_calls: vec![],
+                    usage: None,
+                    thinking: None,
+                };
+                self.journal
+                    .append_model_response(
+                        self.session_id,
+                        serde_json::to_value(&response)
+                            .map_err(|error| LoopError::Other(error.to_string()))?,
+                    )
+                    .await?;
                 Ok(())
             }
             _ => Ok(()),
