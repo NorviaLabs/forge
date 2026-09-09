@@ -8,6 +8,7 @@ description = "Centralized runtime-storage resolver: repository-local .forge/loc
 [dependencies]
 dirs = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 forge-test-support = { workspace = true }
