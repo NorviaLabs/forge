@@ -28,6 +28,15 @@ Forge uses cooperative isolation within one trusted repository operator:
   every Git mutation. It is outside this implementation slice and must not be
   implied by the word “isolated” in product copy.
 
+Session retirement is also fail-closed. Archive and managed-worktree removal
+mark the actor as retiring before draining its foreground turn and
+background jobs. Pending operator interactions stop the transition; otherwise
+background cancellation is drained, session-owned tool processes are shut
+down, and only then may Git remove the worktree. The TUI releases saved
+editor, watcher, and operator-terminal state for a removed session, preserves
+dirty editor buffers until the operator saves or discards them, and selects a
+remaining session when the removed one was active.
+
 Prompt dispatch is fail-closed across supervisor interruption. A prompt is
 claimed before its turn starts and remains durably marked `running` until a
 terminal queue result is recorded. Startup and in-process dispatch errors move

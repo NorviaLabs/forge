@@ -1523,6 +1523,8 @@ pub struct TuiApp {
     pub(crate) task_strip_selection: usize,
     pub(crate) selected_session_id: uuid::Uuid,
     pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
+    pub(crate) retiring_session_view_states:
+        std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) supervisor: Option<SupervisorUiState>,
     /// Per-frame view of `session`, refreshed at the top of `draw`. Render
     /// paths read this instead of the live session, so what they need stops

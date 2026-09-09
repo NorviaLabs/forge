@@ -75,6 +75,45 @@ impl TuiApp {
         for event in events {
             match event {
                 forge_session::SupervisorEvent::Roster(roster) => {
+                    let direct_session_id = self
+                        .session_runtime
+                        .as_ref()
+                        .map(|session| session.session_id);
+                    let mut live_session_ids = roster
+                        .iter()
+                        .map(|snapshot| snapshot.task.session_id)
+                        .collect::<HashSet<_>>();
+                    if let Some(session_id) = direct_session_id {
+                        live_session_ids.insert(session_id);
+                    }
+                    let selected_was_dirty = !live_session_ids.contains(&self.selected_session_id)
+                        && self.session_view_state_is_dirty(self.selected_session_id);
+                    self.retire_removed_session_view_states(&live_session_ids);
+                    let selected_removed = !live_session_ids.contains(&self.selected_session_id);
+                    let fallback_session_id = if selected_removed {
+                        roster
+                            .first()
+                            .map(|snapshot| snapshot.task.session_id)
+                            .or(direct_session_id)
+                    } else {
+                        None
+                    };
+                    if let Some(session_id) = fallback_session_id {
+                        // The selected view is still live until this roster is
+                        // applied. Drop it before restoring the fallback so a
+                        // later Selected event cannot save handles rooted in
+                        // the removed worktree back into the state map.
+                        drop(self.take_session_view_state());
+                        self.selected_session_id = session_id;
+                    } else if selected_removed {
+                        drop(self.take_session_view_state());
+                    }
+                    if selected_was_dirty {
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            "the selected Session was removed with unsaved editor changes",
+                        );
+                    }
                     let selected_snapshot = roster
                         .iter()
                         .find(|snapshot| snapshot.task.session_id == self.selected_session_id)
@@ -118,6 +157,9 @@ impl TuiApp {
                         .iter()
                         .position(|task| task.session_id == self.selected_session_id)
                         .unwrap_or(0);
+                    if let Some(session_id) = fallback_session_id {
+                        self.restore_session_view_state(session_id);
+                    }
                     if let Some(snapshot) = selected_snapshot {
                         self.session_view = snapshot.session.clone();
                         self.transcript_view = snapshot.transcript.clone();

@@ -315,7 +315,7 @@ impl TuiApp {
     /// Moving rather than cloning keeps this correct for the state that holds
     /// buffers (an open editor, a rendered stream preview) and guarantees the
     /// two tasks never share a live copy of anything.
-    fn take_session_view_state(&mut self) -> SessionViewState {
+    pub(super) fn take_session_view_state(&mut self) -> SessionViewState {
         let blank = SessionViewState::default();
         SessionViewState {
             input: std::mem::replace(&mut self.input, blank.input),
@@ -431,6 +431,88 @@ impl TuiApp {
     pub(super) fn save_session_view_state(&mut self, session_id: uuid::Uuid) {
         let state = self.take_session_view_state();
         self.session_view_states.insert(session_id, state);
+    }
+
+    /// Drop view state for sessions that the supervisor no longer reports.
+    ///
+    /// The live selected view stays on the app itself, so pruning this map
+    /// cannot interrupt a pending `Selected` transition or discard the
+    /// selected editor before that transition has restored its replacement.
+    pub(super) fn retire_removed_session_view_states(
+        &mut self,
+        live_session_ids: &std::collections::HashSet<uuid::Uuid>,
+    ) {
+        let removed_dirty = self.session_view_states.iter().any(|(session_id, state)| {
+            !live_session_ids.contains(session_id)
+                && state
+                    .editor_session
+                    .as_ref()
+                    .is_some_and(|editor| editor.is_dirty())
+        });
+        self.session_view_states
+            .retain(|session_id, _| live_session_ids.contains(session_id));
+        self.retiring_session_view_states
+            .retain(|session_id, _| live_session_ids.contains(session_id));
+        if removed_dirty {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "a removed Session had unsaved editor changes; save or discard them before cleanup",
+            );
+        }
+    }
+
+    pub(super) fn session_view_state_is_dirty(&self, session_id: uuid::Uuid) -> bool {
+        if session_id == self.selected_session_id {
+            self.editor_session
+                .as_ref()
+                .is_some_and(|editor| editor.is_dirty())
+        } else {
+            self.session_view_states
+                .get(&session_id)
+                .and_then(|state| state.editor_session.as_ref())
+                .is_some_and(|editor| editor.is_dirty())
+        }
+    }
+
+    /// Move workspace-owned UI handles out of the live app before asking the
+    /// supervisor to remove the worktree. The pending slot lets a failed
+    /// removal restore the exact editor, watcher, and terminal state.
+    pub(super) fn begin_session_view_retirement(&mut self, session_id: uuid::Uuid) -> bool {
+        if self.session_view_state_is_dirty(session_id) {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "save or discard the open editor before removing this worktree",
+            );
+            return false;
+        }
+        let state = if session_id == self.selected_session_id {
+            self.take_session_view_state()
+        } else {
+            self.session_view_states
+                .remove(&session_id)
+                .unwrap_or_default()
+        };
+        self.retiring_session_view_states.insert(session_id, state);
+        true
+    }
+
+    /// Finish the TUI side of a worktree retirement. A failed supervisor
+    /// command puts the moved state back where it was; success drops it.
+    pub(super) fn finish_session_view_retirement(
+        &mut self,
+        session_id: uuid::Uuid,
+        succeeded: bool,
+    ) {
+        let Some(state) = self.retiring_session_view_states.remove(&session_id) else {
+            return;
+        };
+        if succeeded {
+            drop(state);
+        } else if session_id == self.selected_session_id {
+            self.install_session_view_state(state);
+        } else {
+            self.session_view_states.insert(session_id, state);
+        }
     }
 
     /// Keep workspace-owned UI state aligned with the selected Session. In
