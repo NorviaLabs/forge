@@ -1,5 +1,6 @@
 //! Repository-wide session roster, lifecycle state and exclusive ownership.
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -324,10 +325,6 @@ impl RepositoryControl {
             );
             DROP INDEX IF EXISTS tasks_live_workspace;
             DROP INDEX IF EXISTS tasks_live_slot;
-            CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_workspace
-                ON tasks(workspace) WHERE lifecycle = 'active';
-            CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_slot
-                ON tasks(slot) WHERE lifecycle = 'active' AND slot IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS pending_operations (
                 operation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -359,6 +356,76 @@ impl RepositoryControl {
         .execute(&self.pool)
         .await?;
         self.add_missing_columns().await?;
+        self.repair_active_slots().await?;
+        sqlx::query(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_workspace
+                ON tasks(workspace) WHERE lifecycle = 'active';
+            CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_slot
+                ON tasks(slot) WHERE lifecycle = 'active' AND slot IS NOT NULL;
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Normalize active task slots before recreating the live-slot index.
+    ///
+    /// Older control databases can contain active rows with NULL slots (and
+    /// some early development schemas allowed invalid or duplicate values).
+    /// NULL is useful while a task is unavailable, but an active roster needs
+    /// stable, distinct slots so startup and the task strip do not depend on
+    /// which path created each row. Keep valid values where possible, then
+    /// allocate the lowest free positive slot in deterministic roster order;
+    /// reserve slot 1 for a primary that bootstrap may insert next.
+    async fn repair_active_slots(&self) -> Result<(), RepositorySessionError> {
+        let rows = sqlx::query(
+            "SELECT session_id, ownership, slot FROM tasks WHERE lifecycle = 'active' \
+             ORDER BY CASE ownership WHEN 'primary' THEN 0 ELSE 1 END, created_at, session_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut used = HashSet::new();
+        let has_active_primary = rows
+            .iter()
+            .any(|row| row.get::<String, _>("ownership") == "primary");
+        // Repository bootstrap creates the primary in slot 1 when its durable
+        // row is absent. Keep that slot available rather than repairing
+        // managed rows into a collision with the row that is about to be
+        // inserted.
+        let mut next_slot = if has_active_primary { 1_i64 } else { 2_i64 };
+        if !has_active_primary {
+            used.insert(1_i64);
+        }
+        let mut transaction = self.pool.begin().await?;
+
+        for row in rows {
+            let session_id: String = row.get("session_id");
+            let current = row.get::<Option<i64>, _>("slot");
+            let retained = current.filter(|slot| (1..=i64::from(u8::MAX)).contains(slot));
+            let desired = retained.filter(|slot| used.insert(*slot)).or_else(|| {
+                while next_slot <= i64::from(u8::MAX) && used.contains(&next_slot) {
+                    next_slot += 1;
+                }
+                (next_slot <= i64::from(u8::MAX)).then(|| {
+                    let slot = next_slot;
+                    used.insert(slot);
+                    next_slot += 1;
+                    slot
+                })
+            });
+
+            if desired != current {
+                sqlx::query("UPDATE tasks SET slot = ? WHERE session_id = ?")
+                    .bind(desired)
+                    .bind(session_id)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
+        }
+
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -1202,6 +1269,88 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reopening_repairs_null_active_slots_in_deterministic_order() {
+        let dir = TempDir::new().unwrap();
+        let primary_id;
+        {
+            let control = RepositoryControl::open(dir.path()).await.unwrap();
+            let mut primary = new_task(&dir.path().join("primary"), "primary", None);
+            primary.ownership = WorktreeOwnership::Primary;
+            primary_id = primary.session_id;
+            control.register_session(primary, None).await.unwrap();
+            for index in 0..6 {
+                control
+                    .register_session(
+                        new_task(
+                            &dir.path().join(format!("task-{index}")),
+                            &format!("task-{index}"),
+                            None,
+                        ),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let sessions = control.sessions().await.unwrap();
+        let mut slots: Vec<u8> = sessions.iter().filter_map(|session| session.slot).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, (1..=7).collect::<Vec<_>>());
+        assert_eq!(control.session(primary_id).await.unwrap().slot, Some(1));
+
+        // A second open must not reshuffle already repaired rows.
+        drop(control);
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        assert_eq!(control.session(primary_id).await.unwrap().slot, Some(1));
+        let mut reopened_slots: Vec<u8> = control
+            .sessions()
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|session| session.slot)
+            .collect();
+        reopened_slots.sort_unstable();
+        assert_eq!(reopened_slots, (1..=7).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn slot_repair_leaves_primary_slot_free_when_no_primary_is_active() {
+        let dir = TempDir::new().unwrap();
+        {
+            let control = RepositoryControl::open(dir.path()).await.unwrap();
+            for index in 0..2 {
+                control
+                    .register_session(
+                        new_task(
+                            &dir.path().join(format!("managed-{index}")),
+                            &format!("managed-{index}"),
+                            None,
+                        ),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let slots: Vec<Option<u8>> = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.slot)
+            .collect();
+        assert_eq!(slots, vec![Some(2), Some(3)]);
+
+        let mut primary = new_task(&dir.path().join("primary"), "primary", Some(1));
+        primary.ownership = WorktreeOwnership::Primary;
+        control.register_session(primary, None).await.unwrap();
     }
 
     #[tokio::test]
