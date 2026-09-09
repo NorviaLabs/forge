@@ -4880,3 +4880,106 @@ async fn cancellation_yields_interrupted_and_never_completes() {
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Cancelled);
     assert!(matches!(outcome, ApplyOutcome::Done(_)));
 }
+
+#[tokio::test]
+async fn continuing_a_failed_turn_starts_a_fresh_attempt() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "exit 7"}),
+        }]),
+        text_only("Ran the command."),
+        text_only("Recovered on continue."),
+    ]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("run it").await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
+
+    // Continue (no new user message) after a failure must start a fresh
+    // attempt rather than stay wedged in the terminal Failed lifecycle.
+    s.run_agent_turns(None).await.unwrap();
+    assert_eq!(
+        s.active_task.lifecycle,
+        TaskLifecycle::Completed,
+        "continuing a failed turn must recover to Completed"
+    );
+    assert_eq!(s.active_task.task_id.0, 2, "continue starts a new task");
+    assert!(s
+        .messages
+        .iter()
+        .any(|m| m.content.contains("Recovered on continue.")));
+}
+
+#[tokio::test]
+async fn follow_up_prompt_reconciles_dangling_tool_call_from_failed_turn() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![text_only("fresh answer")]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.append_user_message("first prompt").await.unwrap();
+    // A model response whose tool call never got a result (a hard error or
+    // cancel before the tool result was recorded) leaves a dangling assistant
+    // call that would otherwise poison every later request.
+    s.messages.push(Message {
+        role: MessageRole::Assistant,
+        content: String::new(),
+        tool_call_id: None,
+        name: None,
+        thinking: None,
+        thinking_duration_secs: None,
+        tool_calls: vec![ToolCall {
+            id: "doomed".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "exit 7"}),
+        }],
+        attachments: Vec::new(),
+        outcome: ExecutionOutcome::Success,
+    });
+    s.mark_model_call_failed("tool execution failed before a result was recorded")
+        .await
+        .unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
+    assert!(
+        s.messages
+            .iter()
+            .any(|m| m.content.starts_with(TURN_FAILED_MARKER)),
+        "the failure reason must be surfaced into the transcript"
+    );
+
+    s.append_user_message("follow-up after failure")
+        .await
+        .unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
+
+    // The dangling call is reconciled into an interrupted result, so the next
+    // model request is well-formed (every tool call has a matching result).
+    let req = s.build_model_request();
+    let shared = req.messages.shared();
+    let tool_msgs: Vec<_> = shared
+        .iter()
+        .filter(|m| m.role == MessageRole::Tool)
+        .collect();
+    assert_eq!(tool_msgs.len(), 1);
+    assert_eq!(tool_msgs[0].tool_call_id.as_deref(), Some("doomed"));
+    assert!(tool_msgs[0].content.contains("did not complete"));
+
+    // A re-issued call with the same id is served the interrupted result, not
+    // re-executed — no blind replay of the failing step.
+    let outcome = s
+        .begin_model_response_application(tool_call_response(vec![ToolCall {
+            id: "doomed".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "exit 7"}),
+        }]))
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, ModelResponseApplication::Finished(_)),
+        "a replayed call must be served its interrupted result, not executed"
+    );
+}

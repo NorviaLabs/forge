@@ -2647,6 +2647,100 @@ mod tests {
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
+    #[tokio::test]
+    async fn continuing_a_failed_turn_recovers_the_supervised_session() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        // First model call fails (a transient provider fault); the continue
+        // afterwards succeeds.
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::stream_error_then(
+            ModelError::Transport("transient provider fault".into()),
+            vec![text_response("recovered after failure")],
+        ));
+        let opened = open_session_with_model(&cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap();
+        let session_id = opened.session.session_id;
+        let task = task_for(session_id, "failed", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (_supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(task, opened.session)],
+            1,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "do the thing".into(),
+            })
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let failed = loop {
+            let snapshot = _supervisor.snapshot(session_id).await.unwrap();
+            if snapshot.task.turn_state == SupervisorTurnState::Failed {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "turn never failed; last state {:?} lifecycle {:?}",
+                snapshot.task.turn_state,
+                snapshot.session.lifecycle
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert_eq!(failed.session.lifecycle, TaskLifecycle::Failed);
+
+        // Continue after the failure must start a fresh attempt and recover
+        // to Completed instead of staying wedged in Failed.
+        handle
+            .command(SupervisorCommand::ContinueTurn { session_id })
+            .await
+            .unwrap();
+        let recovered = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert_eq!(recovered.session.lifecycle, TaskLifecycle::Completed);
+        assert!(recovered
+            .transcript
+            .messages()
+            .iter()
+            .any(|m| m.content.contains("recovered after failure")));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
     /// A supervisor rooted in a real repository, with trust redirected at a
     /// temporary store so granting it never touches the developer's own.
     async fn git_backed_supervisor(

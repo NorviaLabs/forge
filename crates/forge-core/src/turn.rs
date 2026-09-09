@@ -18,6 +18,15 @@ impl TurnCoordinator {
         if session.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
+        // Continuing a session whose last attempt ended in failure is a fresh
+        // attempt, not a resumption of the poisoned one. A terminal lifecycle
+        // blocks the completion evaluator (see `apply_model_response`), so a
+        // successful continuation would otherwise leave the session permanently
+        // Failed — wedged — and the old turn's dangling tool calls would ride
+        // into the next request. Mirrors what a new user message does.
+        if session.active_task.lifecycle == TaskLifecycle::Failed {
+            session.start_fresh_attempt().await?;
+        }
 
         for turn in 0..session.max_turns() {
             let response = session
