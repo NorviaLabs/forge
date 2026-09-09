@@ -123,6 +123,46 @@ async fn terminal_and_explorer_follow_the_session_worktree() {
 }
 
 #[tokio::test]
+async fn saved_terminal_is_serviced_while_its_session_is_not_selected() {
+    if !crate::interactive_terminal::pty_allocation_available() {
+        eprintln!("skipping: this host denies PTY allocation");
+        return;
+    }
+    let (_dir, mut app) = focus_test_app().await;
+    let session_id = app.selected_session_id;
+    let other_session_id = uuid::Uuid::new_v4();
+    app.open_bottom_panel();
+    app.interactive_terminal
+        .as_mut()
+        .expect("terminal")
+        // Use the shell's printf builtin so the high-volume producer does not
+        // leave a pipeline child behind if the test times out or the PTY is
+        // torn down while output is still buffered.
+        .start_command("printf '%0500000d\\n' 0".into())
+        .unwrap();
+    app.save_session_view_state(session_id);
+    app.selected_session_id = other_session_id;
+    app.restore_session_view_state(other_session_id);
+    assert!(app.interactive_terminal.is_none());
+    assert_ne!(app.selected_session_id, session_id);
+    assert!(app.any_interactive_terminal_running());
+
+    for _ in 0..400 {
+        app.poll_interactive_terminals();
+        let completed = app
+            .session_view_states
+            .get_mut(&session_id)
+            .and_then(|state| state.interactive_terminal.as_mut())
+            .and_then(|terminal| terminal.take_command_completion());
+        if completed.is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("saved terminal did not drain its high-volume command");
+}
+
+#[tokio::test]
 async fn removed_roster_retires_saved_view_state_without_disturbing_selected_editor() {
     let (dir, app, handle) = app_with_supervisor().await;
     let mut app = Box::new(app);
