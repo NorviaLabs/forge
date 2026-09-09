@@ -1247,9 +1247,26 @@ async fn execute_command(
             if task.lifecycle == SessionLifecycle::Removed {
                 // A process may have been restarted after the durable state
                 // was written but before the in-memory actor map was rebuilt.
-                // Removed is already the terminal cleanup state; discard any
-                // leftover actor without touching Git again.
+                // Removed is already the terminal Git state, but a leftover
+                // actor still needs the normal resource drain before it is
+                // discarded.
+                let task_actor = wait_for_actor_retirement(&state, session_id, true).await?;
                 state.actors.write().await.remove(&session_id);
+                drop(task_actor);
+                let _ = state
+                    .events
+                    .send(SupervisorEvent::Roster(snapshots(&state).await));
+                if state.control.selected().await.ok() == Some(Some(session_id)) {
+                    let fallback = state.actors.read().await.keys().next().copied();
+                    if let Err(error) = state.control.set_selected(fallback).await {
+                        let _ = state.events.send(SupervisorEvent::Error {
+                            session_id: Some(session_id),
+                            message: format!("removed Session could not update selection: {error}"),
+                        });
+                    } else {
+                        let _ = state.events.send(SupervisorEvent::Selected(fallback));
+                    }
+                }
                 return Ok(());
             }
             if task.ownership != WorktreeOwnership::Managed
@@ -2027,7 +2044,14 @@ async fn retire_actor_resources(
             )
         })?;
 
-        let mut session = task_actor.session.lock().await;
+        let mut session =
+            tokio::time::timeout(std::time::Duration::from_secs(5), task_actor.session.lock())
+                .await
+                .map_err(|_| {
+                    RepositorySupervisorError::Command(
+                        "session lock did not become available before workspace retirement".into(),
+                    )
+                })?;
         if !allow_pending_interaction
             && (session.pending_hitl().is_some() || session.pending_question().is_some())
         {
@@ -4099,6 +4123,64 @@ mod tests {
             .await
             .unwrap();
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_background_work_before_releasing_session_actors() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let mut session = open_session_with_model(&cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap()
+            .session;
+        let session_id = session.session_id;
+        let background_id = session
+            .spawn_background_shell("sleep 30".into(), "shutdown me".into())
+            .await
+            .unwrap();
+        let task = task_for(session_id, "shutdown", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+
+        let snapshot = supervisor.snapshot(session_id).await.unwrap();
+        assert!(snapshot.details.as_ref().is_some_and(|details| {
+            details
+                .background
+                .iter()
+                .find(|task| task.id == background_id)
+                .is_some_and(|task| task.status.is_terminal())
+        }));
     }
 
     #[tokio::test]
