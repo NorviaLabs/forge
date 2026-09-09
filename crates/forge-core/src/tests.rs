@@ -2033,6 +2033,56 @@ async fn promote_next_queued_starts_a_new_task_and_removes_the_item() {
     assert!(s.messages.iter().any(|m| m.content == "do the next thing"));
 }
 
+/// A turn that ends at a tool boundary while the future-task queue is
+/// non-empty hands off to the queue (`ApplyOutcome::YieldToQueue`). The
+/// coordinator must transition the lifecycle to `Completed` — like the
+/// unsupervised TUI does after `run_agent_turns` — so a later prompt can
+/// start a fresh attempt. Regression: the lifecycle stayed `Working`, the
+/// next prompt's `start_fresh_attempt` rejected the new task (illegal from
+/// `Working`), and the follow-up never reached the model.
+#[tokio::test]
+async fn queue_yield_leaves_the_lifecycle_completed_and_accepts_the_next_prompt() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("readme.txt"), "hello\n").unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "read-1".into(),
+                name: "read_file".into(),
+                arguments: json!({ "path": "readme.txt" }),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "follow-up answer".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(forge_tools::ReadFileTool));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    // A finished background task leaves its summary in the future-task queue,
+    // which is what makes a tool-ending turn hand off to the queue.
+    s.enqueue_task("queued instruction").await.unwrap();
+
+    let first = s.run_user_message("first").await.unwrap();
+    assert!(first.tool_calls.len() == 1);
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+
+    // The follow-up must start a fresh attempt and drive the model — bounded
+    // indirectly by the mock's scripted responses (an illegal-transition
+    // error here is the regression).
+    let follow_up = s.run_user_message("follow-up").await.unwrap();
+    assert_eq!(follow_up.text, "follow-up answer");
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+}
+
 #[tokio::test]
 async fn promote_next_queued_on_empty_queue_is_a_no_op() {
     let dir = tempdir().unwrap();

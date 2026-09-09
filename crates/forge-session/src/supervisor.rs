@@ -2960,6 +2960,149 @@ mod tests {
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
+    /// A follow-up prompt must drive a new model request even after a turn
+    /// that ended with a queue hand-off.
+    ///
+    /// Regression: when the session's future-task queue is non-empty, a turn
+    /// that finishes at a tool boundary yields to the queue
+    /// (`ApplyOutcome::YieldToQueue`) — but the supervised driver returned
+    /// that outcome without transitioning the lifecycle (the unsupervised
+    /// TUI path calls `yield_current_turn_for_queue` itself; the coordinator
+    /// did not). The lifecycle stayed `Working`, so the next prompt journaled
+    /// its `user_message`, then `start_fresh_attempt` rejected the new task
+    /// (illegal from `Working`) and the driver's `?` dropped the error
+    /// without marking the queue item or turn state — the follow-up wedged
+    /// `running` forever, never reaching the model.
+    #[tokio::test]
+    async fn follow_up_after_a_queue_yielding_turn_reaches_the_model() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        std::fs::write(
+            cfg.resolved_workspace.join("readme.txt"),
+            "queued future-task instruction\n",
+        )
+        .unwrap();
+
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![
+            // First turn: issue a tool call, then finish at the tool boundary.
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "read-1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({ "path": "readme.txt" }),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            // Follow-up turn: a plain final answer.
+            text_response("follow-up answer"),
+        ]));
+        let mut opened = open_session_with_model(&cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap();
+        // A finished background task leaves its summary in the future-task
+        // queue (background.rs enqueue_task). A non-empty queue makes a turn
+        // that ends at a tool boundary hand off to the queue instead of
+        // completing normally.
+        opened
+            .session
+            .enqueue_task("Background task 'noop' finished")
+            .await
+            .unwrap();
+        let session_id = opened.session.session_id;
+        let task = task_for(session_id, "followup", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (_supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(task, opened.session)],
+            1,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "first".into(),
+            })
+            .await
+            .unwrap();
+        let first = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert_eq!(
+            first
+                .transcript
+                .messages()
+                .iter()
+                .filter(|m| m.role == forge_types::MessageRole::User)
+                .count(),
+            1
+        );
+
+        // Follow-up. The turn must reach the model and complete — bounded, so
+        // a stall fails the test instead of hanging the suite.
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "follow-up".into(),
+            })
+            .await
+            .unwrap();
+        let follow_up = async {
+            wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.task.turn_state == SupervisorTurnState::Completed
+                    && snapshot
+                        .transcript
+                        .messages()
+                        .iter()
+                        .filter(|m| m.role == forge_types::MessageRole::User)
+                        .count()
+                        == 2
+            })
+            .await
+        };
+        let follow_up = tokio::time::timeout(std::time::Duration::from_secs(8), follow_up)
+            .await
+            .expect("follow-up turn stalled after a queue-yielding turn: bug reproduced");
+        assert!(follow_up
+            .transcript
+            .messages()
+            .iter()
+            .any(|m| m.content.contains("follow-up answer")));
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
     #[tokio::test]
     async fn continuing_a_failed_turn_recovers_the_supervised_session() {
         let temp = TempDir::new().unwrap();
