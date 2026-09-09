@@ -117,7 +117,6 @@ mod tests {
     async fn session_with(script: Vec<ModelResponse>) -> (AgentSession, TempDir) {
         let dir = tempdir().unwrap();
         let cfg = LoopConfig {
-            max_turns: 5,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("journal"),
             enable_context_lifecycle: true,
@@ -211,7 +210,6 @@ mod tests {
         let dir = tempdir().unwrap();
         dirty_git_repo(dir.path()).await;
         let cfg = LoopConfig {
-            max_turns: 20,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("journal"),
             enable_context_lifecycle: true,

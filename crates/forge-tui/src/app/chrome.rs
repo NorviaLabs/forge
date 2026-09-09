@@ -1003,7 +1003,6 @@ pub(crate) fn failure_category_label(category: &str) -> String {
     match category {
         "validation_exhausted" => "Tool retries exhausted".into(),
         "no_final_answer" => "Turn incomplete".into(),
-        "max_turns" => "Step limit reached".into(),
         other => {
             // Keep only short snake_case categories; never raw payloads.
             let cleaned = other.replace('_', " ");

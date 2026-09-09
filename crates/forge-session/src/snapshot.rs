@@ -130,7 +130,6 @@ pub struct SessionDetailsSnapshot {
     pub reasoning_effort: Option<String>,
     pub thinking_enabled: bool,
     pub image_input_supported: bool,
-    pub max_turns: u32,
     pub token_usage_report: TokenUsageReport,
     pub tools: Vec<String>,
     pub skills: Vec<String>,
@@ -156,7 +155,6 @@ impl SessionDetailsSnapshot {
             reasoning_effort: session.reasoning_effort().map(str::to_string),
             thinking_enabled: session.thinking_enabled(),
             image_input_supported: session.image_input_supported(),
-            max_turns: session.max_turns(),
             token_usage_report: session.token_usage_report(),
             tools: session.list_tools(),
             skills: session.loaded_skill_names(),
@@ -321,7 +319,6 @@ mod tests {
 
     async fn session_with(script: Vec<ModelResponse>, dir: &Path) -> AgentSession {
         let cfg = LoopConfig {
-            max_turns: 5,
             workspace: dir.to_path_buf(),
             journal_dir: dir.join("j"),
             enable_context_lifecycle: true,

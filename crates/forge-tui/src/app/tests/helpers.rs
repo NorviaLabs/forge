@@ -138,7 +138,6 @@ pub(crate) async fn session_for_workspace(workspace: &Path) -> AgentSession {
     }]));
     let session = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: workspace.to_path_buf(),
             journal_dir: workspace.join("j"),
             enable_context_lifecycle: true,
@@ -160,7 +159,6 @@ pub(crate) async fn session_for_workspace_with_model(
 ) -> AgentSession {
     AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: workspace.to_path_buf(),
             journal_dir: workspace.join("j"),
             enable_context_lifecycle: true,

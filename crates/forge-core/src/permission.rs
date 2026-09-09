@@ -335,7 +335,6 @@ mod session_egress_tests {
         let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
         let mut session = AgentSession::create(
             LoopConfig {
-                max_turns: 1,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
                 ..Default::default()
@@ -382,7 +381,6 @@ mod session_egress_tests {
         let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
         let mut session = AgentSession::create(
             LoopConfig {
-                max_turns: 1,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
                 ..Default::default()
@@ -405,7 +403,6 @@ mod session_egress_tests {
             let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
             session = AgentSession::create(
                 LoopConfig {
-                    max_turns: 1,
                     workspace: dir.path().to_path_buf(),
                     journal_dir: dir.path().join("j"),
                     ..Default::default()
@@ -436,7 +433,6 @@ mod session_egress_tests {
         let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
         let session = AgentSession::create(
             LoopConfig {
-                max_turns: 1,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
                 ..Default::default()
@@ -481,7 +477,6 @@ mod propagation_contract {
     async fn session(dir: &std::path::Path) -> AgentSession {
         AgentSession::create(
             LoopConfig {
-                max_turns: 1,
                 workspace: dir.to_path_buf(),
                 journal_dir: dir.join("j"),
                 ..Default::default()
@@ -512,7 +507,6 @@ mod propagation_contract {
                     role: "child".into(),
                     prompt: "work".into(),
                     tool_allowlist: None,
-                    max_turns: None,
                 },
             )
             .await

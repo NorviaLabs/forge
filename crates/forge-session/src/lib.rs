@@ -165,7 +165,6 @@ async fn open_session_with_model(
     let (journal_dir, storage_notices) = resolve_journal_dir(cfg);
     notices.extend(storage_notices);
     let loop_cfg = LoopConfig {
-        max_turns: 128,
         workspace: cfg.workspace_root().to_path_buf(),
         journal_dir,
         enable_context_lifecycle: true,

@@ -42,8 +42,6 @@ pub struct SubagentSpec {
     /// `Some(names)` replaces the child's ACL with an allow-list of exactly
     /// those tool names, narrowing (not widening) what it can call.
     pub tool_allowlist: Option<Vec<String>>,
-    /// `None` inherits the parent's `max_turns`.
-    pub max_turns: Option<u32>,
 }
 
 /// What a finished (or cancelled/failed) subagent reports back to its
@@ -130,7 +128,6 @@ impl AgentSession {
                 ctx
             },
             egress: None,
-            max_turns: spec.max_turns.unwrap_or(self.max_turns),
             governance,
             context,
             enable_context: self.enable_context,
@@ -238,7 +235,6 @@ impl AgentSession {
                 ctx
             },
             egress: None,
-            max_turns: self.max_turns,
             governance: self.governance.clone(),
             context,
             enable_context: self.enable_context,
@@ -921,7 +917,6 @@ mod tests {
 
     fn cfg(dir: &std::path::Path) -> LoopConfig {
         LoopConfig {
-            max_turns: 5,
             workspace: dir.to_path_buf(),
             journal_dir: dir.join("j"),
             enable_context_lifecycle: true,
@@ -1009,7 +1004,6 @@ mod tests {
                 role: "risky-runner".into(),
                 prompt: "run the risky command".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1077,7 +1071,6 @@ mod tests {
                 role: "denied-runner".into(),
                 prompt: "run the risky command".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1137,7 +1130,6 @@ mod tests {
                 role: "interrupted".into(),
                 prompt: "do the thing".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1213,7 +1205,6 @@ mod tests {
                 role: "test-fixer".into(),
                 prompt: "fix the tests".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap_err();
@@ -1232,7 +1223,6 @@ mod tests {
                 role: "test-fixer".into(),
                 prompt: "fix the failing tests".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1265,7 +1255,6 @@ mod tests {
                 role: "isolated".into(),
                 prompt: "go".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1291,7 +1280,6 @@ mod tests {
                 role: "explorer".into(),
                 prompt: "look around".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1329,7 +1317,6 @@ mod tests {
                 role: "cancel-me".into(),
                 prompt: "go".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1351,7 +1338,6 @@ mod tests {
                 role: "child".into(),
                 prompt: "go".into(),
                 tool_allowlist: None,
-                max_turns: None,
             })
             .await
             .unwrap();
@@ -1376,7 +1362,6 @@ mod tests {
                     role: "scoped".into(),
                     prompt: "go".into(),
                     tool_allowlist: Some(vec!["read_file".into()]),
-                    max_turns: None,
                 },
             )
             .await

@@ -383,7 +383,6 @@ async fn completed_turn_renders_unfinished_checks_without_claiming_failure() {
     // about approval gating, and a HITL pause would park the turn in Waiting.
     let mut session = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("j"),
             enable_context_lifecycle: true,

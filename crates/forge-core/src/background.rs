@@ -723,7 +723,6 @@ mod tests {
 
         fn cfg(dir: &std::path::Path) -> LoopConfig {
             LoopConfig {
-                max_turns: 5,
                 workspace: dir.to_path_buf(),
                 journal_dir: dir.join("j"),
                 enable_context_lifecycle: true,
