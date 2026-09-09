@@ -125,10 +125,10 @@ impl AgentSession {
             if self.turn.record_hitl_denial() >= Self::MAX_CONSECUTIVE_HITL_DENIALS {
                 // A denial is a strong signal the user does not want this
                 // approach pursued at all. Without this, the model would
-                // keep autonomously searching for a workaround for up to
-                // `max_turns` (128 by default) model steps before yielding
-                // control back — expensive, slow, and surprising for what
-                // was a single "no". Stop the turn now instead.
+                // keep autonomously searching for a workaround indefinitely
+                // before yielding control back — expensive, slow, and
+                // surprising for what was a single "no". Stop the turn now
+                // instead.
                 self.finalize_turn_failure(
                     "Forge stopped after repeated denied approvals for this turn.",
                     "hitl_denied",

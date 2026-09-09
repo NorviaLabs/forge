@@ -717,8 +717,7 @@ impl TuiApp {
                 .map_err(|error| TuiError::Other(error.to_string()))?;
         }
 
-        let max_turns = self.session_runtime.max_turns();
-        let mut outcome_err: Option<String> = None;
+        let outcome_err: Option<String>;
         let mut turn_cancelled = false;
         let mut turn_thought_secs = 0.0f64;
         let mut saw_thinking = false;
@@ -727,7 +726,10 @@ impl TuiApp {
         // classified errors as retryable and then never retried one, so a blip
         // cost the whole turn. Counted per step and reset on success.
         let mut model_retries = 0usize;
-        'turns: for turn in 0..max_turns {
+        let mut turn = 0u32;
+        'turns: loop {
+            let this_turn = turn;
+            turn = turn.wrapping_add(1);
             if let Some(pending) = self.session_runtime.begin_auto_context_compaction() {
                 let completed = self
                     .execute_context_compaction_responsive(pending, terminal.as_deref_mut())
@@ -751,7 +753,7 @@ impl TuiApp {
             self.sync_effort_to_session();
             let req = match self
                 .session_runtime
-                .prepare_model_step_after_compaction(turn)
+                .prepare_model_step_after_compaction(this_turn)
                 .await
             {
                 Ok(r) => r,
@@ -990,8 +992,6 @@ impl TuiApp {
             }
         }
 
-        let turn_limit_reached = outcome_err.is_none()
-            && self.session_runtime.active_task.lifecycle == forge_types::TaskLifecycle::Working;
         let interrupted_partial = outcome_err
             .as_ref()
             .filter(|_| !self.stream.preview.trim().is_empty())
@@ -999,25 +999,7 @@ impl TuiApp {
 
         self.busy_state.stop();
 
-        if turn_limit_reached {
-            self.stream.clear_preview();
-            self.stream.thinking.clear();
-            self.timing.started = None;
-            self.timing.turn_started = None;
-            self.timing.thinking_started = None;
-            self.timing.thought_secs = None;
-            self.overlay = Some(Overlay::turn_limit(max_turns));
-            self.exit.set_code(ExitCode::Success);
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                format!("{max_turns} steps reached — continue?"),
-            );
-            self.push_activity(
-                ActivityKind::Model,
-                FeedbackSeverity::Warn,
-                "turn limit reached",
-            );
-        } else if let Some(e) = outcome_err {
+        if let Some(e) = outcome_err {
             let was_cancel = turn_cancelled;
             if let Some(interrupted) = interrupted_partial {
                 self.record_interrupted_stream(&interrupted);
@@ -1229,7 +1211,6 @@ mod responsiveness_tests {
         tools.register(Arc::new(BashTool));
         let mut session = AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: workspace.path().to_path_buf(),
                 journal_dir: workspace.path().join("j"),
                 enable_context_lifecycle: true,
@@ -1313,7 +1294,6 @@ mod responsiveness_tests {
         tools.register(Arc::new(BlockingTool));
         let mut session = AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: workspace.path().to_path_buf(),
                 journal_dir: workspace.path().join("j"),
                 enable_context_lifecycle: true,
@@ -1378,7 +1358,6 @@ mod responsiveness_tests {
         let workspace = tempfile::tempdir().unwrap();
         let session = AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: workspace.path().to_path_buf(),
                 journal_dir: workspace.path().join("j"),
                 enable_context_lifecycle: true,
@@ -1423,7 +1402,6 @@ mod responsiveness_tests {
         let workspace = tempfile::tempdir().unwrap();
         let session = AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: workspace.path().to_path_buf(),
                 journal_dir: workspace.path().join("j"),
                 enable_context_lifecycle: true,

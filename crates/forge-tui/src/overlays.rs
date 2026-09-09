@@ -139,9 +139,6 @@ pub enum Overlay {
         title: String,
         rows: Vec<StatusRow>,
     },
-    TurnLimit {
-        turns: u32,
-    },
     /// Unified Connect + Model + Effort picker (`/connect` and `/model` both
     /// open this, differing only in `focus`) — one state source so the two
     /// commands can never disagree about "current".
@@ -1231,10 +1228,6 @@ impl Overlay {
         }
     }
 
-    pub fn turn_limit(turns: u32) -> Self {
-        Self::TurnLimit { turns }
-    }
-
     pub fn connect_api_key(
         profile_id: impl Into<String>,
         title: impl Into<String>,
@@ -1530,8 +1523,6 @@ pub enum OverlayAction {
         branch: String,
     },
     BeginOnboarding,
-    ContinueTurns,
-    StopTurns,
     /// Execute slash command string e.g. "/status"
     RunCommand(String),
     /// Model selection
@@ -1595,7 +1586,6 @@ fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
-        Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
         Key::Esc if matches!(overlay, Overlay::TrustSession { .. }) => {
             if let Overlay::TrustSession { operation_id, .. } = overlay {
                 OverlayAction::CancelSessionCreation {
@@ -1915,7 +1905,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 .cloned()
                 .map(OverlayAction::SelectHistory)
                 .unwrap_or(OverlayAction::None),
-            Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
             Overlay::ConnectModel {
                 providers,
                 provider_cursor,
@@ -2256,12 +2245,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             .map(|path| OverlayAction::FilePick { path, is_dir: true })
             .unwrap_or(OverlayAction::None)
-        }
-        Key::Char('y') | Key::Char('Y') if matches!(overlay, Overlay::TurnLimit { .. }) => {
-            OverlayAction::ContinueTurns
-        }
-        Key::Char('n') | Key::Char('N') if matches!(overlay, Overlay::TurnLimit { .. }) => {
-            OverlayAction::StopTurns
         }
         _ => OverlayAction::None,
     }
@@ -2739,26 +2722,6 @@ impl Widget for OverlayWidget<'_> {
                 let inner = block.inner(r);
                 block.render(r, buf);
                 Paragraph::new(status_report_lines(rows, inner.width as usize)).render(inner, buf);
-            }
-            Overlay::TurnLimit { turns } => {
-                let r = centered_rect(52, 24, area);
-                clear_modal(r, buf);
-                let body = format!(
-                    "The agent used {turns} model steps and still has work to do.\n\nContinue for another {turns} steps?\n\n[y/Enter] Continue    [n/Esc] Stop"
-                );
-                Paragraph::new(body)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::warn())
-                            .style(theme::panel())
-                            .padding(Padding::horizontal(1))
-                            .title(Span::styled(
-                                " Turn limit reached ",
-                                theme::warn().add_modifier(Modifier::BOLD),
-                            )),
-                    )
-                    .render(r, buf);
             }
             Overlay::ConnectModel {
                 providers,
@@ -4199,27 +4162,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn turn_limit_keys_continue_or_stop() {
-        let mut overlay = Overlay::turn_limit(128);
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::ContinueTurns
-        );
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Char('y')),
-            OverlayAction::ContinueTurns
-        );
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Char('n')),
-            OverlayAction::StopTurns
-        );
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Esc),
-            OverlayAction::StopTurns
-        );
-    }
-
     /// Build a `ConnectModel` overlay the way `/model` would, unscoped to any
     /// route (mirrors the old `model_open_with`) — used by tests that only
     /// care about the Models column.
@@ -5419,7 +5361,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_widget_renders_help_status_and_turn_limit() {
+    fn overlay_widget_renders_help_status() {
         let help = render_text(&Overlay::Help);
         assert!(help.contains("Forge is an AI coding agent"));
         assert!(help.contains("← / →"));
@@ -5432,11 +5374,6 @@ mod tests {
         assert!(status.contains("One"), "{status}");
         assert!(status.contains("1"), "{status}");
         assert!(status.contains("Two"), "{status}");
-
-        let turn_limit = render_text(&Overlay::turn_limit(64));
-        assert!(turn_limit.contains("Turn limit reached"));
-        assert!(turn_limit.contains("64 model steps"));
-        assert!(turn_limit.contains("[n/Esc] Stop"));
     }
 
     #[test]

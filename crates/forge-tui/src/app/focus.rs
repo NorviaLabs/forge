@@ -158,7 +158,6 @@ impl TuiApp {
         }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {
-                Overlay::TurnLimit { .. } => Some("Enter confirm · Esc cancel".into()),
                 Overlay::ConnectApiKey { .. } => Some("Enter confirm · Esc cancel".into()),
                 Overlay::ConnectOauth { .. } => Some("Enter continue · Esc cancel".into()),
                 _ => None,

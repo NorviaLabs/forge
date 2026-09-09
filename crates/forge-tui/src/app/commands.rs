@@ -1267,7 +1267,6 @@ mod tests {
         }]));
         let session = AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
                 enable_context_lifecycle: true,
@@ -1799,7 +1798,6 @@ mod tests {
         }
         let session = AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
                 enable_context_lifecycle: false,

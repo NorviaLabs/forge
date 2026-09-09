@@ -86,7 +86,6 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
             role: "risky-runner".into(),
             prompt: "run the risky command".into(),
             tool_allowlist: None,
-            max_turns: None,
         })
         .await
         .unwrap();

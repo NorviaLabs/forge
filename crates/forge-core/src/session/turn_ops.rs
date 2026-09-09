@@ -608,7 +608,7 @@ impl AgentSession {
         }
     }
 
-    /// Run until no tool calls, max turns, or HITL pause.
+    /// Run until no tool calls, HITL pause, or an error.
     pub async fn run_user_message(&mut self, text: &str) -> Result<ModelResponse, LoopError> {
         self.reset_turn_cancel();
         self.append_user_message(text).await?;
@@ -741,15 +741,6 @@ impl AgentSession {
         self.cache_epoch = self.cache_epoch.saturating_add(1);
         self.last_prompt_wire = None;
         tracing::debug!(cache_epoch = self.cache_epoch, reason, "cache epoch reset");
-    }
-
-    /// Mark the session failed after exhausting turns.
-    pub async fn fail_max_turns(&mut self) -> Result<(), LoopError> {
-        self.finalize_turn_failure(
-            "Forge couldn't complete this turn within the step limit.",
-            "max_turns",
-        )
-        .await
     }
 
     /// Drive the agent loop after the user message is already appended.

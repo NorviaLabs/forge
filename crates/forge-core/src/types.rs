@@ -39,7 +39,6 @@ pub enum LoopError {
 
 #[derive(Debug, Clone)]
 pub struct LoopConfig {
-    pub max_turns: u32,
     pub workspace: PathBuf,
     pub journal_dir: PathBuf,
     pub enable_context_lifecycle: bool,
@@ -52,7 +51,6 @@ pub struct LoopConfig {
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
-            max_turns: 128,
             workspace: PathBuf::from("."),
             journal_dir: PathBuf::from(".forge/sessions"),
             enable_context_lifecycle: true,
