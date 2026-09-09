@@ -101,7 +101,7 @@ impl TuiApp {
                             lifecycle: snapshot.session.lifecycle,
                             selected: snapshot.task.session_id == self.selected_session_id,
                             secondary: Some(snapshot.task.turn_state.label().into()),
-                            attention: false,
+                            attention: !snapshot.interrupted_prompts.is_empty(),
                         })
                         .collect();
                     if let Some(primary) = direct {
@@ -172,6 +172,9 @@ impl TuiApp {
                         task.slot = snapshot.task.slot;
                         task.lifecycle = lifecycle;
                         task.secondary = Some(snapshot.task.turn_state.label().into());
+                        if !snapshot.interrupted_prompts.is_empty() {
+                            task.attention = true;
+                        }
                     }
                 }
                 forge_session::SupervisorEvent::Attention {

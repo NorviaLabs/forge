@@ -193,6 +193,7 @@ impl TuiApp {
         handle: SupervisorHandle,
     ) -> Self {
         let session_id = initial.task.session_id;
+        let has_interrupted_prompts = !initial.interrupted_prompts.is_empty();
         let workspace_root = initial.session.workspace_root.clone();
         let (registry, theme_notices) =
             crate::theme_registry::ThemeRegistry::load_with_diagnostics(Some(&workspace_root));
@@ -228,7 +229,7 @@ impl TuiApp {
             lifecycle: initial.session.lifecycle,
             selected: true,
             secondary: Some(initial.task.turn_state.label().into()),
-            attention: false,
+            attention: has_interrupted_prompts,
         }];
         let mut snapshots = std::collections::HashMap::new();
         snapshots.insert(session_id, initial);
@@ -360,6 +361,13 @@ impl TuiApp {
         };
         app.init_file_watcher();
         app.load_ui_state();
+        if has_interrupted_prompts {
+            app.status_state.message = "interrupted prompt needs review".into();
+            app.set_feedback(
+                FeedbackSeverity::Warn,
+                "A prompt was interrupted; review it before retrying",
+            );
+        }
         app.restore_saved_auth().apply_connection_chrome()
     }
 }
