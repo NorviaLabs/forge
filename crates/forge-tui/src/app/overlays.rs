@@ -319,17 +319,6 @@ impl TuiApp {
                 self.open_connect_picker();
                 self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
             }
-            OverlayAction::ContinueTurns => {
-                self.overlay = None;
-                self.pending_turn.request_continue();
-                self.busy_state.activate();
-                self.push_toast("continuing");
-            }
-            OverlayAction::StopTurns => {
-                self.overlay = None;
-                self.status_state.message = "agent stopped at turn limit".into();
-                self.set_feedback(FeedbackSeverity::Info, "stopped at turn limit");
-            }
             OverlayAction::RunCommand(cmd) => {
                 self.startup_resume.picker = false;
                 self.overlay = None;

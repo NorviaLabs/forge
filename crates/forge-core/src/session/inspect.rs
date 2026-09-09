@@ -211,10 +211,6 @@ impl AgentSession {
         self.model.clone()
     }
 
-    pub fn max_turns(&self) -> u32 {
-        self.max_turns
-    }
-
     /// Active workspace root.
     pub fn workspace_root(&self) -> &std::path::Path {
         &self.tool_ctx.workspace_root

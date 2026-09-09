@@ -148,7 +148,6 @@ async fn session_at(workspace: &Path) -> AgentSession {
     }]));
     AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: workspace.to_path_buf(),
             journal_dir: workspace.join("j"),
             ..Default::default()
