@@ -756,6 +756,87 @@ async fn a_recognized_command_is_compressed_before_it_reaches_the_transcript() {
     );
 }
 
+/// An approved sandbox escalation must resume the turn: the confined denial
+/// pauses for approval, the approved call re-runs unconfined, its result is
+/// delivered to the agent, and the turn completes normally instead of going
+/// `failed`.
+#[tokio::test]
+async fn approved_sandbox_escalation_resumes_the_turn() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "call-sandbox-denied".into(),
+            name: "sandbox_denied".into(),
+            arguments: json!({}),
+        }]),
+        text_only("done"),
+    ]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SandboxDeniedTool));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.append_user_message("run it").await.unwrap();
+
+    let first = session.run_agent_turns(None).await.unwrap();
+    assert_eq!(session.active_task.lifecycle, TaskLifecycle::Waiting);
+    assert!(session.pending_hitl().unwrap().sandbox_escalation);
+    assert!(first.text.contains("Sandbox blocked"));
+
+    session
+        .resolve_hitl(HitlDecision::Approve, "test")
+        .await
+        .unwrap();
+    assert_eq!(session.active_task.lifecycle, TaskLifecycle::Working);
+
+    let second = session.run_agent_turns(None).await.unwrap();
+    assert_eq!(second.text, "done");
+    assert_eq!(
+        session.active_task.lifecycle,
+        TaskLifecycle::Completed,
+        "turn must not fail after an approved sandbox escalation"
+    );
+}
+
+/// The completion evaluator must not mark a turn `failed` because the
+/// operator-approved escalation re-run did not succeed. The operator already
+/// disposed of that call; its (possibly failing) output is ordinary tool
+/// feedback the agent has seen and responded to, so the turn continues and
+/// completes normally.
+#[tokio::test]
+async fn failed_approved_escalation_is_a_tool_result_not_a_turn_failure() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "g1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "git config --file /nonexistent-dir/x user.name xyz"}),
+        }]),
+        text_only("the git command failed; I will use a workspace-local config"),
+    ]));
+    let mut tools = ToolRegistry::new();
+    for tool in forge_tools::default_builtins() {
+        tools.register(tool);
+    }
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    s.run_user_message("set git config").await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+    assert!(s.pending_hitl().unwrap().sandbox_escalation);
+
+    s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
+
+    let outcome = s.run_agent_turns(None).await.unwrap();
+    assert_eq!(
+        s.active_task.lifecycle,
+        TaskLifecycle::Completed,
+        "a failed approved escalation is an ordinary tool result, not a turn failure; outcome: {}",
+        outcome.text
+    );
+}
+
 #[tokio::test]
 async fn sandbox_denial_pauses_for_hitl_instead_of_recording_failure() {
     let dir = tempdir().unwrap();
