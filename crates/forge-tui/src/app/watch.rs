@@ -15,6 +15,7 @@ pub(super) fn path_is_ignored_by_file_watcher(path: &Path) -> bool {
 impl TuiApp {
     pub(super) fn init_file_watcher(&mut self) {
         let tx = self.file_watch.sender();
+        let overflow = self.file_watch.overflow_handle();
         let mut watcher = match RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| {
                 if let Ok(event) = result {
@@ -37,11 +38,16 @@ impl TuiApp {
                             if path_is_ignored_by_file_watcher(&path) {
                                 continue;
                             }
-                            let _ = tx.send(FileChangeEvent {
-                                path,
-                                tree_changed,
-                                immediate: false,
-                            });
+                            if tx
+                                .try_send(FileChangeEvent {
+                                    path,
+                                    tree_changed,
+                                    immediate: false,
+                                })
+                                .is_err()
+                            {
+                                overflow.store(true, std::sync::atomic::Ordering::Release);
+                            }
                         }
                     }
                 }
@@ -56,6 +62,7 @@ impl TuiApp {
     }
 
     pub(super) fn poll_file_changes(&mut self) {
+        self.drain_inactive_file_watchers();
         let files_are_active = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
             && self.focus.mode() == FocusMode::Navigation;
         if !files_are_active && self.file_watch.take_deferred_tree_refresh() {
@@ -64,13 +71,23 @@ impl TuiApp {
         let Some(batch) = self.file_watch.take_ready_batch() else {
             return;
         };
-        let active_file_changed = self.source_viewer.path.as_ref().is_some_and(|open_path| {
-            batch
-                .paths
-                .iter()
-                .any(|change_path| same_file_identity(change_path, open_path))
-        });
+        let active_file_changed = batch.overflowed
+            || self.source_viewer.path.as_ref().is_some_and(|open_path| {
+                batch
+                    .paths
+                    .iter()
+                    .any(|change_path| same_file_identity(change_path, open_path))
+            });
         self.refresh_after_filesystem_change(active_file_changed, batch.tree_changed);
+    }
+
+    pub(super) fn drain_inactive_file_watchers(&mut self) {
+        for state in self.session_view_states.values_mut() {
+            state.file_watch.drain_events();
+        }
+        for state in self.retiring_session_view_states.values_mut() {
+            state.file_watch.drain_events();
+        }
     }
 
     pub(super) fn note_workspace_changed(&mut self) {

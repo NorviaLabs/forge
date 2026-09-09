@@ -580,9 +580,10 @@ impl TuiApp {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
                     // A supervisor command can wait while an actor drains a
                     // turn or its background resources. Keep every saved PTY
-                    // moving during that wait so cleanup and other commands
-                    // cannot stall a live operator shell.
+                    // and watcher moving during that wait so cleanup and
+                    // other commands cannot stall live session resources.
                     self.poll_interactive_terminals();
+                    self.poll_file_changes();
                 }
             }
         };
