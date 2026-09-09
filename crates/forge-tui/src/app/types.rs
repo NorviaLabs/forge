@@ -27,8 +27,6 @@ pub(crate) struct SessionChromeItem {
 /// only ever has one live copy of its own view state anyway.
 ///
 /// Deliberately excluded, and why:
-/// - the interactive terminal and bottom panel — the terminal is independent
-///   of the selected session by design;
 /// - provider credentials and the connect model — authentication is global,
 ///   only the *model choice* is per-task;
 /// - the explorer tree and its dialogs — those are rooted at a workspace path,

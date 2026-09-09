@@ -572,7 +572,21 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "Sessions are unavailable");
             return false;
         };
-        match handle.command(command).await {
+        let command_future = handle.command(command);
+        tokio::pin!(command_future);
+        let result = loop {
+            tokio::select! {
+                result = &mut command_future => break result,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+                    // A supervisor command can wait while an actor drains a
+                    // turn or its background resources. Keep every saved PTY
+                    // moving during that wait so cleanup and other commands
+                    // cannot stall a live operator shell.
+                    self.poll_interactive_terminals();
+                }
+            }
+        };
+        match result {
             Ok(()) => true,
             Err(error) => {
                 self.set_feedback(FeedbackSeverity::Error, error.to_string());
