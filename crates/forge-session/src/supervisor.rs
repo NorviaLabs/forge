@@ -1470,6 +1470,8 @@ async fn execute_command(
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
+            let selected = state.control.selected().await?;
+            let _ = state.events.send(SupervisorEvent::Selected(selected));
         }
         SupervisorCommand::Shutdown => {
             let actors: Vec<_> = state.actors.read().await.values().cloned().collect();

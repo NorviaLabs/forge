@@ -29,11 +29,22 @@ impl TuiApp {
         };
         let mut events = Vec::new();
         let mut closed = false;
+        let mut resync = false;
         loop {
             let event = match supervisor.events.try_recv() {
                 Ok(event) => event,
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-                | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    // Once the receiver has fallen behind, the retained
+                    // events no longer form a complete state transition. A
+                    // fresh subscription drops that partial history; the
+                    // authoritative roster and selection below rebuild the
+                    // UI from the supervisor's current snapshots.
+                    events.clear();
+                    supervisor.events = supervisor.handle.subscribe();
+                    resync = true;
+                    break;
+                }
                 Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
                     closed = true;
                     break;
@@ -42,6 +53,19 @@ impl TuiApp {
             events.push(event);
         }
         let _ = supervisor;
+        if resync {
+            let result = self.supervisor.as_ref().map(|supervisor| {
+                supervisor
+                    .handle
+                    .try_command(forge_session::SupervisorCommand::Refresh)
+            });
+            if let Some(Err(error)) = result {
+                self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("could not resync repository sessions: {error}"),
+                );
+            }
+        }
         if closed {
             self.set_feedback(
                 FeedbackSeverity::Error,
@@ -51,6 +75,10 @@ impl TuiApp {
         for event in events {
             match event {
                 forge_session::SupervisorEvent::Roster(roster) => {
+                    let selected_snapshot = roster
+                        .iter()
+                        .find(|snapshot| snapshot.task.session_id == self.selected_session_id)
+                        .cloned();
                     if let Some(supervisor) = self.supervisor.as_mut() {
                         supervisor.snapshots = roster
                             .iter()
@@ -90,6 +118,11 @@ impl TuiApp {
                         .iter()
                         .position(|task| task.session_id == self.selected_session_id)
                         .unwrap_or(0);
+                    if let Some(snapshot) = selected_snapshot {
+                        self.session_view = snapshot.session.clone();
+                        self.transcript_view = snapshot.transcript.clone();
+                        self.sync_supervised_presentation(&snapshot);
+                    }
                 }
                 forge_session::SupervisorEvent::SessionUpdated(snapshot) => {
                     let snapshot = *snapshot;
