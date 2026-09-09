@@ -67,7 +67,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
 }
 
 #[tokio::test]
-async fn failed_turn_does_not_open_a_turn_limit_continuation() {
+async fn failed_turn_ends_in_failed_lifecycle() {
     let dir = TempDir::new().unwrap();
     let session = session_for_workspace_with_model(
         dir.path(),
@@ -101,10 +101,7 @@ async fn failed_turn_does_not_open_a_turn_limit_continuation() {
         app.session_runtime.active_task.lifecycle,
         forge_types::TaskLifecycle::Failed
     );
-    assert!(
-        !matches!(app.overlay, Some(Overlay::TurnLimit { .. })),
-        "a failed turn must not be offered another turn-limit batch"
-    );
+    assert!(app.overlay.is_none());
 }
 
 // Regression test for the "permanently stuck Working" bug found in the

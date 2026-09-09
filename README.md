@@ -266,7 +266,7 @@ Agent orchestration is enabled by default. The model can use `spawn_agent`,
 `send_message`, `followup_task`, `wait_agent`, `list_agents`, and
 `interrupt_agent`. Each child runs in an isolated Git worktree and inherits the
 parent model, governance, and workspace policy. `spawn_agent` can narrow a
-child's tools with `tool_allowlist` and its model steps with `max_turns`.
+child's tools with `tool_allowlist`.
 
 `max_depth` bounds nested work. `send_message` queues a
 mailbox message without waking its target; `followup_task` wakes an idle or

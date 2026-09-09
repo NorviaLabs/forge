@@ -28,10 +28,12 @@ impl TurnCoordinator {
             session.start_fresh_attempt().await?;
         }
 
-        for turn in 0..session.max_turns() {
+        let mut turn = 0u32;
+        loop {
             let response = session
                 .run_model_step_with_stream(turn, stream_tx.clone())
                 .await?;
+            turn = turn.wrapping_add(1);
 
             match session.apply_model_response(response).await? {
                 ApplyOutcome::Done(response) | ApplyOutcome::Hitl(response) => return Ok(response),
@@ -51,8 +53,5 @@ impl TurnCoordinator {
                 }
             }
         }
-
-        session.fail_max_turns().await?;
-        Err(LoopError::Other("max_turns exceeded".into()))
     }
 }

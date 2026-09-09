@@ -983,7 +983,6 @@ impl AgentSession {
                         role: args.task_name,
                         prompt: args.message,
                         tool_allowlist: args.tool_allowlist,
-                        max_turns: args.max_turns,
                     })
                     .await?;
                 let agent_id = self

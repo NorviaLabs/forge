@@ -124,7 +124,6 @@ pub struct AgentSession {
     /// `None` means the network is off, which is the state when a proxy could
     /// not be started.
     egress: Option<permission::EgressRuntime>,
-    max_turns: u32,
     governance: Governance,
     context: ContextEngine,
     enable_context: bool,

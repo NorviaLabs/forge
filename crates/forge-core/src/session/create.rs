@@ -209,7 +209,6 @@ impl AgentSession {
             model,
             tool_ctx,
             egress,
-            max_turns: loop_cfg.max_turns,
             governance: Governance::default(),
             context,
             enable_context: loop_cfg.enable_context_lifecycle,
@@ -296,7 +295,6 @@ impl AgentSession {
             model,
             tool_ctx,
             egress,
-            max_turns: loop_cfg.max_turns,
             governance: Governance::default(),
             context,
             enable_context: loop_cfg.enable_context_lifecycle,
@@ -381,7 +379,6 @@ impl AgentSession {
     /// task with a fresh lifecycle and runtime scratch space.
     pub async fn fork(&self) -> Result<Self, LoopError> {
         let loop_cfg = LoopConfig {
-            max_turns: self.max_turns,
             workspace: self.workspace_root().to_path_buf(),
             journal_dir: self.journal.directory().to_path_buf(),
             enable_context_lifecycle: self.enable_context,

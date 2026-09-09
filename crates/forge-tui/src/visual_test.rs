@@ -49,7 +49,6 @@ mod tests {
         }]));
         let session = AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
                 enable_context_lifecycle: true,
@@ -672,7 +671,6 @@ mod tests {
         }]));
         AgentSession::create(
             LoopConfig {
-                max_turns: 4,
                 workspace: workspace.to_path_buf(),
                 journal_dir: dir.join("j"),
                 enable_context_lifecycle: true,
@@ -731,7 +729,7 @@ mod tests {
         assert!(!app.source_viewer.search.matches.is_empty());
 
         // Open an overlay (no-op overlay that doesn't touch search state).
-        app.overlay = Some(crate::overlays::Overlay::turn_limit(5));
+        app.overlay = Some(crate::overlays::Overlay::Help);
 
         let backend = TestBackend::new(120, 40);
         let mut term = Terminal::new(backend).unwrap();

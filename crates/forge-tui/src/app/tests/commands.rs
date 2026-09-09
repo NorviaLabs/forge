@@ -169,7 +169,6 @@ async fn resume_command_replaces_active_conversation_in_app() {
     let model = Arc::new(MockModelClient::script(vec![]));
     let mut previous = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("j"),
             enable_context_lifecycle: true,
@@ -225,7 +224,6 @@ async fn resume_restores_input_history_for_up_down_recall() {
     let model = Arc::new(MockModelClient::script(vec![]));
     let mut previous = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("j"),
             enable_context_lifecycle: true,
@@ -287,7 +285,6 @@ async fn resume_restores_local_only_slash_commands_too() {
     let model = Arc::new(MockModelClient::script(vec![]));
     let previous = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("j"),
             enable_context_lifecycle: true,
@@ -344,7 +341,6 @@ async fn bare_resume_list_shows_title_hint_from_first_user_message() {
     let model = Arc::new(MockModelClient::script(vec![]));
     let mut previous = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("j"),
             enable_context_lifecycle: true,
@@ -398,7 +394,6 @@ async fn compact_reports_the_before_and_after_size_and_the_surviving_objective()
     }]));
     let session = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("j"),
             ..Default::default()

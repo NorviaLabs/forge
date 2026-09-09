@@ -1480,7 +1480,6 @@ fn system_prompt_shows_only_name_and_description_for_skills_with_frontmatter() {
 
 fn base_cfg(dir: &std::path::Path) -> LoopConfig {
     LoopConfig {
-        max_turns: 5,
         workspace: dir.to_path_buf(),
         journal_dir: dir.join("j"),
         enable_context_lifecycle: true,
@@ -2774,12 +2773,12 @@ async fn resume_retries_idempotent_incomplete_intent() {
 }
 
 /// F-RECOVERY-01: denying one trivial approval used to let the model
-/// keep autonomously retrying for up to `max_turns` (128 by default)
-/// steps before yielding control back — a single "no" shouldn't cost
-/// that much. Two denials in a row within the same turn must now stop
-/// the turn outright instead of continuing to churn.
+/// keep autonomously retrying indefinitely before yielding control
+/// back — a single "no" shouldn't cost that much. Two denials in a row
+/// within the same turn must now stop the turn outright instead of
+/// continuing to churn.
 #[tokio::test]
-async fn repeated_hitl_denials_stop_the_turn_instead_of_retrying_to_max_turns() {
+async fn repeated_hitl_denials_stop_the_turn_instead_of_retrying() {
     let dir = tempdir().unwrap();
     let push = ToolCall {
         id: "1".into(),
@@ -3873,27 +3872,6 @@ async fn finalize_turn_failure_keeps_the_first_summary() {
     assert_eq!(markers.len(), 1);
     assert!(markers[0].contains("first failure"));
     assert!(!markers[0].contains("second failure"));
-}
-
-#[tokio::test]
-async fn fail_max_turns_records_a_step_limit_failure() {
-    let dir = tempdir().unwrap();
-    let mut s = idle_session(dir.path()).await;
-    s.append_user_message("do something").await.unwrap();
-
-    s.fail_max_turns().await.unwrap();
-
-    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
-    let marker = s
-        .messages
-        .iter()
-        .find(|m| m.content.starts_with(TURN_FAILED_MARKER))
-        .expect("a turn_failed marker should be recorded");
-    assert!(marker.content.contains("step limit"));
-    assert!(s
-        .events
-        .iter()
-        .any(|e| e.kind == "turn_failed" && e.detail.starts_with("max_turns:")));
 }
 
 #[tokio::test]

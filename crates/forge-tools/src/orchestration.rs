@@ -16,9 +16,6 @@ pub struct SpawnAgentArgs {
     /// Optional allow-list that narrows the child's inherited tool policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_allowlist: Option<Vec<String>>,
-    /// Optional maximum number of model steps for this child.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_turns: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]

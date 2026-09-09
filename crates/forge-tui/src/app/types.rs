@@ -1346,6 +1346,7 @@ impl BusyState {
         self.phase = phase;
     }
 
+    #[cfg(test)]
     pub(crate) fn activate(&mut self) {
         self.active = true;
     }

@@ -659,7 +659,7 @@ async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
         .is_some_and(|hint| hint.contains("Esc cancel")));
 
     app.focus.set_navigation(app.focus.block());
-    app.overlay = Some(Overlay::turn_limit(4));
+    app.overlay = Some(Overlay::connect_api_key("p", "title", None, None));
     assert_eq!(
         app.contextual_hint().as_deref(),
         Some("Enter confirm · Esc cancel")

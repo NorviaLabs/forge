@@ -1920,7 +1920,6 @@ mod tests {
     async fn escalation_session(cfg: &Config, responses: Vec<ModelResponse>) -> AgentSession {
         let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(responses));
         let loop_cfg = LoopConfig {
-            max_turns: 8,
             workspace: cfg.workspace_root().to_path_buf(),
             journal_dir: cfg.journal.path.clone().into(),
             enable_context_lifecycle: true,

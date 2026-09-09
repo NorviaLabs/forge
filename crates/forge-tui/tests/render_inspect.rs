@@ -329,7 +329,6 @@ async fn app_with_messages(messages: Vec<Message>) -> (TempDir, TuiApp) {
     }]));
     let mut session = AgentSession::create(
         LoopConfig {
-            max_turns: 4,
             workspace: dir.path().to_path_buf(),
             journal_dir: dir.path().join("j"),
             ..Default::default()
