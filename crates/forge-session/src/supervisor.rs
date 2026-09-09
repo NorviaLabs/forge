@@ -33,6 +33,10 @@ pub struct SessionRuntimeSnapshot {
     pub transcript: TranscriptSnapshot,
     pub details: Option<SessionDetailsSnapshot>,
     pub queued_prompts: Vec<(u64, String)>,
+    /// Prompts whose dispatch crossed the claim boundary but never reached a
+    /// durable terminal result. These require explicit operator review and
+    /// are never fed back into the runnable queue automatically.
+    pub interrupted_prompts: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,14 +277,20 @@ struct SessionActor {
 }
 
 impl SessionActor {
-    fn new(task: RepositorySession, session: AgentSession) -> Self {
+    fn new(
+        task: RepositorySession,
+        session: AgentSession,
+        queued_prompts: Vec<(u64, String)>,
+        interrupted_prompts: Vec<(u64, String)>,
+    ) -> Self {
         let model = session.model_client();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
             transcript: TranscriptSnapshot::capture(&session),
             details: Some(SessionDetailsSnapshot::capture(&session)),
-            queued_prompts: Vec::new(),
+            queued_prompts,
+            interrupted_prompts,
         };
         Self {
             session: Mutex::new(session),
@@ -751,10 +761,22 @@ impl RepositorySupervisor {
         trust_store: Option<PathBuf>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let (events, _) = broadcast::channel(512);
-        let actors = sessions
-            .into_iter()
-            .map(|(task, session)| (task.session_id, Arc::new(SessionActor::new(task, session))))
-            .collect();
+        let recovered = control.reconcile_running_prompt_claims().await?;
+        let mut actors = HashMap::with_capacity(sessions.len());
+        for (mut task, session) in sessions {
+            // `reconcile_running_prompt_claims` also repairs the durable task
+            // row. Refresh the copy handed to the actor before its first
+            // roster snapshot so a restart cannot show it as running.
+            if recovered.iter().any(|(id, _, _)| *id == task.session_id) {
+                task.turn_state = SupervisorTurnState::Interrupted;
+            }
+            let interrupted = control.interrupted_prompts(task.session_id).await?;
+            let queued = control.queued_prompts(task.session_id).await?;
+            actors.insert(
+                task.session_id,
+                Arc::new(SessionActor::new(task, session, queued, interrupted)),
+            );
+        }
         let state = Arc::new(SupervisorState {
             cfg,
             model,
@@ -773,6 +795,13 @@ impl RepositorySupervisor {
         };
         tokio::spawn(run_commands(state, receiver));
         supervisor.publish_roster().await;
+        for (session_id, _, _) in recovered {
+            let _ = supervisor.state.events.send(SupervisorEvent::Attention {
+                session_id,
+                state: SupervisorTurnState::Interrupted,
+                message: "A prompt was interrupted; review it before retrying".into(),
+            });
+        }
         Ok((supervisor, handle))
     }
 
@@ -1070,7 +1099,12 @@ async fn execute_command(
                     Some(pending.operation_id),
                 )
                 .await?;
-            let actor = Arc::new(SessionActor::new(task.clone(), opened.session));
+            let actor = Arc::new(SessionActor::new(
+                task.clone(),
+                opened.session,
+                Vec::new(),
+                Vec::new(),
+            ));
             state.actors.write().await.insert(task.session_id, actor);
             if first_prompt.is_some() {
                 // A parked prompt runs as soon as the operator confirms
@@ -1148,7 +1182,12 @@ async fn execute_command(
             let actor_task = state.control.session(task.session_id).await?;
             state.actors.write().await.insert(
                 task.session_id,
-                Arc::new(SessionActor::new(actor_task, opened.session)),
+                Arc::new(SessionActor::new(
+                    actor_task,
+                    opened.session,
+                    Vec::new(),
+                    Vec::new(),
+                )),
             );
             let _ = state
                 .events
@@ -1617,7 +1656,15 @@ async fn replace_conversation(
     drop(session);
     let mut actors = state.actors.write().await;
     actors.remove(&previous);
-    actors.insert(next, Arc::new(SessionActor::new(record, replacement)));
+    actors.insert(
+        next,
+        Arc::new(SessionActor::new(
+            record,
+            replacement,
+            Vec::new(),
+            Vec::new(),
+        )),
+    );
     drop(actors);
     let mut archived = state.unavailable_tasks.write().await;
     archived.retain(|task| task.session_id != next && task.session_id != previous);
@@ -1714,6 +1761,36 @@ async fn run_one(
     prompt: Option<(u64, String)>,
 ) -> Result<bool, RepositorySupervisorError> {
     let session_id = task_actor.snapshot.read().await.task.session_id;
+    let queue_id = prompt.as_ref().map(|(queue_id, _)| *queue_id);
+    let result = run_one_inner(state.clone(), task_actor, prompt).await;
+    if result.is_err() {
+        if let Some(queue_id) = queue_id {
+            if state.control.interrupt_prompt_claim(queue_id).await? {
+                let _ = publish_actor(&state, session_id).await;
+                let _ = state.events.send(SupervisorEvent::Attention {
+                    session_id,
+                    state: SupervisorTurnState::Interrupted,
+                    message: "A prompt was interrupted; review it before retrying".into(),
+                });
+            }
+        }
+    }
+    result
+}
+
+async fn run_one_inner(
+    state: Arc<SupervisorState>,
+    task_actor: Arc<SessionActor>,
+    prompt: Option<(u64, String)>,
+) -> Result<bool, RepositorySupervisorError> {
+    let session_id = task_actor.snapshot.read().await.task.session_id;
+    let prompt_attachments = match prompt.as_ref() {
+        Some((queue_id, _)) => Some(
+            serde_json::from_str(&state.control.prompt_attachments(*queue_id).await?)
+                .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?,
+        ),
+        None => None,
+    };
     let permit = state
         .permits
         .clone()
@@ -1740,15 +1817,13 @@ async fn run_one(
         }
     });
     let result = match prompt.as_ref() {
-        Some((queue_id, text)) => {
-            let attachments =
-                serde_json::from_str(&state.control.prompt_attachments(*queue_id).await?)
-                    .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
-            session
-                .append_user_message_with_attachments(text, attachments)
-                .await?;
-            session.run_agent_turns_in_scope(Some(stream_sender)).await
-        }
+        Some((_, text)) => match session
+            .append_user_message_with_attachments(text, prompt_attachments.unwrap_or_default())
+            .await
+        {
+            Ok(()) => session.run_agent_turns_in_scope(Some(stream_sender)).await,
+            Err(error) => Err(error),
+        },
         None => session.run_agent_turns_in_scope(Some(stream_sender)).await,
     };
     drop(permit);
@@ -1837,6 +1912,10 @@ async fn refresh_actor(
         transcript: TranscriptSnapshot::capture(session),
         details: Some(SessionDetailsSnapshot::capture(session)),
         queued_prompts: state.control.queued_prompts(session.session_id).await?,
+        interrupted_prompts: state
+            .control
+            .interrupted_prompts(session.session_id)
+            .await?,
     };
     *task_actor.snapshot.write().await = snapshot.clone();
     let _ = state
@@ -1854,6 +1933,7 @@ async fn publish_actor(
     let mut snapshot = task_actor.snapshot.write().await;
     snapshot.task = task;
     snapshot.queued_prompts = state.control.queued_prompts(session_id).await?;
+    snapshot.interrupted_prompts = state.control.interrupted_prompts(session_id).await?;
     let _ = state
         .events
         .send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
@@ -1878,6 +1958,11 @@ async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
             transcript: TranscriptSnapshot::default(),
             details: None,
             queued_prompts: Vec::new(),
+            interrupted_prompts: state
+                .control
+                .interrupted_prompts(task.session_id)
+                .await
+                .unwrap_or_default(),
             task,
         });
     }
@@ -2137,6 +2222,77 @@ mod tests {
             }
         }
         panic!("timed out waiting for supervisor state");
+    }
+
+    #[tokio::test]
+    async fn startup_reconciles_running_prompt_claims_without_replaying_them() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let session = scripted_session(&cfg, "unused").await;
+        let session_id = session.session_id;
+        let task = task_for(session_id, "recovered", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let interrupted_id = control
+            .enqueue_prompt(session_id, "may already have run")
+            .await
+            .unwrap();
+        let queued_id = control
+            .enqueue_prompt(session_id, "run after review")
+            .await
+            .unwrap();
+        assert_eq!(
+            control.claim_next_prompt(session_id).await.unwrap(),
+            Some((interrupted_id, "may already have run".into()))
+        );
+
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control.clone(),
+            lease,
+            vec![(task, session)],
+            1,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        let snapshot = supervisor.snapshot(session_id).await.unwrap();
+        assert_eq!(snapshot.task.turn_state, SupervisorTurnState::Interrupted);
+        assert_eq!(
+            snapshot.interrupted_prompts,
+            vec![(interrupted_id, "may already have run".into())]
+        );
+        assert_eq!(
+            snapshot.queued_prompts,
+            vec![(queued_id, "run after review".into())]
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]

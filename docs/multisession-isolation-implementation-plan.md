@@ -28,6 +28,14 @@ Forge uses cooperative isolation within one trusted repository operator:
   every Git mutation. It is outside this implementation slice and must not be
   implied by the word “isolated” in product copy.
 
+Prompt dispatch is fail-closed across supervisor interruption. A prompt is
+claimed before its turn starts and remains durably marked `running` until a
+terminal queue result is recorded. Startup and in-process dispatch errors move
+an unfinished claim to `interrupted`, surface it for operator review, and
+leave later queued prompts runnable. Forge does not replay an interrupted
+prompt automatically because the model or a tool may already have produced a
+side effect.
+
 ## Ordered implementation slices
 
 Each slice is completed and validated before the next one begins. Tests are

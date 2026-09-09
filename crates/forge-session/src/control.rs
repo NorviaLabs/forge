@@ -687,6 +687,123 @@ impl RepositoryControl {
             .collect())
     }
 
+    /// Prompts whose supervisor claim was interrupted before the attempt had a
+    /// durable terminal outcome. They are intentionally excluded from
+    /// [`Self::queued_prompts`]: retrying one automatically could repeat a
+    /// tool or model side effect that happened before the process stopped.
+    pub async fn interrupted_prompts(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Vec<(u64, String)>, RepositorySessionError> {
+        let rows = sqlx::query(
+            "SELECT queue_id, text FROM prompt_queue WHERE session_id = ? \
+             AND status = 'interrupted' ORDER BY queue_id",
+        )
+        .bind(session_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<i64, _>("queue_id") as u64,
+                    row.get::<String, _>("text"),
+                )
+            })
+            .collect())
+    }
+
+    /// Reconcile claims left by a previous supervisor process. A `running`
+    /// row has crossed the claim boundary, so its side effects are ambiguous;
+    /// fail closed by surfacing it as interrupted instead of replaying it.
+    /// Later `queued` rows remain available to the normal driver.
+    pub async fn reconcile_running_prompt_claims(
+        &self,
+    ) -> Result<Vec<(SessionId, u64, String)>, RepositorySessionError> {
+        let mut transaction = self.pool.begin().await?;
+        let rows = sqlx::query(
+            "SELECT queue_id, session_id, text FROM prompt_queue \
+             WHERE status = 'running' ORDER BY queue_id",
+        )
+        .fetch_all(&mut *transaction)
+        .await?;
+        if rows.is_empty() {
+            transaction.commit().await?;
+            return Ok(Vec::new());
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let mut interrupted = Vec::with_capacity(rows.len());
+        for row in rows {
+            let queue_id = row.get::<i64, _>("queue_id") as u64;
+            let session_id = parse_session_id(row.get("session_id"))?;
+            let text = row.get::<String, _>("text");
+            sqlx::query(
+                "UPDATE prompt_queue SET status = 'interrupted', updated_at = ? \
+                 WHERE queue_id = ? AND status = 'running'",
+            )
+            .bind(&now)
+            .bind(queue_id as i64)
+            .execute(&mut *transaction)
+            .await?;
+            // Keep a session that was waiting for a human response waiting;
+            // otherwise mark the stale supervisor turn so the UI does not
+            // report an actor as running forever after restart.
+            sqlx::query(
+                "UPDATE tasks SET turn_state = 'interrupted', updated_at = ? \
+                 WHERE session_id = ? AND lifecycle = 'active' \
+                 AND turn_state IN ('idle', 'queued', 'running')",
+            )
+            .bind(&now)
+            .bind(session_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+            interrupted.push((session_id, queue_id, text));
+        }
+        transaction.commit().await?;
+        Ok(interrupted)
+    }
+
+    /// Mark a claimed prompt as ambiguous after an in-process dispatch error.
+    /// The conditional update leaves a normally completed claim untouched.
+    pub async fn interrupt_prompt_claim(
+        &self,
+        queue_id: u64,
+    ) -> Result<bool, RepositorySessionError> {
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT session_id FROM prompt_queue WHERE queue_id = ? AND status = 'running'",
+        )
+        .bind(queue_id as i64)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Ok(false);
+        };
+        let session_id = row.get::<String, _>("session_id");
+        let now = Utc::now().to_rfc3339();
+        let updated = sqlx::query(
+            "UPDATE prompt_queue SET status = 'interrupted', updated_at = ? \
+             WHERE queue_id = ? AND status = 'running'",
+        )
+        .bind(&now)
+        .bind(queue_id as i64)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE tasks SET turn_state = 'interrupted', updated_at = ? \
+             WHERE session_id = ? AND lifecycle = 'active' \
+             AND turn_state IN ('idle', 'queued', 'running')",
+        )
+        .bind(&now)
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
     pub(crate) async fn prompt_attachments(
         &self,
         queue_id: u64,
@@ -1467,6 +1584,82 @@ mod tests {
             .await
             .unwrap();
         control.archive(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_prompt_claims_are_visible_and_do_not_replay() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let task = new_task(&dir.path().join("a"), "a", None);
+        let session_id = task.session_id;
+        control.register_session(task, None).await.unwrap();
+        let interrupted_id = control
+            .enqueue_prompt(session_id, "may have run")
+            .await
+            .unwrap();
+        let queued_id = control
+            .enqueue_prompt(session_id, "run after review")
+            .await
+            .unwrap();
+        assert_eq!(
+            control.claim_next_prompt(session_id).await.unwrap(),
+            Some((interrupted_id, "may have run".into()))
+        );
+
+        let recovered = control.reconcile_running_prompt_claims().await.unwrap();
+        assert_eq!(
+            recovered,
+            vec![(session_id, interrupted_id, "may have run".into())]
+        );
+        assert_eq!(
+            control.interrupted_prompts(session_id).await.unwrap(),
+            vec![(interrupted_id, "may have run".into())]
+        );
+        assert_eq!(
+            control.queued_prompts(session_id).await.unwrap(),
+            vec![(queued_id, "run after review".into())]
+        );
+        assert_eq!(
+            control.session(session_id).await.unwrap().turn_state,
+            SupervisorTurnState::Interrupted
+        );
+        assert!(control
+            .reconcile_running_prompt_claims()
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_claim_is_marked_interrupted_without_overwriting_completion() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let task = new_task(&dir.path().join("a"), "a", None);
+        let session_id = task.session_id;
+        control.register_session(task, None).await.unwrap();
+        let queue_id = control
+            .enqueue_prompt(session_id, "ambiguous")
+            .await
+            .unwrap();
+        control.claim_next_prompt(session_id).await.unwrap();
+
+        assert!(control.interrupt_prompt_claim(queue_id).await.unwrap());
+        assert!(!control.interrupt_prompt_claim(queue_id).await.unwrap());
+        assert_eq!(
+            control.interrupted_prompts(session_id).await.unwrap(),
+            vec![(queue_id, "ambiguous".into())]
+        );
+
+        let completed_id = control
+            .enqueue_prompt(session_id, "completed")
+            .await
+            .unwrap();
+        control.claim_next_prompt(session_id).await.unwrap();
+        control
+            .finish_prompt(completed_id, "completed")
+            .await
+            .unwrap();
+        assert!(!control.interrupt_prompt_claim(completed_id).await.unwrap());
     }
 
     #[tokio::test]
