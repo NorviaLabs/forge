@@ -6,40 +6,52 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust 1.97.1+](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
-_Go from idea to verified code without leaving the terminal—Forge unifies an AI
-agent, code editor, and shell in one focused workflow._
+_Run, supervise, and resume AI coding work without leaving the terminal._
 
 ![Forge demo: a crash is caught in the terminal, fixed by hand in the editor, re-run to confirm—which surfaces the same bug next door—and that one is handed to the agent, all in one pane](.github/assets/demo.gif)
 
-Forge is an open-source AI coding agent for your terminal. It runs a
-full-screen TUI in the repository you are working on, helps inspect and change
-files, runs commands with your approval, and keeps a durable session journal so
-you can continue work after an interruption.
+Forge is an open-source terminal coding environment for engineering with AI
+agents. It combines agent conversations, a file explorer, Vim-style editing,
+an interactive shell, diffs, approvals, model selection, and multiple durable
+sessions in one keyboard-driven TUI.
+
+Managed sessions keep their own durable state and isolated Git worktree, so one
+session can keep working while you inspect, edit, or direct another. Agent shell
+commands run under an OS sandbox, with network egress controlled by explicit
+host rules.
 
 Forge is alpha software. Review every approval prompt and use it first in a
 disposable or backed-up repository.
 
 ## Why this exists
 
-Claude Code is the incumbent for terminal-first AI coding, but its experience
-is centered on an agent you drive from a prompt and an external editor you use
-alongside it. Forge is for people who want the agent, code editor, file
-explorer, shell, approvals, diffs, and durable sessions in one keyboard-driven
-workspace, so inspecting code, changing it, and verifying the result stay in a
-single focused loop.
+Most terminal coding agents optimize the prompt-to-patch loop. Real engineering
+work is wider than that: you inspect code, edit some parts yourself, delegate
+others, run commands, review diffs, verify behavior, switch tasks, and come back
+later.
+
+Forge keeps that whole loop in one workspace. The agent is part of the
+environment rather than the entire environment: you can work directly in the
+editor and shell, supervise long-running agent work, switch between independent
+sessions, and resume durable state after an interruption.
 
 ## What Forge does
 
-- Chats with a configured model while staying inside your terminal.
-- Reads and edits workspace files, applies focused patches, searches code, and
-  works with Git.
-- Runs every shell command inside an OS sandbox confined to your workspace,
-  with network egress restricted to an allow-list.
-- Preserves session history and unfinished work in a local SQLite journal.
-- Supports provider sign-in and model selection from the TUI.
+- Runs multiple independent coding sessions in one TUI; managed sessions use
+  isolated linked Git worktrees and session-local state.
+- Chats with configured models, reads and edits files, searches code, works
+  with Git, and runs tools until the task completes or you interrupt it.
+- Gives you a built-in file explorer, Vim-style editor, interactive shell,
+  diffs, diagnostics, activity, and task state.
+- Runs agent shell commands inside an OS sandbox confined to the workspace,
+  with network egress denied by default and opened through explicit host rules.
+- Preserves transcripts, task state, queued follow-ups, and unfinished work in
+  a local SQLite journal so sessions can survive process restarts.
+- Supports provider sign-in, per-session model selection, reasoning effort, and
+  model switching from the TUI.
 - Connects configured MCP servers and exposes their tools to the agent.
-- Shows files, diffs, command output, activity, diagnostics, and task state in
-  one keyboard-driven workspace.
+- Supports child agents with durable state and isolated worktrees for delegated
+  work.
 
 ## Install
 
@@ -195,6 +207,7 @@ controls are:
 | `Esc` | Leave the current interaction level |
 | `↑` / `↓` | Navigate a local list or input |
 | `F1` | Open help |
+| `F3` | Open the session switcher |
 | `F4` | Open model picker |
 | `Ctrl+E` | Toggle the Files explorer |
 | `Ctrl+Backtick` | Toggle the terminal panel (or `/terminal`) |
@@ -520,8 +533,17 @@ treat model output as trusted input.
 
 ## Sessions and resume
 
-Every Forge session has a durable identifier and journal. If a process stops
-unexpectedly, start Forge with:
+Forge supports multiple durable managed sessions inside one TUI. Each session
+has its own identifier, transcript, queued follow-ups, model selection, runtime
+state, and isolated linked Git worktree. A session can continue streaming or
+running tools in the background while you switch to another session and work
+there independently.
+
+Use `F3` to open the session switcher. Session presentation and input routing
+stay session-local: switching sessions does not move drafts, queued prompts,
+approvals, questions, or model state into another session.
+
+If Forge stops unexpectedly, start it with:
 
 ```sh
 forge --continue
@@ -544,8 +566,8 @@ input recall. `/clear` hides the rendered transcript but does not erase model
 context; use `/compact` when you want a smaller model-visible context.
 
 Inside the TUI, `/resume` lists previous sessions and shows a title hint from
-the first user message when available. Session journals stay separate from
-your source files and should never contain API keys or OAuth tokens.
+the first user message when available. Session journals stay separate from your
+source files and should never contain API keys or OAuth tokens.
 
 ## Safety
 
