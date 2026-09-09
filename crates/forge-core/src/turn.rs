@@ -36,7 +36,19 @@ impl TurnCoordinator {
             match session.apply_model_response(response).await? {
                 ApplyOutcome::Done(response) | ApplyOutcome::Hitl(response) => return Ok(response),
                 ApplyOutcome::Continue => {}
-                ApplyOutcome::YieldToQueue(response) => return Ok(response),
+                // A turn that ends at a tool boundary while the future-task
+                // queue is non-empty hands off to the queue instead of
+                // completing. The direct TUI loop performs this transition
+                // itself (`yield_current_turn_for_queue`) after
+                // `apply_model_response`; the coordinator must do the same so
+                // the lifecycle leaves `Working` — otherwise the next prompt's
+                // `start_fresh_attempt` (illegal from `Working`) wedges the
+                // session. Mirrors `apply_model_response`'s own
+                // terminal-transition behaviour for a normal completion.
+                ApplyOutcome::YieldToQueue(response) => {
+                    session.yield_current_turn_for_queue().await?;
+                    return Ok(response);
+                }
             }
         }
 
