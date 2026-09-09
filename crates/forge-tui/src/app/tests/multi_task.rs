@@ -255,6 +255,56 @@ async fn unchanged_transcript_update_reuses_cached_conversation_lines() {
 }
 
 #[tokio::test]
+async fn lagged_supervisor_events_resync_the_selected_snapshot() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let session_id = app.selected_session_id;
+    let final_model = "mock-after-lag-599";
+
+    // SetModel publishes a snapshot event for every update. Do not poll while
+    // filling the broadcast channel so the TUI receiver is forced to report
+    // Lagged on its next tick.
+    for index in 0..600 {
+        handle
+            .command(forge_session::SupervisorCommand::SetModel {
+                session_id,
+                model_id: if index == 599 {
+                    final_model.into()
+                } else {
+                    format!("mock-after-lag-{index}")
+                },
+                route_id: "native".into(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    app.poll_supervisor_events();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.poll_supervisor_events();
+        let current = app
+            .selected_snapshot()
+            .and_then(|snapshot| snapshot.details.as_ref())
+            .map(|details| details.active_model.as_str());
+        if current == Some(final_model) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "lagged supervisor events did not produce an authoritative refresh: {current:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(app.runtime.model_label, final_model);
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn supervised_primary_has_no_direct_runtime_and_runs_one_turn() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let primary_id = app.selected_session_id;
