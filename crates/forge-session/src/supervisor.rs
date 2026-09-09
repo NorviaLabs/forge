@@ -802,7 +802,9 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(200));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut deferred = std::collections::VecDeque::new();
+    let mut operations = tokio::task::JoinSet::new();
     loop {
+        while operations.try_join_next().is_some() {}
         // New arrivals win over deferred contention retries, so a command
         // waiting on a busy actor never head-of-line-blocks unrelated
         // sessions (or a Shutdown) behind it.
@@ -832,6 +834,24 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
             },
         };
         let shutdown = matches!(envelope.command, SupervisorCommand::Shutdown);
+        if runs_outside_command_loop(&envelope.command) {
+            let command = envelope.command.clone();
+            let reply = envelope.reply;
+            let session_id = command_session_id(&command);
+            let operation_state = state.clone();
+            operations.spawn(async move {
+                let result = execute_detached_command(operation_state.clone(), command).await;
+                let result = result.map_err(|error| error.to_string());
+                if let Err(message) = &result {
+                    let _ = operation_state.events.send(SupervisorEvent::Error {
+                        session_id,
+                        message: message.clone(),
+                    });
+                }
+                let _ = reply.send(result);
+            });
+            continue;
+        }
         // Cloned: a contended command is requeued whole, so the loop keeps
         // ownership of the envelope.
         let command = execute_command(state.clone(), envelope.command.clone());
@@ -898,7 +918,50 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
         }
         let _ = envelope.reply.send(result);
         if shutdown {
+            // Long-running operations own their reply channels and are tracked
+            // here so shutdown does not leave a compaction, MCP startup, or
+            // worktree mutation detached after the command loop exits.
+            while operations.join_next().await.is_some() {}
             break;
+        }
+    }
+}
+
+/// Commands whose work can wait on a provider, MCP process, or Git operation
+/// must not occupy the shared command dispatcher. Their operation task still
+/// uses the actor mutex, so commands for the same session retain ordering;
+/// unrelated sessions continue to receive commands while the operation waits.
+fn runs_outside_command_loop(command: &SupervisorCommand) -> bool {
+    matches!(
+        command,
+        SupervisorCommand::CreateSession { .. }
+            | SupervisorCommand::AttachWorktree { .. }
+            | SupervisorCommand::RemoveManagedWorktree { .. }
+            | SupervisorCommand::CompactContext { .. }
+    )
+}
+
+fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
+    match command {
+        SupervisorCommand::RemoveManagedWorktree { session_id }
+        | SupervisorCommand::CompactContext { session_id } => Some(*session_id),
+        _ => None,
+    }
+}
+
+async fn execute_detached_command(
+    state: Arc<SupervisorState>,
+    command: SupervisorCommand,
+) -> Result<(), RepositorySupervisorError> {
+    loop {
+        match execute_command(state.clone(), command.clone()).await {
+            Err(RepositorySupervisorError::Contention) => {
+                // A turn or another operation owns this actor. Retrying in
+                // the operation task keeps the shared command loop available
+                // and preserves the existing FIFO contention behavior.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            result => return result,
         }
     }
 }
@@ -2723,10 +2786,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ModelClient for GateModel {
-        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelError> {
+        async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
             self.entered.notify_one();
             self.release.notified().await;
-            Ok(text_response("a done"))
+            let text = request
+                .messages
+                .last()
+                .filter(|message| message.content.starts_with("[forge:compaction]"))
+                .map(|_| {
+                    r#"<forge_checkpoint version="1">
+<objective>Keep the session isolated.</objective>
+<user_constraints>Preserve the session boundary.</user_constraints>
+<current_work>Testing supervisor scheduling.</current_work>
+<next_action>Release the compaction gate.</next_action>
+</forge_checkpoint>"#
+                })
+                .unwrap_or("a done");
+            Ok(text_response(text))
         }
     }
 
@@ -2953,6 +3029,105 @@ mod tests {
         );
         assert_eq!(control.queued_prompts(id_b).await.unwrap().len(), 500);
 
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocked_compaction_does_not_block_an_unrelated_session() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg_a = Config {
+            resolved_workspace: temp.path().join("a"),
+            workspace_root: Some(temp.path().join("a").display().to_string()),
+            ..Default::default()
+        };
+        cfg_a.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg_a.resolved_workspace).unwrap();
+        let mut cfg_b = cfg_a.clone();
+        cfg_b.resolved_workspace = temp.path().join("b");
+        cfg_b.workspace_root = Some(temp.path().join("b").display().to_string());
+        std::fs::create_dir_all(&cfg_b.resolved_workspace).unwrap();
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate: Arc<dyn ModelClient> = Arc::new(GateModel {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let mut session_a = open_session_with_model(&cfg_a, SessionTarget::New, gate)
+            .await
+            .unwrap()
+            .session;
+        session_a.append_user_message("seed context").await.unwrap();
+        let id_a = session_a.session_id;
+        let task_a = task_for(id_a, "a", &cfg_a.resolved_workspace);
+        let session_b = scripted_session_with(&cfg_b, vec![text_response("b done")]).await;
+        let id_b = session_b.session_id;
+        let task_b = task_for(id_b, "b", &cfg_b.resolved_workspace);
+        for task in [&task_a, &task_b] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![]));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(task_a, session_a), (task_b, session_b)],
+            2,
+            cfg_a,
+            model,
+        )
+        .await
+        .unwrap();
+
+        let compact = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::CompactContext { session_id: id_a })
+                    .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("compaction never reached the model");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle.command(SupervisorCommand::SelectSession {
+                session_id: Some(id_b),
+            }),
+        )
+        .await
+        .expect("selection of B stalled behind A compaction")
+        .unwrap();
+
+        release.notify_waiters();
+        let compact_result = compact.await.unwrap();
+        assert!(
+            compact_result.is_err(),
+            "the deliberately minimal fixture should reject its checkpoint"
+        );
+        assert_eq!(
+            supervisor.snapshot(id_a).await.unwrap().task.turn_state,
+            SupervisorTurnState::Idle
+        );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
