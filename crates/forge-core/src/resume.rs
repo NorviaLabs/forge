@@ -11,6 +11,8 @@ use crate::{
 
 const INTERRUPTED_TOOL_MSG: &str =
     "Tool execution was interrupted before a result was recorded. Forge did not re-run this tool because it is not marked idempotent.";
+const DANGLING_TOOL_MSG: &str =
+    "Tool execution did not complete before this turn ended. Forge did not re-run it.";
 
 impl AgentSession {
     /// Finish tool intents that were journaled but never received a result.
@@ -38,8 +40,35 @@ impl AgentSession {
             if idempotent {
                 self.complete_journaled_intent(&call, &mut budget).await?;
             } else {
-                self.fail_interrupted_intent(&call).await?;
+                self.fail_interrupted_intent(&call, INTERRUPTED_TOOL_MSG)
+                    .await?;
             }
+        }
+        Ok(())
+    }
+
+    /// Complete every assistant tool call that never received a result with
+    /// a synthetic "interrupted" result, so the next model request is
+    /// well-formed and a stale call cannot be re-executed. A failed or
+    /// cancelled turn may leave a journaled intent with no recorded result
+    /// (a hard tool/model error, a cancel mid-execution, a HITL denial after
+    /// the assistant call message was already appended); without this, the
+    /// dangling call rides into every later request — OpenAI-compatible
+    /// providers reject tool calls without a result, so every follow-up
+    /// failed again with the same invisible error, or the model re-issued
+    /// the call and re-ran the failing step. Called when a new attempt
+    /// starts after a terminal outcome (see `start_fresh_attempt`).
+    pub(crate) async fn reconcile_dangling_tool_calls(&mut self) -> Result<(), LoopError> {
+        let dangling: Vec<ToolCall> = self
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Assistant)
+            .flat_map(|message| message.tool_calls.iter().cloned())
+            .filter(|call| !self.has_tool_message(&call.id))
+            .collect();
+        for call in dangling {
+            self.fail_interrupted_intent(&call, DANGLING_TOOL_MSG)
+                .await?;
         }
         Ok(())
     }
@@ -90,9 +119,12 @@ impl AgentSession {
         })
     }
 
-    async fn fail_interrupted_intent(&mut self, call: &ToolCall) -> Result<(), LoopError> {
-        let output =
-            ToolOutput::spawn_failed(INTERRUPTED_TOOL_MSG, "interrupted before result recorded");
+    async fn fail_interrupted_intent(
+        &mut self,
+        call: &ToolCall,
+        message: &str,
+    ) -> Result<(), LoopError> {
+        let output = ToolOutput::spawn_failed(message, "interrupted before result recorded");
         self.journal
             .append_tool_result(self.session_id, call, &output)
             .await?;
