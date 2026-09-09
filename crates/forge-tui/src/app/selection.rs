@@ -68,6 +68,26 @@ impl TuiApp {
         }
     }
 
+    /// Whether the *selected* session currently runs a turn, derived from the
+    /// authoritative actor state rather than the restored view flag.
+    ///
+    /// `busy_state` is saved and restored per session across switches, so a
+    /// session that finished while unselected restores stale-busy until the
+    /// next supervisor event reconciles it. Routing and presentation must not
+    /// read that flag for supervised sessions.
+    pub(crate) fn selected_turn_running(&self) -> bool {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self.busy_state.is_active(),
+            SelectedRuntime::Supervised(session_id) => self
+                .supervisor
+                .as_ref()
+                .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+                .is_some_and(|snapshot| {
+                    snapshot.task.turn_state == forge_session::SupervisorTurnState::Running
+                }),
+        }
+    }
+
     pub(crate) fn selected_input_route(&self, line: &str) -> input_route::InputRoute {
         if !self.selected_is_supervised() {
             return input_route::classify_input(
@@ -81,7 +101,7 @@ impl TuiApp {
             InputRoute::AnswerClarification
         } else if self.session_view.lifecycle == forge_types::TaskLifecycle::Waiting {
             InputRoute::RejectStaleResponse
-        } else if self.busy_state.is_active() {
+        } else if self.selected_turn_running() {
             InputRoute::QueueFutureTask
         } else {
             InputRoute::StartNewTask

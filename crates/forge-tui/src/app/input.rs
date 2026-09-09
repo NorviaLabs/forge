@@ -129,7 +129,7 @@ impl TuiApp {
     }
 
     pub(super) async fn queue_composer_message(&mut self) -> Result<(), TuiError> {
-        if !self.busy_state.is_active() {
+        if !self.selected_turn_running() {
             return self.submit_composer_message().await;
         }
         let line = self.input.text.trim().to_string();
@@ -215,6 +215,12 @@ impl TuiApp {
                             }
                             self.session_view = snapshot.session.clone();
                             self.transcript_view = snapshot.transcript.clone();
+                            // Reconcile immediately: the restored view may
+                            // carry a busy flag from when this session ran
+                            // before it finished unselected, and the
+                            // supervisor's `Selected` echo only arrives on
+                            // the next poll.
+                            self.sync_supervised_presentation(&snapshot);
                             self.sync_selected_workspace();
                         }
                         self.set_feedback(
@@ -837,7 +843,7 @@ impl TuiApp {
 
         let line = self.input.take();
         if line.trim().is_empty() && !self.attachment.has_images() {
-            if !self.busy_state.is_active() && !self.selected_queue_messages().is_empty() {
+            if !self.selected_turn_running() && !self.selected_queue_messages().is_empty() {
                 self.dequeue_and_send_next().await;
             }
             return Ok(());

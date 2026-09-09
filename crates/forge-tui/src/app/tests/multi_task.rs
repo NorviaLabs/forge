@@ -320,6 +320,21 @@ async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
 /// developer's own. The supervisor starts with no registered sessions, so
 /// the roster only ever contains what the test creates.
 async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHandle) {
+    let model: Arc<dyn forge_model::ModelClient> =
+        Arc::new(forge_model::MockModelClient::script(vec![
+            forge_types::ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+    app_with_supervisor_and_model(model).await
+}
+
+async fn app_with_supervisor_and_model(
+    model: Arc<dyn forge_model::ModelClient>,
+) -> (TempDir, TuiApp, forge_session::SupervisorHandle) {
     isolate_global_skills();
     let dir = TempDir::new().unwrap();
     for args in [
@@ -346,7 +361,9 @@ async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHan
         assert!(status.success(), "git {args:?} failed");
     }
 
-    let session = session_for_workspace(dir.path()).await;
+    // The primary keeps its own model client while supervisor-created
+    // sessions use the supervisor's, so seed both from the same client.
+    let session = session_for_workspace_with_model(dir.path(), model.clone()).await;
     let session_id = session.session_id;
     let runtime = TuiRuntimeConfig {
         model_label: "mock".into(),
@@ -373,15 +390,6 @@ async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHan
         ..Default::default()
     };
     cfg.journal.path = dir.path().join("j").display().to_string();
-    let model: Arc<dyn forge_model::ModelClient> =
-        Arc::new(forge_model::MockModelClient::script(vec![
-            forge_types::ModelResponse {
-                text: "done".into(),
-                tool_calls: vec![],
-                usage: None,
-                thinking: None,
-            },
-        ]));
     control
         .register_session(
             forge_session::NewRepositorySession {
@@ -496,4 +504,294 @@ async fn the_first_prompt_names_an_unnamed_task() {
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
         .unwrap();
+}
+
+/// A model client that parks turns whose prompt contains a registered marker
+/// behind a notify, so a test can hold a session in `Running` across a
+/// session switch. Keyed by prompt text (not call order): sibling sessions
+/// race to the model, so an index-based gate can pin the wrong turn.
+struct GateModel {
+    gates: Vec<(String, std::sync::Arc<tokio::sync::Notify>)>,
+}
+
+impl GateModel {
+    fn new(gates: Vec<(String, std::sync::Arc<tokio::sync::Notify>)>) -> Self {
+        Self { gates }
+    }
+
+    async fn step(
+        &self,
+        req: &forge_model::ModelRequest,
+        tx: Option<forge_model::StreamEventTx>,
+    ) -> Result<forge_types::ModelResponse, forge_model::ModelError> {
+        let last_user = req
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == forge_types::MessageRole::User)
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        if let Some((_, gate)) = self
+            .gates
+            .iter()
+            .find(|(marker, _)| last_user.contains(marker))
+        {
+            gate.notified().await;
+        }
+        if let Some(tx) = tx {
+            let _ = tx.send(forge_types::ModelStreamEvent::TextDelta {
+                text: "done".into(),
+            });
+            let _ = tx.send(forge_types::ModelStreamEvent::MessageEnd);
+        }
+        Ok(forge_types::ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl forge_model::ModelClient for GateModel {
+    async fn complete(
+        &self,
+        req: forge_model::ModelRequest,
+    ) -> Result<forge_types::ModelResponse, forge_model::ModelError> {
+        self.step(&req, None).await
+    }
+
+    async fn complete_with_stream(
+        &self,
+        req: forge_model::ModelRequest,
+        tx: Option<forge_model::StreamEventTx>,
+    ) -> Result<forge_types::ModelResponse, forge_model::ModelError> {
+        self.step(&req, tx).await
+    }
+
+    fn clear_provider_env(&self) {}
+}
+
+async fn wait_for_turn_state(
+    app: &mut TuiApp,
+    session_id: uuid::Uuid,
+    want: forge_session::SupervisorTurnState,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        app.poll_supervisor_events();
+        let state = app
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+            .map(|snapshot| snapshot.task.turn_state);
+        if state == Some(want) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for turn {want:?} (got {state:?})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_user_messages(app: &mut TuiApp, session_id: uuid::Uuid, want: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        app.poll_supervisor_events();
+        let count = user_message_count(app, session_id);
+        if count >= want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {want} user messages (got {count})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// A running and B completed; switching to B must show B's own idle
+/// presentation and accept a prompt into B without disturbing A.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_session_accepts_prompt_while_another_runs() {
+    let gate_b = std::sync::Arc::new(tokio::sync::Notify::new());
+    let gate_a = std::sync::Arc::new(tokio::sync::Notify::new());
+    let model: Arc<dyn forge_model::ModelClient> = Arc::new(GateModel::new(vec![
+        ("B work".to_string(), gate_b.clone()),
+        ("A work".to_string(), gate_a.clone()),
+    ]));
+    let (_dir, app, handle) = app_with_supervisor_and_model(model).await;
+    // Box the app so this test's future stays small: `TuiApp` is large and
+    // deeply-nested key-handling futures already press on the test thread's
+    // stack.
+    let mut app = Box::new(app);
+    let primary_id = app.selected_session_id;
+
+    // Create B and switch to it.
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let b = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+    assert_eq!(app.selected_session_id, b.session_id);
+
+    // Run B, held open on the gate.
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("B work".to_string());
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    wait_for_turn_state(
+        &mut app,
+        b.session_id,
+        forge_session::SupervisorTurnState::Running,
+    )
+    .await;
+    assert!(app.busy_state.is_active());
+
+    // Leave a draft on B and switch back to the primary.
+    app.input.set_text("b leftover draft".to_string());
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+    assert_eq!(app.selected_session_id, primary_id);
+
+    // B completes while it is not selected; A starts and is held running.
+    gate_b.notify_one();
+    wait_for_turn_state(
+        &mut app,
+        b.session_id,
+        forge_session::SupervisorTurnState::Completed,
+    )
+    .await;
+    // B's saved view was reconciled by the completion event itself, not just
+    // at the next switch.
+    assert!(
+        !app.session_view_states
+            .get(&b.session_id)
+            .is_some_and(|saved| saved.busy_state.is_active()),
+        "a session that finishes unselected must not keep a busy view behind"
+    );
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("A work".to_string());
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    wait_for_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Running,
+    )
+    .await;
+
+    // Switch to completed B while A still runs. Assert before the next
+    // poll: the optimistic switch must already present B's own state, not
+    // stale restored busy from before B finished unselected.
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.selected_session_id, b.session_id);
+    // A strip switch keeps focus on the strip for keyboard navigation; the
+    // operator moves to the composer to type.
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    app.focus_block(FocusBlock::Composer);
+    assert!(
+        !app.busy_state.is_active(),
+        "completed B must not show A's (or stale) busy state"
+    );
+    assert!(
+        app.contextual_hint().is_none(),
+        "completed B must not show a busy queue hint: {:?}",
+        app.contextual_hint()
+    );
+    assert!(app.selected_pending_hitl().is_none());
+    assert!(app.selected_pending_question().is_none());
+    assert_eq!(
+        app.selected_input_route("follow-up for B"),
+        input_route::InputRoute::StartNewTask
+    );
+    app.poll_supervisor_events();
+
+    // B's draft survived and typing appends to it.
+    assert_eq!(app.input.text, "b leftover draft");
+    for c in ['h', 'i'] {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.input.text, "b leftover drafthi");
+
+    // Submitting on B's composer stages a prompt (not a TaskStrip re-select)
+    // and it lands in B while A still runs.
+    app.submit_composer_message().await.unwrap();
+    assert!(
+        app.pending_turn.has_prompt(),
+        "submitting on B's composer must stage a prompt"
+    );
+    app.drain_pending_prompt(None).await.unwrap();
+    wait_for_user_messages(&mut app, b.session_id, 2).await;
+    wait_for_turn_state(
+        &mut app,
+        b.session_id,
+        forge_session::SupervisorTurnState::Completed,
+    )
+    .await;
+
+    // A kept running its own turn, undisturbed by the switch and submit.
+    wait_for_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Running,
+    )
+    .await;
+
+    gate_a.notify_one();
+    wait_for_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Completed,
+    )
+    .await;
+    wait_for_user_messages(&mut app, primary_id, 1).await;
+    assert_eq!(
+        user_message_count(&app, primary_id),
+        1,
+        "switching and submitting on B must not disturb A"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+fn user_message_count(app: &TuiApp, session_id: uuid::Uuid) -> usize {
+    app.supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+        .map(|snapshot| {
+            snapshot
+                .transcript
+                .messages()
+                .iter()
+                .filter(|message| message.role == forge_types::MessageRole::User)
+                .count()
+        })
+        .unwrap_or(0)
 }
