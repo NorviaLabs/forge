@@ -7,8 +7,8 @@
 use super::*;
 pub(crate) struct TerminalEventSource {
     rx: tokio::sync::mpsc::UnboundedReceiver<io::Result<Event>>,
-    #[cfg(not(test))]
     pending: std::collections::VecDeque<io::Result<Event>>,
+    ready: std::collections::VecDeque<io::Result<Event>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -42,30 +42,74 @@ impl TerminalEventSource {
         });
         Self {
             rx,
-            #[cfg(not(test))]
             pending: std::collections::VecDeque::new(),
+            ready: std::collections::VecDeque::new(),
             stop,
             task: Some(task),
         }
     }
 
-    async fn recv(&mut self) -> Option<io::Result<Event>> {
+    async fn recv_raw(&mut self) -> Option<io::Result<Event>> {
+        if let Some(item) = self.pending.pop_front() {
+            return Some(item);
+        }
         self.rx.recv().await
     }
 
-    #[cfg(not(test))]
-    fn try_recv(&mut self) -> Result<io::Result<Event>, tokio::sync::mpsc::error::TryRecvError> {
+    async fn recv_channel(&mut self) -> Option<io::Result<Event>> {
+        self.rx.recv().await
+    }
+
+    fn try_recv_raw(
+        &mut self,
+    ) -> Result<io::Result<Event>, tokio::sync::mpsc::error::TryRecvError> {
         if let Some(item) = self.pending.pop_front() {
             return Ok(item);
         }
         self.rx.try_recv()
     }
 
-    /// Stash already-read events back at the head of the queue, preserving
+    fn pop_ready(&mut self) -> Option<io::Result<Event>> {
+        self.ready.pop_front()
+    }
+
+    fn pop_queued(&mut self) -> Option<(io::Result<Event>, bool)> {
+        self.ready
+            .pop_front()
+            .map(|event| (event, true))
+            .or_else(|| self.pending.pop_front().map(|event| (event, false)))
+    }
+
+    /// Stash already-read raw events back at the head of the queue, preserving
     /// order, so a lookahead that did not coalesce loses nothing.
-    #[cfg(not(test))]
-    fn push_front(&mut self, item: io::Result<Event>) {
+    fn push_front_raw(&mut self, item: io::Result<Event>) {
         self.pending.push_front(item);
+    }
+
+    /// Release a lookahead as already-classified events. These events must not
+    /// be reconsidered as a new paste candidate on the next frame: otherwise a
+    /// single typed Enter after a long line would incur one lookahead timeout
+    /// per character.
+    fn release_ready(&mut self, events: std::collections::VecDeque<Event>) {
+        for event in events.into_iter().rev() {
+            self.ready.push_front(Ok(event));
+        }
+    }
+
+    #[cfg(test)]
+    fn from_events(events: impl IntoIterator<Item = Event>) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for event in events {
+            tx.send(Ok(event)).unwrap();
+        }
+        drop(tx);
+        Self {
+            rx,
+            pending: std::collections::VecDeque::new(),
+            ready: std::collections::VecDeque::new(),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            task: None,
+        }
     }
 
     pub(super) async fn shutdown(mut self) {
@@ -126,6 +170,16 @@ impl TuiApp {
 /// whole payload lands as one pending composer message.
 const MAX_EVENTS_PER_FRAME: usize = 32;
 
+/// A paste can cross the reader thread's poll boundary. Once a plain Enter
+/// has arrived, give the rest of that burst a short window to arrive before
+/// deciding that it was an ordinary submit. This is long enough to span the
+/// 20ms terminal-reader poll while keeping a deliberate Enter responsive.
+const UNBRACKETED_PASTE_LOOKAHEAD: Duration = Duration::from_millis(60);
+
+/// Bound an unbracketed lookahead even if a producer continuously sends
+/// printable key events without another newline.
+const MAX_UNBRACKETED_PASTE_EVENTS: usize = 64 * 1024;
+
 /// Minimum queued lines that mark an `Enter` burst as an unbracketed paste
 /// rather than deliberate submits. A lone `Enter` (or one newline between two
 /// typed fragments) keeps submitting; two or more queued `Enter` presses in
@@ -166,7 +220,7 @@ pub(super) async fn drain_events<B: ratatui::backend::Backend>(
         #[cfg(test)]
         let next = coalesce_unbracketed_paste(&mut app.test_events);
         #[cfg(not(test))]
-        let next = coalesce_channel_paste(app);
+        let next = coalesce_channel_paste(app).await;
         let Some(next) = next else {
             break;
         };
@@ -179,23 +233,59 @@ pub(super) async fn drain_events<B: ratatui::backend::Backend>(
 
 /// Pop the next production terminal event, folding an already-queued burst of
 /// printable key events plus plain `Enter` presses into a single `Event::Paste`
-/// (see `coalesce_unbracketed_paste`). Only already-queued events are
-/// inspected, never blocking for more of a burst that is still arriving:
-/// `try_recv` either yields an event or reports the queue empty.
+/// (see `coalesce_unbracketed_paste`). A plain Enter is held briefly so a
+/// paste that is still arriving cannot submit its first line before the
+/// reader has delivered the next one.
 #[cfg(not(test))]
-fn coalesce_channel_paste(app: &mut TuiApp) -> Option<io::Result<Event>> {
+async fn coalesce_channel_paste(app: &mut TuiApp) -> Option<io::Result<Event>> {
+    let events = app.terminal_events.as_mut()?;
+    coalesce_source_paste(events, None).await
+}
+
+#[cfg(not(test))]
+async fn coalesce_channel_paste_with_initial(
+    app: &mut TuiApp,
+    initial: Option<Event>,
+) -> Option<io::Result<Event>> {
+    let Some(events) = app.terminal_events.as_mut() else {
+        return initial.map(Ok);
+    };
+    coalesce_source_paste(events, initial).await
+}
+
+async fn coalesce_source_paste(
+    events: &mut TerminalEventSource,
+    initial: Option<Event>,
+) -> Option<io::Result<Event>> {
     use tokio::sync::mpsc::error::TryRecvError;
 
     let mut queued: std::collections::VecDeque<Event> = std::collections::VecDeque::new();
+    if let Some(event) = initial {
+        if !is_unbracketed_key_event(&event) {
+            return Some(Ok(event));
+        }
+        queued.push_back(event);
+    } else if let Some(item) = events.pop_ready() {
+        return Some(item);
+    }
+
+    let mut newlines = queued.iter().filter(|event| is_plain_enter(event)).count();
     let mut closed = false;
-    while let Some(events) = app.terminal_events.as_mut() {
-        match events.try_recv() {
-            Ok(Ok(event)) => queued.push_back(event),
+    loop {
+        let result = events.try_recv_raw();
+        match result {
+            Ok(Ok(event)) if is_unbracketed_key_event(&event) => {
+                newlines += usize::from(is_plain_enter(&event));
+                queued.push_back(event);
+            }
+            Ok(Ok(event)) if queued.is_empty() => return Some(Ok(event)),
+            Ok(Ok(event)) => {
+                events.push_front_raw(Ok(event));
+                break;
+            }
             Ok(Err(error)) => {
                 for event in queued.into_iter().rev() {
-                    if let Some(events) = app.terminal_events.as_mut() {
-                        events.push_front(Ok(event));
-                    }
+                    events.push_front_raw(Ok(event));
                 }
                 return Some(Err(error));
             }
@@ -205,10 +295,57 @@ fn coalesce_channel_paste(app: &mut TuiApp) -> Option<io::Result<Event>> {
                 break;
             }
         }
-        if queued.len() >= MAX_EVENTS_PER_FRAME {
+
+        // Keep normal key bursts bounded for redraw fairness. Once a newline
+        // is present, continue looking through the whole candidate so a
+        // second newline beyond the old 32-event boundary still makes the
+        // entire unbracketed paste atomic.
+        if newlines >= UNBRACKETED_PASTE_MIN_NEWLINES
+            || (newlines == 0 && queued.len() >= MAX_EVENTS_PER_FRAME)
+            || queued.len() >= MAX_UNBRACKETED_PASTE_EVENTS
+        {
             break;
         }
     }
+
+    // A plain Enter is the point at which a queued key burst becomes
+    // ambiguous. Wait for a short quiet window for the next line. The source
+    // is still the same single reader, so events collected here retain their
+    // original order.
+    if newlines > 0 && newlines < UNBRACKETED_PASTE_MIN_NEWLINES && !closed {
+        let deadline = tokio::time::Instant::now() + UNBRACKETED_PASTE_LOOKAHEAD;
+        while newlines < UNBRACKETED_PASTE_MIN_NEWLINES
+            && queued.len() < MAX_UNBRACKETED_PASTE_EVENTS
+        {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let result = tokio::time::timeout(remaining, events.recv_raw()).await;
+            match result {
+                Ok(Some(Ok(event))) if is_unbracketed_key_event(&event) => {
+                    newlines += usize::from(is_plain_enter(&event));
+                    queued.push_back(event);
+                }
+                Ok(Some(Ok(event))) => {
+                    events.push_front_raw(Ok(event));
+                    break;
+                }
+                Ok(Some(Err(error))) => {
+                    for event in queued.into_iter().rev() {
+                        events.push_front_raw(Ok(event));
+                    }
+                    return Some(Err(error));
+                }
+                Ok(None) => {
+                    closed = true;
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
     if queued.is_empty() {
         return closed.then(|| {
             Err(io::Error::new(
@@ -217,13 +354,42 @@ fn coalesce_channel_paste(app: &mut TuiApp) -> Option<io::Result<Event>> {
             ))
         });
     }
-    let coalesced = coalesce_unbracketed_paste(&mut queued);
-    for event in queued.into_iter().rev() {
-        if let Some(events) = app.terminal_events.as_mut() {
-            events.push_front(Ok(event));
+
+    if newlines >= UNBRACKETED_PASTE_MIN_NEWLINES {
+        let coalesced = coalesce_unbracketed_paste(&mut queued);
+        for event in queued.into_iter().rev() {
+            events.push_front_raw(Ok(event));
         }
+        return coalesced.map(Ok);
     }
-    coalesced.map(Ok)
+
+    // No second newline arrived. Release all inspected events as an ordinary
+    // key sequence in one classified batch; subsequent calls must not repeat
+    // the lookahead timeout for every character in the line.
+    events.release_ready(queued);
+    events.ready.pop_front()
+}
+
+fn is_plain_enter(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && key.code == KeyCode::Enter
+                && key.modifiers.is_empty()
+    )
+}
+
+fn is_unbracketed_key_event(event: &Event) -> bool {
+    let Event::Key(key) = event else {
+        return false;
+    };
+    if key.kind != KeyEventKind::Press {
+        return false;
+    }
+    let non_shift_modifiers = key.modifiers & !(KeyModifiers::SHIFT | KeyModifiers::NONE);
+    matches!(key.code, KeyCode::Enter if key.modifiers.is_empty())
+        || matches!(key.code, KeyCode::Char(c) if !c.is_control() && non_shift_modifiers.is_empty())
 }
 
 /// Fold a queued burst of printable key events plus plain `Enter` presses into
@@ -294,18 +460,175 @@ pub(super) async fn next_foreground_wake(
 
     #[cfg(not(test))]
     {
-        let Some(events) = app.terminal_events.as_mut() else {
+        if app.terminal_events.is_none() {
             ticker.tick().await;
             return Ok(ForegroundWake::Tick);
-        };
+        }
+
+        // Consume our classified/raw lookahead queues before entering the
+        // ticker select. Popping from a queue inside a cancellable select
+        // future would make a simultaneous tick able to lose that event.
+        if let Some((event, already_classified)) = app
+            .terminal_events
+            .as_mut()
+            .and_then(TerminalEventSource::pop_queued)
+        {
+            return foreground_input(app, event, already_classified).await;
+        }
+
         tokio::select! {
-            event = events.recv() => {
+            event = recv_foreground_channel(app) => {
                 let event = event
-                    .ok_or_else(|| TuiError::Other("terminal event stream closed".into()))??;
-                Ok(ForegroundWake::Input(event))
+                    .ok_or_else(|| TuiError::Other("terminal event stream closed".into()))?;
+                foreground_input(app, event, false).await
             }
             _ = ticker.tick() => Ok(ForegroundWake::Tick),
         }
+    }
+}
+
+#[cfg(not(test))]
+async fn recv_foreground_channel(app: &mut TuiApp) -> Option<io::Result<Event>> {
+    let events = app.terminal_events.as_mut()?;
+    events.recv_channel().await
+}
+
+#[cfg(not(test))]
+async fn foreground_input(
+    app: &mut TuiApp,
+    event: io::Result<Event>,
+    already_classified: bool,
+) -> Result<ForegroundWake, TuiError> {
+    let event = event?;
+    if already_classified {
+        return Ok(ForegroundWake::Input(event));
+    }
+    let event = coalesce_channel_paste_with_initial(app, Some(event))
+        .await
+        .ok_or_else(|| TuiError::Other("terminal event stream closed".into()))??;
+    Ok(ForegroundWake::Input(event))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(event::KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    async fn collect_events(events: Vec<Event>) -> Vec<Event> {
+        let mut source = TerminalEventSource::from_events(events);
+        let mut result = Vec::new();
+        loop {
+            match coalesce_source_paste(&mut source, None).await {
+                Some(Ok(event)) => result.push(event),
+                Some(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe => break,
+                Some(Err(error)) => panic!("unexpected terminal error: {error}"),
+                None => break,
+            }
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_keeps_a_large_unbracketed_paste_atomic() {
+        let payload = (0..160)
+            .map(|line| format!("line {line}: {}\n", "assessment ".repeat(2)))
+            .collect::<String>();
+        assert!(payload.len() > 2_000);
+
+        let events = payload.chars().map(|character| match character {
+            '\n' => key(KeyCode::Enter),
+            character => key(KeyCode::Char(character)),
+        });
+        let output = collect_events(events.collect()).await;
+        let mut reconstructed = String::new();
+        for event in output {
+            match event {
+                Event::Paste(text) => reconstructed.push_str(&text),
+                Event::Key(key) => match key.code {
+                    KeyCode::Char(character) => reconstructed.push(character),
+                    _ => panic!("unbracketed paste leaked a control key: {key:?}"),
+                },
+                other => panic!("unexpected event in paste: {other:?}"),
+            }
+        }
+        assert_eq!(reconstructed, payload);
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_still_releases_a_single_typed_enter() {
+        let mut events = "ordinary line"
+            .chars()
+            .map(|character| key(KeyCode::Char(character)))
+            .collect::<Vec<_>>();
+        events.push(key(KeyCode::Enter));
+        let output = collect_events(events).await;
+
+        assert!(output.iter().any(|event| {
+            matches!(
+                event,
+                Event::Key(key) if key.code == KeyCode::Enter
+            )
+        }));
+        assert!(!output.iter().any(|event| matches!(event, Event::Paste(_))));
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_handles_a_foreground_wake_at_the_first_enter() {
+        let mut source = TerminalEventSource::from_events("second line\nthird line\n".chars().map(
+            |character| match character {
+                '\n' => key(KeyCode::Enter),
+                character => key(KeyCode::Char(character)),
+            },
+        ));
+
+        let first = coalesce_source_paste(&mut source, Some(key(KeyCode::Enter)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first,
+            Event::Paste("\nsecond line\n".into()),
+            "a foreground wake must not dispatch the first pasted Enter"
+        );
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_waits_across_a_reader_boundary() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut source = TerminalEventSource {
+            rx,
+            pending: std::collections::VecDeque::new(),
+            ready: std::collections::VecDeque::new(),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            task: None,
+        };
+        for character in "first line\n".chars() {
+            tx.send(Ok(match character {
+                '\n' => key(KeyCode::Enter),
+                character => key(KeyCode::Char(character)),
+            }))
+            .unwrap();
+        }
+        let sender_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            for character in "second line\n".chars() {
+                tx.send(Ok(match character {
+                    '\n' => key(KeyCode::Enter),
+                    character => key(KeyCode::Char(character)),
+                }))
+                .unwrap();
+            }
+        });
+
+        let event = coalesce_source_paste(&mut source, None)
+            .await
+            .unwrap()
+            .unwrap();
+        sender_task.await.unwrap();
+        assert_eq!(event, Event::Paste("first line\nsecond line\n".into()));
     }
 }
 
@@ -388,12 +711,15 @@ pub(super) async fn tick_foreground_frame<B: ratatui::backend::Backend>(
 async fn wait_for_idle_event(
     app: &mut TuiApp,
     timeout: Duration,
-) -> Result<Option<Event>, TuiError> {
+) -> Result<Option<(Event, bool)>, TuiError> {
     let Some(events) = app.terminal_events.as_mut() else {
         return Ok(None);
     };
-    match tokio::time::timeout(timeout, events.recv()).await {
-        Ok(Some(event)) => Ok(Some(event?)),
+    if let Some((event, already_classified)) = events.pop_queued() {
+        return Ok(Some((event?, already_classified)));
+    }
+    match tokio::time::timeout(timeout, events.recv_channel()).await {
+        Ok(Some(event)) => Ok(Some((event?, false))),
         Ok(None) => Err(TuiError::Other("terminal event stream closed".into())),
         Err(_) => Ok(None),
     }
@@ -586,7 +912,7 @@ async fn run_loop(
         } else {
             Duration::from_millis(200)
         };
-        if let Some(event) = wait_for_idle_event(app, input_wait).await? {
+        if let Some((event, already_classified)) = wait_for_idle_event(app, input_wait).await? {
             // Any terminal input changes state directly or through the drained
             // queue; force the next frame rather than waiting for idle cadence.
             // The idle wait already consumed the burst head from the channel,
@@ -594,9 +920,13 @@ async fn run_loop(
             // first Enter would submit a partial line and the rest of the
             // burst would arrive as separate turns.
             frame_dirty = true;
+            #[cfg(test)]
+            let _ = already_classified;
             #[cfg(not(test))]
-            if let Some(events) = app.terminal_events.as_mut() {
-                events.push_front(Ok(event));
+            if already_classified {
+                dispatch_terminal_event(app, event, Some(terminal)).await?;
+            } else if let Some(events) = app.terminal_events.as_mut() {
+                events.push_front_raw(Ok(event));
             }
             #[cfg(test)]
             app.test_events.push_front(event);
