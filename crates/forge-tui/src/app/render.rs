@@ -439,7 +439,6 @@ impl TuiApp {
                 .map(|payload| payload.call_id.clone()),
             question_idx: self.question_menu_indexes().0,
             question_option_idx: self.question_menu_indexes().1,
-            pulse_dim: crate::conversation::plan_pulse_dim(self.busy_state.throbber()),
         };
         // A complete cache already contains every settled line. Keep it
         // complete while scrolling instead of rebuilding a smaller tail, but
@@ -476,7 +475,11 @@ impl TuiApp {
                     busy: false,
                     stream_wait: None,
                     stream_thought_secs: None,
-                    pulse_dim: opts.pulse_dim,
+                    // The cache is keyed by transcript content, not animation
+                    // state. Bake the plan marker bright so the cached lines are
+                    // stable across throbber ticks; the live turn line and the
+                    // streaming preview are the only parts that animate.
+                    pulse_dim: false,
                     ..opts.clone()
                 },
             )

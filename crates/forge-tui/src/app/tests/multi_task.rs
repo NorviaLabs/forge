@@ -219,6 +219,41 @@ async fn supervisor_snapshot_makes_the_selected_session_supervised() {
         .unwrap();
 }
 
+/// A supervisor update that carries no transcript change (a model switch) used
+/// to invalidate the settled conversation cache unconditionally, so the
+/// 200ms background-task poll forced a full O(transcript) rebuild every tick
+/// while a session worked. The render key already detects real transcript
+/// changes; identity-only updates must not throw the cached lines away.
+#[tokio::test]
+async fn unchanged_transcript_update_reuses_cached_conversation_lines() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.conversation_view.splash_dismissed = true;
+    draw_app(&mut app, 100, 30);
+    let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    handle
+        .command(forge_session::SupervisorCommand::SetModel {
+            session_id: app.selected_session_id,
+            model_id: "mock-v2".into(),
+            route_id: "native-v2".into(),
+            reasoning_effort: None,
+        })
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+    draw_app(&mut app, 100, 30);
+
+    let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "a supervisor update with an unchanged transcript must not rebuild conversation lines"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn supervised_primary_has_no_direct_runtime_and_runs_one_turn() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
