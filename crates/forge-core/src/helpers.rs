@@ -157,9 +157,12 @@ pub(crate) async fn hash_file(path: &Path) -> Option<u64> {
     // Preserve the old slice-hash format: `Hash for [u8]` writes length before
     // contents, so snapshots from older and newer runs remain comparable.
     length.hash(&mut hasher);
-    let mut buffer = [0u8; 64 * 1024];
+    // Heap buffer: inline `[0u8; 64 * 1024]` made this future ~65 KiB, nested
+    // inside the supervisor turn-driver chain (~69 KiB total), overflowing the
+    // 2 MiB tokio worker stack (SIGABRT) on write_file evidence hashing.
+    let mut buffer = Box::new([0u8; 64 * 1024]);
     loop {
-        let read = file.read(&mut buffer).await.ok()?;
+        let read = file.read(&mut buffer[..]).await.ok()?;
         if read == 0 {
             break;
         }
@@ -510,5 +513,20 @@ mod tests {
         let mut expected = std::collections::hash_map::DefaultHasher::new();
         bytes.hash(&mut expected);
         assert_eq!(hash_file(&path).await, Some(expected.finish()));
+    }
+
+    /// The read buffer must stay heap-allocated: inline `[0u8; 64 * 1024]`
+    /// made this future ~65 KiB, nested inside the supervisor turn-driver
+    /// chain, overflowing the 2 MiB tokio worker stack (SIGABRT) when a
+    /// `write_file` turn hashed its evidence.
+    #[test]
+    fn hash_file_future_stays_small() {
+        let future = hash_file(std::path::Path::new("missing"));
+        let bytes = std::mem::size_of_val(&future);
+        std::mem::drop(future);
+        assert!(
+            bytes < 4096,
+            "hash_file future is {bytes} bytes; keep the read buffer boxed"
+        );
     }
 }
