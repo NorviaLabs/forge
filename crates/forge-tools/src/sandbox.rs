@@ -619,7 +619,16 @@ impl SandboxPolicy {
             // user's full privileges the next time they use git *outside*
             // the sandbox. Publishing never needs to write one, so the
             // carve-out stops short of them.
-            paths.push(root.join(".git/hooks"));
+            //
+            // A linked worktree's `.git` is a gitdir pointer *file*, not a
+            // directory, so `.git/hooks` cannot exist there and must not be
+            // bound (bwrap would refuse the ENOTDIR). Its real hooks live in
+            // the common git dir, which the linked-gitdirs handling already
+            // carves back read-only.
+            let git = root.join(".git");
+            if git.is_dir() {
+                paths.push(git.join("hooks"));
+            }
         } else {
             paths.push(root.join(".git"));
         }
@@ -1246,10 +1255,22 @@ mod tests {
             p.readonly_subpaths(),
             vec![ws.path().join(".git"), ws.path().join(".forge")]
         );
+        // A real `.git` directory gets its hooks carved read-only.
+        let gitdir = ws.path().join(".git");
+        std::fs::create_dir_all(&gitdir).unwrap();
         assert_eq!(
             p.clone().with_git_writable().readonly_subpaths(),
-            vec![ws.path().join(".git/hooks"), ws.path().join(".forge")],
+            vec![gitdir.join("hooks"), ws.path().join(".forge")],
             "a publish spawn must be able to update refs, but never install a hook"
+        );
+        // A linked worktree's `.git` is a gitdir pointer file; it has no hooks
+        // directory to carve, and the common git dir is handled separately.
+        std::fs::remove_dir_all(&gitdir).unwrap();
+        std::fs::write(&gitdir, "gitdir: /tmp/somewhere\n").unwrap();
+        assert_eq!(
+            p.clone().with_git_writable().readonly_subpaths(),
+            vec![ws.path().join(".forge")],
+            "a linked worktree must not bind a nonexistent .git/hooks"
         );
     }
 
