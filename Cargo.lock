@@ -1375,6 +1375,7 @@ name = "forge-session"
 version = "0.1.0-beta.10"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "forge-config",
  "forge-connect",
