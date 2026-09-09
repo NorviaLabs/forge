@@ -192,6 +192,46 @@ async fn run_git_readonly(tool_ctx: &ToolContext, args: &[&str]) -> Option<Strin
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Recover what a `git restore` invocation was asked to rewrite: its
+/// pathspecs, which surface(s) it touched (`--staged` rewrites the index,
+/// `--worktree` the working tree; neither flag means worktree only), and an
+/// explicit `--source=<tree>`/`-s <tree>` when given.
+///
+/// Post-call verification must compare each touched surface against the tree
+/// it was restored from, so the flags are recovered from the same arguments
+/// here rather than guessed from the exit status alone.
+fn restore_invocation(args: &[String]) -> (Vec<String>, bool, bool, Option<String>) {
+    let mut paths = Vec::new();
+    let mut staged = false;
+    let mut worktree = false;
+    let mut source = None;
+    let mut only_paths = false;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if only_paths || !arg.starts_with('-') || arg == "-" {
+            paths.push(arg.clone());
+        } else if arg == "--" {
+            only_paths = true;
+        } else if let Some(value) = arg.strip_prefix("--source=") {
+            source = Some(value.to_string());
+        } else if arg == "--source" || arg == "-s" {
+            if let Some(value) = args.get(index + 1) {
+                source = Some(value.clone());
+                index += 1;
+            }
+        } else {
+            match arg.as_str() {
+                "--staged" | "-S" => staged = true,
+                "--worktree" | "-W" => worktree = true,
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    (paths, staged, worktree, source)
+}
+
 async fn pre_edit_snapshot(
     tool_ctx: &ToolContext,
     call: &ToolCall,
@@ -585,13 +625,56 @@ impl AgentSession {
                     .await;
                 Some(pre_branch != post_branch)
             }
-            Some(GitPre::RestorePath(Some(path))) => {
-                let still_dirty = self
-                    .run_git_readonly(&["diff", "--name-only", "--", &path])
-                    .await
-                    .map(|s| !s.trim().is_empty())
-                    .unwrap_or(true);
-                Some(!still_dirty)
+            Some(GitPre::RestorePath(pre_path)) => {
+                let (mut paths, staged, worktree, source) = restore_invocation(&a.args);
+                if paths.is_empty() {
+                    paths.extend(pre_path);
+                }
+                if paths.is_empty() {
+                    // Nothing verifiable was named; the successful exit is the
+                    // whole signal (same as `CommandOnly`).
+                    None
+                } else {
+                    // A `git restore` rewrites the index (`--staged`) and/or
+                    // the working tree, each from a different default source:
+                    // HEAD for the index, the index for the working tree.
+                    // Compare each requested surface to the tree it was
+                    // restored from. Checking only worktree-vs-index marked a
+                    // successful `--staged` unstage as "effect not observed",
+                    // because an unstage intentionally leaves the worktree
+                    // modified.
+                    let index_clean = if staged {
+                        let mut check = vec!["diff", "--cached", "--name-only"];
+                        if let Some(src) = source.as_deref() {
+                            check.push(src);
+                        }
+                        check.push("--");
+                        check.extend(paths.iter().map(String::as_str));
+                        !self
+                            .run_git_readonly(&check)
+                            .await
+                            .map(|out| !out.trim().is_empty())
+                            .unwrap_or(true)
+                    } else {
+                        true
+                    };
+                    let worktree_clean = if worktree || !staged {
+                        let mut check = vec!["diff", "--name-only"];
+                        if let Some(src) = source.as_deref() {
+                            check.push(src);
+                        }
+                        check.push("--");
+                        check.extend(paths.iter().map(String::as_str));
+                        !self
+                            .run_git_readonly(&check)
+                            .await
+                            .map(|out| !out.trim().is_empty())
+                            .unwrap_or(true)
+                    } else {
+                        true
+                    };
+                    Some(index_clean && worktree_clean)
+                }
             }
             _ if sub == "add" => {
                 let staged = self
@@ -1509,5 +1592,73 @@ mod observed_failure_tests {
 
         assert_eq!(observed.lines().count(), 3);
         assert!(observed.starts_with("line 1"));
+    }
+}
+
+#[cfg(test)]
+mod restore_invocation_tests {
+    use super::restore_invocation;
+
+    fn s(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    /// No flags means `git restore` rewrites only the working tree, so the
+    /// worktree surface is verified and the index surface is not.
+    #[test]
+    fn no_flags_is_worktree_only() {
+        let (paths, staged, worktree, source) = restore_invocation(&s(&["a.txt"]));
+        assert_eq!(paths, s(&["a.txt"]));
+        assert!(!staged);
+        assert!(!worktree);
+        assert!(source.is_none());
+    }
+
+    /// `--staged` alone touches only the index; the worktree is left alone.
+    #[test]
+    fn staged_only_flags_the_index_surface() {
+        let (paths, staged, worktree, _) = restore_invocation(&s(&["--staged", "a.txt", "b.txt"]));
+        assert_eq!(paths, s(&["a.txt", "b.txt"]));
+        assert!(staged);
+        assert!(!worktree);
+    }
+
+    /// `--staged --worktree` rewrites both surfaces.
+    #[test]
+    fn staged_and_worktree_flags_both_surfaces() {
+        let (paths, staged, worktree, _) =
+            restore_invocation(&s(&["--staged", "--worktree", "a.txt"]));
+        assert_eq!(paths, s(&["a.txt"]));
+        assert!(staged);
+        assert!(worktree);
+    }
+
+    /// The `--` separator stops flag parsing; everything after is a pathspec.
+    #[test]
+    fn double_dash_begins_pathspecs() {
+        let (paths, staged, worktree, _) =
+            restore_invocation(&s(&["--staged", "--", "--worktree"]));
+        assert_eq!(paths, s(&["--worktree"]));
+        assert!(staged);
+        assert!(!worktree);
+    }
+
+    /// `--source` carries the tree to compare against, in either syntax.
+    #[test]
+    fn captures_source_in_both_syntaxes() {
+        let (_, staged, worktree, source) = restore_invocation(&s(&["--source=HEAD~1", "a.txt"]));
+        assert!(!staged && !worktree);
+        assert_eq!(source.as_deref(), Some("HEAD~1"));
+
+        let (_, _, _, source) = restore_invocation(&s(&["-s", "HEAD", "--worktree", "a.txt"]));
+        assert_eq!(source.as_deref(), Some("HEAD"));
+    }
+
+    /// Paths given before the flags still count as pathspecs.
+    #[test]
+    fn lead_paths_are_still_captured() {
+        let (paths, staged, _, _) = restore_invocation(&s(&["a.txt", "--staged"]));
+        assert_eq!(paths, s(&["a.txt"]));
+        assert!(staged);
     }
 }
