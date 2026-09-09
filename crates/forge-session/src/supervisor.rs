@@ -209,6 +209,8 @@ pub enum RepositorySupervisorError {
     NoActor(SessionId),
     #[error("supervisor command channel closed")]
     Closed,
+    #[error("session actor is busy running a turn")]
+    Contention,
     #[error("supervisor command failed: {0}")]
     Command(String),
 }
@@ -265,10 +267,14 @@ struct SessionActor {
     snapshot: RwLock<SessionRuntimeSnapshot>,
     driving: AtomicBool,
     running_cancel: StdMutex<Option<CancellationToken>>,
+    /// The session's own model client, so provider-env updates reach a busy
+    /// actor without waiting on its session lock.
+    model: Arc<dyn ModelClient>,
 }
 
 impl SessionActor {
     fn new(task: RepositorySession, session: AgentSession) -> Self {
+        let model = session.model_client();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
@@ -281,6 +287,7 @@ impl SessionActor {
             snapshot: RwLock::new(snapshot),
             driving: AtomicBool::new(false),
             running_cancel: StdMutex::new(None),
+            model,
         }
     }
 
@@ -358,19 +365,22 @@ impl SupervisorState {
         else {
             return (self.cfg.model.model.clone(), "native".into(), None);
         };
-        let actor = self
-            .actors
-            .read()
-            .await
-            .get(&id)
-            .cloned()
-            .expect("candidate id came from the actor map");
-        let session = actor.session.lock().await;
-        (
-            session.active_model.clone(),
-            session.active_route_id.clone(),
-            session.reasoning_effort().map(str::to_string),
-        )
+        let actor = self.actors.read().await.get(&id).cloned();
+        let Some(actor) = actor else {
+            return (self.cfg.model.model.clone(), "native".into(), None);
+        };
+        // Lock-free: the snapshot carries the same model selection the
+        // session holds, so creating a session never waits out another
+        // session's running turn.
+        let snapshot = actor.snapshot.read().await.clone();
+        match snapshot.details.as_ref() {
+            Some(details) => (
+                details.active_model.clone(),
+                details.active_route_id.clone(),
+                details.reasoning_effort.clone(),
+            ),
+            None => (self.cfg.model.model.clone(), "native".into(), None),
+        }
     }
 }
 
@@ -793,35 +803,44 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut deferred = std::collections::VecDeque::new();
     loop {
-        let envelope = match deferred.pop_front() {
-            Some(envelope) => envelope,
-            None => tokio::select! {
-                envelope = receiver.recv() => match envelope {
-                    Some(envelope) => envelope,
-                    None => break,
-                },
-                _ = poll.tick() => {
-                    let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
-                    for task_actor in actors {
-                        if let Ok(mut session) = task_actor.session.try_lock() {
-                            if session.background().list().any(|task| !task.status.is_terminal()) {
-                                let _ = session.poll_background_tasks().await;
-                                let _ = refresh_actor(&state, &task_actor, &session).await;
+        // New arrivals win over deferred contention retries, so a command
+        // waiting on a busy actor never head-of-line-blocks unrelated
+        // sessions (or a Shutdown) behind it.
+        let envelope = match receiver.try_recv() {
+            Ok(envelope) => envelope,
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+            Err(mpsc::error::TryRecvError::Empty) => match deferred.pop_front() {
+                Some(envelope) => envelope,
+                None => tokio::select! {
+                    envelope = receiver.recv() => match envelope {
+                        Some(envelope) => envelope,
+                        None => break,
+                    },
+                    _ = poll.tick() => {
+                        let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+                        for task_actor in actors {
+                            if let Ok(mut session) = task_actor.session.try_lock() {
+                                if session.background().list().any(|task| !task.status.is_terminal()) {
+                                    let _ = session.poll_background_tasks().await;
+                                    let _ = refresh_actor(&state, &task_actor, &session).await;
+                                }
                             }
                         }
+                        continue;
                     }
-                    continue;
-                }
+                },
             },
         };
         let shutdown = matches!(envelope.command, SupervisorCommand::Shutdown);
-        let command = execute_command(state.clone(), envelope.command);
+        // Cloned: a contended command is requeued whole, so the loop keeps
+        // ownership of the envelope.
+        let command = execute_command(state.clone(), envelope.command.clone());
         tokio::pin!(command);
         // Keep stop requests reachable while an earlier mutation waits for a
         // running actor. Other commands retain their FIFO order.
-        let result = loop {
+        let result: Result<(), RepositorySupervisorError> = loop {
             tokio::select! {
-                result = &mut command => break result.map_err(|error| error.to_string()),
+                result = &mut command => break result,
                 next = receiver.recv(), if !shutdown => {
                     if let Some(next) = next {
                         if let SupervisorCommand::StopTurn { session_id } = next.command {
@@ -844,6 +863,33 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                 }
             }
         };
+        if matches!(result, Err(RepositorySupervisorError::Contention)) {
+            // The target actor is mid-turn; requeue behind newer work and
+            // retry when it frees. Sleep briefly so a long turn doesn't spin
+            // the loop, but wake immediately on new arrivals.
+            deferred.push_back(envelope);
+            tokio::select! {
+                biased;
+                next = receiver.recv() => {
+                    match next {
+                        Some(next) => {
+                            if matches!(next.command, SupervisorCommand::Shutdown) {
+                                for actor in state.actors.read().await.values() {
+                                    actor.request_cancel();
+                                }
+                                deferred.push_front(next);
+                            } else {
+                                deferred.push_back(next);
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+            }
+            continue;
+        }
+        let result = result.map_err(|error| error.to_string());
         if let Err(message) = &result {
             let _ = state.events.send(SupervisorEvent::Error {
                 session_id: None,
@@ -855,6 +901,20 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
             break;
         }
     }
+}
+
+/// Lock a session actor without stalling the shared command loop. The turn
+/// driver holds this mutex for the whole turn, so a blocking wait here would
+/// head-of-line-block every unrelated session behind it. Callers get
+/// [`RepositorySupervisorError::Contention`] instead, and `run_commands`
+/// requeues the command until the actor frees.
+fn try_session(
+    task_actor: &SessionActor,
+) -> Result<tokio::sync::MutexGuard<'_, AgentSession>, RepositorySupervisorError> {
+    task_actor
+        .session
+        .try_lock()
+        .map_err(|_| RepositorySupervisorError::Contention)
 }
 
 async fn execute_command(
@@ -1181,7 +1241,7 @@ async fn execute_command(
         SupervisorCommand::StopTurn { session_id } => {
             let actor = actor(&state, session_id).await?;
             if !actor.request_cancel() {
-                let mut session = actor.session.lock().await;
+                let mut session = try_session(&actor)?;
                 session.mark_cancelled().await?;
                 state
                     .control
@@ -1197,7 +1257,7 @@ async fn execute_command(
             feedback,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session
                 .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
                 .await?;
@@ -1211,7 +1271,7 @@ async fn execute_command(
             actor: answer_actor,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.resolve_question(answers, &answer_actor).await?;
             refresh_actor(&state, &task_actor, &session).await?;
             drop(session);
@@ -1228,7 +1288,7 @@ async fn execute_command(
             reasoning_effort,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.set_active_model(model_id);
             session.set_active_route_id(route_id);
             session.set_reasoning_effort(reasoning_effort);
@@ -1250,7 +1310,7 @@ async fn execute_command(
             enabled,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.set_thinking_enabled(enabled);
             refresh_actor(&state, &task_actor, &session).await?;
         }
@@ -1260,7 +1320,7 @@ async fn execute_command(
             context_window,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.set_image_input_supported(image_input_supported);
             if let Some((capacity, output)) = context_window {
                 session.set_context_window(capacity, output);
@@ -1279,13 +1339,18 @@ async fn execute_command(
         }
         SupervisorCommand::PollSession { session_id } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
-            session.poll_background_tasks().await?;
-            refresh_actor(&state, &task_actor, &session).await?;
+            // Skipping a busy actor is safe: the 200ms ticker retries it and
+            // the turn-end refresh publishes the final state. Blocking here
+            // would stall every unrelated session behind this poll.
+            let lock = task_actor.session.try_lock();
+            if let Ok(mut session) = lock {
+                session.poll_background_tasks().await?;
+                refresh_actor(&state, &task_actor, &session).await?;
+            }
         }
         SupervisorCommand::CompactContext { session_id } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             let pending = session.begin_context_compaction(forge_core::CompactionTrigger::Manual);
             let completed = pending.execute().await;
             session.finish_context_compaction(completed).await?;
@@ -1296,7 +1361,7 @@ async fn execute_command(
             task_id,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.cancel_background_task(task_id);
             session.poll_background_tasks().await?;
             refresh_actor(&state, &task_actor, &session).await?;
@@ -1307,7 +1372,7 @@ async fn execute_command(
             decision,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.resolve_subagent_hitl(task_id, decision);
             refresh_actor(&state, &task_actor, &session).await?;
         }
@@ -1316,26 +1381,26 @@ async fn execute_command(
             pattern,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let session = task_actor.session.lock().await;
+            let session = try_session(&task_actor)?;
             session.grant_egress_host(&pattern);
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::AllowSessionPattern { session_id, call } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.allow_suggested_pattern_for_session(&call);
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::ClearSessionApprovals { session_id } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = task_actor.session.lock().await;
+            let mut session = try_session(&task_actor)?;
             session.clear_session_pattern_allows();
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::ApplyProviderEnv { pairs } => {
             state.model.apply_provider_env(&pairs);
             for actor in state.actors.read().await.values() {
-                actor.session.lock().await.apply_provider_env(&pairs);
+                actor.model.apply_provider_env(&pairs);
             }
         }
         SupervisorCommand::ClearProviderEnv => {
@@ -1441,7 +1506,15 @@ async fn replace_conversation(
             "stop the turn before replacing its conversation".into(),
         ));
     }
-    let session = old_actor.session.lock().await;
+    let session = match old_actor.session.try_lock() {
+        Ok(session) => session,
+        Err(_) if old_actor.driving.load(Ordering::Acquire) => {
+            return Err(RepositorySupervisorError::Command(
+                "stop the turn before replacing its conversation".into(),
+            ));
+        }
+        Err(_) => return Err(RepositorySupervisorError::Contention),
+    };
     if session.pending_hitl().is_some()
         || session.pending_question().is_some()
         || session
@@ -2644,6 +2717,246 @@ mod tests {
             };
             assert_eq!(cancelled.session.lifecycle, TaskLifecycle::Cancelled);
         }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    struct GateModel {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelClient for GateModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(text_response("a done"))
+        }
+    }
+
+    /// Foreground sessions must stay responsive while another session's turn
+    /// holds its actor lock. The supervisor command loop is shared, so a
+    /// handler that blocks on a busy actor stalls unrelated sessions: typed
+    /// input queues behind it, then fires as a burst when the turn ends.
+    #[tokio::test]
+    async fn unrelated_session_commands_progress_while_another_turn_holds_its_actor() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg_a = Config {
+            resolved_workspace: temp.path().join("a"),
+            workspace_root: Some(temp.path().join("a").display().to_string()),
+            ..Default::default()
+        };
+        cfg_a.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg_a.resolved_workspace).unwrap();
+        let mut cfg_b = cfg_a.clone();
+        cfg_b.resolved_workspace = temp.path().join("b");
+        cfg_b.workspace_root = Some(temp.path().join("b").display().to_string());
+        std::fs::create_dir_all(&cfg_b.resolved_workspace).unwrap();
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate: Arc<dyn ModelClient> = Arc::new(GateModel {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let session_a = open_session_with_model(&cfg_a, SessionTarget::New, gate)
+            .await
+            .unwrap()
+            .session;
+        let id_a = session_a.session_id;
+        let mut task_a = task_for(id_a, "a", &cfg_a.resolved_workspace);
+        task_a.ownership = WorktreeOwnership::Primary;
+        let session_b = scripted_session_with(&cfg_b, vec![text_response("b done")]).await;
+        let id_b = session_b.session_id;
+        let task_b = task_for(id_b, "b", &cfg_b.resolved_workspace);
+        for task in [&task_a, &task_b] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![]));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control.clone(),
+            lease,
+            vec![(task_a, session_a), (task_b, session_b)],
+            2,
+            cfg_a,
+            model,
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: id_a,
+                text: "hold A open".into(),
+            })
+            .await
+            .unwrap();
+        // A's driver is inside the gated model call, holding A's actor lock.
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("A turn never started");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if supervisor.snapshot(id_a).await.unwrap().task.turn_state
+                == SupervisorTurnState::Running
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "A never reached Running"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Occupy the shared command loop with a poll against the busy actor,
+        // then prove an unrelated session still moves: selection (the F3
+        // analog), prompt submit (the typed-input analog), and completion.
+        let poll_a = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::PollSession { session_id: id_a })
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let start = std::time::Instant::now();
+        let foreground = async {
+            let selected = std::time::Instant::now();
+            handle
+                .command(SupervisorCommand::SelectSession {
+                    session_id: Some(id_b),
+                })
+                .await
+                .unwrap();
+            let select_latency = selected.elapsed();
+            let submitted = std::time::Instant::now();
+            handle
+                .command(SupervisorCommand::SubmitPrompt {
+                    session_id: id_b,
+                    text: "b hello".into(),
+                })
+                .await
+                .unwrap();
+            let submit_latency = submitted.elapsed();
+            wait_for_task_state(&handle, id_b, |snapshot| {
+                snapshot.task.turn_state == SupervisorTurnState::Completed
+            })
+            .await;
+            (select_latency, submit_latency, start.elapsed())
+        };
+        // Bound the wait: before the fix this times out (the shared command
+        // loop sits in PollSession(A)'s lock wait, so B's select/submit never
+        // run). Release A on timeout so the harness can still drain.
+        let Ok((select_latency, submit_latency, progress_latency)) =
+            tokio::time::timeout(std::time::Duration::from_secs(8), foreground).await
+        else {
+            release.notify_waiters();
+            let _ = poll_a.await;
+            panic!("foreground session B stalled while A held its actor: bug reproduced");
+        };
+        // B finished while A was still gated: nothing queued up to burst later.
+        assert_eq!(
+            supervisor.snapshot(id_a).await.unwrap().task.turn_state,
+            SupervisorTurnState::Running,
+            "B must complete while A is still gated"
+        );
+        eprintln!(
+            "fg-stall latencies: select={select_latency:?} submit={submit_latency:?} progress={progress_latency:?}"
+        );
+        assert!(
+            select_latency < std::time::Duration::from_secs(2),
+            "selecting B stalled behind A: {select_latency:?}"
+        );
+        assert!(
+            submit_latency < std::time::Duration::from_secs(2),
+            "submitting to B stalled behind A: {submit_latency:?}"
+        );
+        assert!(
+            progress_latency < std::time::Duration::from_secs(3),
+            "B did not progress while A was gated: {progress_latency:?}"
+        );
+
+        release.notify_waiters();
+        poll_a.await.unwrap().unwrap();
+        let done_a = wait_for_task_state(&handle, id_a, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        let done_b = wait_for_task_state(&handle, id_b, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        for (snapshot, own_prompt, own_answer) in [
+            (&done_a, "hold A open", "a done"),
+            (&done_b, "b hello", "b done"),
+        ] {
+            let users: Vec<_> = snapshot
+                .transcript
+                .messages()
+                .iter()
+                .filter(|message| message.role == forge_types::MessageRole::User)
+                .collect();
+            assert_eq!(
+                users.len(),
+                1,
+                "session must hold only its own prompt, no burst from the other session"
+            );
+            assert!(users[0].content.contains(own_prompt));
+            assert!(
+                snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .any(|message| message.content.contains(own_answer)),
+                "missing answer `{own_answer}`"
+            );
+        }
+
+        // A large queue must not slow the lock-free foreground path either:
+        // buffer 500 prompts on B (the keystroke-burst shape), then time a
+        // roster refresh, which clones every snapshot.
+        for index in 0..500 {
+            control
+                .enqueue_prompt(id_b, &format!("queued filler {index}"))
+                .await
+                .unwrap();
+        }
+        let refreshed = std::time::Instant::now();
+        handle.command(SupervisorCommand::Refresh).await.unwrap();
+        let refresh_latency = refreshed.elapsed();
+        eprintln!("fg-stall large-queue refresh: {refresh_latency:?}");
+        assert!(
+            refresh_latency < std::time::Duration::from_secs(2),
+            "refresh stalled with a large queue: {refresh_latency:?}"
+        );
+        // And nothing burst: B is still Completed with its queue intact.
+        assert_eq!(
+            supervisor.snapshot(id_b).await.unwrap().task.turn_state,
+            SupervisorTurnState::Completed
+        );
+        assert_eq!(control.queued_prompts(id_b).await.unwrap().len(), 500);
+
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
