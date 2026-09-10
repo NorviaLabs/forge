@@ -279,6 +279,10 @@ pub(super) fn render_plan_checklist_with_pulse(
                 Span::styled(l, theme::muted()),
             ]));
         }
+        // The explanation is a lead-in to the checklist, not part of it; one
+        // blank keeps the `Plan · N of M done` header from reading as a
+        // continuation of the explanation sentence.
+        lines.push(Line::from(""));
     }
 
     // Checkboxes keep every state legible without colour. Reserve the
@@ -1064,15 +1068,21 @@ impl ConversationRenderInternals for ConversationModel {
                 ConversationBlock::DiffBlock(p) => {
                     lines.push(diff_title_line(&p.path, &p.lines));
                     if !p.rationale.is_empty() {
-                        for l in wrap(&p.rationale, width.saturating_sub(6))
+                        // Inside the card's own border+padding, so the
+                        // rationale shares the diff content's left edge rather
+                        // than sitting two columns in from it.
+                        for l in wrap(&p.rationale, width.saturating_sub(4))
                             .into_iter()
                             .take(2)
                         {
-                            lines.push(Line::from(vec![
-                                Span::styled(INDENT_UNIT, theme::info()),
-                                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
-                            ]));
+                            lines.push(Line::from(Span::styled(
+                                l,
+                                theme::muted().add_modifier(Modifier::ITALIC),
+                            )));
                         }
+                        // A blank keeps the rationale from reading as the first
+                        // line of the diff.
+                        lines.push(Line::from(""));
                     }
                     lines.extend(render_numbered_diff(
                         &p.path,
@@ -3404,6 +3414,79 @@ mod tests {
     }
 
     #[test]
+    fn a_block_before_a_plan_is_separated_by_a_blank() {
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                ChatItem::Assistant {
+                    text: "Reads complete; summarizing instead".into(),
+                },
+                ChatItem::PlanChecklist {
+                    explanation: None,
+                    steps: vec![forge_types::PlanItem {
+                        step: "Summarize".into(),
+                        status: forge_types::PlanStepStatus::Completed,
+                    }],
+                    evidence: Vec::new(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let rendered: Vec<String> = model.lines_for_width(80).iter().map(line_text).collect();
+        let ai = rendered
+            .iter()
+            .position(|row| row.contains("Reads complete"))
+            .expect("assistant line");
+        let plan = rendered
+            .iter()
+            .position(|row| row.contains("Plan ·"))
+            .expect("plan header");
+        assert!(
+            rendered[ai + 1..plan]
+                .iter()
+                .any(|row| row.trim().is_empty()),
+            "plan header must not hug the block before it: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_plan_explanation_is_separated_from_its_header() {
+        let model = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![ChatItem::PlanChecklist {
+                explanation: Some("Reads complete; summarizing instead".into()),
+                steps: vec![forge_types::PlanItem {
+                    step: "Summarize".into(),
+                    status: forge_types::PlanStepStatus::Completed,
+                }],
+                evidence: Vec::new(),
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let rendered: Vec<String> = model.lines_for_width(80).iter().map(line_text).collect();
+        let explanation = rendered
+            .iter()
+            .position(|row| row.contains("Reads complete"))
+            .expect("explanation line");
+        let plan = rendered
+            .iter()
+            .position(|row| row.contains("Plan ·"))
+            .expect("plan header");
+        assert!(
+            rendered[explanation + 1..plan]
+                .iter()
+                .any(|row| row.trim().is_empty()),
+            "the plan header must not read as a continuation of the explanation: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn a_cancelled_turn_keeps_a_conversational_ending() {
         // §10: cancellation projects the existing lifecycle outcome into the
         // transcript — a neutral ending, no red failure styling, no receipt.
@@ -4256,6 +4339,66 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(text.contains("lab"), "folder name must survive:\n{text}");
+    }
+
+    /// The option markers and keys sit in a fixed gutter, so a selected row and
+    /// a plain one start their labels at the same column. The PTY showed the
+    /// unselected rows two columns right of the selected one.
+    #[test]
+    fn approval_option_labels_align_across_selection() {
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "printf test".into(),
+            cwd: "/w".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            reason: None,
+            failure: None,
+            options: vec![
+                ApprovalMenuRow {
+                    label: "Approve command retry".into(),
+                    detail: None,
+                    help: Some("Retries outside the sandbox".into()),
+                    key: Some("y".into()),
+                },
+                ApprovalMenuRow {
+                    label: "Don't run".into(),
+                    detail: None,
+                    help: Some("Told it was denied".into()),
+                    key: Some("n".into()),
+                },
+                ApprovalMenuRow {
+                    label: "Explain denial".into(),
+                    detail: None,
+                    help: Some("Type a line".into()),
+                    key: Some("N".into()),
+                },
+            ],
+            selected: 0,
+            focused: true,
+        };
+        let lines: Vec<String> = render_approval_card(&p, 100)
+            .iter()
+            .map(line_text)
+            .collect();
+        let col = |needle: &str| {
+            lines
+                .iter()
+                .find(|l| l.contains(needle))
+                .and_then(|l| l.find(needle))
+                .unwrap_or_else(|| panic!("missing {needle:?} in {lines:?}"))
+        };
+        let selected = col("Approve command retry");
+        assert_eq!(
+            col("Don't run"),
+            selected,
+            "unselected label shifted: {lines:?}"
+        );
+        assert_eq!(
+            col("Explain denial"),
+            selected,
+            "unselected label shifted: {lines:?}"
+        );
     }
 
     /// A single unbreakable command token must be clipped, not allowed to

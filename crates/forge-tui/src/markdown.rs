@@ -335,9 +335,9 @@ fn heading_rank(level: pulldown_cmark::HeadingLevel) -> u8 {
     }
 }
 
-/// Open a block with one blank line of separation, never two, and never a
-/// leading blank at the very top of the answer.
-fn blank_before_block(out: &mut Vec<Line<'static>>) {
+/// Append one blank separator line unless the last line is already blank.
+/// No-op at the very top, so a block never opens with a leading blank.
+fn ensure_blank_separator(out: &mut Vec<Line<'static>>) {
     match out.last() {
         None => {}
         Some(last) if last.width() == 0 => {}
@@ -398,6 +398,7 @@ impl MdRenderer {
                         "─".repeat(self.width),
                         theme::muted(),
                     )));
+                    self.blank_after_top_level_block();
                 }
                 Event::TaskListMarker(checked) => {
                     let mark = if checked { "[✓]" } else { "[ ]" };
@@ -416,6 +417,19 @@ impl MdRenderer {
         }
     }
 
+    /// One blank line after a top-level block, so distinct blocks never touch.
+    ///
+    /// Trailing rather than leading on purpose: the streaming split renderer
+    /// renders a settled prefix and a tail separately and concatenates them, so
+    /// a separator must live in the block that ends, not the one that follows —
+    /// otherwise the tail renderer (starting empty) cannot see it. Nested blocks
+    /// (inside a list or quote) own their own spacing and are left alone.
+    fn blank_after_top_level_block(&mut self) {
+        if self.list_stack.is_empty() && self.quote_depth == 0 {
+            ensure_blank_separator(&mut self.out);
+        }
+    }
+
     fn on_start(&mut self, tag: Tag<'_>) {
         match tag {
             Tag::Paragraph => {}
@@ -429,7 +443,6 @@ impl MdRenderer {
                 // rendered flat.
                 let level = heading_rank(level);
                 self.heading_level = Some(level);
-                blank_before_block(&mut self.out);
                 self.push_style(if level <= 2 {
                     theme::response_heading()
                 } else {
@@ -563,6 +576,7 @@ impl MdRenderer {
                         theme::border_muted(),
                     )));
                 }
+                self.blank_after_top_level_block();
             }
             TagEnd::Item => {
                 self.flush_para();
@@ -586,10 +600,12 @@ impl MdRenderer {
                         }
                     }
                 }
+                self.blank_after_top_level_block();
             }
             TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition => {
                 self.flush_para();
                 self.quote_depth = self.quote_depth.saturating_sub(1);
+                self.blank_after_top_level_block();
             }
             TagEnd::CodeBlock => {
                 if let Some(code) = self.code.take() {
@@ -611,6 +627,7 @@ impl MdRenderer {
                     self.out
                         .extend(render_table(&table, self.width, &prefix, &prefix));
                 }
+                self.blank_after_top_level_block();
             }
             TagEnd::TableRow => {}
             TagEnd::TableCell => {
@@ -772,8 +789,11 @@ impl MdRenderer {
     }
 }
 
-/// Left inset of a fenced code block, matching the prose inset.
-const CODE_INDENT: &str = "  ";
+/// Left inset of a fenced code block. Empty so the rail sits on the same left
+/// edge as prose, list markers, tables and quote rails — a code block is a
+/// block like any other, and an extra inset made it the one content type that
+/// started two columns to the right of everything else.
+const CODE_INDENT: &str = "";
 /// Rule drawn down the left edge of every row of a fenced block.
 const CODE_GUTTER: &str = "▌ ";
 
@@ -1570,6 +1590,47 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         let rendered = render_markdown("First paragraph.\n\nSecond paragraph.", 80);
         assert_eq!(rendered.len(), 3);
         assert!(rendered[1].width() == 0);
+    }
+
+    /// Distinct top-level blocks must not touch: a list into the next list, a
+    /// list into the quote under it, a table into the paragraph after it. Each
+    /// block emits its own trailing blank rather than relying on the next block
+    /// to open with one — the streaming split renderer renders a settled prefix
+    /// and a tail separately, so a leading separator in the tail is invisible.
+    #[test]
+    fn distinct_top_level_blocks_are_separated_by_one_blank() {
+        let md = "\
+- a
+- b
+
+1. one
+2. two
+
+> quote
+
+| h |
+|---|
+| c |
+
+After the table.
+";
+        let rendered = render_markdown(md, 80)
+            .iter()
+            .map(|line| line.to_string().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for pair in [
+            "• b\n\n1. one",
+            "2. two\n\n│ quote",
+            "┘\n\nAfter the table.",
+        ] {
+            assert!(
+                rendered.contains(pair),
+                "blocks must be separated by one blank; missing {pair:?} in:\n{rendered}"
+            );
+        }
+        // Never two: a single blank between blocks, not a blank stack.
+        assert!(!rendered.contains("\n\n\n"), "double blank in:\n{rendered}");
     }
 
     #[test]
