@@ -27,8 +27,6 @@ pub(crate) struct SessionChromeItem {
 /// only ever has one live copy of its own view state anyway.
 ///
 /// Deliberately excluded, and why:
-/// - the interactive terminal and bottom panel — the terminal is independent
-///   of the selected session by design;
 /// - provider credentials and the connect model — authentication is global,
 ///   only the *model choice* is per-task;
 /// - the explorer tree and its dialogs — those are rooted at a workspace path,
@@ -285,29 +283,40 @@ pub(super) struct FileChangeEvent {
 pub(super) struct FileChangeBatch {
     pub(super) paths: Vec<PathBuf>,
     pub(super) tree_changed: bool,
+    pub(super) overflowed: bool,
 }
 
 /// Owns the watcher lifecycle and coalesces notify's many low-level events into
-/// one logical workspace change. Callers cannot replace the channel state.
+/// one logical workspace change. The producer is bounded so an inactive
+/// session cannot retain an unbounded stream of distinct paths.
 pub(crate) struct FileWatchState {
     watcher: Option<RecommendedWatcher>,
     change_rx: Receiver<FileChangeEvent>,
-    change_tx: Sender<FileChangeEvent>,
+    change_tx: std::sync::mpsc::SyncSender<FileChangeEvent>,
+    overflow: Arc<std::sync::atomic::AtomicBool>,
     pending: std::collections::HashMap<PathBuf, bool>,
+    pending_immediate: bool,
+    pending_overflowed: bool,
     ready_at: Option<Instant>,
     deferred_tree_refresh: bool,
 }
 
 impl FileWatchState {
     pub(super) const DEBOUNCE: Duration = Duration::from_millis(100);
+    pub(crate) const EVENT_QUEUE_CAPACITY: usize = 1_024;
+    const MAX_EVENTS_PER_DRAIN: usize = 2_048;
+    const MAX_PENDING_PATHS: usize = 4_096;
 
     pub(crate) fn new() -> Self {
-        let (change_tx, change_rx) = mpsc::channel();
+        let (change_tx, change_rx) = mpsc::sync_channel(Self::EVENT_QUEUE_CAPACITY);
         Self {
             watcher: None,
             change_rx,
             change_tx,
+            overflow: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending: std::collections::HashMap::new(),
+            pending_immediate: false,
+            pending_overflowed: false,
             ready_at: None,
             deferred_tree_refresh: false,
         }
@@ -317,30 +326,72 @@ impl FileWatchState {
         self.watcher = Some(watcher);
     }
 
-    pub(super) fn take_ready_batch(&mut self) -> Option<FileChangeBatch> {
-        let mut immediate = false;
-        while let Ok(event) = self.change_rx.try_recv() {
-            self.pending
-                .entry(event.path)
-                .and_modify(|tree_changed| *tree_changed |= event.tree_changed)
-                .or_insert(event.tree_changed);
-            immediate |= event.immediate;
-            self.ready_at = Some(Instant::now() + Self::DEBOUNCE);
+    pub(super) fn overflow_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.overflow)
+    }
+
+    fn enqueue(&mut self, event: FileChangeEvent) {
+        let immediate = event.immediate;
+        self.pending_immediate |= immediate;
+        if self.pending.contains_key(&event.path) {
+            let tree_changed = self.pending.get_mut(&event.path).expect("path exists");
+            *tree_changed |= event.tree_changed;
+        } else if self.pending.len() < Self::MAX_PENDING_PATHS {
+            self.pending.insert(event.path, event.tree_changed);
+        } else {
+            self.pending_overflowed = true;
         }
-        if self.pending.is_empty()
-            || (!immediate
-                && self
-                    .ready_at
-                    .is_some_and(|ready_at| Instant::now() < ready_at))
+        self.ready_at = if immediate {
+            Some(Instant::now())
+        } else {
+            Some(Instant::now() + Self::DEBOUNCE)
+        };
+    }
+
+    /// Move a bounded amount of producer work into the coalescing map. Saved
+    /// views call this without applying the batch, so their queue stays small
+    /// while the selected view remains responsible for rendering refreshes.
+    pub(super) fn drain_events(&mut self) {
+        if self
+            .overflow
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.pending_overflowed = true;
+        }
+        for _ in 0..Self::MAX_EVENTS_PER_DRAIN {
+            match self.change_rx.try_recv() {
+                Ok(event) => self.enqueue(event),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+        if self.pending_overflowed {
+            self.ready_at = Some(Instant::now());
+        }
+    }
+
+    pub(super) fn take_ready_batch(&mut self) -> Option<FileChangeBatch> {
+        self.drain_events();
+        let immediate = self.pending_immediate || self.pending_overflowed;
+        if self.pending.is_empty() && !immediate {
+            return None;
+        }
+        if !immediate
+            && self
+                .ready_at
+                .is_some_and(|ready_at| Instant::now() < ready_at)
         {
             return None;
         }
         self.ready_at = None;
-        let tree_changed = self.pending.values().any(|changed| *changed);
+        self.pending_immediate = false;
+        let overflowed = std::mem::take(&mut self.pending_overflowed);
+        let tree_changed = overflowed || self.pending.values().any(|changed| *changed);
         let paths = self.pending.drain().map(|(path, _)| path).collect();
         Some(FileChangeBatch {
             paths,
             tree_changed,
+            overflowed,
         })
     }
 
@@ -359,16 +410,21 @@ impl FileWatchState {
 
     #[cfg(test)]
     pub(crate) fn inject_test_change(&self, path: PathBuf, tree_changed: bool, immediate: bool) {
-        self.change_tx
-            .send(FileChangeEvent {
+        if self
+            .change_tx
+            .try_send(FileChangeEvent {
                 path,
                 tree_changed,
                 immediate,
             })
-            .expect("file watcher receiver should remain available during a test");
+            .is_err()
+        {
+            self.overflow
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 
-    pub(super) fn sender(&self) -> Sender<FileChangeEvent> {
+    pub(super) fn sender(&self) -> std::sync::mpsc::SyncSender<FileChangeEvent> {
         self.change_tx.clone()
     }
 }
@@ -1523,6 +1579,8 @@ pub struct TuiApp {
     pub(crate) task_strip_selection: usize,
     pub(crate) selected_session_id: uuid::Uuid,
     pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
+    pub(crate) retiring_session_view_states:
+        std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) supervisor: Option<SupervisorUiState>,
     /// Per-frame view of `session`, refreshed at the top of `draw`. Render
     /// paths read this instead of the live session, so what they need stops

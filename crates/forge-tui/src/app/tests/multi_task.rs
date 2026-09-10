@@ -123,6 +123,197 @@ async fn terminal_and_explorer_follow_the_session_worktree() {
 }
 
 #[tokio::test]
+async fn saved_terminal_is_serviced_while_its_session_is_not_selected() {
+    if !crate::interactive_terminal::pty_allocation_available() {
+        eprintln!("skipping: this host denies PTY allocation");
+        return;
+    }
+    let (_dir, mut app) = focus_test_app().await;
+    let session_id = app.selected_session_id;
+    let other_session_id = uuid::Uuid::new_v4();
+    app.open_bottom_panel();
+    app.interactive_terminal
+        .as_mut()
+        .expect("terminal")
+        // Use the shell's printf builtin so the high-volume producer does not
+        // leave a pipeline child behind if the test times out or the PTY is
+        // torn down while output is still buffered.
+        .start_command("printf '%0500000d\\n' 0")
+        .unwrap();
+    app.save_session_view_state(session_id);
+    app.selected_session_id = other_session_id;
+    app.restore_session_view_state(other_session_id);
+    assert!(app.interactive_terminal.is_none());
+    assert_ne!(app.selected_session_id, session_id);
+    assert!(app.any_interactive_terminal_running());
+
+    for _ in 0..400 {
+        app.poll_interactive_terminals();
+        let completed = app
+            .session_view_states
+            .get_mut(&session_id)
+            .and_then(|state| state.interactive_terminal.as_mut())
+            .and_then(|terminal| terminal.take_command_completion());
+        if completed.is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("saved terminal did not drain its high-volume command");
+}
+
+#[tokio::test]
+async fn removed_roster_retires_saved_view_state_without_disturbing_selected_editor() {
+    let (dir, app, handle) = app_with_supervisor().await;
+    let mut app = Box::new(app);
+    let primary_id = app.selected_session_id;
+
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let sibling = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let sibling_id = sibling.session_id;
+    let sibling_workspace = app
+        .supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&sibling_id))
+        .map(|snapshot| snapshot.task.workspace.clone())
+        .expect("created session snapshot");
+
+    // Visit the sibling so the saved state owns its real editor, watcher, and
+    // (when this host permits PTYs) operator-terminal resources.
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling_id)
+        .expect("sibling in task strip");
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+    let sibling_file = sibling_workspace.join("a.txt");
+    app.open_file_in_editor(&sibling_file);
+    if crate::interactive_terminal::pty_allocation_available() {
+        app.open_bottom_panel();
+        assert!(app.interactive_terminal.is_some());
+    }
+
+    // Move the fully populated sibling view into its per-session slot. Use a
+    // supervisor selection event to install the primary view without routing
+    // another task-strip switch through the stale roster under test.
+    app.save_session_view_state(sibling_id);
+    assert!(
+        app.session_view_states.contains_key(&sibling_id),
+        "the sibling view must be saved before retirement"
+    );
+    app.selected_session_id = primary_id;
+    handle
+        .command(forge_session::SupervisorCommand::SelectSession {
+            session_id: Some(primary_id),
+        })
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+
+    // Keep an unsaved editor live on the selected session. Retirement of an
+    // unselected sibling must not replace or discard this state.
+    let primary_file = dir.path().join("primary.txt");
+    std::fs::write(&primary_file, "primary\n").unwrap();
+    app.open_file_in_editor(&primary_file);
+    app.editor_session
+        .as_mut()
+        .expect("primary editor")
+        .substitute("primary", "edited", true, true);
+    assert!(app
+        .editor_session
+        .as_ref()
+        .is_some_and(|editor| editor.is_dirty()));
+
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling_id)
+        .expect("sibling in task strip");
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        if app.supervisor.as_ref().is_some_and(|supervisor| {
+            supervisor
+                .snapshots
+                .get(&sibling_id)
+                .is_some_and(|snapshot| {
+                    snapshot.task.lifecycle == forge_session::SessionLifecycle::Archived
+                })
+        }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    handle
+        .command(forge_session::SupervisorCommand::RemoveManagedWorktree {
+            session_id: sibling_id,
+        })
+        .await
+        .unwrap();
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        if !app
+            .session_chrome
+            .iter()
+            .any(|item| item.session_id == sibling_id)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        !app.session_view_states.contains_key(&sibling_id),
+        "a Removed session must release its saved editor/watcher/terminal state"
+    );
+    assert_eq!(app.selected_session_id, primary_id);
+    assert!(
+        app.editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty()),
+        "retiring an unselected session must preserve the selected dirty editor"
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn worktree_cleanup_refuses_a_dirty_embedded_editor() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("dirty-before-cleanup.txt");
+    std::fs::write(&path, "before\n").unwrap();
+    app.open_file_in_editor(&path);
+    app.editor_session
+        .as_mut()
+        .expect("editor")
+        .substitute("before", "after", true, true);
+    assert!(app
+        .editor_session
+        .as_ref()
+        .is_some_and(|editor| editor.is_dirty()));
+
+    let session_id = app.selected_session_id;
+    assert!(!app.begin_session_view_retirement(session_id));
+    assert!(app
+        .editor_session
+        .as_ref()
+        .is_some_and(|editor| editor.is_dirty()));
+}
+
+#[tokio::test]
 async fn selecting_a_task_rebinds_workspace_owned_views() {
     let (dir, mut app) = focus_test_app().await;
     let linked = dir.path().join("linked-worktree");
@@ -248,6 +439,56 @@ async fn unchanged_transcript_update_reuses_cached_conversation_lines() {
         Arc::ptr_eq(&first, &second),
         "a supervisor update with an unchanged transcript must not rebuild conversation lines"
     );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn lagged_supervisor_events_resync_the_selected_snapshot() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let session_id = app.selected_session_id;
+    let final_model = "mock-after-lag-599";
+
+    // SetModel publishes a snapshot event for every update. Do not poll while
+    // filling the broadcast channel so the TUI receiver is forced to report
+    // Lagged on its next tick.
+    for index in 0..600 {
+        handle
+            .command(forge_session::SupervisorCommand::SetModel {
+                session_id,
+                model_id: if index == 599 {
+                    final_model.into()
+                } else {
+                    format!("mock-after-lag-{index}")
+                },
+                route_id: "native".into(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    app.poll_supervisor_events();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.poll_supervisor_events();
+        let current = app
+            .selected_snapshot()
+            .and_then(|snapshot| snapshot.details.as_ref())
+            .map(|details| details.active_model.as_str());
+        if current == Some(final_model) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "lagged supervisor events did not produce an authoritative refresh: {current:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(app.runtime.model_label, final_model);
+
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

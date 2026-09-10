@@ -29,11 +29,22 @@ impl TuiApp {
         };
         let mut events = Vec::new();
         let mut closed = false;
+        let mut resync = false;
         loop {
             let event = match supervisor.events.try_recv() {
                 Ok(event) => event,
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-                | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    // Once the receiver has fallen behind, the retained
+                    // events no longer form a complete state transition. A
+                    // fresh subscription drops that partial history; the
+                    // authoritative roster and selection below rebuild the
+                    // UI from the supervisor's current snapshots.
+                    events.clear();
+                    supervisor.events = supervisor.handle.subscribe();
+                    resync = true;
+                    break;
+                }
                 Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
                     closed = true;
                     break;
@@ -42,6 +53,19 @@ impl TuiApp {
             events.push(event);
         }
         let _ = supervisor;
+        if resync {
+            let result = self.supervisor.as_ref().map(|supervisor| {
+                supervisor
+                    .handle
+                    .try_command(forge_session::SupervisorCommand::Refresh)
+            });
+            if let Some(Err(error)) = result {
+                self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("could not resync repository sessions: {error}"),
+                );
+            }
+        }
         if closed {
             self.set_feedback(
                 FeedbackSeverity::Error,
@@ -51,6 +75,49 @@ impl TuiApp {
         for event in events {
             match event {
                 forge_session::SupervisorEvent::Roster(roster) => {
+                    let direct_session_id = self
+                        .session_runtime
+                        .as_ref()
+                        .map(|session| session.session_id);
+                    let mut live_session_ids = roster
+                        .iter()
+                        .map(|snapshot| snapshot.task.session_id)
+                        .collect::<HashSet<_>>();
+                    if let Some(session_id) = direct_session_id {
+                        live_session_ids.insert(session_id);
+                    }
+                    let selected_was_dirty = !live_session_ids.contains(&self.selected_session_id)
+                        && self.session_view_state_is_dirty(self.selected_session_id);
+                    self.retire_removed_session_view_states(&live_session_ids);
+                    let selected_removed = !live_session_ids.contains(&self.selected_session_id);
+                    let fallback_session_id = if selected_removed {
+                        roster
+                            .first()
+                            .map(|snapshot| snapshot.task.session_id)
+                            .or(direct_session_id)
+                    } else {
+                        None
+                    };
+                    if let Some(session_id) = fallback_session_id {
+                        // The selected view is still live until this roster is
+                        // applied. Drop it before restoring the fallback so a
+                        // later Selected event cannot save handles rooted in
+                        // the removed worktree back into the state map.
+                        drop(self.take_session_view_state());
+                        self.selected_session_id = session_id;
+                    } else if selected_removed {
+                        drop(self.take_session_view_state());
+                    }
+                    if selected_was_dirty {
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            "the selected Session was removed with unsaved editor changes",
+                        );
+                    }
+                    let selected_snapshot = roster
+                        .iter()
+                        .find(|snapshot| snapshot.task.session_id == self.selected_session_id)
+                        .cloned();
                     if let Some(supervisor) = self.supervisor.as_mut() {
                         supervisor.snapshots = roster
                             .iter()
@@ -73,7 +140,7 @@ impl TuiApp {
                             lifecycle: snapshot.session.lifecycle,
                             selected: snapshot.task.session_id == self.selected_session_id,
                             secondary: Some(snapshot.task.turn_state.label().into()),
-                            attention: false,
+                            attention: !snapshot.interrupted_prompts.is_empty(),
                         })
                         .collect();
                     if let Some(primary) = direct {
@@ -90,6 +157,14 @@ impl TuiApp {
                         .iter()
                         .position(|task| task.session_id == self.selected_session_id)
                         .unwrap_or(0);
+                    if let Some(session_id) = fallback_session_id {
+                        self.restore_session_view_state(session_id);
+                    }
+                    if let Some(snapshot) = selected_snapshot {
+                        self.session_view = snapshot.session.clone();
+                        self.transcript_view = snapshot.transcript.clone();
+                        self.sync_supervised_presentation(&snapshot);
+                    }
                 }
                 forge_session::SupervisorEvent::SessionUpdated(snapshot) => {
                     let snapshot = *snapshot;
@@ -139,6 +214,9 @@ impl TuiApp {
                         task.slot = snapshot.task.slot;
                         task.lifecycle = lifecycle;
                         task.secondary = Some(snapshot.task.turn_state.label().into());
+                        if !snapshot.interrupted_prompts.is_empty() {
+                            task.attention = true;
+                        }
                     }
                 }
                 forge_session::SupervisorEvent::Attention {

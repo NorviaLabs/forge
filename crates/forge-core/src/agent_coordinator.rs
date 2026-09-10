@@ -460,6 +460,38 @@ impl AgentCoordinator {
         Ok(true)
     }
 
+    /// Stop descendant actors when their parent session is being retired.
+    ///
+    /// A completed subagent normally keeps its actor channel attached so a
+    /// later `followup_task` can wake it. That retention is useful during the
+    /// session's lifetime, but it would keep the child `AgentSession` (and its
+    /// workspace-scoped handles) alive after the parent is archived or the
+    /// repository supervisor shuts down. Cancel the child token and drop the
+    /// coordinator-owned actor senders so active actors finish their current
+    /// cancellation path and idle actors observe a closed command channel.
+    pub(crate) fn shutdown_descendants(&self, requester: SessionId) {
+        let mut state = self.state.lock().unwrap();
+        let descendants: Vec<_> = state
+            .records
+            .keys()
+            .copied()
+            .filter(|id| *id != requester && is_descendant_or_self(&state, requester, *id))
+            .collect();
+        if descendants.is_empty() {
+            return;
+        }
+        for id in descendants {
+            if let Some(record) = state.records.get_mut(&id) {
+                record.cancel.cancel();
+                record.mailbox.clear();
+                let _ = record.actor.take();
+            }
+        }
+        state.revision = state.revision.saturating_add(1);
+        drop(state);
+        self.publish_revision();
+    }
+
     pub fn cancellation_token(
         &self,
         id: SessionId,
@@ -612,6 +644,23 @@ mod tests {
             .update(child, AgentStatus::Completed, Some("done".into()))
             .unwrap();
         assert!(!coordinator.interrupt(root, child).unwrap());
+    }
+
+    #[test]
+    fn shutdown_descendants_closes_retained_actor_channels() {
+        let (root, child, _) = ids();
+        let coordinator = AgentCoordinator::new(root);
+        coordinator
+            .register_child(root, child, "child".into())
+            .unwrap();
+        let (_, mut receiver) = coordinator.actor_channel(child).unwrap();
+
+        coordinator.shutdown_descendants(root);
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
     }
 
     #[tokio::test]

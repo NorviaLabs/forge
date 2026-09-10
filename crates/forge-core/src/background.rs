@@ -541,6 +541,52 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Stop every resource owned by this session before its workspace is
+    /// retired. Cancellation is cooperative, so keep polling the result
+    /// channels until each task has published a terminal outcome. The
+    /// supervisor calls this while it still owns the actor; dropping the
+    /// session only happens after this drain and the tool registry shutdown.
+    pub async fn retire_resources(&mut self) -> Result<(), LoopError> {
+        self.turn_cancel_token.cancel();
+        let task_ids: Vec<_> = self
+            .tasks
+            .background
+            .list()
+            .filter(|task| !task.status.is_terminal())
+            .map(|task| task.id)
+            .collect();
+        for task_id in task_ids {
+            self.cancel_background_task(task_id);
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            self.poll_background_tasks().await?;
+            if !self
+                .tasks
+                .background
+                .list()
+                .any(|task| !task.status.is_terminal())
+            {
+                // Finished subagents intentionally retain their actor so a
+                // later follow-up can wake them. Retirement is the boundary
+                // at which that session-lifetime capability must end.
+                self.coordinator.shutdown_descendants(self.session_id);
+                self.tasks.receivers.clear();
+                self.tasks.subagent_hitl_senders.clear();
+                self.tasks.retained_subagents.clear();
+                self.tools.shutdown().await;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(LoopError::Other(
+                    "session resources did not finish retiring within 5 seconds".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     /// Route an approve/deny decision to the specific subagent waiting on
     /// it. Returns `false` if `id` isn't a subagent currently waiting (e.g.
     /// it already finished, or was never a subagent) — a stale UI selection
@@ -807,6 +853,23 @@ mod tests {
 
             let status = wait_terminal(&mut s, id).await;
             assert_eq!(status, super::BackgroundTaskStatus::Cancelled);
+        }
+
+        #[tokio::test]
+        async fn retiring_a_session_drains_and_cancels_background_work() {
+            let dir = tempdir().unwrap();
+            let mut s = session(dir.path()).await;
+            let id = s
+                .spawn_background_shell("sleep 30".into(), "retire-me".into())
+                .await
+                .unwrap();
+
+            s.retire_resources().await.unwrap();
+
+            assert!(s
+                .background()
+                .get(id)
+                .is_some_and(|task| task.status == super::BackgroundTaskStatus::Cancelled));
         }
 
         #[tokio::test]

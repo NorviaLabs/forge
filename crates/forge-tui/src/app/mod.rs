@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
