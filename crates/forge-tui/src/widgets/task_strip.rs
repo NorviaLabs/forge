@@ -1,4 +1,3 @@
-use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
 use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
@@ -51,20 +50,6 @@ pub struct TaskStrip<'a> {
     pub focused: bool,
 }
 
-impl<'a> TaskStrip<'a> {
-    fn state_status(state: TaskStripState) -> Status {
-        match state {
-            TaskStripState::Idle => Status::Info,
-            TaskStripState::Running => Status::Info,
-            TaskStripState::Waiting => Status::Warning,
-            TaskStripState::Completed => Status::Success,
-            TaskStripState::Failed | TaskStripState::Interrupted | TaskStripState::Unavailable => {
-                Status::Error
-            }
-        }
-    }
-}
-
 impl Widget for TaskStrip<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
@@ -103,14 +88,6 @@ impl Widget for TaskStrip<'_> {
                 spans.push(Span::styled(separator, theme::border_muted()));
                 used += separator.len();
             }
-            let status = Self::state_status(item.state);
-            let indicator = status_indicator_now(status);
-            let indicator_text = indicator.content.to_string();
-            let base = if let Some(slot) = item.slot {
-                format!("{slot} {}", item.label)
-            } else {
-                item.label.clone()
-            };
             let style = if item.focused && self.focused {
                 theme::focused_selection_style()
             } else if item.selected {
@@ -120,24 +97,8 @@ impl Widget for TaskStrip<'_> {
             };
             let mut item_spans = vec![
                 Span::styled("[", theme::border_muted()),
-                indicator,
-                Span::styled(format!(" {base}"), style),
+                Span::styled(format!(" {}", item.label), style),
             ];
-            if !item.branch.is_empty() {
-                item_spans.push(Span::styled(
-                    format!(" · {}", item.branch),
-                    theme::metadata_style(),
-                ));
-            }
-            if let Some(secondary) = &item.secondary {
-                item_spans.push(Span::styled(
-                    format!(" {secondary}"),
-                    theme::metadata_style(),
-                ));
-            }
-            if item.attention {
-                item_spans.push(Span::styled(" !", theme::warn()));
-            }
             item_spans.push(Span::styled("]", theme::border_muted()));
             let item_width = item_spans.iter().map(Span::width).sum::<usize>();
             let remaining = (area.width as usize).saturating_sub(used);
@@ -150,7 +111,7 @@ impl Widget for TaskStrip<'_> {
                     hidden += self.items.len().saturating_sub(position + 1);
                     break;
                 }
-                let text = format!("[{} {}]", indicator_text, base);
+                let text = format!("[ {} ]", item.label);
                 let reserve = if self.items.len() > 1 && remaining > 10 {
                     10
                 } else {
@@ -191,23 +152,7 @@ mod tests {
     use ratatui::Terminal;
 
     #[test]
-    fn lifecycle_states_map_to_non_colliding_semantic_statuses() {
-        assert_eq!(
-            TaskStrip::<'static>::state_status(TaskStripState::Completed),
-            Status::Success
-        );
-        assert_eq!(
-            TaskStrip::<'static>::state_status(TaskStripState::Waiting),
-            Status::Warning
-        );
-        assert_eq!(
-            TaskStrip::<'static>::state_status(TaskStripState::Failed),
-            Status::Error
-        );
-    }
-
-    #[test]
-    fn strip_renders_slots_labels_and_overflow() {
+    fn strip_renders_session_names_and_overflow() {
         let items = vec![TaskStripItem {
             slot: Some(1),
             label: "parser-fix".into(),
@@ -240,6 +185,8 @@ mod tests {
             .map(|cell| cell.symbol().to_string())
             .collect();
         assert!(text.contains("parser-fix"));
+        assert!(!text.contains("forge/parser-fix-1"));
+        assert!(!text.contains("M"));
         assert!(text.contains("+3 more"));
     }
 

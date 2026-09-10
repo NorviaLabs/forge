@@ -62,6 +62,7 @@ pub enum SupervisorEvent {
     },
     TrustRequired {
         operation_id: u64,
+        session_id: SessionId,
         label: String,
         workspace: PathBuf,
     },
@@ -1150,6 +1151,7 @@ async fn execute_command(
                 // confirmed.
                 let _ = state.events.send(SupervisorEvent::TrustRequired {
                     operation_id: pending.operation_id,
+                    session_id: task.session_id,
                     label: task.label,
                     workspace: task.workspace,
                 });
@@ -1636,6 +1638,9 @@ async fn execute_command(
         }
         SupervisorCommand::ClearProviderEnv => {
             state.model.clear_provider_env();
+            for actor in state.actors.read().await.values() {
+                actor.model.clear_provider_env();
+            }
         }
         SupervisorCommand::Refresh => {
             poll_background_tasks(&state).await;
@@ -2255,6 +2260,7 @@ mod tests {
     use forge_tools::{Tool, ToolContext, ToolError, ToolRegistry};
     use forge_types::{AskUserQuestionAnswerItem, ModelResponse, ToolOutput};
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     /// Simulates a command the OS sandbox blocks while confined and that still
@@ -2308,6 +2314,33 @@ mod tests {
                     denied_host: None,
                 })
             })
+        }
+    }
+
+    struct CredentialTrackingModel {
+        clear_count: Arc<AtomicUsize>,
+    }
+
+    impl ModelClient for CredentialTrackingModel {
+        fn complete<'life0, 'async_trait>(
+            &'life0 self,
+            _request: ModelRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ModelResponse, ModelError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(text_response("ok")) })
+        }
+
+        fn clear_provider_env(&self) {
+            self.clear_count.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -2368,6 +2401,19 @@ mod tests {
             .await
             .unwrap()
             .session
+    }
+
+    async fn tracking_session(cfg: &Config, model: Arc<dyn ModelClient>) -> AgentSession {
+        let loop_cfg = LoopConfig {
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        AgentSession::create(loop_cfg, model, ToolRegistry::new())
+            .await
+            .unwrap()
     }
 
     fn approval_then_question_script(label: &str) -> Vec<ModelResponse> {
@@ -2539,6 +2585,71 @@ mod tests {
             snapshot.queued_prompts,
             vec![(queued_id, "run after review".into())]
         );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn clearing_provider_env_reaches_every_session_actor() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let clear_count = Arc::new(AtomicUsize::new(0));
+        let mut sessions = Vec::new();
+        for (index, name) in ["first", "second"].into_iter().enumerate() {
+            let workspace = temp.path().join(name);
+            std::fs::create_dir_all(&workspace).unwrap();
+            let mut cfg = Config {
+                resolved_workspace: workspace.clone(),
+                workspace_root: Some(workspace.display().to_string()),
+                ..Default::default()
+            };
+            cfg.journal.path = temp
+                .path()
+                .join(format!("journals-{index}"))
+                .display()
+                .to_string();
+            let model = Arc::new(CredentialTrackingModel {
+                clear_count: Arc::clone(&clear_count),
+            });
+            let session = tracking_session(&cfg, model).await;
+            let task = task_for(session.session_id, name, &workspace);
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: Some((index + 1) as u8),
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            sessions.push((task, session));
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let cfg = Config {
+            resolved_workspace: temp.path().to_path_buf(),
+            workspace_root: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+        let model: Arc<dyn ModelClient> = Arc::new(CredentialTrackingModel {
+            clear_count: Arc::clone(&clear_count),
+        });
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, sessions, 2, cfg, model)
+                .await
+                .unwrap();
+
+        handle
+            .command(SupervisorCommand::ClearProviderEnv)
+            .await
+            .unwrap();
+        assert_eq!(clear_count.load(Ordering::SeqCst), 3);
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
