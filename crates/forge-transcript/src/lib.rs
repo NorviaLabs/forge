@@ -1127,6 +1127,11 @@ impl ConversationModel {
         let mut repair_pending = false;
         let mut validation_retry_pending = false;
         let mut validation_failures = std::collections::HashMap::<String, usize>::new();
+        // Terminal failure summary, surfaced as one visible row at the end of
+        // the transcript. The durable `[forge.turn_failed]` marker stays hidden
+        // (it is model-facing state), but a failed turn must not leave an empty
+        // gap — see issue #606 / FORGE-DESIGN §9.4.
+        let mut turn_failure: Option<String> = None;
         // What ran under each plan step, keyed by the step's own text.
         let mut plan_evidence = std::collections::HashMap::<String, Vec<String>>::new();
         let mut plan_step_in_progress: Option<String> = None;
@@ -1159,8 +1164,13 @@ impl ConversationModel {
                         }
                     }
                     // Terminal failure summaries are durable state for resume and header
-                    // status, not transcript content.
-                    if m.content.starts_with(TURN_FAILED_MARKER) {
+                    // status, not transcript content. Capture the summary so a single
+                    // visible failure row can be emitted below, then hide the marker.
+                    if let Some(summary) = m.content.strip_prefix(TURN_FAILED_MARKER) {
+                        let summary = summary.trim();
+                        if !summary.is_empty() {
+                            turn_failure = Some(summary.to_string());
+                        }
                         continue;
                     }
                     // Assistant text is durable primary-channel content. A model may
@@ -1327,6 +1337,17 @@ impl ConversationModel {
                 kind: BannerKind::Info,
             });
         }
+        // §9.4: keep genuine failures visible. The durable marker is hidden
+        // above, so the turn's own error line is what stops a failed turn from
+        // reading as an empty gap.
+        if status == TaskLifecycle::Failed {
+            if let Some(summary) = turn_failure {
+                items.push(ChatItem::Banner {
+                    text: format!("Turn failed · {summary}"),
+                    kind: BannerKind::Error,
+                });
+            }
+        }
         Self {
             items,
             scroll: 0,
@@ -1406,10 +1427,18 @@ impl ConversationModel {
         provider: String,
         connected: bool,
     ) -> Self {
-        if !self
+        // The home card is the *first screen*, not history. Once the operator
+        // has sent a turn it must retire, or it stays pinned above the whole
+        // conversation for the rest of the session (issue #608).
+        let has_user_turn = self
             .items
             .iter()
-            .any(|item| matches!(item, ChatItem::Home { .. }))
+            .any(|item| matches!(item, ChatItem::User { .. }));
+        if !has_user_turn
+            && !self
+                .items
+                .iter()
+                .any(|item| matches!(item, ChatItem::Home { .. }))
         {
             let index = self
                 .items
@@ -4171,7 +4200,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_failed_marker_is_hidden_from_transcript() {
+    fn turn_failed_marker_is_hidden_but_a_failure_row_is_visible() {
         let messages = vec![
             Message {
                 outcome: Default::default(),
@@ -4203,12 +4232,65 @@ mod tests {
             ConversationViewOpts::default(),
         );
         let blocks = model.semantic_blocks();
+        // The raw marker never becomes an assistant answer.
         assert!(
-            !blocks.iter().any(|block| matches!(
+            !blocks
+                .iter()
+                .any(|block| matches!(block, ConversationBlock::AssistantAnswer(_))),
+            "failure marker must not render as an answer: {blocks:?}"
+        );
+        // But the failure itself is visible, one row, error-styled.
+        assert!(
+            blocks.iter().any(|block| matches!(
                 block,
-                ConversationBlock::AssistantAnswer(_) | ConversationBlock::Callout(_)
+                ConversationBlock::Callout(CalloutPresentation { text, kind })
+                    if *kind == BannerKind::Error && text.contains("Forge couldn't complete this turn.")
             )),
-            "failure marker must not render in the transcript: {blocks:?}"
+            "a failed turn must render a visible failure row: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn home_card_retires_after_the_first_user_turn() {
+        let empty = ConversationModel::from_messages(
+            &[],
+            &[],
+            TaskLifecycle::Ready,
+            ConversationViewOpts::default(),
+        )
+        .with_home("ws".into(), 1, "m".into(), "p".into(), true);
+        assert!(
+            empty
+                .items
+                .iter()
+                .any(|item| matches!(item, ChatItem::Home { .. })),
+            "the first screen still shows the home card"
+        );
+
+        let messages = vec![Message {
+            outcome: Default::default(),
+            role: MessageRole::User,
+            content: "hi".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: Vec::new(),
+        }];
+        let after_turn = ConversationModel::from_messages(
+            &messages,
+            &[],
+            TaskLifecycle::Ready,
+            ConversationViewOpts::default(),
+        )
+        .with_home("ws".into(), 1, "m".into(), "p".into(), true);
+        assert!(
+            !after_turn
+                .items
+                .iter()
+                .any(|item| matches!(item, ChatItem::Home { .. })),
+            "the home card must retire once a user turn exists"
         );
     }
 
