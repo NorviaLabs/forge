@@ -374,6 +374,43 @@ async fn a_running_supervised_turn_anchors_the_turn_clock() {
         .unwrap();
 }
 
+/// A completed supervised turn closes with the same `Response finished · …`
+/// line a direct turn gets. Regression: the summary was only recorded on the
+/// direct path, so actor-owned sessions lost their exitline entirely.
+#[tokio::test]
+async fn a_completed_supervised_turn_gets_a_summary_line() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("say hi".to_string());
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    let session_id = app.selected_session_id;
+    wait_for_turn_state(
+        &mut app,
+        session_id,
+        forge_session::SupervisorTurnState::Completed,
+    )
+    .await;
+
+    assert!(
+        app.turn_summaries
+            .iter()
+            .any(|record| record.key.session == session_id.to_string()),
+        "a supervised turn must record a summary: {:?}",
+        app.turn_summaries
+    );
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(
+        rendered.contains("Response finished"),
+        "the exitline is missing:\n{rendered}"
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn worktree_cleanup_refuses_a_dirty_embedded_editor() {
     let (dir, mut app) = focus_test_app().await;
