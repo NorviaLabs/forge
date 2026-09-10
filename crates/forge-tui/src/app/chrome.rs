@@ -23,6 +23,18 @@ use super::util::relative_display;
 use super::*;
 
 impl TuiApp {
+    /// The tab the navigator should show: explicit choice wins, otherwise
+    /// `Sessions` when more than one session exists and `Files` otherwise.
+    pub(crate) fn effective_navigator_tab(&self) -> crate::widgets::NavigatorTab {
+        if self.navigator_tab_explicit {
+            self.navigator_tab
+        } else if self.session_chrome.len() > 1 {
+            crate::widgets::NavigatorTab::Sessions
+        } else {
+            crate::widgets::NavigatorTab::Files
+        }
+    }
+
     pub(super) fn poll_supervisor_events(&mut self) {
         let Some(supervisor) = self.supervisor.as_mut() else {
             return;

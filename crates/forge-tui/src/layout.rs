@@ -43,34 +43,6 @@ pub struct LayoutRegions {
     pub footer: Rect,
 }
 
-/// Task-mode layout when the conversation expands into the center pane.
-#[allow(clippy::too_many_arguments)]
-pub fn split_areas_with_task_strip_expanded_conversation(
-    area: Rect,
-    feedback_h: u16,
-    input_h: u16,
-    show_files: bool,
-    queue_h: u16,
-    bottom_panel_h: u16,
-    footer_h: u16,
-    show_sidebar: bool,
-    background_h: u16,
-) -> LayoutRegions {
-    split_areas_with_chrome_mode(
-        area,
-        feedback_h,
-        input_h,
-        show_files,
-        queue_h,
-        bottom_panel_h,
-        footer_h,
-        show_sidebar,
-        background_h,
-        true,
-        true,
-    )
-}
-
 /// Frame-column gate for Files visibility (2026 contract: 116).
 /// Higher than `SIDEBAR_MIN_CONTENT_WIDTH` so the explorer is the first
 /// thing to go as the terminal narrows. Previously a 110 content-column
@@ -196,36 +168,6 @@ pub fn split_areas_with_chrome(
         background_h,
         false,
         false,
-    )
-}
-
-/// Layout variant for repository task mode. The task strip is a dedicated
-/// navigation row between repository identity and the active workspace; it
-/// never wraps and collapses before the editor/conversation panes do.
-#[allow(clippy::too_many_arguments)]
-pub fn split_areas_with_task_strip(
-    area: Rect,
-    feedback_h: u16,
-    input_h: u16,
-    show_files: bool,
-    queue_h: u16,
-    bottom_panel_h: u16,
-    footer_h: u16,
-    show_sidebar: bool,
-    background_h: u16,
-) -> LayoutRegions {
-    split_areas_with_chrome_mode(
-        area,
-        feedback_h,
-        input_h,
-        show_files,
-        queue_h,
-        bottom_panel_h,
-        footer_h,
-        show_sidebar,
-        background_h,
-        false,
-        true,
     )
 }
 

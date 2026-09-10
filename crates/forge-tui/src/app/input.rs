@@ -168,12 +168,17 @@ impl TuiApp {
         if count == 0 {
             return Ok(false);
         }
+        // The session verbs only apply on the Sessions tab; the Files tab hands
+        // navigation to the explorer.
+        if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions {
+            return Ok(false);
+        }
         match key.code {
-            KeyCode::Left if key.modifiers.is_empty() => {
+            KeyCode::Up | KeyCode::Left if key.modifiers.is_empty() => {
                 self.task_strip_selection = self.task_strip_selection.saturating_sub(1);
                 Ok(true)
             }
-            KeyCode::Right if key.modifiers.is_empty() => {
+            KeyCode::Down | KeyCode::Right if key.modifiers.is_empty() => {
                 self.task_strip_selection = (self.task_strip_selection + 1).min(count - 1);
                 Ok(true)
             }
@@ -273,16 +278,6 @@ impl TuiApp {
                 }
                 self.send_session_command(forge_session::SupervisorCommand::ContinueTurn {
                     session_id,
-                })
-                .await;
-                Ok(true)
-            }
-            KeyCode::Char('p') if key.modifiers.is_empty() => {
-                let task = self.session_chrome[self.task_strip_selection].clone();
-                self.send_session_command(forge_session::SupervisorCommand::PinSession {
-                    session_id: task.session_id,
-                    slot: task.slot.or(Some(1)),
-                    swap: true,
                 })
                 .await;
                 Ok(true)
@@ -1574,6 +1569,25 @@ impl TuiApp {
                     self.open_session_switcher();
                 }
                 return Ok(());
+            }
+        }
+
+        // Ctrl+1 / Ctrl+2 switch the left navigator's tab (FORGE-DESIGN §7.7).
+        // Reserved before overlays/editor so the navigator is always reachable.
+        if self.supervisor.is_some() && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('1') => {
+                    self.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+                    self.navigator_tab_explicit = true;
+                    self.focus.set_navigation(FocusBlock::TaskStrip);
+                    return Ok(());
+                }
+                KeyCode::Char('2') => {
+                    self.navigator_tab = crate::widgets::NavigatorTab::Files;
+                    self.navigator_tab_explicit = true;
+                    return Ok(());
+                }
+                _ => {}
             }
         }
 

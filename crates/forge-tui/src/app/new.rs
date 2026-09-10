@@ -60,6 +60,8 @@ impl TuiApp {
                 attention: false,
             }],
             task_strip_selection: 0,
+            navigator_tab: crate::widgets::NavigatorTab::Files,
+            navigator_tab_explicit: false,
             selected_session_id: session.session_id,
             session_view_states: std::collections::HashMap::new(),
             retiring_session_view_states: std::collections::HashMap::new(),
@@ -238,6 +240,8 @@ impl TuiApp {
         let mut app = Self {
             session_chrome,
             task_strip_selection: 0,
+            navigator_tab: crate::widgets::NavigatorTab::Files,
+            navigator_tab_explicit: false,
             selected_session_id: session_id,
             session_view_states: std::collections::HashMap::new(),
             retiring_session_view_states: std::collections::HashMap::new(),

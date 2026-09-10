@@ -46,6 +46,25 @@ impl TuiApp {
             return;
         }
         let already_in_files = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
+
+        // In the navigator (repository mode) Ctrl+E flips between the Sessions
+        // and Files tabs; the column is always present when it fits.
+        if self.supervisor.is_some() {
+            self.navigator_tab =
+                if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Files {
+                    crate::widgets::NavigatorTab::Sessions
+                } else {
+                    crate::widgets::NavigatorTab::Files
+                };
+            self.navigator_tab_explicit = true;
+            if self.navigator_tab == crate::widgets::NavigatorTab::Files {
+                self.workspace_files.visible = true;
+                self.focus_block(FocusBlock::Search);
+            }
+            self.normalize_focus();
+            return;
+        }
+
         if self.workspace_files.visible && !already_in_files {
             self.focus_block(FocusBlock::Search);
             self.normalize_focus();
