@@ -877,15 +877,7 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                         None => break,
                     },
                     _ = poll.tick() => {
-                        let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
-                        for task_actor in actors {
-                            if let Ok(mut session) = task_actor.session.try_lock() {
-                                if session.background().list().any(|task| !task.status.is_terminal()) {
-                                    let _ = session.poll_background_tasks().await;
-                                    let _ = refresh_actor(&state, &task_actor, &session).await;
-                                }
-                            }
-                        }
+                        poll_background_tasks(&state).await;
                         continue;
                     }
                 },
@@ -1646,6 +1638,7 @@ async fn execute_command(
             state.model.clear_provider_env();
         }
         SupervisorCommand::Refresh => {
+            poll_background_tasks(&state).await;
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
@@ -1669,6 +1662,22 @@ async fn execute_command(
         }
     }
     Ok(())
+}
+
+async fn poll_background_tasks(state: &SupervisorState) {
+    let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+    for task_actor in actors {
+        if let Ok(mut session) = task_actor.session.try_lock() {
+            if session
+                .background()
+                .list()
+                .any(|task| !task.status.is_terminal())
+            {
+                let _ = session.poll_background_tasks().await;
+                let _ = refresh_actor(state, &task_actor, &session).await;
+            }
+        }
+    }
 }
 
 /// Check an attach target against Git's own worktree list before Forge binds
