@@ -777,7 +777,7 @@ async fn the_first_prompt_names_an_unnamed_task() {
     app.submit_composer_message().await.unwrap();
     app.drain_pending_prompt(None).await.unwrap();
 
-    let named = wait_for_chrome_session(&mut app, |task| task.label == "rewrite-the-lexer").await;
+    let named = wait_for_chrome_session(&mut app, |task| task.label == "Rewrite the lexer").await;
     assert_eq!(named.session_id, task.session_id);
     handle
         .command(forge_session::SupervisorCommand::Shutdown)

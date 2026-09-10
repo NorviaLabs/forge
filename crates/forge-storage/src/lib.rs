@@ -26,7 +26,7 @@ pub use resolver::{
     RuntimeStorage, StorageError, StorageMode, EXCLUDE_PATTERN,
 };
 pub use worktree::{
-    create_session_worktree, create_worktree, label_from_prompt, list_worktree_records,
-    list_worktrees, main_worktree, remove_clean_worktree, remove_clean_worktree_if_branch,
-    remove_worktree, SubagentWorktree, WorktreeError, WorktreeRecord,
+    create_session_worktree, create_worktree, list_worktree_records, list_worktrees, main_worktree,
+    remove_clean_worktree, remove_clean_worktree_if_branch, remove_worktree, SubagentWorktree,
+    WorktreeError, WorktreeRecord,
 };
