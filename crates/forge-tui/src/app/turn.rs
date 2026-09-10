@@ -18,6 +18,71 @@ use super::shell::{
 const STREAM_EVENT_BUFFER_CAPACITY: usize = 64;
 const MAX_STREAM_EVENTS_PER_TICK: usize = 256;
 
+/// The closing summary for an actor-owned (supervised) turn, computed from the
+/// TUI's own per-turn counters plus the snapshot's cumulative usage less the
+/// count taken when the turn began. `None` until a turn clock is running.
+///
+/// Free function (not a method) so an unselected session's saved view can
+/// record its summary too, not only the selected one.
+pub(super) fn supervised_turn_summary(
+    timing: &super::types::TurnTimingState,
+    snapshot: &forge_session::SessionRuntimeSnapshot,
+) -> Option<(u64, TurnSummaryPresentation)> {
+    let started = timing.turn_started?;
+    let produced = snapshot
+        .details
+        .as_ref()
+        .map(|details| {
+            details
+                .token_usage_report
+                .api
+                .completion_tokens
+                .saturating_sub(timing.completion_tokens_at_start)
+        })
+        .unwrap_or(0);
+    // 0-based ordinal of the just-finished turn in this session's own
+    // transcript — the key the renderer matches against.
+    let user_ordinal = snapshot
+        .transcript
+        .messages()
+        .iter()
+        .filter(|m| m.role == forge_types::MessageRole::User)
+        .count()
+        .saturating_sub(1) as u64;
+    Some((
+        user_ordinal,
+        TurnSummaryPresentation {
+            secs: started.elapsed().as_secs_f64(),
+            chars: timing.chars,
+            tools: timing.tools,
+            output_tokens: (produced > 0).then_some(produced),
+        },
+    ))
+}
+
+/// Insert or replace a per-turn summary in `records` for `(session, ordinal)`.
+pub(super) fn upsert_turn_summary(
+    records: &mut Vec<TurnSummaryRecord>,
+    session_id: String,
+    user_ordinal: u64,
+    summary: TurnSummaryPresentation,
+) {
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|r| r.key.session == session_id && r.key.user_ordinal == user_ordinal)
+    {
+        existing.summary = summary;
+    } else {
+        records.push(TurnSummaryRecord {
+            key: TurnKey {
+                session: session_id,
+                user_ordinal,
+            },
+            summary,
+        });
+    }
+}
+
 impl TuiApp {
     async fn execute_tool_application<B: ratatui::backend::Backend>(
         &mut self,
@@ -191,34 +256,47 @@ impl TuiApp {
             .count()
             .saturating_sub(1) as u64;
         let session_id = self.session_runtime.session_id.to_string();
-        if let Some(existing) = self
-            .turn_summaries
-            .iter_mut()
-            .find(|r| r.key.session == session_id && r.key.user_ordinal == user_ordinal)
-        {
-            existing.summary = TurnSummaryPresentation {
+        self.store_turn_summary(
+            session_id,
+            user_ordinal,
+            TurnSummaryPresentation {
                 secs,
                 chars,
                 tools,
                 output_tokens,
-            };
-        } else {
-            self.turn_summaries.push(TurnSummaryRecord {
-                key: TurnKey {
-                    session: session_id,
-                    user_ordinal,
-                },
-                summary: TurnSummaryPresentation {
-                    secs,
-                    chars,
-                    tools,
-                    output_tokens,
-                },
-            });
-        }
+            },
+        );
         if !self.last_turn_diff_entries().is_empty() {
             self.status_state.message = "Turn complete · /diff turn to review changes".into();
         }
+    }
+
+    /// The same closing line for an actor-owned (supervised) session.
+    ///
+    /// Supervised turns run in the repository supervisor, so the direct
+    /// [`Self::record_turn_summary`] path never sees them and the transcript
+    /// lost its `Response finished · … tok/s` line entirely. The numbers come
+    /// from what the supervisor streamed to us (`timing.chars`/`tools`, reset
+    /// at turn start) plus the snapshot's cumulative usage less the count taken
+    /// when the turn began.
+    pub(super) fn record_supervised_turn_summary(
+        &mut self,
+        snapshot: &forge_session::SessionRuntimeSnapshot,
+    ) {
+        let Some((user_ordinal, summary)) = supervised_turn_summary(&self.timing, snapshot) else {
+            return;
+        };
+        self.store_turn_summary(snapshot.task.session_id.to_string(), user_ordinal, summary);
+    }
+
+    /// Insert or replace the per-turn summary for `(session_id, user_ordinal)`.
+    fn store_turn_summary(
+        &mut self,
+        session_id: String,
+        user_ordinal: u64,
+        summary: TurnSummaryPresentation,
+    ) {
+        upsert_turn_summary(&mut self.turn_summaries, session_id, user_ordinal, summary);
     }
 
     /// How many times one model step may be re-issued after a transient
