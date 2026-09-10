@@ -138,7 +138,7 @@ async fn saved_terminal_is_serviced_while_its_session_is_not_selected() {
         // Use the shell's printf builtin so the high-volume producer does not
         // leave a pipeline child behind if the test times out or the PTY is
         // torn down while output is still buffered.
-        .start_command("printf '%0500000d\\n' 0".into())
+        .start_command("printf '%0500000d\\n' 0")
         .unwrap();
     app.save_session_view_state(session_id);
     app.selected_session_id = other_session_id;
