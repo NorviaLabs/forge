@@ -621,6 +621,14 @@ async fn tui09_chrome_includes_model_on_frame() {
             .path()
             .join("empty-creds.toml"),
     );
+    // `TuiApp::new` also binds ambient host credentials onto the session's
+    // own model + route. Clear that identity too, or the display is driven by
+    // whichever provider this machine happens to have connected, not the
+    // explicit runtime config the test set below.
+    if let Some(session) = app.session_runtime.as_mut() {
+        session.set_active_model(String::new());
+        session.set_active_route_id(String::new());
+    }
     let chrome = app.refresh_status_model();
     assert_eq!(chrome.provider, "native");
     assert!(chrome.model.contains("gpt-test"));
