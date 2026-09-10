@@ -492,6 +492,8 @@ Rules:
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
 - Do not render a permanent progress narration stream.
+- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render.
+- Lists, quotes, tables and fenced code share the prose left edge; only the code rail sits inside the block, never the whole block inset past its neighbours. A plan's explanation is separated from its `Plan · N of M done` header by one blank.
 - Do not surround every message with a full-width box.
 
 Response-structure treatment (editorial): inside an answer, the *skeleton*
