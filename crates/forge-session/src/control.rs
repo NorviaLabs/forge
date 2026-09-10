@@ -279,7 +279,8 @@ pub struct RepositoryControl {
 impl RepositoryControl {
     pub async fn open(control_dir: &Path) -> Result<Self, RepositorySessionError> {
         std::fs::create_dir_all(control_dir)?;
-        let path = control_dir.join("tasks.db");
+        adopt_legacy_control_file(control_dir)?;
+        let path = control_dir.join("sessions.db");
         let options = SqliteConnectOptions::new()
             .filename(&path)
             .create_if_missing(true)
@@ -298,7 +299,29 @@ impl RepositoryControl {
         &self.path
     }
 
+    /// The control table was called `tasks` before the session rename. Move an
+    /// existing table over so a repository keeps its roster.
+    async fn rename_legacy_sessions_table(&self) -> Result<(), RepositorySessionError> {
+        let legacy: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let current: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        if legacy.is_some() && current.is_none() {
+            sqlx::query("ALTER TABLE tasks RENAME TO sessions")
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn migrate(&self) -> Result<(), RepositorySessionError> {
+        self.rename_legacy_sessions_table().await?;
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS repository_state (
@@ -307,7 +330,7 @@ impl RepositoryControl {
             );
             INSERT OR IGNORE INTO repository_state (id) VALUES (1);
 
-            CREATE TABLE IF NOT EXISTS tasks (
+            CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
                 label TEXT NOT NULL,
                 workspace TEXT NOT NULL,
@@ -323,6 +346,8 @@ impl RepositoryControl {
                 updated_at TEXT NOT NULL,
                 archived_at TEXT
             );
+            DROP INDEX IF EXISTS sessions_live_workspace;
+            DROP INDEX IF EXISTS sessions_live_slot;
             DROP INDEX IF EXISTS tasks_live_workspace;
             DROP INDEX IF EXISTS tasks_live_slot;
 
@@ -359,10 +384,10 @@ impl RepositoryControl {
         self.repair_active_slots().await?;
         sqlx::query(
             r#"
-            CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_workspace
-                ON tasks(workspace) WHERE lifecycle = 'active';
-            CREATE UNIQUE INDEX IF NOT EXISTS tasks_live_slot
-                ON tasks(slot) WHERE lifecycle = 'active' AND slot IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS sessions_live_workspace
+                ON sessions(workspace) WHERE lifecycle = 'active';
+            CREATE UNIQUE INDEX IF NOT EXISTS sessions_live_slot
+                ON sessions(slot) WHERE lifecycle = 'active' AND slot IS NOT NULL;
             "#,
         )
         .execute(&self.pool)
@@ -370,18 +395,18 @@ impl RepositoryControl {
         Ok(())
     }
 
-    /// Normalize active task slots before recreating the live-slot index.
+    /// Normalize active session slots before recreating the live-slot index.
     ///
     /// Older control databases can contain active rows with NULL slots (and
     /// some early development schemas allowed invalid or duplicate values).
-    /// NULL is useful while a task is unavailable, but an active roster needs
-    /// stable, distinct slots so startup and the task strip do not depend on
+    /// NULL is useful while a session is unavailable, but an active roster needs
+    /// stable, distinct slots so startup and the session strip do not depend on
     /// which path created each row. Keep valid values where possible, then
     /// allocate the lowest free positive slot in deterministic roster order;
     /// reserve slot 1 for a primary that bootstrap may insert next.
     async fn repair_active_slots(&self) -> Result<(), RepositorySessionError> {
         let rows = sqlx::query(
-            "SELECT session_id, ownership, slot FROM tasks WHERE lifecycle = 'active' \
+            "SELECT session_id, ownership, slot FROM sessions WHERE lifecycle = 'active' \
              ORDER BY CASE ownership WHEN 'primary' THEN 0 ELSE 1 END, created_at, session_id",
         )
         .fetch_all(&self.pool)
@@ -417,7 +442,7 @@ impl RepositoryControl {
             });
 
             if desired != current {
-                sqlx::query("UPDATE tasks SET slot = ? WHERE session_id = ?")
+                sqlx::query("UPDATE sessions SET slot = ? WHERE session_id = ?")
                     .bind(desired)
                     .bind(session_id)
                     .execute(&mut *transaction)
@@ -467,7 +492,7 @@ impl RepositoryControl {
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             "DELETE FROM prompt_queue WHERE session_id = ? AND EXISTS (\
-             SELECT 1 FROM tasks WHERE session_id = ? AND ownership = 'primary' \
+             SELECT 1 FROM sessions WHERE session_id = ? AND ownership = 'primary' \
              AND lifecycle = 'unavailable')",
         )
         .bind(session_id.to_string())
@@ -475,7 +500,7 @@ impl RepositoryControl {
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
-            "DELETE FROM tasks WHERE session_id = ? AND ownership = 'primary' \
+            "DELETE FROM sessions WHERE session_id = ? AND ownership = 'primary' \
              AND lifecycle = 'unavailable'",
         )
         .bind(session_id.to_string())
@@ -563,7 +588,7 @@ impl RepositoryControl {
         .execute(&mut *transaction)
         .await?;
         if let Some(session_id) = session_id {
-            sqlx::query("DELETE FROM tasks WHERE session_id = ?")
+            sqlx::query("DELETE FROM sessions WHERE session_id = ?")
                 .bind(session_id.to_string())
                 .execute(&mut *transaction)
                 .await?;
@@ -591,13 +616,13 @@ impl RepositoryControl {
         let previous_record = self.session(previous).await?;
         let now = Utc::now().to_rfc3339();
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE tasks SET lifecycle = 'archived', archived_at = ?, slot = NULL WHERE session_id = ?")
+        sqlx::query("UPDATE sessions SET lifecycle = 'archived', archived_at = ?, slot = NULL WHERE session_id = ?")
             .bind(&now)
             .bind(previous.to_string())
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO tasks \
+            "INSERT INTO sessions \
              (session_id, label, workspace, branch, ownership, lifecycle, turn_state, slot, \
               model_id, route_id, reasoning_effort, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'active', 'idle', ?, ?, ?, ?, ?, ?) \
@@ -635,8 +660,8 @@ impl RepositoryControl {
         text: &str,
         attachments: &str,
     ) -> Result<u64, RepositorySessionError> {
-        let task = self.session(session_id).await?;
-        if task.lifecycle == SessionLifecycle::Archived {
+        let session = self.session(session_id).await?;
+        if session.lifecycle == SessionLifecycle::Archived {
             return Err(RepositorySessionError::Archived(session_id));
         }
         let awaiting_trust = sqlx::query(
@@ -750,7 +775,7 @@ impl RepositoryControl {
             // otherwise mark the stale supervisor turn so the UI does not
             // report an actor as running forever after restart.
             sqlx::query(
-                "UPDATE tasks SET turn_state = 'interrupted', updated_at = ? \
+                "UPDATE sessions SET turn_state = 'interrupted', updated_at = ? \
                  WHERE session_id = ? AND lifecycle = 'active' \
                  AND turn_state IN ('idle', 'queued', 'running')",
             )
@@ -792,7 +817,7 @@ impl RepositoryControl {
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
-            "UPDATE tasks SET turn_state = 'interrupted', updated_at = ? \
+            "UPDATE sessions SET turn_state = 'interrupted', updated_at = ? \
              WHERE session_id = ? AND lifecycle = 'active' \
              AND turn_state IN ('idle', 'queued', 'running')",
         )
@@ -894,7 +919,7 @@ impl RepositoryControl {
     }
 
     /// Open a managed-worktree creation. `first_prompt` is *parked* on the
-    /// operation rather than queued: a task in `awaiting_trust` must reject
+    /// operation rather than queued: a session in `awaiting_trust` must reject
     /// prompts, so the prompt is handed back by [`Self::complete_creation`]
     /// once the operator has actually granted trust.
     pub async fn begin_managed_creation(
@@ -926,7 +951,7 @@ impl RepositoryControl {
 
     /// Managed creations that were interrupted before trust was resolved.
     /// A restart must surface these rather than leave an orphan worktree and
-    /// a task row that can never accept a prompt.
+    /// a session row that can never accept a prompt.
     pub async fn stale_creations(&self) -> Result<Vec<StaleCreation>, RepositorySessionError> {
         let rows = sqlx::query(
             "SELECT operation_id, label, target_workspace, session_id FROM pending_operations \
@@ -973,7 +998,7 @@ impl RepositoryControl {
 
     pub async fn register_session(
         &self,
-        task: NewRepositorySession,
+        session: NewRepositorySession,
         operation_id: Option<u64>,
     ) -> Result<(), RepositorySessionError> {
         let now = Utc::now().to_rfc3339();
@@ -981,32 +1006,33 @@ impl RepositoryControl {
         // The unique index below would also catch this, but as an opaque
         // constraint violation. Attaching a worktree twice is an ordinary
         // operator mistake and deserves a message that names the conflict.
-        if let Some(row) =
-            sqlx::query("SELECT session_id FROM tasks WHERE workspace = ? AND lifecycle = 'active'")
-                .bind(task.workspace.display().to_string())
-                .fetch_optional(&mut *transaction)
-                .await?
+        if let Some(row) = sqlx::query(
+            "SELECT session_id FROM sessions WHERE workspace = ? AND lifecycle = 'active'",
+        )
+        .bind(session.workspace.display().to_string())
+        .fetch_optional(&mut *transaction)
+        .await?
         {
             return Err(RepositorySessionError::WorkspaceInUse {
-                workspace: task.workspace,
+                workspace: session.workspace,
                 session_id: parse_session_id(row.get::<String, _>("session_id"))?,
             });
         }
         sqlx::query(
-            "INSERT INTO tasks \
+            "INSERT INTO sessions \
              (session_id, label, workspace, branch, ownership, lifecycle, turn_state, slot, \
               model_id, route_id, reasoning_effort, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, 'active', 'idle', ?, ?, ?, ?, ?, ?)",
         )
-        .bind(task.session_id.to_string())
-        .bind(task.label)
-        .bind(task.workspace.display().to_string())
-        .bind(task.branch)
-        .bind(task.ownership.as_str())
-        .bind(task.slot.map(i64::from))
-        .bind(task.model_id)
-        .bind(task.route_id)
-        .bind(task.reasoning_effort)
+        .bind(session.session_id.to_string())
+        .bind(session.label)
+        .bind(session.workspace.display().to_string())
+        .bind(session.branch)
+        .bind(session.ownership.as_str())
+        .bind(session.slot.map(i64::from))
+        .bind(session.model_id)
+        .bind(session.route_id)
+        .bind(session.reasoning_effort)
         .bind(&now)
         .bind(&now)
         .execute(&mut *transaction)
@@ -1016,7 +1042,7 @@ impl RepositoryControl {
                 "UPDATE pending_operations SET status = 'awaiting_trust', session_id = ?, \
                  updated_at = ? WHERE operation_id = ?",
             )
-            .bind(task.session_id.to_string())
+            .bind(session.session_id.to_string())
             .bind(&now)
             .bind(operation_id as i64)
             .execute(&mut *transaction)
@@ -1031,7 +1057,7 @@ impl RepositoryControl {
         session_id: SessionId,
     ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
-            "UPDATE tasks SET lifecycle = 'unavailable', slot = NULL, updated_at = ? \
+            "UPDATE sessions SET lifecycle = 'unavailable', slot = NULL, updated_at = ? \
              WHERE session_id = ? AND lifecycle = 'active'",
         )
         .bind(Utc::now().to_rfc3339())
@@ -1046,7 +1072,7 @@ impl RepositoryControl {
 
     pub async fn sessions(&self) -> Result<Vec<RepositorySession>, RepositorySessionError> {
         let rows = sqlx::query(
-            "SELECT * FROM tasks ORDER BY \
+            "SELECT * FROM sessions ORDER BY \
              CASE lifecycle WHEN 'active' THEN 0 WHEN 'unavailable' THEN 1 ELSE 2 END, \
              CASE WHEN slot IS NULL THEN 10 ELSE slot END, updated_at DESC",
         )
@@ -1059,7 +1085,7 @@ impl RepositoryControl {
         &self,
         session_id: SessionId,
     ) -> Result<RepositorySession, RepositorySessionError> {
-        let row = sqlx::query("SELECT * FROM tasks WHERE session_id = ?")
+        let row = sqlx::query("SELECT * FROM sessions WHERE session_id = ?")
             .bind(session_id.to_string())
             .fetch_optional(&self.pool)
             .await?
@@ -1073,7 +1099,7 @@ impl RepositoryControl {
         state: SupervisorTurnState,
     ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
-            "UPDATE tasks SET turn_state = ?, updated_at = ? WHERE session_id = ? \
+            "UPDATE sessions SET turn_state = ?, updated_at = ? WHERE session_id = ? \
              AND lifecycle <> 'archived'",
         )
         .bind(state.as_str())
@@ -1088,13 +1114,13 @@ impl RepositoryControl {
     }
 
     pub async fn archive(&self, session_id: SessionId) -> Result<(), RepositorySessionError> {
-        let task = self.session(session_id).await?;
-        if !task.turn_state.archive_allowed() {
+        let session = self.session(session_id).await?;
+        if !session.turn_state.archive_allowed() {
             return Err(RepositorySessionError::MustStopBeforeArchive(session_id));
         }
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "UPDATE tasks SET lifecycle = 'archived', slot = NULL, archived_at = ?, \
+            "UPDATE sessions SET lifecycle = 'archived', slot = NULL, archived_at = ?, \
              updated_at = ? WHERE session_id = ?",
         )
         .bind(&now)
@@ -1105,7 +1131,7 @@ impl RepositoryControl {
         Ok(())
     }
 
-    /// Record that the managed checkout has been removed. The task row stays
+    /// Record that the managed checkout has been removed. The session row stays
     /// as durable history, but it no longer represents a workspace binding.
     /// Keeping this state distinct from `archived` makes cleanup idempotent
     /// across a process crash between Git removal and the database update.
@@ -1114,7 +1140,7 @@ impl RepositoryControl {
         session_id: SessionId,
     ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
-            "UPDATE tasks SET lifecycle = 'removed', slot = NULL, updated_at = ? \
+            "UPDATE sessions SET lifecycle = 'removed', slot = NULL, updated_at = ? \
              WHERE session_id = ? AND lifecycle IN ('archived', 'removed')",
         )
         .bind(Utc::now().to_rfc3339())
@@ -1155,7 +1181,7 @@ impl RepositoryControl {
         let mut transaction = self.pool.begin().await?;
         if let Some(slot) = slot {
             let occupant = sqlx::query(
-                "SELECT session_id FROM tasks WHERE slot = ? AND lifecycle <> 'archived' \
+                "SELECT session_id FROM sessions WHERE slot = ? AND lifecycle <> 'archived' \
                  AND session_id <> ?",
             )
             .bind(i64::from(slot))
@@ -1170,14 +1196,14 @@ impl RepositoryControl {
                         session_id: occupant,
                     });
                 }
-                sqlx::query("UPDATE tasks SET slot = NULL WHERE session_id = ?")
+                sqlx::query("UPDATE sessions SET slot = NULL WHERE session_id = ?")
                     .bind(occupant.to_string())
                     .execute(&mut *transaction)
                     .await?;
             }
         }
         let result = sqlx::query(
-            "UPDATE tasks SET slot = ?, updated_at = ? WHERE session_id = ? \
+            "UPDATE sessions SET slot = ?, updated_at = ? WHERE session_id = ? \
              AND lifecycle <> 'archived'",
         )
         .bind(slot.map(i64::from))
@@ -1197,20 +1223,21 @@ impl RepositoryControl {
         session_id: SessionId,
         label: &str,
     ) -> Result<(), RepositorySessionError> {
-        let result = sqlx::query("UPDATE tasks SET label = ?, updated_at = ? WHERE session_id = ?")
-            .bind(label)
-            .bind(Utc::now().to_rfc3339())
-            .bind(session_id.to_string())
-            .execute(&self.pool)
-            .await?;
+        let result =
+            sqlx::query("UPDATE sessions SET label = ?, updated_at = ? WHERE session_id = ?")
+                .bind(label)
+                .bind(Utc::now().to_rfc3339())
+                .bind(session_id.to_string())
+                .execute(&self.pool)
+                .await?;
         if result.rows_affected() == 0 {
             return Err(RepositorySessionError::NotFound(session_id));
         }
         Ok(())
     }
 
-    /// Persist the operator's model selection on the task row so a later
-    /// restart can restore it. Archived tasks are immutable.
+    /// Persist the operator's model selection on the session row so a later
+    /// restart can restore it. Archived sessions are immutable.
     pub async fn set_session_model(
         &self,
         session_id: SessionId,
@@ -1219,7 +1246,7 @@ impl RepositoryControl {
         reasoning_effort: Option<&str>,
     ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
-            "UPDATE tasks SET model_id = ?, route_id = ?, reasoning_effort = ?, updated_at = ? \
+            "UPDATE sessions SET model_id = ?, route_id = ?, reasoning_effort = ?, updated_at = ? \
              WHERE session_id = ? AND lifecycle <> 'archived'",
         )
         .bind(model_id)
@@ -1244,22 +1271,22 @@ impl RepositoryControl {
         let mut transaction = self.pool.begin().await?;
         let active_workspaces: Vec<_> = sessions
             .iter()
-            .filter(|task| task.lifecycle == SessionLifecycle::Active)
-            .map(|task| (task.session_id, task.workspace.clone()))
+            .filter(|session| session.lifecycle == SessionLifecycle::Active)
+            .map(|session| (session.session_id, session.workspace.clone()))
             .collect();
-        for task in sessions.into_iter().filter(|task| {
+        for session in sessions.into_iter().filter(|session| {
             matches!(
-                task.lifecycle,
+                session.lifecycle,
                 SessionLifecycle::Active | SessionLifecycle::Unavailable
             )
         }) {
             let valid = worktrees.iter().any(|worktree| {
-                same_path(&worktree.path, &task.workspace)
-                    && worktree.branch.as_deref() == Some(task.branch.as_str())
+                same_path(&worktree.path, &session.workspace)
+                    && worktree.branch.as_deref() == Some(session.branch.as_str())
             });
             let occupied_by_other = valid
                 && active_workspaces.iter().any(|(session_id, workspace)| {
-                    *session_id != task.session_id && same_path(workspace, &task.workspace)
+                    *session_id != session.session_id && same_path(workspace, &session.workspace)
                 });
             let lifecycle = if valid && !occupied_by_other {
                 "active"
@@ -1267,19 +1294,37 @@ impl RepositoryControl {
                 "unavailable"
             };
             sqlx::query(
-                "UPDATE tasks SET lifecycle = ?, slot = CASE WHEN ? = 'active' THEN slot ELSE NULL END, \
+                "UPDATE sessions SET lifecycle = ?, slot = CASE WHEN ? = 'active' THEN slot ELSE NULL END, \
                  updated_at = ? WHERE session_id = ?",
             )
                 .bind(lifecycle)
                 .bind(lifecycle)
                 .bind(&now)
-                .bind(task.session_id.to_string())
+                .bind(session.session_id.to_string())
                 .execute(&mut *transaction)
                 .await?;
         }
         transaction.commit().await?;
         Ok(())
     }
+}
+
+/// The control database was named `tasks.db` before the session rename. Adopt
+/// an existing file in place so a repository keeps its roster.
+fn adopt_legacy_control_file(control_dir: &Path) -> Result<(), std::io::Error> {
+    let current = control_dir.join("sessions.db");
+    let legacy = control_dir.join("tasks.db");
+    if current.exists() || !legacy.exists() {
+        return Ok(());
+    }
+    std::fs::rename(&legacy, &current)?;
+    for suffix in ["-wal", "-shm"] {
+        let from = control_dir.join(format!("tasks.db{suffix}"));
+        if from.exists() {
+            let _ = std::fs::rename(from, control_dir.join(format!("sessions.db{suffix}")));
+        }
+    }
+    Ok(())
 }
 
 /// Lease-conflict detail an operator can act on: which process, since when,
@@ -1348,7 +1393,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn new_task(workspace: &Path, label: &str, slot: Option<u8>) -> NewRepositorySession {
+    fn new_session(workspace: &Path, label: &str, slot: Option<u8>) -> NewRepositorySession {
         NewRepositorySession {
             session_id: SessionId::new_v4(),
             label: label.into(),
@@ -1363,25 +1408,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_active_task_per_worktree_and_slot() {
+    async fn one_active_session_per_worktree_and_slot() {
         let dir = TempDir::new().unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let first = new_task(&dir.path().join("a"), "a", Some(1));
+        let first = new_session(&dir.path().join("a"), "a", Some(1));
         let first_id = first.session_id;
         control.register_session(first, None).await.unwrap();
 
-        let same_workspace = new_task(&dir.path().join("a"), "b", Some(2));
+        let same_workspace = new_session(&dir.path().join("a"), "b", Some(2));
         assert!(control
             .register_session(same_workspace, None)
             .await
             .is_err());
-        let same_slot = new_task(&dir.path().join("b"), "b", Some(1));
+        let same_slot = new_session(&dir.path().join("b"), "b", Some(1));
         assert!(control.register_session(same_slot, None).await.is_err());
 
         control.archive(first_id).await.unwrap();
         control
             .register_session(
-                new_task(&dir.path().join("a"), "replacement", Some(1)),
+                new_session(&dir.path().join("a"), "replacement", Some(1)),
                 None,
             )
             .await
@@ -1394,16 +1439,16 @@ mod tests {
         let primary_id;
         {
             let control = RepositoryControl::open(dir.path()).await.unwrap();
-            let mut primary = new_task(&dir.path().join("primary"), "primary", None);
+            let mut primary = new_session(&dir.path().join("primary"), "primary", None);
             primary.ownership = WorktreeOwnership::Primary;
             primary_id = primary.session_id;
             control.register_session(primary, None).await.unwrap();
             for index in 0..6 {
                 control
                     .register_session(
-                        new_task(
-                            &dir.path().join(format!("task-{index}")),
-                            &format!("task-{index}"),
+                        new_session(
+                            &dir.path().join(format!("session-{index}")),
+                            &format!("session-{index}"),
                             None,
                         ),
                         None,
@@ -1443,7 +1488,7 @@ mod tests {
             for index in 0..2 {
                 control
                     .register_session(
-                        new_task(
+                        new_session(
                             &dir.path().join(format!("managed-{index}")),
                             &format!("managed-{index}"),
                             None,
@@ -1465,18 +1510,18 @@ mod tests {
             .collect();
         assert_eq!(slots, vec![Some(2), Some(3)]);
 
-        let mut primary = new_task(&dir.path().join("primary"), "primary", Some(1));
+        let mut primary = new_session(&dir.path().join("primary"), "primary", Some(1));
         primary.ownership = WorktreeOwnership::Primary;
         control.register_session(primary, None).await.unwrap();
     }
 
     #[tokio::test]
-    async fn unavailable_task_does_not_block_a_replacement_or_reclaim_the_path() {
+    async fn unavailable_session_does_not_block_a_replacement_or_reclaim_the_path() {
         let dir = TempDir::new().unwrap();
-        let workspace = dir.path().join("task");
+        let workspace = dir.path().join("session");
         std::fs::create_dir_all(&workspace).unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let first = new_task(&workspace, "first", Some(1));
+        let first = new_session(&workspace, "first", Some(1));
         let first_id = first.session_id;
         control.register_session(first, None).await.unwrap();
 
@@ -1487,7 +1532,7 @@ mod tests {
         );
         assert_eq!(control.session(first_id).await.unwrap().slot, None);
 
-        let replacement = new_task(&workspace, "replacement", Some(1));
+        let replacement = new_session(&workspace, "replacement", Some(1));
         let replacement_id = replacement.session_id;
         control.register_session(replacement, None).await.unwrap();
         control
@@ -1511,13 +1556,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forgetting_unavailable_primary_preserves_managed_tasks() {
+    async fn forgetting_unavailable_primary_preserves_managed_sessions() {
         let dir = TempDir::new().unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let mut primary = new_task(&dir.path().join("primary"), "primary", Some(1));
+        let mut primary = new_session(&dir.path().join("primary"), "primary", Some(1));
         primary.ownership = WorktreeOwnership::Primary;
         let primary_id = primary.session_id;
-        let managed = new_task(&dir.path().join("managed"), "managed", Some(2));
+        let managed = new_session(&dir.path().join("managed"), "managed", Some(2));
         let managed_id = managed.session_id;
         control.register_session(primary, None).await.unwrap();
         control.register_session(managed, None).await.unwrap();
@@ -1545,12 +1590,12 @@ mod tests {
     #[tokio::test]
     async fn marking_cleanup_removed_is_idempotent_and_releases_the_binding() {
         let dir = TempDir::new().unwrap();
-        let workspace = dir.path().join("task");
+        let workspace = dir.path().join("session");
         std::fs::create_dir_all(&workspace).unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let task = new_task(&workspace, "cleanup", Some(1));
-        let session_id = task.session_id;
-        control.register_session(task, None).await.unwrap();
+        let session = new_session(&workspace, "cleanup", Some(1));
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
         control.archive(session_id).await.unwrap();
 
         control.mark_worktree_removed(session_id).await.unwrap();
@@ -1562,12 +1607,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn running_waiting_and_queued_tasks_cannot_archive() {
+    async fn running_waiting_and_queued_sessions_cannot_archive() {
         let dir = TempDir::new().unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let task = new_task(&dir.path().join("a"), "a", None);
-        let session_id = task.session_id;
-        control.register_session(task, None).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", None);
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
         for state in [
             SupervisorTurnState::Queued,
             SupervisorTurnState::Running,
@@ -1590,9 +1635,9 @@ mod tests {
     async fn interrupted_prompt_claims_are_visible_and_do_not_replay() {
         let dir = TempDir::new().unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let task = new_task(&dir.path().join("a"), "a", None);
-        let session_id = task.session_id;
-        control.register_session(task, None).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", None);
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
         let interrupted_id = control
             .enqueue_prompt(session_id, "may have run")
             .await
@@ -1634,9 +1679,9 @@ mod tests {
     async fn a_failed_claim_is_marked_interrupted_without_overwriting_completion() {
         let dir = TempDir::new().unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let task = new_task(&dir.path().join("a"), "a", None);
-        let session_id = task.session_id;
-        control.register_session(task, None).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", None);
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
         let queue_id = control
             .enqueue_prompt(session_id, "ambiguous")
             .await
@@ -1666,8 +1711,8 @@ mod tests {
     async fn pin_conflicts_require_an_explicit_swap() {
         let dir = TempDir::new().unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let first = new_task(&dir.path().join("a"), "a", Some(1));
-        let second = new_task(&dir.path().join("b"), "b", Some(2));
+        let first = new_session(&dir.path().join("a"), "a", Some(1));
+        let second = new_session(&dir.path().join("b"), "b", Some(2));
         let first_id = first.session_id;
         let second_id = second.session_id;
         control.register_session(first, None).await.unwrap();
@@ -1684,7 +1729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_creation_and_task_registration_are_recoverable() {
+    async fn pending_creation_and_session_registration_are_recoverable() {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("source");
         let target = dir.path().join("target");
@@ -1697,9 +1742,9 @@ mod tests {
             .mark_worktree_created(pending.operation_id, &target, "forge/parser-1")
             .await
             .unwrap();
-        let task = new_task(&target, "parser", None);
+        let session = new_session(&target, "parser", None);
         control
-            .register_session(task, Some(pending.operation_id))
+            .register_session(session, Some(pending.operation_id))
             .await
             .unwrap();
 
@@ -1755,7 +1800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archived_and_untrusted_tasks_reject_prompt_queueing() {
+    async fn archived_and_untrusted_sessions_reject_prompt_queueing() {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("source");
         let target = dir.path().join("target");
@@ -1768,10 +1813,10 @@ mod tests {
             .mark_worktree_created(pending.operation_id, &target, "forge/parser-1")
             .await
             .unwrap();
-        let task = new_task(&target, "parser", None);
-        let session_id = task.session_id;
+        let session = new_session(&target, "parser", None);
+        let session_id = session.session_id;
         control
-            .register_session(task, Some(pending.operation_id))
+            .register_session(session, Some(pending.operation_id))
             .await
             .unwrap();
         assert!(matches!(
@@ -1808,14 +1853,14 @@ mod tests {
             .mark_worktree_created(pending.operation_id, &target, "forge/parser-1")
             .await
             .unwrap();
-        let task = new_task(&target, "parser", None);
-        let session_id = task.session_id;
+        let session = new_session(&target, "parser", None);
+        let session_id = session.session_id;
         control
-            .register_session(task, Some(pending.operation_id))
+            .register_session(session, Some(pending.operation_id))
             .await
             .unwrap();
 
-        // Nothing is queued while the task awaits trust.
+        // Nothing is queued while the session awaits trust.
         assert!(control.queued_prompts(session_id).await.unwrap().is_empty());
         assert!(matches!(
             control.enqueue_prompt(session_id, "rewrite the lexer").await,
@@ -1858,10 +1903,10 @@ mod tests {
             .mark_worktree_created(pending.operation_id, &target, "forge/parser-1")
             .await
             .unwrap();
-        let task = new_task(&target, "parser", None);
-        let session_id = task.session_id;
+        let session = new_session(&target, "parser", None);
+        let session_id = session.session_id;
         control
-            .register_session(task, Some(pending.operation_id))
+            .register_session(session, Some(pending.operation_id))
             .await
             .unwrap();
 
@@ -1883,15 +1928,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attaching_the_same_worktree_twice_names_the_live_task() {
+    async fn attaching_the_same_worktree_twice_names_the_live_session() {
         let dir = TempDir::new().unwrap();
         let workspace = dir.path().join("linked");
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let first = new_task(&workspace, "linked", None);
+        let first = new_session(&workspace, "linked", None);
         let first_id = first.session_id;
         control.register_session(first, None).await.unwrap();
 
-        let duplicate = new_task(&workspace, "linked-again", None);
+        let duplicate = new_session(&workspace, "linked-again", None);
         assert!(matches!(
             control.register_session(duplicate, None).await,
             Err(RepositorySessionError::WorkspaceInUse { session_id, .. }) if session_id == first_id
@@ -1899,12 +1944,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_set_model_write_round_trips_on_the_task_row() {
+    async fn a_set_model_write_round_trips_on_the_session_row() {
         let dir = TempDir::new().unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let task = new_task(&dir.path().join("a"), "a", None);
-        let session_id = task.session_id;
-        control.register_session(task, None).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", None);
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
 
         control
             .set_session_model(session_id, "claude-sonnet-4-6", "native-v2", Some("high"))
@@ -1945,6 +1990,56 @@ mod tests {
         assert_eq!(pending.first_prompt.as_deref(), Some("go"));
     }
 
+    #[tokio::test]
+    async fn a_legacy_tasks_database_migrates_to_sessions_in_place() {
+        let dir = TempDir::new().unwrap();
+        let session_id = SessionId::new_v4();
+        let legacy_path = dir.path().join("tasks.db");
+        {
+            let options = SqliteConnectOptions::new()
+                .filename(&legacy_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE tasks (
+                    session_id TEXT PRIMARY KEY, label TEXT NOT NULL, workspace TEXT NOT NULL,
+                    branch TEXT NOT NULL, ownership TEXT NOT NULL, lifecycle TEXT NOT NULL,
+                    turn_state TEXT NOT NULL, slot INTEGER, model_id TEXT NOT NULL,
+                    route_id TEXT NOT NULL, reasoning_effort TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL, archived_at TEXT)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let now = Utc::now().to_rfc3339();
+            sqlx::query(
+                "INSERT INTO tasks (session_id, label, workspace, branch, ownership, lifecycle, \
+                 turn_state, slot, model_id, route_id, created_at, updated_at) \
+                 VALUES (?, 'legacy', ?, 'forge/legacy', 'managed', 'active', 'idle', 1, \
+                 'mock', 'native', ?, ?)",
+            )
+            .bind(session_id.to_string())
+            .bind(dir.path().join("legacy").display().to_string())
+            .bind(&now)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        assert!(!legacy_path.exists(), "legacy tasks.db should be adopted");
+        assert!(dir.path().join("sessions.db").exists());
+        let session = control.session(session_id).await.unwrap();
+        assert_eq!(session.label, "legacy");
+        assert_eq!(session.lifecycle, SessionLifecycle::Active);
+    }
+
     #[test]
     fn a_lease_conflict_names_the_owning_process() {
         let dir = TempDir::new().unwrap();
@@ -1964,13 +2059,13 @@ mod tests {
     #[tokio::test]
     async fn reconciliation_marks_branch_or_path_drift_unavailable_and_recovers() {
         let dir = TempDir::new().unwrap();
-        let workspace = dir.path().join("task");
+        let workspace = dir.path().join("session");
         std::fs::create_dir_all(&workspace).unwrap();
         let control = RepositoryControl::open(dir.path()).await.unwrap();
-        let task = new_task(&workspace, "parser", None);
-        let session_id = task.session_id;
-        let branch = task.branch.clone();
-        control.register_session(task, None).await.unwrap();
+        let session = new_session(&workspace, "parser", None);
+        let session_id = session.session_id;
+        let branch = session.branch.clone();
+        control.register_session(session, None).await.unwrap();
 
         control.reconcile_worktrees(&[]).await.unwrap();
         assert_eq!(
