@@ -264,13 +264,12 @@ impl TuiApp {
             SelectedRuntime::Direct => self
                 .session_runtime
                 .as_ref()
-                .expect("direct runtime must exist in direct mode")
-                .token_usage_report(),
+                .map(|session| session.token_usage_report())
+                .unwrap_or_default(),
             SelectedRuntime::Supervised(_) => self
                 .selected_details()
-                .expect("supervised runtime details must exist for an active session")
-                .token_usage_report
-                .clone(),
+                .map(|details| details.token_usage_report.clone())
+                .unwrap_or_default(),
         }
     }
 
