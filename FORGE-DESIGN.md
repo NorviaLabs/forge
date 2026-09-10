@@ -511,7 +511,10 @@ after the checkbox. The heading reports completed tasks, and the pinned
 summary retains the count and current task when the checklist scrolls away.
 Completion reflects the agent's reported plan status; tool evidence remains
 below each step. Nesting stays flat: deeper levels need a transcript schema
-change, so the renderer locks one level rather than inventing hierarchy.
+change, so the renderer locks one level rather than inventing hierarchy. Only
+the newest checklist renders: a superseded revision is removed, never recorded
+as a second `Plan updated · N of M done` line beside it, so the checklist is
+the single plan surface.
 
 ### 9.5 Composer
 
