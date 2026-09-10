@@ -1499,3 +1499,44 @@ async fn a_reused_secret_never_reaches_the_transcript() {
         "activity log must not carry token material"
     );
 }
+
+/// The status chrome must describe the *selected session's* route, not the
+/// startup runtime config or the global connect profile — otherwise switching
+/// sessions leaves the footer/status naming the wrong model and vendor.
+#[tokio::test]
+async fn status_chrome_follows_the_selected_sessions_route() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.model_label = "mock".into();
+    app.runtime.provider = "mock".into();
+    app.connect.profile = None;
+
+    app.session_runtime.set_active_model("xai/grok-4");
+    app.session_runtime.set_active_route_id("xai-api");
+
+    let chrome = app.refresh_status_model();
+    assert_eq!(chrome.model, "xai/grok-4");
+    assert_eq!(chrome.provider, "xai");
+    assert_eq!(chrome.connect_profile.as_deref(), Some("xai"));
+    assert_eq!(chrome.vendor_label.as_deref(), Some("xAI"));
+    assert_eq!(chrome.route_label.as_deref(), Some("API"));
+}
+
+/// A session that has not recorded its own identity falls back to the runtime
+/// config rather than borrowing a route it never selected.
+#[tokio::test]
+async fn status_chrome_falls_back_without_a_session_identity() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.model_label = "mock".into();
+    app.runtime.provider = "mock".into();
+    app.connect.profile = None;
+    if let Some(session) = app.session_runtime.as_mut() {
+        session.set_active_model(String::new());
+        session.set_active_route_id(String::new());
+    }
+
+    let chrome = app.refresh_status_model();
+    assert_eq!(chrome.model, "mock");
+    assert_eq!(chrome.provider, "mock");
+    assert!(chrome.connect_profile.is_none());
+    assert!(chrome.vendor_label.is_none());
+}
