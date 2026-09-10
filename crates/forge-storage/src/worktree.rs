@@ -26,6 +26,8 @@ use uuid::Uuid;
 pub enum WorktreeError {
     #[error("git worktree add failed: {0}")]
     AddFailed(String),
+    #[error("could not create branch `{branch}`: {detail}")]
+    BranchCreateFailed { branch: String, detail: String },
     #[error("git worktree remove failed: {0}")]
     RemoveFailed(String),
     #[error("git worktree list failed: {0}")]
@@ -104,6 +106,115 @@ pub fn create_session_worktree(
     Ok(SubagentWorktree { path, branch })
 }
 
+/// One session's isolated worktree created without a branch (detached HEAD).
+///
+/// The branch is materialized later, on the first filesystem change, so a
+/// read-only/research session never creates a ref. `base_sha` is the commit
+/// the worktree was detached at — the session's identity while branchless.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetachedWorktree {
+    pub path: PathBuf,
+    pub base_sha: String,
+}
+
+/// Create a managed session worktree checked out at a detached `HEAD` from
+/// `source_worktree`'s committed state. No branch is created.
+pub fn create_detached_session_worktree(
+    source_worktree: &Path,
+    base_dir: &Path,
+) -> Result<DetachedWorktree, WorktreeError> {
+    std::fs::create_dir_all(base_dir)?;
+    let name = format!("session-{}", Uuid::new_v4());
+    let path = base_dir.join(&name);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(source_worktree)
+        .args(["worktree", "add", "-q", "--detach"])
+        .arg(&path)
+        .arg("HEAD")
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::AddFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    let base_sha = rev_parse(&path, "HEAD")?;
+    Ok(DetachedWorktree { path, base_sha })
+}
+
+/// True when the worktree has any staged, unstaged or untracked change
+/// relative to its `HEAD`. Git-ignored paths (build output) and Forge's own
+/// excluded runtime subtree do not count.
+pub fn worktree_is_dirty(worktree_path: &Path) -> Result<bool, WorktreeError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["status", "--porcelain"])
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::ListFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+/// The commit `HEAD` currently points at (branch or detached).
+pub fn worktree_head(worktree_path: &Path) -> Result<String, WorktreeError> {
+    rev_parse(worktree_path, "HEAD")
+}
+
+/// Create `branch` at the worktree's current `HEAD` and switch to it,
+/// carrying any uncommitted changes onto the new branch.
+pub fn materialize_branch(worktree_path: &Path, branch: &str) -> Result<(), WorktreeError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["switch", "-c", branch])
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::BranchCreateFailed {
+            branch: branch.to_string(),
+            detail: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Whether `refs/heads/<branch>` already exists in the repository.
+pub fn branch_exists(repo_root: &Path, branch: &str) -> Result<bool, WorktreeError> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .status()?;
+    Ok(status.success())
+}
+
+/// A safe `forge/<slug>` segment derived from a session label.
+pub fn session_branch_slug(label: &str) -> String {
+    sanitize_label(label)
+}
+
+fn rev_parse(worktree_path: &Path, revision: &str) -> Result<String, WorktreeError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["rev-parse", revision])
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::ListFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Reduce arbitrary (possibly model-authored) text to a safe path component
 /// and git ref segment: ASCII alphanumerics/`-`/`_` only, no leading/
 /// trailing `-`, capped length. Without this, a label containing `../` or
@@ -133,7 +244,7 @@ fn sanitize_label(label: &str) -> String {
 /// cleanup helper above, this never passes `--force`; user-session cleanup must
 /// refuse uncommitted work rather than discarding it.
 pub fn remove_clean_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), WorktreeError> {
-    remove_clean_worktree_inner(repo_root, worktree_path, None)
+    remove_clean_worktree_inner(repo_root, worktree_path, ExpectedBinding::Any)
 }
 
 /// Remove a clean worktree only if Git still has the expected branch checked
@@ -145,17 +256,35 @@ pub fn remove_clean_worktree_if_branch(
     worktree_path: &Path,
     expected_branch: &str,
 ) -> Result<(), WorktreeError> {
-    remove_clean_worktree_inner(repo_root, worktree_path, Some(expected_branch))
+    remove_clean_worktree_inner(
+        repo_root,
+        worktree_path,
+        ExpectedBinding::Branch(expected_branch),
+    )
+}
+
+/// Remove a clean worktree only if it is still detached (a branchless managed
+/// session whose branch has not been materialized yet).
+pub fn remove_clean_worktree_if_detached(
+    repo_root: &Path,
+    worktree_path: &Path,
+) -> Result<(), WorktreeError> {
+    remove_clean_worktree_inner(repo_root, worktree_path, ExpectedBinding::Detached)
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedBinding<'a> {
+    Any,
+    Branch(&'a str),
+    Detached,
 }
 
 fn remove_clean_worktree_inner(
     repo_root: &Path,
     worktree_path: &Path,
-    expected_branch: Option<&str>,
+    expected: ExpectedBinding<'_>,
 ) -> Result<(), WorktreeError> {
-    if let Some(expected_branch) = expected_branch {
-        verify_worktree_branch(repo_root, worktree_path, expected_branch)?;
-    }
+    verify_worktree_binding(repo_root, worktree_path, expected)?;
     let status = Command::new("git")
         .arg("-C")
         .arg(worktree_path)
@@ -170,12 +299,10 @@ fn remove_clean_worktree_inner(
     if !dirty.trim().is_empty() {
         return Err(WorktreeError::Dirty(dirty.into_owned()));
     }
-    if let Some(expected_branch) = expected_branch {
-        // Recheck after reading the working tree. This closes the practical
-        // cleanup race where the path is rebound between the first ownership
-        // check and the destructive `git worktree remove` call.
-        verify_worktree_branch(repo_root, worktree_path, expected_branch)?;
-    }
+    // Recheck after reading the working tree. This closes the practical
+    // cleanup race where the path is rebound between the first ownership
+    // check and the destructive `git worktree remove` call.
+    verify_worktree_binding(repo_root, worktree_path, expected)?;
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -190,21 +317,34 @@ fn remove_clean_worktree_inner(
     Ok(())
 }
 
-fn verify_worktree_branch(
+fn verify_worktree_binding(
     repo_root: &Path,
     worktree_path: &Path,
-    expected_branch: &str,
+    expected: ExpectedBinding<'_>,
 ) -> Result<(), WorktreeError> {
+    if matches!(expected, ExpectedBinding::Any) {
+        return Ok(());
+    }
     let record = list_worktree_records(repo_root)?
         .into_iter()
         .find(|record| same_path(&record.path, worktree_path))
         .ok_or_else(|| WorktreeError::NotRegistered {
             path: worktree_path.to_path_buf(),
         })?;
-    if record.branch.as_deref() != Some(expected_branch) {
+    let ok = match expected {
+        ExpectedBinding::Any => true,
+        ExpectedBinding::Branch(branch) => record.branch.as_deref() == Some(branch),
+        ExpectedBinding::Detached => record.branch.is_none(),
+    };
+    if !ok {
+        let expected = match expected {
+            ExpectedBinding::Branch(branch) => branch.to_string(),
+            ExpectedBinding::Detached => "(detached)".to_string(),
+            ExpectedBinding::Any => unreachable!(),
+        };
         return Err(WorktreeError::BranchMismatch {
             path: worktree_path.to_path_buf(),
-            expected: expected_branch.to_string(),
+            expected,
             actual: record.branch,
         });
     }
@@ -417,6 +557,68 @@ mod tests {
         let b = create_worktree(repo.path(), base.path(), 2, "test-fixer").unwrap();
         assert_ne!(a.path, b.path);
         assert_ne!(a.branch, b.branch);
+    }
+
+    #[test]
+    fn detached_session_worktree_starts_without_a_branch() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+
+        let wt = create_detached_session_worktree(repo.path(), base.path()).unwrap();
+        assert!(wt.path.exists());
+        let record = list_worktree_records(repo.path())
+            .unwrap()
+            .into_iter()
+            .find(|record| same_path(&record.path, &wt.path))
+            .expect("registered worktree");
+        assert_eq!(record.branch, None, "detached start must have no branch");
+        assert_eq!(record.head.as_deref(), Some(wt.base_sha.as_str()));
+        assert!(!worktree_is_dirty(&wt.path).unwrap());
+        assert_eq!(worktree_head(&wt.path).unwrap(), wt.base_sha);
+        assert!(!branch_exists(repo.path(), "forge/never-created").unwrap());
+    }
+
+    #[test]
+    fn materialize_branch_carries_uncommitted_changes_onto_the_new_branch() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+        let wt = create_detached_session_worktree(repo.path(), base.path()).unwrap();
+
+        std::fs::write(wt.path.join("changed.txt"), "work in progress").unwrap();
+        assert!(worktree_is_dirty(&wt.path).unwrap());
+
+        materialize_branch(&wt.path, "forge/first-change").unwrap();
+        assert!(branch_exists(repo.path(), "forge/first-change").unwrap());
+        let record = list_worktree_records(repo.path())
+            .unwrap()
+            .into_iter()
+            .find(|record| same_path(&record.path, &wt.path))
+            .unwrap();
+        assert_eq!(record.branch.as_deref(), Some("forge/first-change"));
+        // The uncommitted change rode onto the branch.
+        assert!(wt.path.join("changed.txt").exists());
+        assert!(worktree_is_dirty(&wt.path).unwrap());
+    }
+
+    #[test]
+    fn detached_cleanup_refuses_a_worktree_that_has_a_branch() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let base = TempDir::new().unwrap();
+        let wt = create_detached_session_worktree(repo.path(), base.path()).unwrap();
+
+        // Still detached: removable.
+        remove_clean_worktree_if_detached(repo.path(), &wt.path).unwrap();
+        assert!(!wt.path.exists());
+
+        // Rebound to a branch: the detached ownership check must refuse.
+        let wt = create_detached_session_worktree(repo.path(), base.path()).unwrap();
+        materialize_branch(&wt.path, "forge/materialized").unwrap();
+        let error = remove_clean_worktree_if_detached(repo.path(), &wt.path).unwrap_err();
+        assert!(matches!(error, WorktreeError::BranchMismatch { .. }));
+        assert!(wt.path.exists());
     }
 
     #[test]

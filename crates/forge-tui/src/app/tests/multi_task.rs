@@ -813,11 +813,12 @@ async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
         .unwrap();
 
     // One keypress: no form, no modal. The task is registered unnamed and
-    // prompt-less, with UUID4-backed session branch/path naming.
+    // prompt-less. Managed sessions start detached — the branch is created on
+    // the first filesystem change, so a research session adds no ref.
     let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
     assert!(
-        task.branch.starts_with("forge/session-"),
-        "branch: {}",
+        task.branch.is_empty(),
+        "a new task must start branchless: {}",
         task.branch
     );
     assert!(

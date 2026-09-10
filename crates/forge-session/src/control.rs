@@ -125,6 +125,10 @@ pub struct RepositorySession {
     pub label: String,
     pub workspace: PathBuf,
     pub branch: String,
+    /// Commit the worktree was detached at while the session is branchless
+    /// (the branch is materialized on the first filesystem change). `None`
+    /// once a branch exists.
+    pub base_sha: Option<String>,
     pub ownership: WorktreeOwnership,
     pub lifecycle: SessionLifecycle,
     pub turn_state: SupervisorTurnState,
@@ -335,6 +339,7 @@ impl RepositoryControl {
                 label TEXT NOT NULL,
                 workspace TEXT NOT NULL,
                 branch TEXT NOT NULL,
+                base_sha TEXT,
                 ownership TEXT NOT NULL,
                 lifecycle TEXT NOT NULL,
                 turn_state TEXT NOT NULL,
@@ -479,6 +484,18 @@ impl RepositoryControl {
             .collect();
         if !existing.iter().any(|name| name == "first_prompt") {
             sqlx::query("ALTER TABLE pending_operations ADD COLUMN first_prompt TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        let session_columns: Vec<String> = sqlx::query("PRAGMA table_info(sessions)")
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+        if !session_columns.iter().any(|name| name == "base_sha") {
+            // Commit a branchless (detached) managed session was started at.
+            sqlx::query("ALTER TABLE sessions ADD COLUMN base_sha TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1113,6 +1130,47 @@ impl RepositoryControl {
         Ok(())
     }
 
+    /// Record the commit a branchless managed session's worktree is detached
+    /// at. Used as the session's identity until its branch is materialized.
+    pub async fn set_base_sha(
+        &self,
+        session_id: SessionId,
+        base_sha: &str,
+    ) -> Result<(), RepositorySessionError> {
+        let result =
+            sqlx::query("UPDATE sessions SET base_sha = ?, updated_at = ? WHERE session_id = ?")
+                .bind(base_sha)
+                .bind(Utc::now().to_rfc3339())
+                .bind(session_id.to_string())
+                .execute(&self.pool)
+                .await?;
+        if result.rows_affected() == 0 {
+            return Err(RepositorySessionError::NotFound(session_id));
+        }
+        Ok(())
+    }
+
+    /// Materialize a branch for a previously-detached managed session: record
+    /// the branch name and clear the detached base identity in one update.
+    pub async fn set_session_branch(
+        &self,
+        session_id: SessionId,
+        branch: &str,
+    ) -> Result<(), RepositorySessionError> {
+        let result = sqlx::query(
+            "UPDATE sessions SET branch = ?, base_sha = NULL, updated_at = ? WHERE session_id = ?",
+        )
+        .bind(branch)
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(RepositorySessionError::NotFound(session_id));
+        }
+        Ok(())
+    }
+
     pub async fn archive(&self, session_id: SessionId) -> Result<(), RepositorySessionError> {
         let session = self.session(session_id).await?;
         if !session.turn_state.archive_allowed() {
@@ -1281,8 +1339,17 @@ impl RepositoryControl {
             )
         }) {
             let valid = worktrees.iter().any(|worktree| {
-                same_path(&worktree.path, &session.workspace)
-                    && worktree.branch.as_deref() == Some(session.branch.as_str())
+                if !same_path(&worktree.path, &session.workspace) {
+                    return false;
+                }
+                if session.branch.is_empty() {
+                    // Branchless (detached) managed session: valid while its
+                    // worktree is still detached. The branch is materialized on
+                    // the first filesystem change, after which `branch` is set.
+                    worktree.branch.is_none()
+                } else {
+                    worktree.branch.as_deref() == Some(session.branch.as_str())
+                }
             });
             let occupied_by_other = valid
                 && active_workspaces.iter().any(|(session_id, workspace)| {
@@ -1370,6 +1437,7 @@ fn parse_session(
         label: row.get("label"),
         workspace: PathBuf::from(row.get::<String, _>("workspace")),
         branch: row.get("branch"),
+        base_sha: row.get("base_sha"),
         ownership: WorktreeOwnership::parse(row.get::<String, _>("ownership").as_str())?,
         lifecycle: SessionLifecycle::parse(row.get::<String, _>("lifecycle").as_str())?,
         turn_state: SupervisorTurnState::parse(row.get::<String, _>("turn_state").as_str())?,

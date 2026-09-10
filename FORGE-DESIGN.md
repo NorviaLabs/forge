@@ -620,3 +620,23 @@ These older assumptions are wrong for the shipped architecture and must not be r
 - The shell is not organized around a permanent shortcut manual.
 - The transcript does not need a box for every message.
 - The application must not imply that terminal typography can be configured from inside Forge.
+
+## 12. Session Worktrees
+
+Managed (new) sessions run in their own worktree per session, created from the
+initiating worktree's committed `HEAD`.
+
+- A managed session **starts detached**: no branch is created at creation.
+- On the **first filesystem change** relative to `HEAD`, Forge creates
+  `forge/<label-slug>` in that worktree and switches to it. The trigger is
+  Git's view of the working tree (staged, unstaged and untracked, gitignore-
+  aware) — not which tool ran — so shell redirects, formatters and MCP writes
+  are caught equally.
+- A read-only / research session therefore adds **no ref**. The branch is named
+  from the session label (disambiguated with the short session id on collision),
+  never a random UUID.
+- While branchless, the session's identity is its worktree path plus the base
+  commit; startup reconciliation keeps it active. Cleanup verifies the worktree
+  is still the session's — by branch once branched, or still-detached before.
+- The primary session and attached worktrees are unchanged.
+
