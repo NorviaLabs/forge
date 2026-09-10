@@ -194,10 +194,27 @@ impl TuiApp {
                                 saved.busy_state.start(BusyPhase::Model);
                             }
                         } else {
+                            // A turn that finishes while unselected still earns
+                            // its closing summary, recorded into the saved view.
+                            if snapshot.task.turn_state
+                                == forge_session::SupervisorTurnState::Completed
+                            {
+                                if let Some((ordinal, summary)) =
+                                    super::turn::supervised_turn_summary(&saved.timing, &snapshot)
+                                {
+                                    super::turn::upsert_turn_summary(
+                                        &mut saved.turn_summaries,
+                                        snapshot.task.session_id.to_string(),
+                                        ordinal,
+                                        summary,
+                                    );
+                                }
+                            }
                             saved.busy_state.stop();
                             saved.stream.clear_preview();
                             saved.stream.thinking.clear();
                             saved.cancellation.take_requested();
+                            saved.timing.turn_started = None;
                         }
                     }
                     if let Some(task) = self
@@ -324,13 +341,27 @@ impl TuiApp {
         match event {
             forge_types::ModelStreamEvent::TextDelta { text } => {
                 self.stream.preview.push_str(text);
+                // Feed the same turn counters the direct path keeps, so the
+                // closing summary has volume for an actor-owned session too.
+                self.timing.chars += text.chars().count();
                 self.busy_state.start(crate::widgets::BusyPhase::Model);
             }
             forge_types::ModelStreamEvent::ThinkingDelta { text } => {
+                if !self.thinking_enabled {
+                    return;
+                }
+                if self.timing.thinking_started.is_none() {
+                    self.timing.thinking_started = self
+                        .timing
+                        .started
+                        .or_else(|| Some(std::time::Instant::now()));
+                }
+                self.timing.chars += text.chars().count();
                 self.stream.thinking.push_str(text);
                 self.busy_state.start(crate::widgets::BusyPhase::Model);
             }
             forge_types::ModelStreamEvent::ToolCallStart { name, .. } => {
+                self.timing.tools += 1;
                 self.busy_state
                     .set_phase(crate::widgets::BusyPhase::Tool { name: name.clone() });
             }
@@ -348,12 +379,26 @@ impl TuiApp {
                 self.stream.thinking.clear();
                 self.busy_state.start(BusyPhase::Model);
                 // Supervised turns are driven by supervisor events, not the
-                // local submit path, so the turn clock must be anchored here or
-                // the live line falls back to `timing.started` (app uptime).
+                // local submit path, so the turn clock and the per-turn
+                // counters must be anchored here or the live line falls back to
+                // `timing.started` (app uptime) and the closing summary has no
+                // volume.
                 self.timing.started = Some(std::time::Instant::now());
                 self.timing.turn_started = Some(std::time::Instant::now());
+                self.timing.completion_tokens_at_start = snapshot
+                    .details
+                    .as_ref()
+                    .map(|details| details.token_usage_report.api.completion_tokens)
+                    .unwrap_or(0);
+                self.timing.chars = 0;
+                self.timing.tools = 0;
             }
         } else {
+            // A completed supervised turn closes with the same summary line a
+            // direct turn gets; record it before the clock is cleared.
+            if snapshot.task.turn_state == forge_session::SupervisorTurnState::Completed {
+                self.record_supervised_turn_summary(snapshot);
+            }
             self.busy_state.stop();
             self.stream.clear_preview();
             self.stream.thinking.clear();
