@@ -124,6 +124,11 @@ pub enum SupervisorCommand {
         current_session_id: SessionId,
         session_id: SessionId,
     },
+    /// Stop managing one session without archiving its durable journal or
+    /// worktree. The session can be resumed by a later supervisor.
+    CloseSession {
+        session_id: SessionId,
+    },
     StopTurn {
         session_id: SessionId,
     },
@@ -988,13 +993,15 @@ fn runs_outside_command_loop(command: &SupervisorCommand) -> bool {
             | SupervisorCommand::AttachWorktree { .. }
             | SupervisorCommand::RemoveManagedWorktree { .. }
             | SupervisorCommand::CompactContext { .. }
+            | SupervisorCommand::CloseSession { .. }
     )
 }
 
 fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
     match command {
         SupervisorCommand::RemoveManagedWorktree { session_id }
-        | SupervisorCommand::CompactContext { session_id } => Some(*session_id),
+        | SupervisorCommand::CompactContext { session_id }
+        | SupervisorCommand::CloseSession { session_id } => Some(*session_id),
         _ => None,
     }
 }
@@ -1469,6 +1476,9 @@ async fn execute_command(
                 replace_conversation(&state, current_session_id, Some(session_id)).await?;
             }
         }
+        SupervisorCommand::CloseSession { session_id } => {
+            close_session(&state, session_id).await?;
+        }
         SupervisorCommand::StopTurn { session_id } => {
             let actor = actor(&state, session_id).await?;
             if !actor.request_cancel() {
@@ -1825,6 +1835,42 @@ async fn replace_conversation(
         .events
         .send(SupervisorEvent::Roster(snapshots(state).await));
     let _ = state.events.send(SupervisorEvent::Selected(Some(next)));
+    Ok(())
+}
+
+/// Stop managing one session while leaving its durable task, journal, queue,
+/// and worktree available for a later resume. This is deliberately different
+/// from archiving: closing a session is a process/UI boundary, not a durable
+/// lifecycle change.
+async fn close_session(
+    state: &Arc<SupervisorState>,
+    session_id: SessionId,
+) -> Result<(), RepositorySupervisorError> {
+    let Some(task_actor) = wait_for_actor_retirement(state, session_id, true).await? else {
+        return Err(RepositorySupervisorError::NoActor(session_id));
+    };
+
+    let next_session_id = snapshots(state)
+        .await
+        .into_iter()
+        .find(|snapshot| {
+            snapshot.task.session_id != session_id
+                && snapshot.task.lifecycle == SessionLifecycle::Active
+        })
+        .map(|snapshot| snapshot.task.session_id);
+    if let Err(error) = state.control.set_selected(next_session_id).await {
+        task_actor.finish_retirement();
+        return Err(error.into());
+    }
+    state.actors.write().await.remove(&session_id);
+    task_actor.finish_retirement();
+
+    let _ = state
+        .events
+        .send(SupervisorEvent::Roster(snapshots(state).await));
+    let _ = state
+        .events
+        .send(SupervisorEvent::Selected(next_session_id));
     Ok(())
 }
 

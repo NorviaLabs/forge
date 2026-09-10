@@ -834,8 +834,39 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Quit) => {
-                    self.exit.request();
-                    self.status_state.message = "quitting…".into();
+                    if self.selected_is_supervised() {
+                        let active_sessions = self
+                            .supervisor
+                            .as_ref()
+                            .map(|supervisor| {
+                                supervisor
+                                    .snapshots
+                                    .values()
+                                    .filter(|snapshot| {
+                                        snapshot.task.lifecycle
+                                            == forge_session::SessionLifecycle::Active
+                                    })
+                                    .count()
+                            })
+                            .unwrap_or(0);
+                        if self
+                            .send_session_command(forge_session::SupervisorCommand::CloseSession {
+                                session_id: self.selected_session_id,
+                            })
+                            .await
+                        {
+                            if active_sessions <= 1 {
+                                self.exit.request();
+                                self.status_state.message = "quitting…".into();
+                            } else {
+                                self.poll_supervisor_events();
+                                self.status_state.message = "session closed".into();
+                            }
+                        }
+                    } else {
+                        self.exit.request();
+                        self.status_state.message = "quitting…".into();
+                    }
                 }
                 Ok(SlashCommand::Compact) => {
                     self.queue_context_reset();
