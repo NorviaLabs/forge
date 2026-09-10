@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use forge_config::Config;
@@ -278,6 +278,10 @@ struct SessionActor {
     session: Mutex<AgentSession>,
     snapshot: RwLock<SessionRuntimeSnapshot>,
     driving: AtomicBool,
+    /// Continuations requested while another driver held `driving`. The active
+    /// driver drains them before it stops, so a `ContinueTurn` that lands in
+    /// the hand-off window is never dropped.
+    continue_pending: AtomicUsize,
     retiring: AtomicBool,
     running_cancel: StdMutex<Option<CancellationToken>>,
     /// The session's own model client, so provider-env updates reach a busy
@@ -305,6 +309,7 @@ impl SessionActor {
             session: Mutex::new(session),
             snapshot: RwLock::new(snapshot),
             driving: AtomicBool::new(false),
+            continue_pending: AtomicUsize::new(0),
             retiring: AtomicBool::new(false),
             running_cancel: StdMutex::new(None),
             model,
@@ -1879,6 +1884,55 @@ async fn close_session(
     Ok(())
 }
 
+/// The single driver loop for one session actor. It drains explicit
+/// continuations first, then queued prompts, and keeps going until neither
+/// remains. `driving` is the claim that makes it exclusive; a continuation
+/// that arrives while the claim is held is counted in `continue_pending` and
+/// picked up here instead of being dropped.
+async fn run_driver(
+    state: Arc<SupervisorState>,
+    task_actor: Arc<SessionActor>,
+    session_id: SessionId,
+) {
+    loop {
+        while task_actor.continue_pending.swap(0, Ordering::AcqRel) > 0 {
+            if let Err(error) = run_one(state.clone(), task_actor.clone(), None).await {
+                let _ = state.events.send(SupervisorEvent::Error {
+                    session_id: Some(session_id),
+                    message: error.to_string(),
+                });
+                task_actor.driving.store(false, Ordering::Release);
+                return;
+            }
+        }
+        if let Err(error) = drive_prompts(state.clone(), task_actor.clone()).await {
+            let _ = state.events.send(SupervisorEvent::Error {
+                session_id: Some(session_id),
+                message: error.to_string(),
+            });
+            task_actor.driving.store(false, Ordering::Release);
+            return;
+        }
+        task_actor.driving.store(false, Ordering::Release);
+        let lifecycle = task_actor.snapshot.read().await.session.lifecycle;
+        let queued = state
+            .control
+            .queued_prompts(session_id)
+            .await
+            .unwrap_or_default();
+        let has_continue = task_actor.continue_pending.load(Ordering::Acquire) > 0;
+        if !has_continue
+            && (matches!(lifecycle, TaskLifecycle::Waiting | TaskLifecycle::Cancelled)
+                || queued.is_empty())
+        {
+            return;
+        }
+        if task_actor.driving.swap(true, Ordering::AcqRel) {
+            return;
+        }
+    }
+}
+
 async fn start_prompt_driver(
     state: Arc<SupervisorState>,
     session_id: SessionId,
@@ -1890,31 +1944,7 @@ async fn start_prompt_driver(
     if task_actor.driving.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
-    tokio::spawn(async move {
-        loop {
-            if let Err(error) = drive_prompts(state.clone(), task_actor.clone()).await {
-                let _ = state.events.send(SupervisorEvent::Error {
-                    session_id: Some(session_id),
-                    message: error.to_string(),
-                });
-                task_actor.driving.store(false, Ordering::Release);
-                break;
-            }
-            task_actor.driving.store(false, Ordering::Release);
-            let lifecycle = task_actor.snapshot.read().await.session.lifecycle;
-            let queued = state
-                .control
-                .queued_prompts(session_id)
-                .await
-                .unwrap_or_default();
-            if matches!(lifecycle, TaskLifecycle::Waiting | TaskLifecycle::Cancelled)
-                || queued.is_empty()
-                || task_actor.driving.swap(true, Ordering::AcqRel)
-            {
-                break;
-            }
-        }
-    });
+    tokio::spawn(run_driver(state, task_actor, session_id));
     Ok(())
 }
 
@@ -1926,19 +1956,11 @@ async fn start_continue_driver(
     if task_actor.retiring.load(Ordering::Acquire) {
         return Err(RepositorySupervisorError::Retiring(session_id));
     }
+    task_actor.continue_pending.fetch_add(1, Ordering::AcqRel);
     if task_actor.driving.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
-    tokio::spawn(async move {
-        if let Err(error) = run_one(state.clone(), task_actor.clone(), None).await {
-            let _ = state.events.send(SupervisorEvent::Error {
-                session_id: Some(session_id),
-                message: error.to_string(),
-            });
-        }
-        task_actor.driving.store(false, Ordering::Release);
-        let _ = start_prompt_driver(state, session_id).await;
-    });
+    tokio::spawn(run_driver(state, task_actor, session_id));
     Ok(())
 }
 
@@ -2308,6 +2330,7 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+    use tokio::sync::Notify;
 
     /// Simulates a command the OS sandbox blocks while confined and that still
     /// fails once HITL approval escalates it to an unconfined run — the shape
@@ -2433,6 +2456,40 @@ mod tests {
             Box::pin(async {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 Ok(text_response("should be cancelled"))
+            })
+        }
+    }
+
+    /// Blocks its first call on a gate so a test can issue a command while a
+    /// turn is provably in flight and the driver holds `driving`.
+    struct FirstCallGateModel {
+        calls: Arc<AtomicUsize>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl ModelClient for FirstCallGateModel {
+        fn complete<'life0, 'async_trait>(
+            &'life0 self,
+            _request: ModelRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ModelResponse, ModelError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    self.started.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(text_response(&format!("answer {call}")))
             })
         }
     }
@@ -3931,6 +3988,93 @@ mod tests {
             .messages()
             .iter()
             .any(|m| m.content.contains("recovered after failure")));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_continuation_landing_mid_turn_is_not_dropped() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let model: Arc<dyn ModelClient> = Arc::new(FirstCallGateModel {
+            calls: Arc::clone(&calls),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+        let opened = open_session_with_model(&cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap();
+        let session_id = opened.session.session_id;
+        let task = task_for(session_id, "gated", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (_supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(task, opened.session)],
+            1,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "first".into(),
+            })
+            .await
+            .unwrap();
+        // The first call is now in flight, so the prompt driver owns `driving`.
+        // A continuation requested in this window must not be dropped.
+        started.notified().await;
+        handle
+            .command(SupervisorCommand::ContinueTurn { session_id })
+            .await
+            .unwrap();
+        release.notify_one();
+
+        let done = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot
+                .transcript
+                .messages()
+                .iter()
+                .any(|m| m.content.contains("answer 1"))
+        })
+        .await;
+        assert!(done
+            .transcript
+            .messages()
+            .iter()
+            .any(|m| m.content.contains("answer 0")));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
