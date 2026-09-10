@@ -188,7 +188,7 @@ Useful in-app commands:
 /effort        Set model effort
 /thinking      Toggle model thinking generation
 /help          Open help
-/quit          Exit Forge
+/quit          Close the current session (exit when it is the last one)
 ```
 
 `/resume <session-id>` resumes a specific session. The command-line form

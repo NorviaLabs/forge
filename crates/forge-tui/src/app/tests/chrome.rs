@@ -1454,7 +1454,7 @@ async fn the_command_palette_does_not_repeat_a_description_that_already_fits() {
     }
     let rendered = render_app_text(&mut app, 120, 35);
     assert_eq!(
-        rendered.matches("Exit TUI").count(),
+        rendered.matches("Close the current session").count(),
         1,
         "said twice:\n{rendered}"
     );
