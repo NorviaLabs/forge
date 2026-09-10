@@ -291,6 +291,44 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
 }
 
 #[tokio::test]
+async fn quit_closes_selected_session_before_exiting_on_last_session() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let sibling = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let sibling_id = sibling.session_id;
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling_id)
+        .expect("sibling in task strip");
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+
+    app.dispatch_line("/quit").await.unwrap();
+    assert!(!app.exit.is_requested());
+    assert_eq!(app.selected_session_id, primary_id);
+    assert!(!app
+        .session_chrome
+        .iter()
+        .any(|item| item.session_id == sibling_id));
+
+    app.dispatch_line("/quit").await.unwrap();
+    assert!(app.exit.is_requested());
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn worktree_cleanup_refuses_a_dirty_embedded_editor() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("dirty-before-cleanup.txt");
