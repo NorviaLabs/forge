@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use forge_types::{SideEffectClass, ToolCall, ToolDescriptor, ToolOutput, ToolValidationError};
+use forge_types::{
+    SessionId, SideEffectClass, ToolCall, ToolDescriptor, ToolOutput, ToolValidationError,
+};
 use jsonschema::Validator;
 use serde_json::Value;
 
@@ -68,6 +70,10 @@ pub fn canonicalize_tool_call(mut call: ToolCall) -> ToolCall {
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub workspace_root: PathBuf,
+    /// Session that owns session-scoped tool state such as interactive shells.
+    /// `None` is retained for standalone tool callers and tests that do not
+    /// have a session identity.
+    pub session_id: Option<SessionId>,
     pub principal: String,
     /// Fail-closed: `view_image` is allowed only when the active model
     /// advertises image input and the transport can serialize attachments.
@@ -96,6 +102,7 @@ impl ToolContext {
     pub fn new(workspace_root: PathBuf) -> Self {
         Self {
             workspace_root,
+            session_id: None,
             principal: "local-dev".into(),
             image_input: false,
             active_model: String::new(),
@@ -108,6 +115,11 @@ impl ToolContext {
 
     pub fn with_session_tmp(mut self, session_tmp: Arc<SessionTempDir>) -> Self {
         self.session_tmp = Some(session_tmp);
+        self
+    }
+
+    pub fn with_session_id(mut self, session_id: SessionId) -> Self {
+        self.session_id = Some(session_id);
         self
     }
 

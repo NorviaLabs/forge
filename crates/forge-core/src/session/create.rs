@@ -88,7 +88,9 @@ impl AgentSession {
             detail: format!("seq={}", state.last_seq),
         }];
         self.journal = SessionPersistence::new(journal);
-        self.tool_ctx = ToolContext::new(active_root).with_session_tmp(session_tmp);
+        self.tool_ctx = ToolContext::new(active_root)
+            .with_session_id(session_id)
+            .with_session_tmp(session_tmp);
         self.tool_ctx.egress = self.egress.as_ref().map(|runtime| runtime.grant());
         self.context = context;
         self.token_usage = token_usage;
@@ -176,7 +178,9 @@ impl AgentSession {
         let egress =
             crate::permission::start_egress(session_id, forge_tools::egress::EgressPolicy::new())
                 .await;
-        let mut tool_ctx = ToolContext::new(active_root).with_session_tmp(session_tmp);
+        let mut tool_ctx = ToolContext::new(active_root)
+            .with_session_id(session_id)
+            .with_session_tmp(session_tmp);
         tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
 
         Ok(Self {
@@ -270,7 +274,9 @@ impl AgentSession {
         let egress =
             crate::permission::start_egress(session_id, forge_tools::egress::EgressPolicy::new())
                 .await;
-        let mut tool_ctx = ToolContext::new(active_root).with_session_tmp(session_tmp);
+        let mut tool_ctx = ToolContext::new(active_root)
+            .with_session_id(session_id)
+            .with_session_tmp(session_tmp);
         tool_ctx.egress = egress.as_ref().map(|runtime| runtime.grant());
 
         let mut session = Self {

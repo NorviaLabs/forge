@@ -267,28 +267,53 @@ impl TuiApp {
                     session_id,
                     message,
                 } => {
-                    self.set_feedback(
-                        FeedbackSeverity::Error,
-                        format!(
-                            "Session {}: {message}",
-                            session_id.map_or_else(|| "unknown".into(), |id| id.to_string())
-                        ),
-                    );
+                    if session_id.is_some_and(|id| id != self.selected_session_id) {
+                        if let Some(session_id) = session_id {
+                            if let Some(task) = self
+                                .session_chrome
+                                .iter_mut()
+                                .find(|task| task.session_id == session_id)
+                            {
+                                task.attention = true;
+                            }
+                        }
+                        self.push_toast(message);
+                    } else {
+                        self.set_feedback(
+                            FeedbackSeverity::Error,
+                            format!(
+                                "Session {}: {message}",
+                                session_id.map_or_else(|| "unknown".into(), |id| id.to_string())
+                            ),
+                        );
+                    }
                 }
                 forge_session::SupervisorEvent::TrustRequired {
                     operation_id,
+                    session_id,
                     label,
                     workspace,
                 } => {
-                    self.overlay = Some(Overlay::TrustSession {
-                        operation_id,
-                        label,
-                        workspace: workspace.display().to_string(),
-                    });
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        "trust required before the Session can run",
-                    );
+                    if session_id != self.selected_session_id {
+                        if let Some(task) = self
+                            .session_chrome
+                            .iter_mut()
+                            .find(|task| task.session_id == session_id)
+                        {
+                            task.attention = true;
+                        }
+                        self.push_toast(format!("Session {label} needs workspace trust"));
+                    } else {
+                        self.overlay = Some(Overlay::TrustSession {
+                            operation_id,
+                            label,
+                            workspace: workspace.display().to_string(),
+                        });
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            "trust required before the Session can run",
+                        );
+                    }
                 }
                 _ => {}
             }
