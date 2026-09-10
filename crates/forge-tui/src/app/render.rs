@@ -125,12 +125,8 @@ impl TuiApp {
         let contextual_hint = self.contextual_hint();
         // The event-loop tick refreshes this cache; drawing only reads it.
         let connected = self.provider_connected_cached();
-        let (vendor_label, _route_label) = self
-            .connect
-            .profile
-            .as_deref()
-            .map(|id| self.vendor_route_labels(id))
-            .unwrap_or((None, None));
+        let (provider, _connect_profile, vendor_label, _route_label) =
+            self.selected_provider_display();
         // Model/vendor/effort live on the footer chip row; the composer band
         // is text-only and the footer always reserves two rows — a thin
         // DESIGN-012: the footer is a single content row with no separator.
@@ -415,10 +411,8 @@ impl TuiApp {
             home_card: (!slash_mode && !self.conversation_view.splash_dismissed).then(|| {
                 (
                     connected,
-                    self.runtime.model_label.clone(),
-                    vendor_label
-                        .clone()
-                        .unwrap_or_else(|| self.runtime.provider.clone()),
+                    self.selected_model_label(),
+                    vendor_label.clone().unwrap_or_else(|| provider.clone()),
                     self.session_view.loaded_skills_count,
                 )
             }),
@@ -489,10 +483,8 @@ impl TuiApp {
                 conv = conv.with_home(
                     crate::widgets::status::shorten_home_path(&self.runtime.cwd),
                     self.session_view.loaded_skills_count,
-                    self.runtime.model_label.clone(),
-                    vendor_label
-                        .clone()
-                        .unwrap_or_else(|| self.runtime.provider.clone()),
+                    self.selected_model_label(),
+                    vendor_label.clone().unwrap_or_else(|| provider.clone()),
                     connected,
                 );
             }
@@ -961,15 +953,16 @@ impl TuiApp {
                 (None, None) => None,
             }
         };
+        let model_label = self.selected_model_label();
         let effort_label = self
             .reasoning_effort
             .value
-            .display_label(&self.runtime.model_label)
+            .display_label(&model_label)
             .to_string();
         let llm_label = format!(
             "{}/{}",
             vendor_label.as_deref().unwrap_or("model"),
-            footer_short_model_id(&self.runtime.model_label)
+            footer_short_model_id(&model_label)
         );
         // Only three focusable footer controls now (which-LLM, effort, mode).
         if let Some(idx) = self.composer_chip_focus {
