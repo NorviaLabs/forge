@@ -104,16 +104,6 @@ pub fn create_session_worktree(
     Ok(SubagentWorktree { path, branch })
 }
 
-/// Derive a task label from a prompt's opening words: "rewrite the lexer"
-/// becomes `rewrite-the-lexer`. Used to name an unnamed task from its first
-/// prompt, so the strip/branch stay readable instead of showing an empty
-/// or id-only name. Falls back to `task` for prompts that sanitize to
-/// nothing (punctuation-only, etc.), matching [`sanitize_label`].
-pub fn label_from_prompt(prompt: &str) -> String {
-    let words: Vec<&str> = prompt.split_whitespace().take(8).collect();
-    sanitize_label(&words.join(" "))
-}
-
 /// Reduce arbitrary (possibly model-authored) text to a safe path component
 /// and git ref segment: ASCII alphanumerics/`-`/`_` only, no leading/
 /// trailing `-`, capped length. Without this, a label containing `../` or
@@ -361,20 +351,6 @@ mod tests {
         assert_eq!(sanitize_label("---"), "task");
         let long = "a".repeat(100);
         assert_eq!(sanitize_label(&long).len(), 40);
-    }
-
-    #[test]
-    fn label_from_prompt_uses_the_opening_words() {
-        assert_eq!(label_from_prompt("rewrite the lexer"), "rewrite-the-lexer");
-        assert_eq!(
-            label_from_prompt("fix the login bug and then run the tests"),
-            "fix-the-login-bug-and-then-run-the"
-        );
-        // Eight words max, then sanitize caps the length.
-        assert_eq!(label_from_prompt("!!! ???"), "task");
-        assert_eq!(label_from_prompt("  "), "task");
-        let long = format!("word {}", "a".repeat(200));
-        assert_eq!(label_from_prompt(&long).len(), 40);
     }
 
     #[test]

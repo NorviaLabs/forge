@@ -1270,7 +1270,7 @@ impl Overlay {
         items.sort_by(|left, right| {
             left.group
                 .cmp(&right.group)
-                .then_with(|| left.label.cmp(&right.label))
+                .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
         });
         Self::SessionSwitcher {
             selected: 0,

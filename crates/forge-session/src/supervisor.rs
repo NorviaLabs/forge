@@ -1064,7 +1064,7 @@ async fn execute_command(
             let label = if label.trim().is_empty() {
                 first_prompt
                     .as_deref()
-                    .map(forge_storage::label_from_prompt)
+                    .map(forge_types::title_from_prompt)
                     .unwrap_or_default()
             } else {
                 label
@@ -1433,7 +1433,7 @@ async fn execute_command(
             if state.control.session(session_id).await?.label.is_empty() {
                 state
                     .control
-                    .rename(session_id, &forge_storage::label_from_prompt(&text))
+                    .rename(session_id, &forge_types::title_from_prompt(&text))
                     .await?;
             }
             state.control.enqueue_prompt(session_id, &text).await?;
@@ -1452,7 +1452,7 @@ async fn execute_command(
             if state.control.session(session_id).await?.label.is_empty() {
                 state
                     .control
-                    .rename(session_id, &forge_storage::label_from_prompt(&text))
+                    .rename(session_id, &forge_types::title_from_prompt(&text))
                     .await?;
             }
             let attachments = serde_json::to_string(&attachments)
@@ -4320,7 +4320,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|task| task.label == "rewrite-the-lexer")
+            .find(|task| task.label == "Rewrite the lexer")
             .expect("prompt-derived label");
         let branch_id = task
             .branch
