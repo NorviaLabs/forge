@@ -2540,7 +2540,11 @@ mod tests {
         session_id: SessionId,
         predicate: impl Fn(&SessionRuntimeSnapshot) -> bool,
     ) -> SessionRuntimeSnapshot {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // Generous headroom: the turn itself is fast, but the workspace tests
+        // run concurrently on shared CI runners, and a starved worker could
+        // otherwise blow a tight deadline while the state it polls for is
+        // still coming. A genuine hang still trips this.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut events = handle.subscribe();
         while std::time::Instant::now() < deadline {
             handle.command(SupervisorCommand::Refresh).await.unwrap();
