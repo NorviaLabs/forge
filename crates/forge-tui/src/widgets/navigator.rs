@@ -1,0 +1,316 @@
+//! The left **navigator**: a two-tab column, `Sessions | Files` (`FORGE-DESIGN
+//! §7.7`). This module owns the tab bar and the session list; the file tree is
+//! the existing explorer widget, composed by the renderer under the tab bar.
+//!
+//! Only three session states are user-facing here — `● needs you`,
+//! `◐ working`, `○ idle`. Branch, worktree and ownership never appear.
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Widget;
+
+use crate::theme;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavigatorTab {
+    Sessions,
+    Files,
+}
+
+impl NavigatorTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sessions => "Sessions",
+            Self::Files => "Files",
+        }
+    }
+}
+
+/// One session's row in the list. Two visual lines: identity, then qualifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRow {
+    /// `●` needs you · `◐` working · `○` idle.
+    pub glyph: char,
+    pub need: bool,
+    /// `None` renders a dimmer qualifier (archived/idle).
+    pub label: String,
+    pub qualifier: String,
+    /// The session currently shown in the workspace.
+    pub selected: bool,
+    /// The navigator cursor rests here.
+    pub focused: bool,
+}
+
+/// The one-row tab bar across the top of the navigator column.
+pub struct NavigatorTabs {
+    pub tab: NavigatorTab,
+    pub focused: bool,
+    pub needs_you: usize,
+}
+
+impl Widget for NavigatorTabs {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let active = if self.focused {
+            theme::brand().add_modifier(Modifier::BOLD)
+        } else {
+            theme::brand()
+        };
+        let inactive = theme::metadata_style();
+        let mut spans = Vec::new();
+        for (index, tab) in [NavigatorTab::Sessions, NavigatorTab::Files]
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                spans.push(Span::styled(" │ ", theme::border_muted()));
+            }
+            let is_active = tab == self.tab;
+            if is_active {
+                spans.push(Span::styled("▌", theme::accent_style()));
+            } else {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                tab.label(),
+                if is_active { active } else { inactive },
+            ));
+        }
+        if self.needs_you > 0 {
+            let label = format!("{} need", self.needs_you);
+            let used: usize = spans.iter().map(Span::width).sum();
+            let pad = (area.width as usize)
+                .saturating_sub(used)
+                .saturating_sub(label.chars().count() + 1);
+            if pad > 0 {
+                spans.push(Span::raw(" ".repeat(pad)));
+                spans.push(Span::styled(label, theme::warn()));
+            }
+        }
+        buf.set_line(area.x, area.y, &Line::from(spans), area.width);
+    }
+}
+
+/// The vertical, attention-ordered session list.
+pub struct SessionList<'a> {
+    pub rows: &'a [SessionRow],
+    pub focused: bool,
+}
+
+impl Widget for SessionList<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let mut y = area.y;
+        let bottom = area.bottom();
+        for row in self.rows {
+            if y >= bottom {
+                break;
+            }
+            let (glyph_style, label_style) = if row.need {
+                (theme::warn(), theme::text())
+            } else {
+                (theme::muted(), theme::text_secondary())
+            };
+            let label_style = if row.selected {
+                theme::text().add_modifier(Modifier::BOLD)
+            } else {
+                label_style
+            };
+            let glyph_style = if row.selected {
+                theme::accent_style()
+            } else {
+                glyph_style
+            };
+            let cursor = if (row.focused && self.focused) || row.selected {
+                Span::styled("›", theme::accent_style())
+            } else {
+                Span::raw(" ")
+            };
+            let mut spans = vec![
+                cursor,
+                Span::raw(" "),
+                Span::styled(row.glyph.to_string(), glyph_style),
+                Span::raw(" "),
+            ];
+            let prefix: usize = spans.iter().map(Span::width).sum();
+            let room = (area.width as usize).saturating_sub(prefix);
+            spans.push(Span::styled(truncate(&row.label, room), label_style));
+            let mut line = Line::from(spans);
+            if row.focused && self.focused {
+                line = line.style(theme::focused_selection_style());
+                buf.set_line(area.x, y, &line, area.width);
+                fill_selection(buf, area.x, y, area.width);
+            } else {
+                buf.set_line(area.x, y, &line, area.width);
+            }
+            y += 1;
+            if y >= bottom {
+                break;
+            }
+            if !row.qualifier.is_empty() {
+                let indent = 3usize.min(area.width as usize);
+                let room = (area.width as usize).saturating_sub(indent);
+                let text = truncate(&row.qualifier, room);
+                let qual = Line::from(vec![
+                    Span::raw(" ".repeat(indent)),
+                    Span::styled(text, theme::metadata_style()),
+                ]);
+                buf.set_line(area.x, y, &qual, area.width);
+            }
+            y += 1;
+        }
+    }
+}
+
+/// Extend the selection ground across the row so it reads as one band.
+fn fill_selection(buf: &mut Buffer, x: u16, y: u16, width: u16) {
+    let style = theme::focused_selection_style();
+    for col in x..x.saturating_add(width) {
+        if let Some(cell) = buf.cell_mut((col, y)) {
+            cell.set_style(style);
+        }
+    }
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    format!("{}…", text.chars().take(width - 1).collect::<String>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn row(label: &str, qualifier: &str) -> SessionRow {
+        SessionRow {
+            glyph: '●',
+            need: true,
+            label: label.into(),
+            qualifier: qualifier.into(),
+            selected: false,
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn tabs_show_both_names_and_the_needs_you_count() {
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    NavigatorTabs {
+                        tab: NavigatorTab::Sessions,
+                        focused: false,
+                        needs_you: 2,
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(text.contains("Sessions"), "{text:?}");
+        assert!(text.contains("Files"), "{text:?}");
+        assert!(text.contains("2 need"), "{text:?}");
+    }
+
+    #[test]
+    fn the_active_tab_carries_the_accent() {
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    NavigatorTabs {
+                        tab: NavigatorTab::Files,
+                        focused: false,
+                        needs_you: 0,
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let accent = theme::accent_color();
+        let marker_accent = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "▌" && cell.style().fg == Some(accent));
+        assert!(marker_accent, "active tab marker should be accented");
+    }
+
+    #[test]
+    fn the_list_renders_a_glyph_label_and_qualifier_per_row() {
+        let rows = vec![row("Fix login redirect", "needs you · 2m")];
+        let backend = TestBackend::new(30, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    SessionList {
+                        rows: &rows,
+                        focused: true,
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(text.contains('●'), "{text:?}");
+        assert!(text.contains("Fix login redirect"), "{text:?}");
+        assert!(text.contains("needs you"), "{text:?}");
+    }
+
+    #[test]
+    fn a_long_label_is_elided_to_the_column() {
+        let rows = vec![row(&"x".repeat(80), "idle")];
+        let backend = TestBackend::new(20, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    SessionList {
+                        rows: &rows,
+                        focused: true,
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(text.contains('…'), "long label should elide: {text:?}");
+    }
+}

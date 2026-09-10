@@ -56,10 +56,7 @@ use crate::file_explorer::{FileExplorer, FileExplorerWidget};
 use crate::history::{HistoryStore, InputHistory};
 use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
-use crate::layout::{
-    split_areas_with_chrome, split_areas_with_expanded_conversation, split_areas_with_task_strip,
-    split_areas_with_task_strip_expanded_conversation,
-};
+use crate::layout::{split_areas_with_chrome, split_areas_with_expanded_conversation};
 use crate::overlays::{
     centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalOverlayState,
     ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction,

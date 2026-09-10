@@ -138,11 +138,11 @@ impl TuiApp {
         // no Workspace block to focus.
         let task_mode = self.supervisor.is_some();
         let regions = if expand_conversation && task_mode {
-            split_areas_with_task_strip_expanded_conversation(
+            split_areas_with_expanded_conversation(
                 area,
                 fb_h,
                 input_h,
-                self.workspace_files.visible,
+                self.workspace_files.visible || task_mode,
                 queue_h,
                 panel_h,
                 hint_h,
@@ -150,11 +150,11 @@ impl TuiApp {
                 0,
             )
         } else if task_mode {
-            split_areas_with_task_strip(
+            split_areas_with_chrome(
                 area,
                 fb_h,
                 input_h,
-                self.workspace_files.visible,
+                self.workspace_files.visible || task_mode,
                 queue_h,
                 panel_h,
                 hint_h,
@@ -202,10 +202,13 @@ impl TuiApp {
         // Questions reuse `FocusBlock::Approval` (same inline transcript
         // prompt as HITL); omitting them here kicks focus off the menu on the
         // first frame, so ↑↓ never move the selection.
+        let navigator_tab = self.effective_navigator_tab();
+        let navigator_sessions =
+            task_mode && navigator_tab == crate::widgets::NavigatorTab::Sessions;
         let available = FocusAvailability {
             task_strip: true,
-            search: regions.files.is_some(),
-            files: regions.files.is_some(),
+            search: regions.files.is_some() && !navigator_sessions,
+            files: regions.files.is_some() && !navigator_sessions,
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
             approval: self.session_view.is_awaiting_approval()
@@ -262,17 +265,100 @@ impl TuiApp {
             );
         }
         if let Some(files) = regions.files {
-            frame.render_widget(
-                FileExplorerWidget {
-                    explorer: &mut self.workspace_files.explorer,
-                    focused: crate::widgets::background_focused(
-                        matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
-                        modal_open,
-                    ),
-                    search_active: self.focus.block() == FocusBlock::Search && !modal_open,
-                },
-                files,
-            );
+            let navigator_focused = self.focus.block() == FocusBlock::TaskStrip && !modal_open;
+            if task_mode {
+                // The left column is the navigator: a tab bar over either the
+                // session list or the file explorer (FORGE-DESIGN §7.7).
+                let rows = ratatui::layout::Layout::default()
+                    .direction(ratatui::layout::Direction::Vertical)
+                    .constraints([
+                        ratatui::layout::Constraint::Length(1),
+                        ratatui::layout::Constraint::Min(0),
+                    ])
+                    .split(files);
+                let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
+                frame.render_widget(
+                    crate::widgets::NavigatorTabs {
+                        tab: navigator_tab,
+                        focused: navigator_focused,
+                        needs_you,
+                    },
+                    rows[0],
+                );
+                if navigator_sessions {
+                    let mut unnamed = 0usize;
+                    let session_rows: Vec<crate::widgets::SessionRow> = self
+                        .session_chrome
+                        .iter()
+                        .enumerate()
+                        .map(|(index, task)| {
+                            let label = if task.label.is_empty() {
+                                unnamed += 1;
+                                format!("session {unnamed}")
+                            } else {
+                                task.label.clone()
+                            };
+                            let state = task.secondary.clone().unwrap_or_else(|| "idle".into());
+                            let need = task.attention;
+                            let working = !need && task.secondary.as_deref() == Some("running");
+                            let glyph = if need {
+                                '●'
+                            } else if working {
+                                '◐'
+                            } else {
+                                '○'
+                            };
+                            let qualifier = if need {
+                                format!("needs you · {state}")
+                            } else {
+                                state
+                            };
+                            crate::widgets::SessionRow {
+                                glyph,
+                                need,
+                                label,
+                                qualifier,
+                                selected: task.selected,
+                                focused: self.task_strip_selection == index,
+                            }
+                        })
+                        .collect();
+                    frame.render_widget(
+                        crate::widgets::SessionList {
+                            rows: &session_rows,
+                            focused: navigator_focused,
+                        },
+                        rows[1],
+                    );
+                } else {
+                    frame.render_widget(
+                        FileExplorerWidget {
+                            explorer: &mut self.workspace_files.explorer,
+                            focused: crate::widgets::background_focused(
+                                matches!(
+                                    self.focus.block(),
+                                    FocusBlock::Files | FocusBlock::Search
+                                ),
+                                modal_open,
+                            ),
+                            search_active: self.focus.block() == FocusBlock::Search && !modal_open,
+                        },
+                        rows[1],
+                    );
+                }
+            } else {
+                frame.render_widget(
+                    FileExplorerWidget {
+                        explorer: &mut self.workspace_files.explorer,
+                        focused: crate::widgets::background_focused(
+                            matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
+                            modal_open,
+                        ),
+                        search_active: self.focus.block() == FocusBlock::Search && !modal_open,
+                    },
+                    files,
+                );
+            }
         }
         // How long a turn must have been running before the pinned status
         // line (`Waiting for the model…` / `Thinking…` / `Running {tool}…`)

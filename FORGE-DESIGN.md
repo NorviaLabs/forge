@@ -319,7 +319,10 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
 
 ### 7.1 Blocks
 
-1. **Files** — repository explorer with Git status markers and its own search row (`Search` is a separate Tab stop nested in the same bordered box).
+1. **Navigator** — the left column. Two tabs, `Sessions` and `Files`, sharing
+   one column (`§7.7`). `Files` is the repository explorer with Git status
+   markers and its own search row (`Search` is a separate Tab stop nested in the
+   same bordered box). `Sessions` is the multi-session list.
 2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, feedback strip, and the composer. It never hides; the composer lives inside it.
 3. **Workspace** — the center pane. Its only views are `File` and `Diff` (`types.rs::WorkspaceView`); with nothing open it renders an empty-state placeholder. Conversation is deliberately *not* a workspace view.
 4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
@@ -381,6 +384,33 @@ Verify layouts at least at these sizes (tests pin `80×18`):
 - `80×18` (enforced minimum)
 - `120×40`
 - `160×50`
+
+### 7.7 Navigator — Sessions and Files
+
+The left column is a two-tab **navigator**; it is the single multi-session
+surface. The old top task strip is superseded (`§11`).
+
+- Tabs: `Sessions` and `Files`, toggled with `Ctrl+1` / `Ctrl+2` (and by
+  focusing the navigator and pressing `Tab`/`Enter`). They never show side by
+  side: the layout already carries three content columns (navigator | Workspace
+  | conversation) and cannot afford a fourth, and `Files` is the first thing to
+  collapse (`§7.3`).
+- Default tab: `Sessions` when more than one session exists, `Files` otherwise.
+  The choice is remembered for the session.
+- **Sessions tab** is a vertical, attention-ordered list. Only three states are
+  user-facing: `● needs you`, `◐ working`, `○ idle`. Rows carry the label and a
+  short qualifier; branch, worktree and ownership are never shown here.
+  Selection (`›`) is the only cursor; `Enter` attaches, `Space` peeks and
+  replies inline, `n` creates, `s` stops, `d` marks done, `r` renames.
+- **Files tab** is today's explorer, unchanged.
+- Ownership (primary/managed/attached), slots/pinning, and the
+  archive/cleanup/remove split are internal — not navigator affordances.
+- Below `files_fit()` the whole navigator collapses exactly as `Files` does
+  today: the `Sessions` list falls back to a one-line status-line chip
+  (`⌄ 2 need · 1 working`, `←` opens the full-height Sessions panel) so sessions
+  are never unreachable.
+- The conversation sidebar stays permanent; the Workspace stays
+  `File`/`Diff`. The navigator introduces no new column.
 
 ## 8. Focus, Modes and Navigation
 
@@ -620,6 +650,8 @@ These older assumptions are wrong for the shipped architecture and must not be r
 - The shell is not organized around a permanent shortcut manual.
 - The transcript does not need a box for every message.
 - The application must not imply that terminal typography can be configured from inside Forge.
+- There is no horizontal task strip above the workspace, and no separate modal session switcher with its own keymap and five-group taxonomy. Multi-session lives in the navigator (`§7.7`): one vertical list, three states, one keymap.
+- Pinning/slots are not a user-facing affordance, and archive/cleanup/remove are not three separate verbs.
 
 ## 12. Session Worktrees
 
