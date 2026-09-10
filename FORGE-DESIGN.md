@@ -487,9 +487,10 @@ Rules:
 - Tool calls use concise verbs: `Read 4 files`, `Ran cargo test`.
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
-- While a turn runs, the live turn line (`widgets/turn_line.rs`) names the phase and counts up. No placeholder shimmer rows in the transcript — the pane stays empty until content arrives. Gated behind the busy debounce so instant turns never flash it.
+- The home card is the first screen only: once the operator has sent a turn it retires, never pinned above the conversation for the rest of the session.
+- While a turn runs, the live turn line (`widgets/turn_line.rs`) names the phase and counts up from the current turn's start — including supervised sessions, where the clock is anchored on the actor's `Running` state, never on process uptime. No placeholder shimmer rows in the transcript — the pane stays empty until content arrives. Gated behind the busy debounce so instant turns never flash it.
 - Keep zero-result searches neutral unless they block progress.
-- Keep genuine failures visible.
+- Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
 - Do not render a permanent progress narration stream.
 - Do not surround every message with a full-width box.
 

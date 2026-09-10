@@ -331,6 +331,49 @@ async fn quit_closes_selected_session_before_exiting_on_last_session() {
         .unwrap();
 }
 
+/// Supervised turns are driven by supervisor events, not the local submit
+/// path, so the turn clock must be anchored when the actor reports Running.
+/// Before this, the live line counted from `timing.started` (app uptime) and
+/// showed values like `Waiting for the model · 642s` seconds after Enter.
+#[tokio::test]
+async fn a_running_supervised_turn_anchors_the_turn_clock() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let session_id = app.selected_session_id;
+    let mut snapshot = app
+        .supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+        .expect("primary snapshot")
+        .clone();
+
+    snapshot.task.turn_state = forge_session::SupervisorTurnState::Idle;
+    app.sync_supervised_presentation(&snapshot);
+    assert!(
+        app.timing.turn_started.is_none(),
+        "an idle session must not carry a turn clock"
+    );
+
+    snapshot.task.turn_state = forge_session::SupervisorTurnState::Running;
+    app.sync_supervised_presentation(&snapshot);
+    assert!(app.busy_state.is_active(), "a running turn is busy");
+    assert!(
+        app.timing.turn_started.is_some(),
+        "a running supervised turn must anchor the turn clock"
+    );
+
+    snapshot.task.turn_state = forge_session::SupervisorTurnState::Completed;
+    app.sync_supervised_presentation(&snapshot);
+    assert!(
+        app.timing.turn_started.is_none(),
+        "an ended turn must clear the turn clock"
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn worktree_cleanup_refuses_a_dirty_embedded_editor() {
     let (dir, mut app) = focus_test_app().await;
