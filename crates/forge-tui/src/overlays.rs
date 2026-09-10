@@ -844,7 +844,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/quit".into(),
-            desc: "Exit TUI".into(),
+            desc: "Close the current session (exit when it is the last one)".into(),
             is_skill: false,
         },
     ]
