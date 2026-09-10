@@ -1088,12 +1088,16 @@ async fn execute_command(
                 .await?;
             // Branch from the *initiating* worktree's committed HEAD, not the
             // main worktree's — launching Forge from a linked worktree must
-            // fork the work that worktree is actually on.
-            let worktree =
-                forge_storage::create_session_worktree(&state.cfg.resolved_workspace, &base_dir)?;
+            // fork the work that worktree is actually on. The worktree starts
+            // detached: no branch is created until the session first changes a
+            // file, so a read-only/research session never adds a ref.
+            let worktree = forge_storage::create_detached_session_worktree(
+                &state.cfg.resolved_workspace,
+                &base_dir,
+            )?;
             state
                 .control
-                .mark_worktree_created(pending.operation_id, &worktree.path, &worktree.branch)
+                .mark_worktree_created(pending.operation_id, &worktree.path, "")
                 .await?;
             let mut task_cfg = state.cfg.clone();
             task_cfg.resolved_workspace = worktree.path.clone();
@@ -1116,7 +1120,8 @@ async fn execute_command(
                 session_id: opened.session.session_id,
                 label,
                 workspace: worktree.path,
-                branch: worktree.branch,
+                branch: String::new(),
+                base_sha: Some(worktree.base_sha.clone()),
                 ownership: WorktreeOwnership::Managed,
                 lifecycle: SessionLifecycle::Active,
                 turn_state: SupervisorTurnState::Idle,
@@ -1144,6 +1149,10 @@ async fn execute_command(
                     },
                     Some(pending.operation_id),
                 )
+                .await?;
+            state
+                .control
+                .set_base_sha(task.session_id, &worktree.base_sha)
                 .await?;
             let actor = Arc::new(SessionActor::new(
                 task.clone(),
@@ -1344,11 +1353,21 @@ async fn execute_command(
                     .iter()
                     .any(|worktree| same_path(&worktree.path, &task.workspace))
                 {
-                    forge_storage::remove_clean_worktree_if_branch(
-                        storage.main_worktree(),
-                        &task.workspace,
-                        &task.branch,
-                    )
+                    if task.branch.is_empty() {
+                        // Branchless managed session: verify it is still the
+                        // detached worktree this session owns, not one rebound
+                        // to a newer session.
+                        forge_storage::remove_clean_worktree_if_detached(
+                            storage.main_worktree(),
+                            &task.workspace,
+                        )
+                    } else {
+                        forge_storage::remove_clean_worktree_if_branch(
+                            storage.main_worktree(),
+                            &task.workspace,
+                            &task.branch,
+                        )
+                    }
                 } else if task.workspace.exists() {
                     Err(forge_storage::WorktreeError::RemoveFailed(format!(
                         "{} is no longer a registered worktree; refusing to remove it",
@@ -2094,6 +2113,19 @@ async fn run_one_inner(
     }
     state.control.set_turn_state(session_id, turn_state).await?;
     refresh_actor(&state, &task_actor, &session).await?;
+    // Release the session lock before touching Git: cleanup/archive paths take
+    // `git_mutation` and then the session lock, so taking them in the opposite
+    // order here would deadlock.
+    drop(session);
+    // A branchless managed session that changed the tree gets its branch now,
+    // named from the session label. Best-effort: a failure leaves it detached
+    // and the next turn retries, rather than failing a finished turn.
+    if let Err(error) = materialize_managed_branch(&state, session_id).await {
+        let _ = state.events.send(SupervisorEvent::Error {
+            session_id: Some(session_id),
+            message: format!("could not create a branch for this session's changes: {error}"),
+        });
+    }
     let message = match turn_state {
         SupervisorTurnState::Waiting => "Session needs input",
         SupervisorTurnState::Completed => "Session completed",
@@ -2118,6 +2150,82 @@ async fn run_one_inner(
         turn_state,
         SupervisorTurnState::Waiting | SupervisorTurnState::Cancelled
     ))
+}
+
+/// Materialize a branch for a branchless managed session once its worktree has
+/// changed since it was created.
+///
+/// The decision is Git's own view of the working tree versus `HEAD` — not which
+/// tool ran — so shell redirects, formatters and MCP writes are all caught, and
+/// read-only research sessions never create a ref. The branch is named from the
+/// session label, falling back to the base commit for an unnamed session.
+///
+/// Caller must NOT hold the session lock (this takes `git_mutation`).
+async fn materialize_managed_branch(
+    state: &Arc<SupervisorState>,
+    session_id: SessionId,
+) -> Result<(), RepositorySupervisorError> {
+    let task = state.control.session(session_id).await?;
+    if task.ownership != WorktreeOwnership::Managed || !task.branch.is_empty() {
+        return Ok(());
+    }
+    let workspace = task.workspace.clone();
+    if !workspace.is_dir() {
+        return Ok(());
+    }
+    let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
+    let records = forge_storage::list_worktree_records(storage.main_worktree())?;
+    let Some(record) = records
+        .iter()
+        .find(|record| same_path(&record.path, &workspace))
+    else {
+        return Ok(());
+    };
+    // A branch may already exist because the operator or the model created one;
+    // adopt it rather than starting a second.
+    if let Some(existing) = record.branch.as_deref() {
+        state
+            .control
+            .set_session_branch(session_id, existing)
+            .await?;
+        publish_actor(state, session_id).await?;
+        return Ok(());
+    }
+    let head = forge_storage::worktree_head(&workspace)?;
+    let dirty = forge_storage::worktree_is_dirty(&workspace)?;
+    let head_moved = task.base_sha.as_deref().is_some_and(|base| base != head);
+    if !dirty && !head_moved {
+        return Ok(());
+    }
+    let branch = unique_session_branch(state, &task.label, session_id)?;
+    {
+        let _git_mutation = state.git_mutation.lock().await;
+        forge_storage::materialize_branch(&workspace, &branch)?;
+    }
+    state
+        .control
+        .set_session_branch(session_id, &branch)
+        .await?;
+    publish_actor(state, session_id).await?;
+    Ok(())
+}
+
+/// `forge/<slug>` from the session label, disambiguated with the session's
+/// short id when another session already took that name.
+fn unique_session_branch(
+    state: &SupervisorState,
+    label: &str,
+    session_id: SessionId,
+) -> Result<String, RepositorySupervisorError> {
+    let slug = forge_storage::session_branch_slug(label);
+    let repo = state.cfg.resolved_workspace.as_path();
+    let base = format!("forge/{slug}");
+    if !forge_storage::branch_exists(repo, &base)? {
+        return Ok(base);
+    }
+    let id = session_id.to_string();
+    let short = id.get(..8).unwrap_or(&id).to_string();
+    Ok(format!("{base}-{short}"))
 }
 
 async fn actor(
@@ -2579,6 +2687,7 @@ mod tests {
             label: label.into(),
             workspace: workspace.to_path_buf(),
             branch: format!("forge/{label}"),
+            base_sha: None,
             ownership: WorktreeOwnership::Managed,
             lifecycle: SessionLifecycle::Active,
             turn_state: SupervisorTurnState::Idle,
@@ -4268,23 +4377,18 @@ mod tests {
             .expect("unnamed task row");
         assert!(task.workspace.exists());
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
-        // The generated identity is a UUID4 shared by the path and branch.
-        let branch_id = task
-            .branch
-            .strip_prefix("forge/session-")
-            .expect("session branch prefix");
-        assert_eq!(branch_id.parse::<SessionId>().unwrap().get_version_num(), 4);
-        assert!(
-            task.workspace
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("session-")),
-            "path: {}",
-            task.workspace.display()
-        );
-        assert_eq!(
-            task.workspace.file_name().unwrap().to_string_lossy(),
-            format!("session-{branch_id}")
-        );
+        // Managed sessions start detached: no branch, and the path keeps the
+        // generated UUID4 identity.
+        assert!(task.branch.is_empty(), "branch: {:?}", task.branch);
+        assert!(task.base_sha.is_some(), "detached base sha missing");
+        let name = task
+            .workspace
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let uuid = name.strip_prefix("session-").expect("session path prefix");
+        assert_eq!(uuid.parse::<SessionId>().unwrap().get_version_num(), 4);
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
@@ -4322,16 +4426,156 @@ mod tests {
             .into_iter()
             .find(|task| task.label == "Rewrite the lexer")
             .expect("prompt-derived label");
-        let branch_id = task
-            .branch
-            .strip_prefix("forge/session-")
-            .expect("session branch prefix");
-        assert_eq!(branch_id.parse::<SessionId>().unwrap().get_version_num(), 4);
+        assert!(task.branch.is_empty(), "branch: {:?}", task.branch);
+        assert!(task.base_sha.is_some(), "detached base sha missing");
 
         handle
             .command(SupervisorCommand::FinalizeCreation { operation_id })
             .await
             .unwrap();
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_managed_session_branches_on_its_first_write() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![forge_types::ToolCall {
+                    id: "1".into(),
+                    name: "write_file".into(),
+                    arguments: serde_json::json!({"path": "new.txt", "content": "hi"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response("done"),
+        ]));
+        let (_supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store.clone()),
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "Fix the parser".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let session_id = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "Fix the parser")
+            .expect("created session")
+            .session_id;
+
+        // Detached at creation: a base commit instead of a branch.
+        let created = control.session(session_id).await.unwrap();
+        assert!(created.branch.is_empty(), "branch: {:?}", created.branch);
+        assert!(created.base_sha.is_some(), "detached base missing");
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "make the change".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+
+        let expected = format!(
+            "forge/{}",
+            forge_storage::session_branch_slug("Fix the parser")
+        );
+        let task = control.session(session_id).await.unwrap();
+        assert_eq!(task.branch, expected, "branch must be named from the label");
+        assert!(
+            task.base_sha.is_none(),
+            "base identity cleared once branched"
+        );
+        assert!(forge_storage::branch_exists(repo.path(), &expected).unwrap());
+        assert!(task.workspace.join("new.txt").exists());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Read-only/research sessions never create a branch.
+    #[tokio::test]
+    async fn a_read_only_managed_session_stays_detached() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "Research the parser".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let session_id = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "Research the parser")
+            .expect("created session")
+            .session_id;
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "just explain it".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+
+        let task = control.session(session_id).await.unwrap();
+        assert!(task.branch.is_empty(), "no branch for a read-only session");
+        assert!(task.base_sha.is_some());
+        assert!(!forge_storage::branch_exists(
+            repo.path(),
+            &format!(
+                "forge/{}",
+                forge_storage::session_branch_slug("Research the parser")
+            )
+        )
+        .unwrap());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
