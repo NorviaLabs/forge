@@ -513,22 +513,18 @@ impl TuiApp {
         } else {
             id
         };
-        let (vendor_label, route_label) = self
-            .connect
-            .profile
-            .as_deref()
-            .map(|pid| self.vendor_route_labels(pid))
-            .unwrap_or((None, None));
+        let (provider, connect_profile, vendor_label, route_label) =
+            self.selected_provider_display();
         StatusModel {
             status: session_view.lifecycle,
             session_short: short,
-            model: self.runtime.model_label.clone(),
-            provider: self.runtime.provider.clone(),
+            model: self.selected_model_label(),
+            provider,
             effort: self.reasoning_effort.value.to_string(),
             ctx_pct: session_view.context_usage_ratio,
             busy: self.busy_state.is_active(),
             busy_phase: self.busy_state.phase().clone(),
-            connect_profile: self.connect.profile.clone(),
+            connect_profile,
             provider_connected,
             vendor_label,
             route_label,

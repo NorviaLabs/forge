@@ -20,6 +20,68 @@ pub(crate) enum SelectedRuntime {
 }
 
 impl TuiApp {
+    /// The model the selected session itself records, when it has one.
+    ///
+    /// Runtime config is startup state and the connect profile is global
+    /// credential state; neither is authoritative once sessions can be
+    /// switched independently. A session may carry a restored route without a
+    /// model (see `restore_saved_auth` and `disconnect`), so callers deciding
+    /// identity must key off the model, not the route.
+    fn selected_session_model(&self) -> Option<&str> {
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => self
+                .session_runtime
+                .as_ref()
+                .map(|session| session.active_model.as_str()),
+            SelectedRuntime::Supervised(_) => self
+                .selected_details()
+                .map(|details| details.active_model.as_str()),
+        }
+        .filter(|model| !model.is_empty())
+    }
+
+    /// The model identity belonging to the selected session, falling back to
+    /// the startup runtime label for a session that has not picked its own.
+    pub(crate) fn selected_model_label(&self) -> String {
+        self.selected_session_model()
+            .map(str::to_string)
+            .unwrap_or_else(|| self.runtime.model_label.clone())
+    }
+
+    /// Resolve the selected session's provider route for display.
+    ///
+    /// Credentials remain global, but the route is part of each session's
+    /// model selection. Only a session that records its own model may claim a
+    /// route; otherwise the global profile preserves the display for legacy
+    /// sessions that predate route persistence.
+    pub(crate) fn selected_provider_display(
+        &self,
+    ) -> (String, Option<String>, Option<String>, Option<String>) {
+        if self.selected_session_model().is_some() {
+            let route_id = self.selected_active_route_id();
+            if let Some(profile) = self.connect.registry.get_by_route(&route_id) {
+                let route_label =
+                    (!profile.route_label.is_empty()).then(|| profile.route_label.clone());
+                return (
+                    profile.id.clone(),
+                    Some(profile.id.clone()),
+                    Some(profile.vendor_label.clone()),
+                    route_label,
+                );
+            }
+        }
+        if let Some(profile_id) = self.connect.profile.as_deref() {
+            let (vendor, route) = self.vendor_route_labels(profile_id);
+            return (
+                self.runtime.provider.clone(),
+                Some(profile_id.to_string()),
+                vendor,
+                route,
+            );
+        }
+        (self.runtime.provider.clone(), None, None, None)
+    }
+
     pub(crate) fn selected_pending_hitl(&self) -> Option<&forge_types::HitlPayload> {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
