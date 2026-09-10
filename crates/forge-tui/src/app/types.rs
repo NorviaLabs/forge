@@ -1577,6 +1577,11 @@ pub struct TuiApp {
     /// supervisor roster events can add siblings without changing render code.
     pub(crate) session_chrome: Vec<SessionChromeItem>,
     pub(crate) task_strip_selection: usize,
+    /// Which tab the left navigator shows (`FORGE-DESIGN §7.7`).
+    pub(crate) navigator_tab: crate::widgets::NavigatorTab,
+    /// Set once the operator picks a tab explicitly; until then the default
+    /// derives from the number of sessions (`Sessions` when >1, else `Files`).
+    pub(crate) navigator_tab_explicit: bool,
     pub(crate) selected_session_id: uuid::Uuid,
     pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) retiring_session_view_states:

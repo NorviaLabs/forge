@@ -1144,6 +1144,59 @@ async fn completed_session_accepts_prompt_while_another_runs() {
         .unwrap();
 }
 
+/// The navigator defaults to `Sessions` only once there is more than one
+/// session; a single session keeps the file tree (`FORGE-DESIGN §7.7`).
+#[tokio::test]
+async fn navigator_defaults_to_sessions_once_a_second_session_exists() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    assert_eq!(
+        app.effective_navigator_tab(),
+        NavigatorTab::Files,
+        "one session keeps the file tree"
+    );
+
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let _ = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    assert_eq!(
+        app.effective_navigator_tab(),
+        NavigatorTab::Sessions,
+        "two sessions default to the list"
+    );
+
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("Sessions"), "{rendered}");
+    assert!(rendered.contains("Files"), "{rendered}");
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// Ctrl+1 / Ctrl+2 flip the navigator tab and stick.
+#[tokio::test]
+async fn ctrl_tab_switches_the_navigator() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.handle_key(press(KeyCode::Char('1'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.navigator_tab_explicit);
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Sessions);
+
+    app.handle_key(press(KeyCode::Char('2'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 fn user_message_count(app: &TuiApp, session_id: uuid::Uuid) -> usize {
     app.supervisor
         .as_ref()

@@ -725,7 +725,7 @@ async fn navigation_hints_match_the_active_chrome_surface() {
     app.focus_block(FocusBlock::TaskStrip);
     assert_eq!(
         app.contextual_hint().as_deref(),
-        Some("←→ select · Enter switch · n new · s stop · c continue · p pin · x archive")
+        Some("↑↓ select · Enter attach · n new · s stop · c continue · x archive · Ctrl+E tabs")
     );
 
     app.focus_block(FocusBlock::Files);
