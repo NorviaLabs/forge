@@ -321,6 +321,9 @@ async fn quit_closes_selected_session_before_exiting_on_last_session() {
 
     app.dispatch_line("/quit").await.unwrap();
     assert!(app.exit.is_requested());
+    // Quitting the last session leaves no runtime selected; the shutdown-path
+    // token report must not panic on the missing runtime.
+    assert_eq!(app.selected_token_usage_report().api.total_api_tokens(), 0);
 
     handle
         .command(forge_session::SupervisorCommand::Shutdown)

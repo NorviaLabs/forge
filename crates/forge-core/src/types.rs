@@ -113,7 +113,7 @@ impl SessionTokenUsage {
 }
 
 /// Snapshot of session token metrics for status UIs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TokenUsageReport {
     pub api: SessionTokenUsage,
     pub context_tokens_est: usize,
