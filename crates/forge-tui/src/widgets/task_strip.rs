@@ -56,9 +56,9 @@ impl Widget for TaskStrip<'_> {
             return;
         }
         let title = if self.focused {
-            " ● TASKS "
+            " ● SESSIONS "
         } else {
-            " TASKS "
+            " SESSIONS "
         };
         let title_style = if self.focused {
             theme::active_panel_border().add_modifier(Modifier::BOLD)

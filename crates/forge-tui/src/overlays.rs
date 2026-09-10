@@ -3255,7 +3255,7 @@ impl Widget for OverlayWidget<'_> {
                     .border_style(theme::border())
                     .style(theme::panel())
                     .title(theme::modal_title(&format!(
-                        "Tasks · {} · Enter switch · n new · a attach · r rename · x archive · d cleanup",
+                        "Sessions · {} · Enter switch · n new · a attach · r rename · x archive · d cleanup",
                         picker_position(selected_position, indices.len())
                     )));
                 let inner = block.inner(r);
@@ -3402,7 +3402,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
-                        .title(theme::modal_title("Rename task")),
+                        .title(theme::modal_title("Rename session")),
                 )
                 .render(r, buf);
             }
@@ -3415,7 +3415,7 @@ impl Widget for OverlayWidget<'_> {
                 let r = centered_rect(68, 36, area);
                 clear_modal(r, buf);
                 let (title, question) = match kind {
-                    SessionConfirmKind::Archive => ("Archive task", "Archive"),
+                    SessionConfirmKind::Archive => ("Archive session", "Archive"),
                     SessionConfirmKind::Cleanup => ("Remove worktree", "Remove the worktree for"),
                 };
                 Paragraph::new(format!(
@@ -3443,7 +3443,7 @@ impl Widget for OverlayWidget<'_> {
                 clear_modal(r, buf);
                 let (title, hint) = match mode {
                     SessionInputMode::New => (
-                        "New managed task",
+                        "New managed session",
                         "Branches from this worktree's committed HEAD.",
                     ),
                     SessionInputMode::Attach => (
@@ -3491,7 +3491,7 @@ impl Widget for OverlayWidget<'_> {
                 let r = centered_rect(72, 36, area);
                 clear_modal(r, buf);
                 Paragraph::new(format!(
-                    "Forge created a managed worktree for `{label}`.\n\nWorkspace:\n{}\n\nTrust this directory before running the task?\n\nEnter trust · Esc roll back",
+                    "Forge created a managed worktree for `{label}`.\n\nWorkspace:\n{}\n\nTrust this directory before running the session?\n\nEnter trust · Esc roll back",
                     workspace
                 ))
                 .block(
@@ -3499,7 +3499,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
-                        .title(theme::modal_title("Trust task worktree")),
+                        .title(theme::modal_title("Trust session worktree")),
                 )
                 .render(r, buf);
             }
