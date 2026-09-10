@@ -347,12 +347,20 @@ impl TuiApp {
                 self.stream.clear_preview();
                 self.stream.thinking.clear();
                 self.busy_state.start(BusyPhase::Model);
+                // Supervised turns are driven by supervisor events, not the
+                // local submit path, so the turn clock must be anchored here or
+                // the live line falls back to `timing.started` (app uptime).
+                self.timing.started = Some(std::time::Instant::now());
+                self.timing.turn_started = Some(std::time::Instant::now());
             }
         } else {
             self.busy_state.stop();
             self.stream.clear_preview();
             self.stream.thinking.clear();
             self.cancellation.take_requested();
+            // The turn ended: clear the anchor so the next turn starts a fresh
+            // clock instead of inheriting this one's age.
+            self.timing.turn_started = None;
         }
         if let Some(details) = snapshot.details.as_ref() {
             self.runtime.model_label = details.active_model.clone();
