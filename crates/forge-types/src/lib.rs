@@ -32,6 +32,97 @@ pub fn strip_protocol_markers(text: &str) -> String {
     out.trim().to_string()
 }
 
+/// Longest session title we keep, in characters.
+pub const TITLE_MAX_CHARS: usize = 60;
+
+/// Derive a human-readable session title from the first user message.
+///
+/// Cuts at the first newline, or at the first `.`/`!`/`?` followed by
+/// whitespace or end-of-input (so `src/main.rs` and `v1.2.3` survive), drops
+/// trailing punctuation, trims to a word boundary at [`TITLE_MAX_CHARS`], and
+/// sentence-cases the result. Falls back to `Untitled session` when nothing
+/// usable remains. Display-only: never used as a path or Git ref.
+pub fn title_from_prompt(prompt: &str) -> String {
+    let first_line = prompt.split('\n').next().unwrap_or("");
+    let cut = sentence_end(first_line).unwrap_or(first_line.len());
+    let head = trim_trailing(first_line[..cut].trim());
+    if head.is_empty() {
+        return "Untitled session".to_string();
+    }
+    let title = trim_trailing(truncate_at_word_boundary(head, TITLE_MAX_CHARS));
+    if title.is_empty() {
+        return "Untitled session".to_string();
+    }
+    sentence_case(title)
+}
+
+/// Byte index of the first sentence terminator followed by whitespace or the
+/// end of the input. A `.` inside `main.rs` or `v1.2.3` is not a boundary.
+fn sentence_end(text: &str) -> Option<usize> {
+    let mut chars = text.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
+        if matches!(c, '.' | '!' | '?') {
+            match chars.peek() {
+                Some((_, next)) if next.is_whitespace() => return Some(index),
+                None => return Some(index),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn is_trailing_punct(c: char) -> bool {
+    matches!(
+        c,
+        '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | ')' | ']'
+    )
+}
+
+fn trim_trailing(text: &str) -> &str {
+    text.trim_end_matches(|c: char| c.is_whitespace() || is_trailing_punct(c))
+}
+
+/// Cut `text` to at most `max` characters, preferring the last whitespace
+/// before the limit so a word is never split. A single over-long token is
+/// hard-cut at `max`.
+fn truncate_at_word_boundary(text: &str, max: usize) -> &str {
+    if text.chars().count() <= max {
+        return text;
+    }
+    let cut = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .nth(max)
+        .unwrap_or(text.len());
+    let head = &text[..cut];
+    match head.rfind(char::is_whitespace) {
+        Some(index) if !head[..index].trim().is_empty() => &head[..index],
+        _ => head,
+    }
+}
+
+/// Uppercase the first character only when the first token is a plain
+/// alphanumeric word, so paths, flags, and versions keep their casing.
+fn sentence_case(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let plain_word = text
+        .split_whitespace()
+        .next()
+        .is_some_and(|token| token.chars().all(|c| c.is_ascii_alphanumeric()));
+    if plain_word && first.is_ascii_lowercase() {
+        let mut out = String::with_capacity(text.len() + 1);
+        out.extend(first.to_uppercase());
+        out.push_str(chars.as_str());
+        out
+    } else {
+        text.to_string()
+    }
+}
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -795,6 +886,65 @@ pub struct BackgroundTaskId(pub u64);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_from_prompt_sentence_cases_the_opening() {
+        assert_eq!(title_from_prompt("rewrite the lexer"), "Rewrite the lexer");
+        assert_eq!(
+            title_from_prompt("fix the login bug and then run the tests"),
+            "Fix the login bug and then run the tests"
+        );
+    }
+
+    #[test]
+    fn title_from_prompt_cuts_at_a_newline_or_sentence_end() {
+        assert_eq!(
+            title_from_prompt("Fix auth\nDetails follow here"),
+            "Fix auth"
+        );
+        assert_eq!(
+            title_from_prompt("Fix the login bug. Then run tests"),
+            "Fix the login bug"
+        );
+        // Dots that are not sentence boundaries must survive.
+        assert_eq!(
+            title_from_prompt("Upgrade to v1.2.3 now"),
+            "Upgrade to v1.2.3 now"
+        );
+        assert_eq!(
+            title_from_prompt("fix src/main.rs parser"),
+            "Fix src/main.rs parser"
+        );
+    }
+
+    #[test]
+    fn title_from_prompt_preserves_code_like_openings() {
+        assert_eq!(title_from_prompt("--help fails"), "--help fails");
+        assert_eq!(
+            title_from_prompt("src/main.rs breaks"),
+            "src/main.rs breaks"
+        );
+        assert_eq!(title_from_prompt("API key missing"), "API key missing");
+    }
+
+    #[test]
+    fn title_from_prompt_falls_back_when_empty() {
+        assert_eq!(title_from_prompt(""), "Untitled session");
+        assert_eq!(title_from_prompt("   "), "Untitled session");
+        assert_eq!(title_from_prompt("!!! ???"), "Untitled session");
+        assert_eq!(title_from_prompt("\nbody only"), "Untitled session");
+    }
+
+    #[test]
+    fn title_from_prompt_truncates_at_a_word_boundary() {
+        let long = "word ".repeat(40);
+        let title = title_from_prompt(&long);
+        assert!(title.chars().count() <= TITLE_MAX_CHARS, "{title:?}");
+        assert!(!title.ends_with(' '), "{title:?}");
+        // A single over-long token is hard-cut, not dropped.
+        let token = "a".repeat(200);
+        assert_eq!(title_from_prompt(&token).chars().count(), TITLE_MAX_CHARS);
+    }
 
     #[test]
     fn task_lifecycle_roundtrip() {
