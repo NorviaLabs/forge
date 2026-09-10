@@ -230,24 +230,14 @@ pub enum ChatItem {
     QuestionPending(QuestionPendingPresentation),
     /// Structured TODO checklist from the `update_plan` tool.
     ///
-    /// Only the newest one survives in the transcript: see [`Self::PlanUpdated`].
+    /// Only the newest one survives in the transcript; superseded cards are
+    /// removed, not replaced with a line, so the checklist is the single plan
+    /// surface (issue #609).
     PlanChecklist {
         explanation: Option<String>,
         steps: Vec<forge_types::PlanItem>,
         /// Tool subjects observed while each step was the one in progress.
         evidence: Vec<Vec<String>>,
-    },
-    /// What a superseded `update_plan` call changed, in one line.
-    ///
-    /// Every call used to print the whole checklist again, so a six-step turn
-    /// left six near-identical lists down the transcript. The list itself is
-    /// state, and state belongs in one place — the card, kept at the live
-    /// edge. What history wants is the event: at this point, the plan moved.
-    PlanUpdated {
-        done: usize,
-        total: usize,
-        /// The step that was in progress at that point, if any.
-        step: Option<String>,
     },
     Banner {
         text: String,
@@ -499,35 +489,21 @@ fn plan_evidence_subject(name: &str, call: Option<&ToolCall>) -> String {
     }
 }
 
-/// Replace the newest plan card, if there is one, with a one-line record of
-/// where it had got to.
+/// Retire the newest plan card, if there is one.
 ///
 /// Called just before a newer card is pushed, so at most one checklist is ever
-/// in the transcript and it is always the current one. The line stays at the
-/// position the superseded card held, which is where that update happened.
-fn supersede_plan_checklist(items: &mut [ChatItem]) {
+/// in the transcript and it is always the current one. The superseded card is
+/// removed outright: the checklist heading already reports completed/total and
+/// the current step, so a `Plan updated · N of M done` line beside it was a
+/// second copy of the same state (issue #609 / FORGE-DESIGN §9.4).
+fn supersede_plan_checklist(items: &mut Vec<ChatItem>) {
     let Some(slot) = items
         .iter()
         .rposition(|item| matches!(item, ChatItem::PlanChecklist { .. }))
     else {
         return;
     };
-    let ChatItem::PlanChecklist { steps, .. } = &items[slot] else {
-        return;
-    };
-    let done = steps
-        .iter()
-        .filter(|item| item.status == forge_types::PlanStepStatus::Completed)
-        .count();
-    let step = steps
-        .iter()
-        .find(|item| item.status == forge_types::PlanStepStatus::InProgress)
-        .map(|item| item.step.clone());
-    items[slot] = ChatItem::PlanUpdated {
-        done,
-        total: steps.len(),
-        step,
-    };
+    items.remove(slot);
 }
 
 /// An approval request reduced to what the transcript displays: the command
@@ -1854,16 +1830,6 @@ fn semantic_blocks_from_items(
                     },
                 ));
             }
-            ChatItem::PlanUpdated { done, total, step } => {
-                flush_progress(&mut blocks, &mut progress);
-                flush_activity(&mut blocks, &mut activity_group);
-                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
-                    text: match step {
-                        Some(step) => format!("Plan updated · {done} of {total} done · {step}"),
-                        None => format!("Plan updated · {done} of {total} done"),
-                    },
-                }));
-            }
             ChatItem::System { text } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
@@ -2885,11 +2851,11 @@ mod tests {
         }
     }
 
-    /// A turn that revises its plan four times used to leave four
-    /// near-identical checklists stacked down the transcript. The list is
-    /// state: one card, and one line of history per revision.
+    /// A turn that revises its plan several times leaves exactly one card:
+    /// the superseded checklist is removed, not collapsed into a second
+    /// "Plan updated" line beside it (issue #609).
     #[test]
-    fn a_revised_plan_replaces_its_card_and_leaves_a_line() {
+    fn a_revised_plan_leaves_only_the_current_card() {
         let mut items = vec![ChatItem::PlanChecklist {
             explanation: None,
             steps: vec![
@@ -2919,18 +2885,18 @@ mod tests {
             1,
             "only the current plan should remain as a card"
         );
-        // The record keeps where the superseded card had got to, at the
-        // position it held.
-        assert!(
-            matches!(
-                &items[0],
-                ChatItem::PlanUpdated { done, total, step }
-                    if *done == 1
-                        && *total == 3
-                        && step.as_deref() == Some("Add the dark palette")
-            ),
-            "{:?}",
-            items[0]
+        // The superseded card is gone entirely — no leftover summary line.
+        assert_eq!(items.len(), 1, "no second surface left behind: {items:?}");
+        let ChatItem::PlanChecklist { steps, .. } = &items[0] else {
+            panic!("the surviving item must be the checklist: {:?}", items[0]);
+        };
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|s| s.status == PlanStepStatus::Completed)
+                .count(),
+            2,
+            "the surviving card is the newest revision"
         );
     }
 
@@ -2968,18 +2934,17 @@ mod tests {
     }
 
     /// Nothing to supersede on the first call: the plan appears as a card and
-    /// no history line is invented for an update that never happened.
+    /// the transcript is otherwise untouched.
     #[test]
-    fn a_first_plan_leaves_no_history_line() {
+    fn a_first_plan_retires_nothing() {
         let mut items = vec![ChatItem::Assistant {
             text: "here is the plan".into(),
         }];
 
         supersede_plan_checklist(&mut items);
 
-        assert!(items
-            .iter()
-            .all(|item| !matches!(item, ChatItem::PlanUpdated { .. })));
+        assert_eq!(items.len(), 1, "no-op with no plan card present");
+        assert!(matches!(items[0], ChatItem::Assistant { .. }));
     }
 
     use super::*;
