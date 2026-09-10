@@ -123,7 +123,9 @@ impl AgentSession {
             // owns the proxy, so `egress` here is None — the child holds a
             // grant, not the listener.
             tool_ctx: {
-                let mut ctx = ToolContext::new(workspace).with_session_tmp(session_tmp);
+                let mut ctx = ToolContext::new(workspace)
+                    .with_session_id(session_id)
+                    .with_session_tmp(session_tmp);
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx
             },
@@ -230,7 +232,9 @@ impl AgentSession {
             // owns the proxy, so `egress` here is None — the child holds a
             // grant, not the listener.
             tool_ctx: {
-                let mut ctx = ToolContext::new(workspace).with_session_tmp(session_tmp);
+                let mut ctx = ToolContext::new(workspace)
+                    .with_session_id(session_id)
+                    .with_session_tmp(session_tmp);
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx
             },

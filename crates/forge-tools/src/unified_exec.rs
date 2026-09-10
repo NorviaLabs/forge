@@ -74,6 +74,7 @@ fn default_stdin_yield() -> u64 {
 }
 
 struct Session {
+    owner: Option<forge_types::SessionId>,
     command: String,
     shell: String,
     confined: bool,
@@ -611,6 +612,7 @@ async fn start(
         }
     };
     let session = Session {
+        owner: ctx.session_id,
         command: args.cmd.clone(),
         shell: shell.to_string(),
         confined,
@@ -702,7 +704,7 @@ impl Tool for WriteStdinTool {
     fn side_effect_class(&self) -> SideEffectClass {
         SideEffectClass::Exec
     }
-    async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: WriteStdinArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
         let session = self
@@ -716,6 +718,12 @@ impl Tool for WriteStdinTool {
                 ToolError::Execution(format!("unknown shell session {}", args.session_id))
             })?;
         let mut session = session.lock().await;
+        if session.owner != ctx.session_id {
+            return Err(ToolError::Execution(format!(
+                "shell session {} belongs to another session",
+                args.session_id
+            )));
+        }
         if !args.chars.is_empty() {
             write_process_input(&mut session.process, &args.chars).await?;
         }
@@ -911,6 +919,31 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("unknown shell session"));
+    }
+
+    #[tokio::test]
+    async fn sessions_cannot_cross_session_owners() {
+        let dir = tempdir().unwrap();
+        let first_ctx = ToolContext::new(dir.path().to_path_buf())
+            .with_session_id(forge_types::SessionId::new_v4());
+        let second_ctx = ToolContext::new(dir.path().to_path_buf())
+            .with_session_id(forge_types::SessionId::new_v4());
+        let (exec_command, write_stdin) = unified_exec_tools();
+        let first = exec_command
+            .call(&first_ctx, json!({"cmd": "sleep 1", "yield_time_ms": 20}))
+            .await
+            .unwrap();
+        let id = serde_json::from_str::<Value>(&first.content).unwrap()["session_id"]
+            .as_u64()
+            .unwrap();
+
+        let error = write_stdin
+            .call(&second_ctx, json!({"session_id": id, "yield_time_ms": 20}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("belongs to another session"));
+
+        exec_command.shutdown().await;
     }
 
     #[tokio::test]
