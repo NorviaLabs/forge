@@ -42,7 +42,7 @@ layout-blocks:
 focus-blocks:
   order: [TaskStrip, Search, Files, Workspace, Sidebar, Approval, Composer, Footer, BottomPanel]
   labels:
-    TaskStrip: TASKS
+    TaskStrip: SESSIONS
     Search: SEARCH
     Files: FILES
     Workspace: CHAT
@@ -398,7 +398,7 @@ TaskStrip → Search → Files → Workspace(CHAT) → Sidebar → Approval → 
 - A handled event never falls through to another block.
 - `Esc` pops exactly one interaction level.
 
-The canonical label vocabulary is `TASKS SEARCH FILES CHAT SIDEBAR COMPOSER FOOTER PANEL APPROVAL` (`types.rs::FocusBlock::label`). Labels identify the active block in help and status contexts; panes themselves carry `>` title rows, not label tags.
+The canonical label vocabulary is `SESSIONS SEARCH FILES CHAT SIDEBAR COMPOSER FOOTER PANEL APPROVAL` (`types.rs::FocusBlock::label`). Labels identify the active block in help and status contexts; panes themselves carry `>` title rows, not label tags.
 
 ### 8.2 Modes
 
