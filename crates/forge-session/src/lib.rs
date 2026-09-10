@@ -154,7 +154,9 @@ async fn open_session_with_model(
     let mut notices = cfg.refused_key_notices();
     if !cfg.mcp.servers.is_empty() {
         let mut mgr = McpManager::new();
-        let errors = mgr.connect_all(&cfg.mcp.servers).await;
+        let errors = mgr
+            .connect_all_in_workspace(&cfg.mcp.servers, cfg.workspace_root())
+            .await;
         for e in errors {
             notices.push(format!("mcp: {e}"));
         }

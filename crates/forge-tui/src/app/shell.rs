@@ -130,16 +130,47 @@ impl Drop for TerminalEventSource {
 }
 
 impl TuiApp {
-    pub(super) fn poll_interactive_terminal(&mut self) -> bool {
+    /// Service every terminal owned by the application, including terminals
+    /// moved into saved session views. A saved terminal still has a live PTY;
+    /// polling only the selected view lets its bounded reader queue fill and
+    /// eventually back up the child process.
+    pub(super) fn poll_interactive_terminals(&mut self) -> bool {
+        let mut active_changed = false;
         if let Some(terminal) = self.interactive_terminal.as_mut() {
-            let changed = terminal.poll();
+            active_changed = terminal.poll();
             if terminal.take_command_completion().is_some() {
-                return true;
+                active_changed = true;
             }
-            changed
-        } else {
-            false
         }
+        for state in self.session_view_states.values_mut() {
+            if let Some(terminal) = state.interactive_terminal.as_mut() {
+                let _ = terminal.poll();
+            }
+        }
+        for state in self.retiring_session_view_states.values_mut() {
+            if let Some(terminal) = state.interactive_terminal.as_mut() {
+                let _ = terminal.poll();
+            }
+        }
+        active_changed
+    }
+
+    pub(super) fn any_interactive_terminal_running(&self) -> bool {
+        self.interactive_terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.running)
+            || self.session_view_states.values().any(|state| {
+                state
+                    .interactive_terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.running)
+            })
+            || self.retiring_session_view_states.values().any(|state| {
+                state
+                    .interactive_terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.running)
+            })
     }
 
     pub(super) fn resize_interactive_terminal(&mut self, width: u16, height: u16) {
@@ -642,7 +673,7 @@ mod tests {
 pub(super) async fn tick_application(app: &mut TuiApp) -> Result<bool, TuiError> {
     app.poll_supervisor_events();
     app.poll_file_changes();
-    let terminal_changed = app.poll_interactive_terminal();
+    let terminal_changed = app.poll_interactive_terminals();
     if let Some(editor) = app.editor_session.as_mut() {
         editor.refresh_pending_highlights();
     }
@@ -870,11 +901,7 @@ async fn run_loop(
         frame_dirty |= tick_application(app).await?;
         let is_animating = app.busy_state.is_active()
             || app.pending_approved_tool.is_some()
-            || app.bottom_panel.open
-                && app
-                    .interactive_terminal
-                    .as_ref()
-                    .is_some_and(|terminal| terminal.running);
+            || app.any_interactive_terminal_running();
         if frame_dirty || is_animating || last_idle_draw.elapsed() >= IDLE_REDRAW_INTERVAL {
             terminal.draw(|f| app.draw(f))?;
             frame_dirty = false;
@@ -907,7 +934,7 @@ async fn run_loop(
             continue;
         }
 
-        let input_wait = if app.interactive_terminal.is_some() {
+        let input_wait = if app.any_interactive_terminal_running() {
             Duration::from_millis(20)
         } else {
             Duration::from_millis(200)
@@ -931,7 +958,7 @@ async fn run_loop(
             #[cfg(test)]
             app.test_events.push_front(event);
             drain_events(app, Some(terminal)).await?;
-            app.poll_interactive_terminal();
+            app.poll_interactive_terminals();
             // Next loop iteration draws once after all input and background polls.
         }
     }

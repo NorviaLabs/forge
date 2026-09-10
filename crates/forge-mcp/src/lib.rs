@@ -1,6 +1,7 @@
 //! MCP protocol (protocol-mcp.md) — CORE-02 Phase 1.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -111,17 +112,21 @@ pub struct McpStdioClient {
 async fn spawn_retrying_text_file_busy(
     command: &str,
     args: &[String],
+    current_dir: Option<&Path>,
 ) -> Result<Child, std::io::Error> {
     const ETXTBSY: i32 = 26;
     const MAX_ATTEMPTS: u32 = 5;
     for attempt in 1..=MAX_ATTEMPTS {
-        match Command::new(command)
+        let mut child_command = Command::new(command);
+        child_command
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
+            .stderr(Stdio::null());
+        if let Some(current_dir) = current_dir {
+            child_command.current_dir(current_dir);
+        }
+        match child_command.spawn() {
             Ok(child) => return Ok(child),
             Err(err) if err.raw_os_error() == Some(ETXTBSY) && attempt < MAX_ATTEMPTS => {
                 tokio::time::sleep(Duration::from_millis(10 * attempt as u64)).await;
@@ -134,13 +139,29 @@ async fn spawn_retrying_text_file_busy(
 
 impl McpStdioClient {
     pub async fn spawn(cfg: &McpServerConfig) -> Result<Self, McpError> {
+        Self::spawn_with_workspace(cfg, None).await
+    }
+
+    /// Spawn an MCP server with its process working directory bound to the
+    /// session workspace.
+    pub async fn spawn_in_workspace(
+        cfg: &McpServerConfig,
+        workspace: &Path,
+    ) -> Result<Self, McpError> {
+        Self::spawn_with_workspace(cfg, Some(workspace)).await
+    }
+
+    async fn spawn_with_workspace(
+        cfg: &McpServerConfig,
+        workspace: Option<&Path>,
+    ) -> Result<Self, McpError> {
         if cfg.transport != "stdio" {
             return Err(McpError::Protocol(format!(
                 "unsupported transport {}",
                 cfg.transport
             )));
         }
-        let mut child = spawn_retrying_text_file_busy(&cfg.command, &cfg.args).await?;
+        let mut child = spawn_retrying_text_file_busy(&cfg.command, &cfg.args, workspace).await?;
         let stdin = child
             .stdin
             .take()
@@ -396,9 +417,28 @@ impl McpManager {
     }
 
     pub async fn connect_all(&mut self, servers: &[McpServerConfig]) -> Vec<String> {
+        self.connect_all_with_workspace(servers, None).await
+    }
+
+    /// Connect MCP servers with each child process rooted in the session
+    /// workspace.
+    pub async fn connect_all_in_workspace(
+        &mut self,
+        servers: &[McpServerConfig],
+        workspace: &Path,
+    ) -> Vec<String> {
+        self.connect_all_with_workspace(servers, Some(workspace))
+            .await
+    }
+
+    async fn connect_all_with_workspace(
+        &mut self,
+        servers: &[McpServerConfig],
+        workspace: Option<&Path>,
+    ) -> Vec<String> {
         let mut errors = Vec::new();
         for s in servers {
-            match McpStdioClient::spawn(s).await {
+            match McpStdioClient::spawn_with_workspace(s, workspace).await {
                 Ok(c) => {
                     self.clients.insert(s.id.clone(), Arc::new(c));
                     self.side_effect_classes
@@ -607,6 +647,33 @@ while IFS= read -r line; do
       ;;
     *'"method":"tools/list"'*)
       printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}},{"name":"ping","description":"Ping","inputSchema":{"type":"object"}}]}}'
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    #[cfg(unix)]
+    fn fixture_server_records_cwd() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+output="$1"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      pwd -P > "$output"
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
       ;;
   esac
 done
@@ -997,6 +1064,43 @@ done
         let mut registry = ToolRegistry::new();
         manager.register_into(&mut registry).await.unwrap();
         assert!(registry.names().is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn separate_session_mcp_servers_start_in_their_own_workspaces() {
+        let server = fixture_server_records_cwd();
+        let workspace_a = tempfile::tempdir().unwrap();
+        let workspace_b = tempfile::tempdir().unwrap();
+        let cwd_a = workspace_a.path().join("mcp-cwd.txt");
+        let cwd_b = workspace_b.path().join("mcp-cwd.txt");
+
+        let mut cfg_a = fixture_cfg(&server);
+        cfg_a.id = "session-a".into();
+        cfg_a.args = vec![cwd_a.to_string_lossy().into_owned()];
+        let mut cfg_b = fixture_cfg(&server);
+        cfg_b.id = "session-b".into();
+        cfg_b.args = vec![cwd_b.to_string_lossy().into_owned()];
+
+        let mut manager_a = McpManager::new();
+        assert!(manager_a
+            .connect_all_in_workspace(&[cfg_a], workspace_a.path())
+            .await
+            .is_empty());
+        let mut manager_b = McpManager::new();
+        assert!(manager_b
+            .connect_all_in_workspace(&[cfg_b], workspace_b.path())
+            .await
+            .is_empty());
+
+        assert_eq!(
+            std::fs::read_to_string(cwd_a).unwrap().trim(),
+            workspace_a.path().canonicalize().unwrap().to_string_lossy()
+        );
+        assert_eq!(
+            std::fs::read_to_string(cwd_b).unwrap().trim(),
+            workspace_b.path().canonicalize().unwrap().to_string_lossy()
+        );
     }
 
     #[tokio::test]

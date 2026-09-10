@@ -247,12 +247,16 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
-                if self
+                if !self.begin_session_view_retirement(session_id) {
+                    return Ok(());
+                }
+                let removed = self
                     .send_session_command(forge_session::SupervisorCommand::RemoveManagedWorktree {
                         session_id,
                     })
-                    .await
-                {
+                    .await;
+                self.finish_session_view_retirement(session_id, removed);
+                if removed {
                     self.set_feedback(FeedbackSeverity::Ok, "worktree removed · branch kept");
                 }
                 self.overlay = None;

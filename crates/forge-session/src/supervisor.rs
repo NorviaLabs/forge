@@ -33,6 +33,10 @@ pub struct SessionRuntimeSnapshot {
     pub transcript: TranscriptSnapshot,
     pub details: Option<SessionDetailsSnapshot>,
     pub queued_prompts: Vec<(u64, String)>,
+    /// Prompts whose dispatch crossed the claim boundary but never reached a
+    /// durable terminal result. These require explicit operator review and
+    /// are never fed back into the runnable queue automatically.
+    pub interrupted_prompts: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +215,8 @@ pub enum RepositorySupervisorError {
     Closed,
     #[error("session actor is busy running a turn")]
     Contention,
+    #[error("session `{0}` is retiring its workspace resources")]
+    Retiring(SessionId),
     #[error("supervisor command failed: {0}")]
     Command(String),
 }
@@ -266,6 +272,7 @@ struct SessionActor {
     session: Mutex<AgentSession>,
     snapshot: RwLock<SessionRuntimeSnapshot>,
     driving: AtomicBool,
+    retiring: AtomicBool,
     running_cancel: StdMutex<Option<CancellationToken>>,
     /// The session's own model client, so provider-env updates reach a busy
     /// actor without waiting on its session lock.
@@ -273,19 +280,26 @@ struct SessionActor {
 }
 
 impl SessionActor {
-    fn new(task: RepositorySession, session: AgentSession) -> Self {
+    fn new(
+        task: RepositorySession,
+        session: AgentSession,
+        queued_prompts: Vec<(u64, String)>,
+        interrupted_prompts: Vec<(u64, String)>,
+    ) -> Self {
         let model = session.model_client();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
             transcript: TranscriptSnapshot::capture(&session),
             details: Some(SessionDetailsSnapshot::capture(&session)),
-            queued_prompts: Vec::new(),
+            queued_prompts,
+            interrupted_prompts,
         };
         Self {
             session: Mutex::new(session),
             snapshot: RwLock::new(snapshot),
             driving: AtomicBool::new(false),
+            retiring: AtomicBool::new(false),
             running_cancel: StdMutex::new(None),
             model,
         }
@@ -303,12 +317,28 @@ impl SessionActor {
             false
         }
     }
+
+    fn begin_retirement(&self) -> bool {
+        self.retiring
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn finish_retirement(&self) {
+        self.retiring.store(false, Ordering::Release);
+    }
 }
 
 struct SupervisorState {
     cfg: Config,
     model: Arc<dyn ModelClient>,
     control: Arc<RepositoryControl>,
+    /// Forge-managed worktree/ref administration is shared Git authority.
+    /// The repository lease excludes other Forge processes; this gate keeps
+    /// detached create/attach/remove operations in this process from racing
+    /// over the common worktree metadata. Explicit user `git` tools remain
+    /// shared operator authority under the cooperative isolation contract.
+    git_mutation: Arc<Mutex<()>>,
     actors: RwLock<HashMap<SessionId, Arc<SessionActor>>>,
     unavailable_tasks: RwLock<Vec<RepositorySession>>,
     permits: Arc<Semaphore>,
@@ -399,6 +429,7 @@ pub struct RepositoryBootstrap {
     lease: RepositoryLease,
     control: Arc<RepositoryControl>,
     main_worktree: PathBuf,
+    git_mutation: Arc<Mutex<()>>,
 }
 
 impl RepositoryBootstrap {
@@ -413,6 +444,7 @@ impl RepositoryBootstrap {
             lease,
             control,
             main_worktree: storage.main_worktree().to_path_buf(),
+            git_mutation: Arc::new(Mutex::new(())),
         })
     }
 
@@ -433,6 +465,7 @@ impl RepositoryBootstrap {
                 .await?;
             let removed = match stale.workspace.as_ref() {
                 Some(workspace) if workspace.is_dir() => {
+                    let _git_mutation = self.git_mutation.lock().await;
                     forge_storage::remove_clean_worktree(&self.main_worktree, workspace).is_ok()
                 }
                 _ => true,
@@ -480,6 +513,7 @@ impl RepositorySupervisor {
             lease,
             control,
             main_worktree,
+            git_mutation,
         } = bootstrap;
         let worktrees = forge_storage::list_worktree_records(&main_worktree)?;
         control.reconcile_worktrees(&worktrees).await?;
@@ -580,6 +614,7 @@ impl RepositorySupervisor {
             cfg.clone(),
             model,
             None,
+            git_mutation,
         )
         .await
     }
@@ -699,6 +734,7 @@ impl RepositorySupervisor {
             cfg.clone(),
             model,
             None,
+            Arc::new(Mutex::new(())),
         )
         .await
     }
@@ -735,6 +771,7 @@ impl RepositorySupervisor {
             cfg,
             model,
             trust_store,
+            Arc::new(Mutex::new(())),
         )
         .await
     }
@@ -749,16 +786,30 @@ impl RepositorySupervisor {
         cfg: Config,
         model: Arc<dyn ModelClient>,
         trust_store: Option<PathBuf>,
+        git_mutation: Arc<Mutex<()>>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let (events, _) = broadcast::channel(512);
-        let actors = sessions
-            .into_iter()
-            .map(|(task, session)| (task.session_id, Arc::new(SessionActor::new(task, session))))
-            .collect();
+        let recovered = control.reconcile_running_prompt_claims().await?;
+        let mut actors = HashMap::with_capacity(sessions.len());
+        for (mut task, session) in sessions {
+            // `reconcile_running_prompt_claims` also repairs the durable task
+            // row. Refresh the copy handed to the actor before its first
+            // roster snapshot so a restart cannot show it as running.
+            if recovered.iter().any(|(id, _, _)| *id == task.session_id) {
+                task.turn_state = SupervisorTurnState::Interrupted;
+            }
+            let interrupted = control.interrupted_prompts(task.session_id).await?;
+            let queued = control.queued_prompts(task.session_id).await?;
+            actors.insert(
+                task.session_id,
+                Arc::new(SessionActor::new(task, session, queued, interrupted)),
+            );
+        }
         let state = Arc::new(SupervisorState {
             cfg,
             model,
             control,
+            git_mutation,
             actors: RwLock::new(actors),
             unavailable_tasks: RwLock::new(unavailable_tasks),
             permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
@@ -773,6 +824,13 @@ impl RepositorySupervisor {
         };
         tokio::spawn(run_commands(state, receiver));
         supervisor.publish_roster().await;
+        for (session_id, _, _) in recovered {
+            let _ = supervisor.state.events.send(SupervisorEvent::Attention {
+                session_id,
+                state: SupervisorTurnState::Interrupted,
+                message: "A prompt was interrupted; review it before retrying".into(),
+            });
+        }
         Ok((supervisor, handle))
     }
 
@@ -802,7 +860,9 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(200));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut deferred = std::collections::VecDeque::new();
+    let mut operations = tokio::task::JoinSet::new();
     loop {
+        while operations.try_join_next().is_some() {}
         // New arrivals win over deferred contention retries, so a command
         // waiting on a busy actor never head-of-line-blocks unrelated
         // sessions (or a Shutdown) behind it.
@@ -817,21 +877,31 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                         None => break,
                     },
                     _ = poll.tick() => {
-                        let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
-                        for task_actor in actors {
-                            if let Ok(mut session) = task_actor.session.try_lock() {
-                                if session.background().list().any(|task| !task.status.is_terminal()) {
-                                    let _ = session.poll_background_tasks().await;
-                                    let _ = refresh_actor(&state, &task_actor, &session).await;
-                                }
-                            }
-                        }
+                        poll_background_tasks(&state).await;
                         continue;
                     }
                 },
             },
         };
         let shutdown = matches!(envelope.command, SupervisorCommand::Shutdown);
+        if runs_outside_command_loop(&envelope.command) {
+            let command = envelope.command.clone();
+            let reply = envelope.reply;
+            let session_id = command_session_id(&command);
+            let operation_state = state.clone();
+            operations.spawn(async move {
+                let result = execute_detached_command(operation_state.clone(), command).await;
+                let result = result.map_err(|error| error.to_string());
+                if let Err(message) = &result {
+                    let _ = operation_state.events.send(SupervisorEvent::Error {
+                        session_id,
+                        message: message.clone(),
+                    });
+                }
+                let _ = reply.send(result);
+            });
+            continue;
+        }
         // Cloned: a contended command is requeued whole, so the loop keeps
         // ownership of the envelope.
         let command = execute_command(state.clone(), envelope.command.clone());
@@ -898,7 +968,50 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
         }
         let _ = envelope.reply.send(result);
         if shutdown {
+            // Long-running operations own their reply channels and are tracked
+            // here so shutdown does not leave a compaction, MCP startup, or
+            // worktree mutation detached after the command loop exits.
+            while operations.join_next().await.is_some() {}
             break;
+        }
+    }
+}
+
+/// Commands whose work can wait on a provider, MCP process, or Git operation
+/// must not occupy the shared command dispatcher. Their operation task still
+/// uses the actor mutex, so commands for the same session retain ordering;
+/// unrelated sessions continue to receive commands while the operation waits.
+fn runs_outside_command_loop(command: &SupervisorCommand) -> bool {
+    matches!(
+        command,
+        SupervisorCommand::CreateSession { .. }
+            | SupervisorCommand::AttachWorktree { .. }
+            | SupervisorCommand::RemoveManagedWorktree { .. }
+            | SupervisorCommand::CompactContext { .. }
+    )
+}
+
+fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
+    match command {
+        SupervisorCommand::RemoveManagedWorktree { session_id }
+        | SupervisorCommand::CompactContext { session_id } => Some(*session_id),
+        _ => None,
+    }
+}
+
+async fn execute_detached_command(
+    state: Arc<SupervisorState>,
+    command: SupervisorCommand,
+) -> Result<(), RepositorySupervisorError> {
+    loop {
+        match execute_command(state.clone(), command.clone()).await {
+            Err(RepositorySupervisorError::Contention) => {
+                // A turn or another operation owns this actor. Retrying in
+                // the operation task keeps the shared command loop available
+                // and preserves the existing FIFO contention behavior.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            result => return result,
         }
     }
 }
@@ -911,6 +1024,11 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
 fn try_session(
     task_actor: &SessionActor,
 ) -> Result<tokio::sync::MutexGuard<'_, AgentSession>, RepositorySupervisorError> {
+    if task_actor.retiring.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Command(
+            "session actor is retiring its workspace resources".into(),
+        ));
+    }
     task_actor
         .session
         .try_lock()
@@ -938,6 +1056,13 @@ async fn execute_command(
             } else {
                 label
             };
+            // Worktree allocation and repository-local runtime setup both
+            // update shared Git administration (the common exclude file is
+            // one example). Keep the whole creation binding under the same
+            // process-wide gate, including session assembly's journal setup,
+            // so another managed attach/remove cannot observe half-complete
+            // repository state.
+            let _git_mutation = state.git_mutation.lock().await;
             let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
             let base_dir = storage.path_for(RuntimeDataKind::Worktree)?;
             let pending = state
@@ -1007,8 +1132,14 @@ async fn execute_command(
                     Some(pending.operation_id),
                 )
                 .await?;
-            let actor = Arc::new(SessionActor::new(task.clone(), opened.session));
+            let actor = Arc::new(SessionActor::new(
+                task.clone(),
+                opened.session,
+                Vec::new(),
+                Vec::new(),
+            ));
             state.actors.write().await.insert(task.session_id, actor);
+            drop(_git_mutation);
             if first_prompt.is_some() {
                 // A parked prompt runs as soon as the operator confirms
                 // trust, so the creation pauses on the trust modal. The
@@ -1052,6 +1183,11 @@ async fn execute_command(
             label,
             branch,
         } => {
+            // Hold the Git administration gate from the initial ownership
+            // check through session storage setup and the final durable bind.
+            // The second validation remains deliberate: it checks the
+            // immutable path/branch binding immediately before registration.
+            let _git_mutation = state.git_mutation.lock().await;
             let workspace = validate_attach_target(&state, &workspace, &branch)?;
             let mut task_cfg = state.cfg.clone();
             task_cfg.resolved_workspace = workspace.clone();
@@ -1070,7 +1206,7 @@ async fn execute_command(
                     ATTACH_SESSION_INIT_TIMEOUT.as_secs()
                 ))
             })??;
-            let task = NewRepositorySession {
+            let mut task = NewRepositorySession {
                 session_id: opened.session.session_id,
                 label,
                 workspace,
@@ -1081,18 +1217,41 @@ async fn execute_command(
                 route_id: opened.session.active_route_id.clone(),
                 reasoning_effort: None,
             };
+            // Recheck the immutable worktree binding immediately before the
+            // durable attach. The first check selected the workspace for
+            // session assembly; this one closes the gap where a concurrent
+            // Forge-managed removal could otherwise detach it underneath us.
+            task.workspace = validate_attach_target(&state, &task.workspace, &task.branch)?;
             state.control.register_session(task.clone(), None).await?;
             let actor_task = state.control.session(task.session_id).await?;
             state.actors.write().await.insert(
                 task.session_id,
-                Arc::new(SessionActor::new(actor_task, opened.session)),
+                Arc::new(SessionActor::new(
+                    actor_task,
+                    opened.session,
+                    Vec::new(),
+                    Vec::new(),
+                )),
             );
+            drop(_git_mutation);
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::ArchiveSession { session_id } => {
-            state.control.archive(session_id).await?;
+            let task_actor = retire_actor_resources(&state, session_id, false).await?;
+            if let Some(task_actor) = &task_actor {
+                let session = task_actor.session.lock().await;
+                if let Err(error) = refresh_actor(&state, task_actor, &session).await {
+                    task_actor.finish_retirement();
+                    return Err(error);
+                }
+            }
+            let result = state.control.archive(session_id).await;
+            if let Some(task_actor) = task_actor {
+                task_actor.finish_retirement();
+            }
+            result?;
             publish_actor(&state, session_id).await?;
         }
         SupervisorCommand::RenameSession { session_id, label } => {
@@ -1111,6 +1270,31 @@ async fn execute_command(
         }
         SupervisorCommand::RemoveManagedWorktree { session_id } => {
             let task = state.control.session(session_id).await?;
+            if task.lifecycle == SessionLifecycle::Removed {
+                // A process may have been restarted after the durable state
+                // was written but before the in-memory actor map was rebuilt.
+                // Removed is already the terminal Git state, but a leftover
+                // actor still needs the normal resource drain before it is
+                // discarded.
+                let task_actor = wait_for_actor_retirement(&state, session_id, true).await?;
+                state.actors.write().await.remove(&session_id);
+                drop(task_actor);
+                let _ = state
+                    .events
+                    .send(SupervisorEvent::Roster(snapshots(&state).await));
+                if state.control.selected().await.ok() == Some(Some(session_id)) {
+                    let fallback = state.actors.read().await.keys().next().copied();
+                    if let Err(error) = state.control.set_selected(fallback).await {
+                        let _ = state.events.send(SupervisorEvent::Error {
+                            session_id: Some(session_id),
+                            message: format!("removed Session could not update selection: {error}"),
+                        });
+                    } else {
+                        let _ = state.events.send(SupervisorEvent::Selected(fallback));
+                    }
+                }
+                return Ok(());
+            }
             if task.ownership != WorktreeOwnership::Managed
                 || task.lifecycle != SessionLifecycle::Archived
             {
@@ -1118,28 +1302,78 @@ async fn execute_command(
                     "only archived managed Sessions can remove a worktree".into(),
                 ));
             }
-            let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
-            let worktrees = forge_storage::list_worktree_records(storage.main_worktree())?;
-            if worktrees
-                .iter()
-                .any(|worktree| same_path(&worktree.path, &task.workspace))
-            {
-                forge_storage::remove_clean_worktree_if_branch(
-                    storage.main_worktree(),
-                    &task.workspace,
-                    &task.branch,
-                )?;
-            } else if task.workspace.exists() {
-                return Err(RepositorySupervisorError::Command(format!(
-                    "{} is no longer a registered worktree; refusing to remove it",
-                    task.workspace.display()
-                )));
+
+            let task_actor = retire_actor_resources(&state, session_id, false).await?;
+
+            let storage = match RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    if let Some(task_actor) = &task_actor {
+                        task_actor.finish_retirement();
+                    }
+                    return Err(error.into());
+                }
+            };
+            let removal = {
+                let _git_mutation = state.git_mutation.lock().await;
+                let worktrees = match forge_storage::list_worktree_records(storage.main_worktree())
+                {
+                    Ok(worktrees) => worktrees,
+                    Err(error) => {
+                        if let Some(task_actor) = &task_actor {
+                            task_actor.finish_retirement();
+                        }
+                        return Err(error.into());
+                    }
+                };
+                if worktrees
+                    .iter()
+                    .any(|worktree| same_path(&worktree.path, &task.workspace))
+                {
+                    forge_storage::remove_clean_worktree_if_branch(
+                        storage.main_worktree(),
+                        &task.workspace,
+                        &task.branch,
+                    )
+                } else if task.workspace.exists() {
+                    Err(forge_storage::WorktreeError::RemoveFailed(format!(
+                        "{} is no longer a registered worktree; refusing to remove it",
+                        task.workspace.display()
+                    )))
+                } else {
+                    Ok(())
+                }
+            };
+            if let Err(error) = removal {
+                if let Some(task_actor) = &task_actor {
+                    task_actor.finish_retirement();
+                }
+                return Err(error.into());
             }
-            state.control.mark_worktree_removed(session_id).await?;
+            if let Err(error) = state.control.mark_worktree_removed(session_id).await {
+                if let Some(task_actor) = &task_actor {
+                    task_actor.finish_retirement();
+                }
+                return Err(error.into());
+            }
             state.actors.write().await.remove(&session_id);
+            drop(task_actor);
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
+            if state.control.selected().await.ok() == Some(Some(session_id)) {
+                let fallback = state.actors.read().await.keys().next().copied();
+                if let Err(error) = state.control.set_selected(fallback).await {
+                    let _ = state.events.send(SupervisorEvent::Error {
+                        session_id: Some(session_id),
+                        message: format!(
+                            "worktree removed but selection could not be updated: {error}"
+                        ),
+                    });
+                } else {
+                    let _ = state.events.send(SupervisorEvent::Selected(fallback));
+                }
+            }
         }
         SupervisorCommand::FinalizeCreation { operation_id } => {
             let completed = state.control.complete_creation(operation_id).await?;
@@ -1404,26 +1638,46 @@ async fn execute_command(
             state.model.clear_provider_env();
         }
         SupervisorCommand::Refresh => {
+            poll_background_tasks(&state).await;
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
+            let selected = state.control.selected().await?;
+            let _ = state.events.send(SupervisorEvent::Selected(selected));
         }
         SupervisorCommand::Shutdown => {
-            let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
-            for task_actor in &actors {
-                task_actor.request_cancel();
-            }
-            for task_actor in actors {
-                while task_actor.driving.load(Ordering::Acquire) {
-                    task_actor.request_cancel();
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                let session = task_actor.session.lock().await;
-                refresh_actor(&state, &task_actor, &session).await?;
+            let session_ids: Vec<_> = state.actors.read().await.keys().copied().collect();
+            for session_id in session_ids {
+                let Some(task_actor) = wait_for_actor_retirement(&state, session_id, true).await?
+                else {
+                    continue;
+                };
+                let refresh = {
+                    let session = task_actor.session.lock().await;
+                    refresh_actor(&state, &task_actor, &session).await
+                };
+                task_actor.finish_retirement();
+                refresh?;
             }
         }
     }
     Ok(())
+}
+
+async fn poll_background_tasks(state: &SupervisorState) {
+    let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+    for task_actor in actors {
+        if let Ok(mut session) = task_actor.session.try_lock() {
+            if session
+                .background()
+                .list()
+                .any(|task| !task.status.is_terminal())
+            {
+                let _ = session.poll_background_tasks().await;
+                let _ = refresh_actor(state, &task_actor, &session).await;
+            }
+        }
+    }
 }
 
 /// Check an attach target against Git's own worktree list before Forge binds
@@ -1486,6 +1740,7 @@ async fn rollback_creation(
     if let Some(workspace) = workspace {
         let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
         if workspace.is_dir() {
+            let _git_mutation = state.git_mutation.lock().await;
             let _ = forge_storage::remove_clean_worktree(storage.main_worktree(), &workspace);
         }
     }
@@ -1552,7 +1807,15 @@ async fn replace_conversation(
     drop(session);
     let mut actors = state.actors.write().await;
     actors.remove(&previous);
-    actors.insert(next, Arc::new(SessionActor::new(record, replacement)));
+    actors.insert(
+        next,
+        Arc::new(SessionActor::new(
+            record,
+            replacement,
+            Vec::new(),
+            Vec::new(),
+        )),
+    );
     drop(actors);
     let mut archived = state.unavailable_tasks.write().await;
     archived.retain(|task| task.session_id != next && task.session_id != previous);
@@ -1570,6 +1833,9 @@ async fn start_prompt_driver(
     session_id: SessionId,
 ) -> Result<(), RepositorySupervisorError> {
     let task_actor = actor(&state, session_id).await?;
+    if task_actor.retiring.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Retiring(session_id));
+    }
     if task_actor.driving.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
@@ -1606,6 +1872,9 @@ async fn start_continue_driver(
     session_id: SessionId,
 ) -> Result<(), RepositorySupervisorError> {
     let task_actor = actor(&state, session_id).await?;
+    if task_actor.retiring.load(Ordering::Acquire) {
+        return Err(RepositorySupervisorError::Retiring(session_id));
+    }
     if task_actor.driving.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
@@ -1628,6 +1897,9 @@ async fn drive_prompts(
 ) -> Result<(), RepositorySupervisorError> {
     let session_id = task_actor.snapshot.read().await.task.session_id;
     loop {
+        if task_actor.retiring.load(Ordering::Acquire) {
+            break;
+        }
         let waiting = task_actor.snapshot.read().await.session.lifecycle == TaskLifecycle::Waiting;
         if waiting {
             break;
@@ -1649,6 +1921,36 @@ async fn run_one(
     prompt: Option<(u64, String)>,
 ) -> Result<bool, RepositorySupervisorError> {
     let session_id = task_actor.snapshot.read().await.task.session_id;
+    let queue_id = prompt.as_ref().map(|(queue_id, _)| *queue_id);
+    let result = run_one_inner(state.clone(), task_actor, prompt).await;
+    if result.is_err() {
+        if let Some(queue_id) = queue_id {
+            if state.control.interrupt_prompt_claim(queue_id).await? {
+                let _ = publish_actor(&state, session_id).await;
+                let _ = state.events.send(SupervisorEvent::Attention {
+                    session_id,
+                    state: SupervisorTurnState::Interrupted,
+                    message: "A prompt was interrupted; review it before retrying".into(),
+                });
+            }
+        }
+    }
+    result
+}
+
+async fn run_one_inner(
+    state: Arc<SupervisorState>,
+    task_actor: Arc<SessionActor>,
+    prompt: Option<(u64, String)>,
+) -> Result<bool, RepositorySupervisorError> {
+    let session_id = task_actor.snapshot.read().await.task.session_id;
+    let prompt_attachments = match prompt.as_ref() {
+        Some((queue_id, _)) => Some(
+            serde_json::from_str(&state.control.prompt_attachments(*queue_id).await?)
+                .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?,
+        ),
+        None => None,
+    };
     let permit = state
         .permits
         .clone()
@@ -1675,15 +1977,13 @@ async fn run_one(
         }
     });
     let result = match prompt.as_ref() {
-        Some((queue_id, text)) => {
-            let attachments =
-                serde_json::from_str(&state.control.prompt_attachments(*queue_id).await?)
-                    .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
-            session
-                .append_user_message_with_attachments(text, attachments)
-                .await?;
-            session.run_agent_turns_in_scope(Some(stream_sender)).await
-        }
+        Some((_, text)) => match session
+            .append_user_message_with_attachments(text, prompt_attachments.unwrap_or_default())
+            .await
+        {
+            Ok(()) => session.run_agent_turns_in_scope(Some(stream_sender)).await,
+            Err(error) => Err(error),
+        },
         None => session.run_agent_turns_in_scope(Some(stream_sender)).await,
     };
     drop(permit);
@@ -1760,6 +2060,93 @@ async fn actor(
         .ok_or(RepositorySupervisorError::NoActor(session_id))
 }
 
+/// Close the runtime handles owned by an actor before Git is allowed to
+/// remove its workspace. The retirement flag closes the race where a queued
+/// prompt or continuation tries to start while the actor is being drained.
+/// The actor remains in the map until the caller has completed its durable or
+/// filesystem mutation, so a failed cleanup can be retried safely.
+async fn retire_actor_resources(
+    state: &SupervisorState,
+    session_id: SessionId,
+    allow_pending_interaction: bool,
+) -> Result<Option<Arc<SessionActor>>, RepositorySupervisorError> {
+    let Some(task_actor) = state.actors.read().await.get(&session_id).cloned() else {
+        return Ok(None);
+    };
+    if !task_actor.begin_retirement() {
+        return Err(RepositorySupervisorError::Retiring(session_id));
+    }
+    task_actor.request_cancel();
+
+    let retirement = async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while task_actor.driving.load(Ordering::Acquire) {
+                task_actor.request_cancel();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            RepositorySupervisorError::Command(
+                "session turn did not stop before workspace retirement".into(),
+            )
+        })?;
+
+        let mut session =
+            tokio::time::timeout(std::time::Duration::from_secs(5), task_actor.session.lock())
+                .await
+                .map_err(|_| {
+                    RepositorySupervisorError::Command(
+                        "session lock did not become available before workspace retirement".into(),
+                    )
+                })?;
+        if !allow_pending_interaction
+            && (session.pending_hitl().is_some() || session.pending_question().is_some())
+        {
+            return Err(RepositorySupervisorError::Command(
+                "resolve the pending interaction before retiring this workspace".into(),
+            ));
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            session.retire_resources(),
+        )
+        .await
+        .map_err(|_| {
+            RepositorySupervisorError::Command(
+                "session resources did not stop before workspace retirement".into(),
+            )
+        })?
+        .map_err(|error| {
+            RepositorySupervisorError::Command(format!(
+                "session resources did not stop before workspace retirement: {error}"
+            ))
+        })?;
+        Ok::<(), RepositorySupervisorError>(())
+    }
+    .await;
+    if let Err(error) = retirement {
+        task_actor.finish_retirement();
+        return Err(error);
+    }
+    Ok(Some(task_actor))
+}
+
+async fn wait_for_actor_retirement(
+    state: &SupervisorState,
+    session_id: SessionId,
+    allow_pending_interaction: bool,
+) -> Result<Option<Arc<SessionActor>>, RepositorySupervisorError> {
+    loop {
+        match retire_actor_resources(state, session_id, allow_pending_interaction).await {
+            Err(RepositorySupervisorError::Retiring(_)) => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 async fn refresh_actor(
     state: &SupervisorState,
     task_actor: &SessionActor,
@@ -1772,6 +2159,10 @@ async fn refresh_actor(
         transcript: TranscriptSnapshot::capture(session),
         details: Some(SessionDetailsSnapshot::capture(session)),
         queued_prompts: state.control.queued_prompts(session.session_id).await?,
+        interrupted_prompts: state
+            .control
+            .interrupted_prompts(session.session_id)
+            .await?,
     };
     *task_actor.snapshot.write().await = snapshot.clone();
     let _ = state
@@ -1789,6 +2180,7 @@ async fn publish_actor(
     let mut snapshot = task_actor.snapshot.write().await;
     snapshot.task = task;
     snapshot.queued_prompts = state.control.queued_prompts(session_id).await?;
+    snapshot.interrupted_prompts = state.control.interrupted_prompts(session_id).await?;
     let _ = state
         .events
         .send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
@@ -1813,6 +2205,11 @@ async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
             transcript: TranscriptSnapshot::default(),
             details: None,
             queued_prompts: Vec::new(),
+            interrupted_prompts: state
+                .control
+                .interrupted_prompts(task.session_id)
+                .await
+                .unwrap_or_default(),
             task,
         });
     }
@@ -2072,6 +2469,77 @@ mod tests {
             }
         }
         panic!("timed out waiting for supervisor state");
+    }
+
+    #[tokio::test]
+    async fn startup_reconciles_running_prompt_claims_without_replaying_them() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let session = scripted_session(&cfg, "unused").await;
+        let session_id = session.session_id;
+        let task = task_for(session_id, "recovered", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let interrupted_id = control
+            .enqueue_prompt(session_id, "may already have run")
+            .await
+            .unwrap();
+        let queued_id = control
+            .enqueue_prompt(session_id, "run after review")
+            .await
+            .unwrap();
+        assert_eq!(
+            control.claim_next_prompt(session_id).await.unwrap(),
+            Some((interrupted_id, "may already have run".into()))
+        );
+
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control.clone(),
+            lease,
+            vec![(task, session)],
+            1,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        let snapshot = supervisor.snapshot(session_id).await.unwrap();
+        assert_eq!(snapshot.task.turn_state, SupervisorTurnState::Interrupted);
+        assert_eq!(
+            snapshot.interrupted_prompts,
+            vec![(interrupted_id, "may already have run".into())]
+        );
+        assert_eq!(
+            snapshot.queued_prompts,
+            vec![(queued_id, "run after review".into())]
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]
@@ -2723,10 +3191,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ModelClient for GateModel {
-        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelError> {
+        async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
             self.entered.notify_one();
             self.release.notified().await;
-            Ok(text_response("a done"))
+            let text = request
+                .messages
+                .last()
+                .filter(|message| message.content.starts_with("[forge:compaction]"))
+                .map(|_| {
+                    r#"<forge_checkpoint version="1">
+<objective>Keep the session isolated.</objective>
+<user_constraints>Preserve the session boundary.</user_constraints>
+<current_work>Testing supervisor scheduling.</current_work>
+<next_action>Release the compaction gate.</next_action>
+</forge_checkpoint>"#
+                })
+                .unwrap_or("a done");
+            Ok(text_response(text))
         }
     }
 
@@ -2953,6 +3434,105 @@ mod tests {
         );
         assert_eq!(control.queued_prompts(id_b).await.unwrap().len(), 500);
 
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocked_compaction_does_not_block_an_unrelated_session() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg_a = Config {
+            resolved_workspace: temp.path().join("a"),
+            workspace_root: Some(temp.path().join("a").display().to_string()),
+            ..Default::default()
+        };
+        cfg_a.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg_a.resolved_workspace).unwrap();
+        let mut cfg_b = cfg_a.clone();
+        cfg_b.resolved_workspace = temp.path().join("b");
+        cfg_b.workspace_root = Some(temp.path().join("b").display().to_string());
+        std::fs::create_dir_all(&cfg_b.resolved_workspace).unwrap();
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate: Arc<dyn ModelClient> = Arc::new(GateModel {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let mut session_a = open_session_with_model(&cfg_a, SessionTarget::New, gate)
+            .await
+            .unwrap()
+            .session;
+        session_a.append_user_message("seed context").await.unwrap();
+        let id_a = session_a.session_id;
+        let task_a = task_for(id_a, "a", &cfg_a.resolved_workspace);
+        let session_b = scripted_session_with(&cfg_b, vec![text_response("b done")]).await;
+        let id_b = session_b.session_id;
+        let task_b = task_for(id_b, "b", &cfg_b.resolved_workspace);
+        for task in [&task_a, &task_b] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![]));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(task_a, session_a), (task_b, session_b)],
+            2,
+            cfg_a,
+            model,
+        )
+        .await
+        .unwrap();
+
+        let compact = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::CompactContext { session_id: id_a })
+                    .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("compaction never reached the model");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle.command(SupervisorCommand::SelectSession {
+                session_id: Some(id_b),
+            }),
+        )
+        .await
+        .expect("selection of B stalled behind A compaction")
+        .unwrap();
+
+        release.notify_waiters();
+        let compact_result = compact.await.unwrap();
+        assert!(
+            compact_result.is_err(),
+            "the deliberately minimal fixture should reject its checkpoint"
+        );
+        assert_eq!(
+            supervisor.snapshot(id_a).await.unwrap().task.turn_state,
+            SupervisorTurnState::Idle
+        );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
@@ -3228,6 +3808,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_creation_waits_for_the_shared_git_mutation_gate() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store.to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+        let git_gate = supervisor.state.git_mutation.clone();
+        let gate = git_gate.lock().await;
+        let creation = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::CreateSession {
+                        label: "gated".into(),
+                        first_prompt: None,
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !creation.is_finished(),
+            "managed creation bypassed the repository Git mutation gate"
+        );
+        drop(gate);
+        creation.await.unwrap().unwrap();
+
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "gated")
+            .expect("gated task row");
+        assert!(task.workspace.exists());
+        assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_first_prompt_runs_only_after_trust_finalizes_the_creation() {
         let repo = TempDir::new().unwrap();
         forge_test_support::init_repo_with_commit(repo.path());
@@ -3494,6 +4136,161 @@ mod tests {
             }
         }
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn archived_cleanup_drains_background_work_before_removing_the_checkout() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let worktree = forge_storage::create_session_worktree(repo.path(), scratch.path()).unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let control_dir = RepositoryRuntimeStorage::new(repo.path())
+            .unwrap()
+            .path_for(RuntimeDataKind::Control)
+            .unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let journal = scratch.path().join("journals");
+        let mut session_cfg = Config {
+            resolved_workspace: worktree.path.clone(),
+            workspace_root: Some(worktree.path.display().to_string()),
+            ..Default::default()
+        };
+        session_cfg.journal.path = journal.display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![]));
+        let mut opened = open_session_with_model(&session_cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap();
+        let session_id = opened.session.session_id;
+        opened
+            .session
+            .spawn_background_shell("sleep 30".into(), "retire me".into())
+            .await
+            .unwrap();
+        let mut task = task_for(session_id, "retire", &worktree.path);
+        task.branch = worktree.branch.clone();
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let mut supervisor_cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        supervisor_cfg.journal.path = journal.display().to_string();
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            vec![(task.clone(), opened.session)],
+            2,
+            supervisor_cfg,
+            model,
+            Some(trust_store),
+        )
+        .await
+        .unwrap();
+
+        let started = supervisor.snapshot(session_id).await.unwrap();
+        assert!(started.details.as_ref().is_some_and(|details| {
+            details
+                .background
+                .iter()
+                .any(|task| !task.status.is_terminal())
+        }));
+        handle
+            .command(SupervisorCommand::ArchiveSession { session_id })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree { session_id })
+            .await
+            .unwrap();
+
+        assert!(!task.workspace.exists());
+        assert_eq!(
+            control.session(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Removed
+        );
+        assert!(supervisor.snapshot(session_id).await.is_none());
+        // Cleanup is idempotent after the durable Removed transition.
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree { session_id })
+            .await
+            .unwrap();
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_background_work_before_releasing_session_actors() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let mut session = open_session_with_model(&cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap()
+            .session;
+        let session_id = session.session_id;
+        let background_id = session
+            .spawn_background_shell("sleep 30".into(), "shutdown me".into())
+            .await
+            .unwrap();
+        let task = task_for(session_id, "shutdown", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+
+        let snapshot = supervisor.snapshot(session_id).await.unwrap();
+        assert!(snapshot.details.as_ref().is_some_and(|details| {
+            details
+                .background
+                .iter()
+                .find(|task| task.id == background_id)
+                .is_some_and(|task| task.status.is_terminal())
+        }));
     }
 
     #[tokio::test]
