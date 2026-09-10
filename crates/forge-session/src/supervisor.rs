@@ -333,6 +333,12 @@ struct SupervisorState {
     cfg: Config,
     model: Arc<dyn ModelClient>,
     control: Arc<RepositoryControl>,
+    /// Forge-managed worktree/ref administration is shared Git authority.
+    /// The repository lease excludes other Forge processes; this gate keeps
+    /// detached create/attach/remove operations in this process from racing
+    /// over the common worktree metadata. Explicit user `git` tools remain
+    /// shared operator authority under the cooperative isolation contract.
+    git_mutation: Arc<Mutex<()>>,
     actors: RwLock<HashMap<SessionId, Arc<SessionActor>>>,
     unavailable_tasks: RwLock<Vec<RepositorySession>>,
     permits: Arc<Semaphore>,
@@ -423,6 +429,7 @@ pub struct RepositoryBootstrap {
     lease: RepositoryLease,
     control: Arc<RepositoryControl>,
     main_worktree: PathBuf,
+    git_mutation: Arc<Mutex<()>>,
 }
 
 impl RepositoryBootstrap {
@@ -437,6 +444,7 @@ impl RepositoryBootstrap {
             lease,
             control,
             main_worktree: storage.main_worktree().to_path_buf(),
+            git_mutation: Arc::new(Mutex::new(())),
         })
     }
 
@@ -457,6 +465,7 @@ impl RepositoryBootstrap {
                 .await?;
             let removed = match stale.workspace.as_ref() {
                 Some(workspace) if workspace.is_dir() => {
+                    let _git_mutation = self.git_mutation.lock().await;
                     forge_storage::remove_clean_worktree(&self.main_worktree, workspace).is_ok()
                 }
                 _ => true,
@@ -504,6 +513,7 @@ impl RepositorySupervisor {
             lease,
             control,
             main_worktree,
+            git_mutation,
         } = bootstrap;
         let worktrees = forge_storage::list_worktree_records(&main_worktree)?;
         control.reconcile_worktrees(&worktrees).await?;
@@ -604,6 +614,7 @@ impl RepositorySupervisor {
             cfg.clone(),
             model,
             None,
+            git_mutation,
         )
         .await
     }
@@ -723,6 +734,7 @@ impl RepositorySupervisor {
             cfg.clone(),
             model,
             None,
+            Arc::new(Mutex::new(())),
         )
         .await
     }
@@ -759,6 +771,7 @@ impl RepositorySupervisor {
             cfg,
             model,
             trust_store,
+            Arc::new(Mutex::new(())),
         )
         .await
     }
@@ -773,6 +786,7 @@ impl RepositorySupervisor {
         cfg: Config,
         model: Arc<dyn ModelClient>,
         trust_store: Option<PathBuf>,
+        git_mutation: Arc<Mutex<()>>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let (events, _) = broadcast::channel(512);
         let recovered = control.reconcile_running_prompt_claims().await?;
@@ -795,6 +809,7 @@ impl RepositorySupervisor {
             cfg,
             model,
             control,
+            git_mutation,
             actors: RwLock::new(actors),
             unavailable_tasks: RwLock::new(unavailable_tasks),
             permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
@@ -1049,6 +1064,13 @@ async fn execute_command(
             } else {
                 label
             };
+            // Worktree allocation and repository-local runtime setup both
+            // update shared Git administration (the common exclude file is
+            // one example). Keep the whole creation binding under the same
+            // process-wide gate, including session assembly's journal setup,
+            // so another managed attach/remove cannot observe half-complete
+            // repository state.
+            let _git_mutation = state.git_mutation.lock().await;
             let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
             let base_dir = storage.path_for(RuntimeDataKind::Worktree)?;
             let pending = state
@@ -1125,6 +1147,7 @@ async fn execute_command(
                 Vec::new(),
             ));
             state.actors.write().await.insert(task.session_id, actor);
+            drop(_git_mutation);
             if first_prompt.is_some() {
                 // A parked prompt runs as soon as the operator confirms
                 // trust, so the creation pauses on the trust modal. The
@@ -1168,6 +1191,11 @@ async fn execute_command(
             label,
             branch,
         } => {
+            // Hold the Git administration gate from the initial ownership
+            // check through session storage setup and the final durable bind.
+            // The second validation remains deliberate: it checks the
+            // immutable path/branch binding immediately before registration.
+            let _git_mutation = state.git_mutation.lock().await;
             let workspace = validate_attach_target(&state, &workspace, &branch)?;
             let mut task_cfg = state.cfg.clone();
             task_cfg.resolved_workspace = workspace.clone();
@@ -1186,7 +1214,7 @@ async fn execute_command(
                     ATTACH_SESSION_INIT_TIMEOUT.as_secs()
                 ))
             })??;
-            let task = NewRepositorySession {
+            let mut task = NewRepositorySession {
                 session_id: opened.session.session_id,
                 label,
                 workspace,
@@ -1197,6 +1225,11 @@ async fn execute_command(
                 route_id: opened.session.active_route_id.clone(),
                 reasoning_effort: None,
             };
+            // Recheck the immutable worktree binding immediately before the
+            // durable attach. The first check selected the workspace for
+            // session assembly; this one closes the gap where a concurrent
+            // Forge-managed removal could otherwise detach it underneath us.
+            task.workspace = validate_attach_target(&state, &task.workspace, &task.branch)?;
             state.control.register_session(task.clone(), None).await?;
             let actor_task = state.control.session(task.session_id).await?;
             state.actors.write().await.insert(
@@ -1208,6 +1241,7 @@ async fn execute_command(
                     Vec::new(),
                 )),
             );
+            drop(_git_mutation);
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
@@ -1288,31 +1322,35 @@ async fn execute_command(
                     return Err(error.into());
                 }
             };
-            let worktrees = match forge_storage::list_worktree_records(storage.main_worktree()) {
-                Ok(worktrees) => worktrees,
-                Err(error) => {
-                    if let Some(task_actor) = &task_actor {
-                        task_actor.finish_retirement();
+            let removal = {
+                let _git_mutation = state.git_mutation.lock().await;
+                let worktrees = match forge_storage::list_worktree_records(storage.main_worktree())
+                {
+                    Ok(worktrees) => worktrees,
+                    Err(error) => {
+                        if let Some(task_actor) = &task_actor {
+                            task_actor.finish_retirement();
+                        }
+                        return Err(error.into());
                     }
-                    return Err(error.into());
+                };
+                if worktrees
+                    .iter()
+                    .any(|worktree| same_path(&worktree.path, &task.workspace))
+                {
+                    forge_storage::remove_clean_worktree_if_branch(
+                        storage.main_worktree(),
+                        &task.workspace,
+                        &task.branch,
+                    )
+                } else if task.workspace.exists() {
+                    Err(forge_storage::WorktreeError::RemoveFailed(format!(
+                        "{} is no longer a registered worktree; refusing to remove it",
+                        task.workspace.display()
+                    )))
+                } else {
+                    Ok(())
                 }
-            };
-            let removal = if worktrees
-                .iter()
-                .any(|worktree| same_path(&worktree.path, &task.workspace))
-            {
-                forge_storage::remove_clean_worktree_if_branch(
-                    storage.main_worktree(),
-                    &task.workspace,
-                    &task.branch,
-                )
-            } else if task.workspace.exists() {
-                Err(forge_storage::WorktreeError::RemoveFailed(format!(
-                    "{} is no longer a registered worktree; refusing to remove it",
-                    task.workspace.display()
-                )))
-            } else {
-                Ok(())
             };
             if let Err(error) = removal {
                 if let Some(task_actor) = &task_actor {
@@ -1693,6 +1731,7 @@ async fn rollback_creation(
     if let Some(workspace) = workspace {
         let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
         if workspace.is_dir() {
+            let _git_mutation = state.git_mutation.lock().await;
             let _ = forge_storage::remove_clean_worktree(storage.main_worktree(), &workspace);
         }
     }
@@ -3757,6 +3796,68 @@ mod tests {
         .await
         .unwrap();
         (cfg, control, handle)
+    }
+
+    #[tokio::test]
+    async fn managed_creation_waits_for_the_shared_git_mutation_gate() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store.to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+        let git_gate = supervisor.state.git_mutation.clone();
+        let gate = git_gate.lock().await;
+        let creation = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::CreateSession {
+                        label: "gated".into(),
+                        first_prompt: None,
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !creation.is_finished(),
+            "managed creation bypassed the repository Git mutation gate"
+        );
+        drop(gate);
+        creation.await.unwrap().unwrap();
+
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "gated")
+            .expect("gated task row");
+        assert!(task.workspace.exists());
+        assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]

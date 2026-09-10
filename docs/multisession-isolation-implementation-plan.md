@@ -22,8 +22,9 @@ Forge uses cooperative isolation within one trusted repository operator:
 - Git worktrees isolate checked-out files and per-worktree indexes. The common
   repository directory, refs, objects, and repository configuration remain
   shared Git authority. Forge serializes and ownership-checks Forge-managed
-  repository mutations; a tool explicitly granted Git access can still affect
-  shared repository state, so this mode is not a strict security boundary.
+  repository mutations behind the repository lease and supervisor Git gate; a
+  tool explicitly granted Git access can still affect shared repository state,
+  so this mode is not a strict security boundary.
 - Strict isolation requires separate repository clones or a broker that owns
   every Git mutation. It is outside this implementation slice and must not be
   implied by the word “isolated” in product copy.
