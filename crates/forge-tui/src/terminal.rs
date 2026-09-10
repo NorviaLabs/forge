@@ -107,6 +107,13 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         (self.restore)();
+        // Modifying the panic hook is forbidden while a thread is unwinding
+        // (`panic::take_hook` panics, and a panic in a destructor aborts the
+        // process). During a panic the installed hook already restored the
+        // terminal, so leave the hook chain untouched.
+        if std::thread::panicking() {
+            return;
+        }
         let previous_hook = Arc::clone(&self.previous_hook);
         let _ = panic::take_hook();
         panic::set_hook(Box::new(move |info| previous_hook(info)));
@@ -210,6 +217,33 @@ mod tests {
         assert!(result.is_err());
         // The hook fires once during this thread's panic.
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn drop_during_panic_does_not_abort() {
+        let _lock = lock_panic_hook();
+        let count = Arc::new(AtomicUsize::new(0));
+        let owner = std::thread::current().id();
+
+        // A guard dropped while unwinding skips reinstating the previous hook,
+        // so capture and reinstate it here to keep this binary's hook chain clean.
+        let previous: Arc<dyn Fn(&panic::PanicHookInfo<'_>) + Send + Sync> =
+            Arc::from(panic::take_hook());
+        let previous_for_restore = Arc::clone(&previous);
+        let _restore = RestorePanicHook(Some(Box::new(move |info| previous_for_restore(info))));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard =
+                TerminalGuard::with_restore(count_on_owner_thread(owner, Arc::clone(&count)));
+            panic!("controlled panic while the guard is alive");
+        }));
+
+        assert!(result.is_err());
+        // The hook restored the terminal during the panic, and the guard's drop
+        // restored again while unwinding. The key assertion is that the process
+        // did not abort on a "panic in a destructor" from modifying the panic
+        // hook mid-unwind.
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
