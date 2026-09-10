@@ -83,17 +83,7 @@ impl Widget for TaskStrip<'_> {
         let mut spans = vec![Span::styled(title, title_style)];
         let mut used = title.chars().count();
         let mut hidden = self.overflow;
-        let selected_index = self
-            .items
-            .iter()
-            .position(|item| item.selected || (item.focused && self.focused));
-        let mut order = Vec::with_capacity(self.items.len());
-        if let Some(index) = selected_index {
-            order.push(index);
-        }
-        order.extend((0..self.items.len()).filter(|index| Some(*index) != selected_index));
-        for (position, index) in order.into_iter().enumerate() {
-            let item = &self.items[index];
+        for (position, item) in self.items.iter().enumerate() {
             if position > 0 {
                 let separator = " · ";
                 if used + separator.len() >= area.width as usize {
@@ -114,7 +104,10 @@ impl Widget for TaskStrip<'_> {
             let style = if item.focused && self.focused {
                 theme::focused_selection_style()
             } else if item.selected {
-                theme::text().add_modifier(Modifier::BOLD)
+                // The active session keeps the accent even when the strip is
+                // unfocused or the cursor rests on a sibling, so the user can
+                // always see which tab they are viewing.
+                theme::brand()
             } else {
                 theme::metadata_style()
             };
@@ -244,7 +237,96 @@ mod tests {
     }
 
     #[test]
+    fn selecting_a_tab_does_not_reorder_the_strip() {
+        let items = vec![
+            TaskStripItem {
+                slot: Some(1),
+                label: "alpha".into(),
+                branch: String::new(),
+                state: TaskStripState::Idle,
+                secondary: None,
+                selected: false,
+                focused: false,
+                attention: false,
+            },
+            TaskStripItem {
+                slot: Some(2),
+                label: "beta".into(),
+                branch: String::new(),
+                state: TaskStripState::Idle,
+                secondary: None,
+                selected: true,
+                focused: false,
+                attention: false,
+            },
+        ];
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    TaskStrip {
+                        items: &items,
+                        overflow: 0,
+                        focused: false,
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        let alpha = text.find("alpha").expect("alpha rendered");
+        let beta = text.find("beta").expect("beta rendered");
+        assert!(alpha < beta, "active tab moved: {text:?}");
+    }
+
+    #[test]
+    fn active_tab_uses_the_theme_accent() {
+        let items = vec![TaskStripItem {
+            slot: Some(1),
+            label: "alpha".into(),
+            branch: String::new(),
+            state: TaskStripState::Idle,
+            secondary: None,
+            selected: true,
+            focused: false,
+            attention: false,
+        }];
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    TaskStrip {
+                        items: &items,
+                        overflow: 0,
+                        focused: false,
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let accent = crate::theme::accent_color();
+        let highlighted = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| "alpha".contains(cell.symbol()) && cell.style().fg == Some(accent));
+        assert!(highlighted, "active tab should carry the accent colour");
+    }
+
+    #[test]
     fn narrow_strip_truncates_and_reports_hidden_tasks() {
+        // Order is stable: a focused tab past the visible width is counted in
+        // the overflow rather than hoisted to the front, so keep the focused
+        // tab first to exercise the elision path itself.
         let items = (0..4)
             .map(|index| TaskStripItem {
                 slot: Some(index + 1),
@@ -252,8 +334,8 @@ mod tests {
                 branch: "feature/long-branch-name".into(),
                 state: TaskStripState::Running,
                 secondary: None,
-                selected: index == 2,
-                focused: index == 2,
+                selected: index == 0,
+                focused: index == 0,
                 attention: false,
             })
             .collect::<Vec<_>>();
