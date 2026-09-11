@@ -1162,14 +1162,21 @@ async fn execute_command(
             ));
             state.actors.write().await.insert(task.session_id, actor);
             drop(_git_mutation);
-            if first_prompt.is_some() {
+            // Trust is inherited by descendants (`is_trusted_at` walks
+            // ancestors). A managed worktree lives under the repository's
+            // `.forge/local/worktrees`, so when the repository is trusted the
+            // new workspace is already trusted and must not park on a modal.
+            // Only a genuinely untrusted workspace (e.g. the worktree base
+            // resolves outside a trusted path) asks the operator.
+            let already_trusted = match state.trust_store.as_deref() {
+                Some(store) => forge_config::is_trusted_at(store, &task.workspace),
+                None => forge_config::is_trusted(&task.workspace),
+            };
+            if first_prompt.is_some() && !already_trusted {
                 // A parked prompt runs as soon as the operator confirms
                 // trust, so the creation pauses on the trust modal. The
                 // prompt stays parked on the pending operation until
-                // `FinalizeCreation`; queueing it here would be rejected by
-                // the `awaiting_trust` guard, and bypassing that guard
-                // would run a model turn in a worktree the operator has not
-                // confirmed.
+                // `FinalizeCreation`.
                 let _ = state.events.send(SupervisorEvent::TrustRequired {
                     operation_id: pending.operation_id,
                     session_id: task.session_id,
@@ -1177,11 +1184,10 @@ async fn execute_command(
                     workspace: task.workspace,
                 });
             } else {
-                // Prompt-less creation is one keypress and nothing can run
-                // until the operator types in the task, so no modal: record
-                // the trust grant now and finalize immediately. A failure to
-                // persist rolls the creation back rather than leaving a task
-                // that looks trusted but is not recorded.
+                // Trusted (or prompt-less): record the grant and finalize now,
+                // running any parked prompt. A failure to persist rolls the
+                // creation back rather than leaving a task that looks trusted
+                // but is not recorded.
                 let completed = state
                     .control
                     .complete_creation(pending.operation_id)
@@ -1194,6 +1200,15 @@ async fn execute_command(
                             .events
                             .send(SupervisorEvent::Roster(snapshots(&state).await));
                         return Err(error);
+                    }
+                    if let Some(text) = completed.first_prompt {
+                        state.control.enqueue_prompt(session_id, &text).await?;
+                        state
+                            .control
+                            .set_turn_state(session_id, SupervisorTurnState::Queued)
+                            .await?;
+                        publish_actor(&state, session_id).await?;
+                        start_prompt_driver(state.clone(), session_id).await?;
                     }
                 }
             }
@@ -4285,6 +4300,54 @@ mod tests {
             .expect("gated task row");
         assert!(task.workspace.exists());
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// A managed worktree under an already-trusted repository inherits trust,
+    /// so a prompt-carrying creation must not park on the trust modal.
+    #[tokio::test]
+    async fn a_prompt_carrying_creation_skips_trust_when_the_repo_is_trusted() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        forge_config::grant_trust_at(&trust_store, repo.path()).unwrap();
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: String::new(),
+                first_prompt: Some("rewrite the lexer".into()),
+            })
+            .await
+            .unwrap();
+
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "Rewrite the lexer")
+            .expect("prompt-derived label");
+        assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
+        wait_for_task_state(&handle, task.session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+
+        let mut saw_trust_modal = false;
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, SupervisorEvent::TrustRequired { .. }) {
+                saw_trust_modal = true;
+            }
+        }
+        assert!(
+            !saw_trust_modal,
+            "a trusted repository must not park the prompt on the trust modal"
+        );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
