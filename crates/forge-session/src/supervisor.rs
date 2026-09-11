@@ -296,13 +296,29 @@ struct SessionActor {
     model: Arc<dyn ModelClient>,
 }
 
+/// Whether `workspace` is trusted, using the injected store when present and
+/// the user-global store otherwise. Shared by session assembly (which stamps
+/// the flag onto the core session) and the approve-all command gate.
+fn workspace_is_trusted(
+    trust_store: Option<&std::path::Path>,
+    workspace: &std::path::Path,
+) -> bool {
+    match trust_store {
+        Some(store) => forge_config::is_trusted_at(store, workspace),
+        None => forge_config::is_trusted(workspace),
+    }
+}
+
 impl SessionActor {
     fn new(
         task: RepositorySession,
-        session: AgentSession,
+        mut session: AgentSession,
         queued_prompts: Vec<(u64, String)>,
         interrupted_prompts: Vec<(u64, String)>,
+        workspace_trusted: bool,
     ) -> Self {
+        // The trust gate is enforced in the core session, not only the TUI.
+        session.set_workspace_trusted(workspace_trusted);
         let model = session.model_client();
         let snapshot = SessionRuntimeSnapshot {
             task,
@@ -818,9 +834,16 @@ impl RepositorySupervisor {
             }
             let interrupted = control.interrupted_prompts(task.session_id).await?;
             let queued = control.queued_prompts(task.session_id).await?;
+            let trusted = workspace_is_trusted(trust_store.as_deref(), &task.workspace);
             actors.insert(
                 task.session_id,
-                Arc::new(SessionActor::new(task, session, queued, interrupted)),
+                Arc::new(SessionActor::new(
+                    task,
+                    session,
+                    queued,
+                    interrupted,
+                    trusted,
+                )),
             );
         }
         let state = Arc::new(SupervisorState {
@@ -1166,6 +1189,7 @@ async fn execute_command(
                 opened.session,
                 Vec::new(),
                 Vec::new(),
+                workspace_is_trusted(state.trust_store.as_deref(), &task.workspace),
             ));
             state.actors.write().await.insert(task.session_id, actor);
             drop(_git_mutation);
@@ -1269,6 +1293,7 @@ async fn execute_command(
             task.workspace = validate_attach_target(&state, &task.workspace, &task.branch)?;
             state.control.register_session(task.clone(), None).await?;
             let actor_task = state.control.session(task.session_id).await?;
+            let trusted = workspace_is_trusted(state.trust_store.as_deref(), &actor_task.workspace);
             state.actors.write().await.insert(
                 task.session_id,
                 Arc::new(SessionActor::new(
@@ -1276,6 +1301,7 @@ async fn execute_command(
                     opened.session,
                     Vec::new(),
                     Vec::new(),
+                    trusted,
                 )),
             );
             drop(_git_mutation);
@@ -1609,9 +1635,16 @@ async fn execute_command(
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::SetApproveAll { session_id, on } => {
+            // `set_approve_all` is the trust gate: it refuses to *enable* on an
+            // untrusted workspace (the flag is stamped when the actor is built),
+            // and always clears the flag on `off`.
             let task_actor = actor(&state, session_id).await?;
             let mut session = try_session(&task_actor)?;
-            session.set_approve_all(on);
+            if !session.set_approve_all(on) {
+                return Err(RepositorySupervisorError::Command(
+                    "approve-all requires a trusted workspace".into(),
+                ));
+            }
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::SetCapabilities {
@@ -1876,6 +1909,7 @@ async fn replace_conversation(
     let next = replacement.session_id;
     state.control.replace_active_session(previous, next).await?;
     let record = state.control.session(next).await?;
+    let trusted = workspace_is_trusted(state.trust_store.as_deref(), &record.workspace);
     drop(session);
     let mut actors = state.actors.write().await;
     actors.remove(&previous);
@@ -1886,6 +1920,7 @@ async fn replace_conversation(
             replacement,
             Vec::new(),
             Vec::new(),
+            trusted,
         )),
     );
     drop(actors);
@@ -2872,13 +2907,18 @@ mod tests {
             .unwrap();
         let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
         let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
-        let (supervisor, handle) = RepositorySupervisor::spawn(
+        // Approve-all is gated on trust at the server; trust the workspace in a
+        // temp store so the test never touches the developer's real trust.toml.
+        let trust_store = temp.path().join("trust.toml");
+        forge_config::grant_trust_at(&trust_store, &workspace).unwrap();
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
             control.clone(),
             lease,
             vec![(task, session)],
             1,
             cfg,
             model,
+            Some(trust_store),
         )
         .await
         .unwrap();

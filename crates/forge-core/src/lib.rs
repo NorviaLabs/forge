@@ -132,6 +132,11 @@ pub struct AgentSession {
     /// decision is auto-approved and shell tools run unconfined (no
     /// filesystem/network sandbox). Never persisted; defaults off.
     approve_all: bool,
+    /// Whether this session's workspace is trusted. The owner sets this from
+    /// the trust store at assembly; `set_approve_all` refuses to enable
+    /// approve-all unless it is true, so the trust gate is enforced below the
+    /// TUI rather than only there.
+    workspace_trusted: bool,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the
