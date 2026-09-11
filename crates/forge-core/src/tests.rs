@@ -3399,6 +3399,93 @@ async fn hitl_approve_does_not_take_the_denial_path() {
     );
 }
 
+/// A batched response where a gated call precedes an ordinary one used to
+/// drop the ordinary call when the batch paused for approval. Approving then
+/// left the assistant `tool_calls` message unanswered, so every later request
+/// was rejected with HTTP 400. Every call must end with exactly one result.
+#[tokio::test]
+async fn approving_a_batched_hitl_call_leaves_every_tool_call_with_a_result() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "hello\n").unwrap();
+    let model = script(vec![
+        tool_call_response(vec![
+            ToolCall {
+                id: "hitl-1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "echo ok"}),
+            },
+            ToolCall {
+                id: "read-1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "note.txt"}),
+            },
+        ]),
+        text_only("done"),
+    ]);
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    with_shell_hitl(&mut s);
+    s.run_user_message("do both").await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+
+    s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+    // The supervisor re-drives the turn after approval with no new user
+    // message; this must reconcile and then complete cleanly.
+    let response = s.run_agent_turns(None).await.unwrap();
+    assert_eq!(response.text, "done");
+
+    let calls: Vec<String> = s
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::Assistant)
+        .flat_map(|m| m.tool_calls.iter().map(|c| c.id.clone()))
+        .collect();
+    assert_eq!(calls.len(), 2, "expected both batched calls, got {calls:?}");
+    for id in calls {
+        let results = s
+            .messages
+            .iter()
+            .filter(|m| {
+                m.role == MessageRole::Tool && m.tool_call_id.as_deref() == Some(id.as_str())
+            })
+            .count();
+        assert_eq!(results, 1, "call {id} must have exactly one tool result");
+    }
+}
+
+/// A dangling tool call from a cancelled turn must be reconciled *before* the
+/// next user message is appended, so the tool result sits adjacent to its
+/// assistant message and the provider does not reject the transcript.
+#[tokio::test]
+async fn a_new_prompt_reconciles_a_dangling_tool_call_before_its_user_message() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![text_only("ok")]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.append_user_message("first").await.unwrap();
+    // A cancelled turn leaves the assistant tool call unanswered.
+    s.messages.push(assistant_with_tool_call("bash"));
+    s.mark_cancelled().await.unwrap();
+    s.append_user_message("second").await.unwrap();
+
+    let tool_idx = s
+        .messages
+        .iter()
+        .position(|m| m.role == MessageRole::Tool && m.tool_call_id.as_deref() == Some("c1"))
+        .expect("a dangling tool call must be reconciled");
+    let user_idx = s
+        .messages
+        .iter()
+        .rposition(|m| m.role == MessageRole::User)
+        .unwrap();
+    assert!(
+        tool_idx < user_idx,
+        "reconciled tool result must precede the new user message"
+    );
+}
+
 #[tokio::test]
 async fn session_pattern_allow_skips_hitl_for_the_command_family() {
     let dir = tempdir().unwrap();
