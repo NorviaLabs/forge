@@ -248,8 +248,52 @@ fn is_destructive_git_call(call: &ToolCall) -> bool {
         "clean" => args
             .iter()
             .any(|a| *a == "--force" || is_clean_force_cluster(a)),
+        "restore" => restore_discards_worktree(&args),
+        "checkout" => checkout_discards_worktree(&args),
+        "switch" => args
+            .iter()
+            .any(|a| *a == "-f" || *a == "--force" || *a == "--discard-changes"),
         _ => false,
     }
+}
+
+/// True for a `git restore` that can overwrite working-tree files.
+///
+/// `restore` defaults to the working tree, so anything that is not *only*
+/// index-scoped discards uncommitted changes: plain `restore <path>`,
+/// `--worktree`, and a source option (`-s`/`--source`) that still defaults to
+/// the worktree. `--staged`/`-S` alone is index-only and safe; adding
+/// `--worktree`/`-W` alongside it touches the worktree again and is gated.
+fn restore_discards_worktree(args: &[&str]) -> bool {
+    let flag = |long: &str, short: char| {
+        args.iter().any(|a| {
+            *a == long
+                || (a.len() == 2 && a.starts_with('-') && a.ends_with(short))
+                || (a.len() > 2
+                    && a.starts_with('-')
+                    && !a.starts_with("--")
+                    && a[1..].contains(short))
+        })
+    };
+    flag("--worktree", 'W') || !flag("--staged", 'S')
+}
+
+/// True for a `git checkout` that can overwrite working-tree files.
+///
+/// Branch navigation (`checkout <branch>`, `-b`/`-B`, `--detach`, `-`) leaves
+/// uncommitted files alone. A pathspec after `--`, the conflict-resolution
+/// `--ours`/`--theirs` forms, and the force (`-f`/`--force`) or merge
+/// (`-m`/`--merge`) flags all rewrite the worktree and must be consented to.
+fn checkout_discards_worktree(args: &[&str]) -> bool {
+    args.iter().any(|a| {
+        *a == "--"
+            || *a == "-f"
+            || *a == "--force"
+            || *a == "-m"
+            || *a == "--merge"
+            || *a == "--ours"
+            || *a == "--theirs"
+    })
 }
 
 /// True for a `git clean` short-flag cluster that carries force, e.g. `-f`,
@@ -491,6 +535,19 @@ mod tests {
             ("clean", json!(["-df"])),
             ("clean", json!(["-fdx"])),
             ("clean", json!(["--force"])),
+            ("restore", json!(["."])),
+            ("restore", json!(["src/lib.rs"])),
+            ("restore", json!(["--worktree", "."])),
+            ("restore", json!(["-s", "HEAD~1", "f.txt"])),
+            ("restore", json!(["--source=HEAD~1", "f.txt"])),
+            ("restore", json!(["--staged", "--worktree"])),
+            ("checkout", json!(["--", "."])),
+            ("checkout", json!(["--", "src/lib.rs"])),
+            ("checkout", json!(["-f"])),
+            ("checkout", json!(["--force"])),
+            ("checkout", json!(["--ours", "f.txt"])),
+            ("switch", json!(["-f", "main"])),
+            ("switch", json!(["--discard-changes", "main"])),
         ];
         for (subcommand, args) in gated {
             assert_eq!(
@@ -518,6 +575,14 @@ mod tests {
             ("reset", json!(["--soft", "HEAD~1"])),
             ("clean", json!(["-n"])),
             ("clean", json!(["--dry-run"])),
+            ("restore", json!(["--staged", "."])),
+            ("restore", json!(["-S", "HEAD~1", "f.txt"])),
+            ("checkout", json!(["main"])),
+            ("checkout", json!(["-b", "feature/x"])),
+            ("checkout", json!(["--detach"])),
+            ("checkout", json!(["-"])),
+            ("switch", json!(["main"])),
+            ("switch", json!(["-c", "topic"])),
         ];
         for (subcommand, args) in allowed {
             assert_eq!(
