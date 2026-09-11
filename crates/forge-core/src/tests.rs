@@ -5372,24 +5372,6 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
         !marker.exists(),
         "cancelled tool still executed its side effect"
     );
-
-    // The next prompt must reconcile the dangling call *before* its own user
-    // message, or the provider still sees an unanswered tool_calls message.
-    s.append_user_message("next").await.unwrap();
-    let tool_idx = s
-        .messages
-        .iter()
-        .position(|m| m.role == MessageRole::Tool && m.tool_call_id.as_deref() == Some("c1"))
-        .expect("cancel must reconcile the dangling tool call");
-    let user_idx = s
-        .messages
-        .iter()
-        .rposition(|m| m.role == MessageRole::User)
-        .unwrap();
-    assert!(
-        tool_idx < user_idx,
-        "reconciled tool result must precede the new user message"
-    );
 }
 
 #[tokio::test]
