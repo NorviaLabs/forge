@@ -149,20 +149,19 @@ impl TuiApp {
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
         let count = self.session_chrome.len();
-        // One-key task start, before the empty-strip guard: creating the
-        // first task is exactly when the list has nothing to select yet. The
-        // task starts unnamed and prompt-less; its name comes from the first
-        // prompt typed in it (see `enqueue_user_message`).
-        if matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty()) {
-            let created = self
-                .send_session_command(forge_session::SupervisorCommand::CreateSession {
-                    label: String::new(),
-                    first_prompt: None,
-                })
-                .await;
-            if created {
-                self.set_feedback(FeedbackSeverity::Info, "creating session…");
-            }
+        // `n` opens the navigator's inline composer; the typed task is the
+        // session's first prompt (and names it). A trusted repo needs no modal.
+        // Guarded on the composer being closed, so an `n` typed into the task
+        // does not reset the buffer.
+        if self.navigator_new_session.is_none()
+            && matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty())
+        {
+            self.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+            self.navigator_tab_explicit = true;
+            self.focus.set_navigation(FocusBlock::TaskStrip);
+            self.navigator_peek = None;
+            self.navigator_reply.clear();
+            self.navigator_new_session = Some(String::new());
             return Ok(true);
         }
         if count == 0 {
@@ -172,6 +171,43 @@ impl TuiApp {
         // navigation to the explorer.
         if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions {
             return Ok(false);
+        }
+        if self.navigator_new_session.is_some() {
+            match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.navigator_new_session = None;
+                    return Ok(true);
+                }
+                KeyCode::Backspace if key.modifiers.is_empty() => {
+                    if let Some(buffer) = self.navigator_new_session.as_mut() {
+                        buffer.pop();
+                    }
+                    return Ok(true);
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    let text = self.navigator_new_session.take().unwrap_or_default();
+                    if !text.trim().is_empty() {
+                        self.send_session_command(
+                            forge_session::SupervisorCommand::CreateSession {
+                                label: String::new(),
+                                first_prompt: Some(text),
+                            },
+                        )
+                        .await;
+                        self.set_feedback(FeedbackSeverity::Info, "starting session…");
+                    }
+                    return Ok(true);
+                }
+                KeyCode::Char(c)
+                    if key.modifiers.is_empty() || key.modifiers == event::KeyModifiers::SHIFT =>
+                {
+                    if let Some(buffer) = self.navigator_new_session.as_mut() {
+                        buffer.push(c);
+                    }
+                    return Ok(true);
+                }
+                _ => {}
+            }
         }
         let focused_id = self.session_chrome[self.task_strip_selection].session_id;
         if self.navigator_peek == Some(focused_id) {

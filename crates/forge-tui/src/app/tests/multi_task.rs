@@ -168,11 +168,7 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
     let mut app = Box::new(app);
     let primary_id = app.selected_session_id;
 
-    app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let sibling = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let sibling = create_promptless_session(&mut app).await;
     let sibling_id = sibling.session_id;
     let sibling_workspace = app
         .supervisor
@@ -295,11 +291,7 @@ async fn quit_closes_selected_session_before_exiting_on_last_session() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let primary_id = app.selected_session_id;
 
-    app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let sibling = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let sibling = create_promptless_session(&mut app).await;
     let sibling_id = sibling.session_id;
     app.task_strip_selection = app
         .session_chrome
@@ -501,11 +493,7 @@ async fn without_a_supervisor_the_session_is_direct_owned() {
 #[tokio::test]
 async fn supervisor_snapshot_makes_the_selected_session_supervised() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let session = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let session = create_promptless_session(&mut app).await;
 
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
@@ -805,64 +793,33 @@ async fn wait_for_chrome_session(
 }
 
 #[tokio::test]
-async fn strip_n_creates_an_unnamed_task_in_one_keypress() {
+async fn n_opens_the_inline_composer_and_starts_a_named_session() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
-
-    // One keypress: no form, no modal. The task is registered unnamed and
-    // prompt-less. Managed sessions start detached — the branch is created on
-    // the first filesystem change, so a research session adds no ref.
-    let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
     assert!(
-        task.branch.is_empty(),
-        "a new task must start branchless: {}",
-        task.branch
-    );
-    assert!(
-        app.overlay.is_none(),
-        "instant create must not open a modal"
+        app.navigator_new_session.is_some(),
+        "n must open the inline composer"
     );
 
-    // The strip renders the positional fallback instead of a hole.
-    let text = render_app_text(&mut app, 120, 30);
-    assert!(
-        text.contains("session 1"),
-        "strip should fall back to `session 1`: {text}"
-    );
-
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn the_first_prompt_names_an_unnamed_task() {
-    let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let task = wait_for_chrome_session(&mut app, |task| task.label.is_empty()).await;
-
-    // The strip opens on the primary row; move right onto the new task,
-    // then select it. Typing the first prompt both names it and runs it —
-    // the strip label comes from the prompt's opening words.
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
+    for ch in "rename the parser".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    app.input.set_text("rewrite the lexer".to_string());
-    app.submit_composer_message().await.unwrap();
-    app.drain_pending_prompt(None).await.unwrap();
+    assert!(
+        app.navigator_new_session.is_none(),
+        "the composer closes on Enter"
+    );
 
-    let named = wait_for_chrome_session(&mut app, |task| task.label == "Rewrite the lexer").await;
-    assert_eq!(named.session_id, task.session_id);
+    // The typed task becomes the session's first prompt, which names it.
+    let created = wait_for_chrome_session(&mut app, |task| task.label == "Rename the parser").await;
+    assert!(!created.session_id.is_nil());
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
@@ -994,11 +951,7 @@ async fn completed_session_accepts_prompt_while_another_runs() {
     let primary_id = app.selected_session_id;
 
     // Create B and switch to it.
-    app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let b = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let b = create_promptless_session(&mut app).await;
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -1156,11 +1109,7 @@ async fn navigator_defaults_to_sessions_once_a_second_session_exists() {
         "one session keeps the file tree"
     );
 
-    app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let _ = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let _ = create_promptless_session(&mut app).await;
     assert_eq!(
         app.effective_navigator_tab(),
         NavigatorTab::Sessions,
@@ -1270,11 +1219,7 @@ async fn the_peek_renders_the_last_answer_and_reply() {
 async fn d_archives_an_idle_managed_session() {
     use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let sibling = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    let sibling = create_promptless_session(&mut app).await;
     app.navigator_tab = NavigatorTab::Sessions;
     app.navigator_tab_explicit = true;
     app.task_strip_selection = app
@@ -1339,6 +1284,24 @@ async fn a_narrow_navigator_falls_back_to_a_status_chip() {
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
         .unwrap();
+}
+
+/// Create a prompt-less managed session directly, bypassing the inline
+/// composer — for tests that only need a sibling to exist (the composer's
+/// first prompt would otherwise start a model turn).
+async fn create_promptless_session(app: &mut TuiApp) -> SessionChromeItem {
+    let before: std::collections::HashSet<uuid::Uuid> = app
+        .session_chrome
+        .iter()
+        .map(|item| item.session_id)
+        .collect();
+    app.focus_block(FocusBlock::TaskStrip);
+    app.send_session_command(forge_session::SupervisorCommand::CreateSession {
+        label: String::new(),
+        first_prompt: None,
+    })
+    .await;
+    wait_for_chrome_session(app, |item| !before.contains(&item.session_id)).await
 }
 
 fn user_message_count(app: &TuiApp, session_id: uuid::Uuid) -> usize {
