@@ -3467,6 +3467,7 @@ async fn a_new_prompt_reconciles_a_dangling_tool_call_before_its_user_message() 
     s.append_user_message("first").await.unwrap();
     // A cancelled turn leaves the assistant tool call unanswered.
     s.messages.push(assistant_with_tool_call("bash"));
+    s.mark_cancelled().await.unwrap();
     s.append_user_message("second").await.unwrap();
 
     let tool_idx = s
