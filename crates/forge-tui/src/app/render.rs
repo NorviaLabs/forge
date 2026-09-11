@@ -228,7 +228,35 @@ impl TuiApp {
         }
         self.normalize_focus();
         let status = self.refresh_status_model_with_connected(connected);
-        frame.render_widget(StatusBar { model: &status }, regions.status);
+        // When the navigator column is collapsed there is no session list on
+        // screen; a one-line chip in the status row keeps sessions reachable.
+        let sessions_chip: Option<String> = if task_mode && regions.files.is_none() {
+            let need = self
+                .session_chrome
+                .iter()
+                .filter(|task| task.attention)
+                .count();
+            let working = self
+                .session_chrome
+                .iter()
+                .filter(|task| task.secondary.as_deref() == Some("running"))
+                .count();
+            match (need, working) {
+                (0, 0) => None,
+                (n, 0) => Some(format!("⌄ {n} need")),
+                (0, w) => Some(format!("⌄ {w} working")),
+                (n, w) => Some(format!("⌄ {n} need · {w} working")),
+            }
+        } else {
+            None
+        };
+        frame.render_widget(
+            StatusBar {
+                model: &status,
+                sessions_chip: sessions_chip.as_deref(),
+            },
+            regions.status,
+        );
         if regions.task_strip.height > 0 {
             // An unnamed task (created with one key, before its first prompt
             // names it) shows an ordinal instead of a hole. Numbered among
@@ -309,9 +337,9 @@ impl TuiApp {
                                 '○'
                             };
                             let qualifier = if need {
-                                format!("needs you · {state}")
+                                format!("needs you · {}", relative_age(task.updated_at))
                             } else {
-                                state
+                                format!("{state} · {}", relative_age(task.updated_at))
                             };
                             crate::widgets::SessionRow {
                                 glyph,
@@ -1505,12 +1533,42 @@ fn wrap_to_width(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     lines
 }
 
+/// Compact age for a session row: `just now`, `2m`, `3h`, `4d`.
+fn relative_age(then: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = (chrono::Utc::now() - then).num_seconds().max(0);
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::composer_input_height;
+    use super::relative_age;
     use crate::widgets::InputModel;
     use ratatui::layout::Rect;
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn relative_age_buckets_by_magnitude() {
+        let now = chrono::Utc::now();
+        assert_eq!(relative_age(now), "just now");
+        assert_eq!(relative_age(now - chrono::Duration::seconds(120)), "2m");
+        assert_eq!(
+            relative_age(now - chrono::Duration::seconds(3 * 3600)),
+            "3h"
+        );
+        assert_eq!(
+            relative_age(now - chrono::Duration::seconds(2 * 86_400)),
+            "2d"
+        );
+    }
 
     #[test]
     fn wrapped_composer_grows_before_the_second_visual_line_is_clipped() {

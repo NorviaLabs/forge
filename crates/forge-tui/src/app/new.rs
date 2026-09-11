@@ -58,6 +58,7 @@ impl TuiApp {
                 selected: true,
                 secondary: None,
                 attention: false,
+                updated_at: chrono::Utc::now(),
             }],
             task_strip_selection: 0,
             navigator_tab: crate::widgets::NavigatorTab::Files,
@@ -236,6 +237,7 @@ impl TuiApp {
             selected: true,
             secondary: Some(initial.task.turn_state.label().into()),
             attention: has_interrupted_prompts,
+            updated_at: initial.task.updated_at,
         }];
         let mut snapshots = std::collections::HashMap::new();
         snapshots.insert(session_id, initial);

@@ -226,6 +226,7 @@ impl TuiApp {
                             selected: snapshot.task.session_id == self.selected_session_id,
                             secondary: Some(snapshot.task.turn_state.label().into()),
                             attention: !snapshot.interrupted_prompts.is_empty(),
+                            updated_at: snapshot.task.updated_at,
                         })
                         .collect();
                     if let Some(primary) = direct {
