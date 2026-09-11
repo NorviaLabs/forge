@@ -502,6 +502,7 @@ Two rows (`widgets/footer.rs`); the second row is the background activity line.
   - **Working meter:** one quarter-circle glyph from the same ◐◓◑◒ family the turn line speaks, stepped once per event-loop tick while a turn runs (`throbber-widgets-tui` state, forge styling). Motion pauses with work instead of free-running on the wall clock.
   - When an approval pends, the row dims — it must not look interactive.
 - **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — terminal/background jobs, agents/subagents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `◆` agent, `⇥` queued); the bracket is shared chrome so the chips read as a segmented strip. The row is blank when nothing is in flight, so an idle footer is unchanged. Per-item detail (command, elapsed, live subagent activity) lives in the task view, not the footer.
+  - **A completion is an observation, not a queued prompt.** Finishing a background task does not inject a user-role prompt. The result stays in the background strip and the operator attaches it to the composer explicitly (`i` on the selected task). Only approve-all — no human in the loop — auto-continues by enqueuing the result at the next turn boundary.
 
 ### 9.4 Chat transcript (sidebar)
 

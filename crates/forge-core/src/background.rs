@@ -676,15 +676,18 @@ impl AgentSession {
     }
 
     /// Finalize a background task: journal `BackgroundTaskFinished`, update
-    /// the registry, and — per the "next natural turn boundary" delivery
-    /// decision — enqueue the result as a future-task observation via the
-    /// existing `TaskQueue`, exactly like a queued user message.
+    /// the registry, and deliver the result. A completion is an *observation*,
+    /// not an operator-typed prompt, so by default it stays in the background
+    /// strip (surfaced with a terminal status) and the operator attaches it
+    /// explicitly. Only approve-all — where there is no human in the loop to
+    /// attach anything — auto-continues by enqueuing the result for the next
+    /// natural turn boundary.
     async fn finish_background_task(
         &mut self,
         id: BackgroundTaskId,
         outcome: Option<BackgroundTaskOutcome>,
     ) -> Result<(), LoopError> {
-        let deliver_to_queue = !matches!(outcome, Some(BackgroundTaskOutcome::Subagent(_)));
+        let deliver_to_queue = self.approve_all;
         let label = self
             .tasks
             .background
@@ -820,7 +823,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn successful_shell_job_finishes_succeeded_and_enqueues_observation() {
+        async fn successful_shell_job_finishes_succeeded_without_queuing_a_prompt() {
             let dir = tempdir().unwrap();
             let mut s = session(dir.path()).await;
             let id = s
@@ -835,7 +838,24 @@ mod tests {
                 }
                 other => panic!("expected Succeeded, got {other:?}"),
             }
-            // Result delivery: next-turn-boundary via the existing queue.
+            // A completion is an observation, not an operator-typed prompt:
+            // nothing is queued unless approve-all removes the human.
+            assert_eq!(s.queue().len(), 0);
+        }
+
+        #[tokio::test]
+        async fn shell_completion_auto_continues_only_under_approve_all() {
+            let dir = tempdir().unwrap();
+            let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
+            let id = s
+                .spawn_background_shell("echo bg-result".into(), "echo".into())
+                .await
+                .unwrap();
+
+            wait_terminal(&mut s, id).await;
+            // With no human in the loop, the result drives the next turn.
             assert_eq!(s.queue().len(), 1);
         }
 
