@@ -51,6 +51,19 @@ impl TuiApp {
                             self.go_back_workspace();
                         }
                     }
+                    "preview" => {
+                        if self.source_viewer.supports_markdown_preview() {
+                            let on = self.source_viewer.toggle_markdown_preview();
+                            self.status_state.message = if on {
+                                "Markdown preview · :preview to edit".into()
+                            } else {
+                                "Editing source · :preview to render".into()
+                            };
+                            self.editor_message = Some(self.status_state.message.clone());
+                        } else {
+                            self.editor_message = Some("E: not a Markdown file".to_string());
+                        }
+                    }
                     command if command == "e" || command == "edit" => {
                         if self
                             .editor_session
@@ -1096,6 +1109,18 @@ impl TuiApp {
             return false;
         }
 
+        if self.source_viewer.markdown_preview {
+            // Preview is read-only. `:` still opens the command line so
+            // `:preview` (and `:q`) stay reachable; every other key scrolls the
+            // rendered document instead of reaching the editor buffer.
+            if key.code == KeyCode::Char(':') && key.modifiers.is_empty() {
+                self.editor_command = Some(String::new());
+                self.status_state.message = ":".into();
+                return true;
+            }
+            return self.handle_markdown_preview_key(key);
+        }
+
         if let Some(editor) = self.editor_session.as_mut() {
             if key.code == KeyCode::Char(':')
                 && key.modifiers.is_empty()
@@ -1182,6 +1207,42 @@ impl TuiApp {
             // they cannot fall through to the chat composer.
             _ => self.editor_session.is_none(),
         }
+    }
+
+    /// Scroll the rendered Markdown preview. Every key is consumed: the
+    /// preview is read-only, so nothing may reach and mutate the buffer.
+    fn handle_markdown_preview_key(&mut self, key: event::KeyEvent) -> bool {
+        // The preview body is the pane minus the header and the mode row.
+        // Sizing it a touch small keeps the last page reachable.
+        let height = self.editor_viewport.height.saturating_sub(4).max(1) as usize;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                self.source_viewer.scroll_preview(-1, height);
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+                self.source_viewer.scroll_preview(1, height);
+            }
+            KeyCode::PageUp if key.modifiers.is_empty() => {
+                self.source_viewer
+                    .scroll_preview(-(height as isize), height);
+            }
+            KeyCode::PageDown if key.modifiers.is_empty() => {
+                self.source_viewer.scroll_preview(height as isize, height);
+            }
+            KeyCode::Home | KeyCode::Char('g') if key.modifiers.is_empty() => {
+                self.source_viewer.preview_to_first_line();
+            }
+            KeyCode::End if key.modifiers.is_empty() => {
+                self.source_viewer.preview_to_last_line(height);
+            }
+            KeyCode::Char('G')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.source_viewer.preview_to_last_line(height);
+            }
+            _ => {}
+        }
+        true
     }
 
     async fn handle_sidebar_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {

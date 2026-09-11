@@ -135,6 +135,11 @@ pub struct SourceViewer {
     pub size_bytes: u64,
     /// Whether the current view is a limited preview.
     pub preview: bool,
+    /// Whether the active file is shown as a rendered Markdown preview.
+    /// Only meaningful for `.md`/`.markdown` files opened in the editor.
+    pub markdown_preview: bool,
+    /// First visible rendered Markdown line (0-based).
+    pub preview_top: usize,
     /// Last modified time observed for change detection.
     modified: Option<SystemTime>,
     /// Best-effort file identity from the last successful load. Unix uses
@@ -148,6 +153,11 @@ pub struct SourceViewer {
     pub highlight_disabled: bool,
     /// Cached highlighted lines. Empty when highlighting is unavailable.
     highlighted_lines: Vec<Vec<Span<'static>>>,
+    /// Cached rendered Markdown preview. Rebuilt when the pane width or the
+    /// source revision changes; empty until the first preview render.
+    preview_lines: Vec<Line<'static>>,
+    preview_width: usize,
+    preview_revision: u64,
     /// In-file search state.
     pub search: SearchState,
     /// Jump-to-line state.
@@ -178,12 +188,17 @@ impl Default for SourceViewer {
             status: ViewerStatus::Empty,
             size_bytes: 0,
             preview: false,
+            markdown_preview: false,
+            preview_top: 0,
             modified: None,
             identity: None,
             notice: None,
             language_label: None,
             highlight_disabled: false,
             highlighted_lines: Vec::new(),
+            preview_lines: Vec::new(),
+            preview_width: 0,
+            preview_revision: 0,
             search: SearchState::default(),
             jump: JumpState::default(),
             last_content_width: 0,
@@ -236,11 +251,16 @@ impl SourceViewer {
         self.status = ViewerStatus::Loading;
         self.size_bytes = 0;
         self.preview = false;
+        self.markdown_preview = false;
+        self.preview_top = 0;
         self.modified = None;
         self.notice = None;
         self.language_label = None;
         self.highlight_disabled = false;
         self.highlighted_lines.clear();
+        self.preview_lines.clear();
+        self.preview_width = 0;
+        self.preview_revision = 0;
         self.search = SearchState::default();
         self.jump = JumpState::default();
         self.last_content_width = 0;
@@ -405,6 +425,8 @@ impl SourceViewer {
         let search_query = self.search.query.clone();
         let jump_open = self.jump.open;
         let jump_input = self.jump.input.clone();
+        let was_markdown_preview = self.markdown_preview;
+        let old_preview_top = self.preview_top;
 
         if highlight {
             self.open(root, &path);
@@ -418,6 +440,15 @@ impl SourceViewer {
             self.current_line = old_current.min(self.lines.len().saturating_sub(1));
             self.h_scroll = old_h;
             self.rel_path = old_rel;
+            // Preview is a reading mode, not a property of the file: keep it
+            // across reloads so an external change does not throw the reader
+            // back into the source.
+            if was_markdown_preview && self.supports_markdown_preview() {
+                self.markdown_preview = true;
+                self.preview_top = old_preview_top;
+                // Invalidate the render so the reloaded text is reflected.
+                self.preview_lines.clear();
+            }
             let changed = self.modified != old_modified || self.size_bytes != old_size;
             if changed {
                 self.notice = Some("Reloaded".into());
@@ -506,6 +537,67 @@ impl SourceViewer {
     /// Switch the cosmetic mode tag back to NORMAL. Doesn't change key behavior.
     pub fn enter_normal_mode(&mut self) {
         self.mode = ViewerMode::Normal;
+    }
+
+    /// Whether `rel_path` names a Markdown document.
+    pub fn is_markdown_path(rel_path: &str) -> bool {
+        matches!(
+            Path::new(rel_path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .as_str(),
+            "md" | "markdown"
+        )
+    }
+
+    /// Whether the open file can be shown as a rendered Markdown preview.
+    pub fn supports_markdown_preview(&self) -> bool {
+        matches!(self.status, ViewerStatus::Ok) && Self::is_markdown_path(&self.rel_path)
+    }
+
+    /// Toggle the rendered Markdown preview. Returns the new state; a no-op
+    /// returning `false` for files that are not Markdown.
+    pub fn toggle_markdown_preview(&mut self) -> bool {
+        if !self.supports_markdown_preview() {
+            return false;
+        }
+        self.markdown_preview = !self.markdown_preview;
+        // Render from the current buffer on the next frame.
+        self.preview_lines.clear();
+        self.markdown_preview
+    }
+
+    pub(crate) fn preview_cache_stale(&self, width: usize, revision: u64) -> bool {
+        self.preview_width != width
+            || self.preview_revision != revision
+            || self.preview_lines.is_empty()
+    }
+
+    pub(crate) fn set_markdown_preview(&mut self, text: &str, width: usize, revision: u64) {
+        self.preview_lines = crate::markdown::render_markdown(text, width.max(1));
+        self.preview_width = width;
+        self.preview_revision = revision;
+        let max_top = self.preview_lines.len().saturating_sub(1);
+        self.preview_top = self.preview_top.min(max_top);
+    }
+
+    pub fn scroll_preview(&mut self, delta: isize, page_height: usize) {
+        let max_top = self.preview_lines.len().saturating_sub(page_height.max(1));
+        if delta < 0 {
+            self.preview_top = self.preview_top.saturating_sub(delta.unsigned_abs());
+        } else {
+            self.preview_top = (self.preview_top + delta as usize).min(max_top);
+        }
+    }
+
+    pub fn preview_to_first_line(&mut self) {
+        self.preview_top = 0;
+    }
+
+    pub fn preview_to_last_line(&mut self, page_height: usize) {
+        self.preview_top = self.preview_lines.len().saturating_sub(page_height.max(1));
     }
 
     pub fn move_cursor_vertical(&mut self, delta: isize, page_height: usize) {
@@ -908,6 +1000,35 @@ fn apply_search_styles(
     out
 }
 
+/// Paint the one-column vertical position indicator shared by the source
+/// viewer and the Markdown preview.
+fn paint_vertical_scrollbar(
+    buf: &mut Buffer,
+    body: Rect,
+    start: usize,
+    visible_height: usize,
+    total: usize,
+) {
+    if total <= visible_height || visible_height == 0 {
+        return;
+    }
+    let thumb = visible_height
+        .saturating_mul(visible_height)
+        .div_ceil(total)
+        .max(1);
+    let track = total.saturating_sub(visible_height);
+    let pos = if track == 0 {
+        0
+    } else {
+        start.saturating_mul(visible_height - thumb).div_ceil(track)
+    };
+    let bar_y = body.y + pos.min(visible_height.saturating_sub(1)) as u16;
+    if bar_y < body.y + body.height {
+        let x = body.x + body.width - 1;
+        buf[(x, bar_y)].set_symbol("█").set_style(theme::dim());
+    }
+}
+
 fn is_binary(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
@@ -1081,7 +1202,11 @@ impl SourceViewerWidget<'_> {
         }
 
         if self.editor.is_some() {
-            self.render_editor_content(area, buf);
+            if self.viewer.markdown_preview {
+                self.render_markdown_preview(area, buf);
+            } else {
+                self.render_editor_content(area, buf);
+            }
             return;
         }
 
@@ -1199,23 +1324,7 @@ impl SourceViewerWidget<'_> {
         }
 
         // Vertical position indicator.
-        if total > visible_height && visible_height > 0 {
-            let thumb = visible_height
-                .saturating_mul(visible_height)
-                .div_ceil(total);
-            let thumb = thumb.max(1);
-            let track = total.saturating_sub(visible_height);
-            let pos = if track == 0 {
-                0
-            } else {
-                start.saturating_mul(visible_height - thumb).div_ceil(track)
-            };
-            let bar_y = body.y + pos.min(visible_height.saturating_sub(1)) as u16;
-            if bar_y < body.y + body.height {
-                let x = body.x + body.width - 1;
-                buf[(x, bar_y)].set_symbol("█").set_style(theme::dim());
-            }
-        }
+        paint_vertical_scrollbar(buf, body, start, visible_height, total);
 
         if input_open {
             self.render_input(rows[2], buf);
@@ -1296,6 +1405,94 @@ impl SourceViewerWidget<'_> {
         };
         // DESIGN-017: the mode row starts at the composer's text inset, so
         // the editor baseline and the composer baseline share a left edge.
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ".repeat(TEXT_INSET as usize), status_style),
+            Span::styled(status, status_style),
+        ]))
+        .render(rows[2], buf);
+        if self.editor_command.is_some() {
+            let command = self.editor_command.unwrap_or_default();
+            let cursor_x = rows[2].x + TEXT_INSET + 1 + command.chars().count() as u16;
+            if cursor_x < rows[2].x + rows[2].width {
+                theme::paint_caret(buf, cursor_x, rows[2].y);
+            }
+        }
+    }
+
+    /// Read-only rendered Markdown. Builds the preview from the live editor
+    /// buffer (so unsaved edits show), caches it by pane width and revision,
+    /// and scrolls with the same keys as the source viewer.
+    fn render_markdown_preview(&mut self, area: Rect, buf: &mut Buffer) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+
+        let body = rows[1];
+        let content_width = body.width as usize;
+        let visible_height = body.height as usize;
+
+        let revision = self
+            .editor
+            .as_deref()
+            .map(EditorSession::revision)
+            .unwrap_or(0);
+        let dirty = self.editor.as_deref().is_some_and(EditorSession::is_dirty);
+        if self.viewer.preview_cache_stale(content_width, revision) {
+            let text = self
+                .editor
+                .as_deref()
+                .map(EditorSession::text)
+                .unwrap_or_default();
+            self.viewer
+                .set_markdown_preview(&text, content_width, revision);
+        }
+
+        let total = self.viewer.preview_lines.len().max(1);
+        let header = compose_source_header(
+            &SourceHeader {
+                mode: "PREVIEW",
+                rel_path: &self.viewer.rel_path,
+                line: self.viewer.preview_top + 1,
+                total,
+                language: None,
+                note: None,
+                modified: dirty,
+            },
+            rows[0].width as usize,
+        );
+        Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
+
+        let count = self.viewer.preview_lines.len();
+        let start = self.viewer.preview_top.min(count.saturating_sub(1));
+        let end = (start + visible_height).min(count);
+        for (row, line) in self.viewer.preview_lines[start..end].iter().enumerate() {
+            let y = body.y + row as u16;
+            if y >= body.y + body.height {
+                break;
+            }
+            line.clone()
+                .render(Rect::new(body.x, y, body.width, 1), buf);
+        }
+
+        paint_vertical_scrollbar(buf, body, start, visible_height, total);
+
+        let status_style = if self.focused {
+            theme::text()
+        } else {
+            theme::muted()
+        };
+        let status = if let Some(command) = self.editor_command {
+            format!(":{command}")
+        } else if let Some(message) = self.editor_message {
+            message.to_string()
+        } else {
+            "PREVIEW · :preview to edit".to_string()
+        };
         Paragraph::new(Line::from(vec![
             Span::styled(" ".repeat(TEXT_INSET as usize), status_style),
             Span::styled(status, status_style),
@@ -2435,5 +2632,62 @@ mod tests {
         viewer.open(root.path(), &b);
         assert!(!viewer.search.open);
         assert!(viewer.search.query.is_empty());
+    }
+
+    #[test]
+    fn markdown_preview_is_limited_to_markdown_extensions() {
+        assert!(SourceViewer::is_markdown_path("README.md"));
+        assert!(SourceViewer::is_markdown_path("docs/guide.MARKDOWN"));
+        assert!(!SourceViewer::is_markdown_path("notes.txt"));
+        assert!(!SourceViewer::is_markdown_path("src/main.rs"));
+        assert!(!SourceViewer::is_markdown_path("markdown"));
+    }
+
+    #[test]
+    fn markdown_preview_renders_markup_and_labels_the_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("README.md");
+        fs::write(&path, "# Title\n\n- one\n- two\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open_for_editor(root.path(), &path);
+        assert!(viewer.supports_markdown_preview());
+        assert!(viewer.toggle_markdown_preview());
+        assert!(viewer.markdown_preview);
+
+        let mut editor = EditorSession::new("# Title\n\n- one\n- two\n");
+        let area = Rect::new(0, 0, 60, 14);
+        let mut buf = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+
+        let text = buffer_text(&buf, area);
+        assert!(text.contains("PREVIEW"), "mode row missing: {text}");
+        assert!(text.contains("TITLE"), "heading not rendered: {text}");
+        assert!(text.contains("• one"), "bullet not rendered: {text}");
+        assert!(
+            !text.contains("# Title"),
+            "raw heading leaked through: {text}"
+        );
+        assert!(!text.contains("- one"), "raw bullet leaked through: {text}");
+    }
+
+    #[test]
+    fn non_markdown_file_rejects_preview_toggle() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
+        fs::write(&path, "plain\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open_for_editor(root.path(), &path);
+        assert!(!viewer.supports_markdown_preview());
+        assert!(!viewer.toggle_markdown_preview());
+        assert!(!viewer.markdown_preview);
     }
 }

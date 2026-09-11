@@ -572,6 +572,7 @@ the single plan surface.
 - The title shows the exact file with an ASCII `*` unsaved marker that is never elided; there is no trailing "modified" word.
 - The NORMAL / INSERT mode row shares the composer's text inset so both baselines align.
 - Search matches rank: active match, other matches, current line.
+- Markdown (`.md` / `.markdown`) opens in a read-only rendered `PREVIEW` mode; `:preview` toggles between the rendered document and the editable source, which keeps any unsaved buffer. Other files are unaffected.
 - Line numbers muted; active line number accented.
 - Horizontal scrolling must not detach markers from content.
 - Binary and invalid-UTF-8 files are explicitly read-only.
