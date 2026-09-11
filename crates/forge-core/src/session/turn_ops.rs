@@ -160,14 +160,29 @@ impl AgentSession {
             application = match application {
                 ModelResponseApplication::Finished(outcome) => return Ok(outcome),
                 ModelResponseApplication::Execute(pending) => {
-                    let completed = IsolatedTask::spawn((*pending).execute())
-                        .join()
-                        .await
-                        .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?
-                        .ok_or(LoopError::Cancelled)?;
+                    let completed = self
+                        .join_tool_execution(IsolatedTask::spawn((*pending).execute()))
+                        .await?;
                     self.finish_tool_application(completed).await?
                 }
             };
+        }
+    }
+
+    /// Join an isolated tool execution, abandoning it when the turn is
+    /// cancelled. Dropping the task drops the tool future, which reaps any
+    /// shell process group it spawned (see `forge-tools`'s `ProcessGroupGuard`).
+    /// A cancel that only flips a status flag would otherwise let the command
+    /// run to completion and execute its side effects after the user stopped it.
+    pub(crate) async fn join_tool_execution<T: Send + 'static>(
+        &self,
+        task: IsolatedTask<T>,
+    ) -> Result<T, LoopError> {
+        tokio::select! {
+            joined = task.join() => joined
+                .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?
+                .ok_or(LoopError::Cancelled),
+            _ = self.turn_cancel_token.cancelled() => Err(LoopError::Cancelled),
         }
     }
 

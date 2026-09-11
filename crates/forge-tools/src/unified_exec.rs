@@ -183,7 +183,7 @@ impl ExecSessionStore {
         };
         for session in sessions {
             let mut session = session.lock().await;
-            terminate_process(&mut *session).await;
+            terminate_process(&mut session).await;
             session.running = false;
         }
     }
@@ -1149,10 +1149,7 @@ mod tests {
         // future mid-flight — the same drop a cancelled turn performs.
         let dropped = tokio::time::timeout(
             Duration::from_millis(200),
-            exec_command.call(
-                &ctx,
-                json!({"cmd": command, "yield_time_ms": 30_000}),
-            ),
+            exec_command.call(&ctx, json!({"cmd": command, "yield_time_ms": 30_000})),
         )
         .await;
         assert!(dropped.is_err(), "session should still be running at drop");

@@ -5302,6 +5302,63 @@ async fn cancellation_yields_interrupted_and_never_completes() {
     assert!(matches!(outcome, ApplyOutcome::Done(_)));
 }
 
+/// Cancelling a turn while a shell tool is running must kill the process
+/// tree so its side effect never lands (regression #642).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_turn_kills_the_running_shell_tool() {
+    let dir = tempdir().unwrap();
+    let marker = dir.path().join("cancel-marker");
+    let command = format!("sleep 3; printf done > {}", marker.display());
+    let model = script(vec![]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.set_workspace_trusted(true);
+    assert!(s.set_approve_all(true));
+
+    let cancel = s.begin_turn_cancellation_scope();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        cancel.cancel();
+    });
+
+    let result = s
+        .apply_model_response(tool_call_response(vec![ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: json!({ "command": command }),
+        }]))
+        .await;
+    assert!(
+        matches!(result, Err(LoopError::Cancelled)),
+        "cancel must interrupt the running tool"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert!(
+        !marker.exists(),
+        "cancelled shell tool still executed its side effect"
+    );
+
+    // The next prompt must reconcile the dangling call *before* its own user
+    // message, or the provider still sees an unanswered tool_calls message.
+    s.append_user_message("next").await.unwrap();
+    let tool_idx = s
+        .messages
+        .iter()
+        .position(|m| m.role == MessageRole::Tool && m.tool_call_id.as_deref() == Some("c1"))
+        .expect("cancel must reconcile the dangling tool call");
+    let user_idx = s
+        .messages
+        .iter()
+        .rposition(|m| m.role == MessageRole::User)
+        .unwrap();
+    assert!(
+        tool_idx < user_idx,
+        "reconciled tool result must precede the new user message"
+    );
+}
+
 #[tokio::test]
 async fn continuing_a_failed_turn_starts_a_fresh_attempt() {
     let dir = tempdir().unwrap();
