@@ -32,6 +32,14 @@ pub struct FooterActivity {
     pub jobs_need: usize,
     /// Shell/terminal jobs that finished successfully or were cancelled.
     pub jobs_done: usize,
+    /// Agents/subagents queued or running.
+    pub agents_active: usize,
+    /// Subagents blocked on an operator decision.
+    pub agents_need: usize,
+    /// Subagents that ended in failure.
+    pub agents_failed: usize,
+    /// Subagents that finished successfully or were cancelled.
+    pub agents_done: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -165,38 +173,63 @@ const MIN_MODEL_CHARS: u16 = 6;
 fn activity_chips(a: &FooterActivity) -> Option<ratatui::text::Line<'static>> {
     use ratatui::text::Span;
     let mut spans: Vec<Span<'static>> = Vec::new();
-    push_jobs_chip(&mut spans, a);
+    push_count_chip(
+        &mut spans,
+        "⟳",
+        "jobs",
+        a.jobs_active,
+        a.jobs_need,
+        a.jobs_failed,
+        a.jobs_done,
+    );
+    push_count_chip(
+        &mut spans,
+        "◆",
+        "agents",
+        a.agents_active,
+        a.agents_need,
+        a.agents_failed,
+        a.agents_done,
+    );
     if spans.is_empty() {
         return None;
     }
     Some(ratatui::text::Line::from(spans))
 }
 
-/// One `[glyph label]` chip per activity group, counts only. The glyph and
-/// colour carry state; the bracket is shared chrome, so the chips read as a
-/// segmented strip rather than a sentence.
-fn push_jobs_chip(spans: &mut Vec<ratatui::text::Span<'static>>, a: &FooterActivity) {
+/// One `[glyph noun N · qualifiers]` chip. The glyph and colour carry state;
+/// the bracket is shared chrome, so the chips read as a segmented strip rather
+/// than a sentence. Returns without drawing when the group is empty.
+fn push_count_chip(
+    spans: &mut Vec<ratatui::text::Span<'static>>,
+    glyph: &'static str,
+    noun: &'static str,
+    active: usize,
+    need: usize,
+    failed: usize,
+    done: usize,
+) {
     use ratatui::text::Span;
-    let (glyph, label, style) = if a.jobs_active > 0 {
-        let mut label = format!("jobs {}", a.jobs_active);
-        if a.jobs_need > 0 {
-            label.push_str(&format!(" · {} need", a.jobs_need));
+    let (glyph, label, style) = if active > 0 {
+        let mut label = format!("{noun} {active}");
+        if need > 0 {
+            label.push_str(&format!(" · {need} need"));
         }
-        if a.jobs_failed > 0 {
-            label.push_str(&format!(" · {} failed", a.jobs_failed));
+        if failed > 0 {
+            label.push_str(&format!(" · {failed} failed"));
         }
-        let style = if a.jobs_need > 0 {
+        let style = if need > 0 {
             theme::warn()
-        } else if a.jobs_failed > 0 {
+        } else if failed > 0 {
             theme::danger()
         } else {
             theme::info()
         };
-        ("⟳", label, style)
-    } else if a.jobs_failed > 0 {
-        ("✕", format!("{} failed", a.jobs_failed), theme::danger())
-    } else if a.jobs_done > 0 {
-        ("✓", format!("{} done", a.jobs_done), theme::ok())
+        (glyph, label, style)
+    } else if failed > 0 {
+        ("✕", format!("{noun} {failed} failed"), theme::danger())
+    } else if done > 0 {
+        ("✓", format!("{noun} {done} done"), theme::ok())
     } else {
         return;
     };
@@ -950,6 +983,32 @@ mod tests {
         let out = rows(&done, 90, 2);
         assert!(
             out[1].contains('✓') && out[1].contains("4 done"),
+            "{:?}",
+            out[1]
+        );
+    }
+
+    #[test]
+    fn agents_get_their_own_chip_after_jobs() {
+        let mut m = model(TurnLifecycle::Ready, 0.1);
+        m.activity.jobs_active = 1;
+        m.activity.agents_active = 2;
+        m.activity.agents_need = 1;
+        let out = rows(&m, 90, 2);
+        assert!(
+            out[1].contains("[⟳ jobs 1] [◆ agents 2 · 1 need]"),
+            "{:?}",
+            out[1]
+        );
+    }
+
+    #[test]
+    fn agents_chip_survives_when_only_finished_subagents_remain() {
+        let mut m = model(TurnLifecycle::Ready, 0.1);
+        m.activity.agents_done = 2;
+        let out = rows(&m, 90, 2);
+        assert!(
+            out[1].contains('✓') && out[1].contains("agents 2 done"),
             "{:?}",
             out[1]
         );
