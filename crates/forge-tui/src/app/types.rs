@@ -18,6 +18,9 @@ pub(crate) struct SessionChromeItem {
     pub(crate) selected: bool,
     pub(crate) secondary: Option<String>,
     pub(crate) attention: bool,
+    /// Last time the session row changed; drives the navigator's relative
+    /// qualifier (`idle · 2m`).
+    pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Everything the operator's view of one task carries with it across a switch.
