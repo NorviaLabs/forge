@@ -803,6 +803,11 @@ impl TuiApp {
                 return;
             }
         } else {
+            // The core session gates approve-all on workspace trust; the TUI is
+            // the trust authority for a directly-owned session, and trust can
+            // be granted after the session opened, so refresh it here.
+            let trusted = forge_config::is_trusted(self.session_view.workspace_root());
+            self.session_runtime.set_workspace_trusted(trusted);
             self.session_runtime.set_approve_all(on);
         }
         self.approve_all = on;
