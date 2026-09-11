@@ -605,6 +605,10 @@ async fn status_chrome_shows_not_connected_badge() {
 async fn tui09_chrome_includes_model_on_frame() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    // `TuiApp::new` restores the user's saved selection; isolate HOME so an
+    // ambient `preferences.toml` on the developer's machine cannot override
+    // the explicit runtime config this test asserts on.
+    let (_home, _env) = isolated_home_guard();
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -664,6 +668,9 @@ async fn tui09_chrome_includes_model_on_frame() {
 async fn tui09_narrow_frame_still_shows_model_or_ctx() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    // See `tui09_chrome_includes_model_on_frame`: isolate the user's saved
+    // selection so this frame assertion is deterministic.
+    let (_home, _env) = isolated_home_guard();
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,

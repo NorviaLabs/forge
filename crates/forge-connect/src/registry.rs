@@ -43,6 +43,25 @@ impl ConnectRegistry {
             .find(|p| p.route_id.eq_ignore_ascii_case(route_id))
     }
 
+    /// The profile that owns `model`, matched by the provider prefix the model
+    /// id is namespaced with (`opencode-go/...` -> the `opencode_go` profile).
+    ///
+    /// A model id is authoritative about its provider; a saved profile id is
+    /// not, and can be left stale by an earlier switch. Callers use this to
+    /// reconcile the two instead of pairing a foreign model with the wrong
+    /// route. Returns `None` for un-namespaced custom ids no profile claims.
+    pub fn profile_for_model(&self, model: &str) -> Option<&ProviderSpec> {
+        let prefix = model.split('/').next().unwrap_or("").trim();
+        if prefix.is_empty() {
+            return None;
+        }
+        self.profiles.iter().find(|p| {
+            !p.model_provider_prefix.is_empty()
+                && (p.model_provider_prefix.eq_ignore_ascii_case(prefix)
+                    || p.id.eq_ignore_ascii_case(prefix))
+        })
+    }
+
     pub fn ids(&self) -> Vec<&str> {
         self.profiles.iter().map(|p| p.id.as_str()).collect()
     }

@@ -342,6 +342,18 @@ impl TuiApp {
         // deliberately doesn't gate on `last_selection_struct()`, which would
         // only return `Some` when a complete selection exists.
         let saved_selection = self.connect.preferences.last_selection().ok().flatten();
+        // The saved profile can be stale relative to the saved model: a model
+        // id is namespaced by its provider (`opencode-go/x`), so when the two
+        // disagree the model is authoritative. Otherwise a stale profile pairs
+        // a foreign model with the wrong route and the resumed session cannot
+        // answer a single turn.
+        let saved_profile_id = saved_selection.as_ref().map(|(profile_id, model)| {
+            self.connect
+                .registry
+                .profile_for_model(model)
+                .map(|spec| spec.id.clone())
+                .unwrap_or_else(|| profile_id.clone())
+        });
         if let Some(effort) = self
             .connect
             .preferences
@@ -356,7 +368,7 @@ impl TuiApp {
         // connected profile instead of silently preferring one backend family.
         let chosen = connected
             .iter()
-            .find(|p| saved_selection.as_ref().is_some_and(|(id, _)| id == &p.id))
+            .find(|p| saved_profile_id.as_deref() == Some(p.id.as_str()))
             .cloned();
         if let Some(profile) = chosen {
             // Refresh and inject provider credentials into the client only.
@@ -394,12 +406,17 @@ impl TuiApp {
                         .selected_details()
                         .map(|details| details.active_model.clone())
                         .unwrap_or_else(|| self.runtime.model_label.clone());
-                    self.try_session_command(forge_session::SupervisorCommand::SetModel {
-                        session_id,
-                        model_id: active_model,
-                        route_id: restored_route,
-                        reasoning_effort: Some(self.reasoning_effort.value.to_string()),
-                    });
+                    // Never persist a route without a model: an empty model id
+                    // under a real route is the exact "model id is required"
+                    // state. The selection block below applies a valid model.
+                    if !active_model.trim().is_empty() {
+                        self.try_session_command(forge_session::SupervisorCommand::SetModel {
+                            session_id,
+                            model_id: active_model,
+                            route_id: restored_route,
+                            reasoning_effort: Some(self.reasoning_effort.value.to_string()),
+                        });
+                    }
                 }
             }
             // Only switch the active model when it still looks like the forge default
@@ -410,19 +427,8 @@ impl TuiApp {
             if looks_default {
                 let saved_model = saved_selection
                     .as_ref()
-                    .and_then(|(id, model)| (id == &profile.id).then_some(model.as_str()))
-                    .filter(|model| {
-                        let prefix = Self::model_prefix(model);
-                        let pid = profile.id.as_str();
-                        let provider_prefix = profile.model_provider_prefix.as_str();
-                        prefix == pid
-                            || prefix == provider_prefix
-                            || (prefix == "openai" && pid == "openai_codex")
-                            || (prefix == "openai-codex" && pid == "openai_codex")
-                            || (prefix == "opencode-go" && pid == "opencode_go")
-                            || (prefix == "opencode-zen" && pid == "opencode_zen")
-                            || (prefix == "grok" && pid == "xai")
-                    });
+                    .map(|(_, model)| model.as_str())
+                    .filter(|model| self.profile_owns_model(&profile, model));
                 if let Some(model) = saved_model.or_else(|| profile.default_model()) {
                     self.apply_selection(&ModelSelection {
                         route_id: self
@@ -448,13 +454,25 @@ impl TuiApp {
                         .is_none_or(|details| details.active_model.is_empty()),
                 };
                 if active_model_empty {
-                    self.apply_selection(&ModelSelection {
-                        route_id: route_id_for_profile(&profile.id),
-                        provider: "native".into(),
-                        model: self.runtime.model_label.clone(),
-                        profile_id: Some(profile.id.clone()),
-                        effort: self.reasoning_effort.value.to_string(),
-                    });
+                    let candidate = self.runtime.model_label.clone();
+                    let model = if self.profile_owns_model(&profile, &candidate) {
+                        candidate
+                    } else {
+                        profile.default_model().unwrap_or_default().to_string()
+                    };
+                    if model.is_empty() {
+                        // No model this profile can run: keep the profile but
+                        // never write an empty model id under its route.
+                        self.connect.profile = Some(profile.id.clone());
+                    } else {
+                        self.apply_selection(&ModelSelection {
+                            route_id: route_id_for_profile(&profile.id),
+                            provider: "native".into(),
+                            model,
+                            profile_id: Some(profile.id.clone()),
+                            effort: self.reasoning_effort.value.to_string(),
+                        });
+                    }
                 }
             }
             self.status_state.message =
@@ -606,11 +624,23 @@ impl TuiApp {
     }
 
     pub(super) fn persist_selection(&self) {
-        if let Some(profile_id) = self.connect.profile.as_deref() {
-            let _ = self
-                .connect
-                .preferences
-                .set_last_selection(profile_id, &self.runtime.model_label);
+        let model = self.runtime.model_label.trim();
+        // Persist the profile the model actually belongs to; `connect.profile`
+        // can lag behind a model switch and writing the two independently is
+        // what left a stale profile paired with a foreign model on disk.
+        let profile_id = self
+            .connect
+            .registry
+            .profile_for_model(model)
+            .map(|spec| spec.id.clone())
+            .or_else(|| self.connect.profile.clone());
+        if !model.is_empty() {
+            if let Some(profile_id) = profile_id.as_deref() {
+                let _ = self
+                    .connect
+                    .preferences
+                    .set_last_selection(profile_id, model);
+            }
         }
         let _ = self
             .connect
@@ -1268,7 +1298,10 @@ impl TuiApp {
         // `resolve_effort_for_model`), so carry the current value through
         // unchanged rather than resetting it.
         self.apply_selection(&ModelSelection {
-            route_id: profile_id.map(route_id_for_profile).unwrap_or_default(),
+            route_id: resolved_profile_id
+                .as_deref()
+                .map(route_id_for_profile)
+                .unwrap_or_default(),
             provider: provider.to_string(),
             model: model.to_string(),
             profile_id: resolved_profile_id,
@@ -1289,6 +1322,21 @@ impl TuiApp {
 
     pub(super) fn model_prefix(model: &str) -> &str {
         model.split('/').next().unwrap_or("").trim()
+    }
+
+    /// True when `model` belongs to `profile`. The namespaced provider prefix
+    /// on the model id is authoritative; un-namespaced ids fall back to the
+    /// profile id / provider prefix comparison.
+    pub(super) fn profile_owns_model(
+        &self,
+        profile: &forge_connect::ConnectProfile,
+        model: &str,
+    ) -> bool {
+        if let Some(spec) = self.connect.registry.profile_for_model(model) {
+            return spec.id == profile.id;
+        }
+        let prefix = Self::model_prefix(model);
+        !prefix.is_empty() && (prefix == profile.id || prefix == profile.model_provider_prefix)
     }
 
     /// Build `/model` picker rows from connected-profile catalogs (cache + optional refresh).

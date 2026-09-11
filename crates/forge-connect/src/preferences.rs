@@ -105,16 +105,23 @@ impl PreferenceStore {
         let Some((profile_id, model)) = self.last_selection()? else {
             return Ok(None);
         };
+        let registry = crate::loaded_registry();
+        // The model id carries its provider prefix; a saved profile that
+        // disagrees with it is stale and would otherwise pair a foreign model
+        // with the wrong route. The model wins, with the saved profile as the
+        // fallback for un-namespaced ids.
+        let Some(spec) = registry
+            .profile_for_model(&model)
+            .or_else(|| registry.get(&profile_id))
+        else {
+            return Ok(None);
+        };
         let effort = self.last_effort()?.unwrap_or_default();
-        let route_id = crate::loaded_registry()
-            .get(&profile_id)
-            .map(|spec| spec.route_id.clone())
-            .unwrap_or_else(|| profile_id.clone());
         Ok(Some(ModelSelection {
-            route_id,
+            route_id: spec.route_id.clone(),
             provider: "native".into(),
             model,
-            profile_id: Some(profile_id),
+            profile_id: Some(spec.id.clone()),
             effort,
         }))
     }
@@ -297,6 +304,46 @@ mod tests {
         prefs.clear_last_selection(Some("anthropic")).unwrap();
         assert_eq!(prefs.last_selection().unwrap(), None);
         assert_eq!(prefs.last_effort().unwrap(), None);
+    }
+
+    #[test]
+    fn a_stale_saved_profile_yields_to_the_model_provider_prefix() {
+        let dir = tempdir().unwrap();
+        let prefs = PreferenceStore::new(dir.path().join("p.toml"));
+        // A corrupt/legacy pair: the xAI profile with an OpenCode model id.
+        prefs
+            .set_last_selection("xai", "opencode-go/deepseek-v4.1-flash")
+            .unwrap();
+
+        let selection = prefs.last_selection_struct().unwrap().unwrap();
+        assert_eq!(selection.profile_id.as_deref(), Some("opencode_go"));
+        assert_eq!(selection.route_id, "opencode-go");
+        assert_eq!(selection.model, "opencode-go/deepseek-v4.1-flash");
+    }
+
+    #[test]
+    fn a_consistent_saved_selection_is_preserved() {
+        let dir = tempdir().unwrap();
+        let prefs = PreferenceStore::new(dir.path().join("p.toml"));
+        prefs
+            .set_last_selection("opencode_go", "opencode-go/deepseek-v4.1-flash")
+            .unwrap();
+
+        let selection = prefs.last_selection_struct().unwrap().unwrap();
+        assert_eq!(selection.profile_id.as_deref(), Some("opencode_go"));
+        assert_eq!(selection.route_id, "opencode-go");
+    }
+
+    #[test]
+    fn profile_for_model_resolves_the_namespaced_provider() {
+        let registry = crate::loaded_registry();
+        assert_eq!(
+            registry
+                .profile_for_model("opencode-go/deepseek-v4.1-flash")
+                .map(|spec| spec.id.as_str()),
+            Some("opencode_go")
+        );
+        assert!(registry.profile_for_model("not-a-provider/model").is_none());
     }
 
     #[test]
