@@ -475,6 +475,9 @@ impl TuiApp {
             KeyCode::Char('d') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::DenySelectedBackgroundTask)
             }
+            KeyCode::Char('i') if key.modifiers.is_empty() => {
+                Some(SemanticCommand::AttachSelectedBackgroundTask)
+            }
             KeyCode::Esc if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelCurrentInteraction)
             }
@@ -740,6 +743,7 @@ impl TuiApp {
             SemanticCommand::DenySelectedBackgroundTask => {
                 self.resolve_selected_task_hitl(HitlDecision::Deny)
             }
+            SemanticCommand::AttachSelectedBackgroundTask => self.attach_selected_task(),
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy_state.is_active() {
                     if self.cancellation.is_requested() {
