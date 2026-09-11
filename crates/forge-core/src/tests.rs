@@ -3454,6 +3454,37 @@ async fn approving_a_batched_hitl_call_leaves_every_tool_call_with_a_result() {
     }
 }
 
+/// A dangling tool call from a cancelled turn must be reconciled *before* the
+/// next user message is appended, so the tool result sits adjacent to its
+/// assistant message and the provider does not reject the transcript.
+#[tokio::test]
+async fn a_new_prompt_reconciles_a_dangling_tool_call_before_its_user_message() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![text_only("ok")]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.append_user_message("first").await.unwrap();
+    // A cancelled turn leaves the assistant tool call unanswered.
+    s.messages.push(assistant_with_tool_call("bash"));
+    s.append_user_message("second").await.unwrap();
+
+    let tool_idx = s
+        .messages
+        .iter()
+        .position(|m| m.role == MessageRole::Tool && m.tool_call_id.as_deref() == Some("c1"))
+        .expect("a dangling tool call must be reconciled");
+    let user_idx = s
+        .messages
+        .iter()
+        .rposition(|m| m.role == MessageRole::User)
+        .unwrap();
+    assert!(
+        tool_idx < user_idx,
+        "reconciled tool result must precede the new user message"
+    );
+}
+
 #[tokio::test]
 async fn session_pattern_allow_skips_hitl_for_the_command_family() {
     let dir = tempdir().unwrap();
