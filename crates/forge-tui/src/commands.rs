@@ -37,8 +37,11 @@ pub enum SlashCommand {
     },
     /// Refresh the file explorer's git status cache.
     Refresh,
-    /// Open the active file in the external editor.
-    Edit,
+    /// Open the active file in the external editor, or a specific
+    /// workspace-relative file in the embedded editor when a path is given.
+    Edit {
+        path: Option<String>,
+    },
     /// Attach the current active file to the next user message.
     ContextFile,
     /// Switch presentation theme (`dark`, `light`, `system`).
@@ -87,7 +90,7 @@ impl SlashCommand {
                 | Self::Resume { .. }
                 | Self::Compact
                 | Self::Disconnect { .. }
-                | Self::Edit
+                | Self::Edit { .. }
         )
     }
 }
@@ -157,7 +160,13 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }
         "clear" => Ok(SlashCommand::Clear),
         "refresh" => Ok(SlashCommand::Refresh),
-        "edit" => Ok(SlashCommand::Edit),
+        "edit" => Ok(SlashCommand::Edit {
+            path: rest
+                .split_once(char::is_whitespace)
+                .map(|(_, path)| path.trim())
+                .filter(|path| !path.is_empty())
+                .map(str::to_string),
+        }),
         "context-file" | "context_file" | "cf" => Ok(SlashCommand::ContextFile),
         "theme" => Ok(SlashCommand::Theme {
             name: parts.next().map(|s| s.to_string()),
@@ -232,7 +241,7 @@ mod tests {
             SlashCommand::ResumeList,
             SlashCommand::Compact,
             SlashCommand::Disconnect { profile_id: None },
-            SlashCommand::Edit,
+            SlashCommand::Edit { path: None },
         ] {
             assert!(!command.available_while_busy(), "{command:?}");
         }
@@ -385,7 +394,24 @@ mod tests {
 
     #[test]
     fn parses_edit() {
-        assert_eq!(parse_slash("/edit").unwrap().unwrap(), SlashCommand::Edit);
+        assert_eq!(
+            parse_slash("/edit").unwrap().unwrap(),
+            SlashCommand::Edit { path: None }
+        );
+        assert_eq!(
+            parse_slash("/edit src/lib.rs").unwrap().unwrap(),
+            SlashCommand::Edit {
+                path: Some("src/lib.rs".into())
+            }
+        );
+        assert_eq!(
+            parse_slash("/edit  src/nested path/file.rs ")
+                .unwrap()
+                .unwrap(),
+            SlashCommand::Edit {
+                path: Some("src/nested path/file.rs".into())
+            }
+        );
     }
 
     #[test]

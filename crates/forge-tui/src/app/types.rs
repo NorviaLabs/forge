@@ -23,6 +23,45 @@ pub(crate) struct SessionChromeItem {
     pub(crate) updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl SessionChromeItem {
+    /// A row is "working" only when a turn is actually running or queued and
+    /// the row is not asking for the operator. Kept next to
+    /// [`session_needs_attention`] so the navigator and the switcher overlay
+    /// can never disagree about which state a session is in.
+    pub(crate) fn is_working(&self) -> bool {
+        !self.attention && matches!(self.secondary.as_deref(), Some("running") | Some("queued"))
+    }
+}
+
+/// The single source of truth for a session's "needs you" state, shared by the
+/// sidebar rows and the session-switcher overlay (#643).
+///
+/// `attention` used to be a sticky bool that was only ever set true, so a
+/// session that had once stopped for input kept showing `● needs you` even
+/// after it resumed. A running or queued turn is never "needs you" — the row
+/// shows it as working instead — and the selected session is never flagged
+/// because the operator is already looking at it.
+pub(crate) fn session_needs_attention(
+    selected: bool,
+    turn_state: forge_session::SupervisorTurnState,
+    interrupted: bool,
+) -> bool {
+    use forge_session::SupervisorTurnState;
+    if selected
+        || matches!(
+            turn_state,
+            SupervisorTurnState::Running | SupervisorTurnState::Queued
+        )
+    {
+        return false;
+    }
+    interrupted
+        || matches!(
+            turn_state,
+            SupervisorTurnState::Waiting | SupervisorTurnState::Failed
+        )
+}
+
 /// Everything the operator's view of one task carries with it across a switch.
 ///
 /// Saved and restored by *moving*, not cloning: several of these hold buffers
@@ -1715,6 +1754,9 @@ pub struct TuiApp {
     pub(crate) editor_message: Option<String>,
     pub(crate) pending_editor_path: Option<PathBuf>,
     pub(crate) pending_editor_home: bool,
+    /// A global quit was requested while the editor was dirty; the `DirtyExit`
+    /// dialog owns the decision and only exits on Save/Discard (#647).
+    pub(crate) pending_editor_quit: bool,
     pub(crate) file_watch: FileWatchState,
     pub(crate) bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,

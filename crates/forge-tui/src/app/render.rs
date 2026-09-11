@@ -285,7 +285,7 @@ impl TuiApp {
             let working = self
                 .session_chrome
                 .iter()
-                .filter(|task| task.secondary.as_deref() == Some("running"))
+                .filter(|task| task.is_working())
                 .count();
             match (need, working) {
                 (0, 0) => None,
@@ -389,7 +389,7 @@ impl TuiApp {
                             };
                             let state = task.secondary.clone().unwrap_or_else(|| "idle".into());
                             let need = task.attention;
-                            let working = !need && task.secondary.as_deref() == Some("running");
+                            let working = task.is_working();
                             let glyph = if need {
                                 '●'
                             } else if working {

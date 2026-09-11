@@ -811,10 +811,12 @@ impl TuiApp {
             ExplorerDialog::DirtyExit => match key.code {
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     self.pending_editor_home = false;
+                    self.pending_editor_quit = false;
                     None
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     self.pending_editor_home = false;
+                    self.pending_editor_quit = false;
                     None
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -881,6 +883,7 @@ impl TuiApp {
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     self.pending_editor_path = None;
                     self.pending_editor_home = false;
+                    self.pending_editor_quit = false;
                     None
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -896,7 +899,7 @@ impl TuiApp {
                         .editor_session
                         .as_ref()
                         .is_some_and(|editor| !editor.is_dirty())
-                        && self.pending_editor_home
+                        && (self.pending_editor_home || self.pending_editor_quit)
                     {
                         self.complete_dirty_editor_exit();
                     }
@@ -911,7 +914,7 @@ impl TuiApp {
                     {
                         if self.pending_editor_path.is_some() {
                             self.complete_pending_editor_switch(false);
-                        } else if self.pending_editor_home {
+                        } else if self.pending_editor_home || self.pending_editor_quit {
                             self.complete_dirty_editor_exit();
                         }
                         None
@@ -1339,6 +1342,17 @@ impl TuiApp {
 
     async fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         if self.workspace_files.explorer.search_focused {
+            if key.modifiers.is_empty() && matches!(key.code, KeyCode::Esc) {
+                // Esc backs out of the filter in two steps: clear the query and
+                // stay in Search, then (once the query is already empty) leave
+                // the block. Falling straight through to the composer left the
+                // filter applied and routed the next printable key into the
+                // chat draft (#645).
+                if !self.workspace_files.explorer.search_query.trim().is_empty() {
+                    self.workspace_files.explorer.clear_search();
+                    return Ok(true);
+                }
+            }
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U'))
             {
