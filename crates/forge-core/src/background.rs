@@ -352,20 +352,30 @@ async fn run_shell_job(
     workspace_root: std::path::PathBuf,
     egress: Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>>,
     session_tmp: Option<std::sync::Arc<forge_tools::SessionTempDir>>,
+    unconfined: bool,
 ) -> BackgroundTaskOutcome {
     // Backgrounded work gets the same network the foreground has. It was
     // calling the grantless variant, so a background `cargo build` was confined
     // *and* offline while the identical foreground command worked — a
     // difference with no reason behind it, and one that would have surfaced as
     // a mysteriously failing build rather than as a permission decision.
-    match forge_tools::run_shell_command_with_egress_and_temp(
-        &command,
-        &workspace_root,
-        egress.as_deref(),
-        session_tmp.as_deref().map(|temp| temp.path()),
-    )
-    .await
-    {
+    //
+    // Under approve-all the foreground runs unconfined; the background job must
+    // match, or a sandbox denial here would raise an approval prompt the mode
+    // is meant to remove.
+    let tmp = session_tmp.as_deref().map(|temp| temp.path());
+    let result = if unconfined {
+        forge_tools::run_shell_command_unconfined(&command, &workspace_root, tmp).await
+    } else {
+        forge_tools::run_shell_command_with_egress_and_temp(
+            &command,
+            &workspace_root,
+            egress.as_deref(),
+            tmp,
+        )
+        .await
+    };
+    match result {
         Ok(out) => BackgroundTaskOutcome::Shell {
             output: out.content,
             is_error: out.is_error,
@@ -472,9 +482,10 @@ impl AgentSession {
         let workspace_root = self.tool_ctx.workspace_root.clone();
         let egress = self.tool_ctx.egress.clone();
         let session_tmp = self.tool_ctx.session_tmp.clone();
+        let unconfined = self.approve_all;
         tokio::spawn(async move {
             let outcome = tokio::select! {
-                outcome = run_shell_job(command, workspace_root, egress, session_tmp) => outcome,
+                outcome = run_shell_job(command, workspace_root, egress, session_tmp, unconfined) => outcome,
                 _ = cancel.cancelled() => BackgroundTaskOutcome::Cancelled,
             };
             let _ = tx.send(outcome);

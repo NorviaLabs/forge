@@ -304,12 +304,30 @@ impl AgentSession {
     /// Turn this session's approve-all mode on or off. While on, `Hitl`
     /// decisions are auto-approved and shell tools run unconfined. Session
     /// scoped; never persisted.
-    pub fn set_approve_all(&mut self, on: bool) {
-        self.approve_all = on;
+    ///
+    /// Enabling is refused unless the workspace is trusted (see
+    /// [`Self::set_workspace_trusted`]); disabling always applies. Returns
+    /// whether the request took effect.
+    pub fn set_approve_all(&mut self, on: bool) -> bool {
+        self.approve_all = on && self.workspace_trusted;
+        self.approve_all == on
     }
 
     pub fn approve_all(&self) -> bool {
         self.approve_all
+    }
+
+    /// Record whether this session's workspace is trusted. Set once by the
+    /// owner (the supervisor) from its trust store at session assembly.
+    pub fn set_workspace_trusted(&mut self, trusted: bool) {
+        self.workspace_trusted = trusted;
+        if !trusted {
+            self.approve_all = false;
+        }
+    }
+
+    pub fn workspace_trusted(&self) -> bool {
+        self.workspace_trusted
     }
 
     /// Push provider credentials into the model client (OAuth tokens → worker env).

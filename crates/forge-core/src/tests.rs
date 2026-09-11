@@ -2928,6 +2928,7 @@ async fn approve_all_auto_approves_hitl_and_runs_the_tool_unconfined() {
         .await
         .unwrap();
     s.set_governance(Governance::default().require_hitl_for_tool("probe"));
+    s.set_workspace_trusted(true);
     s.set_approve_all(true);
 
     s.run_user_message("go").await.unwrap();
