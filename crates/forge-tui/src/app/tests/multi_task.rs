@@ -236,7 +236,7 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
         .position(|item| item.session_id == sibling_id)
         .expect("sibling in task strip");
     app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
         .await
         .unwrap();
     for _ in 0..300 {
@@ -1259,6 +1259,52 @@ async fn the_peek_renders_the_last_answer_and_reply() {
         rendered.contains("Enter send"),
         "peek hint missing: {rendered}"
     );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// `d` on an idle managed session archives it; the primary is refused.
+#[tokio::test]
+async fn d_archives_an_idle_managed_session() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let sibling = wait_for_chrome_session(&mut app, |item| item.label.is_empty()).await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling.session_id)
+        .expect("sibling in list");
+
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    let archived = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.poll_supervisor_events();
+            let done = app
+                .supervisor
+                .as_ref()
+                .and_then(|supervisor| supervisor.snapshots.get(&sibling.session_id))
+                .is_none_or(|snapshot| {
+                    snapshot.task.lifecycle == forge_session::SessionLifecycle::Archived
+                });
+            if done || std::time::Instant::now() >= deadline {
+                break done;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    assert!(archived, "the idle session should have been archived");
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
