@@ -99,6 +99,15 @@ pub const QUESTION_TABS: &[Hint] = &[
     ("Enter", "answer"),
     ("Esc", "skip"),
 ];
+/// Multi-select with more than one question: both the tab keys and `Space`
+/// are live, so both must be shown (the displayed-binding invariant).
+pub const QUESTION_TABS_MULTI: &[Hint] = &[
+    ("←→", "questions"),
+    ("↑↓", "move"),
+    ("Space", "toggle"),
+    ("Enter", "answer"),
+    ("Esc", "skip"),
+];
 pub const THEME: &[Hint] = &[("↑↓", "preview"), ("Enter", "apply"), ("Esc", "cancel")];
 /// First-run trust prompt. Enter confirms the highlighted choice — which is
 /// "exit" when the No row is selected — so the verb is `confirm`, not `trust`.
@@ -145,6 +154,7 @@ mod tests {
             QUESTION,
             QUESTION_MULTI,
             QUESTION_TABS,
+            QUESTION_TABS_MULTI,
             THEME,
             TRUST,
             COMMANDS,

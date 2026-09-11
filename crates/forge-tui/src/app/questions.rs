@@ -36,6 +36,28 @@ impl TuiApp {
         )
     }
 
+    /// The visible question's chosen set and free text, for the conversation
+    /// render cache key. Multi-select toggles change only these, so without
+    /// them in the key the cached card keeps showing the previous checkboxes
+    /// and count.
+    pub(super) fn question_selection_key(&self) -> (Vec<String>, Option<String>) {
+        let idx = self.question_session.menu.question_idx;
+        (
+            self.question_session
+                .menu
+                .chosen
+                .get(idx)
+                .cloned()
+                .unwrap_or_default(),
+            self.question_session
+                .menu
+                .custom
+                .get(idx)
+                .cloned()
+                .flatten(),
+        )
+    }
+
     pub(super) fn sync_question_menu(&mut self) {
         match self.selected_pending_question().cloned() {
             None => self.question_session.menu = QuestionMenuState::default(),
@@ -257,14 +279,7 @@ impl TuiApp {
                 );
                 return;
             }
-        } else if question.multi_select {
-            self.toggle_current_option(payload);
-            if self.question_session.menu.chosen[q_idx].is_empty()
-                && self.question_session.menu.custom[q_idx].is_none()
-            {
-                return;
-            }
-        } else {
+        } else if !question.multi_select {
             self.question_session.menu.chosen[q_idx] =
                 vec![question.options[opt_idx].label.clone()];
             self.question_session.menu.custom[q_idx] = None;
@@ -296,7 +311,7 @@ impl TuiApp {
                 .get(idx)
                 .cloned()
                 .flatten();
-            if selected.is_empty() && custom.is_none() {
+            if selected.is_empty() && custom.is_none() && !question.multi_select {
                 return None;
             }
             answers.push(AskUserQuestionAnswerItem {

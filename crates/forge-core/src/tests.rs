@@ -4201,6 +4201,55 @@ async fn ask_user_question_dismiss_returns_a_tool_result() {
 }
 
 #[tokio::test]
+async fn ask_user_question_multi_select_result_carries_the_full_set() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+    let mut budget = ValidationBudget::default();
+    let call = ToolCall {
+        id: "q-multi".into(),
+        name: "ask_user_question".into(),
+        arguments: json!({"questions": [{
+            "id": "checks",
+            "question": "Which checks?",
+            "multi_select": true,
+            "options": [{"label": "lint"}, {"label": "tests"}, {"label": "clippy"}]
+        }]}),
+    };
+    s.transition_to_new_task(TaskId(1)).await.unwrap();
+    s.start_tool_call(&call, &mut budget).await.unwrap();
+    assert!(s.pending_question().is_some());
+
+    s.resolve_question(
+        Some(forge_types::AskUserQuestionResult {
+            answers: vec![forge_types::AskUserQuestionAnswerItem {
+                id: "checks".into(),
+                selected: vec!["lint".into(), "clippy".into()],
+                custom: None,
+            }],
+        }),
+        "test",
+    )
+    .await
+    .unwrap();
+
+    let tool_msg = s
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::Tool)
+        .expect("tool message");
+    let value: serde_json::Value = serde_json::from_str(&tool_msg.content).unwrap();
+    let selected = value["answers"][0]["selected"].as_array().unwrap();
+    assert_eq!(selected.len(), 2, "{}", tool_msg.content);
+    assert!(selected.iter().any(|v| v == "lint"), "{}", tool_msg.content);
+    assert!(
+        selected.iter().any(|v| v == "clippy"),
+        "{}",
+        tool_msg.content
+    );
+}
+
+#[tokio::test]
 async fn ask_user_question_invalid_args_do_not_pause() {
     let dir = tempdir().unwrap();
     let mut s = idle_session(dir.path()).await;

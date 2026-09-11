@@ -513,6 +513,7 @@ impl TuiApp {
             .saturating_add(TRANSCRIPT_SCROLL_BUCKET - 1)
             / TRANSCRIPT_SCROLL_BUCKET
             * TRANSCRIPT_SCROLL_BUCKET;
+        let (question_selected, question_custom) = self.question_selection_key();
         let mut key = ConversationRenderKey {
             session_id: self.session_view.session_id,
             transcript_revision: self.transcript_view.revision(),
@@ -574,6 +575,8 @@ impl TuiApp {
                 .map(|payload| payload.call_id.clone()),
             question_idx: self.question_menu_indexes().0,
             question_option_idx: self.question_menu_indexes().1,
+            question_selected,
+            question_custom,
         };
         // A complete cache already contains every settled line. Keep it
         // complete while scrolling instead of rebuilding a smaller tail, but
