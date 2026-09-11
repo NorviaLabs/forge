@@ -452,6 +452,9 @@ impl StatusModel {
 
 pub struct StatusBar<'a> {
     pub model: &'a StatusModel,
+    /// Right-aligned navigator summary, shown only when the navigator column is
+    /// collapsed (`<116` columns): `⌄ 2 need · 1 working`.
+    pub sessions_chip: Option<&'a str>,
 }
 
 impl Widget for StatusBar<'_> {
@@ -462,16 +465,29 @@ impl Widget for StatusBar<'_> {
         // Centered single block: ⌂ path  ·  ⎇ branch — identity only,
         // full window width, changes only on project/branch switch.
         let width = area.width as usize;
+        let chip = self.sessions_chip.unwrap_or("");
+        let reserved = if chip.is_empty() {
+            0
+        } else {
+            chip.chars().count() + 4
+        };
         // Elide the workspace path rather than letting the line run off the
         // right edge: clipping keeps the leading directories and drops the
         // folder name, which is the only part that identifies the workspace.
-        let content = self.model.identity_line_within(width);
+        // A session chip reserves its own space first, so it always fits.
+        let content = self
+            .model
+            .identity_line_within(width.saturating_sub(reserved));
         let content_width = content.chars().count();
 
         theme::fill(area, buf, theme::status_bar());
-        let pad = (width.saturating_sub(content_width)) / 2;
+        let pad = (width.saturating_sub(content_width + reserved)) / 2;
         let padded = format!("{}{}", " ".repeat(pad), content);
         buf.set_line(area.x, area.y, &Line::from(padded), area.width);
+        if !chip.is_empty() {
+            let x = area.x + (width - chip.chars().count() - 1) as u16;
+            buf.set_string(x, area.y, chip, theme::warn());
+        }
     }
 }
 
@@ -838,7 +854,11 @@ mod tests {
         };
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
-        StatusBar { model: &m }.render(area, &mut buf);
+        StatusBar {
+            model: &m,
+            sessions_chip: None,
+        }
+        .render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         // Identity-only centered line: directory + branch, no status.
         assert!(rendered.contains("~/Projects/forge"));
@@ -877,7 +897,11 @@ mod tests {
         };
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
-        StatusBar { model: &m }.render(area, &mut buf);
+        StatusBar {
+            model: &m,
+            sessions_chip: None,
+        }
+        .render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         // Narrow width falls back to left-aligned rather than dropping content.
         assert!(rendered.contains("Projects/forge") || rendered.contains("main"));
@@ -1001,7 +1025,11 @@ mod tests {
         let m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
-        StatusBar { model: &m }.render(area, &mut buf);
+        StatusBar {
+            model: &m,
+            sessions_chip: None,
+        }
+        .render(area, &mut buf);
     }
 
     #[test]
@@ -1141,14 +1169,22 @@ mod tests {
         m.progress_description = Some("Inspecting repository".into());
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
-        StatusBar { model: &m }.render(area, &mut buf);
+        StatusBar {
+            model: &m,
+            sessions_chip: None,
+        }
+        .render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         // Status removed from the top bar; it's identity-only now.
         assert!(rendered.contains("Projects/forge"), "{rendered}");
 
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
-        StatusBar { model: &m }.render(area, &mut buf);
+        StatusBar {
+            model: &m,
+            sessions_chip: None,
+        }
+        .render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("Projects/forge"), "{rendered}");
     }

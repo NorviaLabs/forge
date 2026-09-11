@@ -822,6 +822,7 @@ impl TuiApp {
                                     selected: true,
                                     secondary: None,
                                     attention: false,
+                                    updated_at: chrono::Utc::now(),
                                 });
                             }
                             self.session_view = SessionSnapshot::capture(&self.session_runtime);

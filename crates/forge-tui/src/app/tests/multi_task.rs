@@ -1328,6 +1328,19 @@ async fn d_archives_an_idle_managed_session() {
         .unwrap();
 }
 
+/// Below the navigator width the session state collapses to a status chip.
+#[tokio::test]
+async fn a_narrow_navigator_falls_back_to_a_status_chip() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.session_chrome[0].attention = true;
+    let rendered = render_app_text(&mut app, 100, 40);
+    assert!(rendered.contains("need"), "chip missing: {rendered}");
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 fn user_message_count(app: &TuiApp, session_id: uuid::Uuid) -> usize {
     app.supervisor
         .as_ref()
