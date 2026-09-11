@@ -1217,6 +1217,11 @@ pub struct ConversationLinesWidget<'a> {
     pub anchor_bottom: bool,
     /// Stands in for the plan card once it has scrolled above the window.
     pub plan_dock: Option<&'a PlanDock>,
+    /// Records each approval/question option row's screen rect this paint, for
+    /// mouse hit-testing. `None` in tests.
+    pub option_sink: Option<&'a std::cell::RefCell<Vec<(usize, Rect)>>>,
+    /// Option index under the pointer; tints that row only.
+    pub hover_option: Option<usize>,
 }
 
 /// The three slices a transcript frame is painted from, in paint order:
@@ -1357,6 +1362,8 @@ pub(super) fn render_conversation_lines(
     anchor_bottom: bool,
     dock: Option<&PlanDock>,
     area: Rect,
+    option_rects: Option<&mut Vec<(usize, Rect)>>,
+    hover_option: Option<usize>,
     buf: &mut Buffer,
 ) {
     theme::fill(area, buf, theme::assistant_message());
@@ -1416,13 +1423,15 @@ pub(super) fn render_conversation_lines(
     } else {
         area
     };
-    render_visible_conversation_lines(&visible, area, buf);
+    render_visible_conversation_lines(&visible, area, buf, option_rects, hover_option);
 }
 
 pub(super) fn render_visible_conversation_lines(
     lines: &[&Line<'static>],
     area: Rect,
     buf: &mut Buffer,
+    mut option_rects: Option<&mut Vec<(usize, Rect)>>,
+    hover_option: Option<usize>,
 ) {
     let mut index = 0;
     let mut y = area.y;
@@ -1464,7 +1473,21 @@ pub(super) fn render_visible_conversation_lines(
             y = y.saturating_add(block_height);
             index = end.saturating_add(1);
         } else {
-            lines[index].render(Rect::new(area.x, y, area.width, 1), buf);
+            let line = lines[index];
+            let rect = Rect::new(area.x, y, area.width, 1);
+            match option_row_index(line) {
+                Some(option) => {
+                    if let Some(rects) = option_rects.as_deref_mut() {
+                        rects.push((option, rect));
+                    }
+                    if hover_option == Some(option) {
+                        line.clone().style(theme::surface_hover()).render(rect, buf);
+                    } else {
+                        line.render(rect, buf);
+                    }
+                }
+                None => line.render(rect, buf),
+            }
             y = y.saturating_add(1);
             index += 1;
         }
@@ -1473,6 +1496,7 @@ pub(super) fn render_visible_conversation_lines(
 
 impl Widget for ConversationLinesWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let mut collected = self.option_sink.map(|cell| cell.borrow_mut());
         render_conversation_lines(
             TranscriptSlices {
                 lines: self.lines,
@@ -1485,6 +1509,8 @@ impl Widget for ConversationLinesWidget<'_> {
             self.anchor_bottom,
             self.plan_dock,
             area,
+            collected.as_deref_mut(),
+            self.hover_option,
             buf,
         );
     }
@@ -1516,6 +1542,8 @@ impl Widget for ConversationWidget<'_> {
             false,
             None,
             area,
+            None,
+            None,
             buf,
         );
     }
@@ -1800,6 +1828,9 @@ pub(super) fn render_question_card(
                 },
                 theme::accent_style(),
             )];
+            if n == 0 {
+                spans.insert(0, Span::raw(option_row_marker(idx)));
+            }
             spans.push(Span::styled(
                 if n == 0 {
                     tag.clone()
@@ -2038,6 +2069,9 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         for (n, wrapped) in label_lines.into_iter().enumerate() {
             let lead = if n == 0 { marker } else { "  " };
             let mut spans = vec![Span::styled(lead.to_string(), theme::accent_style())];
+            if n == 0 {
+                spans.insert(0, Span::raw(option_row_marker(idx)));
+            }
             // The key leads the row it triggers, so the mapping is visible
             // without reading the hint line and counting. In front rather than
             // after the label: trailing, it ate into the room the consequence
@@ -2096,6 +2130,25 @@ fn approval_location_line(cwd: &str, env_delta: &str) -> String {
 const DIFF_BLOCK_MARKER: &str = "\u{200b}";
 
 const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
+
+/// Zero-width marker prefixed to an approval/question option's first row,
+/// repeated `index + 1` times so the paint pass can recover the option index
+/// and record its screen `Rect` for mouse click/hover. Same trick as the diff
+/// markers: zero width, so it never changes layout.
+const OPTION_ROW_MARKER: char = '\u{2061}';
+
+fn option_row_marker(index: usize) -> String {
+    std::iter::repeat_n(OPTION_ROW_MARKER, index + 1).collect()
+}
+
+fn option_row_index(line: &Line<'_>) -> Option<usize> {
+    let content = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .find(|content| !content.is_empty() && content.chars().all(|c| c == OPTION_ROW_MARKER))?;
+    Some(content.chars().count() - 1)
+}
 
 const INDENT_UNIT: &str = "  ";
 
@@ -3604,6 +3657,8 @@ mod tests {
             false,
             Some(&dock),
             Rect::new(0, 0, 80, 10),
+            None,
+            None,
             &mut buf,
         );
         let top: String = (0..80)
@@ -3904,7 +3959,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
 
         let lines = lines.iter().collect::<Vec<_>>();
-        render_visible_conversation_lines(&lines, area, &mut buf);
+        render_visible_conversation_lines(&lines, area, &mut buf, None, None);
 
         assert_eq!(buf[(0, 0)].symbol(), "┌");
         assert_eq!(buf[(39, 0)].symbol(), "┐");
@@ -4794,7 +4849,11 @@ mod tests {
     }
 
     fn line_text(line: &Line<'static>) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+            .replace(OPTION_ROW_MARKER, "")
     }
 
     fn tool_turn_items() -> Vec<ChatItem> {
@@ -5448,6 +5507,8 @@ mod tests {
                 anchor_bottom,
                 None,
                 area,
+                None,
+                None,
                 &mut buf,
             );
             (0..area.height).find(|y| {

@@ -77,11 +77,20 @@ pub struct FooterModel {
     pub prompt_cache_reads: u64,
     /// Live background activity for the second row. All-zero renders nothing.
     pub activity: FooterActivity,
+    /// Hovered left chip (0 = model, 1 = effort); tint only, never focus.
+    pub hover_chip: Option<usize>,
 }
 
 pub struct FooterBar<'a> {
     pub model: &'a FooterModel,
+    /// Optional sink receiving the two left-chip x-ranges `(model, effort)`
+    /// from this paint, for pointer hit-testing. `None` in tests.
+    pub chip_sink: Option<&'a ChipSink<'a>>,
 }
+
+/// x-ranges `(model, effort)` of the footer's left chips, published by a
+/// paint into a [`ChipSink`] for pointer hit-testing.
+pub type ChipSink<'a> = std::cell::RefCell<Option<[(u16, u16); 2]>>;
 
 /// Strip a `provider/` prefix from a wire model id for display.
 pub fn footer_short_model_id(model: &str) -> &str {
@@ -335,6 +344,7 @@ impl Widget for FooterBar<'_> {
             .saturating_sub(config_chrome as u16 + effort_chars)
             .min(left_budget);
         let llm_label = fit_model_label(&m.llm_label, model_max as usize);
+        let llm_label_w = llm_label.chars().count() as u16;
 
         let mut left: Vec<Span<'static>> = Vec::new();
         let dot_style = if dim {
@@ -355,6 +365,11 @@ impl Widget for FooterBar<'_> {
             theme::text_secondary()
         };
         let llm_focused = m.focus == Some(FooterFocus::Llm);
+        let llm_style = if m.hover_chip == Some(0) && !llm_focused {
+            llm_style.patch(theme::surface_hover())
+        } else {
+            llm_style
+        };
         left.push(Span::styled("●", dot_style));
         left.push(Span::raw(" "));
         left.push(Span::styled(
@@ -374,6 +389,11 @@ impl Widget for FooterBar<'_> {
             theme::accent_style().add_modifier(Modifier::BOLD)
         };
         let effort_focused = m.focus == Some(FooterFocus::Effort);
+        let effort_style = if m.hover_chip == Some(1) && !effort_focused {
+            effort_style.patch(theme::surface_hover())
+        } else {
+            effort_style
+        };
         left.push(Span::styled(
             m.effort_label.clone(),
             if effort_focused && !dim {
@@ -385,6 +405,14 @@ impl Widget for FooterBar<'_> {
 
         let left_line = ratatui::text::Line::from(left);
         let left_w = left_line.width() as u16;
+
+        if let Some(sink) = self.chip_sink {
+            let model_x = area.x + 2;
+            let model_end = model_x + llm_label_w;
+            let effort_x = model_end + 3;
+            let effort_end = effort_x + m.effort_label.chars().count() as u16;
+            *sink.borrow_mut() = Some([(model_x, model_end), (effort_x, effort_end)]);
+        }
 
         // Activity (right) never yields when it's the read-only state — it's
         // short by construction (fixed-width meter + state word). Configuration
@@ -647,12 +675,22 @@ mod tests {
         // DESIGN-012: single content row, no separator row.
         let area = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(area);
-        FooterBar { model: m }.render(area, &mut buf);
+        FooterBar {
+            model: m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
         (0..area.width).map(|x| buf[(x, 0)].symbol()).collect()
     }
 
     fn activity_styled(m: &FooterModel) -> Vec<ratatui::text::Span<'static>> {
-        FooterBar { model: m }.activity_line(true).spans.to_vec()
+        FooterBar {
+            model: m,
+            chip_sink: None,
+        }
+        .activity_line(true)
+        .spans
+        .to_vec()
     }
 
     #[test]
@@ -679,7 +717,11 @@ mod tests {
         for height in [1, 2] {
             let area = Rect::new(0, 0, 90, height);
             let mut buf = Buffer::empty(area);
-            FooterBar { model: &m }.render(area, &mut buf);
+            FooterBar {
+                model: &m,
+                chip_sink: None,
+            }
+            .render(area, &mut buf);
             let row0: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
             assert!(row0.contains("Medium"), "{row0:?}");
             assert!(!row0.chars().all(|c| c == '─'), "{row0:?}");
@@ -717,7 +759,11 @@ mod tests {
         let m = model(TurnLifecycle::Ready, 0.34);
         let area = Rect::new(0, 0, 90, 1);
         let mut buf = Buffer::empty(area);
-        FooterBar { model: &m }.render(area, &mut buf);
+        FooterBar {
+            model: &m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
         let out: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
     }
@@ -751,7 +797,11 @@ mod tests {
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
         let area = Rect::new(0, 0, 90, 2);
         let mut buf = Buffer::empty(area);
-        FooterBar { model: &m }.render(area, &mut buf);
+        FooterBar {
+            model: &m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
         assert_eq!(buf[(PAD, 0)].style().fg, theme::warn().fg);
     }
 
@@ -786,7 +836,11 @@ mod tests {
         );
         let area = Rect::new(0, 0, 90, 1);
         let mut buf = Buffer::empty(area);
-        FooterBar { model: &m }.render(area, &mut buf);
+        FooterBar {
+            model: &m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
         let hint_cell = (0..area.width)
             .find(|&x| buf[(x, 0)].symbol() == "⏎")
             .expect("hint glyph should render");
@@ -860,7 +914,11 @@ mod tests {
         let m = model(TurnLifecycle::Ready, 0.1);
         let area = Rect::new(0, 0, 0, 1);
         let mut buf = Buffer::empty(area);
-        FooterBar { model: &m }.render(area, &mut buf);
+        FooterBar {
+            model: &m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
     }
 
     #[test]
@@ -1018,7 +1076,11 @@ mod tests {
     fn rows(m: &FooterModel, width: u16, height: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        FooterBar { model: m }.render(area, &mut buf);
+        FooterBar {
+            model: m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
         (0..height)
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
             .collect()
