@@ -240,6 +240,7 @@ impl TuiApp {
         self.navigator_list_area = None;
         self.task_strip_area = None;
         self.footer_area = None;
+        self.option_rects.clear();
         self.conversation_rows.clear();
         self.terminal_rows.clear();
         // Layout can hide a requested side/bottom panel. Focus must follow the
@@ -906,6 +907,7 @@ impl TuiApp {
                 conversation_area,
             );
             sidebar_block.render(sidebar, frame.buffer_mut());
+            let option_sink = std::cell::RefCell::new(Vec::new());
             frame.render_widget(
                 crate::conversation::ConversationLinesWidget {
                     lines: &cached_lines,
@@ -916,9 +918,12 @@ impl TuiApp {
                     follow: self.conversation_view.follow,
                     bottom_padding,
                     plan_dock: plan_dock.as_ref(),
+                    option_sink: Some(&option_sink),
+                    hover_option: self.hover_option,
                 },
                 conversation_area,
             );
+            self.option_rects = option_sink.into_inner();
         }
         // The approval decision now lives in the conversation itself (inline
         // transcript item) and the composer, so the center pane gets its full
@@ -1268,9 +1273,18 @@ impl TuiApp {
             completion_tokens: self.session_view.completion_tokens,
             prompt_cache_reads: self.session_view.prompt_cache_hits,
             activity: footer_activity(&self.selected_background_tasks()),
+            hover_chip: self.hover_chip,
         };
         self.footer_area = Some(regions.footer);
-        frame.render_widget(FooterBar { model: &footer }, regions.footer);
+        let footer_chip_sink = std::cell::RefCell::new(None);
+        frame.render_widget(
+            FooterBar {
+                model: &footer,
+                chip_sink: Some(&footer_chip_sink),
+            },
+            regions.footer,
+        );
+        self.footer_chip_rects = footer_chip_sink.into_inner();
 
         if let Some(dialog) = self.explorer_dialog.current() {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());

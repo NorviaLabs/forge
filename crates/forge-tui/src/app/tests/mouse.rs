@@ -400,3 +400,122 @@ async fn motion_hovers_a_session_row() {
     assert_eq!(app.hover_session, Some(0));
     assert_eq!(app.focus.block(), before, "hover must never move focus");
 }
+
+#[tokio::test]
+async fn click_activates_a_footer_chip() {
+    let (_dir, mut app) = focus_test_app().await;
+    render_app_text(&mut app, 120, 40);
+    let ranges = app.footer_chip_rects.expect("chips captured during paint");
+    let y = app.footer_area.expect("footer drawn").y;
+
+    app.handle_mouse(left_click(ranges[0].0 + 1, y))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.block(), FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, Some(0));
+    assert!(
+        app.overlay.is_some(),
+        "the model chip opens the connect/model control"
+    );
+}
+
+#[tokio::test]
+async fn motion_hovers_a_footer_chip_without_moving_focus() {
+    let (_dir, mut app) = focus_test_app().await;
+    render_app_text(&mut app, 120, 40);
+    let ranges = app.footer_chip_rects.expect("chips captured during paint");
+    let y = app.footer_area.expect("footer drawn").y;
+    let before = app.focus.block();
+
+    app.handle_mouse(moved(ranges[1].0 + 1, y)).await.unwrap();
+    assert_eq!(app.hover_chip, Some(1));
+    assert_eq!(app.focus.block(), before, "hover must never move focus");
+
+    app.handle_mouse(moved(0, 200)).await.unwrap();
+    assert_eq!(app.hover_chip, None);
+}
+
+#[tokio::test]
+async fn click_selects_an_approval_option_row() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, direct_hitl_payload("call-1", "/tmp/x"));
+    app.sync_approval_focus();
+    render_app_text(&mut app, 120, 40);
+    assert!(
+        app.option_rects.len() >= 2,
+        "approval option rects captured: {:?}",
+        app.option_rects
+    );
+
+    let (index, rect) = app.option_rects[1];
+    assert_eq!(index, 1);
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    assert_eq!(app.approval_menu_selected(), 1);
+}
+
+#[tokio::test]
+async fn motion_hovers_an_approval_option_without_moving_focus() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, direct_hitl_payload("call-2", "/tmp/x"));
+    app.sync_approval_focus();
+    render_app_text(&mut app, 120, 40);
+    let (_, rect) = app.option_rects[1];
+    let before = app.focus.block();
+
+    app.handle_mouse(moved(rect.x + 2, rect.y)).await.unwrap();
+
+    assert_eq!(app.hover_option, Some(1));
+    assert_eq!(app.focus.block(), before, "hover must never move focus");
+}
+
+#[tokio::test]
+async fn click_selects_a_question_option_row() {
+    use forge_types::{AskUserQuestionItem, AskUserQuestionOption, QuestionPayload};
+
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_question(
+        &mut app,
+        QuestionPayload {
+            call_id: "q-1".into(),
+            tool: "ask_user_question".into(),
+            questions: vec![AskUserQuestionItem {
+                id: "db".into(),
+                question: "Which database?".into(),
+                header: "Database".into(),
+                options: vec![
+                    AskUserQuestionOption {
+                        label: "Postgres".into(),
+                        description: String::new(),
+                    },
+                    AskUserQuestionOption {
+                        label: "SQLite".into(),
+                        description: String::new(),
+                    },
+                ],
+                multi_select: false,
+            }],
+        },
+    );
+    app.sync_question_focus();
+    app.sync_question_menu();
+    render_app_text(&mut app, 120, 40);
+    assert!(
+        app.option_rects.len() >= 2,
+        "question option rects captured: {:?}",
+        app.option_rects
+    );
+
+    let (index, rect) = app.option_rects[1];
+    assert_eq!(index, 1);
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    assert_eq!(app.question_menu_indexes().1, 1);
+}

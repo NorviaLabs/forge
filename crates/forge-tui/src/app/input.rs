@@ -1662,7 +1662,10 @@ impl TuiApp {
         }
     }
 
-    async fn activate_composer_chip(&mut self, focus: FooterFocus) -> Result<(), TuiError> {
+    pub(super) async fn activate_composer_chip(
+        &mut self,
+        focus: FooterFocus,
+    ) -> Result<(), TuiError> {
         match focus {
             // Which-LLM merges the old Connect+Model chips into one control:
             // opens the full connect flow when nothing's connected yet,
