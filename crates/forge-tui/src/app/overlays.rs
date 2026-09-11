@@ -179,12 +179,6 @@ impl TuiApp {
                 ))
                 .await?;
             }
-            OverlayAction::SelectHistory(text) => {
-                self.input.set_text(text);
-                self.input.history_browse = false;
-                self.history.reset_browse();
-                self.overlay = None;
-            }
             OverlayAction::Toast(message) => {
                 self.set_feedback(FeedbackSeverity::Warn, message);
             }
@@ -487,11 +481,6 @@ impl TuiApp {
             if crate::theme::active() != restore {
                 self.set_theme_active(&restore);
             }
-        }
-        if let Some(Overlay::HistorySearch { draft, .. }) = &self.overlay {
-            self.input.set_text(draft.clone());
-            self.input.history_browse = false;
-            self.history.reset_browse();
         }
         self.overlay = None;
     }

@@ -967,7 +967,7 @@ impl TuiApp {
         }
 
         // Inline slash autocomplete above the input bar — full list with scroll window
-        if self.overlay.is_none() {
+        if self.overlay.is_none() && self.inline_search.is_none() {
             let suggestions = self.slash_suggestions();
             if !suggestions.is_empty() && self.input.text.starts_with('/') {
                 let input = regions.input;
@@ -1072,6 +1072,12 @@ impl TuiApp {
                     );
                 }
             }
+        }
+
+        // Inline `Ctrl+r` commands+history fuzzy search, same anchored area
+        // the slash suggestions use above the composer.
+        if self.overlay.is_none() && self.inline_search.is_some() {
+            self.render_inline_search(frame, regions.input);
         }
 
         // Phase 10 / TUI-08 — always-visible feedback strip
@@ -1216,6 +1222,144 @@ impl TuiApp {
         // Transient toast overlay paints last: notification only, never
         // focusable, never blocking. Positioned bottom-right by the engine.
         self.toast.render_overlay(area, frame.buffer_mut());
+    }
+
+    /// Inline commands+history fuzzy search, drawn in the same anchored band
+    /// above the composer as the slash palette. Rows get a `Commands` and a
+    /// `History` header; the highlighted row is marked and `search_match`
+    /// highlights the contiguous query run in command/history text.
+    fn render_inline_search(&self, frame: &mut ratatui::Frame, input: ratatui::layout::Rect) {
+        let Some(state) = self.inline_search.as_ref() else {
+            return;
+        };
+        let items = self.inline_search_items();
+        let query = state.query.clone();
+        let selected = state.selected;
+
+        enum Row {
+            Header(&'static str),
+            Item(usize),
+        }
+        let mut rows: Vec<Row> = Vec::new();
+        let (mut commands_header, mut history_header) = (false, false);
+        for (index, item) in items.iter().enumerate() {
+            match item {
+                InlineSearchItem::Command(_) if !commands_header => {
+                    rows.push(Row::Header("Commands"));
+                    commands_header = true;
+                }
+                InlineSearchItem::History(_) if !history_header => {
+                    rows.push(Row::Header("History"));
+                    history_header = true;
+                }
+                _ => {}
+            }
+            rows.push(Row::Item(index));
+        }
+        if rows.is_empty() {
+            return;
+        }
+
+        let inner_w = input.width.saturating_sub(2) as usize;
+        let budget = inner_w.saturating_sub(1);
+        let max_list = input.y.saturating_sub(2).clamp(1, SLASH_PALETTE_MAX_ROWS) as usize;
+        let total = rows.len();
+        let visible = total.min(max_list);
+        let sel_pos = rows
+            .iter()
+            .position(|row| matches!(row, Row::Item(index) if *index == selected))
+            .unwrap_or(0);
+        let start = if total <= visible || sel_pos < visible / 2 {
+            0
+        } else if sel_pos + (visible - visible / 2) >= total {
+            total - visible
+        } else {
+            sel_pos - visible / 2
+        };
+        let height = (visible as u16).saturating_add(2);
+        if input.y < height {
+            return;
+        }
+        let area = ratatui::layout::Rect {
+            x: input.x,
+            y: input.y.saturating_sub(height),
+            width: input.width,
+            height,
+        };
+        let lines: Vec<Line<'static>> = rows
+            .iter()
+            .skip(start)
+            .take(visible)
+            .map(|row| match row {
+                Row::Header(title) => {
+                    let mut text = format!(" {title}");
+                    while text.chars().count() < budget {
+                        text.push(' ');
+                    }
+                    Line::from(Span::styled(text, theme::metadata_style()))
+                }
+                Row::Item(index) => {
+                    let is_selected = *index == selected;
+                    let base = if is_selected {
+                        theme::selected_row()
+                    } else {
+                        theme::text()
+                    };
+                    let marker = if is_selected { "> " } else { "  " };
+                    let mut spans = vec![Span::styled(marker, base)];
+                    match &items[*index] {
+                        InlineSearchItem::Command(item) => {
+                            let cmd = item.display_cmd();
+                            spans.extend(crate::file_explorer::highlight_name_spans(
+                                &cmd, &query, base,
+                            ));
+                            let used: usize =
+                                spans.iter().map(|span| span.content.chars().count()).sum();
+                            let desc: String = item
+                                .desc
+                                .chars()
+                                .take(budget.saturating_sub(used + 2))
+                                .collect();
+                            if !desc.is_empty() {
+                                spans.push(Span::styled(
+                                    format!("  {desc}"),
+                                    if is_selected { base } else { theme::muted() },
+                                ));
+                            }
+                        }
+                        InlineSearchItem::History(text) => {
+                            let text: String =
+                                text.chars().take(budget.saturating_sub(2)).collect();
+                            spans.extend(crate::file_explorer::highlight_name_spans(
+                                &text, &query, base,
+                            ));
+                        }
+                    }
+                    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+                    if used < budget {
+                        spans.push(Span::styled(" ".repeat(budget - used), base));
+                    }
+                    Line::from(spans)
+                }
+            })
+            .collect();
+
+        let title = if query.is_empty() {
+            format!(" Search · {} · Esc close ", items.len())
+        } else {
+            format!(" Search: {query} · Esc close ")
+        };
+        frame.render_widget(ratatui::widgets::Clear, area);
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::brand())
+                    .style(theme::panel())
+                    .title(Span::styled(title, theme::brand())),
+            ),
+            area,
+        );
     }
 
     /// Center-pane placeholder for when nothing is open — `workspace_navigation.current()`
