@@ -150,9 +150,9 @@ impl TuiApp {
     ) -> Result<bool, TuiError> {
         let count = self.session_chrome.len();
         // One-key task start, before the empty-strip guard: creating the
-        // first task is exactly when the list has nothing to select yet. The
-        // task starts unnamed and prompt-less; its name comes from the first
-        // prompt typed in it (see `enqueue_user_message`).
+        // first task is exactly when the strip has nothing to select yet.
+        // The task starts unnamed and prompt-less; its name comes from the
+        // first prompt typed in it (see `enqueue_user_message`).
         if matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty()) {
             let created = self
                 .send_session_command(forge_session::SupervisorCommand::CreateSession {
@@ -329,9 +329,23 @@ impl TuiApp {
                 .await;
                 Ok(true)
             }
-            KeyCode::Char('d') if key.modifiers.is_empty() => {
+            KeyCode::Char('x') if key.modifiers.is_empty() => {
                 let session_id = self.session_chrome[self.task_strip_selection].session_id;
-                self.request_session_done(session_id).await;
+                if self
+                    .session_runtime
+                    .as_ref()
+                    .is_some_and(|session| session.session_id == session_id)
+                {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "the primary Session cannot be archived",
+                    );
+                    return Ok(true);
+                }
+                self.send_session_command(forge_session::SupervisorCommand::ArchiveSession {
+                    session_id,
+                })
+                .await;
                 Ok(true)
             }
             _ => Ok(false),
