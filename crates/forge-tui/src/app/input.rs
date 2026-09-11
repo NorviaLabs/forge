@@ -173,6 +173,53 @@ impl TuiApp {
         if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions {
             return Ok(false);
         }
+        let focused_id = self.session_chrome[self.task_strip_selection].session_id;
+        if self.navigator_peek == Some(focused_id) {
+            match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.navigator_peek = None;
+                    self.navigator_reply.clear();
+                    return Ok(true);
+                }
+                KeyCode::Char(' ') if key.modifiers.is_empty() => {
+                    self.navigator_peek = None;
+                    self.navigator_reply.clear();
+                    return Ok(true);
+                }
+                KeyCode::Backspace if key.modifiers.is_empty() => {
+                    self.navigator_reply.pop();
+                    return Ok(true);
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    let text = std::mem::take(&mut self.navigator_reply);
+                    if !text.trim().is_empty() {
+                        self.send_session_command(forge_session::SupervisorCommand::SubmitPrompt {
+                            session_id: focused_id,
+                            text,
+                        })
+                        .await;
+                    }
+                    self.navigator_peek = None;
+                    return Ok(true);
+                }
+                KeyCode::Char(c)
+                    if key.modifiers.is_empty() || key.modifiers == event::KeyModifiers::SHIFT =>
+                {
+                    self.navigator_reply.push(c);
+                    return Ok(true);
+                }
+                KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
+                    // Moving the cursor collapses the peek under the old row.
+                    self.navigator_peek = None;
+                    self.navigator_reply.clear();
+                }
+                _ => {}
+            }
+        } else if matches!(key.code, KeyCode::Char(' ') if key.modifiers.is_empty()) {
+            self.navigator_peek = Some(focused_id);
+            self.navigator_reply.clear();
+            return Ok(true);
+        }
         match key.code {
             KeyCode::Up | KeyCode::Left if key.modifiers.is_empty() => {
                 self.task_strip_selection = self.task_strip_selection.saturating_sub(1);

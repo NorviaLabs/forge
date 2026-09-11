@@ -1582,6 +1582,10 @@ pub struct TuiApp {
     /// Set once the operator picks a tab explicitly; until then the default
     /// derives from the number of sessions (`Sessions` when >1, else `Files`).
     pub(crate) navigator_tab_explicit: bool,
+    /// Session whose last answer is expanded inline in the navigator (`Space`).
+    pub(crate) navigator_peek: Option<uuid::Uuid>,
+    /// Inline reply buffer for the peeked session.
+    pub(crate) navigator_reply: String,
     pub(crate) selected_session_id: uuid::Uuid,
     pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) retiring_session_view_states:
