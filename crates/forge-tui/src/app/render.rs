@@ -442,6 +442,7 @@ impl TuiApp {
                             focused: navigator_focused,
                             peek: peek_panel.as_ref(),
                             new_session: self.navigator_new_session.as_deref(),
+                            hover: self.hover_session,
                         },
                         rows[1],
                     );
@@ -457,6 +458,7 @@ impl TuiApp {
                                 modal_open,
                             ),
                             search_active: self.focus.block() == FocusBlock::Search && !modal_open,
+                            hover: self.hover_file,
                         },
                         rows[1],
                     );
@@ -471,6 +473,7 @@ impl TuiApp {
                             modal_open,
                         ),
                         search_active: self.focus.block() == FocusBlock::Search && !modal_open,
+                        hover: self.hover_file,
                     },
                     files,
                 );
