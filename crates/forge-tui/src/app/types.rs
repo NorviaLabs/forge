@@ -1728,7 +1728,7 @@ pub struct TuiApp {
     pub(crate) last_frame_width: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct RepoHeaderCache {
     pub(crate) repo_name: Option<String>,
     pub(crate) branch: Option<String>,

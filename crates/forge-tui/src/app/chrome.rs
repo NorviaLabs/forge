@@ -874,25 +874,29 @@ impl TuiApp {
 
     /// Read the cached repo header. This is a plain field read: it must never
     /// spawn a subprocess, because callers sit on the render path.
-    pub(super) fn repo_header(&self) -> RepoHeaderCache {
+    pub(crate) fn repo_header(&self) -> RepoHeaderCache {
         self.repo_header_state.cache.clone()
     }
 
     /// Advance the off-thread repo-header refresh. Non-blocking and safe to call
     /// from the render loop, matching `GitStatusCache::poll`.
     ///
-    /// The previous value is retained while a refresh is in flight and when a
-    /// refresh fails, so the header never blanks mid-update (FORGE-DESIGN 9.7).
+    /// Within one directory the previous value is retained while a refresh is in
+    /// flight and when a refresh fails, so the header never blanks mid-update. A
+    /// cwd change is different: the cached value describes another directory, so
+    /// it is cleared and replaced by a fresh worker read.
     pub(super) fn poll_repo_header(&mut self) {
-        // A cwd change makes the cached header describe the wrong directory, so
-        // read through synchronously: the next frame must be correct, and this
-        // only happens on a workspace switch, never frame to frame.
+        // A cwd change makes the cached header describe the wrong directory.
+        // Blank it and fetch the replacement on a worker: this runs on the
+        // event-loop tick *and* the session-switch path, so shelling out to
+        // `git` here (as this used to) stalls the UI on large worktrees. The
+        // header is briefly empty rather than briefly wrong, then fills in.
         if self.repo_header_state.cwd != self.runtime.cwd {
             self.repo_header_state.cwd = self.runtime.cwd.clone();
-            self.repo_header_state.cache = load_repo_header(&self.repo_header_state.cwd);
-            self.repo_header_state.refreshed_at = Instant::now();
+            self.repo_header_state.cache = RepoHeaderCache::default();
             // Drop any refresh still in flight for the previous directory.
             self.repo_header_state.refresh_rx = None;
+            self.start_repo_header_refresh();
             return;
         }
 
@@ -917,7 +921,14 @@ impl TuiApp {
             return;
         }
 
-        let cwd = self.runtime.cwd.clone();
+        self.start_repo_header_refresh();
+    }
+
+    /// Shell out to `git` for the current header directory on a worker thread.
+    /// Never call `load_repo_header` inline from a UI path; the subprocess can
+    /// take seconds on a large worktree.
+    fn start_repo_header_refresh(&mut self) {
+        let cwd = self.repo_header_state.cwd.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(load_repo_header(&cwd));

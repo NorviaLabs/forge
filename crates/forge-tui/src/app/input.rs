@@ -602,17 +602,18 @@ impl TuiApp {
         if !already_bound {
             let diff_source = self.diff_view_is_open().then_some(self.diff_view.source);
             self.workspace_files.explorer =
-                FileExplorer::new(Some(workspace.clone()), self.runtime.file_icons);
+                FileExplorer::new(Some(workspace), self.runtime.file_icons);
             self.file_watch = FileWatchState::new();
             self.init_file_watcher();
             if let Some(source) = diff_source {
                 self.diff_view = crate::diff_view::DiffView::new(source);
             }
         }
-        self.repo_header_state.cwd = workspace;
-        self.repo_header_state.cache = chrome::load_repo_header(&self.runtime.cwd);
-        self.repo_header_state.refreshed_at = Instant::now();
-        self.repo_header_state.refresh_rx = None;
+        // The cwd change invalidates the cached repo header: `poll_repo_header`
+        // blanks it and fetches the replacement on a worker. Shelling out to
+        // `git` inline here (as this used to) blocks the session switch on
+        // large worktrees.
+        self.poll_repo_header();
     }
 
     pub(super) fn restore_session_view_state(&mut self, session_id: uuid::Uuid) {

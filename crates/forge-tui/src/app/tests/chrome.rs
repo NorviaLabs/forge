@@ -67,10 +67,12 @@ async fn failed_repo_header_refresh_keeps_last_known_value() {
     assert!(app.repo_header_state.refresh_rx.is_none());
 }
 
-/// Changing the working directory must invalidate the cached header on the
-/// very next poll, so the header never describes the previous directory.
+/// Changing the working directory must invalidate the cached header — the old
+/// directory's branch must never be shown for the new one — and the replacement
+/// is fetched on a worker so the tick path never shells out to `git`. Regression
+/// for #592.
 #[tokio::test]
-async fn cwd_change_refreshes_repo_header_immediately() {
+async fn cwd_change_invalidates_repo_header_without_blocking() {
     let (dir, mut app) = focus_test_app().await;
     app.repo_header_state.cache = RepoHeaderCache {
         repo_name: Some("stale-repo".into()),
@@ -84,10 +86,14 @@ async fn cwd_change_refreshes_repo_header_immediately() {
     app.poll_repo_header();
 
     assert_eq!(app.repo_header_state.cwd, moved);
-    assert_eq!(app.repo_header().repo_name.as_deref(), Some("elsewhere"));
-    // Plain directory, no git metadata: no branch, and not reported dirty.
-    assert!(app.repo_header().branch.is_none());
-    assert!(!app.repo_header().dirty);
+    assert!(
+        app.repo_header().repo_name.is_none(),
+        "the previous directory's header must not survive a cwd change"
+    );
+    assert!(
+        app.repo_header_state.refresh_rx.is_some(),
+        "the replacement header must be fetched on a worker"
+    );
 }
 
 /// An in-flight refresh that has not produced a value yet must be retained
