@@ -17,25 +17,32 @@ const SLASH_PALETTE_MAX_ROWS: u16 = 16;
 /// Fold the selected session's background tasks into the footer's counts-only
 /// second row. The registry prunes terminal tasks, so `done`/`failed` count
 /// recent history, not everything the session ever ran.
-fn footer_jobs_activity(tasks: &[forge_session::BackgroundTaskSnapshot]) -> FooterActivity {
+fn footer_activity(tasks: &[forge_session::BackgroundTaskSnapshot]) -> FooterActivity {
     use forge_core::{BackgroundTaskKind, BackgroundTaskStatus};
     let mut activity = FooterActivity::default();
     for task in tasks {
-        if !matches!(task.kind, BackgroundTaskKind::Shell { .. }) {
-            continue;
-        }
+        let (active, need, failed, done) = match task.kind {
+            BackgroundTaskKind::Shell { .. } => (
+                &mut activity.jobs_active,
+                &mut activity.jobs_need,
+                &mut activity.jobs_failed,
+                &mut activity.jobs_done,
+            ),
+            BackgroundTaskKind::Subagent { .. } => (
+                &mut activity.agents_active,
+                &mut activity.agents_need,
+                &mut activity.agents_failed,
+                &mut activity.agents_done,
+            ),
+        };
         match task.status {
-            BackgroundTaskStatus::Queued | BackgroundTaskStatus::Running => {
-                activity.jobs_active += 1;
-            }
+            BackgroundTaskStatus::Queued | BackgroundTaskStatus::Running => *active += 1,
             BackgroundTaskStatus::WaitingForApproval { .. } => {
-                activity.jobs_active += 1;
-                activity.jobs_need += 1;
+                *active += 1;
+                *need += 1;
             }
-            BackgroundTaskStatus::Failed { .. } => activity.jobs_failed += 1,
-            BackgroundTaskStatus::Succeeded { .. } | BackgroundTaskStatus::Cancelled => {
-                activity.jobs_done += 1;
-            }
+            BackgroundTaskStatus::Failed { .. } => *failed += 1,
+            BackgroundTaskStatus::Succeeded { .. } | BackgroundTaskStatus::Cancelled => *done += 1,
         }
     }
     activity
@@ -1249,7 +1256,7 @@ impl TuiApp {
             prompt_tokens: self.session_view.prompt_tokens,
             completion_tokens: self.session_view.completion_tokens,
             prompt_cache_reads: self.session_view.prompt_cache_hits,
-            activity: footer_jobs_activity(&self.selected_background_tasks()),
+            activity: footer_activity(&self.selected_background_tasks()),
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
