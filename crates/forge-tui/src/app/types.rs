@@ -1763,6 +1763,10 @@ pub struct TuiApp {
     pub(crate) footer_area: Option<ratatui::layout::Rect>,
     /// Last left-click `(when, column, row)` for double-click detection.
     pub(crate) last_click: Option<(Instant, u16, u16)>,
+    /// Hovered navigator session index (pointer motion; never moves focus).
+    pub(crate) hover_session: Option<usize>,
+    /// Hovered file-tree visible index (pointer motion; never moves focus).
+    pub(crate) hover_file: Option<usize>,
     pub(crate) catalog_fetch: CatalogFetchState,
     /// Frame width from the most recent draw. Key handling runs before the
     /// next render, so commands that depend on whether a pane can physically

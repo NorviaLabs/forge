@@ -189,6 +189,8 @@ impl TuiApp {
             task_strip_area: None,
             footer_area: None,
             last_click: None,
+            hover_session: None,
+            hover_file: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
@@ -383,6 +385,8 @@ impl TuiApp {
             task_strip_area: None,
             footer_area: None,
             last_click: None,
+            hover_session: None,
+            hover_file: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
