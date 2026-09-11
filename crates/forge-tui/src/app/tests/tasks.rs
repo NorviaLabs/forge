@@ -218,3 +218,49 @@ async fn poll_background_tasks_keeps_finished_job_in_session_state() {
         forge_core::BackgroundTaskStatus::Succeeded { .. }
     ));
 }
+
+#[tokio::test]
+async fn attach_moves_a_finished_background_result_into_the_composer() {
+    let (_dir, mut app) = focus_test_app().await;
+    let id = app
+        .session_runtime
+        .spawn_background_shell("echo attached-output".into(), "echo".into())
+        .await
+        .unwrap();
+    wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
+
+    app.focus_block(FocusBlock::Sidebar);
+    app.move_tasks_selection(1);
+    app.attach_selected_task();
+
+    assert!(
+        app.input.text.contains("attached-output"),
+        "result should land in the composer: {:?}",
+        app.input.text
+    );
+    assert!(
+        app.status_state.message.contains("attached"),
+        "{:?}",
+        app.status_state.message
+    );
+}
+
+#[tokio::test]
+async fn attach_is_a_no_op_for_a_running_task() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .spawn_background_shell("sleep 5".into(), "sleep".into())
+        .await
+        .unwrap();
+
+    app.focus_block(FocusBlock::Sidebar);
+    app.move_tasks_selection(1);
+    app.attach_selected_task();
+
+    assert!(app.input.text.is_empty(), "{:?}", app.input.text);
+    assert!(
+        app.status_state.message.contains("hasn't finished"),
+        "{:?}",
+        app.status_state.message
+    );
+}

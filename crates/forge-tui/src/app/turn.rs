@@ -18,6 +18,17 @@ use super::shell::{
 const STREAM_EVENT_BUFFER_CAPACITY: usize = 64;
 const MAX_STREAM_EVENTS_PER_TICK: usize = 256;
 
+/// The operator-facing text of a finished background task, if it has one.
+/// Running tasks have no result to attach; `latest_message` is a live status
+/// snapshot, not a completion.
+fn background_task_result_text(task: &forge_session::BackgroundTaskSnapshot) -> Option<String> {
+    match &task.status {
+        forge_core::BackgroundTaskStatus::Succeeded { summary } => Some(summary.clone()),
+        forge_core::BackgroundTaskStatus::Failed { error } => Some(error.clone()),
+        _ => None,
+    }
+}
+
 /// The closing summary for an actor-owned (supervised) turn, computed from the
 /// TUI's own per-turn counters plus the snapshot's cumulative usage less the
 /// count taken when the turn began. `None` until a turn clock is running.
@@ -725,6 +736,36 @@ impl TuiApp {
                 format!("task #{} isn't waiting for approval", id.0),
             );
         }
+    }
+
+    /// Move the selected background task's result into the composer so the
+    /// operator can send it to the model explicitly. Completions are no longer
+    /// injected as queued user prompts (#589); this is the deliberate hand-off.
+    /// Appends rather than replaces, so an in-progress draft survives.
+    pub(super) fn attach_selected_task(&mut self) {
+        let Some(idx) = self.task_selection.task() else {
+            self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
+            return;
+        };
+        let mut tasks = self.selected_background_tasks();
+        tasks.sort_by_key(|task| task.id.0);
+        let Some(task) = tasks.get(idx) else {
+            self.clamp_tasks_selection();
+            return;
+        };
+        let Some(text) = background_task_result_text(task) else {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("task #{} hasn't finished yet", task.id.0),
+            );
+            return;
+        };
+        self.input.insert_paste(&text);
+        self.enter_chat_composer();
+        self.set_feedback(
+            FeedbackSeverity::Ok,
+            format!("attached result of task #{} to composer", task.id.0),
+        );
     }
 
     /// Run a queued user prompt with streaming + intermediate redraws.

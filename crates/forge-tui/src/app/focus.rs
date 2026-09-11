@@ -180,6 +180,9 @@ impl TuiApp {
         {
             return Some("Ctrl+↑↓ select queued · Ctrl+Backspace remove".into());
         }
+        if self.focus.block() == FocusBlock::Sidebar && self.task_selection.task().is_some() {
+            return Some("↑↓ select · i attach · a approve · d deny · x stop".into());
+        }
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 Some("Enter next · ⇧Enter previous · Esc cancel".into())

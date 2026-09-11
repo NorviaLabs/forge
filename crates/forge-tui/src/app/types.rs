@@ -630,6 +630,9 @@ pub(crate) enum SemanticCommand {
     CancelSelectedBackgroundTask,
     ApproveSelectedBackgroundTask,
     DenySelectedBackgroundTask,
+    /// Move a finished background task's result into the composer for the
+    /// operator to send explicitly (completions no longer auto-queue — #589).
+    AttachSelectedBackgroundTask,
     QuitOrInterrupt,
     Quit,
 }
