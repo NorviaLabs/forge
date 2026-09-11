@@ -486,6 +486,9 @@ impl AgentSession {
         tokio::spawn(async move {
             let outcome = tokio::select! {
                 outcome = run_shell_job(command, workspace_root, egress, session_tmp, unconfined) => outcome,
+                // Dropping the job future on cancel drops the shell spawn's
+                // process-group guard, which kills the whole tree — not just
+                // the direct child — so no side effect runs after cancel.
                 _ = cancel.cancelled() => BackgroundTaskOutcome::Cancelled,
             };
             let _ = tx.send(outcome);
@@ -884,6 +887,38 @@ mod tests {
 
             let status = wait_terminal(&mut s, id).await;
             assert_eq!(status, super::BackgroundTaskStatus::Cancelled);
+        }
+
+        /// Cancelling a background shell must kill its whole process tree, not
+        /// just drop the future and leave a grandchild running.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn cancelling_a_background_shell_kills_its_process_tree() {
+            let dir = tempdir().unwrap();
+            let marker = dir.path().join("bg-marker");
+            let mut s = session(dir.path()).await;
+            // Approve-all runs the background job unconfined so the test never
+            // depends on a sandbox being installed on the host.
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
+            // The marker writer is a grandchild; only a process-group kill
+            // reaches it once the direct shell is gone.
+            let command = format!("true; sh -c 'sleep 2; printf done > {}'", marker.display());
+            let id = s
+                .spawn_background_shell(command, "marker".into())
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(s.cancel_background_task(id));
+
+            let status = wait_terminal(&mut s, id).await;
+            assert_eq!(status, super::BackgroundTaskStatus::Cancelled);
+
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            assert!(
+                !marker.exists(),
+                "cancelled background shell tree still executed its side effect"
+            );
         }
 
         #[tokio::test]
