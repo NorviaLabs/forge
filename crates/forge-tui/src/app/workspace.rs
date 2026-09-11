@@ -60,6 +60,8 @@ impl TuiApp {
             if self.navigator_tab == crate::widgets::NavigatorTab::Files {
                 self.workspace_files.visible = true;
                 self.focus_block(FocusBlock::Search);
+            } else {
+                self.focus_block(FocusBlock::TaskStrip);
             }
             self.normalize_focus();
             return;
