@@ -191,6 +191,10 @@ impl TuiApp {
             last_click: None,
             hover_session: None,
             hover_file: None,
+            footer_chip_rects: None,
+            hover_chip: None,
+            option_rects: Vec::new(),
+            hover_option: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
@@ -387,6 +391,10 @@ impl TuiApp {
             last_click: None,
             hover_session: None,
             hover_file: None,
+            footer_chip_rects: None,
+            hover_chip: None,
+            option_rects: Vec::new(),
+            hover_option: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,

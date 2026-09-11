@@ -1767,6 +1767,16 @@ pub struct TuiApp {
     pub(crate) hover_session: Option<usize>,
     /// Hovered file-tree visible index (pointer motion; never moves focus).
     pub(crate) hover_file: Option<usize>,
+    /// x-ranges `(model, effort)` of the footer's left chips, from the last
+    /// draw, for pointer hit-testing.
+    pub(crate) footer_chip_rects: Option<[(u16, u16); 2]>,
+    /// Hovered footer chip index (0 = model, 1 = effort).
+    pub(crate) hover_chip: Option<usize>,
+    /// Option-row rects `(index, rect)` for the pending approval/question card,
+    /// captured during the last conversation paint.
+    pub(crate) option_rects: Vec<(usize, ratatui::layout::Rect)>,
+    /// Hovered option index in the pending card (pointer motion only).
+    pub(crate) hover_option: Option<usize>,
     pub(crate) catalog_fetch: CatalogFetchState,
     /// Frame width from the most recent draw. Key handling runs before the
     /// next render, so commands that depend on whether a pane can physically

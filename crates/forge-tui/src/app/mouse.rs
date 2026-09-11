@@ -79,15 +79,22 @@ impl TuiApp {
     /// never starts a drag by itself; `mouse_start_selection` runs after and
     /// only engages on the copyable panes.
     async fn mouse_click(&mut self, col: u16, row: u16) -> Result<(), TuiError> {
-        if self.pointer_blocked() {
-            return Ok(());
-        }
         let now = Instant::now();
         let double = self.last_click.is_some_and(|(at, c, r)| {
             now.duration_since(at) <= DOUBLE_CLICK && c == col && r == row
         });
         self.last_click = Some((now, col, row));
 
+        // The inline approval/question card is live even while it pends — the
+        // pointer guard below is for text selection under modal surfaces, not
+        // for the card's own option rows.
+        if let Some(index) = self.option_at(col, row) {
+            self.click_option(index, double).await?;
+            return Ok(());
+        }
+        if self.pointer_blocked() {
+            return Ok(());
+        }
         if let Some(area) = self.navigator_tabs_area {
             if cell_inside(area, col, row) {
                 self.click_navigator_tab(col, area);
@@ -119,6 +126,15 @@ impl TuiApp {
         if let Some(area) = self.footer_area {
             if cell_inside(area, col, row) {
                 self.focus_block(FocusBlock::Footer);
+                if let Some(chip) = self.footer_chip_at(col, row) {
+                    self.composer_chip_focus = Some(chip);
+                    let focus = if chip == 0 {
+                        FooterFocus::Llm
+                    } else {
+                        FooterFocus::Effort
+                    };
+                    self.activate_composer_chip(focus).await?;
+                }
                 return Ok(());
             }
         }
@@ -212,8 +228,15 @@ impl TuiApp {
     fn mouse_hover(&mut self, col: u16, row: u16) {
         self.hover_session = None;
         self.hover_file = None;
+        self.hover_chip = None;
+        self.hover_option = self.option_at(col, row);
         if self.pointer_blocked() {
             return;
+        }
+        if let Some(area) = self.footer_area {
+            if cell_inside(area, col, row) {
+                self.hover_chip = self.footer_chip_at(col, row);
+            }
         }
         let Some(area) = self.navigator_list_area else {
             return;
@@ -238,6 +261,100 @@ impl TuiApp {
                 }
             }
         }
+    }
+
+    /// Which footer chip (0 = model, 1 = effort) sits under a pointer cell,
+    /// if any. Uses the x-ranges captured during the last footer paint.
+    fn footer_chip_at(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.footer_area?;
+        if row != area.y {
+            return None;
+        }
+        let ranges = self.footer_chip_rects?;
+        if (ranges[0].0..ranges[0].1).contains(&col) {
+            Some(0)
+        } else if (ranges[1].0..ranges[1].1).contains(&col) {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    /// The option index of the pending approval/question card under the
+    /// pointer, if any. Uses the rects captured during the conversation paint.
+    fn option_at(&self, col: u16, row: u16) -> Option<usize> {
+        if !(self.session_view.is_awaiting_approval() || self.session_view.is_awaiting_question()) {
+            return None;
+        }
+        self.option_rects
+            .iter()
+            .find(|(_, rect)| cell_inside(*rect, col, row))
+            .map(|(index, _)| *index)
+    }
+
+    /// Click an option row: first click moves the highlight, a double-click
+    /// confirms (same as Enter). Driven through the existing menu handlers so
+    /// the card's own focus/selection invariants stay in one place.
+    async fn click_option(&mut self, index: usize, double: bool) -> Result<(), TuiError> {
+        let approval = self.session_view.is_awaiting_approval();
+        let question = self.session_view.is_awaiting_question();
+        if approval {
+            self.sync_approval_focus();
+        } else if question {
+            self.sync_question_focus();
+        } else {
+            return Ok(());
+        }
+        let current = if approval {
+            self.approval_menu_selected()
+        } else {
+            self.question_menu_indexes().1
+        };
+        self.step_option(current, index, approval).await?;
+        if double {
+            let key = crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            if approval {
+                self.handle_approval_menu_key(key).await?;
+            } else {
+                self.handle_question_menu_key(key).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Walk the card's highlight to `target` with the same Up/Down keys the
+    /// keyboard uses, so clamping and sync run exactly once per step. Stops if
+    /// a step does not move (clamped) to avoid a spin.
+    async fn step_option(
+        &mut self,
+        current: usize,
+        target: usize,
+        approval: bool,
+    ) -> Result<(), TuiError> {
+        let mut index = current;
+        while index != target {
+            let code = if target > index {
+                KeyCode::Down
+            } else {
+                KeyCode::Up
+            };
+            let key = crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+            if approval {
+                self.handle_approval_menu_key(key).await?;
+            } else {
+                self.handle_question_menu_key(key).await?;
+            }
+            let next = if approval {
+                self.approval_menu_selected()
+            } else {
+                self.question_menu_indexes().1
+            };
+            if next == index {
+                break;
+            }
+            index = next;
+        }
+        Ok(())
     }
 
     fn mouse_start_selection(&mut self, col: u16, row: u16) {
