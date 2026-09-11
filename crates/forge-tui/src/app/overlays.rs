@@ -242,6 +242,16 @@ impl TuiApp {
                 }
                 self.overlay = None;
             }
+            OverlayAction::ApproveAll => {
+                self.overlay = None;
+                self.set_approve_all(true);
+                if self.approve_all {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        "approve-all on · sandbox off for this session",
+                    );
+                }
+            }
             OverlayAction::CleanupSessionWorktree { session_id } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");

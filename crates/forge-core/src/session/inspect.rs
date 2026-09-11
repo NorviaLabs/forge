@@ -301,6 +301,17 @@ impl AgentSession {
         self.thinking_enabled
     }
 
+    /// Turn this session's approve-all mode on or off. While on, `Hitl`
+    /// decisions are auto-approved and shell tools run unconfined. Session
+    /// scoped; never persisted.
+    pub fn set_approve_all(&mut self, on: bool) {
+        self.approve_all = on;
+    }
+
+    pub fn approve_all(&self) -> bool {
+        self.approve_all
+    }
+
     /// Push provider credentials into the model client (OAuth tokens → worker env).
     pub fn apply_provider_env(&self, pairs: &[(String, String)]) {
         self.model.apply_provider_env(pairs);

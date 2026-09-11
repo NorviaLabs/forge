@@ -78,6 +78,9 @@ pub(crate) struct SessionViewState {
     /// is not, and stays on `connect`.
     pub(crate) reasoning_effort: ReasoningEffortState,
     pub(crate) thinking_enabled: bool,
+    /// Per-session approve-all mode, moved with the rest of the view on a
+    /// switch. Never persisted; a restart or a new session starts it off.
+    pub(crate) approve_all: bool,
     pub(crate) model_label: String,
     pub(crate) provider: String,
 }
@@ -135,6 +138,7 @@ impl Default for SessionViewState {
             timing: TurnTimingState::default(),
             reasoning_effort: ReasoningEffortState::default(),
             thinking_enabled: true,
+            approve_all: false,
             model_label: String::new(),
             provider: String::new(),
         }
@@ -1660,6 +1664,9 @@ pub struct TuiApp {
     pub(crate) activity: ActivityFeed,
     pub(crate) reasoning_effort: ReasoningEffortState,
     pub(crate) thinking_enabled: bool,
+    /// Per-session approve-all mode for the selected session; drives the
+    /// full-width warning strip. Mirrors `SessionViewState::approve_all`.
+    pub(crate) approve_all: bool,
     /// When `Some`, composer chip bar is focused at this index.
     pub(crate) composer_chip_focus: Option<usize>,
     pub(crate) tool_detail: ToolDetailState,

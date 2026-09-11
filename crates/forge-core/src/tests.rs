@@ -2859,6 +2859,152 @@ async fn hitl_pauses_on_git_push() {
     assert!(s.pending_hitl().is_none());
 }
 
+/// Records whether it ran with the shell sandbox off, so approve-all can be
+/// observed end to end without spawning a real process.
+struct SandboxProbeTool {
+    called: Arc<AtomicBool>,
+    unconfined: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl forge_tools::Tool for SandboxProbeTool {
+    fn name(&self) -> &str {
+        "probe"
+    }
+
+    fn description(&self) -> &str {
+        "record the sandbox state it ran under"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "additionalProperties": false})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        self.called.store(true, Ordering::SeqCst);
+        self.unconfined
+            .store(ctx.unconfined_shell, Ordering::SeqCst);
+        Ok(ToolOutput::success("probe ran"))
+    }
+}
+
+#[tokio::test]
+async fn approve_all_auto_approves_hitl_and_runs_the_tool_unconfined() {
+    let dir = tempdir().unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let unconfined = Arc::new(AtomicBool::new(false));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SandboxProbeTool {
+        called: called.clone(),
+        unconfined: unconfined.clone(),
+    }));
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "probe".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    s.set_governance(Governance::default().require_hitl_for_tool("probe"));
+    s.set_approve_all(true);
+
+    s.run_user_message("go").await.unwrap();
+
+    assert!(s.approve_all());
+    assert!(
+        s.pending_hitl().is_none(),
+        "approve-all must not enter Waiting on a HITL decision"
+    );
+    assert_ne!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+    assert!(
+        called.load(Ordering::SeqCst),
+        "the probe tool must have run"
+    );
+    assert!(
+        unconfined.load(Ordering::SeqCst),
+        "approve-all execution context must be unconfined"
+    );
+}
+
+#[tokio::test]
+async fn approve_all_does_not_override_an_explicit_deny() {
+    let dir = tempdir().unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let unconfined = Arc::new(AtomicBool::new(false));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SandboxProbeTool {
+        called: called.clone(),
+        unconfined: unconfined.clone(),
+    }));
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "probe".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    s.set_governance(Governance::default().with_acl({
+        let mut acl = AclPolicy::allow_all();
+        acl.deny("probe".into());
+        acl
+    }));
+    s.set_approve_all(true);
+
+    s.run_user_message("go").await.unwrap();
+
+    assert!(
+        s.pending_hitl().is_none(),
+        "a deny must be handled inline, not turned into a prompt"
+    );
+    assert_ne!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "approve-all must not run a tool an explicit deny refused"
+    );
+    assert!(!unconfined.load(Ordering::SeqCst));
+    assert!(s
+        .messages
+        .iter()
+        .any(|message| message.role == MessageRole::Tool
+            && message.content.contains("denied by ACL")));
+}
+
 #[tokio::test]
 async fn inspection_bash_runs_without_a_prompt_in_accept_edits() {
     let dir = tempdir().unwrap();

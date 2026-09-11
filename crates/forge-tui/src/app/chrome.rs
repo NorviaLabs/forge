@@ -497,6 +497,7 @@ impl TuiApp {
             self.runtime.model_label = details.active_model.clone();
             self.thinking_enabled = details.thinking_enabled;
         }
+        self.approve_all = snapshot.session.approve_all;
         for item in &mut self.session_chrome {
             item.selected = item.session_id == self.selected_session_id;
         }

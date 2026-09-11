@@ -830,7 +830,13 @@ impl AgentSession {
             .unwrap_or(SideEffectClass::Meta);
 
         if self.enable_gov {
-            let decision = self.governance.authorize(&call, class);
+            let mut decision = self.governance.authorize(&call, class);
+            // Approve-all turns a human-review prompt into an automatic allow.
+            // It never overrides a Deny: an explicit policy refusal is not
+            // human review, and the deny path below must stay reachable.
+            if self.approve_all && decision == PolicyDecision::Hitl {
+                decision = PolicyDecision::Allow;
+            }
             let redacted = self.governance.redact_args(&call.arguments);
             self.governance.record_audit(AuditEvent {
                 session_id: self.session_id.to_string(),
@@ -944,7 +950,11 @@ impl AgentSession {
             PendingToolExecution {
                 call: call.clone(),
                 tools: self.tools.clone(),
-                tool_ctx: self.tool_ctx.clone(),
+                tool_ctx: if self.approve_all {
+                    self.tool_ctx.clone().with_unconfined_shell()
+                } else {
+                    self.tool_ctx.clone()
+                },
                 budget: std::mem::take(budget),
                 prepared: validated
                     .then(|| self.tools.prepare_call(&call.name, call.arguments.clone()))

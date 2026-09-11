@@ -1797,3 +1797,98 @@ async fn send_with_image_is_allowed_when_model_can_see() {
     assert_eq!(app.pending_turn.prompt(), Some("compare this"));
     assert_eq!(app.pending_turn.attachment_count(), 1);
 }
+
+#[tokio::test]
+async fn approve_all_is_refused_for_an_untrusted_workspace() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/approve-all").await.unwrap();
+    assert!(
+        app.overlay.is_none(),
+        "an untrusted enable must not open the confirmation"
+    );
+    assert!(!app.approve_all);
+    assert!(!app.session_runtime.approve_all());
+    assert!(
+        app.feedback.text.contains("trusted"),
+        "feedback={}",
+        app.feedback.text
+    );
+}
+
+#[tokio::test]
+async fn approve_all_enable_requires_confirmation() {
+    let (_fake_home, _home_guard) = fake_home_guard();
+    let (dir, mut app) = focus_test_app().await;
+    forge_config::grant_trust(dir.path()).unwrap();
+
+    app.dispatch_line("/approve-all").await.unwrap();
+
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::SessionConfirm {
+                kind: crate::overlays::SessionConfirmKind::ApproveAll,
+                ..
+            })
+        ),
+        "enabling must ask first"
+    );
+    assert!(
+        !app.approve_all,
+        "the flag must not flip before the operator confirms"
+    );
+    assert!(!app.session_runtime.approve_all());
+}
+
+#[tokio::test]
+async fn confirming_approve_all_sets_the_flag_and_disabling_is_immediate() {
+    let (_fake_home, _home_guard) = fake_home_guard();
+    let (dir, mut app) = focus_test_app().await;
+    forge_config::grant_trust(dir.path()).unwrap();
+
+    app.dispatch_line("/approve-all").await.unwrap();
+    app.apply_overlay_action(crate::overlays::OverlayAction::ApproveAll)
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert!(app.approve_all);
+    assert!(app.session_runtime.approve_all());
+
+    // Disabling takes one command and no confirmation.
+    app.dispatch_line("/approve-all").await.unwrap();
+    assert!(app.overlay.is_none(), "disable must not prompt");
+    assert!(!app.approve_all);
+    assert!(!app.session_runtime.approve_all());
+}
+
+#[tokio::test]
+async fn approve_all_flag_moves_with_the_session_view_state() {
+    let (_dir, mut app) = focus_test_app().await;
+    let session_id = uuid::Uuid::new_v4();
+    app.approve_all = true;
+    app.save_session_view_state(session_id);
+    app.approve_all = false;
+    app.restore_session_view_state(session_id);
+    assert!(
+        app.approve_all,
+        "the per-session flag must survive a switch"
+    );
+}
+
+#[tokio::test]
+async fn approve_all_warning_strip_renders_only_while_on() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.approve_all = true;
+    let text = render_app_text(&mut app, 120, 40);
+    assert!(
+        text.contains("SANDBOX OFF"),
+        "frame missing approve-all warning:\n{text}"
+    );
+
+    app.approve_all = false;
+    let text = render_app_text(&mut app, 120, 40);
+    assert!(
+        !text.contains("SANDBOX OFF"),
+        "warning must clear when approve-all is off:\n{text}"
+    );
+}

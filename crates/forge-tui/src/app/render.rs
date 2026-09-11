@@ -133,6 +133,9 @@ impl TuiApp {
         // The focused footer's hint shares that row (replacing the
         // right-side activity while focused), never adds another.
         let hint_h: u16 = crate::design::FOOTER_H;
+        // One full-width warning row directly under the status row while
+        // approve-all is on. Session state, so it is never scrollable away.
+        let approve_all_warning_h: u16 = u16::from(self.approve_all);
         // An open file or `/diff` occupies the center workspace pane. Anything
         // else (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
@@ -148,6 +151,7 @@ impl TuiApp {
                 hint_h,
                 true,
                 0,
+                approve_all_warning_h,
             )
         } else if task_mode {
             split_areas_with_chrome(
@@ -160,6 +164,7 @@ impl TuiApp {
                 hint_h,
                 true,
                 0,
+                approve_all_warning_h,
             )
         } else if expand_conversation {
             split_areas_with_expanded_conversation(
@@ -172,6 +177,7 @@ impl TuiApp {
                 hint_h,
                 true,
                 0,
+                approve_all_warning_h,
             )
         } else {
             split_areas_with_chrome(
@@ -184,6 +190,7 @@ impl TuiApp {
                 hint_h,
                 true,
                 0,
+                approve_all_warning_h,
             )
         };
         // Remember the rendered editor rect so mouse events (which arrive
@@ -257,6 +264,18 @@ impl TuiApp {
             },
             regions.status,
         );
+        if regions.approve_all_warning.height > 0 {
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                    ratatui::text::Span::styled(
+                        "⚠ SANDBOX OFF · approvals, filesystem and network unconfined · this session only · /approve-all to re-enable",
+                        theme::danger(),
+                    ),
+                ))
+                .style(theme::panel()),
+                regions.approve_all_warning,
+            );
+        }
         if regions.task_strip.height > 0 {
             // An unnamed task (created with one key, before its first prompt
             // names it) shows an ordinal instead of a hole. Numbered among

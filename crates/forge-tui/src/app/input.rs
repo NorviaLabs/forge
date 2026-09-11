@@ -441,6 +441,7 @@ impl TuiApp {
             timing: std::mem::take(&mut self.timing),
             reasoning_effort: std::mem::take(&mut self.reasoning_effort),
             thinking_enabled: self.thinking_enabled,
+            approve_all: self.approve_all,
             // Copied, not moved: the incoming task may have no model recorded
             // yet, and a blank footer between the save and the restore would
             // be a visible flicker on every switch.
@@ -490,6 +491,7 @@ impl TuiApp {
         self.timing = state.timing;
         self.reasoning_effort = state.reasoning_effort;
         self.thinking_enabled = state.thinking_enabled;
+        self.approve_all = state.approve_all;
         // A task that has never been shown has no model of its own recorded
         // yet; keep whatever is on screen rather than blanking the footer.
         if !state.model_label.is_empty() {

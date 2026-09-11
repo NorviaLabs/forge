@@ -157,6 +157,13 @@ pub enum SupervisorCommand {
         session_id: SessionId,
         enabled: bool,
     },
+    /// Toggle per-session approve-all mode. While on, HITL prompts are
+    /// auto-approved and shell tools run unconfined. Session scoped and never
+    /// persisted.
+    SetApproveAll {
+        session_id: SessionId,
+        on: bool,
+    },
     SetCapabilities {
         session_id: SessionId,
         image_input_supported: bool,
@@ -1601,6 +1608,12 @@ async fn execute_command(
             session.set_thinking_enabled(enabled);
             refresh_actor(&state, &task_actor, &session).await?;
         }
+        SupervisorCommand::SetApproveAll { session_id, on } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = try_session(&task_actor)?;
+            session.set_approve_all(on);
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
         SupervisorCommand::SetCapabilities {
             session_id,
             image_input_supported,
@@ -2821,6 +2834,94 @@ mod tests {
             snapshot.queued_prompts,
             vec![(queued_id, "run after review".into())]
         );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_approve_all_round_trips_through_a_refresh_snapshot() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let session = scripted_session(&cfg, "unused").await;
+        let session_id = session.session_id;
+        assert!(!session.approve_all(), "approve-all must default off");
+        let task = task_for(session_id, "approve-all", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control.clone(),
+            lease,
+            vec![(task, session)],
+            1,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::SetApproveAll {
+                session_id,
+                on: true,
+            })
+            .await
+            .unwrap();
+        let on =
+            wait_for_task_state(&handle, session_id, |snapshot| snapshot.session.approve_all).await;
+        assert!(on.session.approve_all);
+
+        // A refresh publishes a fresh snapshot from the same live actor; the
+        // flag must still be on, proving it is session state and not a
+        // one-shot command ack.
+        let refreshed =
+            wait_for_task_state(&handle, session_id, |snapshot| snapshot.session.approve_all).await;
+        assert!(refreshed.session.approve_all);
+        assert!(
+            supervisor
+                .snapshot(session_id)
+                .await
+                .unwrap()
+                .session
+                .approve_all
+        );
+
+        handle
+            .command(SupervisorCommand::SetApproveAll {
+                session_id,
+                on: false,
+            })
+            .await
+            .unwrap();
+        let off = wait_for_task_state(&handle, session_id, |snapshot| {
+            !snapshot.session.approve_all
+        })
+        .await;
+        assert!(!off.session.approve_all);
+
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 

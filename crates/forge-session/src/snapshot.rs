@@ -38,6 +38,8 @@ pub struct SessionSnapshot {
     /// Authoritative task state. Frontends must render this rather than
     /// deriving their own from busy/streaming flags.
     pub lifecycle: TaskLifecycle,
+    /// Per-session approve-all mode: HITL auto-approved, shell unconfined.
+    pub approve_all: bool,
     /// The outstanding approval request, if the session is waiting on one.
     pub pending_hitl: Option<HitlPayload>,
     /// The outstanding `ask_user_question` request, if the session is waiting
@@ -65,6 +67,7 @@ impl SessionSnapshot {
         Self {
             session_id: session.session_id,
             lifecycle: session.active_task.lifecycle,
+            approve_all: session.approve_all(),
             pending_hitl: session.pending_hitl().cloned(),
             pending_question: session.pending_question().cloned(),
             queue_len: session.queue().len(),
@@ -101,6 +104,7 @@ impl Default for SessionSnapshot {
         Self {
             session_id: SessionId::nil(),
             lifecycle: TaskLifecycle::Ready,
+            approve_all: false,
             pending_hitl: None,
             pending_question: None,
             queue_len: 0,
