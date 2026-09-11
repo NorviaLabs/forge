@@ -24,6 +24,12 @@ impl AgentSession {
         }
         let mut content = text.to_string();
         let attachments = self.freeze_attachments(&mut content, attachments);
+        // Reconcile a dangling tool call from the previous attempt *before* the
+        // new user message is pushed. Appending the synthetic tool result after
+        // the user turn would leave the assistant `tool_calls` message answered
+        // only later in the transcript, which providers still reject as
+        // "insufficient tool messages following tool_calls".
+        self.reconcile_dangling_tool_calls().await?;
         self.journal
             .append_user_message_with_attachments(self.session_id, &content, &attachments)
             .await?;
@@ -623,6 +629,17 @@ impl AgentSession {
         // fatal — the pre-compaction context is still valid, so the step
         // proceeds on it (see `maybe_auto_compact`).
         //
+        // Every assistant tool call must have a tool result before the next
+        // request is serialized; OpenAI-compatible providers reject a
+        // `tool_calls` message whose ids are unanswered with HTTP 400. A
+        // batched step paused for HITL drops the calls after the gated one,
+        // and a cancelled step can drop its in-flight call; neither resumes
+        // via `start_fresh_attempt`, so reconcile here — the one path every
+        // model request takes. A call awaiting approval is deliberately
+        // unresolved, so leave it to the approval flow.
+        if self.pending_hitl().is_none() {
+            self.reconcile_dangling_tool_calls().await?;
+        }
         // Compaction opens its own cache epoch, so `epoch_reason` stays
         // `None` here: bumping it again in `record_prompt_snapshot` would
         // double-count the epoch for a single boundary.
