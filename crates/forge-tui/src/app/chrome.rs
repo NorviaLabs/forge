@@ -208,6 +208,15 @@ impl TuiApp {
                     });
                     self.session_chrome = roster
                         .into_iter()
+                        // Archived/Removed sessions leave the navigator; they
+                        // live behind the switcher's archive filter.
+                        .filter(|snapshot| {
+                            !matches!(
+                                snapshot.task.lifecycle,
+                                forge_session::SessionLifecycle::Archived
+                                    | forge_session::SessionLifecycle::Removed
+                            )
+                        })
                         .map(|snapshot| SessionChromeItem {
                             session_id: snapshot.task.session_id,
                             slot: snapshot.task.slot,

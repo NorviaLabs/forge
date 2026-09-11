@@ -1276,6 +1276,11 @@ async fn execute_command(
             }
             result?;
             publish_actor(&state, session_id).await?;
+            // A roster refresh lets the navigator drop the archived row instead
+            // of leaving it listed with a stale state.
+            let _ = state
+                .events
+                .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::RenameSession { session_id, label } => {
             state.control.rename(session_id, &label).await?;

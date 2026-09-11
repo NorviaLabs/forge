@@ -1305,6 +1305,23 @@ async fn d_archives_an_idle_managed_session() {
         }
     };
     assert!(archived, "the idle session should have been archived");
+
+    // The navigator drops the archived row rather than leaving it listed.
+    let removed = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.poll_supervisor_events();
+            let gone = !app
+                .session_chrome
+                .iter()
+                .any(|item| item.session_id == sibling.session_id);
+            if gone || std::time::Instant::now() >= deadline {
+                break gone;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    assert!(removed, "the archived session should leave the navigator");
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
