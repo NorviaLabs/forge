@@ -317,6 +317,17 @@ pub async fn run_shell_command_with_egress_and_temp(
     run_shell_command_inner(command, workspace_root, egress, session_tmp, true).await
 }
 
+/// Run `command` with no sandbox at all — filesystem and network unconfined.
+/// Used by the approve-all session mode for background shells, so a background
+/// job is never confined while the foreground runs unconfined.
+pub async fn run_shell_command_unconfined(
+    command: &str,
+    workspace_root: &Path,
+    session_tmp: Option<&Path>,
+) -> Result<ToolOutput, ToolError> {
+    run_shell_command_inner(command, workspace_root, None, session_tmp, false).await
+}
+
 async fn run_shell_command_inner(
     command: &str,
     workspace_root: &Path,
