@@ -513,6 +513,51 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     );
 }
 
+/// Regression (#640): a stale saved profile paired with a model from another
+/// provider must not restore the stale route. The model id is authoritative.
+#[tokio::test]
+async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "opencode-go/deepseek-v4.1-flash".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+    app.connect
+        .store
+        .set_api_key("opencode_go", "sk-test-opencode-go")
+        .unwrap();
+    app.connect
+        .preferences
+        .set_last_selection("xai", "opencode-go/deepseek-v4.1-flash")
+        .unwrap();
+
+    let restored = app.restore_saved_auth();
+
+    assert_eq!(restored.connect.profile.as_deref(), Some("opencode_go"));
+    assert_eq!(
+        restored.session_runtime.active_route_id, "opencode-go",
+        "route must follow the model, not the stale saved profile"
+    );
+    assert_eq!(
+        restored.session_runtime.active_model,
+        "opencode-go/deepseek-v4.1-flash"
+    );
+    let request = restored.session_runtime.build_model_request();
+    assert_eq!(request.model, "opencode-go/deepseek-v4.1-flash");
+    assert_eq!(request.route_id.as_deref(), Some("opencode-go"));
+}
+
 #[tokio::test]
 async fn first_request_after_switching_models_uses_the_new_complete_id() {
     let cred_dir = tempfile::tempdir().unwrap();
