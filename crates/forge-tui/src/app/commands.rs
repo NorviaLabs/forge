@@ -791,6 +791,50 @@ impl TuiApp {
         self.start_catalog_refresh();
     }
 
+    /// Apply approve-all to the selected session. For a supervised session the
+    /// supervisor actor owns the flag, so the command is the only writer; for
+    /// a directly-owned session the TUI sets it in place.
+    pub(super) fn set_approve_all(&mut self, on: bool) {
+        if self.selected_is_supervised() {
+            if !self.try_session_command(forge_session::SupervisorCommand::SetApproveAll {
+                session_id: self.selected_session_id,
+                on,
+            }) {
+                return;
+            }
+        } else {
+            self.session_runtime.set_approve_all(on);
+        }
+        self.approve_all = on;
+    }
+
+    /// `/approve-all`: enabling is destructive enough to confirm first;
+    /// disabling is immediate and unconfirmed.
+    pub(super) fn handle_approve_all_command(&mut self) {
+        if self.approve_all {
+            self.set_approve_all(false);
+            self.set_feedback(FeedbackSeverity::Ok, "approve-all off · sandbox restored");
+            return;
+        }
+        let workspace = self.session_view.workspace_root().to_path_buf();
+        if !forge_config::is_trusted(&workspace) {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "approve-all requires a trusted workspace · trust this directory first",
+            );
+            return;
+        }
+        self.overlay = Some(Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::ApproveAll,
+            session_id: self.selected_session_id.to_string(),
+            label: self.selected_session_label(),
+            detail:
+                "approvals auto-approved · filesystem and network unconfined · this session only"
+                    .into(),
+        });
+        self.status_state.message = "confirm approve-all".into();
+    }
+
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
         let skill_line = if let Some(skill_name) = line
             .split_whitespace()
@@ -1138,6 +1182,9 @@ impl TuiApp {
                     self.sync_effort_to_session();
                     let label = if self.thinking_enabled { "on" } else { "off" };
                     self.set_feedback(FeedbackSeverity::Info, format!("thinking: {label}"));
+                }
+                Ok(SlashCommand::ApproveAll) => {
+                    self.handle_approve_all_command();
                 }
                 Ok(SlashCommand::Terminal) => {
                     // Open rather than toggle: the user asked for the terminal

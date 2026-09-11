@@ -57,6 +57,10 @@ pub enum SlashCommand {
     Thinking {
         enabled: Option<bool>,
     },
+    /// Toggle this session's approve-all mode. Enabling asks for confirmation;
+    /// disabling is immediate. Approve-all auto-approves HITL and turns the
+    /// shell sandbox off for the session.
+    ApproveAll,
     /// Open (and focus) the terminal panel. The `Ctrl+\`` chord is the fast
     /// path, but it is an unusual key to guess and appears only in the help
     /// overlay — without a palette entry the terminal is unreachable for
@@ -178,6 +182,13 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             }),
             Some(_) => Err(CommandError::Usage("/thinking [on|off]".into())),
         },
+        "approve-all" | "approve_all" => {
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/approve-all".into()))
+            } else {
+                Ok(SlashCommand::ApproveAll)
+            }
+        }
         "diff" | "d" => match parts.next() {
             None => Ok(SlashCommand::Diff {
                 source: crate::diff_view::DiffSource::WorkingTree,
@@ -229,6 +240,7 @@ mod tests {
             SlashCommand::Model,
             SlashCommand::Effort,
             SlashCommand::Thinking { enabled: None },
+            SlashCommand::ApproveAll,
             SlashCommand::Connect,
             SlashCommand::Help,
             SlashCommand::Sessions,
@@ -451,6 +463,22 @@ mod tests {
         assert_eq!(
             parse_slash("/thinking maybe").unwrap().unwrap_err(),
             CommandError::Usage("/thinking [on|off]".into())
+        );
+    }
+
+    #[test]
+    fn parses_approve_all() {
+        assert_eq!(
+            parse_slash("/approve-all").unwrap().unwrap(),
+            SlashCommand::ApproveAll
+        );
+        assert_eq!(
+            parse_slash("/approve_all").unwrap().unwrap(),
+            SlashCommand::ApproveAll
+        );
+        assert_eq!(
+            parse_slash("/approve-all now").unwrap().unwrap_err(),
+            CommandError::Usage("/approve-all".into())
         );
     }
 

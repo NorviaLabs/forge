@@ -299,6 +299,9 @@ pub enum SessionConfirmKind {
     Archive,
     /// Removes a clean managed worktree; the branch is kept.
     Cleanup,
+    /// Enables approve-all: confirms that the sandbox goes off for the
+    /// session before the first auto-approval can happen.
+    ApproveAll,
 }
 
 #[derive(Debug, Clone)]
@@ -1471,6 +1474,8 @@ pub enum OverlayAction {
         label: String,
         detail: String,
     },
+    /// Confirmed enabling of approve-all.
+    ApproveAll,
     RenameSession {
         session_id: String,
         label: String,
@@ -2011,6 +2016,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 SessionConfirmKind::Cleanup => OverlayAction::CleanupSessionWorktree {
                     session_id: session_id.clone(),
                 },
+                SessionConfirmKind::ApproveAll => OverlayAction::ApproveAll,
             },
             Overlay::TrustSession { operation_id, .. } => OverlayAction::FinalizeSessionCreation {
                 operation_id: *operation_id,
@@ -3251,6 +3257,9 @@ impl Widget for OverlayWidget<'_> {
                 let (title, question) = match kind {
                     SessionConfirmKind::Archive => ("Archive session", "Archive"),
                     SessionConfirmKind::Cleanup => ("Remove worktree", "Remove the worktree for"),
+                    SessionConfirmKind::ApproveAll => {
+                        ("Enable approve-all", "Enable approve-all for")
+                    }
                 };
                 Paragraph::new(format!(
                     "{question} `{label}`?\n\n{detail}\n\nEnter confirm · Esc cancel"

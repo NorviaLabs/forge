@@ -304,6 +304,7 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
 ```
 ┌──────────────────────────────────────────────────────────┐
 │ StatusBar (one row)                                       │
+│ Approve-all warning (one row, full width, when on)        │
 ├────────┬───────────────────────┬─────────────────────────┤
 │        │                       │ feedback strip (0–1)    │
 │        │                       │ conversation            │
@@ -607,6 +608,12 @@ Rules:
 
 - Success and error notices additionally surface as a positioned toast (`ratatui-toaster`, `widgets/toasts.rs`), bottom-right, auto-expiring after 2s. Notification only: never focusable, never blocking.
 - The feedback strip keeps its persistent latest-status role; the toast is the interruption, the strip is the record.
+
+### 9.11 Approve-all warning strip
+
+- While a session's approve-all mode is on, one full-width row renders directly under the StatusBar: `⚠ SANDBOX OFF · approvals, filesystem and network unconfined · this session only · /approve-all to re-enable`.
+- Error-coloured (`theme::danger()`), one row, full frame width, and part of the fixed chrome — the conversation scroll cannot move it off screen.
+- It is the persistent record that the sandbox is off; it disappears the moment approve-all is disabled.
 
 ## 10. Theme Policy
 

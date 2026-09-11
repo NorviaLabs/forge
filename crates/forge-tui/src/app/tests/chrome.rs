@@ -975,6 +975,7 @@ async fn tui08_feedback_strip_visible_on_frame() {
         2,
         true,
         0,
+        0,
     );
     assert_eq!(regions.feedback.height, 1);
     assert!(regions.feedback.y < regions.input.y);
