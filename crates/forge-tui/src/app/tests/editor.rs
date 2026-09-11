@@ -681,3 +681,99 @@ async fn external_editor_resume_draws_after_terminal_reinit() {
     let result = app.resume_after_external_editor(None);
     assert!(result.is_ok());
 }
+
+#[tokio::test]
+async fn markdown_opens_in_preview_and_preview_is_read_only() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("README.md");
+    fs::write(&path, "# Title\n\n- one\n").unwrap();
+    app.open_file_in_editor(&path);
+
+    assert!(
+        app.source_viewer.markdown_preview,
+        "markdown lands in preview"
+    );
+    let before = app.editor_session.as_ref().unwrap().text();
+
+    // Typing in preview must not touch the buffer or dirty it.
+    for ch in "ix".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), before);
+    assert!(!app.editor_session.as_ref().unwrap().is_dirty());
+}
+
+#[tokio::test]
+async fn preview_command_toggles_back_to_editable_source() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("notes.md");
+    fs::write(&path, "# Title\n").unwrap();
+    app.open_file_in_editor(&path);
+    assert!(app.source_viewer.markdown_preview);
+
+    for key in [
+        press(KeyCode::Char(':'), KeyModifiers::NONE),
+        press(KeyCode::Char('p'), KeyModifiers::NONE),
+        press(KeyCode::Char('r'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char('v'), KeyModifiers::NONE),
+        press(KeyCode::Char('i'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char('w'), KeyModifiers::NONE),
+        press(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        app.handle_key(key).await.unwrap();
+    }
+    assert!(
+        !app.source_viewer.markdown_preview,
+        ":preview returns to source"
+    );
+
+    // Editing is restored: `i` enters INSERT and `x` mutates the buffer.
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Insert
+    );
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+}
+
+#[tokio::test]
+async fn non_markdown_file_never_enters_preview() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("plain.txt");
+    fs::write(&path, "plain\n").unwrap();
+    app.open_file_in_editor(&path);
+    assert!(!app.source_viewer.markdown_preview);
+
+    for key in [
+        press(KeyCode::Char(':'), KeyModifiers::NONE),
+        press(KeyCode::Char('p'), KeyModifiers::NONE),
+        press(KeyCode::Char('r'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char('v'), KeyModifiers::NONE),
+        press(KeyCode::Char('i'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char('w'), KeyModifiers::NONE),
+        press(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        app.handle_key(key).await.unwrap();
+    }
+    assert!(!app.source_viewer.markdown_preview);
+
+    // Source editing still works: `i` reaches the embedded editor.
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Insert
+    );
+}
