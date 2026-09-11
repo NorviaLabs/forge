@@ -35,6 +35,70 @@ impl TuiApp {
         }
     }
 
+    /// `d` in the navigator: stop a running turn, then archive. Idle/terminal
+    /// sessions archive immediately; a running one archives when it settles.
+    pub(crate) async fn request_session_done(&mut self, session_id: uuid::Uuid) {
+        let Some((ownership, state)) = self
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+            .map(|snapshot| (snapshot.task.ownership, snapshot.task.turn_state))
+        else {
+            return;
+        };
+        if ownership == forge_session::WorktreeOwnership::Primary {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "the primary session cannot be archived",
+            );
+            return;
+        }
+        if matches!(
+            state,
+            forge_session::SupervisorTurnState::Queued
+                | forge_session::SupervisorTurnState::Running
+                | forge_session::SupervisorTurnState::Waiting
+        ) {
+            self.send_session_command(forge_session::SupervisorCommand::StopTurn { session_id })
+                .await;
+            self.navigator_done_pending = Some(session_id);
+            self.set_feedback(FeedbackSeverity::Info, "stopping to archive…");
+        } else {
+            self.send_session_command(forge_session::SupervisorCommand::ArchiveSession {
+                session_id,
+            })
+            .await;
+        }
+    }
+
+    /// Archive a session the operator marked done once its turn has settled.
+    pub(crate) async fn flush_done_pending(&mut self) {
+        let Some(session_id) = self.navigator_done_pending else {
+            return;
+        };
+        let state = self
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+            .map(|snapshot| snapshot.task.turn_state);
+        if matches!(
+            state,
+            None | Some(
+                forge_session::SupervisorTurnState::Idle
+                    | forge_session::SupervisorTurnState::Completed
+                    | forge_session::SupervisorTurnState::Failed
+                    | forge_session::SupervisorTurnState::Cancelled
+                    | forge_session::SupervisorTurnState::Interrupted
+            )
+        ) {
+            self.navigator_done_pending = None;
+            self.send_session_command(forge_session::SupervisorCommand::ArchiveSession {
+                session_id,
+            })
+            .await;
+        }
+    }
+
     pub(super) fn poll_supervisor_events(&mut self) {
         let Some(supervisor) = self.supervisor.as_mut() else {
             return;
