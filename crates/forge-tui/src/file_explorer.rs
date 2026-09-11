@@ -1039,6 +1039,9 @@ pub struct FileExplorerWidget<'a> {
     /// finer-grained than `focused`, which is true for either. Drives the
     /// solid/hollow state of the focus-indicator dot on the rule.
     pub search_active: bool,
+    /// Visible node index under the pointer (hover), if any. Hover never
+    /// moves focus or selection; it only tints the row.
+    pub hover: Option<usize>,
 }
 
 impl Widget for FileExplorerWidget<'_> {
@@ -1083,7 +1086,12 @@ impl Widget for FileExplorerWidget<'_> {
                 }
                 let list_height = height.saturating_sub(error_shown as usize);
                 let query = self.explorer.search_query.clone();
-                for node in visible.iter().skip(self.explorer.scroll).take(list_height) {
+                for (offset, node) in visible
+                    .iter()
+                    .skip(self.explorer.scroll)
+                    .take(list_height)
+                    .enumerate()
+                {
                     let selected = self.explorer.selected_path.as_ref() == Some(&node.path);
                     let marker = match node.kind {
                         FileKind::Directory if node.loading => "...",
@@ -1097,7 +1105,7 @@ impl Widget for FileExplorerWidget<'_> {
                     } else {
                         None
                     };
-                    lines.push(explorer_row_line(
+                    let mut line = explorer_row_line(
                         &prefix,
                         marker,
                         &node.path,
@@ -1108,7 +1116,14 @@ impl Widget for FileExplorerWidget<'_> {
                         status,
                         self.explorer.icon_mode,
                         &query,
-                    ));
+                    );
+                    // Hover is a background tint only, never a marker:
+                    // selection wins and nothing about the row's layout or
+                    // focus changes.
+                    if self.hover == Some(self.explorer.scroll + offset) && !selected {
+                        line = line.style(theme::surface_hover());
+                    }
+                    lines.push(line);
                     if let Some(error) = &node.error {
                         lines.push(Line::styled(
                             format!("{prefix}  Unable to read this directory"),
@@ -2006,6 +2021,7 @@ mod tests {
             explorer,
             focused: true,
             search_active,
+            hover: None,
         }
         .render(area, &mut buf);
         buf

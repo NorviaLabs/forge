@@ -131,6 +131,15 @@ fn left_release(column: u16, row: u16) -> event::MouseEvent {
     }
 }
 
+fn moved(column: u16, row: u16) -> event::MouseEvent {
+    event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
 #[tokio::test]
 async fn click_without_drag_clears_selection_instead_of_copying() {
     let (_dir, mut app) = focus_test_app().await;
@@ -344,4 +353,50 @@ async fn click_opens_a_file_tree_row() {
         app.current_workspace_is_file(),
         "clicking a file row should open it"
     );
+}
+
+#[tokio::test]
+async fn motion_sets_file_hover_without_moving_focus() {
+    let (dir, mut app) = focus_test_app().await;
+    std::fs::write(dir.path().join("hoverme.txt"), "hi").unwrap();
+    app.workspace_files.explorer.refresh_workspace();
+    app.workspace_files.visible = true;
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.navigator_tab_explicit = true;
+    render_app_text(&mut app, 140, 45);
+
+    let index = app
+        .workspace_files
+        .explorer
+        .visible_nodes()
+        .iter()
+        .position(|node| node.display_name == "hoverme.txt")
+        .expect("test file should be visible");
+    let list = app.navigator_list_area.expect("file list drawn");
+    let before = app.focus.block();
+
+    app.handle_mouse(moved(list.x + 3, list.y + 2 + index as u16))
+        .await
+        .unwrap();
+
+    assert_eq!(app.hover_file, Some(index));
+    assert_eq!(app.focus.block(), before, "hover must never move focus");
+
+    // Motion away clears the highlight.
+    app.handle_mouse(moved(0, 200)).await.unwrap();
+    assert_eq!(app.hover_file, None);
+}
+
+#[tokio::test]
+async fn motion_hovers_a_session_row() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
+    let before = app.focus.block();
+
+    app.handle_mouse(moved(2, 5)).await.unwrap();
+
+    assert_eq!(app.hover_session, Some(0));
+    assert_eq!(app.focus.block(), before, "hover must never move focus");
 }

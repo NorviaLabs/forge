@@ -115,6 +115,8 @@ pub struct SessionList<'a> {
     pub peek: Option<&'a PeekPanel<'a>>,
     /// Inline "new session" task buffer; rendered on the bottom row when set.
     pub new_session: Option<&'a str>,
+    /// Session index under the pointer (hover); tints its two lines only.
+    pub hover: Option<usize>,
 }
 
 impl Widget for SessionList<'_> {
@@ -124,10 +126,11 @@ impl Widget for SessionList<'_> {
         }
         let mut y = area.y;
         let bottom = area.bottom();
-        for row in self.rows {
+        for (index, row) in self.rows.iter().enumerate() {
             if y >= bottom {
                 break;
             }
+            let hovered = self.hover == Some(index);
             let (glyph_style, label_style) = if row.need {
                 (theme::warn(), theme::text())
             } else {
@@ -163,6 +166,9 @@ impl Widget for SessionList<'_> {
                 buf.set_line(area.x, y, &line, area.width);
                 fill_selection(buf, area.x, y, area.width);
             } else {
+                if hovered {
+                    line = line.style(theme::surface_hover());
+                }
                 buf.set_line(area.x, y, &line, area.width);
             }
             y += 1;
@@ -173,10 +179,13 @@ impl Widget for SessionList<'_> {
                 let indent = 3usize.min(area.width as usize);
                 let room = (area.width as usize).saturating_sub(indent);
                 let text = truncate(&row.qualifier, room);
-                let qual = Line::from(vec![
+                let mut qual = Line::from(vec![
                     Span::raw(" ".repeat(indent)),
                     Span::styled(text, theme::metadata_style()),
                 ]);
+                if hovered && !(row.focused && self.focused) {
+                    qual = qual.style(theme::surface_hover());
+                }
                 buf.set_line(area.x, y, &qual, area.width);
             }
             y += 1;
@@ -381,6 +390,7 @@ mod tests {
                         focused: true,
                         peek: Some(&peek),
                         new_session: None,
+                        hover: None,
                     },
                     frame.area(),
                 );
@@ -411,6 +421,7 @@ mod tests {
                         focused: true,
                         peek: None,
                         new_session: None,
+                        hover: None,
                     },
                     frame.area(),
                 );
@@ -441,6 +452,7 @@ mod tests {
                         focused: true,
                         peek: None,
                         new_session: None,
+                        hover: None,
                     },
                     frame.area(),
                 );

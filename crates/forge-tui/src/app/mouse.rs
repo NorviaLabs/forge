@@ -48,8 +48,11 @@ impl TuiApp {
                 self.mouse_click(event.column, event.row).await?;
                 self.mouse_start_selection(event.column, event.row);
             }
-            MouseEventKind::Drag(_) | MouseEventKind::Moved => {
+            MouseEventKind::Drag(_) => {
                 self.mouse_update_selection(event.column, event.row);
+            }
+            MouseEventKind::Moved => {
+                self.mouse_hover(event.column, event.row);
             }
             MouseEventKind::Up(MouseButton::Left) => self.mouse_finish_selection(),
             MouseEventKind::Down(MouseButton::Right) => {
@@ -201,6 +204,40 @@ impl TuiApp {
         self.execute_semantic_command(SemanticCommand::OpenSelectedEntry)
             .await?;
         Ok(())
+    }
+
+    /// Pointer motion updates hover highlights only — it never moves focus and
+    /// never starts a selection. Terminals that do not report motion simply
+    /// never send `Moved`; the highlight is then never triggered.
+    fn mouse_hover(&mut self, col: u16, row: u16) {
+        self.hover_session = None;
+        self.hover_file = None;
+        if self.pointer_blocked() {
+            return;
+        }
+        let Some(area) = self.navigator_list_area else {
+            return;
+        };
+        if !cell_inside(area, col, row) {
+            return;
+        }
+        match self.effective_navigator_tab() {
+            crate::widgets::NavigatorTab::Sessions => {
+                let index = row.saturating_sub(area.y) as usize / 2;
+                if index < self.session_chrome.len() {
+                    self.hover_session = Some(index);
+                }
+            }
+            crate::widgets::NavigatorTab::Files => {
+                let tree_top = area.y + 2;
+                if row >= tree_top {
+                    let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
+                    if index < self.workspace_files.explorer.visible_nodes().len() {
+                        self.hover_file = Some(index);
+                    }
+                }
+            }
+        }
     }
 
     fn mouse_start_selection(&mut self, col: u16, row: u16) {
