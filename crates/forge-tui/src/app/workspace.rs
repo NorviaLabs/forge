@@ -134,12 +134,32 @@ impl TuiApp {
     }
 
     pub(super) fn complete_dirty_editor_exit(&mut self) {
-        if self.pending_editor_home {
+        if self.pending_editor_quit {
+            self.pending_editor_quit = false;
+            self.exit.request();
+            self.status_state.message = "quitting…".into();
+        } else if self.pending_editor_home {
             self.pending_editor_home = false;
             self.go_home_workspace();
         } else {
             self.go_back_workspace();
         }
+    }
+
+    /// Global quit (`Ctrl+D`). A dirty editor buffer raises the existing
+    /// Save/Discard/Cancel dialog first; exit is only requested once the
+    /// operator resolves it (#647).
+    pub(super) fn request_quit(&mut self) {
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.pending_editor_quit = true;
+            self.explorer_dialog.show(ExplorerDialog::DirtyExit);
+            return;
+        }
+        self.exit.request();
     }
 
     pub(super) fn go_back_workspace(&mut self) {

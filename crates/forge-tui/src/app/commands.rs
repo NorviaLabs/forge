@@ -28,12 +28,13 @@ impl TuiApp {
                     use forge_session::{SessionLifecycle, SupervisorTurnState};
                     // "Needs you" is a turn that stopped for a reason the
                     // operator has to answer; a task the operator is already
-                    // looking at is never in it.
-                    let attention = snapshot.task.session_id != selected_session_id
-                        && matches!(
-                            snapshot.task.turn_state,
-                            SupervisorTurnState::Waiting | SupervisorTurnState::Failed
-                        );
+                    // looking at is never in it. Shared with the sidebar rows
+                    // so both surfaces agree (#643).
+                    let attention = session_needs_attention(
+                        snapshot.task.session_id == selected_session_id,
+                        snapshot.task.turn_state,
+                        !snapshot.interrupted_prompts.is_empty(),
+                    );
                     let group = match snapshot.task.lifecycle {
                         SessionLifecycle::Archived | SessionLifecycle::Removed => {
                             SessionSwitcherGroup::Archived
@@ -767,7 +768,7 @@ impl TuiApp {
                     self.exit.request_with_code(ExitCode::Canceled);
                 }
             }
-            SemanticCommand::Quit => self.exit.request(),
+            SemanticCommand::Quit => self.request_quit(),
         }
         Ok(true)
     }
@@ -1156,9 +1157,28 @@ impl TuiApp {
                     self.note_workspace_changed();
                     self.status_state.message = "Refreshing git status...".into();
                 }
-                Ok(SlashCommand::Edit) => {
-                    self.external_editor.requested = true;
-                }
+                Ok(SlashCommand::Edit { path }) => match path {
+                    Some(path) => match self.resolve_workspace_path(path.trim()) {
+                        Ok(resolved) if resolved.is_file() => {
+                            self.open_file_in_editor(&resolved);
+                        }
+                        Ok(_) => self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            format!("not a file: {path}"),
+                        ),
+                        Err(TuiError::Other(_)) => self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            format!("{path} is outside the workspace"),
+                        ),
+                        Err(_) => self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            format!("no such file: {path}"),
+                        ),
+                    },
+                    None => {
+                        self.external_editor.requested = true;
+                    }
+                },
                 Ok(SlashCommand::ContextFile) => {
                     self.toggle_file_attachment();
                 }

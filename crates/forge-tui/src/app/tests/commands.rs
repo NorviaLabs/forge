@@ -29,6 +29,38 @@ async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
 }
 
 #[tokio::test]
+async fn edit_with_a_path_opens_the_file_without_the_explorer_visible() {
+    let (dir, mut app) = focus_test_app().await;
+    let src = dir.path().join("src");
+    fs::create_dir(&src).unwrap();
+    let file = src.join("lib.rs");
+    fs::write(&file, "pub fn x() {}\n").unwrap();
+
+    // Below the layout's 116-column gate the explorer is not rendered at all;
+    // `/edit <path>` must still reach the file.
+    app.workspace_files.visible = false;
+    app.last_frame_width = 100;
+    draw_app(&mut app, 100, 30);
+
+    app.dispatch_line("/edit src/lib.rs").await.unwrap();
+
+    assert_eq!(
+        app.source_viewer.path.as_deref(),
+        Some(file.canonicalize().unwrap().as_path())
+    );
+    assert!(app.editor_session.is_some());
+    assert!(!app.workspace_files.visible);
+}
+
+#[tokio::test]
+async fn edit_rejects_a_path_outside_the_workspace() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/edit ../outside.rs").await.unwrap();
+    assert!(app.source_viewer.path.is_none());
+    assert!(app.editor_session.is_none());
+}
+
+#[tokio::test]
 async fn ctrl_r_opens_inline_search_over_commands_and_history() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, mut app) = focus_test_app().await;
@@ -1318,6 +1350,62 @@ async fn app_quit_command() {
     );
     app.dispatch_line("/quit").await.unwrap();
     assert!(app.exit.is_requested());
+}
+
+#[tokio::test]
+async fn ctrl_d_guards_a_dirty_editor_before_quitting() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("dirty.txt");
+    fs::write(&path, "before\n").unwrap();
+    app.open_file_in_editor(&path);
+    app.editor_session
+        .as_mut()
+        .expect("editor")
+        .substitute("before", "after", true, true);
+    assert!(app
+        .editor_session
+        .as_ref()
+        .is_some_and(|editor| editor.is_dirty()));
+
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        app.explorer_dialog.current(),
+        Some(ExplorerDialog::DirtyExit)
+    ));
+    assert!(
+        !app.exit.is_requested(),
+        "exit must wait for the dirty resolution"
+    );
+
+    // Esc cancels the quit; the dialog closes and the app stays alive.
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.explorer_dialog.is_open());
+    assert!(!app.exit.is_requested());
+
+    // Discard resolves it and only then requests exit.
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.explorer_dialog.is_open());
+    assert!(app.exit.is_requested());
+}
+
+#[tokio::test]
+async fn ctrl_d_with_a_clean_buffer_quits_immediately() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.exit.is_requested());
+    assert!(!app.explorer_dialog.is_open());
 }
 
 #[tokio::test]

@@ -143,6 +143,7 @@ impl TuiApp {
             editor_message: None,
             pending_editor_path: None,
             pending_editor_home: false,
+            pending_editor_quit: false,
             file_watch: FileWatchState::new(),
             bottom_panel: BottomPanelState::default(),
             workspace_files: WorkspaceFilesState {
@@ -250,7 +251,7 @@ impl TuiApp {
             lifecycle: initial.session.lifecycle,
             selected: true,
             secondary: Some(initial.task.turn_state.label().into()),
-            attention: has_interrupted_prompts,
+            attention: false,
             updated_at: initial.task.updated_at,
         }];
         let mut snapshots = std::collections::HashMap::new();
@@ -346,6 +347,7 @@ impl TuiApp {
             editor_message: None,
             pending_editor_path: None,
             pending_editor_home: false,
+            pending_editor_quit: false,
             file_watch: FileWatchState::new(),
             bottom_panel: BottomPanelState::default(),
             workspace_files: WorkspaceFilesState {

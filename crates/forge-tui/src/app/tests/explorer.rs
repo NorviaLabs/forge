@@ -27,6 +27,50 @@ async fn explorer_search_accepts_shortcut_initials_without_opening_dialogs() {
 }
 
 #[tokio::test]
+async fn explorer_search_esc_clears_the_filter_before_leaving_the_block() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_files.visible = true;
+    app.focus_block(FocusBlock::Search);
+
+    for ch in "docs".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.workspace_files.explorer.search_query, "docs");
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(app.workspace_files.explorer.search_query.is_empty());
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert!(app.workspace_files.explorer.search_focused);
+
+    // Printable keys after Esc stay in the filter, never the composer draft.
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.workspace_files.explorer.search_query, "x");
+    assert!(app.input.text.is_empty());
+}
+
+#[tokio::test]
+async fn explorer_search_esc_with_empty_query_leaves_the_block() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_files.visible = true;
+    app.focus_block(FocusBlock::Search);
+    assert!(app.workspace_files.explorer.search_query.is_empty());
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_ne!(app.focus.block(), FocusBlock::Search);
+    assert!(app.input.text.is_empty());
+}
+
+#[tokio::test]
 async fn explorer_files_focus_treats_shortcut_keys_as_tree_commands() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;

@@ -225,7 +225,11 @@ impl TuiApp {
                             lifecycle: snapshot.session.lifecycle,
                             selected: snapshot.task.session_id == self.selected_session_id,
                             secondary: Some(snapshot.task.turn_state.label().into()),
-                            attention: !snapshot.interrupted_prompts.is_empty(),
+                            attention: session_needs_attention(
+                                snapshot.task.session_id == self.selected_session_id,
+                                snapshot.task.turn_state,
+                                !snapshot.interrupted_prompts.is_empty(),
+                            ),
                             updated_at: snapshot.task.updated_at,
                         })
                         .collect();
@@ -317,9 +321,14 @@ impl TuiApp {
                         task.slot = snapshot.task.slot;
                         task.lifecycle = lifecycle;
                         task.secondary = Some(snapshot.task.turn_state.label().into());
-                        if !snapshot.interrupted_prompts.is_empty() {
-                            task.attention = true;
-                        }
+                        // Recompute, do not just set. A turn that resumed after
+                        // stopping for input must clear a stale "needs you"
+                        // rather than carry it for the rest of the session.
+                        task.attention = session_needs_attention(
+                            snapshot.task.session_id == self.selected_session_id,
+                            snapshot.task.turn_state,
+                            !snapshot.interrupted_prompts.is_empty(),
+                        );
                     }
                 }
                 forge_session::SupervisorEvent::Attention {
@@ -327,14 +336,14 @@ impl TuiApp {
                     message,
                     ..
                 } => {
-                    if let Some(task) = self
-                        .session_chrome
-                        .iter_mut()
-                        .find(|task| task.session_id == session_id)
-                    {
-                        task.attention = true;
-                    }
                     if session_id != self.selected_session_id {
+                        if let Some(task) = self
+                            .session_chrome
+                            .iter_mut()
+                            .find(|task| task.session_id == session_id)
+                        {
+                            task.attention = true;
+                        }
                         self.push_toast(message);
                     }
                 }
@@ -500,6 +509,13 @@ impl TuiApp {
         self.approve_all = snapshot.session.approve_all;
         for item in &mut self.session_chrome {
             item.selected = item.session_id == self.selected_session_id;
+            if item.session_id == snapshot.task.session_id {
+                item.attention = session_needs_attention(
+                    item.selected,
+                    snapshot.task.turn_state,
+                    !snapshot.interrupted_prompts.is_empty(),
+                );
+            }
         }
     }
 

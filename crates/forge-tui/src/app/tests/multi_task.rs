@@ -1305,6 +1305,73 @@ async fn d_archives_an_idle_managed_session() {
 }
 
 /// Below the navigator width the session state collapses to a status chip.
+/// Regression for #643: `attention` was sticky, so a session that once stopped
+/// for input kept showing `● needs you` while its turn was actually running.
+/// A published snapshot must re-derive the row from turn state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_running_turn_clears_stale_sidebar_attention() {
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let model: Arc<dyn forge_model::ModelClient> = Arc::new(GateModel::new(vec![(
+        "hold".to_string(),
+        gate.clone(),
+    )]));
+    let (_dir, mut app, handle) = app_with_supervisor_and_model(model).await;
+    let session_id = app.selected_session_id;
+
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("hold".to_string());
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    wait_for_turn_state(
+        &mut app,
+        session_id,
+        forge_session::SupervisorTurnState::Running,
+    )
+    .await;
+
+    // Simulate the pre-fix sticky flag: attention left true on a live turn.
+    if let Some(task) = app
+        .session_chrome
+        .iter_mut()
+        .find(|task| task.session_id == session_id)
+    {
+        task.attention = true;
+    }
+
+    // Any subsequent roster publication must derive attention from truth.
+    handle
+        .command(forge_session::SupervisorCommand::Refresh)
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+
+    let task = app
+        .session_chrome
+        .iter()
+        .find(|task| task.session_id == session_id)
+        .expect("primary row");
+    assert!(
+        !task.attention,
+        "a running turn must not read as needs-you: {task:?}"
+    );
+    assert!(task.is_working(), "a running turn must read as working: {task:?}");
+
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("running"), "sidebar missing running: {rendered}");
+    assert!(
+        !rendered.contains("needs you"),
+        "sidebar wrongly reads needs-you: {rendered}"
+    );
+
+    gate.notify_one();
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn a_narrow_navigator_falls_back_to_a_status_chip() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
