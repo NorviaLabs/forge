@@ -1311,10 +1311,8 @@ async fn d_archives_an_idle_managed_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_running_turn_clears_stale_sidebar_attention() {
     let gate = std::sync::Arc::new(tokio::sync::Notify::new());
-    let model: Arc<dyn forge_model::ModelClient> = Arc::new(GateModel::new(vec![(
-        "hold".to_string(),
-        gate.clone(),
-    )]));
+    let model: Arc<dyn forge_model::ModelClient> =
+        Arc::new(GateModel::new(vec![("hold".to_string(), gate.clone())]));
     let (_dir, mut app, handle) = app_with_supervisor_and_model(model).await;
     let session_id = app.selected_session_id;
 
@@ -1354,12 +1352,18 @@ async fn a_running_turn_clears_stale_sidebar_attention() {
         !task.attention,
         "a running turn must not read as needs-you: {task:?}"
     );
-    assert!(task.is_working(), "a running turn must read as working: {task:?}");
+    assert!(
+        task.is_working(),
+        "a running turn must read as working: {task:?}"
+    );
 
     app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
     app.navigator_tab_explicit = true;
     let rendered = render_app_text(&mut app, 120, 40);
-    assert!(rendered.contains("running"), "sidebar missing running: {rendered}");
+    assert!(
+        rendered.contains("running"),
+        "sidebar missing running: {rendered}"
+    );
     assert!(
         !rendered.contains("needs you"),
         "sidebar wrongly reads needs-you: {rendered}"

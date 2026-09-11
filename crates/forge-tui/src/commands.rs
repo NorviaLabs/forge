@@ -405,7 +405,9 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_slash("/edit  src/nested path/file.rs ").unwrap().unwrap(),
+            parse_slash("/edit  src/nested path/file.rs ")
+                .unwrap()
+                .unwrap(),
             SlashCommand::Edit {
                 path: Some("src/nested path/file.rs".into())
             }

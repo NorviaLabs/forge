@@ -29,11 +29,7 @@ impl SessionChromeItem {
     /// [`session_needs_attention`] so the navigator and the switcher overlay
     /// can never disagree about which state a session is in.
     pub(crate) fn is_working(&self) -> bool {
-        !self.attention
-            && matches!(
-                self.secondary.as_deref(),
-                Some("running") | Some("queued")
-            )
+        !self.attention && matches!(self.secondary.as_deref(), Some("running") | Some("queued"))
     }
 }
 

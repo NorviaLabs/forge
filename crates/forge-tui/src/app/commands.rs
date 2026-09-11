@@ -1162,18 +1162,15 @@ impl TuiApp {
                         Ok(resolved) if resolved.is_file() => {
                             self.open_file_in_editor(&resolved);
                         }
-                        Ok(_) => self.set_feedback(
-                            FeedbackSeverity::Warn,
-                            format!("not a file: {path}"),
-                        ),
+                        Ok(_) => {
+                            self.set_feedback(FeedbackSeverity::Warn, format!("not a file: {path}"))
+                        }
                         Err(TuiError::Other(_)) => self.set_feedback(
                             FeedbackSeverity::Warn,
                             format!("{path} is outside the workspace"),
                         ),
-                        Err(_) => self.set_feedback(
-                            FeedbackSeverity::Warn,
-                            format!("no such file: {path}"),
-                        ),
+                        Err(_) => self
+                            .set_feedback(FeedbackSeverity::Warn, format!("no such file: {path}")),
                     },
                     None => {
                         self.external_editor.requested = true;
