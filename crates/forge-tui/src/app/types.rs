@@ -1586,6 +1586,9 @@ pub struct TuiApp {
     pub(crate) navigator_peek: Option<uuid::Uuid>,
     /// Inline reply buffer for the peeked session.
     pub(crate) navigator_reply: String,
+    /// Session the operator marked done while its turn was still running; it is
+    /// archived once the turn reaches a terminal state.
+    pub(crate) navigator_done_pending: Option<uuid::Uuid>,
     pub(crate) selected_session_id: uuid::Uuid,
     pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) retiring_session_view_states:
