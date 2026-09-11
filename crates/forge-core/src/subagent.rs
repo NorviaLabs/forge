@@ -310,9 +310,9 @@ impl AgentSession {
         let status = BackgroundTaskStatus::Failed {
             error: summary.clone(),
         };
-        let _ = self
-            .coordinator
-            .update(child_session_id, AgentStatus::Failed, Some(summary.clone()));
+        let _ =
+            self.coordinator
+                .update(child_session_id, AgentStatus::Failed, Some(summary.clone()));
         // Reuses `task.id` (not a fresh id) — see `resume_slot`'s doc
         // comment for why that's what lets the eventual
         // `append_background_task_finished` close the SAME pair
@@ -1150,8 +1150,7 @@ mod tests {
         // A later resume sees the closed task pair: it is restored as a
         // retained child rather than re-detected as a fresh orphan, and still
         // runs no model call.
-        let resumed_again_model =
-            Arc::new(MockModelClient::script(vec![text_response("unused")]));
+        let resumed_again_model = Arc::new(MockModelClient::script(vec![text_response("unused")]));
         let resumed_again = AgentSession::resume(
             cfg,
             resumed_again_model.clone(),
