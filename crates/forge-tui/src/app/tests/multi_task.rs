@@ -444,6 +444,37 @@ async fn selecting_a_task_rebinds_workspace_owned_views() {
     assert_eq!(app.repo_header_state.cwd, app.runtime.cwd);
 }
 
+/// Regression for #592: switching sessions rebinds the workspace, and rebinding
+/// used to shell out to `git status` inline, stalling the UI. The header read
+/// must be dispatched to a worker and the stale value dropped, never computed
+/// on the switch path.
+#[tokio::test]
+async fn switching_workspace_defers_repo_header_to_worker() {
+    let (dir, mut app) = focus_test_app().await;
+    app.repo_header_state.cache = RepoHeaderCache {
+        repo_name: Some("stale-repo".into()),
+        branch: Some("stale-branch".into()),
+        dirty: true,
+    };
+    let linked = dir.path().join("linked-worktree-592");
+    std::fs::create_dir_all(&linked).unwrap();
+    app.session_view.workspace_root = linked.canonicalize().unwrap();
+
+    app.sync_selected_workspace();
+
+    let linked = linked.canonicalize().unwrap();
+    assert_eq!(app.runtime.cwd, linked);
+    assert_eq!(app.repo_header_state.cwd, app.runtime.cwd);
+    assert!(
+        app.repo_header().repo_name.is_none(),
+        "the switch path must not synchronously populate the repo header"
+    );
+    assert!(
+        app.repo_header_state.refresh_rx.is_some(),
+        "the repo header refresh must be dispatched to a worker"
+    );
+}
+
 #[tokio::test]
 async fn switching_tasks_discards_the_previous_worktree_diff_cache() {
     let (dir, mut app) = focus_test_app().await;
