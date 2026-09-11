@@ -128,6 +128,10 @@ pub struct AgentSession {
     context: ContextEngine,
     enable_context: bool,
     enable_gov: bool,
+    /// Per-session "approve-all" mode. When on, every `Hitl` governance
+    /// decision is auto-approved and shell tools run unconfined (no
+    /// filesystem/network sandbox). Never persisted; defaults off.
+    approve_all: bool,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the

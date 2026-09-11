@@ -17,6 +17,9 @@ pub const THEME_DOCK_H: u16 = 12;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
     pub status: Rect,
+    /// Full-width approve-all warning strip, directly under `status`. 0-height
+    /// when approve-all is off.
+    pub approve_all_warning: Rect,
     /// Persistent task/session strip. Zero-height for legacy layout callers
     /// that have not opted into repository task mode.
     pub task_strip: Rect,
@@ -117,6 +120,7 @@ pub fn split_areas_with_bottom_panel(
         0,
         true,
         0,
+        0,
     )
 }
 
@@ -141,6 +145,7 @@ pub fn split_areas_with_side_panels(
         0,
         show_sidebar,
         background_h,
+        0,
     )
 }
 
@@ -155,6 +160,7 @@ pub fn split_areas_with_chrome(
     footer_h: u16,
     show_sidebar: bool,
     background_h: u16,
+    warning_h: u16,
 ) -> LayoutRegions {
     split_areas_with_chrome_mode(
         area,
@@ -166,6 +172,7 @@ pub fn split_areas_with_chrome(
         footer_h,
         show_sidebar,
         background_h,
+        warning_h,
         false,
         false,
     )
@@ -183,6 +190,7 @@ pub fn split_areas_with_expanded_conversation(
     footer_h: u16,
     show_sidebar: bool,
     background_h: u16,
+    warning_h: u16,
 ) -> LayoutRegions {
     split_areas_with_chrome_mode(
         area,
@@ -194,6 +202,7 @@ pub fn split_areas_with_expanded_conversation(
         footer_h,
         show_sidebar,
         background_h,
+        warning_h,
         true,
         false,
     )
@@ -210,6 +219,7 @@ fn split_areas_with_chrome_mode(
     footer_h: u16,
     show_sidebar: bool,
     background_h: u16,
+    warning_h: u16,
     expand_conversation: bool,
     show_task_strip: bool,
 ) -> LayoutRegions {
@@ -237,22 +247,24 @@ fn split_areas_with_chrome_mode(
         .saturating_sub(3);
     let panel_h = requested_panel_h.min(available_panel_h);
 
-    // Top-level vertical stack: status / main / footer. `feedback`, `queue`
-    // and `input` no longer live here — they're scoped to the sidebar's own
-    // width, split out below.
+    // Top-level vertical stack: status / approve-all warning / main / footer.
+    // `feedback`, `queue` and `input` no longer live here — they're scoped to
+    // the sidebar's own width, split out below.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                      // status
+            Constraint::Length(warning_h.min(1)),       // approve-all warning
             Constraint::Length(show_task_strip as u16), // task strip
             Constraint::Min(3),                         // main
             Constraint::Length(footer_h),               // contextual hint
         ])
         .split(content_area);
     let status = rows[0];
-    let task_strip = rows[1];
-    let main = rows[2];
-    let footer = rows[3];
+    let approve_all_warning = rows[1];
+    let task_strip = rows[2];
+    let main = rows[3];
+    let footer = rows[4];
 
     // main row: [left column (files+chat+bottom_panel), sidebar]
     let (left_area, sidebar) = if show_sidebar && !expand_conversation {
@@ -332,6 +344,7 @@ fn split_areas_with_chrome_mode(
 
     LayoutRegions {
         status,
+        approve_all_warning,
         task_strip,
         chat,
         files,
@@ -483,7 +496,7 @@ mod tests {
     #[test]
     fn contextual_hint_row_is_explicit() {
         let area = Rect::new(0, 0, 120, 40);
-        let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 1, true, 0);
+        let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 1, true, 0, 0);
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.footer.y + r.footer.height, area.height);
     }
@@ -491,7 +504,7 @@ mod tests {
     #[test]
     fn footer_can_reserve_two_rows_for_its_divider_rule() {
         let area = Rect::new(0, 0, 120, 40);
-        let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 2, true, 0);
+        let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 2, true, 0, 0);
         assert_eq!(r.footer.height, 2);
         assert_eq!(r.footer.y + r.footer.height, area.height);
     }
@@ -548,6 +561,7 @@ mod tests {
             0,
             0,
             true,
+            0,
             0,
         );
         assert_eq!(r.files, Some(Rect::new(1, 1, 29, 39)));
