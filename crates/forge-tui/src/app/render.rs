@@ -236,6 +236,10 @@ impl TuiApp {
         };
         self.conversation_area = None;
         self.terminal_area = None;
+        self.navigator_tabs_area = None;
+        self.navigator_list_area = None;
+        self.task_strip_area = None;
+        self.footer_area = None;
         self.conversation_rows.clear();
         self.terminal_rows.clear();
         // Layout can hide a requested side/bottom panel. Focus must follow the
@@ -311,6 +315,7 @@ impl TuiApp {
             );
         }
         if regions.task_strip.height > 0 {
+            self.task_strip_area = Some(regions.task_strip);
             // An unnamed task (created with one key, before its first prompt
             // names it) shows an ordinal instead of a hole. Numbered among
             // unnamed tasks, not by strip position, so the first unnamed
@@ -357,6 +362,8 @@ impl TuiApp {
                         ratatui::layout::Constraint::Min(0),
                     ])
                     .split(files);
+                self.navigator_tabs_area = Some(rows[0]);
+                self.navigator_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
                 frame.render_widget(
                     crate::widgets::NavigatorTabs {
@@ -455,6 +462,7 @@ impl TuiApp {
                     );
                 }
             } else {
+                self.navigator_list_area = Some(files);
                 frame.render_widget(
                     FileExplorerWidget {
                         explorer: &mut self.workspace_files.explorer,
@@ -1258,6 +1266,7 @@ impl TuiApp {
             prompt_cache_reads: self.session_view.prompt_cache_hits,
             activity: footer_activity(&self.selected_background_tasks()),
         };
+        self.footer_area = Some(regions.footer);
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
         if let Some(dialog) = self.explorer_dialog.current() {

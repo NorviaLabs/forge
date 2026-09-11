@@ -184,6 +184,11 @@ impl TuiApp {
             conversation_rows: Vec::new(),
             terminal_area: None,
             terminal_rows: Vec::new(),
+            navigator_tabs_area: None,
+            navigator_list_area: None,
+            task_strip_area: None,
+            footer_area: None,
+            last_click: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
@@ -373,6 +378,11 @@ impl TuiApp {
             conversation_rows: Vec::new(),
             terminal_area: None,
             terminal_rows: Vec::new(),
+            navigator_tabs_area: None,
+            navigator_list_area: None,
+            task_strip_area: None,
+            footer_area: None,
+            last_click: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
