@@ -847,6 +847,10 @@ pub(crate) struct ConversationRenderKey {
     pub(crate) pending_question: Option<String>,
     pub(crate) question_idx: usize,
     pub(crate) question_option_idx: usize,
+    /// The visible question's checked labels and free text. Multi-select only:
+    /// toggling changes no other keyed field, so the card would stay stale.
+    pub(crate) question_selected: Vec<String>,
+    pub(crate) question_custom: Option<String>,
 }
 
 pub(crate) struct ConversationRenderCache {
