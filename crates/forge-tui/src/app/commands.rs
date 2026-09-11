@@ -187,6 +187,74 @@ impl TuiApp {
         self.clamp_slash_suggest();
     }
 
+    /// Open the inline `Ctrl+r` commands+history fuzzy search, empty query.
+    pub(super) fn open_inline_search(&mut self) {
+        self.inline_search = Some(InlineSearchState::default());
+    }
+
+    /// Rows for the inline search: built-in commands ranked by fuzzy score,
+    /// then input-history entries ranked by the same matcher (newest first on
+    /// an empty query). Commands always precede history; the renderer draws a
+    /// `Commands`/`History` header before each section.
+    pub(crate) fn inline_search_items(&self) -> Vec<InlineSearchItem> {
+        let Some(state) = self.inline_search.as_ref() else {
+            return Vec::new();
+        };
+        let query = state.query.trim();
+        let mut commands: Vec<(i32, PaletteItem)> = filter_palette("")
+            .into_iter()
+            .filter_map(|item| {
+                let name = item.cmd.trim_start_matches('/');
+                crate::history::fuzzy_match_score(name, query).map(|score| (score, item))
+            })
+            .collect();
+        commands.sort_by_key(|item| std::cmp::Reverse(item.0));
+        let mut items: Vec<InlineSearchItem> = commands
+            .into_iter()
+            .map(|(_, item)| InlineSearchItem::Command(item))
+            .collect();
+        items.extend(
+            crate::history::search_entries(self.history.entries(), query)
+                .into_iter()
+                .map(InlineSearchItem::History),
+        );
+        items
+    }
+
+    /// Move the inline-search highlight, wrapping over every row.
+    pub(super) fn move_inline_search(&mut self, delta: i32) {
+        let n = self.inline_search_items().len();
+        if n == 0 {
+            return;
+        }
+        if let Some(state) = self.inline_search.as_mut() {
+            state.selected = ((state.selected as i32 + delta).rem_euclid(n as i32)) as usize;
+        }
+    }
+
+    /// Insert the highlighted row into the composer and close the search —
+    /// a command becomes `/name `, a history row its own text. Never submits.
+    pub(super) fn insert_inline_search_selection(&mut self) {
+        let Some(selected) = self.inline_search.as_ref().map(|state| state.selected) else {
+            return;
+        };
+        let items = self.inline_search_items();
+        let text = match items.get(selected) {
+            Some(InlineSearchItem::Command(item)) => format!("{} ", item.display_cmd()),
+            Some(InlineSearchItem::History(text)) => text.clone(),
+            None => {
+                self.inline_search = None;
+                return;
+            }
+        };
+        self.input.set_text(text);
+        self.input.history_browse = false;
+        self.history.reset_browse();
+        self.slash_suggestions.selected = 0;
+        self.clamp_slash_suggest();
+        self.inline_search = None;
+    }
+
     pub(super) fn tab_nav_command(&self, key: event::KeyEvent) -> Option<TabNavCommand> {
         // Plain Left is in-panel back. Right is unbound after Review removal.
         let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -442,7 +510,7 @@ impl TuiApp {
                 Some(SemanticCommand::InsertComposerNewline)
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(SemanticCommand::OpenHistorySearch)
+                Some(SemanticCommand::OpenInlineSearch)
             }
             KeyCode::Char('v')
                 if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -543,13 +611,8 @@ impl TuiApp {
             SemanticCommand::QueueMessage => self.queue_composer_message().await?,
             SemanticCommand::EditLastQueuedMessage => self.edit_last_queued_message().await,
             SemanticCommand::InsertComposerNewline => self.input.insert_newline(),
-            SemanticCommand::OpenHistorySearch => {
-                self.overlay = Some(Overlay::history_search(
-                    self.history.entries().to_vec(),
-                    self.input.text.clone(),
-                ));
-                self.input.history_browse = false;
-                self.history.reset_browse();
+            SemanticCommand::OpenInlineSearch => {
+                self.open_inline_search();
             }
             SemanticCommand::OpenSlashCommands => {
                 self.enter_chat_composer();

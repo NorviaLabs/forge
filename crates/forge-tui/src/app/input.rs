@@ -1481,7 +1481,49 @@ impl TuiApp {
         }
     }
 
+    /// Keys for the inline `Ctrl+r` search: type to filter, arrows to move,
+    /// Enter inserts into the composer without submitting, Esc just closes.
+    fn handle_inline_search_key(&mut self, key: event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.inline_search = None;
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                self.insert_inline_search_selection();
+            }
+            KeyCode::Up if key.modifiers.is_empty() => self.move_inline_search(-1),
+            KeyCode::Down if key.modifiers.is_empty() => self.move_inline_search(1),
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.inline_search = None;
+            }
+            KeyCode::Backspace if key.modifiers.is_empty() => {
+                if let Some(state) = self.inline_search.as_mut() {
+                    state.query.pop();
+                    state.selected = 0;
+                }
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !c.is_control() =>
+            {
+                if let Some(state) = self.inline_search.as_mut() {
+                    state.query.push(c);
+                    state.selected = 0;
+                }
+            }
+            _ => {}
+        }
+        // The search owns the composer while open; never let a key fall
+        // through and edit the draft underneath it.
+        true
+    }
+
     async fn handle_chat_composer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        if self.inline_search.is_some() {
+            return Ok(self.handle_inline_search_key(key));
+        }
         let input_was_empty = self.input.text.is_empty();
         if let Some(command) = self.semantic_command_for_composer_key(key) {
             let consumed = Box::pin(self.execute_semantic_command(command)).await?;

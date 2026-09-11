@@ -963,7 +963,7 @@ fn explorer_row_line(
 /// [`theme::search_match`] style (same as the source viewer). Tokens that
 /// only match as a fuzzy subsequence (or only match an ancestor path) leave
 /// the name plain: no highlight is more truthful than a wrong one.
-fn highlight_name_spans(name: &str, query: &str, base: Style) -> Vec<Span<'static>> {
+pub(crate) fn highlight_name_spans(name: &str, query: &str, base: Style) -> Vec<Span<'static>> {
     let token = query
         .split_whitespace()
         .find(|token| contains_case_insensitive(name, token));

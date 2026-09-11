@@ -577,7 +577,7 @@ pub(crate) enum SemanticCommand {
     QueueMessage,
     EditLastQueuedMessage,
     InsertComposerNewline,
-    OpenHistorySearch,
+    OpenInlineSearch,
     OpenSlashCommands,
     OpenHelp,
     SelectEntry(PathBuf),
@@ -1258,6 +1258,22 @@ pub(crate) struct SlashSuggestionState {
     pub(crate) selected: usize,
 }
 
+/// Inline `Ctrl+r` fuzzy search over commands and input history, rendered in
+/// the anchored palette area above the composer. `None` when closed.
+#[derive(Default)]
+pub(crate) struct InlineSearchState {
+    pub(crate) query: String,
+    pub(crate) selected: usize,
+}
+
+/// One selectable row of the inline search. Commands are listed before
+/// history; each section gets its own header at render time.
+#[derive(Debug, Clone)]
+pub(crate) enum InlineSearchItem {
+    Command(PaletteItem),
+    History(String),
+}
+
 pub(crate) struct ExitState {
     requested: bool,
     code: ExitCode,
@@ -1625,6 +1641,8 @@ pub struct TuiApp {
     /// transcript, this survives starting a new session.
     pub(crate) history_store: HistoryStore,
     pub(crate) slash_suggestions: SlashSuggestionState,
+    /// Inline `Ctrl+r` commands+history fuzzy search. `None` when closed.
+    pub(crate) inline_search: Option<InlineSearchState>,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     pub(crate) feedback: FeedbackModel,
     pub(crate) feedback_until: Option<Instant>,

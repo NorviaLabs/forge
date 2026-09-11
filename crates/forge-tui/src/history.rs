@@ -294,7 +294,7 @@ pub fn search_entries(entries: &[String], query: &str) -> Vec<String> {
         .collect()
 }
 
-fn fuzzy_match_score(candidate: &str, query: &str) -> Option<i32> {
+pub(crate) fn fuzzy_match_score(candidate: &str, query: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }

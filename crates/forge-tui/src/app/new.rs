@@ -91,6 +91,7 @@ impl TuiApp {
             history,
             history_store,
             slash_suggestions: SlashSuggestionState { selected: 0 },
+            inline_search: None,
             feedback: FeedbackModel::default(),
             feedback_until: None,
             banner_state: BannerState {
@@ -281,6 +282,7 @@ impl TuiApp {
             history,
             history_store,
             slash_suggestions: SlashSuggestionState { selected: 0 },
+            inline_search: None,
             feedback: FeedbackModel::default(),
             feedback_until: None,
             banner_state: BannerState {

@@ -29,7 +29,37 @@ async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
 }
 
 #[tokio::test]
-async fn ctrl_r_fuzzy_searches_history_and_enter_restores_selection() {
+async fn ctrl_r_opens_inline_search_over_commands_and_history() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, mut app) = focus_test_app().await;
+    app.history.push("cargo test");
+    app.input.set_text("draft");
+
+    app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+
+    assert!(app.overlay.is_none(), "inline search must not open a modal");
+    assert!(
+        app.inline_search.is_some(),
+        "Ctrl+r opens the inline search"
+    );
+    let text = render_app_text(&mut app, 100, 30);
+    assert!(text.contains("Commands"), "{text}");
+    assert!(text.contains("/help"), "{text}");
+
+    // Selecting the history row scrolls it into view; its section header
+    // renders immediately above it.
+    let history_index = crate::overlays::default_palette_items().len();
+    app.inline_search.as_mut().unwrap().selected = history_index;
+    let text = render_app_text(&mut app, 100, 30);
+    assert!(text.contains("History"), "{text}");
+    assert!(text.contains("cargo test"), "{text}");
+    assert_eq!(app.input.text, "draft", "opening search leaves the draft");
+}
+
+#[tokio::test]
+async fn ctrl_r_typing_filters_and_enter_inserts_history_without_submitting() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, mut app) = focus_test_app().await;
     app.history.push("cargo test");
@@ -39,24 +69,58 @@ async fn ctrl_r_fuzzy_searches_history_and_enter_restores_selection() {
     app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(matches!(app.overlay, Some(Overlay::HistorySearch { .. })));
+    for c in "cargo test".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    let items = app.inline_search_items();
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, InlineSearchItem::History(text) if text == "cargo test")),
+        "typed query keeps the matching history row"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|item| matches!(item, InlineSearchItem::Command(cmd) if cmd.cmd == "/quit")),
+        "typed query filters out non-matching commands"
+    );
 
-    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    app.handle_key(press(KeyCode::Char('t'), KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
 
-    assert_eq!(app.input.text, "cargo test");
+    assert_eq!(app.input.text, "cargo test", "Enter inserts, never submits");
+    assert!(app.inline_search.is_none());
     assert!(app.overlay.is_none());
 }
 
 #[tokio::test]
-async fn ctrl_r_escape_restores_the_original_composer_draft() {
+async fn ctrl_r_enter_on_command_inserts_slash_command() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("draft");
+
+    app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    for c in "status".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.input.text, "/status ");
+    assert!(app.inline_search.is_none());
+}
+
+#[tokio::test]
+async fn ctrl_r_escape_closes_and_preserves_composer_text() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, mut app) = focus_test_app().await;
     app.history.push("cargo test");
@@ -65,15 +129,43 @@ async fn ctrl_r_escape_restores_the_original_composer_draft() {
     app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
-        .await
-        .unwrap();
+    for c in "carg".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
 
     assert_eq!(app.input.text, "unfinished draft");
+    assert!(app.inline_search.is_none());
     assert!(app.overlay.is_none());
+}
+
+#[tokio::test]
+async fn ctrl_r_arrows_move_across_commands_then_history() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, mut app) = focus_test_app().await;
+    app.history.push("cargo test");
+
+    app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    let items = app.inline_search_items();
+    assert_eq!(
+        items.len(),
+        crate::overlays::default_palette_items().len() + 1,
+        "commands then one history row"
+    );
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.inline_search.as_ref().unwrap().selected, 1);
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.inline_search.as_ref().unwrap().selected, 0);
 }
 
 #[tokio::test]
