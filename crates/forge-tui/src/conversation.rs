@@ -1736,8 +1736,23 @@ pub(super) fn render_question_card(
         out.push(Line::from(all));
     };
 
-    for wrapped in wrap(&p.question, inner) {
-        row(vec![Span::styled(wrapped, theme::text())]);
+    let selected_count = p.options.iter().filter(|opt| opt.chosen).count();
+    for (line_idx, wrapped) in wrap(&p.question, inner).into_iter().enumerate() {
+        let mut spans = vec![Span::styled(wrapped.clone(), theme::text())];
+        if line_idx == 0 && p.multi_select {
+            // The live count rides the header line, right-aligned: the card
+            // holds no border to put a title in, and the count belongs next to
+            // the question, not buried with the options.
+            let label = format!("{selected_count} selected");
+            let used = wrapped.chars().count() + label.chars().count();
+            if used + 2 <= inner {
+                spans.push(Span::raw(" ".repeat(inner - used)));
+            } else {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(label, theme::ok()));
+        }
+        row(spans);
     }
     row(vec![]);
 
@@ -1754,10 +1769,25 @@ pub(super) fn render_question_card(
         } else {
             theme::text()
         };
-        // The digit already answers the question — `handle_question_menu_key`
-        // has accepted 1-9 all along, with nothing on screen to say so.
-        let ordinal = format!("{}. ", idx + 1);
-        let lead = marker.chars().count() + ordinal.chars().count();
+        // Multi-select rows use a checkbox in place of the ordinal, so the
+        // checked state reads before the label. Single-select keeps the
+        // ordinal: 1-9 already answer the question.
+        let (tag, tag_style) = if p.multi_select {
+            if opt.chosen {
+                ("[x] ".to_string(), theme::ok())
+            } else {
+                (
+                    "[ ] ".to_string(),
+                    theme::metadata_style().add_modifier(Modifier::BOLD),
+                )
+            }
+        } else {
+            (
+                format!("{}. ", idx + 1),
+                theme::metadata_style().add_modifier(Modifier::BOLD),
+            )
+        };
+        let lead = marker.chars().count() + tag.chars().count();
         for (n, wrapped) in wrap(&opt.label, inner.saturating_sub(lead))
             .into_iter()
             .enumerate()
@@ -1772,13 +1802,13 @@ pub(super) fn render_question_card(
             )];
             spans.push(Span::styled(
                 if n == 0 {
-                    ordinal.clone()
+                    tag.clone()
                 } else {
-                    " ".repeat(ordinal.chars().count())
+                    " ".repeat(tag.chars().count())
                 },
-                theme::metadata_style().add_modifier(Modifier::BOLD),
+                tag_style,
             ));
-            if opt.chosen {
+            if !p.multi_select && opt.chosen {
                 spans.push(Span::styled("selected ", theme::ok()));
             }
             spans.push(Span::styled(wrapped, style));
@@ -1813,7 +1843,9 @@ pub(super) fn render_question_card(
     }
 
     row(vec![]);
-    let hint = if p.question_count > 1 {
+    let hint = if p.question_count > 1 && p.multi_select {
+        crate::hints::QUESTION_TABS_MULTI
+    } else if p.question_count > 1 {
         crate::hints::QUESTION_TABS
     } else if p.multi_select {
         crate::hints::QUESTION_MULTI
