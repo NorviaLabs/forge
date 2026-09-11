@@ -381,6 +381,7 @@ impl TuiApp {
                             rows: &session_rows,
                             focused: navigator_focused,
                             peek: peek_panel.as_ref(),
+                            new_session: self.navigator_new_session.as_deref(),
                         },
                         rows[1],
                     );

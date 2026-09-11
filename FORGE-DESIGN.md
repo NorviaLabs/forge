@@ -401,7 +401,8 @@ surface. The old top task strip is superseded (`§11`).
   user-facing: `● needs you`, `◐ working`, `○ idle`. Rows carry the label and a
   short qualifier; branch, worktree and ownership are never shown here.
   Selection (`›`) is the only cursor; `Enter` attaches, `Space` peeks and
-  replies inline, `n` creates, `s` stops, `d` marks done, `r` renames.
+  replies inline, `n` opens an inline composer whose typed task becomes the
+  session's first prompt (and names it), `s` stops, `d` marks done, `r` renames.
 - **Files tab** is today's explorer, unchanged.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
