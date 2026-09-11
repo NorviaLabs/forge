@@ -268,21 +268,19 @@ impl SessionInputMode {
 /// should land on what is waiting on them before anything else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SessionSwitcherGroup {
-    Attention,
-    Active,
-    Unavailable,
+    NeedsYou,
+    Working,
+    Idle,
     Archived,
-    Removed,
 }
 
 impl SessionSwitcherGroup {
     pub fn heading(self) -> &'static str {
         match self {
-            Self::Attention => "Needs you",
-            Self::Active => "Active",
-            Self::Unavailable => "Unavailable",
+            Self::NeedsYou => "Needs you",
+            Self::Working => "Working",
+            Self::Idle => "Idle",
             Self::Archived => "Archived",
-            Self::Removed => "Removed",
         }
     }
 }
@@ -3721,7 +3719,7 @@ mod tests {
             workspace: format!("/tmp/{label}"),
             state: "idle".into(),
             attention: false,
-            group: SessionSwitcherGroup::Active,
+            group: SessionSwitcherGroup::Idle,
             managed: true,
         };
         let mut overlay = Overlay::session_switcher(vec![
@@ -3985,7 +3983,7 @@ mod tests {
             branch: format!("forge/{label}"),
             workspace: format!("/repo/{label}"),
             state: "idle".into(),
-            attention: group == SessionSwitcherGroup::Attention,
+            attention: group == SessionSwitcherGroup::NeedsYou,
             group,
             managed,
         }
@@ -3995,9 +3993,9 @@ mod tests {
     fn the_switcher_puts_waiting_tasks_first_and_archived_last() {
         let overlay = Overlay::session_switcher(vec![
             switcher_item("zeta", SessionSwitcherGroup::Archived, true),
-            switcher_item("beta", SessionSwitcherGroup::Active, true),
-            switcher_item("alpha", SessionSwitcherGroup::Attention, true),
-            switcher_item("gamma", SessionSwitcherGroup::Unavailable, false),
+            switcher_item("beta", SessionSwitcherGroup::Idle, true),
+            switcher_item("alpha", SessionSwitcherGroup::NeedsYou, true),
+            switcher_item("gamma", SessionSwitcherGroup::Idle, false),
         ]);
         let Overlay::SessionSwitcher { items, .. } = &overlay else {
             panic!("expected the session switcher");
@@ -4015,7 +4013,7 @@ mod tests {
     fn archiving_from_the_switcher_asks_first() {
         let mut overlay = Overlay::session_switcher(vec![switcher_item(
             "parser",
-            SessionSwitcherGroup::Active,
+            SessionSwitcherGroup::Idle,
             true,
         )]);
         let action = handle_overlay_key(&mut overlay, Key::Char('x'));
@@ -4030,7 +4028,7 @@ mod tests {
     fn cleanup_is_offered_only_for_an_archived_managed_worktree() {
         let mut live = Overlay::session_switcher(vec![switcher_item(
             "parser",
-            SessionSwitcherGroup::Active,
+            SessionSwitcherGroup::Idle,
             true,
         )]);
         assert!(matches!(
