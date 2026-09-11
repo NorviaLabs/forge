@@ -571,6 +571,12 @@ impl FileExplorer {
         self.selected_index = Some(index);
     }
 
+    /// Select the node at `index` in the visible list (mouse row click). A
+    /// no-op out of range, so a click below the last row changes nothing.
+    pub fn select_visible_row(&mut self, index: usize) {
+        self.select_visible_index(index);
+    }
+
     fn repair_selection(&mut self, previous_index: usize) {
         if self.visible.is_empty() {
             self.selected_index = None;

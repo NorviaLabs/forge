@@ -9,8 +9,14 @@
 use super::*;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use ratatui::layout::Rect;
+use std::time::{Duration, Instant};
+
 use crate::clipboard;
 use crate::selection::{self, cell_inside, Cell, ContextMenuItem, CopyPane};
+
+/// Two clicks within this window at the same cell count as a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// Conversation/explorer rows moved per plain wheel notch.
 ///
@@ -39,6 +45,7 @@ impl TuiApp {
                 self.dispatch_mouse_scroll(1, event.modifiers.contains(KeyModifiers::SHIFT));
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                self.mouse_click(event.column, event.row).await?;
                 self.mouse_start_selection(event.column, event.row);
             }
             MouseEventKind::Drag(_) | MouseEventKind::Moved => {
@@ -63,6 +70,137 @@ impl TuiApp {
         self.explorer_dialog.is_open()
             || self.session_view.pending_hitl.is_some()
             || self.overlay.is_some()
+    }
+
+    /// Focus the block under the pointer and act on the hit row/tab. A click
+    /// never starts a drag by itself; `mouse_start_selection` runs after and
+    /// only engages on the copyable panes.
+    async fn mouse_click(&mut self, col: u16, row: u16) -> Result<(), TuiError> {
+        if self.pointer_blocked() {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let double = self.last_click.is_some_and(|(at, c, r)| {
+            now.duration_since(at) <= DOUBLE_CLICK && c == col && r == row
+        });
+        self.last_click = Some((now, col, row));
+
+        if let Some(area) = self.navigator_tabs_area {
+            if cell_inside(area, col, row) {
+                self.click_navigator_tab(col, area);
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.navigator_list_area {
+            if cell_inside(area, col, row) {
+                if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Sessions {
+                    self.click_session_row(row, area, double).await?;
+                } else {
+                    self.click_file_row(row, area).await?;
+                }
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.task_strip_area {
+            if cell_inside(area, col, row) {
+                self.focus_block(FocusBlock::TaskStrip);
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.composer_area {
+            if cell_inside(area, col, row) {
+                self.enter_chat_composer();
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.footer_area {
+            if cell_inside(area, col, row) {
+                self.focus_block(FocusBlock::Footer);
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.conversation_area {
+            if cell_inside(area, col, row) {
+                self.focus_block(FocusBlock::Sidebar);
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.editor_area {
+            if cell_inside(area, col, row) {
+                self.focus_block(FocusBlock::Workspace);
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.terminal_area {
+            if cell_inside(area, col, row) {
+                self.focus_block(FocusBlock::BottomPanel);
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// A click anywhere on the navigator tab bar switches to that tab. The bar
+    /// has no per-tab rect, so derive the boundary from the rendered labels
+    /// (`▌Sessions │ ▌Files`).
+    fn click_navigator_tab(&mut self, col: u16, area: Rect) {
+        use crate::widgets::NavigatorTab;
+        let sessions_w = 1 + NavigatorTab::Sessions.label().chars().count() as u16;
+        let files_x = area.x + sessions_w + " │ ".chars().count() as u16;
+        let tab = if col < files_x {
+            NavigatorTab::Sessions
+        } else {
+            NavigatorTab::Files
+        };
+        self.navigator_tab = tab;
+        self.navigator_tab_explicit = true;
+        self.focus_block(match tab {
+            NavigatorTab::Sessions => FocusBlock::TaskStrip,
+            NavigatorTab::Files => FocusBlock::Files,
+        });
+    }
+
+    /// Session rows are two visual lines each. Peek expansion shifts later
+    /// rows, so the mapping is approximate below the focused row — good
+    /// enough for a click, and Enter remains the exact path.
+    async fn click_session_row(
+        &mut self,
+        row: u16,
+        area: Rect,
+        double: bool,
+    ) -> Result<(), TuiError> {
+        let index = row.saturating_sub(area.y) as usize / 2;
+        if index >= self.session_chrome.len() {
+            return Ok(());
+        }
+        self.focus_block(FocusBlock::TaskStrip);
+        self.task_strip_selection = index;
+        if double {
+            self.handle_task_strip_key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// The explorer insets a border (1 row) then the `/` search row (1 row),
+    /// so tree row 0 sits at `area.y + 2`; node index adds the scroll offset.
+    async fn click_file_row(&mut self, row: u16, area: Rect) -> Result<(), TuiError> {
+        let tree_top = area.y + 2;
+        if row < tree_top {
+            return Ok(());
+        }
+        let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
+        if index >= self.workspace_files.explorer.visible_nodes().len() {
+            return Ok(());
+        }
+        self.focus_block(FocusBlock::Files);
+        self.workspace_files.explorer.select_visible_row(index);
+        self.execute_semantic_command(SemanticCommand::OpenSelectedEntry)
+            .await?;
+        Ok(())
     }
 
     fn mouse_start_selection(&mut self, col: u16, row: u16) {

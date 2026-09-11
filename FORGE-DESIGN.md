@@ -473,6 +473,15 @@ Do not fill the entire active block with accent colour. Focus is structural, not
 - **Selection** (a row, a list item, a diff entry) is shown inside the block.
 - A selection inside an inactive block stays visible but muted, and never implies keyboard ownership.
 
+### 8.6 Mouse
+
+Mouse is a second input for the same grammar, never a separate mode. Clicking moves block focus and acts on the hit target; hover previews without moving focus.
+
+- **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel). A second click at the same cell within the double-click window acts: a navigator session row attaches; a file-tree row opens on the first click.
+- **Wheel** scrolls the focused pane's content (conversation, file tree, source viewer), matching the keyboard page/step size. `Shift` pages.
+- **Right-click** opens the copy/clear context menu over a text selection.
+- **Hover** (when the terminal reports motion) tints only the hovered row/chip with `surface_hover`; it never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Hover is additive to selection/focus styling — focus still wins.
+
 ## 9. Component Specifications
 
 ### 9.1 StatusBar
