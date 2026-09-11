@@ -257,3 +257,91 @@ async fn horizontal_wheel_is_ignored() {
 
     assert_eq!(app.conversation_view.scroll, 0);
 }
+
+#[tokio::test]
+async fn click_focuses_the_block_under_the_pointer() {
+    let (_dir, mut app) = focus_test_app().await;
+    render_app_text(&mut app, 120, 40);
+
+    let footer = app.footer_area.expect("footer drawn");
+    app.focus_block(FocusBlock::Workspace);
+    app.handle_mouse(left_click(footer.x + 2, footer.y))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Footer);
+
+    let composer = app.composer_area.expect("composer drawn");
+    app.focus_block(FocusBlock::Workspace);
+    app.handle_mouse(left_click(composer.x + 2, composer.y))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+}
+
+#[tokio::test]
+async fn click_navigator_tab_switches_between_sessions_and_files() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.navigator_tabs_area = Some(ratatui::layout::Rect::new(0, 0, 40, 1));
+
+    // `▌Sessions` occupies x 0..9, then ` │ `, then the Files tab.
+    app.handle_mouse(left_click(1, 0)).await.unwrap();
+    assert_eq!(
+        app.effective_navigator_tab(),
+        crate::widgets::NavigatorTab::Sessions
+    );
+    app.handle_mouse(left_click(20, 0)).await.unwrap();
+    assert_eq!(
+        app.effective_navigator_tab(),
+        crate::widgets::NavigatorTab::Files
+    );
+}
+
+#[tokio::test]
+async fn click_selects_a_navigator_session_row() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
+
+    app.task_strip_selection = 99;
+    app.handle_mouse(left_click(2, 5)).await.unwrap();
+
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    assert_eq!(app.task_strip_selection, 0);
+}
+
+#[tokio::test]
+async fn click_opens_a_file_tree_row() {
+    let (dir, mut app) = focus_test_app().await;
+    std::fs::write(dir.path().join("clickme.txt"), "hi").unwrap();
+    app.workspace_files.explorer.refresh_workspace();
+    app.workspace_files.visible = true;
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.navigator_tab_explicit = true;
+    render_app_text(&mut app, 140, 45);
+
+    let index = app
+        .workspace_files
+        .explorer
+        .visible_nodes()
+        .iter()
+        .position(|node| node.display_name == "clickme.txt")
+        .expect("test file should be visible");
+    let list = app.navigator_list_area.expect("file list drawn");
+    app.handle_mouse(left_click(list.x + 3, list.y + 2 + index as u16))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.workspace_files
+            .explorer
+            .selected_path
+            .as_deref()
+            .and_then(|path| path.file_name()),
+        Some(std::ffi::OsStr::new("clickme.txt"))
+    );
+    assert!(
+        app.current_workspace_is_file(),
+        "clicking a file row should open it"
+    );
+}

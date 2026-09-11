@@ -1753,6 +1753,16 @@ pub struct TuiApp {
     pub(crate) conversation_rows: Vec<String>,
     pub(crate) terminal_area: Option<ratatui::layout::Rect>,
     pub(crate) terminal_rows: Vec<String>,
+    /// Navigator tab-bar rect (Sessions | Files) from the last draw.
+    pub(crate) navigator_tabs_area: Option<ratatui::layout::Rect>,
+    /// Navigator list rect (session rows or file tree) from the last draw.
+    pub(crate) navigator_list_area: Option<ratatui::layout::Rect>,
+    /// Session task-strip rect from the last draw.
+    pub(crate) task_strip_area: Option<ratatui::layout::Rect>,
+    /// Footer rect from the last draw.
+    pub(crate) footer_area: Option<ratatui::layout::Rect>,
+    /// Last left-click `(when, column, row)` for double-click detection.
+    pub(crate) last_click: Option<(Instant, u16, u16)>,
     pub(crate) catalog_fetch: CatalogFetchState,
     /// Frame width from the most recent draw. Key handling runs before the
     /// next render, so commands that depend on whether a pane can physically
