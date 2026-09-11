@@ -1197,6 +1197,74 @@ async fn ctrl_tab_switches_the_navigator() {
         .unwrap();
 }
 
+/// `Space` opens the inline peek; typing fills the reply; `Esc` collapses.
+#[tokio::test]
+async fn space_peeks_and_esc_collapses_in_the_navigator() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+    let id = app.session_chrome[0].session_id;
+
+    app.handle_key(press(KeyCode::Char(' '), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_peek, Some(id));
+
+    app.handle_key(press(KeyCode::Char('h'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_reply, "hi");
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_peek, None);
+    assert!(app.navigator_reply.is_empty());
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// With peek set, the navigator renders the last answer and the reply box.
+#[tokio::test]
+async fn the_peek_renders_the_last_answer_and_reply() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let id = app.selected_session_id;
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("hello".to_string());
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    wait_for_turn_state(&mut app, id, forge_session::SupervisorTurnState::Completed).await;
+
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.navigator_peek = Some(id);
+    app.navigator_reply = "push it".to_string();
+    app.focus_block(FocusBlock::TaskStrip);
+
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("done"), "last answer missing: {rendered}");
+    assert!(
+        rendered.contains("push it"),
+        "reply buffer missing: {rendered}"
+    );
+    assert!(
+        rendered.contains("Enter send"),
+        "peek hint missing: {rendered}"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 fn user_message_count(app: &TuiApp, session_id: uuid::Uuid) -> usize {
     app.supervisor
         .as_ref()

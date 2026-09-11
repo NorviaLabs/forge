@@ -323,10 +323,36 @@ impl TuiApp {
                             }
                         })
                         .collect();
+                    let peek_lines = self.navigator_peek.and_then(|id| {
+                        if !navigator_focused {
+                            return None;
+                        }
+                        let snapshot = self.supervisor.as_ref()?.snapshots.get(&id)?;
+                        let last = snapshot
+                            .transcript
+                            .messages()
+                            .iter()
+                            .rev()
+                            .find(|message| {
+                                message.role == forge_types::MessageRole::Assistant
+                                    && !message.content.trim().is_empty()
+                            })?;
+                        Some(wrap_to_width(
+                            last.content.trim(),
+                            rows[1].width.saturating_sub(3) as usize,
+                            6,
+                        ))
+                    });
+                    let peek_panel = peek_lines.as_ref().map(|lines| crate::widgets::PeekPanel {
+                        lines,
+                        reply: &self.navigator_reply,
+                        placeholder: "reply to this session…",
+                    });
                     frame.render_widget(
                         crate::widgets::SessionList {
                             rows: &session_rows,
                             focused: navigator_focused,
+                            peek: peek_panel.as_ref(),
                         },
                         rows[1],
                     );
@@ -1446,6 +1472,37 @@ fn open_preview_above_streamed_thinking(
     if !above_blank && !preview_blank {
         preview.insert(0, Line::from(""));
     }
+}
+
+/// Greedy word wrap for the navigator peek; `max_lines` caps the height and
+/// marks truncation with an ellipsis.
+fn wrap_to_width(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let width = width.max(4);
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for (index, word) in words.iter().enumerate() {
+        let extra = usize::from(!current.is_empty());
+        if !current.is_empty() && current.chars().count() + extra + word.chars().count() > width {
+            lines.push(std::mem::take(&mut current));
+            if lines.len() == max_lines {
+                if index < words.len() {
+                    if let Some(last) = lines.last_mut() {
+                        last.push('…');
+                    }
+                }
+                return lines;
+            }
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 #[cfg(test)]

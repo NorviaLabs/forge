@@ -96,10 +96,23 @@ impl Widget for NavigatorTabs {
     }
 }
 
+/// The expanded peek under the focused row: the session's last answer and an
+/// inline reply box (`FORGE-DESIGN §7.7`).
+pub struct PeekPanel<'a> {
+    /// Pre-wrapped lines of the last answer.
+    pub lines: &'a [String],
+    /// Current reply buffer.
+    pub reply: &'a str,
+    /// Placeholder shown when the buffer is empty.
+    pub placeholder: &'a str,
+}
+
 /// The vertical, attention-ordered session list.
 pub struct SessionList<'a> {
     pub rows: &'a [SessionRow],
     pub focused: bool,
+    /// Rendered immediately under the focused row when set.
+    pub peek: Option<&'a PeekPanel<'a>>,
 }
 
 impl Widget for SessionList<'_> {
@@ -165,6 +178,60 @@ impl Widget for SessionList<'_> {
                 buf.set_line(area.x, y, &qual, area.width);
             }
             y += 1;
+            if let Some(peek) = self.peek.filter(|_| row.focused && self.focused) {
+                let indent = 3usize.min(area.width as usize);
+                for line in peek.lines {
+                    if y >= bottom {
+                        break;
+                    }
+                    let room = (area.width as usize).saturating_sub(indent);
+                    buf.set_line(
+                        area.x,
+                        y,
+                        &Line::from(vec![
+                            Span::raw(" ".repeat(indent)),
+                            Span::styled(truncate(line, room), theme::text_secondary()),
+                        ]),
+                        area.width,
+                    );
+                    y += 1;
+                }
+                if y < bottom {
+                    let prefix = "› ";
+                    let used = indent + prefix.chars().count();
+                    let room = (area.width as usize).saturating_sub(used);
+                    let reply = if peek.reply.is_empty() {
+                        Span::styled(truncate(peek.placeholder, room), theme::muted())
+                    } else {
+                        Span::styled(truncate(peek.reply, room), theme::text())
+                    };
+                    buf.set_line(
+                        area.x,
+                        y,
+                        &Line::from(vec![
+                            Span::raw(" ".repeat(indent)),
+                            Span::styled(prefix, theme::accent_style()),
+                            reply,
+                        ]),
+                        area.width,
+                    );
+                    y += 1;
+                }
+                if y < bottom {
+                    let hint = "Enter send · Esc collapse";
+                    let room = (area.width as usize).saturating_sub(indent);
+                    buf.set_line(
+                        area.x,
+                        y,
+                        &Line::from(vec![
+                            Span::raw(" ".repeat(indent)),
+                            Span::styled(truncate(hint, room), theme::metadata_style()),
+                        ]),
+                        area.width,
+                    );
+                    y += 1;
+                }
+            }
         }
     }
 }
@@ -261,6 +328,48 @@ mod tests {
     }
 
     #[test]
+    fn the_peek_shows_the_last_answer_and_reply_box() {
+        let rows = vec![SessionRow {
+            glyph: '●',
+            need: true,
+            label: "Fix login redirect".into(),
+            qualifier: "needs you".into(),
+            selected: true,
+            focused: true,
+        }];
+        let lines = vec!["I added the guard in src/auth.rs.".to_string()];
+        let peek = PeekPanel {
+            lines: &lines,
+            reply: "push it",
+            placeholder: "reply to this session…",
+        };
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    SessionList {
+                        rows: &rows,
+                        focused: true,
+                        peek: Some(&peek),
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(text.contains("I added the guard"), "{text:?}");
+        assert!(text.contains("push it"), "{text:?}");
+        assert!(text.contains("Enter send"), "{text:?}");
+    }
+
+    #[test]
     fn the_list_renders_a_glyph_label_and_qualifier_per_row() {
         let rows = vec![row("Fix login redirect", "needs you · 2m")];
         let backend = TestBackend::new(30, 4);
@@ -271,6 +380,7 @@ mod tests {
                     SessionList {
                         rows: &rows,
                         focused: true,
+                        peek: None,
                     },
                     frame.area(),
                 );
@@ -299,6 +409,7 @@ mod tests {
                     SessionList {
                         rows: &rows,
                         focused: true,
+                        peek: None,
                     },
                     frame.area(),
                 );
