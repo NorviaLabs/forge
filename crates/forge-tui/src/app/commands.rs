@@ -35,11 +35,21 @@ impl TuiApp {
                             SupervisorTurnState::Waiting | SupervisorTurnState::Failed
                         );
                     let group = match snapshot.task.lifecycle {
-                        SessionLifecycle::Archived => SessionSwitcherGroup::Archived,
-                        SessionLifecycle::Unavailable => SessionSwitcherGroup::Unavailable,
-                        SessionLifecycle::Removed => SessionSwitcherGroup::Removed,
-                        SessionLifecycle::Active if attention => SessionSwitcherGroup::Attention,
-                        SessionLifecycle::Active => SessionSwitcherGroup::Active,
+                        SessionLifecycle::Archived | SessionLifecycle::Removed => {
+                            SessionSwitcherGroup::Archived
+                        }
+                        // Drift shows on the row's state, not as its own group.
+                        SessionLifecycle::Unavailable => SessionSwitcherGroup::Idle,
+                        SessionLifecycle::Active if attention => SessionSwitcherGroup::NeedsYou,
+                        SessionLifecycle::Active
+                            if matches!(
+                                snapshot.task.turn_state,
+                                SupervisorTurnState::Running | SupervisorTurnState::Queued
+                            ) =>
+                        {
+                            SessionSwitcherGroup::Working
+                        }
+                        SessionLifecycle::Active => SessionSwitcherGroup::Idle,
                     };
                     SessionSwitcherItem {
                         session_id: snapshot.task.session_id.to_string(),
