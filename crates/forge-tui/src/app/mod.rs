@@ -68,8 +68,8 @@ use crate::theme;
 use crate::widgets::{
     classify_operator_error, composer_cursor_position, composer_text_area_width,
     footer_short_model_id, BottomPanel, BottomPanelModel, BottomPanelState, BusyPhase, FeedbackBar,
-    FeedbackModel, FeedbackSeverity, FooterBar, FooterFocus, FooterModel, InputBar, InputModel,
-    QueuedMessages, StatusBar, StatusModel, TaskStrip, TaskStripItem,
+    FeedbackModel, FeedbackSeverity, FooterActivity, FooterBar, FooterFocus, FooterModel, InputBar,
+    InputModel, QueuedMessages, StatusBar, StatusModel, TaskStrip, TaskStripItem,
 };
 use forge_config::FileIconMode;
 use forge_workspace::file_ops::{

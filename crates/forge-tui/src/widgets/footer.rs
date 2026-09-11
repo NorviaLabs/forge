@@ -1,8 +1,8 @@
-//! Footer strip: one row, configuration on the left, live activity on the
-//! right. Reuses the row's existing right-aligned-hints convention rather
-//! than adding a second row — the footer renders at full window width
-//! (`layout.rs`'s top-level status/main/footer stack), not sidebar width,
-//! so both halves fit comfortably even at the enforced terminal minimum.
+//! Footer strip: row 0 is configuration on the left and live turn activity on
+//! the right; row 1 (when the layout reserves it) is the background activity
+//! line — counts-only chips for jobs, agents and queued prompts. The footer
+//! renders at full window width (`layout.rs`'s top-level status/main/footer
+//! stack), not sidebar width, so both halves fit at the enforced minimum.
 
 use crate::theme;
 use crate::widgets::status::TurnLifecycle;
@@ -16,6 +16,22 @@ use ratatui::widgets::Widget;
 pub enum FooterFocus {
     Llm,
     Effort,
+}
+
+/// Live background activity for the footer's reserved second row (design A3:
+/// segmented count chips). Deliberately counts-only — the per-item list,
+/// with commands and elapsed time, lives in the task view. All-zero means the
+/// row stays blank, so the footer looks exactly as it did before anything runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FooterActivity {
+    /// Shell/terminal jobs queued or running.
+    pub jobs_active: usize,
+    /// Shell/terminal jobs that exited with a failure.
+    pub jobs_failed: usize,
+    /// Jobs blocked on an operator decision (subagent approvals).
+    pub jobs_need: usize,
+    /// Shell/terminal jobs that finished successfully or were cancelled.
+    pub jobs_done: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,6 +67,8 @@ pub struct FooterModel {
     pub completion_tokens: u64,
     /// Session API-reported cached prompt-read tokens.
     pub prompt_cache_reads: u64,
+    /// Live background activity for the second row. All-zero renders nothing.
+    pub activity: FooterActivity,
 }
 
 pub struct FooterBar<'a> {
@@ -142,6 +160,56 @@ const PAD: u16 = 1;
 /// than the chips.
 const MIN_MODEL_CHARS: u16 = 6;
 
+/// Build the second-row activity line from live counts (design A3). Returns
+/// `None` when nothing is running so the reserved row stays blank.
+fn activity_chips(a: &FooterActivity) -> Option<ratatui::text::Line<'static>> {
+    use ratatui::text::Span;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    push_jobs_chip(&mut spans, a);
+    if spans.is_empty() {
+        return None;
+    }
+    Some(ratatui::text::Line::from(spans))
+}
+
+/// One `[glyph label]` chip per activity group, counts only. The glyph and
+/// colour carry state; the bracket is shared chrome, so the chips read as a
+/// segmented strip rather than a sentence.
+fn push_jobs_chip(spans: &mut Vec<ratatui::text::Span<'static>>, a: &FooterActivity) {
+    use ratatui::text::Span;
+    let (glyph, label, style) = if a.jobs_active > 0 {
+        let mut label = format!("jobs {}", a.jobs_active);
+        if a.jobs_need > 0 {
+            label.push_str(&format!(" · {} need", a.jobs_need));
+        }
+        if a.jobs_failed > 0 {
+            label.push_str(&format!(" · {} failed", a.jobs_failed));
+        }
+        let style = if a.jobs_need > 0 {
+            theme::warn()
+        } else if a.jobs_failed > 0 {
+            theme::danger()
+        } else {
+            theme::info()
+        };
+        ("⟳", label, style)
+    } else if a.jobs_failed > 0 {
+        ("✕", format!("{} failed", a.jobs_failed), theme::danger())
+    } else if a.jobs_done > 0 {
+        ("✓", format!("{} done", a.jobs_done), theme::ok())
+    } else {
+        return;
+    };
+    if !spans.is_empty() {
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled("[", theme::border_muted()));
+    spans.push(Span::styled(glyph, style.add_modifier(Modifier::BOLD)));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(label, style));
+    spans.push(Span::styled("]", theme::border_muted()));
+}
+
 impl Widget for FooterBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -150,29 +218,26 @@ impl Widget for FooterBar<'_> {
         theme::fill(area, buf, theme::canvas());
         let m = self.model;
 
-        // The first row carries interactive controls; the second row is
-        // reserved for background execution status.
-        let content_area = Rect::new(area.x, area.y, area.width, 1.min(area.height));
-        // Inset the content row so text aligns with the composer's edges
-        // instead of running flush to the terminal border.
-        let area = Rect::new(
-            content_area.x + PAD.min(content_area.width),
-            content_area.y,
-            content_area.width.saturating_sub(2 * PAD),
-            content_area.height,
+        // Row 0 carries the interactive controls; row 1 (when the layout
+        // reserves it) carries live background activity. Both share one inset
+        // so text aligns with the composer's edges, not the terminal border.
+        let inner = Rect::new(
+            area.x + PAD.min(area.width),
+            area.y,
+            area.width.saturating_sub(2 * PAD),
+            area.height.min(2),
         );
-        if area.width == 0 {
+        if inner.width == 0 {
             return;
         }
-
-        if area.height > 1 {
-            buf.set_string(
-                area.x + PAD,
-                area.y + 1,
-                "background · shell · agents · subagents",
-                theme::dim(),
-            );
+        if inner.height > 1 {
+            if let Some(line) = activity_chips(&m.activity) {
+                buf.set_line(inner.x, inner.y + 1, &line, inner.width);
+            }
         }
+
+        // From here the renderer is single-row: row 0 only.
+        let area = Rect::new(inner.x, inner.y, inner.width, 1);
 
         // A blocking hint (HITL/dialog) takes over the whole row for this
         // frame — the chips are dimmed and irrelevant then. The focused
@@ -851,5 +916,52 @@ mod tests {
         assert_eq!(compact_token_count(1_000), "1k");
         assert_eq!(compact_token_count(12_400), "12.4k");
         assert_eq!(compact_token_count(1_200_000), "1.2M");
+    }
+
+    #[test]
+    fn second_row_renders_a_jobs_chip_only_when_work_is_present() {
+        let mut m = model(TurnLifecycle::Ready, 0.1);
+        let idle = rows(&m, 90, 2);
+        assert!(idle[1].trim().is_empty(), "idle second row: {:?}", idle[1]);
+
+        m.activity.jobs_active = 2;
+        m.activity.jobs_need = 1;
+        let busy = rows(&m, 90, 2);
+        assert!(busy[1].contains("⟳ jobs 2"), "{:?}", busy[1]);
+        assert!(busy[1].contains("1 need"), "{:?}", busy[1]);
+        // The activity row never disturbs the config/state row.
+        assert!(busy[0].contains("Medium"), "{:?}", busy[0]);
+        assert!(busy[0].contains("ready"), "{:?}", busy[0]);
+    }
+
+    #[test]
+    fn finished_jobs_collapse_into_a_state_chip() {
+        let mut failed = model(TurnLifecycle::Ready, 0.1);
+        failed.activity.jobs_failed = 3;
+        let out = rows(&failed, 90, 2);
+        assert!(
+            out[1].contains('✕') && out[1].contains("3 failed"),
+            "{:?}",
+            out[1]
+        );
+
+        let mut done = model(TurnLifecycle::Ready, 0.1);
+        done.activity.jobs_done = 4;
+        let out = rows(&done, 90, 2);
+        assert!(
+            out[1].contains('✓') && out[1].contains("4 done"),
+            "{:?}",
+            out[1]
+        );
+    }
+
+    /// Render `height` rows and return each row's text.
+    fn rows(m: &FooterModel, width: u16, height: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        FooterBar { model: m }.render(area, &mut buf);
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
     }
 }
