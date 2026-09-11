@@ -759,22 +759,28 @@ impl RepositoryControl {
     /// row has crossed the claim boundary, so its side effects are ambiguous;
     /// fail closed by surfacing it as interrupted instead of replaying it.
     /// Later `queued` rows remain available to the normal driver.
+    ///
+    /// Also repairs sessions whose durable `turn_state` is `running`/`queued`
+    /// but which have no live claim at all — a continuation turn (`prompt =
+    /// None`, e.g. post-HITL/question) or a crash in the window between
+    /// finishing a claim and recording its terminal turn state. Those have no
+    /// recoverable runtime either, so they are failed closed to `interrupted`
+    /// too. `waiting` is intentionally left alone: a HITL/question pause is
+    /// still recoverable by the operator. Sessions repaired without a queue
+    /// claim are reported with `queue_id = 0` and empty text so the caller can
+    /// refresh its roster copy.
     pub async fn reconcile_running_prompt_claims(
         &self,
     ) -> Result<Vec<(SessionId, u64, String)>, RepositorySessionError> {
         let mut transaction = self.pool.begin().await?;
+        let now = Utc::now().to_rfc3339();
         let rows = sqlx::query(
             "SELECT queue_id, session_id, text FROM prompt_queue \
              WHERE status = 'running' ORDER BY queue_id",
         )
         .fetch_all(&mut *transaction)
         .await?;
-        if rows.is_empty() {
-            transaction.commit().await?;
-            return Ok(Vec::new());
-        }
 
-        let now = Utc::now().to_rfc3339();
         let mut interrupted = Vec::with_capacity(rows.len());
         for row in rows {
             let queue_id = row.get::<i64, _>("queue_id") as u64;
@@ -802,6 +808,35 @@ impl RepositoryControl {
             .await?;
             interrupted.push((session_id, queue_id, text));
         }
+
+        // Sessions left `running`/`queued` with no live claim have nothing to
+        // replay, but a crash may still have left them (and their roster row)
+        // in flight. Repair them independently of the queue so a later
+        // `--continue` does not treat them as running.
+        let stale = sqlx::query(
+            "SELECT session_id FROM sessions \
+             WHERE lifecycle = 'active' AND turn_state IN ('running', 'queued') \
+             AND NOT EXISTS (SELECT 1 FROM prompt_queue q \
+                 WHERE q.session_id = sessions.session_id AND q.status = 'running')",
+        )
+        .fetch_all(&mut *transaction)
+        .await?;
+        for row in stale {
+            let session_id = parse_session_id(row.get("session_id"))?;
+            let updated = sqlx::query(
+                "UPDATE sessions SET turn_state = 'interrupted', updated_at = ? \
+                 WHERE session_id = ? AND lifecycle = 'active' \
+                 AND turn_state IN ('running', 'queued')",
+            )
+            .bind(&now)
+            .bind(session_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+            if updated.rows_affected() > 0 {
+                interrupted.push((session_id, 0, String::new()));
+            }
+        }
+
         transaction.commit().await?;
         Ok(interrupted)
     }
@@ -1738,6 +1773,42 @@ mod tests {
         );
         assert!(control
             .reconcile_running_prompt_claims()
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconcile_marks_a_running_session_with_no_prompt_claim_interrupted() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", None);
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
+        // A continuation turn (`prompt = None`) or a crash between finishing a
+        // claim and recording its terminal state leaves `running` behind with
+        // no `prompt_queue` row to match.
+        control
+            .set_turn_state(session_id, SupervisorTurnState::Running)
+            .await
+            .unwrap();
+
+        let recovered = control.reconcile_running_prompt_claims().await.unwrap();
+
+        assert_eq!(
+            control.session(session_id).await.unwrap().turn_state,
+            SupervisorTurnState::Interrupted
+        );
+        assert!(
+            recovered
+                .iter()
+                .any(|(id, queue_id, _)| *id == session_id && *queue_id == 0),
+            "the repaired no-claim session must be reported for roster refresh: {recovered:?}"
+        );
+        // Nothing was replayed.
+        assert!(control.queued_prompts(session_id).await.unwrap().is_empty());
+        assert!(control
+            .interrupted_prompts(session_id)
             .await
             .unwrap()
             .is_empty());

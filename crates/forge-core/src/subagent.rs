@@ -157,9 +157,9 @@ impl AgentSession {
     }
 
     /// Reconstruct a subagent's `AgentSession` from its OWN existing journal
-    /// (as opposed to `create_child`, which starts a brand new one) — used
-    /// only by `resume_subagent_task` to auto-resume a subagent that was
-    /// still running when the process crashed/restarted. Shares the
+    /// (as opposed to `create_child`, which starts a brand new one) — used by
+    /// `interrupt_orphaned_subagent_task` and `restore_finished_subagent_task`
+    /// to reopen a child without running a turn. Shares the
     /// parent's `Arc<ToolRegistry>`/`Arc<dyn ModelClient>`/governance, same
     /// as `create_child`. Note: the original `SubagentSpec.tool_allowlist`
     /// isn't itself journaled (only `role` is, via `SubagentSpawned`), so a
@@ -267,26 +267,24 @@ impl AgentSession {
             canonical_user_messages: state.user_messages.clone(),
         };
         child.reconcile_incomplete_intents(&incomplete).await?;
-        // Deliberately no `mark_interrupted_if_stale()` here — that method
-        // exists to convert a stale `Working`/`Waiting` top-level session
-        // into `Interrupted` on resume, on the assumption a human will
-        // re-issue instructions if they want to continue. A subagent has no
-        // human to do that: the entire point of auto-resume is to continue
-        // a `Working` state via `run_agent_turns` (see
-        // `resume_subagent_task`), which calling this first would defeat by
-        // marking it terminal before that ever gets a chance to run.
+        // Deliberately no `mark_interrupted_if_stale()` here — this only
+        // reconstructs the child's state; callers decide. Neither caller runs
+        // a turn from it: `interrupt_orphaned_subagent_task` marks a stale
+        // `Working` interrupted before retaining the actor, and
+        // `restore_finished_subagent_task` starts from a terminal lifecycle
+        // already.
         Ok(child)
     }
 
-    /// Auto-resume one orphaned subagent found by
-    /// `reconcile_orphaned_background_tasks`: reopen its journal, reconcile
-    /// its own incomplete tool intents (it gets this for free — it's a
-    /// normal session on its own terms), and re-launch its agent loop
-    /// exactly as if `spawn_subagent` had just been called. Errors resuming
-    /// one subagent are reported on that task (`Failed`) rather than
-    /// propagated — one bad subagent must not block the parent session
-    /// itself from finishing resume.
-    pub(crate) async fn resume_subagent_task(
+    /// Stop an orphaned subagent found by
+    /// `reconcile_orphaned_background_tasks`: reopen its journal (reconciling
+    /// its own incomplete tool intents), mark its stale lifecycle
+    /// interrupted, and retain it so the operator can continue it
+    /// explicitly. Deliberately does NOT run a turn or issue a model call —
+    /// restarting Forge must never silently start model/tool work. The
+    /// child's session/journal and the parent's task record stay available
+    /// for a later `followup_retained_subagent`.
+    pub(crate) async fn interrupt_orphaned_subagent_task(
         &mut self,
         task: &forge_durable::RestoredBackgroundTask,
         workspace: PathBuf,
@@ -305,12 +303,21 @@ impl AgentSession {
                 )
                 .map_err(|error| LoopError::Other(error.to_string()))?;
         }
+        let summary = format!(
+            "Subagent '{}' was interrupted by a restart and was not resumed.",
+            task.label
+        );
+        let status = BackgroundTaskStatus::Failed {
+            error: summary.clone(),
+        };
+        let _ = self
+            .coordinator
+            .update(child_session_id, AgentStatus::Failed, Some(summary.clone()));
         // Reuses `task.id` (not a fresh id) — see `resume_slot`'s doc
         // comment for why that's what lets the eventual
-        // `append_background_task_finished` (from either the error path
-        // below or the normal `drive_subagent` -> `finish_background_task`
-        // path once this subagent actually finishes) close the SAME pair
-        // `BackgroundTaskStarted` opened under.
+        // `append_background_task_finished` close the SAME pair
+        // `BackgroundTaskStarted` opened under, so a later restart does not
+        // re-detect this orphan.
         let id = self.tasks.background.resume_slot(
             task.id,
             BackgroundTaskKind::Subagent {
@@ -322,75 +329,53 @@ impl AgentSession {
             cancel.clone(),
             Some(child_session_id),
         );
+        self.tasks.background.set_status(id, status.clone());
+        self.journal
+            .append_background_task_finished(self.session_id, task.id, status.tag(), &summary)
+            .await?;
 
         let child = match self.resume_child(child_session_id, workspace, cancel).await {
             Ok(child) => child,
-            Err(e) => {
-                let error = format!("could not resume subagent: {e}");
-                let _ = self.coordinator.update(
-                    child_session_id,
-                    AgentStatus::Failed,
-                    Some(error.clone()),
-                );
-                self.tasks.background.set_status(
-                    id,
-                    BackgroundTaskStatus::Failed {
-                        error: error.clone(),
-                    },
-                );
-                self.journal
-                    .append_background_task_finished(
-                        self.session_id,
-                        id,
-                        BackgroundTaskStatus::Failed {
-                            error: error.clone(),
-                        }
-                        .tag(),
-                        &error,
-                    )
-                    .await?;
-                return Ok(());
-            }
+            // Already recorded as failed above; one unreadable subagent must
+            // not fail the parent's whole resume.
+            Err(_) => return Ok(()),
         };
-        self.tasks.background.mark_running(id);
+        let mut child = child;
+        child.mark_interrupted_if_stale().await?;
+        self.retain_subagent(task, child).await
+    }
 
-        // Branch name follows `create_worktree`'s naming convention
-        // (`forge/subagent/<dir-basename>`) — reconstructing it from the
-        // path avoids duplicating `forge_storage::worktree`'s private
-        // sanitize/slug logic just to redisplay something derivable.
-        let branch = child
-            .workspace_root()
-            .file_name()
-            .map(|name| format!("forge/subagent/{}", name.to_string_lossy()));
-        if let Some(branch) = branch {
-            self.tasks
-                .background
-                .set_worktree(id, child.workspace_root().to_path_buf(), branch);
-        }
-        let latest_message = self
-            .tasks
-            .background
-            .latest_message_cell(id)
-            .unwrap_or_default();
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let result_sink = Arc::new(std::sync::Mutex::new(Some(tx)));
+    /// Attach an idle actor to an already-resumed child so the operator can
+    /// wake it with an explicit follow-up. Runs no turn on its own.
+    async fn retain_subagent(
+        &mut self,
+        task: &forge_durable::RestoredBackgroundTask,
+        child: AgentSession,
+    ) -> Result<(), LoopError> {
+        let child_session_id = child.session_id;
+        let result_sink = Arc::new(std::sync::Mutex::new(None));
+        let latest_message = Arc::new(std::sync::Mutex::new(None));
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
-        self.tasks.subagent_hitl_senders.insert(id, hitl_tx);
-        let coordinator = self.coordinator.clone();
-        let initial_resume = child.active_task.lifecycle == TaskLifecycle::Working;
+        self.tasks.retained_subagents.insert(
+            child_session_id,
+            crate::task_runtime::RetainedSubagent {
+                label: task.label.clone(),
+                workspace: child.workspace_root().to_path_buf(),
+                result_sink: result_sink.clone(),
+                hitl_sender: hitl_tx,
+                latest_message: latest_message.clone(),
+            },
+        );
         spawn_subagent_actor(
             child,
             None,
-            initial_resume,
+            false,
             child_session_id,
             result_sink,
             hitl_rx,
             latest_message,
-            coordinator,
-        )?;
-        self.tasks.receivers.insert(id, std::sync::Mutex::new(rx));
-        Ok(())
+            self.coordinator.clone(),
+        )
     }
 
     pub(crate) async fn followup_retained_subagent(
@@ -497,30 +482,7 @@ impl AgentSession {
         let child = self
             .resume_child(child_session_id, workspace, cancel)
             .await?;
-        let result_sink = Arc::new(std::sync::Mutex::new(None));
-        let latest_message = Arc::new(std::sync::Mutex::new(None));
-        let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
-        self.tasks.retained_subagents.insert(
-            child_session_id,
-            crate::task_runtime::RetainedSubagent {
-                label: task.label.clone(),
-                workspace: child.workspace_root().to_path_buf(),
-                result_sink: result_sink.clone(),
-                hitl_sender: hitl_tx,
-                latest_message: latest_message.clone(),
-            },
-        );
-        spawn_subagent_actor(
-            child,
-            None,
-            false,
-            child_session_id,
-            result_sink,
-            hitl_rx,
-            latest_message,
-            self.coordinator.clone(),
-        )?;
-        Ok(())
+        self.retain_subagent(task, child).await
     }
 
     /// Create a worktree, spin up a child session in it, and drive the
@@ -1122,7 +1084,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resuming_the_parent_auto_resumes_a_still_working_subagent() {
+    async fn resuming_the_parent_does_not_silently_run_an_orphaned_subagent() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path()).await;
         let cfg = cfg(dir.path());
@@ -1150,60 +1112,67 @@ mod tests {
             s.session_id
         };
 
-        // Resume the parent — with a model that will actually complete this
-        // time — and confirm the subagent comes back `Running`, not
-        // orphaned/`Cancelled`, then finishes normally.
+        // Resume the parent. The orphan must surface as terminal, be retained
+        // for an explicit follow-up, and never issue a model call on its own.
         let resumed_model = Arc::new(MockModelClient::script(vec![text_response(
-            "finished after auto-resume",
+            "must not run on resume",
         )]));
-        let mut resumed = AgentSession::resume(
+        let resumed = AgentSession::resume(
             cfg.clone(),
-            resumed_model,
+            resumed_model.clone(),
             ToolRegistry::new(),
             parent_session_id,
         )
         .await
         .unwrap();
 
+        assert!(
+            resumed_model.last_request().is_none(),
+            "resuming must not silently issue a subagent model call"
+        );
         assert_eq!(resumed.background().list().count(), 1);
         let task = resumed.background().list().next().unwrap();
         assert!(matches!(task.kind, BackgroundTaskKind::Subagent { .. }));
-        assert_ne!(
-            task.status,
-            BackgroundTaskStatus::Cancelled,
-            "a still-Working subagent must be auto-resumed, not marked cancelled"
+        assert!(
+            task.status.is_terminal(),
+            "an orphaned subagent must not be left running: {:?}",
+            task.status
         );
-        let id = task.id;
+        let child_session_id = task.child_session_id.expect("subagent has a child session");
+        assert!(
+            resumed
+                .tasks
+                .retained_subagents
+                .contains_key(&child_session_id),
+            "the child must be retained so the operator can continue it explicitly"
+        );
 
-        let status = wait_terminal(&mut resumed, id).await;
-        match status {
-            BackgroundTaskStatus::Succeeded { summary } => {
-                assert_eq!(summary, "finished after auto-resume");
-            }
-            other => panic!("expected Succeeded, got {other:?}"),
-        }
-
-        // Regression check for `resume_slot` reusing the ORIGINAL journaled
-        // id: once this resumed-and-now-finished subagent's
-        // `BackgroundTaskFinished` is drained into the parent's own journal
-        // (via `poll_background_tasks`), a SECOND resume of the parent must
-        // see the pair as closed — not re-detect it as orphaned and attempt
-        // to auto-resume an already-completed subagent all over again.
-        resumed.poll_background_tasks().await.unwrap();
-        let resumed_again_model = Arc::new(MockModelClient::script(vec![text_response("unused")]));
+        // A later resume sees the closed task pair: it is restored as a
+        // retained child rather than re-detected as a fresh orphan, and still
+        // runs no model call.
+        let resumed_again_model =
+            Arc::new(MockModelClient::script(vec![text_response("unused")]));
         let resumed_again = AgentSession::resume(
             cfg,
-            resumed_again_model,
+            resumed_again_model.clone(),
             ToolRegistry::new(),
             parent_session_id,
         )
         .await
         .unwrap();
+        assert!(
+            resumed_again_model.last_request().is_none(),
+            "a second resume must not silently issue a subagent model call"
+        );
         assert_eq!(
             resumed_again.background().list().count(),
             0,
-            "the already-finished subagent must not be re-resumed"
+            "the already-interrupted subagent must not be re-detected as an orphan"
         );
+        assert!(resumed_again
+            .tasks
+            .retained_subagents
+            .contains_key(&child_session_id));
     }
 
     #[tokio::test]

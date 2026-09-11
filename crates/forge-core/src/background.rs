@@ -162,7 +162,8 @@ impl BackgroundTaskRegistry {
 
     /// Like `spawn_slot`, but reuses a specific id instead of minting a
     /// fresh one — for reconciling a task that already has journal history
-    /// under that id (an auto-resumed subagent). Bumps `next_id` past `id`
+    /// under that id (an orphaned subagent marked interrupted on restart).
+    /// Bumps `next_id` past `id`
     /// so a later `spawn_slot` call can never collide with it. Unlike
     /// `spawn_slot`'s fresh ids (which reset every process and only ever
     /// need to be *distinct within this process*, per `lifecycle.rs`'s doc
@@ -394,9 +395,10 @@ impl AgentSession {
     /// job's process cannot survive a process restart (no PID
     /// resurrection), so every orphaned (`finished: false`) shell task is
     /// marked `Cancelled` and re-registered in the session task store purely for
-    /// display — nothing is re-spawned. A subagent orphan is different: its
-    /// state lives entirely in its own journal (not an OS process), so it
-    /// can genuinely be auto-resumed — see `resume_subagent_task`.
+    /// display — nothing is re-spawned. A subagent orphan is never
+    /// auto-resumed either: restarting Forge must not silently start
+    /// model/tool work. It is marked interrupted and retained for explicit
+    /// operator continuation — see `interrupt_orphaned_subagent_task`.
     /// `subagent_workspaces` (from `Journal::replay`'s
     /// `ReplayState::subagent_workspaces`) is how the worktree path for
     /// each subagent orphan is found.
@@ -408,7 +410,8 @@ impl AgentSession {
         for task in orphaned.iter().filter(|t| !t.finished) {
             if task.kind == "subagent" {
                 if let Some(workspace) = subagent_workspaces.get(&task.id.0) {
-                    self.resume_subagent_task(task, workspace.clone()).await?;
+                    self.interrupt_orphaned_subagent_task(task, workspace.clone())
+                        .await?;
                     continue;
                 }
                 // No recorded workspace — fall through to the conservative
