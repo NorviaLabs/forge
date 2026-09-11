@@ -5389,6 +5389,78 @@ async fn cancellation_yields_interrupted_and_never_completes() {
     assert!(matches!(outcome, ApplyOutcome::Done(_)));
 }
 
+/// Cancelling a turn while a tool is running must abort the tool future so
+/// its side effect never lands (regression #642). Uses a tool whose only side
+/// effect happens after an await, so it is deterministic regardless of the
+/// host's sandbox or shell availability. Process-tree killing is covered in
+/// `forge-tools`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_turn_aborts_the_running_tool() {
+    struct SlowMarkerTool {
+        marker: std::path::PathBuf,
+    }
+
+    #[async_trait]
+    impl forge_tools::Tool for SlowMarkerTool {
+        fn name(&self) -> &str {
+            "slow_marker"
+        }
+        fn description(&self) -> &str {
+            "Sleep, then write a marker"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+        fn side_effect_class(&self) -> SideEffectClass {
+            SideEffectClass::Exec
+        }
+        async fn call(
+            &self,
+            _ctx: &ToolContext,
+            _args: serde_json::Value,
+        ) -> Result<ToolOutput, ToolError> {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let _ = std::fs::write(&self.marker, "done");
+            Ok(ToolOutput::success("done"))
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let marker = dir.path().join("cancel-marker");
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SlowMarkerTool {
+        marker: marker.clone(),
+    }));
+    let model = script(vec![]);
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+
+    let cancel = s.begin_turn_cancellation_scope();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        cancel.cancel();
+    });
+
+    let result = s
+        .apply_model_response(tool_call_response(vec![ToolCall {
+            id: "c1".into(),
+            name: "slow_marker".into(),
+            arguments: json!({}),
+        }]))
+        .await;
+    assert!(
+        matches!(result, Err(LoopError::Cancelled)),
+        "cancel must abort the running tool"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert!(
+        !marker.exists(),
+        "cancelled tool still executed its side effect"
+    );
+}
+
 #[tokio::test]
 async fn continuing_a_failed_turn_starts_a_fresh_attempt() {
     let dir = tempdir().unwrap();

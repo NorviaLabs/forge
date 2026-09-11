@@ -16,7 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-use crate::builtins::schema_for;
+use crate::builtins::{schema_for, set_process_group, ProcessGroupGuard};
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
 
@@ -82,6 +82,9 @@ struct Session {
     egress_invocation: Option<crate::egress::EgressInvocation>,
     _session_tmp: Option<Arc<crate::SessionTempDir>>,
     process: Process,
+    /// Owns the retained session's process group so `terminate_process`,
+    /// `shutdown`, and dropping the session all reap the whole tree.
+    process_group: ProcessGroupGuard,
     output: String,
     stderr_output: String,
     output_truncated: bool,
@@ -180,14 +183,17 @@ impl ExecSessionStore {
         };
         for session in sessions {
             let mut session = session.lock().await;
-            terminate_process(&mut session.process).await;
+            terminate_process(&mut session).await;
             session.running = false;
         }
     }
 }
 
-async fn terminate_process(process: &mut Process) {
-    match process {
+async fn terminate_process(session: &mut Session) {
+    // Kill the whole group first: a plain child kill (below) can leave a
+    // shell's descendants — or a sandbox wrapper's shell — running.
+    session.process_group.kill();
+    match &mut session.process {
         Process::Pipe { child, .. } => {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -521,7 +527,7 @@ async fn start(
         let _ = std::fs::create_dir_all(&identity_dir);
     }
 
-    let process = if args.tty {
+    let (process, pgid) = if args.tty {
         let pty = native_pty_system()
             .openpty(PTY_DEFAULT_SIZE)
             .map_err(|error| ToolError::Execution(format!("failed to open exec PTY: {error}")))?;
@@ -539,6 +545,9 @@ async fn start(
             .slave
             .spawn_command(command)
             .map_err(|error| ToolError::Execution(format!("failed to spawn exec PTY: {error}")))?;
+        // portable-pty calls `setsid` in the child, so its pid is also its
+        // process-group id.
+        let pgid = child.process_id().map(|pid| pid as i32);
         let mut reader = pty
             .master
             .try_clone_reader()
@@ -569,13 +578,16 @@ async fn start(
             .map_err(|error| {
                 ToolError::Execution(format!("failed to start exec PTY reader: {error}"))
             })?;
-        Process::Pty(PtyProcess {
-            _master: pty.master,
-            writer: Arc::new(StdMutex::new(writer)),
-            child,
-            output_rx,
-            reader_done,
-        })
+        (
+            Process::Pty(PtyProcess {
+                _master: pty.master,
+                writer: Arc::new(StdMutex::new(writer)),
+                child,
+                output_rx,
+                reader_done,
+            }),
+            pgid,
+        )
     } else {
         let mut command = Command::new(&program);
         command.args(&command_args);
@@ -586,6 +598,7 @@ async fn start(
             confined,
             &identity_dir,
         );
+        set_process_group(&mut command);
         let mut child = command
             .current_dir(&ctx.workspace_root)
             .stdin(Stdio::piped())
@@ -593,23 +606,27 @@ async fn start(
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
-        Process::Pipe {
-            stdin: Some(
-                child
-                    .stdin
+        let pgid = child.id().map(|pid| pid as i32);
+        (
+            Process::Pipe {
+                stdin: Some(
+                    child
+                        .stdin
+                        .take()
+                        .ok_or_else(|| ToolError::Execution("failed to open stdin".into()))?,
+                ),
+                stdout: child
+                    .stdout
                     .take()
-                    .ok_or_else(|| ToolError::Execution("failed to open stdin".into()))?,
-            ),
-            stdout: child
-                .stdout
-                .take()
-                .ok_or_else(|| ToolError::Execution("failed to open stdout".into()))?,
-            stderr: child
-                .stderr
-                .take()
-                .ok_or_else(|| ToolError::Execution("failed to open stderr".into()))?,
-            child,
-        }
+                    .ok_or_else(|| ToolError::Execution("failed to open stdout".into()))?,
+                stderr: child
+                    .stderr
+                    .take()
+                    .ok_or_else(|| ToolError::Execution("failed to open stderr".into()))?,
+                child,
+            },
+            pgid,
+        )
     };
     let session = Session {
         owner: ctx.session_id,
@@ -620,12 +637,17 @@ async fn start(
         egress_invocation,
         _session_tmp: ctx.session_tmp.clone(),
         process,
+        process_group: ProcessGroupGuard::new(pgid),
         output: String::new(),
         stderr_output: String::new(),
         output_truncated: false,
         started: Instant::now(),
         running: true,
     };
+    // A second guard local to this future. If the call is cancelled/dropped
+    // while `collect` is still awaiting, dropping it reaps the tree even though
+    // the session — and its own guard — lives on in the store.
+    let mut cancel_guard = ProcessGroupGuard::new(pgid);
     let id = sessions.next_id();
     let session = Arc::new(Mutex::new(session));
     sessions.sessions.lock().await.insert(id, session.clone());
@@ -640,6 +662,9 @@ async fn start(
     if session_finished(&result) {
         sessions.sessions.lock().await.remove(&id);
     }
+    // The store now owns the group; only an explicit terminate/shutdown may
+    // kill a retained session.
+    cancel_guard.disarm();
     result
 }
 
@@ -1105,6 +1130,34 @@ mod tests {
             out.content.contains("[]"),
             "credential reached the child: {}",
             out.content
+        );
+    }
+
+    /// Dropping the active `exec_command` call (Esc during the first yield)
+    /// must reap the retained session's process tree. Without the process-group
+    /// guard the store's child keeps running because `kill_on_drop` never fires.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_exec_command_kills_the_retained_session_tree() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let ctx = ToolContext::new(dir.path().to_path_buf()).with_unconfined_shell();
+        let (exec_command, _) = unified_exec_tools();
+        let command = format!("true; sh -c 'sleep 2; printf done > {}'", marker.display());
+
+        // A long yield keeps `collect` awaiting, so the timeout drops the call
+        // future mid-flight — the same drop a cancelled turn performs.
+        let dropped = tokio::time::timeout(
+            Duration::from_millis(200),
+            exec_command.call(&ctx, json!({"cmd": command, "yield_time_ms": 30_000})),
+        )
+        .await;
+        assert!(dropped.is_err(), "session should still be running at drop");
+
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(
+            !marker.exists(),
+            "cancelled exec session tree still executed its side effect"
         );
     }
 }

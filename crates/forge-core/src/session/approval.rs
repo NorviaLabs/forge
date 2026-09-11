@@ -179,11 +179,9 @@ impl AgentSession {
             )
             .await?
         {
-            let completed = IsolatedTask::spawn(pending.execute())
-                .join()
-                .await
-                .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?
-                .ok_or(LoopError::Cancelled)?;
+            let completed = self
+                .join_tool_execution(IsolatedTask::spawn(pending.execute()))
+                .await?;
             self.finish_hitl_execution(completed).await?;
         }
         Ok(())

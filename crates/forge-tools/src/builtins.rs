@@ -16,6 +16,86 @@ pub(crate) fn schema_for<T: JsonSchema>() -> Value {
     serde_json::to_value(s).unwrap_or_else(|_| json!({"type": "object"}))
 }
 
+/// Put a freshly built command in its own process group so a single signal can
+/// reach the whole tree it goes on to fork.
+///
+/// `kill_on_drop` only signals the *direct* child. The real work is usually a
+/// grandchild: a sandbox wrapper (`sandbox-exec`/`bwrap`) execs a shell that
+/// forks `sleep`, and killing the wrapper leaves the shell running to execute
+/// its side effects after cancellation. A dedicated group makes every
+/// descendant reachable. No-op off unix, where `kill_on_drop` stays the
+/// fallback.
+#[cfg(unix)]
+pub(crate) fn set_process_group(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+pub(crate) fn set_process_group(_command: &mut Command) {}
+
+/// Signal an entire process group with `SIGKILL`. `pgid` is the group leader's
+/// pid (`process_group(0)` and `setsid` both make the child's pid its pgid).
+///
+/// Best-effort: a group that has already been reaped returns `ESRCH`, which is
+/// expected and ignored, so overlapping guards never panic.
+#[cfg(unix)]
+pub(crate) fn kill_process_group(pgid: i32) {
+    if pgid <= 0 {
+        return;
+    }
+    // `kill` is part of the platform libc that Rust's std already links; the
+    // raw declaration keeps this to one call instead of a new dependency.
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    unsafe {
+        let _ = kill(-pgid, SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn kill_process_group(_pgid: i32) {}
+
+/// Owns a spawned child's process group and kills the whole tree on drop.
+///
+/// Spawn sites keep one next to the child so cancelling or dropping a tool
+/// future reaps grandchildren, not just the direct child. For a process whose
+/// lifetime is handed to a store that will kill it explicitly later, `disarm`
+/// transfers that responsibility.
+pub(crate) struct ProcessGroupGuard {
+    pgid: i32,
+    armed: bool,
+}
+
+impl ProcessGroupGuard {
+    pub(crate) fn new(pgid: Option<i32>) -> Self {
+        Self {
+            pgid: pgid.unwrap_or(0),
+            armed: pgid.is_some_and(|pid| pid > 0),
+        }
+    }
+
+    /// Kill the group now and stop the drop from killing it again.
+    pub(crate) fn kill(&mut self) {
+        if self.armed {
+            self.armed = false;
+            kill_process_group(self.pgid);
+        }
+    }
+
+    /// Hand the group to another owner; this guard no longer kills on drop.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ReadFileArgs {
     /// Path relative to workspace root (or absolute under the workspace or
@@ -410,6 +490,7 @@ async fn run_shell_command_inner(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    set_process_group(&mut shell);
     for name in PROVIDER_CREDENTIAL_ENV {
         shell.env_remove(name);
     }
@@ -445,7 +526,18 @@ async fn run_shell_command_inner(
     let mut child = shell
         .spawn()
         .map_err(|e| ToolError::Execution(e.to_string()))?;
-    let (status, stdout, stderr) = collect_bounded_output(&mut child).await?;
+    // Dropping this future (turn cancel, background cancel) drops the guard
+    // and kills the whole shell tree, not just the sandbox wrapper or shell.
+    let mut process_group = ProcessGroupGuard::new(child.id().map(|pid| pid as i32));
+    let (status, stdout, stderr) = match collect_bounded_output(&mut child).await {
+        Ok(captured) => {
+            // The leader is reaped; stop guarding the (possibly recycled) pgid.
+            process_group.disarm();
+            captured
+        }
+        // Armed guard drops here and reaps the tree the failure left behind.
+        Err(error) => return Err(error),
+    };
     let mut content = String::from_utf8_lossy(&stdout).into_owned();
     let err = String::from_utf8_lossy(&stderr);
     if !err.is_empty() {
@@ -2718,5 +2810,31 @@ itself, never to git hooks)."
         let t = crate::fast_file_tools::FffGrepTool::new(state, "grep");
         crate::validation::validate_args("grep", &t.input_schema(), &json!({"pattern": "TODO"}))
             .unwrap();
+    }
+
+    /// Dropping the shell future (what Esc does to the active tool call) must
+    /// kill the whole process tree, not just the direct `bash`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_shell_future_kills_the_process_tree() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        // The marker writer is a *grandchild*: a plain `kill_on_drop` on the
+        // direct `bash` leaves it running to execute the redirect. Only a
+        // process-group kill reaches it.
+        let command = format!("true; sh -c 'sleep 2; printf done > {}'", marker.display());
+
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            run_shell_command_unconfined(&command, dir.path(), None),
+        )
+        .await;
+        assert!(dropped.is_err(), "shell should still be running at drop");
+
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        assert!(
+            !marker.exists(),
+            "cancelled shell tree still executed its side effect"
+        );
     }
 }
