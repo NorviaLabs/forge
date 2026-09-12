@@ -356,8 +356,16 @@ impl GitStatusCache {
 }
 
 fn load_unstaged_diff(root: &Path, path: &Path) -> Result<String, String> {
+    // `--no-optional-locks` keeps this background read from refreshing (and
+    // locking) the index, which would race a foreground `s` / `u` stage.
     let output = std::process::Command::new("git")
-        .args(["diff", "--no-color", "--", path.to_str().unwrap_or("")])
+        .args([
+            "--no-optional-locks",
+            "diff",
+            "--no-color",
+            "--",
+            path.to_str().unwrap_or(""),
+        ])
         .current_dir(root)
         .output()
         .map_err(|e| format!("failed to run git diff: {e}"))?;
@@ -373,8 +381,17 @@ fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, PathStatus>, String> 
     if !root.join(".git").exists() {
         return Ok(HashMap::new());
     }
+    // Same reason as `load_unstaged_diff`: a background poll must never take
+    // the index lock. The test `s_stages_the_selected_file_and_u_puts_it_back`
+    // was the canary — `u` intermittently failed with a live index.lock.
     let output = std::process::Command::new("git")
-        .args(["status", "--porcelain=1", "-z", "-uall"])
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=1",
+            "-z",
+            "-uall",
+        ])
         .current_dir(root)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

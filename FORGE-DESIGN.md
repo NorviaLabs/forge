@@ -338,7 +338,7 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
    one column (`§7.7`). `Files` is the repository explorer with Git status
    markers and its own search row (`Search` is a separate Tab stop nested in the
    same bordered box). `Sessions` is the multi-session list.
-2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, feedback strip, and the composer. It never hides; the composer lives inside it.
+2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, feedback strip, and the composer. It never hides; the composer lives inside it. The column is a flat surface — no border box — and shows a thin scrollbar in its right padding when the transcript overflows.
 3. **Workspace** — the center pane. Its only views are `File` and `Diff` (`types.rs::WorkspaceView`); with nothing open it renders an empty-state placeholder. Conversation is deliberately *not* a workspace view.
 4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
 5. **StatusBar / Footer** — chrome rows described in §9.
@@ -513,6 +513,11 @@ The active block must use at least two signals:
 - accent or bold block title
 - explicit state marker where relevant (`> Terminal`)
 
+The conversation column is the deliberate exception: it is borderless in every
+state, so focus there takes the scrollbar's shape and colour — a solid accent
+thumb while the Sidebar block owns the keyboard, a muted half-block otherwise.
+No box is drawn around the transcript.
+
 Inactive blocks use a muted hairline border and normal title weight.
 
 Do not fill the entire active block with accent colour. Focus is structural, not a selection rectangle.
@@ -585,6 +590,10 @@ Rules:
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
 - The home card is the first screen only: once the operator has sent a turn it retires, never pinned above the conversation for the rest of the session.
+- The transcript is borderless; when its content overflows the pane, a thin
+  track (`│`) with a solid thumb (`▐`) marks position in the column's right
+  padding, and the thumb turns into the accent `█` while the Sidebar block owns
+  the keyboard. No overflow, no track.
 - While a turn runs, the live turn line (`widgets/turn_line.rs`) names the phase and counts up from the current turn's start — including supervised sessions, where the clock is anchored on the actor's `Running` state, never on process uptime. No placeholder shimmer rows in the transcript — the pane stays empty until content arrives. Gated behind the busy debounce so instant turns never flash it.
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
