@@ -787,8 +787,9 @@ impl ConversationRenderInternals for ConversationModel {
             .count();
         // A full-width rule opens every turn boundary (every UserMessage
         // after the first block in the transcript) — independent of whether
-        // that turn has a plan checklist. Compact tool rows stay tight
-        // against each other; major blocks get a blank separator.
+        // that turn has a plan checklist. The rule is cushioned by one blank
+        // row on each side so turns visibly separate; compact tool rows stay
+        // tight against each other and major blocks get a blank separator.
         let mut seen_any_block = start_block > 0;
         for block in blocks.into_iter().skip(start_block) {
             let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));
@@ -804,9 +805,12 @@ impl ConversationRenderInternals for ConversationModel {
                 ensure_blank_line(&mut lines);
             }
             if is_turn_start && seen_any_block {
-                // A turn boundary is represented by one rule and one row of
-                // breathing room, rather than stacking the generic block gap
-                // with whitespace on both sides of the rule.
+                // A turn boundary is one rule with one row of breathing room
+                // on each side. `ensure_blank_line` keeps a preceding block's
+                // own trailing blank from doubling into a stack.
+                if gap {
+                    ensure_blank_line(&mut lines);
+                }
                 lines.push(Line::from(Span::styled(
                     "─".repeat(width),
                     theme::border_muted(),

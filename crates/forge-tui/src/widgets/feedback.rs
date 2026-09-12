@@ -91,7 +91,7 @@ impl Widget for FeedbackBar<'_> {
                     .borders(Borders::ALL)
                     .border_style(style)
                     .style(theme::panel())
-                    .padding(Padding::horizontal(1)),
+                    .padding(Padding::horizontal(crate::design::PANE_PAD_X)),
             )
             .render(area, buf);
     }

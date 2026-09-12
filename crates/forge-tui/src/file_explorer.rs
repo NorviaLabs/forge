@@ -1049,7 +1049,7 @@ impl Widget for FileExplorerWidget<'_> {
         self.explorer.poll_search_load();
         let block = Block::default()
             .borders(Borders::ALL)
-            .padding(Padding::horizontal(1))
+            .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(if self.focused {
                 theme::active_panel_border()
             } else {
@@ -2071,8 +2071,8 @@ mod tests {
         }
 
         // The `/` prefix changes colour instead. Outer border (1) + padding
-        // (1) + inset (1) puts `/` at area.x + 4.
-        let prefix = (area.x + 4, area.y + 1);
+        // (PANE_PAD_X) + text inset puts `/` at area.x + 6.
+        let prefix = (area.x + 6, area.y + 1);
         assert_ne!(
             idle[prefix].style().fg,
             active[prefix].style().fg,
@@ -2100,12 +2100,14 @@ mod tests {
         let buf = render_widget(&mut explorer, area, true);
         let content_row = area.y + 1;
         let row = row_text(&buf, area, content_row);
-        // Outer border (1) + padding (1) + inset (1) + `/ ` prefix (2).
-        let cursor = &buf[(area.x + 5, content_row)];
+        // Outer border (1) + padding (PANE_PAD_X) + text inset + `/ ` (2).
+        let cursor = &buf[(area.x + 8, content_row)];
         assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
         assert_eq!(cursor.style().bg, theme::caret().bg);
         assert!(row.contains("/ "), "{row:?}");
-        assert!(row.contains("Search files..."), "{row:?}");
+        // The airy pane inset clips the fixture's 24-col row before the
+        // trailing ellipsis; the placeholder is still present.
+        assert!(row.contains("Search files"), "{row:?}");
         assert!(!row.contains('⌕'));
     }
 

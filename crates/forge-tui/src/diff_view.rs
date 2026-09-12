@@ -717,7 +717,7 @@ impl Widget for DiffViewWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .padding(Padding::horizontal(1))
+            .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(if self.focused {
                 theme::active_panel_border()
             } else {

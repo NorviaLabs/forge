@@ -7,7 +7,7 @@ pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 18;
 /// 2026 geometry: 1-column frame gutters replace the legacy 95% inset.
 /// See `crate::design::FRAME_INSET_X` and `FILES_VISIBLE_FRAME_W`.
-use crate::design::{FILES_VISIBLE_FRAME_W, FRAME_INSET_X};
+use crate::design::{CHROME_GAP_Y, FILES_VISIBLE_FRAME_W, FRAME_INSET_X, PANE_GAP_X, PANE_GAP_Y};
 /// Composer text rows (visual lines), capped for normal chat. The band adds
 /// one top rule row on top of this (DESIGN-012).
 pub const MAX_COMPOSER_INPUT_H: u16 = 10;
@@ -239,7 +239,10 @@ fn split_areas_with_chrome_mode(
     let sidebar_width = sidebar_width(content_area.width);
     let show_sidebar =
         show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
-    let fixed_h = 1 + footer_h;
+    // Airy pass: a blank gutter row sits between the chrome band and the work
+    // surface on each side, and between the left column and the bottom panel.
+    let gap_bottom = if footer_h > 0 { CHROME_GAP_Y } else { 0 };
+    let fixed_h = 1 + footer_h + CHROME_GAP_Y + gap_bottom;
     let requested_panel_h = bottom_panel_h.min(32);
     let available_panel_h = content_area
         .height
@@ -247,53 +250,76 @@ fn split_areas_with_chrome_mode(
         .saturating_sub(3);
     let panel_h = requested_panel_h.min(available_panel_h);
 
-    // Top-level vertical stack: status / approve-all warning / main / footer.
-    // `feedback`, `queue` and `input` no longer live here — they're scoped to
-    // the sidebar's own width, split out below.
+    // Top-level vertical stack: status / approve-all warning / task strip /
+    // gutter / main / gutter / footer. `feedback`, `queue` and `input` do not
+    // live here — they're scoped to the sidebar's own width, split below.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                      // status
             Constraint::Length(warning_h.min(1)),       // approve-all warning
             Constraint::Length(show_task_strip as u16), // task strip
+            Constraint::Length(CHROME_GAP_Y),           // gutter under chrome
             Constraint::Min(3),                         // main
+            Constraint::Length(gap_bottom),             // gutter above footer
             Constraint::Length(footer_h),               // contextual hint
         ])
         .split(content_area);
     let status = rows[0];
     let approve_all_warning = rows[1];
     let task_strip = rows[2];
-    let main = rows[3];
-    let footer = rows[4];
+    let main = rows[4];
+    let footer = rows[6];
 
-    // main row: [left column (files+chat+bottom_panel), sidebar]
+    // main row: [left column (files+chat+bottom_panel), gutter, sidebar]
     let (left_area, sidebar) = if show_sidebar && !expand_conversation {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(40), Constraint::Length(sidebar_width)])
+            .constraints([
+                Constraint::Min(40),
+                Constraint::Length(PANE_GAP_X),
+                Constraint::Length(sidebar_width),
+            ])
             .split(main);
-        (columns[0], Some(columns[1]))
+        (columns[0], Some(columns[2]))
     } else {
         (main, None)
     };
 
-    // left column: [files+chat, bottom_panel] — bottom panel spans this
-    // column's full width, never the sidebar's.
+    // left column: [files+chat, gutter, bottom_panel] — bottom panel spans
+    // this column's full width, never the sidebar's.
     let left_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(panel_h)])
+        .constraints(if panel_h > 0 {
+            [
+                Constraint::Min(3),
+                Constraint::Length(PANE_GAP_Y),
+                Constraint::Length(panel_h),
+            ]
+        } else {
+            [
+                Constraint::Min(3),
+                Constraint::Length(0),
+                Constraint::Length(0),
+            ]
+        })
         .split(left_area);
     let top = left_rows[0];
-    let bottom_panel = left_rows[1];
+    let bottom_panel = left_rows[2];
 
-    let show_files = show_files && area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + 40;
+    let show_files =
+        show_files && area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + PANE_GAP_X + 40;
     let file_width = (content_area.width / 4).clamp(28, 37);
     let (files, chat) = if show_files {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(file_width), Constraint::Min(40)])
+            .constraints([
+                Constraint::Length(file_width),
+                Constraint::Length(PANE_GAP_X),
+                Constraint::Min(40),
+            ])
             .split(top);
-        (Some(columns[0]), columns[1])
+        (Some(columns[0]), columns[2])
     } else {
         (None, top)
     };
@@ -302,9 +328,13 @@ fn split_areas_with_chrome_mode(
         let (files, conversation) = if show_files {
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(file_width), Constraint::Min(40)])
+                .constraints([
+                    Constraint::Length(file_width),
+                    Constraint::Length(PANE_GAP_X),
+                    Constraint::Min(40),
+                ])
                 .split(top);
-            (Some(columns[0]), columns[1])
+            (Some(columns[0]), columns[2])
         } else {
             (None, top)
         };
@@ -317,8 +347,8 @@ fn split_areas_with_chrome_mode(
         (files, chat, sidebar)
     };
 
-    // sidebar: [transcript, feedback, queue, background, input] — always
-    // shows a composer when the sidebar itself is shown.
+    // sidebar: [transcript, feedback, queue, background, gutter, input] —
+    // always shows a composer when the sidebar itself is shown.
     let (sidebar, feedback, queue, background, input) = if let Some(sb) = sidebar {
         let sidebar_rows = Layout::default()
             .direction(Direction::Vertical)
@@ -327,6 +357,7 @@ fn split_areas_with_chrome_mode(
                 Constraint::Length(fb),
                 Constraint::Length(qh),
                 Constraint::Length(bg_h),
+                Constraint::Length(PANE_GAP_Y), // gutter above the composer
                 Constraint::Length(input_h),
             ])
             .split(sb);
@@ -335,7 +366,7 @@ fn split_areas_with_chrome_mode(
             sidebar_rows[1],
             sidebar_rows[2],
             sidebar_rows[3],
-            sidebar_rows[4],
+            sidebar_rows[5],
         )
     } else {
         let zero = Rect::new(main.x, main.y, 0, 0);
@@ -375,7 +406,10 @@ pub fn estimate_composer_region_width(
     if expanded_conversation {
         let file_width = (width / 4).clamp(28, 37);
         if show_files && area.width >= FILES_WIDTH_THRESHOLD && width >= file_width + 40 {
-            width.saturating_sub(file_width).max(1) as usize
+            width
+                .saturating_sub(file_width)
+                .saturating_sub(PANE_GAP_X)
+                .max(1) as usize
         } else {
             width.max(1) as usize
         }
@@ -413,7 +447,9 @@ mod tests {
     fn expanded_composer_width_tracks_the_conversation_pane() {
         let area = Rect::new(0, 0, 120, 40);
         assert_eq!(estimate_composer_region_width(area, false, true), 118);
-        assert_eq!(estimate_composer_region_width(area, true, true), 89);
+        // Files visible: the conversation is the content width minus the
+        // explorer column and the column gutter between them.
+        assert_eq!(estimate_composer_region_width(area, true, true), 88);
         assert_eq!(estimate_composer_region_width(area, false, false), 32);
     }
 
@@ -444,8 +480,8 @@ mod tests {
         // Chat gets the width left of the sidebar; taller than before since
         // the composer no longer eats vertical space from this column — it
         // lives in the sidebar's own split instead.
-        assert_eq!(r.chat, Rect::new(1, 1, 86, 39));
-        assert_eq!(r.sidebar, Some(Rect::new(87, 1, 32, 36)));
+        assert_eq!(r.chat, Rect::new(1, 2, 85, 38));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 2, 32, 34)));
         assert_eq!(r.footer.height, 0);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.bottom_panel.height, 0);
@@ -467,14 +503,14 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 40);
         assert_eq!(r.bottom_panel.height, 32);
-        assert_eq!(r.chat.height, 17);
+        assert_eq!(r.chat.height, 15);
     }
 
     #[test]
     fn bottom_panel_hides_when_height_is_tight() {
         let area = Rect::new(0, 0, 80, MIN_HEIGHT);
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 32);
-        assert_eq!(r.bottom_panel.height, 14);
+        assert_eq!(r.bottom_panel.height, 12);
         assert_eq!(r.input.height, 3);
     }
 
@@ -483,7 +519,7 @@ mod tests {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
         assert_eq!(r.status, Rect::new(1, 0, 198, 1));
-        assert_eq!(r.chat, Rect::new(1, 1, 110, 39));
+        assert_eq!(r.chat, Rect::new(1, 2, 109, 38));
         // The composer is scoped to the sidebar's width now, not the full
         // content column.
         assert_eq!(r.input.x, 111);
@@ -537,9 +573,9 @@ mod tests {
     fn files_panel_reserves_bounded_left_space() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0, true, 0);
-        assert_eq!(r.files, Some(Rect::new(1, 1, 29, 39)));
-        assert_eq!(r.chat, Rect::new(30, 1, 57, 39));
-        assert_eq!(r.sidebar, Some(Rect::new(87, 1, 32, 36)));
+        assert_eq!(r.files, Some(Rect::new(1, 2, 29, 38)));
+        assert_eq!(r.chat, Rect::new(31, 2, 55, 38));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 2, 32, 34)));
     }
 
     #[test]
@@ -547,7 +583,7 @@ mod tests {
         let narrow =
             split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, 0, 0, true, 0);
         assert!(narrow.files.is_none());
-        assert_eq!(narrow.chat.width, 66);
+        assert_eq!(narrow.chat.width, 65);
     }
 
     #[test]
@@ -564,10 +600,10 @@ mod tests {
             0,
             0,
         );
-        assert_eq!(r.files, Some(Rect::new(1, 1, 29, 39)));
+        assert_eq!(r.files, Some(Rect::new(1, 2, 29, 38)));
         assert_eq!(r.chat.width, 0);
-        assert_eq!(r.sidebar, Some(Rect::new(30, 1, 89, 36)));
-        assert_eq!(r.input.width, 89);
+        assert_eq!(r.sidebar, Some(Rect::new(31, 2, 88, 34)));
+        assert_eq!(r.input.width, 88);
     }
 
     #[test]

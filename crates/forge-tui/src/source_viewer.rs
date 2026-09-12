@@ -1129,7 +1129,7 @@ impl Widget for SourceViewerWidget<'_> {
     fn render(mut self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .padding(Padding::horizontal(1))
+            .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(if self.focused {
                 theme::active_panel_border()
             } else {
@@ -2569,8 +2569,8 @@ mod tests {
         }
         .render(area, &mut command);
         assert!(buffer_text(&command, area).contains(":w"));
-        // Panel padding (2) + text inset (1) + `:` (1) + `w` (1).
-        let cursor_style = command[(5, area.bottom() - 2)].style();
+        // Panel border (1) + padding (PANE_PAD_X) + text inset + `:` (1) + `w` (1).
+        let cursor_style = command[(8, area.bottom() - 2)].style();
         let caret_style = theme::caret();
         assert_eq!(cursor_style.fg, caret_style.fg);
         assert_eq!(cursor_style.bg, caret_style.bg);
@@ -2586,7 +2586,7 @@ mod tests {
         }
         .render(area, &mut result);
         assert!(buffer_text(&result, area).contains("written notes.txt"));
-        assert_eq!(result[(2, area.bottom() - 2)].style().fg, theme::muted().fg);
+        assert_eq!(result[(3, area.bottom() - 2)].style().fg, theme::muted().fg);
     }
 
     fn buffer_text(buffer: &Buffer, area: Rect) -> String {

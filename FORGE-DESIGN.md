@@ -364,11 +364,21 @@ Explorer-first collapse is deliberate: the composer (in the sidebar) outranks th
 
 ### 7.5 Cell spacing
 
-Use a compact cell-based scale:
+Use a compact cell-based scale, biased airy so panes never touch and text
+never sits flush against a border:
 
 - `0`: no gap; tightly related glyphs.
-- `1`: standard inline gap or one-cell padding.
-- `2`: block interior padding where width allows.
+- `1`: standard inline gap, the outer frame gutter (`FRAME_INSET_X`), and the
+  gutter between adjacent columns (`PANE_GAP_X`) or stacked panes /
+  chrome rows (`PANE_GAP_Y`, `CHROME_GAP_Y`).
+- `2`: block interior padding (`PANE_PAD_X`), including the composer's text
+  inset (`PANE_PAD_X + 1`, matching a bordered pane's text origin).
+
+Concretely (`design.rs`): a blank column separates Files, Workspace and the
+Sidebar; a blank row separates the status/approve-all chrome and the Footer
+from the content band, and the left column from the bottom panel; the
+transcript and composer are separated by a blank row. Pane contents are inset
+two cells from their border, and the Footer shares that inset.
 
 Avoid double-padding a bordered block and its inner component.
 
