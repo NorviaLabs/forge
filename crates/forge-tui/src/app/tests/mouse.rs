@@ -437,6 +437,26 @@ async fn motion_hovers_a_footer_chip_without_moving_focus() {
 }
 
 #[tokio::test]
+async fn motion_hovers_a_queued_message_without_moving_focus() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.enqueue_user_message("queued alpha".into()).await;
+    app.enqueue_user_message("queued beta".into()).await;
+    render_app_text(&mut app, 120, 40);
+    let area = app.queue_area.expect("queue strip drawn");
+    let before = app.focus.block();
+
+    // Row 0 is the strip title; row 2 is the second queued message.
+    app.handle_mouse(moved(area.x + 2, area.y + 2))
+        .await
+        .unwrap();
+    assert_eq!(app.hover_queue, Some(1));
+    assert_eq!(app.focus.block(), before, "hover must never move focus");
+
+    app.handle_mouse(moved(0, 200)).await.unwrap();
+    assert_eq!(app.hover_queue, None);
+}
+
+#[tokio::test]
 async fn click_selects_an_approval_option_row() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_hitl(&mut app, direct_hitl_payload("call-1", "/tmp/x"));

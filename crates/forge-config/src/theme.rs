@@ -551,6 +551,39 @@ default = "#E6EDF3"
     /// The built-in templates state all three explicitly — a theme author
     /// copying one gets real values, not silent fallbacks.
     #[test]
+    fn builtin_themes_keep_selection_stronger_than_hover() {
+        for (id, text) in [
+            (
+                "forge-dark",
+                include_str!("../../forge-tui/themes/forge-dark.toml"),
+            ),
+            (
+                "forge-light",
+                include_str!("../../forge-tui/themes/forge-light.toml"),
+            ),
+        ] {
+            let theme = parse_theme_toml(text).expect("built-in theme parses");
+            let p = &theme.palette;
+            let on_dark_canvas = p.background.to_hsl().2 < 50.0;
+            let outranks = |stronger: Rgb, weaker: Rgb| {
+                if on_dark_canvas {
+                    stronger.to_hsl().2 > weaker.to_hsl().2
+                } else {
+                    stronger.to_hsl().2 < weaker.to_hsl().2
+                }
+            };
+            assert!(
+                outranks(p.selection, p.surface_hover),
+                "{id}: selection must outrank hover"
+            );
+            assert!(
+                outranks(p.surface_hover, p.surface),
+                "{id}: hover must outrank surface"
+            );
+        }
+    }
+
+    #[test]
     fn builtin_templates_declare_response_structure_tokens() {
         for content in [
             include_str!("../../forge-tui/themes/forge-dark.toml"),

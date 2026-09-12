@@ -738,13 +738,17 @@ impl TuiApp {
         }
 
         if regions.queue.height > 0 {
+            self.queue_area = Some(regions.queue);
             frame.render_widget(
                 QueuedMessages {
                     messages: &queued_messages,
                     selected: self.task_selection.queue(),
+                    hover: self.hover_queue,
                 },
                 regions.queue,
             );
+        } else {
+            self.queue_area = None;
         }
         let width = conversation_text_width(sidebar_width);
         // Tail-only changes use `StreamMarkdownCache` and must become visible
@@ -1818,10 +1822,11 @@ mod tests {
                 .join(" "),
         );
 
-        // DESIGN-012: 7 visual lines + 1 top rule row (was +2 box rows).
+        // DESIGN-012: 8 visual lines + 1 top rule row. The round-2 inset
+        // costs one column of wrap width, so the same stress text adds a row.
         assert_eq!(
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, false),
-            8
+            9
         );
     }
 

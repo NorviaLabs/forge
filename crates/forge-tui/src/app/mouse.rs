@@ -224,9 +224,20 @@ impl TuiApp {
         self.hover_file = None;
         self.hover_chip = None;
         self.hover_navigator_tab = None;
+        self.hover_queue = None;
         self.hover_option = self.option_at(col, row);
         if self.pointer_blocked() {
             return;
+        }
+        if let Some(area) = self.queue_area {
+            let messages = self.selected_queue_messages();
+            self.hover_queue = crate::widgets::queued_messages::message_index_at(
+                messages.len(),
+                self.task_selection.queue(),
+                area,
+                col,
+                row,
+            );
         }
         if let Some(area) = self.footer_area {
             if cell_inside(area, col, row) {

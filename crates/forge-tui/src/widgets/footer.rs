@@ -168,9 +168,9 @@ fn running_dot_style(
 /// (The live turn line above the composer owns phase detail; the footer
 /// keeps the state word for every lifecycle, animated only while running.)
 /// with the composer's left/right edges above it, rather than running flush
-/// to the terminal border. Matches `PANE_PAD_X`; the 78-col MIN_WIDTH floor
-/// (80-column frame minus the frame gutters) still fits the full model label
-/// plus every chip.
+/// to the terminal border. Matches `PANE_PAD_X`; the round-2 inset costs the
+/// 78-col MIN_WIDTH floor two columns, so a long provider/model label keeps
+/// its vendor dropped and middle-truncates the model id instead of clipping.
 const PAD: u16 = crate::design::PANE_PAD_X;
 
 /// Columns the model id needs to stay recognisable once middle-truncated
@@ -900,15 +900,16 @@ mod tests {
         let mut m = model(TurnLifecycle::Working, 0.34);
         m.llm_label = "OpenCode/deepseek-v4-flash-free".into();
         // 78 is the real MIN_WIDTH floor (80-col frame minus the 1-col frame
-        // gutters); the airy footer inset still fits the whole model name.
+        // gutters); the airy footer inset costs two columns, so the model id
+        // middle-truncates but keeps both ends recognisable.
         let out = rendered(&m, 78);
         assert!(out.contains("Medium"), "{out:?}");
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
-        // The vendor goes first and goes whole, so the model name stays
-        // readable instead of becoming `Open…free`.
+        // The vendor goes first and goes whole; the model id keeps its head
+        // and tail around a middle ellipsis instead of clipping.
         assert!(
-            out.contains("deepseek-v4-flash-free"),
-            "model name should survive: {out:?}"
+            out.contains("deepseek-v") && out.contains("flash-free"),
+            "model name should stay recognisable: {out:?}"
         );
         assert!(!out.contains("OpenCode/"), "{out:?}");
     }
@@ -951,10 +952,10 @@ mod tests {
     #[test]
     fn a_cramped_row_drops_the_unit_label_before_the_effort_chip() {
         // The effort chip stays fully visible; the `tokens` unit drops first.
-        // Narrower than it used to be: retiring the nine-cell context bar and
-        // the idle `· —` gave the row back eleven columns.
+        // The round-2 inset costs two columns, so the cramped case sits at 50
+        // rather than 48.
         let m = model(TurnLifecycle::Working, 0.34);
-        let out = rendered(&m, 48);
+        let out = rendered(&m, 50);
         assert!(out.contains("Medium"), "{out:?}");
         assert!(out.contains("0"), "{out:?}");
         assert!(!out.contains("0 tokens"), "{out:?}");
