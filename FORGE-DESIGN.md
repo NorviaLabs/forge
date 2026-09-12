@@ -394,8 +394,10 @@ never sits flush against a border:
 Concretely (`design.rs`): two blank columns separate Files, Workspace and the
 Sidebar; two blank rows separate the status/approve-all chrome and the Footer
 from the content band; pane contents are inset three cells from their border
-(border + `PANE_PAD_X` puts text four cells from the pane edge), and the
-Footer shares the same inset. The transcript and composer are separated by the
+(border + `PANE_PAD_X` puts text four cells from the pane edge). Borderless
+sidebar surfaces — the composer, the feedback strip, the queue strip and the
+bottom panel — share that same four-cell text origin (`TEXT_INSET`), so the
+column keeps one left edge. The transcript and composer are separated by the
 height-gated `COMPOSER_GAP_Y`.
 
 Avoid double-padding a bordered block and its inner component.
@@ -545,6 +547,9 @@ Avoid duplicating file counts, task details or provider telemetry already shown 
 - Inactive border: `border_muted` / `border`.
 - Active border: `accent` (or thick border type where the region is a single rule).
 - Active title: bold accent with the `>` marker, e.g. `> Terminal`; modals use `theme::modal_title`, panes `theme::pane_title`.
+- Modal bodies inset `MODAL_PAD_X` (2) horizontally; a titled modal adds one top
+  row. A title never touches the rule it sits on — one space separates the
+  label from the fill.
 - No double borders except to express a modal or focused panel.
 
 ### 9.3 Footer
@@ -667,7 +672,8 @@ Rules:
 ### 9.9 Terminal (BottomPanel)
 
 - One interactive login shell per session; closing the panel never kills it.
-- Focused presentation: thick top rule + `> Terminal` + accent title — legible without colour (shape carries it too).
+- Focused presentation: thick top rule + `> Terminal` + accent title — legible without colour (shape carries it too). The title keeps one cell before the rule.
+- The body shares the shared text origin (`TEXT_INSET`), like the composer and the feedback strip.
 - Busy phase, activity feed lines, shell label and a painted caret render inside the panel.
 - Standard control keys, arrows, Tab, paste and resize are forwarded to the shell.
 

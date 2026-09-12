@@ -5,7 +5,7 @@ use crate::widgets::BusyPhase;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BottomPanelState {
@@ -40,6 +40,10 @@ impl Widget for BottomPanel<'_> {
         // "where do my keystrokes go" is answerable from shape, and mark the
         // title with the shared `>` grammar, since the rule is only one
         // cell tall. Callers pass modal-suppressed focus (DESIGN-004).
+        // The body shares the pane text origin (`TEXT_INSET`); the title keeps
+        // one cell before the rule so it never touches the fill.
+        let mut title = panel::title(self.focused, false, "Terminal");
+        title.spans.push(Span::raw(" "));
         let block = Block::default()
             .borders(Borders::TOP)
             .border_type(if self.focused {
@@ -53,7 +57,8 @@ impl Widget for BottomPanel<'_> {
                 theme::inactive_panel_border()
             })
             .style(theme::panel())
-            .title(panel::title(self.focused, false, "Terminal"));
+            .padding(Padding::horizontal(crate::widgets::input::TEXT_INSET))
+            .title(title);
         let inner = block.inner(area);
         block.render(area, buf);
         let lines = terminal_lines(
@@ -200,6 +205,10 @@ mod tests {
 
         let rendered = rendered_text(model, true);
         assert!(rendered.contains("Terminal"));
+        assert!(
+            rendered.contains("> Terminal "),
+            "title must not touch the rule: {rendered}"
+        );
         assert!(!rendered.contains("BOTTOM"));
         assert!(!rendered.contains("Ctrl+P close"));
     }
@@ -307,7 +316,10 @@ mod tests {
         };
 
         let buffer = rendered_buffer(model, true);
-        let cursor = &buffer[(4, 4)];
+        // The body shares the pane text origin; the PTY cursor is relative to it.
+        let inset = crate::widgets::input::TEXT_INSET;
+        assert_eq!(buffer[(inset, 1)].symbol(), "I", "shell label origin");
+        let cursor = &buffer[(inset + 4, 4)];
         assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
         assert_eq!(cursor.style().bg, theme::caret().bg);
     }

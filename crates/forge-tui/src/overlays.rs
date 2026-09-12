@@ -1,5 +1,6 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
+use crate::design::MODAL_PAD_X;
 use crate::{effort::ReasoningEffort, theme, theme_registry};
 use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
@@ -2540,6 +2541,7 @@ pub fn render_theme_dock(
         .borders(Borders::ALL)
         .border_style(theme::border())
         .style(theme::panel())
+        .padding(Padding::horizontal(MODAL_PAD_X))
         .title(theme::modal_title(&format!(
             "Theme · {}",
             crate::hints::hint_text(crate::hints::THEME)
@@ -2680,7 +2682,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::brand())
                         .style(theme::panel())
-                        .padding(Padding::horizontal(1))
+                        .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title("Help")),
                 )
                 .render(r, buf);
@@ -2692,7 +2694,7 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .padding(Padding::horizontal(1))
+                    .padding(Padding::horizontal(MODAL_PAD_X))
                     .title(Span::styled(
                         format!(" {title} "),
                         theme::heading().add_modifier(Modifier::BOLD),
@@ -2769,7 +2771,7 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .padding(Padding::new(1, 1, 1, 0))
+                    .padding(Padding::new(MODAL_PAD_X, MODAL_PAD_X, 1, 0))
                     .title(theme::modal_title(&title_text));
                 let inner = block.inner(r);
                 block.render(r, buf);
@@ -3135,6 +3137,7 @@ impl Widget for OverlayWidget<'_> {
                             .borders(Borders::ALL)
                             .border_style(theme::border())
                             .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
                             .title(theme::modal_title("Connect with API key")),
                     )
                     .render(r, buf);
@@ -3160,6 +3163,7 @@ impl Widget for OverlayWidget<'_> {
                             .borders(Borders::ALL)
                             .border_style(theme::border())
                             .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
                             .title(theme::modal_title("Sign in")),
                     )
                     .render(r, buf);
@@ -3185,6 +3189,7 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
+                    .padding(Padding::horizontal(MODAL_PAD_X))
                     .title(theme::modal_title(&format!(
                         "Resume a session · {} · {}",
                         picker_position(selected_position, indices.len()),
@@ -3281,6 +3286,7 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
+                    .padding(Padding::horizontal(MODAL_PAD_X))
                     .title(theme::modal_title(&format!(
                         "Sessions · {} · Enter switch · n new · a attach · r rename · x archive · d cleanup",
                         picker_position(selected_position, indices.len())
@@ -3362,6 +3368,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title("Rename session")),
                 )
                 .render(r, buf);
@@ -3389,6 +3396,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title(title)),
                 )
                 .render(r, buf);
@@ -3442,6 +3450,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title(title)),
                 )
                 .render(r, buf);
@@ -3462,6 +3471,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::border())
                         .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title("Trust session worktree")),
                 )
                 .render(r, buf);
@@ -3518,6 +3528,7 @@ impl Widget for OverlayWidget<'_> {
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
+                    .padding(Padding::horizontal(MODAL_PAD_X))
                     .title(theme::modal_title(&format!(
                         "File explorer · readonly · {} · {}",
                         picker_position(*selected, items.len()),
@@ -3586,6 +3597,7 @@ impl Widget for OverlayWidget<'_> {
                             .borders(Borders::ALL)
                             .border_style(theme::border())
                             .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
                             .title(theme::modal_title(&title)),
                     )
                     .render(r, buf);

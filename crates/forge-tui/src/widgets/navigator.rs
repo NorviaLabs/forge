@@ -50,8 +50,10 @@ pub struct NavigatorTabs {
     pub focused: bool,
     pub needs_you: usize,
     /// Tab under the pointer. The hovered *inactive* tab gets a raised ground
-    /// and a leading marker, so a pointer user can tell it is clickable; the
+    /// and a weight step, so a pointer user can tell it is clickable; the
     /// active tab keeps its own treatment and focus never moves on hover.
+    /// Labels sit on the column's left edge; only the active tab's `▌` marker
+    /// takes the leading cell, so nothing shifts on hover.
     pub hover: Option<NavigatorTab>,
 }
 
@@ -78,17 +80,15 @@ impl Widget for NavigatorTabs {
             let hovered = !is_active && self.hover == Some(tab);
             if is_active {
                 spans.push(Span::styled("▌", theme::accent_style()));
-            } else if hovered {
-                // A pointer-only affordance: shape (`›`) plus ground, never
-                // colour alone, and never on the tab that already owns input.
-                spans.push(Span::styled("›", theme::accent_style()));
-            } else {
-                spans.push(Span::raw(" "));
             }
             let label_style = if is_active {
                 active
             } else if hovered {
-                inactive.patch(theme::surface_hover())
+                // Ground plus weight: no reserved marker cell, so the label
+                // never moves and the bar stays flush with the column edge.
+                inactive
+                    .patch(theme::surface_hover())
+                    .add_modifier(Modifier::BOLD)
             } else {
                 inactive
             };
@@ -387,7 +387,7 @@ mod tests {
     /// ground plus a leading marker — so a pointer user can tell it is
     /// clickable. The active tab's treatment is untouched by hover.
     #[test]
-    fn hovered_inactive_tab_takes_the_hover_ground() {
+    fn hovered_inactive_tab_takes_the_hover_ground_without_moving_the_label() {
         let render = |hover: Option<NavigatorTab>| {
             let backend = TestBackend::new(40, 1);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -429,9 +429,21 @@ mod tests {
             "unhovered tab must not carry the hover ground"
         );
         assert!(
-            hovered.content().iter().any(|cell| cell.symbol() == "›"),
-            "hovered tab lost its leading marker"
+            sessions_label(&hovered)
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "hovered tab lost its weight step"
         );
+        // No reserved hover cell: the label stays on the column's left edge
+        // whether or not the pointer is over it.
+        let label_x = |buffer: &ratatui::buffer::Buffer| {
+            buffer
+                .content()
+                .iter()
+                .position(|cell| cell.symbol() == "S")
+                .expect("Sessions label")
+        };
+        assert_eq!(label_x(&base), label_x(&hovered));
     }
 
     #[test]

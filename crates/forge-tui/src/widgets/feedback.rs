@@ -77,9 +77,16 @@ impl Widget for FeedbackBar<'_> {
             Span::styled(&self.model.text, style),
         ]);
         if area.height == 1 {
+            // Single-row strip: no border to inset from, so pad directly to
+            // the same text origin the bordered strips and the composer use
+            // (`TEXT_INSET`), keeping the sidebar's left edge consistent.
             Paragraph::new(text)
                 .style(theme::panel())
                 .wrap(Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .padding(Padding::horizontal(crate::widgets::input::TEXT_INSET)),
+                )
                 .render(area, buf);
             return;
         }
@@ -213,6 +220,19 @@ mod tests {
         let rendered = render_feedback(&long, 20, 4);
         // 2026 grammar: warning renders `[?]`, not the animated WAIT word.
         assert!(rendered.contains("[?]") && rendered.contains("abcdef"));
+    }
+
+    /// The strip has no border, so it pads directly to the sidebar's shared
+    /// text origin — the same column the conversation and composer start at.
+    #[test]
+    fn single_row_strip_starts_at_the_shared_text_origin() {
+        let model = FeedbackModel::error("boom");
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        FeedbackBar { model: &model }.render(area, &mut buf);
+        let inset = crate::widgets::input::TEXT_INSET;
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+        assert_eq!(buf[(inset, 0)].symbol(), "[");
     }
 
     #[test]

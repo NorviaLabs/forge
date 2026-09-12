@@ -15,6 +15,18 @@ pub struct QueuedMessages<'a> {
     pub hover: Option<usize>,
 }
 
+/// Text area inside the strip: the queue has no border, so it pads directly
+/// to the sidebar's shared text origin (same inset as the composer and the
+/// conversation), keeping one left edge for the whole column.
+fn inner_area(area: Rect) -> Rect {
+    let inset = crate::widgets::input::TEXT_INSET.min(area.width / 2);
+    Rect {
+        x: area.x.saturating_add(inset),
+        width: area.width.saturating_sub(inset.saturating_mul(2)),
+        ..area
+    }
+}
+
 /// First message index in the visible window (window follows the selection).
 fn window_start(len: usize, selected: Option<usize>) -> usize {
     let visible = len.min(MAX_DISPLAYED_MESSAGES);
@@ -37,7 +49,8 @@ pub fn message_index_at(
     if len == 0 || area.width == 0 || area.height == 0 {
         return None;
     }
-    if col < area.x || col >= area.right() || row <= area.y || row >= area.bottom() {
+    let inner = inner_area(area);
+    if col < inner.x || col >= inner.right() || row <= area.y || row >= area.bottom() {
         return None;
     }
     let start = window_start(len, selected);
@@ -52,13 +65,17 @@ impl Widget for QueuedMessages<'_> {
             return;
         }
 
+        let inner = inner_area(area);
+        if inner.width == 0 {
+            return;
+        }
         let visible = self.messages.len().min(MAX_DISPLAYED_MESSAGES);
         let start = window_start(self.messages.len(), self.selected);
         let title = Line::from(vec![
             Span::styled("Queued", theme::metadata_style()),
             Span::styled(" · ↑ edit last", theme::dim()),
         ]);
-        buf.set_line(area.x, area.y, &title, area.width);
+        buf.set_line(inner.x, area.y, &title, inner.width);
 
         for (offset, message) in self.messages.iter().skip(start).take(visible).enumerate() {
             let index = start + offset;
@@ -73,7 +90,7 @@ impl Widget for QueuedMessages<'_> {
             } else {
                 (format!("  {}. ", index + 1), theme::dim())
             };
-            let available = area.width.saturating_sub(prefix.chars().count() as u16) as usize;
+            let available = inner.width.saturating_sub(prefix.chars().count() as u16) as usize;
             let preview = truncate(&normalized, available);
             let style = if selected {
                 theme::focused_selection_style()
@@ -92,14 +109,14 @@ impl Widget for QueuedMessages<'_> {
             ];
             if hovered {
                 let used = spans.iter().map(Span::width).sum::<usize>();
-                if used < area.width as usize {
-                    spans.push(Span::styled(" ".repeat(area.width as usize - used), style));
+                if used < inner.width as usize {
+                    spans.push(Span::styled(" ".repeat(inner.width as usize - used), style));
                 }
             }
             let line = Line::from(spans);
             let row = area.y.saturating_add(1 + offset as u16);
             if row < area.bottom() {
-                buf.set_line(area.x, row, &line, area.width);
+                buf.set_line(inner.x, row, &line, inner.width);
             }
         }
 
@@ -114,10 +131,10 @@ impl Widget for QueuedMessages<'_> {
                     self.messages.len() - visible
                 );
                 buf.set_line(
-                    area.x,
+                    inner.x,
                     row,
                     &Line::from(Span::styled(overflow, theme::dim())),
-                    area.width,
+                    inner.width,
                 );
             }
         }
@@ -193,8 +210,10 @@ mod tests {
 
     #[test]
     fn truncates_previews_to_the_available_width() {
-        let output = render(&["a very long queued message".into()], None, None, 18, 2);
-        assert!(output.contains("a very long…"));
+        // 26 wide leaves 18 inner columns after the shared inset; the prefix
+        // eats 5, so the preview middle-truncates.
+        let output = render(&["a very long queued message".into()], None, None, 26, 2);
+        assert!(output.contains("a very long…"), "{output:?}");
     }
 
     #[test]
@@ -225,19 +244,24 @@ mod tests {
         let buf = terminal.backend().buffer();
         let cell = |x, y| &buf[(x, y)];
         // Row 0 is the title, row 1 the first message, row 2 the hovered one.
-        assert!(cell(0, 2).symbol() == "›", "hovered row lost its marker");
+        // The strip pads to the shared sidebar text origin (TEXT_INSET).
+        let inset = crate::widgets::input::TEXT_INSET;
+        assert!(
+            cell(inset, 2).symbol() == "›",
+            "hovered row lost its marker"
+        );
         assert_eq!(
-            cell(5, 2).style().bg,
+            cell(inset + 5, 2).style().bg,
             theme::surface_hover().bg,
             "hovered row lost its ground"
         );
         assert_ne!(
-            cell(5, 1).style().bg,
+            cell(inset + 5, 1).style().bg,
             theme::surface_hover().bg,
             "unhovered row gained ground"
         );
         assert_eq!(
-            cell(0, 1).style().fg,
+            cell(inset, 1).style().fg,
             theme::dim().fg,
             "unhovered prefix style changed"
         );
@@ -260,13 +284,14 @@ mod tests {
             })
             .unwrap();
         let buf = terminal.backend().buffer();
+        let inset = crate::widgets::input::TEXT_INSET;
         assert_eq!(
-            buf[(5, 1)].style().bg,
+            buf[(inset + 5, 1)].style().bg,
             theme::focused_selection_style().bg,
             "selection ground must survive hover"
         );
         assert!(
-            buf[(0, 1)].symbol() != "›",
+            buf[(inset, 1)].symbol() != "›",
             "hover marker impersonated selection"
         );
     }
@@ -274,15 +299,22 @@ mod tests {
     #[test]
     fn hit_testing_matches_the_rendered_window() {
         let area = Rect::new(4, 10, 30, 5);
+        // The strip's text area starts at the shared sidebar inset.
+        let x = area.x + crate::widgets::input::TEXT_INSET + 1;
         // Window follows the selection: 2..5.
-        assert_eq!(message_index_at(5, Some(4), area, 5, 10), None, "title row");
-        assert_eq!(message_index_at(5, Some(4), area, 5, 11), Some(2));
-        assert_eq!(message_index_at(5, Some(4), area, 5, 13), Some(4));
+        assert_eq!(message_index_at(5, Some(4), area, x, 10), None, "title row");
+        assert_eq!(message_index_at(5, Some(4), area, x, 11), Some(2));
+        assert_eq!(message_index_at(5, Some(4), area, x, 13), Some(4));
         assert_eq!(
-            message_index_at(5, Some(4), area, 5, 14),
+            message_index_at(5, Some(4), area, x, 14),
             None,
             "overflow row"
         );
-        assert_eq!(message_index_at(5, Some(4), area, 3, 11), None, "outside");
+        assert_eq!(
+            message_index_at(5, Some(4), area, area.x, 11),
+            None,
+            "before the inset"
+        );
+        assert_eq!(message_index_at(5, Some(4), area, x, 9), None, "above");
     }
 }
