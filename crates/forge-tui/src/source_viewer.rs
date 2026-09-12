@@ -2592,8 +2592,11 @@ mod tests {
         }
         .render(area, &mut command);
         assert!(buffer_text(&command, area).contains(":w"));
-        // Panel border (1) + padding (PANE_PAD_X) + text inset + `:` (1) + `w` (1).
-        let cursor_style = command[(10, area.bottom() - 2)].style();
+        // Caret sits after the panel border, padding, shared text inset,
+        // `:` and the command text — derived, never hardcoded, so padding
+        // changes move it instead of breaking it.
+        let cursor_x = area.x + 1 + crate::design::PANE_PAD_X + TEXT_INSET + 2;
+        let cursor_style = command[(cursor_x, area.bottom() - 2)].style();
         let caret_style = theme::caret();
         assert_eq!(cursor_style.fg, caret_style.fg);
         assert_eq!(cursor_style.bg, caret_style.bg);

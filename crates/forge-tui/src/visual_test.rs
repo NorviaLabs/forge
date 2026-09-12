@@ -114,7 +114,11 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        let top = text.lines().next().unwrap_or_default();
+        // The framed header puts its border on row 0; identity lives inside.
+        let top = text
+            .lines()
+            .find(|line| line.contains('⌂'))
+            .unwrap_or_default();
         assert!(top.contains("forge"), "missing header directory:\n{text}");
         assert!(top.contains("main*"), "missing dirty branch:\n{text}");
     }
@@ -137,7 +141,10 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        let top = text.lines().next().unwrap_or_default();
+        let top = text
+            .lines()
+            .find(|line| line.contains('⌂'))
+            .unwrap_or_default();
         assert!(top.contains('⌂'), "missing directory identity:\n{text}");
         assert!(
             !top.contains("mock"),
@@ -438,7 +445,7 @@ mod tests {
         assert!(text.contains("main.rs"), "missing path:\n{text}");
         assert!(text.contains("fn main()"), "missing content:\n{text}");
         assert!(
-            text.contains("│   1 fn main()"),
+            text.contains("│ 1 fn main()"),
             "missing line numbers:\n{text}"
         );
     }
