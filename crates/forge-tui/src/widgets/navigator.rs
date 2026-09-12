@@ -151,6 +151,10 @@ impl Widget for SessionList<'_> {
             };
             let label_style = if row.selected {
                 theme::text().add_modifier(Modifier::BOLD)
+            } else if hovered && !(row.focused && self.focused) {
+                // Hover is a pointer affordance: ground plus a weight step,
+                // never the selection treatment.
+                label_style.add_modifier(Modifier::BOLD)
             } else {
                 label_style
             };

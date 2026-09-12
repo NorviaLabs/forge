@@ -1239,7 +1239,15 @@ impl SourceViewerWidget<'_> {
         );
         Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
 
+        // Air pass: one blank row between the pane title and the content, so
+        // the header reads as chrome rather than the first source line.
         let body = rows[1];
+        let spacer = u16::from(body.height > 4);
+        let body = Rect {
+            y: body.y.saturating_add(spacer),
+            height: body.height.saturating_sub(spacer),
+            ..body
+        };
         let visible_height = body.height as usize;
         let content_width = body.width.saturating_sub(gutter) as usize;
         self.viewer.last_content_width = content_width;
@@ -1375,8 +1383,16 @@ impl SourceViewerWidget<'_> {
         );
         Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
 
+        // Air pass: keep the editor body aligned with the read-only viewer.
+        let body = rows[1];
+        let spacer = u16::from(body.height > 4);
+        let body = Rect {
+            y: body.y.saturating_add(spacer),
+            height: body.height.saturating_sub(spacer),
+            ..body
+        };
         if let Some(editor) = self.editor.as_deref_mut() {
-            editor.render(rows[1], buf);
+            editor.render(body, buf);
         }
 
         let status_style = if self.focused {
@@ -1432,7 +1448,14 @@ impl SourceViewerWidget<'_> {
             ])
             .split(area);
 
+        // Air pass: one blank row between the pane title and the preview.
         let body = rows[1];
+        let spacer = u16::from(body.height > 4);
+        let body = Rect {
+            y: body.y.saturating_add(spacer),
+            height: body.height.saturating_sub(spacer),
+            ..body
+        };
         let content_width = body.width as usize;
         let visible_height = body.height as usize;
 

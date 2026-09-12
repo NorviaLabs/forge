@@ -1849,6 +1849,11 @@ pub struct TuiApp {
     pub(crate) hover_chip: Option<usize>,
     /// Hovered queued-message index (pointer motion; never moves the selection).
     pub(crate) hover_queue: Option<usize>,
+    /// Mouse-hittable overlay list rows from the last draw.
+    pub(crate) overlay_rows:
+        std::cell::RefCell<Vec<(crate::overlays::OverlayRow, ratatui::layout::Rect)>>,
+    /// Hovered overlay row (pointer motion; never moves the selection).
+    pub(crate) hover_overlay: Option<crate::overlays::OverlayRow>,
     /// Option-row rects `(index, rect)` for the pending approval/question card,
     /// captured during the last conversation paint.
     pub(crate) option_rects: Vec<(usize, ratatui::layout::Rect)>,

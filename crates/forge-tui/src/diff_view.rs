@@ -794,9 +794,15 @@ impl Widget for DiffViewWidget<'_> {
             }
         }
 
+        // Air pass: one blank row between the pane title and the patch, so the
+        // header reads as chrome rather than the first hunk line.
+        let spacer = u16::from(inner.height.saturating_sub(if hint_row { 2 } else { 1 }) > 4);
         let body = Rect {
-            y: inner.y.saturating_add(1),
-            height: inner.height.saturating_sub(if hint_row { 2 } else { 1 }),
+            y: inner.y.saturating_add(1 + spacer),
+            height: inner
+                .height
+                .saturating_sub(if hint_row { 2 } else { 1 })
+                .saturating_sub(spacer),
             ..inner
         };
         if body.height == 0 {
@@ -1360,9 +1366,9 @@ mod widget_tests {
     #[test]
     fn the_hint_row_costs_the_patch_exactly_one_line() {
         let mut view = view_with_patch();
-        // 12 rows: 2 borders, 1 header, 1 hint, 8 for the patch.
+        // 12 rows: 2 borders, 1 header, 1 title spacer, 1 hint, 7 for the patch.
         render(&mut view, 60, 12);
-        assert_eq!(view.viewport_height, 8);
+        assert_eq!(view.viewport_height, 7);
     }
 
     #[test]

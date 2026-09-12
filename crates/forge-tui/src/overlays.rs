@@ -1547,7 +1547,7 @@ pub enum OverlayAction {
 
 /// Key handling for overlays. Each `Overlay` variant dispatches to its own
 /// key handler; the returned `OverlayAction` is applied by the app.
-fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
+pub(crate) fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
     match overlay {
         Overlay::Theme {
             selected, items, ..
@@ -2530,6 +2530,8 @@ pub fn render_theme_dock(
     items: &[(String, String)],
     area: Rect,
     buf: &mut Buffer,
+    row_sink: Option<&std::cell::RefCell<Vec<(OverlayRow, Rect)>>>,
+    hover_row: Option<OverlayRow>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -2552,8 +2554,13 @@ pub fn render_theme_dock(
         let marker = if index == selected { "> " } else { "  " };
         let is_current = id == current;
         let selected_row = index == selected;
+        let hovered = hover_row == Some(OverlayRow::Theme(index)) && !selected_row;
         let style = if selected_row {
             theme::focused_selection_style()
+        } else if hovered {
+            theme::text()
+                .patch(theme::surface_hover())
+                .add_modifier(Modifier::BOLD)
         } else {
             theme::text()
         };
@@ -2591,17 +2598,68 @@ pub fn render_theme_dock(
         .into_iter()
         .skip(start)
         .take(visible)
-        .map(|(_, item)| item)
+        .enumerate()
+        .map(|(offset, (index, item))| {
+            if index != usize::MAX {
+                record_row(
+                    row_sink,
+                    OverlayRow::Theme(index),
+                    list_area,
+                    list_area.y + offset as u16,
+                );
+            }
+            item
+        })
         .collect();
     List::new(list_items).render(list_area, buf);
 }
 
 pub struct OverlayWidget<'a> {
     pub overlay: &'a Overlay,
+    /// Captured list-row rects this paint, for pointer hit-testing. `None`
+    /// leaves the overlay keyboard-only (tests and snapshot renders).
+    pub row_sink: Option<&'a std::cell::RefCell<Vec<(OverlayRow, Rect)>>>,
+    /// Row under the pointer this frame; takes the shared hover treatment.
+    pub hover_row: Option<OverlayRow>,
+}
+
+/// One mouse-hittable row inside an overlay list. The payload is the row's
+/// selection index in the same space the keyboard uses, so click and key
+/// handling can never disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayRow {
+    Provider(usize),
+    Model(usize),
+    Effort(usize),
+    Resume(usize),
+    Session(usize),
+    Theme(usize),
+}
+
+/// Record one list row's screen rect for pointer hit-testing. No-op without a
+/// sink, so keyboard-only paints stay allocation-free.
+fn record_row(
+    sink: Option<&std::cell::RefCell<Vec<(OverlayRow, Rect)>>>,
+    row: OverlayRow,
+    area: Rect,
+    y: u16,
+) {
+    if let Some(sink) = sink {
+        sink.borrow_mut().push((
+            row,
+            Rect {
+                y,
+                height: 1,
+                ..area
+            },
+        ));
+    }
 }
 
 impl Widget for OverlayWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let sink = self.row_sink;
+        let hover_row = self.hover_row;
         // Dimmed transcript behind every modal keeps context legible without
         // competing with the picker. Theme dock is the exception: it replaces
         // the composer band so live preview stays honest against undimmed UI.
@@ -2743,8 +2801,20 @@ impl Widget for OverlayWidget<'_> {
                                 let idx = start + i;
                                 let vendor = &providers[row.vendor_idx];
                                 let selected = idx == *provider_cursor;
+                                record_row(
+                                    sink,
+                                    OverlayRow::Provider(idx),
+                                    list_area,
+                                    list_area.y + i as u16,
+                                );
+                                let hovered =
+                                    hover_row == Some(OverlayRow::Provider(idx)) && !selected;
                                 let style = if selected {
                                     theme::focused_selection_style()
+                                } else if hovered {
+                                    theme::text()
+                                        .patch(theme::surface_hover())
+                                        .add_modifier(Modifier::BOLD)
                                 } else {
                                     theme::text()
                                 };
@@ -2901,8 +2971,20 @@ impl Widget for OverlayWidget<'_> {
                                 .map(|(i, row)| {
                                     let idx = start + i;
                                     let selected = idx == *model_selected;
+                                    record_row(
+                                        sink,
+                                        OverlayRow::Model(idx),
+                                        list_area,
+                                        list_area.y + i as u16,
+                                    );
+                                    let hovered =
+                                        hover_row == Some(OverlayRow::Model(idx)) && !selected;
                                     let row_style = if selected {
                                         theme::focused_selection_style()
+                                    } else if hovered {
+                                        theme::text()
+                                            .patch(theme::surface_hover())
+                                            .add_modifier(Modifier::BOLD)
                                     } else {
                                         theme::text()
                                     };
@@ -2958,8 +3040,20 @@ impl Widget for OverlayWidget<'_> {
                                     .enumerate()
                                     .map(|(idx, effort)| {
                                         let selected = idx == *effort_selected;
+                                        record_row(
+                                            sink,
+                                            OverlayRow::Effort(idx),
+                                            list_area,
+                                            list_area.y + idx as u16,
+                                        );
+                                        let hovered =
+                                            hover_row == Some(OverlayRow::Effort(idx)) && !selected;
                                         let style = if selected {
                                             theme::focused_selection_style()
+                                        } else if hovered {
+                                            theme::text()
+                                                .patch(theme::surface_hover())
+                                                .add_modifier(Modifier::BOLD)
                                         } else {
                                             theme::text()
                                         };
@@ -3135,11 +3229,24 @@ impl Widget for OverlayWidget<'_> {
                         .enumerate()
                         .skip(start)
                         .take(visible)
-                        .map(|(_position, index)| {
+                        .map(|(position, index)| {
                             let item = &items[*index];
-                            let marker = if *index == *selected { "> " } else { "  " };
-                            let style = if *index == *selected {
+                            let selected_row = *index == *selected;
+                            record_row(
+                                sink,
+                                OverlayRow::Resume(*index),
+                                list_area,
+                                list_area.y + (position - start) as u16,
+                            );
+                            let hovered =
+                                hover_row == Some(OverlayRow::Resume(*index)) && !selected_row;
+                            let marker = if selected_row { "> " } else { "  " };
+                            let style = if selected_row {
                                 theme::selected_row()
+                            } else if hovered {
+                                theme::text()
+                                    .patch(theme::surface_hover())
+                                    .add_modifier(Modifier::BOLD)
                             } else {
                                 theme::text()
                             };
@@ -3191,15 +3298,28 @@ impl Widget for OverlayWidget<'_> {
                     .filter(|(index, _)| indices.contains(index))
                     .skip(start)
                     .take(visible)
-                    .map(|(index, item)| {
+                    .enumerate()
+                    .map(|(offset, (index, item))| {
                         let heading = if previous_group == Some(item.group) {
                             String::new()
                         } else {
                             previous_group = Some(item.group);
                             item.group.heading().to_string()
                         };
+                        record_row(
+                            sink,
+                            OverlayRow::Session(index),
+                            list_area,
+                            list_area.y + offset as u16,
+                        );
+                        let hovered =
+                            hover_row == Some(OverlayRow::Session(index)) && index != *selected;
                         let style = if index == *selected {
                             theme::selected_row()
+                        } else if hovered {
+                            theme::text()
+                                .patch(theme::surface_hover())
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             theme::text()
                         };
@@ -3352,7 +3472,15 @@ impl Widget for OverlayWidget<'_> {
                 current,
                 items,
             } => {
-                render_theme_dock(*selected, current, items, theme_dock_rect(area), buf);
+                render_theme_dock(
+                    *selected,
+                    current,
+                    items,
+                    theme_dock_rect(area),
+                    buf,
+                    sink,
+                    hover_row,
+                );
                 if let Some((id, _)) = items.get(*selected) {
                     crate::theme_preview::render_theme_preview(id, theme_preview_rect(area), buf);
                 }
@@ -3510,7 +3638,12 @@ mod tests {
     fn render_text(overlay: &Overlay) -> String {
         let area = Rect::new(0, 0, 100, 48);
         let mut buf = Buffer::empty(area);
-        OverlayWidget { overlay }.render(area, &mut buf);
+        OverlayWidget {
+            overlay,
+            row_sink: None,
+            hover_row: None,
+        }
+        .render(area, &mut buf);
         let mut text = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
@@ -3519,6 +3652,62 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    /// Pointer support: every picker list row records a screen rect, and a
+    /// hovered row takes the shared ground + weight while the selection keeps
+    /// its stronger treatment.
+    #[test]
+    fn overlay_rows_record_rects_and_hover_takes_the_ground() {
+        let overlay = model_overlay(sample_default_models(), ConnectModelColumn::Models);
+        let area = Rect::new(0, 0, 100, 30);
+        let sink = std::cell::RefCell::new(Vec::new());
+        let mut buf = Buffer::empty(area);
+        OverlayWidget {
+            overlay: &overlay,
+            row_sink: Some(&sink),
+            hover_row: None,
+        }
+        .render(area, &mut buf);
+        let rows = sink.into_inner();
+        assert!(
+            rows.iter()
+                .any(|(row, _)| matches!(row, OverlayRow::Model(0))),
+            "model rows captured: {rows:?}"
+        );
+        let (_, second) = rows
+            .iter()
+            .find(|(row, _)| *row == OverlayRow::Model(1))
+            .expect("second model row");
+        let (_, first) = rows
+            .iter()
+            .find(|(row, _)| *row == OverlayRow::Model(0))
+            .expect("first model row");
+
+        let mut hovered = Buffer::empty(area);
+        OverlayWidget {
+            overlay: &overlay,
+            row_sink: None,
+            hover_row: Some(OverlayRow::Model(1)),
+        }
+        .render(area, &mut hovered);
+        assert_eq!(
+            hovered[(first.x + 4, first.y)].style().bg,
+            theme::focused_selection_style().bg,
+            "selection must outrank hover"
+        );
+        assert_eq!(
+            hovered[(second.x + 4, second.y)].style().bg,
+            theme::surface_hover().bg,
+            "hovered row lost its ground"
+        );
+        assert!(
+            hovered[(second.x + 4, second.y)]
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "hovered row lost its weight step"
+        );
     }
 
     #[test]
@@ -3536,7 +3725,12 @@ mod tests {
             title: "Status".into(),
             rows: vec![StatusRow::field("Model", "gpt")],
         };
-        OverlayWidget { overlay: &overlay }.render(area, &mut buf);
+        OverlayWidget {
+            overlay: &overlay,
+            row_sink: None,
+            hover_row: None,
+        }
+        .render(area, &mut buf);
         // Corner sits far outside the centered 74x30 modal: glyph survives,
         // only re-toned by dim_region rather than blanked to a space.
         assert_eq!(buf[(0, 0)].symbol(), "x");
@@ -4174,7 +4368,12 @@ mod tests {
 
         let title_row = |overlay: &Overlay| -> u16 {
             let mut buf = Buffer::empty(area);
-            OverlayWidget { overlay }.render(area, &mut buf);
+            OverlayWidget {
+                overlay,
+                row_sink: None,
+                hover_row: None,
+            }
+            .render(area, &mut buf);
             for y in 0..area.height {
                 let mut line = String::new();
                 for x in 0..area.width {
@@ -5051,7 +5250,12 @@ mod tests {
         // Dock sits in the bottom band — title should appear in the lower half.
         let area = Rect::new(0, 0, 100, 48);
         let mut buf = Buffer::empty(area);
-        OverlayWidget { overlay: &overlay }.render(area, &mut buf);
+        OverlayWidget {
+            overlay: &overlay,
+            row_sink: None,
+            hover_row: None,
+        }
+        .render(area, &mut buf);
         let mut title_row = None;
         for y in 0..area.height {
             let mut row = String::new();

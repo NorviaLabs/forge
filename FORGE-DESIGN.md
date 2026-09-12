@@ -407,7 +407,8 @@ The conversation has two densities (`markdown.rs::Density`):
 - **Airy** is the default at comfortable pane heights. It adds one blank row
   before a section heading, one after the heading rule, one between list
   items (never before the first or after the last), one on each side of a
-  fenced code block, and one after each `You` / `Answer` speaker label so the
+  fenced code block, one between distinct tool/activity groups (rows inside a
+  group stay tight), and one after each `You` / `Answer` speaker label so the
   label reads as a heading rather than a prefix of its text.
 - **Compact** is the historical spacing and the fallback for short terminals.
   The app switches to it when the conversation pane is shorter than
@@ -524,10 +525,10 @@ Do not fill the entire active block with accent colour. Focus is structural, not
 
 Mouse is a second input for the same grammar, never a separate mode. Clicking moves block focus and acts on the hit target; hover previews without moving focus.
 
-- **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel). A second click at the same cell within the double-click window acts: a navigator session row attaches; a file-tree row opens on the first click.
+- **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel). A second click at the same cell within the double-click window acts: a navigator session row attaches; a file-tree row opens on the first click. Overlay list rows (model picker providers/models/effort, resume picker, session switcher, theme dock) are pointer-actionable too: a single click moves the highlight (and the picker's focused column), a double-click confirms through the same `Enter` path the keyboard uses.
 - **Wheel** scrolls the focused pane's content (conversation, file tree, source viewer), matching the keyboard page/step size. `Shift` pages.
 - **Right-click** opens the copy/clear context menu over a text selection.
-- **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, navigator tabs, and queued-message rows. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker in the reserved gutter and/or a weight step — so clickability is never colour-only; the marker column is pre-reserved, so hover never shifts text. It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover: `selection` is the strongest neutral ground in both built-in themes (`selection` outranks `surface_hover`), so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
+- **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, navigator tabs, queued-message rows, and overlay list rows. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker in the reserved gutter and/or a weight step — so clickability is never colour-only; the marker column is pre-reserved, so hover never shifts text. It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover: `selection` is the strongest neutral ground in both built-in themes (`selection` outranks `surface_hover`), so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
 
 ## 9. Component Specifications
 
@@ -583,7 +584,9 @@ Rules:
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
 - Do not render a permanent progress narration stream.
-- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, list items, fenced code and the `You` / `Answer` speaker labels widen by one blank row; the rule itself never stacks separators.
+- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, list items, fenced code and the `You` / `Answer` speaker labels widen by one blank row; distinct tool/activity groups are separated by one
+blank row while rows inside one group stay tight; the rule itself never stacks
+separators.
 - Lists, quotes, tables and fenced code share the prose left edge; only the code rail sits inside the block, never the whole block inset past its neighbours. A plan's explanation is separated from its `Plan · N of M done` header by one blank.
 - Do not surround every message with a full-width box.
 
@@ -632,6 +635,7 @@ the single plan surface.
 ### 9.7 Source viewer
 
 - Code remains the visual focus; syntax highlighting is restrained (`syntax.*` palette).
+- One blank row separates the pane title from the content, so the header reads as chrome rather than the first source line.
 - The title shows the exact file with an ASCII `*` unsaved marker that is never elided; there is no trailing "modified" word.
 - The NORMAL / INSERT mode row shares the composer's text inset so both baselines align.
 - Search matches rank: active match, other matches, current line.
@@ -653,6 +657,7 @@ Conventional semantics with textual fallbacks:
 Rules:
 
 - Preserve old and new line numbers.
+- One blank row separates the pane title from the patch (same rule as the source viewer).
 - Prefer foreground/gutter markers over large background fills per changed line.
 - The header names the selected file as the pane title (`> …`), with ASCII `+N -M` counts and the `N of M` position; the marker column comes off the elision budget so counts never clip.
 - Reviewed files carry the `✓` tick; counts stay ASCII even in narrow panes.

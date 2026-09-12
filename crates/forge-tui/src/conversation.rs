@@ -817,9 +817,12 @@ impl ConversationRenderInternals for ConversationModel {
         // A full-width rule opens every turn boundary (every UserMessage
         // after the first block in the transcript) — independent of whether
         // that turn has a plan checklist. The rule is cushioned by one blank
-        // row on each side so turns visibly separate; compact tool rows stay
-        // tight against each other and major blocks get a blank separator.
+        // row on each side so turns visibly separate; distinct tool/activity
+        // groups get a blank separator of their own in airy density, while
+        // rows inside one group stay tight. Major blocks get a blank
+        // separator.
         let mut seen_any_block = start_block > 0;
+        let mut prev_railed = false;
         for block in blocks.into_iter().skip(start_block) {
             let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));
             if is_turn_start {
@@ -833,6 +836,12 @@ impl ConversationRenderInternals for ConversationModel {
                 // have their own separator treatment below.
                 ensure_blank_line(&mut lines);
             }
+            if railed && prev_railed && gap && !lines.is_empty() {
+                // Two adjacent activity groups are distinct outlines; one
+                // blank row keeps their headers from reading as one list.
+                ensure_blank_line(&mut lines);
+            }
+            prev_railed = railed;
             if is_turn_start && seen_any_block {
                 // A turn boundary is one rule with one row of breathing room
                 // on each side. `ensure_blank_line` keeps a preceding block's
@@ -3194,6 +3203,62 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if group.items.iter().any(|item| item.contains("https://ratatui.rs"))
         )));
+    }
+
+    #[test]
+    fn adjacent_activity_groups_take_a_blank_row_in_airy_density() {
+        let group = |category: ActivityCategory, summary: &str| ChatItem::ActivityGroup {
+            category,
+            summary: summary.into(),
+            detail: "detail".into(),
+            state: ToolCardState::Done,
+            outcome: ExecutionOutcome::Success,
+            retries: 0,
+        };
+        let airy = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                group(ActivityCategory::Exploring, "First group"),
+                group(ActivityCategory::Validating, "Second group"),
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let lines: Vec<String> = airy.lines_for_width(80).iter().map(line_text).collect();
+        let second = lines
+            .iter()
+            .position(|line| line.contains("Second group"))
+            .expect("second group renders");
+        assert!(
+            lines[second - 1].trim().is_empty(),
+            "adjacent activity groups must be separated by one blank row: {lines:?}"
+        );
+
+        let compact = ConversationModel {
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            items: vec![
+                group(ActivityCategory::Exploring, "First group"),
+                group(ActivityCategory::Validating, "Second group"),
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                compact: true,
+                ..ConversationViewOpts::default()
+            },
+        };
+        let lines: Vec<String> = compact.lines_for_width(80).iter().map(line_text).collect();
+        let second = lines
+            .iter()
+            .position(|line| line.contains("Second group"))
+            .expect("second group renders");
+        assert!(
+            !lines[second - 1].trim().is_empty(),
+            "compact density keeps adjacent groups tight: {lines:?}"
+        );
     }
 
     #[test]

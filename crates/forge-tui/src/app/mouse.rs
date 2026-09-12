@@ -3,8 +3,9 @@
 //! Split out of `app.rs` per the `input.rs` precedent (#19). v1 scope is
 //! **vertical wheel only**, routed by focus (not pointer position). Selection
 //! support (drag-to-select + right-click context menu, v1: the Editor pane) is
-//! routed by pointer position within the editor rect. Hover `Moved` events are
-//! not emitted unless `EnableMouseMotion` is also enabled (it is not).
+//! routed by pointer position within the editor rect. Pointer motion enables
+//! hover highlights (`EnableMouseCapture` includes any-motion tracking), so
+//! `Moved` events preview rows without ever moving keyboard focus.
 
 use super::*;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -90,6 +91,12 @@ impl TuiApp {
         // for the card's own option rows.
         if let Some(index) = self.option_at(col, row) {
             self.click_option(index, double).await?;
+            return Ok(());
+        }
+        // Overlay list rows (model picker, resume, sessions, themes) are
+        // mouse-actionable too: same grammar as the approval card.
+        if let Some(hit) = self.overlay_row_at(col, row) {
+            self.click_overlay_row(hit, double).await?;
             return Ok(());
         }
         if self.pointer_blocked() {
@@ -226,6 +233,7 @@ impl TuiApp {
         self.hover_navigator_tab = None;
         self.hover_queue = None;
         self.hover_option = self.option_at(col, row);
+        self.hover_overlay = self.overlay_row_at(col, row);
         if self.pointer_blocked() {
             return;
         }
@@ -289,6 +297,100 @@ impl TuiApp {
         } else {
             None
         }
+    }
+
+    /// The overlay list row under a pointer cell, if any. Uses the row rects
+    /// captured during the overlay paint, so hover and click share one
+    /// geometry with the renderer.
+    fn overlay_row_at(&self, col: u16, row: u16) -> Option<crate::overlays::OverlayRow> {
+        self.overlay.as_ref()?;
+        self.overlay_rows
+            .borrow()
+            .iter()
+            .find(|(_, rect)| cell_inside(*rect, col, row))
+            .map(|(hit, _)| *hit)
+    }
+
+    /// Select an overlay list row. A single click moves the highlight (and the
+    /// focused column for the unified picker); a double-click confirms with the
+    /// same Enter path the keyboard uses, so side effects stay in one place.
+    async fn click_overlay_row(
+        &mut self,
+        hit: crate::overlays::OverlayRow,
+        double: bool,
+    ) -> Result<(), TuiError> {
+        use crate::overlays::{ConnectModelColumn, Overlay, OverlayRow};
+
+        let theme_preview = {
+            let Some(overlay) = self.overlay.as_mut() else {
+                return Ok(());
+            };
+            match (hit, &mut *overlay) {
+                (
+                    OverlayRow::Provider(index),
+                    Overlay::ConnectModel {
+                        provider_cursor,
+                        focus,
+                        ..
+                    },
+                ) => {
+                    *focus = ConnectModelColumn::Providers;
+                    *provider_cursor = index;
+                }
+                (
+                    OverlayRow::Model(index),
+                    Overlay::ConnectModel {
+                        model_selected,
+                        focus,
+                        ..
+                    },
+                ) => {
+                    *focus = ConnectModelColumn::Models;
+                    *model_selected = index;
+                }
+                (
+                    OverlayRow::Effort(index),
+                    Overlay::ConnectModel {
+                        effort_selected,
+                        focus,
+                        ..
+                    },
+                ) => {
+                    *focus = ConnectModelColumn::Effort;
+                    *effort_selected = index;
+                }
+                (OverlayRow::Resume(index), Overlay::ResumePicker { selected, .. }) => {
+                    *selected = index;
+                }
+                (OverlayRow::Session(index), Overlay::SessionSwitcher { selected, .. }) => {
+                    *selected = index;
+                }
+                (OverlayRow::Theme(index), Overlay::Theme { selected, .. }) => {
+                    *selected = index;
+                }
+                _ => return Ok(()),
+            }
+            matches!(overlay, Overlay::Theme { .. })
+        };
+
+        if theme_preview {
+            // Moving the theme cursor must re-theme, exactly as Up/Down does.
+            let action = self
+                .overlay
+                .as_mut()
+                .map(|overlay| crate::overlays::theme_preview_action(overlay))
+                .unwrap_or(OverlayAction::None);
+            self.apply_overlay_action(action).await?;
+        }
+        if double {
+            let action = self
+                .overlay
+                .as_mut()
+                .map(|overlay| handle_overlay_key(overlay, OverlayKey::Enter))
+                .unwrap_or(OverlayAction::None);
+            self.apply_overlay_action(action).await?;
+        }
+        Ok(())
     }
 
     /// The option index of the pending approval/question card under the
