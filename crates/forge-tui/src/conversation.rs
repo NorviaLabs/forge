@@ -7,7 +7,9 @@
 
 pub use forge_transcript::*;
 
-use crate::markdown::{render_markdown, STREAM_CARET};
+use crate::markdown::{
+    render_markdown, render_markdown_open_with, render_markdown_with_density, Density, STREAM_CARET,
+};
 use crate::status_glyph::{lifecycle_marker, Lifecycle};
 use crate::theme;
 use crate::user_message_gutter;
@@ -453,11 +455,23 @@ fn start_block_for_tail(
 #[derive(Default)]
 pub struct StreamMarkdownCache {
     width: usize,
+    /// Density the cached lines were rendered at. A density flip (short pane
+    /// ↔ comfortable pane) changes line counts, so it invalidates like width.
+    density: Density,
     /// The exact text the cached lines came from. Compared by content rather
     /// than length so a boundary that moves backwards rebuilds instead of
     /// silently reusing the wrong lines.
     prefix: String,
     open_lines: Vec<Line<'static>>,
+}
+
+/// Map the app's compact flag onto the renderer's density.
+pub(crate) fn transcript_density(compact: bool) -> Density {
+    if compact {
+        Density::Compact
+    } else {
+        Density::Airy
+    }
 }
 
 impl StreamMarkdownCache {
@@ -468,8 +482,14 @@ impl StreamMarkdownCache {
     /// stays quadratic. Only the tail is ever on screen, so only the tail is
     /// built — the same windowing `lines_for_width_from_end` already applies to
     /// the transcript, moved inside a single block.
-    fn render(&mut self, text: &str, width: usize, keep_from_end: usize) -> Vec<Line<'static>> {
-        self.render_inner(text, width, keep_from_end, false)
+    fn render(
+        &mut self,
+        text: &str,
+        width: usize,
+        keep_from_end: usize,
+        density: Density,
+    ) -> Vec<Line<'static>> {
+        self.render_inner(text, width, keep_from_end, false, density)
     }
 
     fn render_live(
@@ -477,8 +497,9 @@ impl StreamMarkdownCache {
         text: &str,
         width: usize,
         keep_from_end: usize,
+        density: Density,
     ) -> Vec<Line<'static>> {
-        self.render_inner(text, width, keep_from_end, true)
+        self.render_inner(text, width, keep_from_end, true, density)
     }
 
     fn render_inner(
@@ -487,14 +508,16 @@ impl StreamMarkdownCache {
         width: usize,
         keep_from_end: usize,
         append_caret: bool,
+        density: Density,
     ) -> Vec<Line<'static>> {
         // Grow the cache rather than rebuild it. Re-rendering the whole settled
         // prefix on every boundary advance is O(n) per advance, which is the
         // quadratic this cache exists to remove. Appending is sound for the
         // same reason the split is: each advance lands on a top-level block
         // boundary, where the renderer's state is its initial state.
-        if self.width != width || !text.starts_with(&self.prefix) {
+        if self.width != width || self.density != density || !text.starts_with(&self.prefix) {
             self.width = width;
+            self.density = density;
             self.prefix.clear();
             self.open_lines.clear();
         }
@@ -507,7 +530,7 @@ impl StreamMarkdownCache {
         if cut > self.prefix.len() {
             let fresh = &text[self.prefix.len()..cut];
             self.open_lines
-                .extend(crate::markdown::render_markdown_open(fresh, width));
+                .extend(render_markdown_open_with(fresh, width, density));
             self.prefix.push_str(fresh);
         }
         let raw_tail = &text[cut..];
@@ -518,7 +541,7 @@ impl StreamMarkdownCache {
         } else {
             raw_tail
         };
-        let mut tail = crate::markdown::render_markdown_open(tail_text, width);
+        let mut tail = render_markdown_open_with(tail_text, width, density);
         crate::markdown::fade_streaming_tail(&mut tail);
         let from_prefix = keep_from_end.saturating_sub(tail.len());
         let skip = self.open_lines.len().saturating_sub(from_prefix);
@@ -526,6 +549,7 @@ impl StreamMarkdownCache {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_assistant_answer(
     text: &str,
     streaming: bool,
@@ -534,13 +558,14 @@ fn render_assistant_answer(
     keep_from_end: usize,
     stream_cache: Option<&mut StreamMarkdownCache>,
     append_stream_caret: bool,
+    density: Density,
 ) -> Vec<Line<'static>> {
     let parts = match stream_cache {
         Some(cache) if streaming && append_stream_caret => {
-            cache.render_live(text, prose_width, keep_from_end)
+            cache.render_live(text, prose_width, keep_from_end, density)
         }
-        Some(cache) if streaming => cache.render(text, prose_width, keep_from_end),
-        _ => render_markdown(text, prose_width),
+        Some(cache) if streaming => cache.render(text, prose_width, keep_from_end, density),
+        _ => render_markdown_with_density(text, prose_width, density),
     };
     parts
         .into_iter()
@@ -589,6 +614,7 @@ pub(crate) fn render_streaming_preview(
     available_width: usize,
     keep_from_end: usize,
     cache: &mut StreamMarkdownCache,
+    density: Density,
 ) -> Vec<Line<'static>> {
     let width = available_width.max(4);
     let prose_width = prose_width_for(width);
@@ -613,6 +639,7 @@ pub(crate) fn render_streaming_preview(
                 keep_from_end,
                 Some(cache),
                 false,
+                density,
             ));
         } else {
             lines.extend(render_assistant_answer(
@@ -623,6 +650,7 @@ pub(crate) fn render_streaming_preview(
                 keep_from_end,
                 Some(cache),
                 true,
+                density,
             ));
         }
         lines.push(Line::from(""));
@@ -761,6 +789,7 @@ impl ConversationRenderInternals for ConversationModel {
         let prose_width = prose_width_for(width);
         let mut lines = Vec::new();
         let gap = !self.opts.compact;
+        let density = transcript_density(self.opts.compact);
         let rail = width >= RAIL_MIN_WIDTH;
         let blocks = self.semantic_blocks();
         // §12: empty reasoning carries no actionable information in the
@@ -881,6 +910,7 @@ impl ConversationRenderInternals for ConversationModel {
                         keep_from_end,
                         stream_cache.as_deref_mut(),
                         false,
+                        density,
                     ));
                     if gap {
                         lines.push(Line::from(""));
@@ -5438,7 +5468,7 @@ mod tests {
                 continue;
             }
             let buffer = &full[..end];
-            let incremental = lines_text(&cache.render(buffer, 60, usize::MAX));
+            let incremental = lines_text(&cache.render(buffer, 60, usize::MAX, Density::Compact));
             let one_shot = lines_text(&crate::markdown::render_markdown(buffer, 60));
             assert_eq!(
                 incremental, one_shot,
@@ -5481,6 +5511,7 @@ mod tests {
                 72,
                 usize::MAX,
                 &mut direct_cache,
+                crate::conversation::transcript_density(opts.compact),
             );
 
             assert_eq!(direct, projected, "answer: {answer:?}");
@@ -5575,7 +5606,12 @@ mod tests {
     fn the_unsettled_tail_renders_dimmer_than_settled_text() {
         let mut cache = StreamMarkdownCache::default();
         // The first paragraph is settled; the second is still being written.
-        let lines = cache.render("Settled paragraph.\n\nIn flight now▌", 60, usize::MAX);
+        let lines = cache.render(
+            "Settled paragraph.\n\nIn flight now▌",
+            60,
+            usize::MAX,
+            Density::Compact,
+        );
         let dim = crate::theme::text_dim_color();
         let fg_of = |needle: &str| {
             lines
@@ -5602,7 +5638,7 @@ mod tests {
     fn fading_the_tail_leaves_the_text_alone() {
         let mut cache = StreamMarkdownCache::default();
         let buffer = "Alpha.\n\n- one\n- two▌";
-        let faded = lines_text(&cache.render(buffer, 60, usize::MAX));
+        let faded = lines_text(&cache.render(buffer, 60, usize::MAX, Density::Compact));
         let plain = lines_text(&crate::markdown::render_markdown(buffer, 60));
         assert_eq!(faded, plain);
     }
@@ -5614,9 +5650,9 @@ mod tests {
         let text =
             "Alpha beta gamma delta epsilon zeta eta theta.\n\nSecond paragraph here.\n\nTail.";
         let mut cache = StreamMarkdownCache::default();
-        let narrow = lines_text(&cache.render(text, 30, usize::MAX));
-        let wide = lines_text(&cache.render(text, 90, usize::MAX));
-        let back = lines_text(&cache.render(text, 30, usize::MAX));
+        let narrow = lines_text(&cache.render(text, 30, usize::MAX, Density::Compact));
+        let wide = lines_text(&cache.render(text, 90, usize::MAX, Density::Compact));
+        let back = lines_text(&cache.render(text, 30, usize::MAX, Density::Compact));
 
         assert_eq!(
             wide,
@@ -5644,8 +5680,8 @@ mod tests {
         // the same number and the windowing arithmetic goes untested.
         body.push_str("A trailing paragraph still being written");
         let mut cache = StreamMarkdownCache::default();
-        let windowed = cache.render(&body, 60, 10);
-        let whole = cache.render(&body, 60, usize::MAX);
+        let windowed = cache.render(&body, 60, 10, Density::Compact);
+        let whole = cache.render(&body, 60, usize::MAX, Density::Compact);
 
         assert!(windowed.len() <= 10, "got {} lines", windowed.len());
         assert!(

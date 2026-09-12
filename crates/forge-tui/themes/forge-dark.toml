@@ -6,7 +6,10 @@ background = "#141414"
 background_deep = "#080808"
 surface = "#1E1E1E"
 surface_raised = "#1E1E1E"
-surface_hover = "#292929"
+# Hover is a pointer affordance, not a selection: it sits a clear step above
+# `surface` while staying below `selection` (#292929), so the two never read
+# as the same state.
+surface_hover = "#2E2E2E"
 border = "#343434"
 border_muted = "#292929"
 text_primary = "#EBEBEB"
@@ -30,6 +33,11 @@ waiting_border = "#E6C66A"
 structure = "#A0A0A0"
 scan_band = "#141414"
 zebra_row = "#1A1A1A"
+# Editorial emphasis inside model prose (never chrome/status/code).
+# md_strong shares the active-work orange family (36°); md_emph is a
+# greenish yellow at 70°, between warning (45°) and success (141°).
+md_strong = "#FFA31D"
+md_emph = "#C7D96B"
 
 [syntax]
 comment = "#A0A0A0"

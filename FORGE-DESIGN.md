@@ -195,6 +195,8 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `structure` | Structural landmarks inside a model response — section labels, list markers |
 | `scan_band` | Ground behind a whole list block in a model response |
 | `zebra_row` | Even-row tint zebra-striping a rendered table |
+| `md_strong` | Editorial emphasis: `**strong**` prose hue (orange in the built-ins) |
+| `md_emph` | Editorial emphasis: `*emphasis*` prose hue (greenish yellow in the built-ins) |
 | `syntax.*` | Code highlighting palette |
 
 Do not use shadows. Ratatui depth comes from border weight, contrast and placement.
@@ -230,6 +232,10 @@ Rules:
 - Red is reserved for credible error or destructive consequence.
 - Blue/info is lower priority than the accent and should not compete with focus.
 - Never use semantic colour on every row in a busy transcript.
+- Editorial emphasis (`md_strong` / `md_emph`) is the one sanctioned exception to
+  hue reservation: it tints prose emphasis so a long answer can be skimmed. It
+  never appears in chrome, status glyphs, diffs, code, or the composer, and the
+  bold/italic modifier still carries the emphasis without colour.
 
 ### 5.3 Status indicators (colour never travels alone)
 
@@ -238,7 +244,7 @@ Rules:
 | Indicator | Meaning |
 |---|---|
 | `[ ]` | Pending / queued |
-| `[>]` | Active work (the only orange element; never focus, selection, or completed success) |
+| `[>]` | Active work (the only orange **state marker**; never focus, selection, or completed success. `md_strong` shares the orange family but is prose emphasis, not state.) |
 | `[✓]` | Complete (neutral in history; green only for a confirmed successful result glyph) |
 | `[!]` | Failed |
 | `[-]` | Cancelled |
@@ -271,7 +277,13 @@ Forge inherits the user's terminal font. Never bundle or require a font.
 - Use bold sparingly: active labels, headings, consequences, status glyphs.
 - Use underline for links or explicit selected actions only.
 - Use dim only for genuinely secondary metadata and always test legibility.
-- Avoid italics; support is inconsistent across terminals.
+- Use italics for model-prose emphasis only, and never as the sole signal.
+  Terminal italic support varies, so `md_emph` and the wording carry meaning
+  when the modifier is dropped.
+- Model prose emphasis takes colour: `**strong**` is `md_strong` (orange) at
+  bold weight and `*emphasis*` is `md_emph` (greenish yellow) at italic weight,
+  so key claims and qualifications pop out when skimming. These hues never
+  appear in chrome, status glyphs, diffs, code, or the composer.
 - Use uppercase for compact structural labels only — the focus-block titles are exactly `SEARCH`, `FILES`, `CHAT`, `SIDEBAR`, `COMPOSER`, `FOOTER`, `PANEL`, `APPROVAL` (`types.rs::FocusBlock::label`).
 - Use sentence case for messages, explanations and actions.
 - Avoid decorative ASCII art inside the product chrome.
@@ -285,6 +297,8 @@ Hierarchy comes from weight, token step and placement — never from size, since
 | Active block title | Bold + accent with the `>` marker (`> Terminal`) |
 | Inactive block title | Normal + muted, two-space indented to hold alignment |
 | Primary content | `text_primary` — assistant response, source code |
+| Prose strong | `md_strong` + bold — key claims inside an answer |
+| Prose emphasis | `md_emph` + italic — qualifications inside an answer |
 | Supporting content | `text_secondary` — metadata, descriptions |
 | Utility content | `text_muted` — keys, timestamps, counts |
 
@@ -381,6 +395,24 @@ transcript and composer are separated by a blank row. Pane contents are inset
 two cells from their border, and the Footer shares that inset.
 
 Avoid double-padding a bordered block and its inner component.
+
+### 7.5.1 Transcript density
+
+The conversation has two densities (`markdown.rs::Density`):
+
+- **Airy** is the default at comfortable pane heights. It adds one blank row
+  before a section heading, one after the heading rule, one between list
+  items (never before the first or after the last), and one on each side of a
+  fenced code block.
+- **Compact** is the historical spacing and the fallback for short terminals.
+  The app switches to it when the conversation pane is shorter than
+  `design::AIRY_MIN_ROWS` (24 rows), so the enforced 80×18 minimum keeps its
+  content budget instead of spending rows on padding.
+
+Density is part of the streaming cache key: switching densities re-renders the
+settled prefix, exactly as a width change does. Both densities keep the "one
+blank line between distinct block types" rule from §9.4; airy only widens the
+structural rests, it never stacks separators.
 
 ### 7.6 Responsive Presentation
 
@@ -490,7 +522,7 @@ Mouse is a second input for the same grammar, never a separate mode. Clicking mo
 - **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel). A second click at the same cell within the double-click window acts: a navigator session row attaches; a file-tree row opens on the first click.
 - **Wheel** scrolls the focused pane's content (conversation, file tree, source viewer), matching the keyboard page/step size. `Shift` pages.
 - **Right-click** opens the copy/clear context menu over a text selection.
-- **Hover** (when the terminal reports motion) tints only the hovered row/chip with `surface_hover`; it never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Hover is additive to selection/focus styling — focus still wins.
+- **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, and the navigator tabs. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker and/or a weight step — so clickability is never colour-only. It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover, so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
 
 ## 9. Component Specifications
 
@@ -546,7 +578,7 @@ Rules:
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
 - Do not render a permanent progress narration stream.
-- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render.
+- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, list items and fenced code widen by one blank row; the rule itself never stacks separators.
 - Lists, quotes, tables and fenced code share the prose left edge; only the code rail sits inside the block, never the whole block inset past its neighbours. A plan's explanation is separated from its `Plan · N of M done` header by one blank.
 - Do not surround every message with a full-width box.
 
@@ -555,8 +587,11 @@ is tinted so a long reply can be skimmed by shape before it is read — H1/H2
 section labels render uppercased in `structure` over a hairline
 `border_muted` rule, list markers take `structure`, and whole list blocks sit
 on the `scan_band` ground while rendered tables zebra-stripe body rows with
-`zebra_row`. Prose itself stays `text_primary`; `accent` never appears in an
-answer, and outcome colours stay reserved for result state.
+`zebra_row`. Prose itself stays `text_primary` except for emphasis:
+`**strong**` takes `md_strong` (orange) bold and `*emphasis*` takes
+`md_emph` (greenish yellow) italic, so the load-bearing words pop out while
+the rest of the paragraph stays calm. `accent` never appears in an answer,
+and outcome colours stay reserved for result state.
 
 Implementation: `crates/forge-tui/src/conversation.rs`.
 
@@ -666,6 +701,9 @@ Forge Dark is the reference implementation of the system's philosophy:
 - Accent is periwinkle blue (`#8FA4D6`), placed at 222° precisely because it is the widest arc clear of success (119°), warning (39°), error (6°) and agent violet (274°).
 - Agent narration gets its own violet voice (`agent`), distinct from both the user's text and every outcome colour.
 - `tag` is deliberately unsaturated: low-emphasis labels must not read as a hue with meaning.
+- `md_strong` shares the activity orange family (36°), and `md_emph` is a
+  yellow-green at 70° — clear of warning (45°) and success (141°). Both are
+  prose-only and fall back to `text_primary` in themes that omit them.
 
 New themes should document their hue arithmetic the same way in their TOML comments.
 

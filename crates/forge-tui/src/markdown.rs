@@ -176,10 +176,32 @@ fn markdown_options() -> Options {
         | Options::ENABLE_FOOTNOTES
 }
 
+/// Transcript density (FORGE-DESIGN §7.5).
+///
+/// `Airy` is the app default at comfortable pane heights: extra breathing
+/// room around headings, list items and fenced code. `Compact` is the
+/// historical spacing, used as the fallback on short terminals (and pinned by
+/// older renderer tests).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Density {
+    #[default]
+    Compact,
+    Airy,
+}
+
 /// Render `text` keeping its trailing separator, so the result can be
 /// continued. Only [`render_markdown_split`] and its cache should hold one.
+#[cfg(test)]
 pub(crate) fn render_markdown_open(text: &str, width: usize) -> Vec<Line<'static>> {
-    let mut renderer = MdRenderer::new(width.max(1));
+    render_markdown_open_with(text, width, Density::Compact)
+}
+
+pub(crate) fn render_markdown_open_with(
+    text: &str,
+    width: usize,
+    density: Density,
+) -> Vec<Line<'static>> {
+    let mut renderer = MdRenderer::new(width.max(1), density);
     renderer.feed(Parser::new_ext(text, markdown_options()));
     renderer.finish_open()
 }
@@ -244,7 +266,15 @@ pub(crate) fn fade_streaming_tail(lines: &mut [Line<'static>]) {
 }
 
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
-    let mut renderer = MdRenderer::new(width.max(1));
+    render_markdown_with_density(text, width, Density::Compact)
+}
+
+pub(crate) fn render_markdown_with_density(
+    text: &str,
+    width: usize,
+    density: Density,
+) -> Vec<Line<'static>> {
+    let mut renderer = MdRenderer::new(width.max(1), density);
     renderer.feed(Parser::new_ext(text, markdown_options()));
     renderer.finish()
 }
@@ -255,6 +285,9 @@ struct ListFrame {
     indent: usize,
     marker_w: usize,
     saved_cont: String,
+    /// Items already emitted in this frame, so airy density can put one blank
+    /// row *between* items but never before the first.
+    items_seen: usize,
 }
 
 struct CodeBuffer {
@@ -320,6 +353,9 @@ struct MdRenderer {
     /// across their whole line range (`band_depth` nests).
     band_start: Option<usize>,
     band_depth: usize,
+    /// Airy adds breathing room around headings, list items and code; compact
+    /// is the historical spacing for short terminals.
+    density: Density,
 }
 
 /// Map `pulldown_cmark`'s heading level onto 1-6.
@@ -345,8 +381,24 @@ fn ensure_blank_separator(out: &mut Vec<Line<'static>>) {
     }
 }
 
+/// Pad the output so it ends with exactly `n` blank lines. No-op when the
+/// output is empty, so a block never opens with a leading blank.
+fn ensure_blank_lines(out: &mut Vec<Line<'static>>, n: usize) {
+    if out.is_empty() {
+        return;
+    }
+    let existing = out
+        .iter()
+        .rev()
+        .take_while(|line| line.width() == 0)
+        .count();
+    for _ in existing..n {
+        out.push(Line::from(""));
+    }
+}
+
 impl MdRenderer {
-    fn new(width: usize) -> Self {
+    fn new(width: usize, density: Density) -> Self {
         MdRenderer {
             width,
             out: Vec::new(),
@@ -364,7 +416,12 @@ impl MdRenderer {
             marker_style: theme::muted(),
             band_start: None,
             band_depth: 0,
+            density,
         }
+    }
+
+    fn airy(&self) -> bool {
+        self.density == Density::Airy
     }
 
     fn feed(&mut self, parser: Parser<'_>) {
@@ -441,6 +498,13 @@ impl MdRenderer {
                 // and below stay secondary bold text. Before any of this,
                 // every level was the same bold line, so a structured answer
                 // rendered flat.
+                //
+                // Airy density gives the heading a rest before it: the
+                // preceding block's own separator is padded to two blank rows
+                // so a section break reads as a break (FORGE-DESIGN §7.5).
+                if self.airy() {
+                    ensure_blank_lines(&mut self.out, 2);
+                }
                 let level = heading_rank(level);
                 self.heading_level = Some(level);
                 self.push_style(if level <= 2 {
@@ -455,6 +519,11 @@ impl MdRenderer {
             }
             Tag::CodeBlock(kind) => {
                 self.flush_para();
+                // Airy density gives a fenced block a full blank row of air
+                // on each side so it reads as its own object.
+                if self.airy() {
+                    ensure_blank_lines(&mut self.out, 2);
+                }
                 let (fenced, language) = match kind {
                     CodeBlockKind::Fenced(info) => (true, info.to_ascii_lowercase()),
                     CodeBlockKind::Indented => (false, String::new()),
@@ -472,6 +541,7 @@ impl MdRenderer {
                     indent: display_width(&self.cont_prefix),
                     marker_w: 0,
                     saved_cont: self.cont_prefix.clone(),
+                    items_seen: 0,
                 };
                 self.list_stack.push(frame);
                 self.band_depth += 1;
@@ -488,7 +558,15 @@ impl MdRenderer {
                 // structure, so it takes the structure hue for the lifetime
                 // of the item; prose inside stays neutral.
                 self.marker_style = theme::response_marker();
+                let airy = self.airy();
                 if let Some(frame) = self.list_stack.last_mut() {
+                    // Airy density puts one blank row between items — never
+                    // before the first, and never after the last (the list's
+                    // own trailing separator covers that).
+                    if airy && frame.items_seen > 0 {
+                        ensure_blank_separator(&mut self.out);
+                    }
+                    frame.items_seen += 1;
                     let marker = if frame.ordered {
                         let marker = format!("{}. ", frame.index);
                         frame.index += 1;
@@ -504,8 +582,12 @@ impl MdRenderer {
                     self.cont_prefix = " ".repeat(frame.indent + frame.marker_w);
                 }
             }
-            Tag::Emphasis => self.push_style(Style::default().add_modifier(Modifier::ITALIC)),
-            Tag::Strong => self.push_style(Style::default().add_modifier(Modifier::BOLD)),
+            // Editorial emphasis (FORGE-DESIGN §6, §9.4): `**strong**` takes
+            // the orange prose hue, `*emphasis*` the greenish-yellow one. The
+            // modifier stays so weight/style — not colour alone — carries the
+            // emphasis on monochrome terminals.
+            Tag::Emphasis => self.push_style(theme::md_emph().add_modifier(Modifier::ITALIC)),
+            Tag::Strong => self.push_style(theme::md_strong().add_modifier(Modifier::BOLD)),
             Tag::Strikethrough => {
                 self.push_style(Style::default().add_modifier(Modifier::CROSSED_OUT))
             }
@@ -576,7 +658,11 @@ impl MdRenderer {
                         theme::border_muted(),
                     )));
                 }
-                self.blank_after_top_level_block();
+                if self.airy() {
+                    ensure_blank_lines(&mut self.out, 2);
+                } else {
+                    self.blank_after_top_level_block();
+                }
             }
             TagEnd::Item => {
                 self.flush_para();
@@ -786,6 +872,11 @@ impl MdRenderer {
         // which belongs to what comes after it, a fenced block belongs to
         // itself.
         self.out.push(Line::from(""));
+        if self.airy() {
+            // Match the blank row added before the block, so code sits in an
+            // even band of air rather than one-sided padding.
+            self.out.push(Line::from(""));
+        }
     }
 }
 
@@ -1956,6 +2047,91 @@ After the table.
         // 'd' only occurs inside "does"; 'm' only inside "matter".
         assert!(bold_at('d'), "emphasised word lost its weight");
         assert!(!bold_at('m'), "ordinary prose came out bold");
+    }
+
+    /// Editorial emphasis: `**strong**` takes the orange token at bold weight,
+    /// `*emphasis*` the greenish-yellow one at italic weight, and body prose
+    /// keeps primary text.
+    #[test]
+    fn strong_and_emphasis_take_their_editorial_hues() {
+        let palette = theme::palette(forge_config::DEFAULT_THEME_ID);
+        let lines = render_markdown("plain **strong** and *soft* end", 80);
+        let spans: Vec<_> = lines.iter().flat_map(|line| line.spans.iter()).collect();
+
+        let strong = spans
+            .iter()
+            .find(|span| span.content == "strong")
+            .expect("strong span");
+        assert_eq!(strong.style.fg, Some(palette.md_strong));
+        assert!(strong.style.add_modifier.contains(Modifier::BOLD));
+
+        let soft = spans
+            .iter()
+            .find(|span| span.content == "soft")
+            .expect("emphasis span");
+        assert_eq!(soft.style.fg, Some(palette.md_emph));
+        assert!(soft.style.add_modifier.contains(Modifier::ITALIC));
+
+        let plain = spans
+            .iter()
+            .find(|span| span.content.contains("plain"))
+            .expect("prose span");
+        assert_eq!(plain.style.fg, Some(palette.text));
+    }
+
+    /// Airy density puts one blank row between list items — but never before
+    /// the first item or after the last, and compact keeps the old spacing.
+    #[test]
+    fn airy_density_separates_list_items() {
+        let md = "- one\n- two\n- three\n";
+        // The scan band paints interior blanks as spaces, so count
+        // visually-empty rows rather than width-0 lines.
+        let blank_rows = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .filter(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+                .count()
+        };
+        let compact = render_markdown(md, 40);
+        let airy = render_markdown_with_density(md, 40, Density::Airy);
+        assert_eq!(
+            blank_rows(&airy),
+            blank_rows(&compact) + 2,
+            "two gaps belong between three items"
+        );
+        assert!(text(&airy).contains("one") && text(&airy).contains("three"));
+    }
+
+    /// Airy density airs out section breaks: an extra blank before the heading
+    /// and an extra blank after its rule.
+    #[test]
+    fn airy_density_airs_out_section_breaks() {
+        let md = "intro paragraph\n\n## Section\n\nbody text\n";
+        let blank_rows =
+            |lines: &[Line<'static>]| lines.iter().filter(|line| line.width() == 0).count();
+        let compact = render_markdown(md, 60);
+        let airy = render_markdown_with_density(md, 60, Density::Airy);
+        assert_eq!(
+            blank_rows(&airy),
+            blank_rows(&compact) + 2,
+            "one blank before the heading, one after its rule"
+        );
+    }
+
+    /// Airy density gives fenced code a blank row of air on each side.
+    #[test]
+    fn airy_density_pads_fenced_code() {
+        let md = "before\n\n```rust\nlet x = 1;\n```\n\nafter\n";
+        let blank_rows =
+            |lines: &[Line<'static>]| lines.iter().filter(|line| line.width() == 0).count();
+        let compact = render_markdown(md, 60);
+        let airy = render_markdown_with_density(md, 60, Density::Airy);
+        assert_eq!(
+            blank_rows(&airy),
+            blank_rows(&compact) + 2,
+            "one blank before the block, one after"
+        );
+        assert!(text(&airy).contains("let x = 1;"));
     }
 
     #[test]

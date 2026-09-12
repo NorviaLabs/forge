@@ -1838,6 +1838,8 @@ pub struct TuiApp {
     pub(crate) hover_session: Option<usize>,
     /// Hovered file-tree visible index (pointer motion; never moves focus).
     pub(crate) hover_file: Option<usize>,
+    /// Hovered navigator tab (pointer motion; never moves focus).
+    pub(crate) hover_navigator_tab: Option<crate::widgets::NavigatorTab>,
     /// x-ranges `(model, effort)` of the footer's left chips, from the last
     /// draw, for pointer hit-testing.
     pub(crate) footer_chip_rects: Option<[(u16, u16); 2]>,
