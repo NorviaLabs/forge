@@ -5,21 +5,17 @@
 
 /// Outer frame gutter, each side.
 pub const FRAME_INSET_X: u16 = 1;
-/// Internal pane padding, each side. Round 2 airy pass: 2 → 3 so pane text
-/// sits four cells from the pane edge (border + padding), matching the
-/// reference TUIs' message origin.
-pub const PANE_PAD_X: u16 = 3;
+/// Internal pane padding, each side, in addition to the border column.
+pub const PANE_PAD_X: u16 = 1;
 /// Blank column between adjacent columns (Files | Workspace | Sidebar).
 pub const PANE_GAP_X: u16 = 2;
 /// Blank row between vertically stacked panes (left column ↔ bottom panel).
 pub const PANE_GAP_Y: u16 = 1;
 /// Blank row between the content band and the chrome rows (StatusBar /
 /// Footer), so the chrome reads as separate from the work surface.
-pub const CHROME_GAP_Y: u16 = 2;
-/// Blank rows between the transcript and the composer at comfortable heights;
-/// collapses to [`PANE_GAP_Y`] on short frames so the 80×18 workflow keeps its
-/// content rows.
-pub const COMPOSER_GAP_Y: u16 = 2;
+pub const CHROME_GAP_Y: u16 = 1;
+/// Blank row between the transcript and the composer.
+pub const COMPOSER_GAP_Y: u16 = 1;
 /// Pane title height.
 pub const PANE_TITLE_H: u16 = 1;
 /// Shared vertical separator width.
@@ -34,8 +30,8 @@ pub const PLAN_ITEM_GAP_H: u16 = 0;
 pub const PLAN_META_INDENT: u16 = 4;
 /// Composer horizontal padding; same text origin as chat.
 pub const COMPOSER_PAD_X: u16 = 2;
-/// Composer top rule height; no side/bottom border.
-pub const COMPOSER_RULE_H: u16 = 1;
+/// Composer border rows, above and below the input.
+pub const COMPOSER_BORDER_H: u16 = 2;
 /// Max composer input rows.
 pub const MAX_COMPOSER_INPUT_H: u16 = 10;
 /// Footer height; no separate separator row.
@@ -57,7 +53,7 @@ pub const FILES_VISIBLE_FRAME_W: u16 = 116;
 pub const MIN_FRAME_W: u16 = 80;
 pub const MIN_FRAME_H: u16 = 18;
 /// Conversation pane rows below which the transcript falls back to compact
-/// rhythm. Airy spacing (blank rows around headings, list items and code) is
+/// rhythm. Airy spacing (blank rows around headings and code) is
 /// the default at comfortable heights; short terminals keep today's density so
 /// the 80×18 workflow never loses content rows to padding.
 pub const AIRY_MIN_ROWS: u16 = 24;
@@ -69,11 +65,11 @@ mod tests {
     #[test]
     fn metrics_match_design_system() {
         assert_eq!(FRAME_INSET_X, 1);
-        assert_eq!(PANE_PAD_X, 3);
+        assert_eq!(PANE_PAD_X, 1);
         assert_eq!(PANE_GAP_X, 2);
         assert_eq!(PANE_GAP_Y, 1);
-        assert_eq!(CHROME_GAP_Y, 2);
-        assert_eq!(COMPOSER_GAP_Y, 2);
+        assert_eq!(CHROME_GAP_Y, 1);
+        assert_eq!(COMPOSER_GAP_Y, 1);
         assert_eq!(PANE_TITLE_H, 1);
         assert_eq!(PANE_SEPARATOR_W, 1);
         assert_eq!(MAX_COMPOSER_INPUT_H, 10);

@@ -166,9 +166,7 @@ impl TuiApp {
         Ok(())
     }
 
-    /// A click anywhere on the navigator tab bar switches to that tab. The bar
-    /// has no per-tab rect, so derive the boundary from the rendered labels
-    /// (`▌Sessions │ ▌Files`).
+    /// A click on the navigator tab bar switches to the painted tab.
     fn click_navigator_tab(&mut self, col: u16, area: Rect) {
         use crate::widgets::NavigatorTab;
         let tab = navigator_tab_at(col, area);
@@ -205,11 +203,13 @@ impl TuiApp {
         Ok(())
     }
 
-    /// The explorer insets a border (1 row) then the `/` search row (1 row),
-    /// so tree row 0 sits at `area.y + 2`; node index adds the scroll offset.
+    /// Share the explorer's search/border budget rather than duplicating it.
     async fn click_file_row(&mut self, row: u16, area: Rect) -> Result<(), TuiError> {
-        let tree_top = area.y + 2;
+        let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
         if row < tree_top {
+            if row > area.y {
+                self.focus_block(FocusBlock::Search);
+            }
             return Ok(());
         }
         let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
@@ -271,7 +271,7 @@ impl TuiApp {
                 }
             }
             crate::widgets::NavigatorTab::Files => {
-                let tree_top = area.y + 2;
+                let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
                 if row >= tree_top {
                     let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
                     if index < self.workspace_files.explorer.visible_nodes().len() {
@@ -767,13 +767,10 @@ impl TuiApp {
     }
 }
 
-/// Which navigator tab sits under `col`. The tab bar has no per-tab rect, so
-/// the boundary is derived from the rendered labels (`▌Sessions │ ▌Files`) once
-/// and shared by click and hover routing so the two can never disagree.
+/// Tab boundary shared with painting, used by both click and hover routing.
 fn navigator_tab_at(col: u16, area: Rect) -> crate::widgets::NavigatorTab {
     use crate::widgets::NavigatorTab;
-    let sessions_w = 1 + NavigatorTab::Sessions.label().chars().count() as u16;
-    let files_x = area.x + sessions_w + " │ ".chars().count() as u16;
+    let files_x = area.x + crate::widgets::navigator::SESSIONS_TAB_WIDTH;
     if col < files_x {
         NavigatorTab::Sessions
     } else {

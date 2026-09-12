@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
 use crate::theme;
 
@@ -44,7 +44,10 @@ pub struct SessionRow {
     pub focused: bool,
 }
 
-/// The one-row tab bar across the top of the navigator column.
+/// Width shared by tab painting and pointer routing.
+pub(crate) const SESSIONS_TAB_WIDTH: u16 = 12;
+
+/// Framed tabs across the top of the navigator column.
 pub struct NavigatorTabs {
     pub tab: NavigatorTab,
     pub focused: bool,
@@ -52,8 +55,7 @@ pub struct NavigatorTabs {
     /// Tab under the pointer. The hovered *inactive* tab gets a raised ground
     /// and a weight step, so a pointer user can tell it is clickable; the
     /// active tab keeps its own treatment and focus never moves on hover.
-    /// Labels sit on the column's left edge; only the active tab's `▌` marker
-    /// takes the leading cell, so nothing shifts on hover.
+    /// Labels reserve a marker cell, so focus and hover never shift text.
     pub hover: Option<NavigatorTab>,
 }
 
@@ -62,25 +64,42 @@ impl Widget for NavigatorTabs {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let active = if self.focused {
-            theme::brand().add_modifier(Modifier::BOLD)
-        } else {
-            theme::brand()
-        };
+        let active = theme::accent_style().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
         let inactive = theme::metadata_style();
-        let mut spans = Vec::new();
         for (index, tab) in [NavigatorTab::Sessions, NavigatorTab::Files]
             .into_iter()
             .enumerate()
         {
-            if index > 0 {
-                spans.push(Span::styled(" │ ", theme::border_muted()));
+            let split = SESSIONS_TAB_WIDTH.min(area.width);
+            let tab_area = if index == 0 {
+                Rect::new(area.x, area.y, split, area.height)
+            } else {
+                Rect::new(
+                    area.x + split.saturating_sub(1),
+                    area.y,
+                    area.width.saturating_sub(split.saturating_sub(1)),
+                    area.height,
+                )
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(if self.focused && tab == self.tab {
+                    theme::active_panel_border()
+                } else {
+                    theme::inactive_panel_border()
+                })
+                .style(theme::panel());
+            let inner = if area.height >= 3 {
+                block.inner(tab_area)
+            } else {
+                tab_area
+            };
+            if area.height >= 3 {
+                block.render(tab_area, buf);
             }
             let is_active = tab == self.tab;
             let hovered = !is_active && self.hover == Some(tab);
-            if is_active {
-                spans.push(Span::styled("▌", theme::accent_style()));
-            }
             let label_style = if is_active {
                 active
             } else if hovered {
@@ -92,20 +111,27 @@ impl Widget for NavigatorTabs {
             } else {
                 inactive
             };
-            spans.push(Span::styled(tab.label(), label_style));
-        }
-        if self.needs_you > 0 {
-            let label = format!("{} need", self.needs_you);
-            let used: usize = spans.iter().map(Span::width).sum();
-            let pad = (area.width as usize)
-                .saturating_sub(used)
-                .saturating_sub(label.chars().count() + 1);
-            if pad > 0 {
-                spans.push(Span::raw(" ".repeat(pad)));
-                spans.push(Span::styled(label, theme::warn()));
+            let marker = if self.focused && is_active { ">" } else { " " };
+            let mut spans = vec![Span::styled(
+                format!("{marker}{}", tab.label()),
+                label_style,
+            )];
+            if index == 1 && self.needs_you > 0 {
+                let label = format!("{} need", self.needs_you);
+                let used: usize = spans.iter().map(Span::width).sum();
+                let pad = (inner.width as usize).saturating_sub(used + label.len());
+                if pad > 0 {
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans.push(Span::styled(label, theme::warn()));
+                }
+            }
+            if inner.width > 0 && inner.height > 0 {
+                buf.set_line(inner.x, inner.y, &Line::from(spans), inner.width);
             }
         }
-        buf.set_line(area.x, area.y, &Line::from(spans), area.width);
+        if area.height >= 3 && area.width > SESSIONS_TAB_WIDTH {
+            buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y)].set_symbol("┬");
+        }
     }
 }
 
@@ -329,7 +355,7 @@ mod tests {
 
     #[test]
     fn tabs_show_both_names_and_the_needs_you_count() {
-        let backend = TestBackend::new(40, 1);
+        let backend = TestBackend::new(40, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -358,7 +384,7 @@ mod tests {
 
     #[test]
     fn the_active_tab_carries_the_accent() {
-        let backend = TestBackend::new(40, 1);
+        let backend = TestBackend::new(40, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -374,12 +400,11 @@ mod tests {
             })
             .unwrap();
         let accent = theme::accent_color();
-        let marker_accent = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .any(|cell| cell.symbol() == "▌" && cell.style().fg == Some(accent));
+        let marker_accent = terminal.backend().buffer().content().iter().any(|cell| {
+            cell.symbol() == "F"
+                && cell.style().fg == Some(accent)
+                && cell.style().add_modifier.contains(Modifier::UNDERLINED)
+        });
         assert!(marker_accent, "active tab marker should be accented");
     }
 
@@ -389,7 +414,7 @@ mod tests {
     #[test]
     fn hovered_inactive_tab_takes_the_hover_ground_without_moving_the_label() {
         let render = |hover: Option<NavigatorTab>| {
-            let backend = TestBackend::new(40, 1);
+            let backend = TestBackend::new(40, 3);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
                 .draw(|frame| {

@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, BorderType, Borders, Widget};
 use std::path::Path;
 
 /// Collapse a home-directory prefix to `~` for the top-bar identity line.
@@ -462,6 +462,18 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        let area = if area.height >= 3 {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(theme::inactive_panel_border())
+                .style(theme::status_bar());
+            let inner = block.inner(area);
+            block.render(area, buf);
+            inner
+        } else {
+            area
+        };
         // Centered single block: ⌂ path  ·  ⎇ branch — identity only,
         // full window width, changes only on project/branch switch.
         let width = area.width as usize;

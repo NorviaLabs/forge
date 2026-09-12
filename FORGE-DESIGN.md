@@ -338,7 +338,7 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
    one column (`§7.7`). `Files` is the repository explorer with Git status
    markers and its own search row (`Search` is a separate Tab stop nested in the
    same bordered box). `Sessions` is the multi-session list.
-2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, feedback strip, and the composer. It never hides; the composer lives inside it. The column is a flat surface — no border box — and shows a thin scrollbar in its right padding when the transcript overflows.
+2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, feedback strip, and the composer. It never hides; the composer lives inside it. One rounded frame contains the transcript; a thin scrollbar sits inside its right padding when the transcript overflows. Messages do not get individual frames.
 3. **Workspace** — the center pane. Its only views are `File` and `Diff` (`types.rs::WorkspaceView`); with nothing open it renders an empty-state placeholder. Conversation is deliberately *not* a workspace view.
 4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
 5. **StatusBar / Footer** — chrome rows described in §9.
@@ -355,7 +355,7 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
 
 ### 7.3 Width behaviour in terminal columns
 
-Content width is 95% of frame width (`CONTENT_WIDTH_PERCENT`).
+Content width is the frame width minus one outer gutter column on each side (`FRAME_INSET_X`).
 
 | Frame width | Behaviour |
 |---|---|
@@ -370,8 +370,8 @@ Explorer-first collapse is deliberate: the composer (in the sidebar) outranks th
 
 ### 7.4 Height behaviour
 
-- StatusBar and Footer consume one row each.
-- Composer input band is capped at 10 visual lines (`MAX_COMPOSER_INPUT_H`) — it grows within bounds and never crowds out the transcript.
+- StatusBar consumes three rows for a rounded frame at heights ≥24, otherwise one compact identity row. Footer uses up to two rows (`FOOTER_H`); its background-activity row stays blank when idle.
+- Composer input band is capped at 10 visual lines (`MAX_COMPOSER_INPUT_H`), plus top and bottom border rows — it grows within bounds and never crowds out the transcript.
 - Theme picker dock is 12 rows (`THEME_DOCK_H`), sized to show built-ins without scrolling.
 - A modal leaves surrounding context visible so it reads as overlaying Forge, with the background clearly secondary.
 - Every modal title uses the shared `> Title` grammar (`theme::modal_title`) — including the workspace unsaved-changes and file-changed-on-disk conflicts. Borders keep severity colour; the marker says who owns the keyboard.
@@ -382,23 +382,17 @@ Use a compact cell-based scale, biased airy so panes never touch and text
 never sits flush against a border:
 
 - `0`: no gap; tightly related glyphs.
-- `1`: standard inline gap, the outer frame gutter (`FRAME_INSET_X`), and the
-  gutter between the left column and the bottom panel (`PANE_GAP_Y`).
-- `2`: block interior padding (`PANE_PAD_X`), the gutter between adjacent
-  columns (`PANE_GAP_X`), the gutter between the chrome rows and the content
-  band (`CHROME_GAP_Y`), and the transcript ↔ composer gutter
-  (`COMPOSER_GAP_Y`) at comfortable heights. `COMPOSER_GAP_Y` collapses to
-  `PANE_GAP_Y` when the frame is shorter than `AIRY_MIN_ROWS`, so 80×18 keeps
-  its content rows.
+- `1`: standard inline gap, outer frame gutter (`FRAME_INSET_X`), interior
+  padding (`PANE_PAD_X`), vertical pane gap (`PANE_GAP_Y`), chrome gap
+  (`CHROME_GAP_Y`), and transcript ↔ composer gap (`COMPOSER_GAP_Y`).
+- `2`: gutter between adjacent columns (`PANE_GAP_X`).
 
 Concretely (`design.rs`): two blank columns separate Files, Workspace and the
-Sidebar; two blank rows separate the status/approve-all chrome and the Footer
-from the content band; pane contents are inset three cells from their border
-(border + `PANE_PAD_X` puts text four cells from the pane edge). Borderless
-sidebar surfaces — the composer, the feedback strip, the queue strip and the
-bottom panel — share that same four-cell text origin (`TEXT_INSET`), so the
-column keeps one left edge. The transcript and composer are separated by the
-height-gated `COMPOSER_GAP_Y`.
+Sidebar; one blank row separates chrome from content and transcript from
+composer. Border plus `PANE_PAD_X` puts text two cells from the pane edge.
+Composer, feedback, queue, and bottom-panel text share this origin
+(`TEXT_INSET`). Rounded frames use Ratatui border glyphs and semantic theme
+tokens; they do not emulate pixel shadows or change terminal typography.
 
 Avoid double-padding a bordered block and its inner component.
 
@@ -407,8 +401,7 @@ Avoid double-padding a bordered block and its inner component.
 The conversation has two densities (`markdown.rs::Density`):
 
 - **Airy** is the default at comfortable pane heights. It adds one blank row
-  before a section heading, one after the heading rule, one between list
-  items (never before the first or after the last), one on each side of a
+  before a section heading, one after the heading rule, one on each side of a
   fenced code block, one between distinct tool/activity groups (rows inside a
   group stay tight), and one after each `You` / `Answer` speaker label so the
   label reads as a heading rather than a prefix of its text.
@@ -416,6 +409,9 @@ The conversation has two densities (`markdown.rs::Density`):
   The app switches to it when the conversation pane is shorter than
   `design::AIRY_MIN_ROWS` (24 rows), so the enforced 80×18 minimum keeps its
   content budget instead of spending rows on padding.
+
+Tight list items remain consecutive in both densities; explicit paragraph
+breaks within loose lists are preserved.
 
 Density is part of the streaming cache key: switching densities re-renders the
 settled prefix, exactly as a width change does. Both densities keep the "one
@@ -513,10 +509,10 @@ The active block must use at least two signals:
 - accent or bold block title
 - explicit state marker where relevant (`> Terminal`)
 
-The conversation column is the deliberate exception: it is borderless in every
-state, so focus there takes the scrollbar's shape and colour — a solid accent
-thumb while the Sidebar block owns the keyboard, a muted half-block otherwise.
-No box is drawn around the transcript.
+The transcript has one rounded frame. Focus adds an accent border and a
+`> Chat` title marker, including when the transcript has no overflow. Its
+scrollbar also takes a solid accent thumb while the Sidebar block owns the
+keyboard, a muted half-block otherwise. Modals suppress background focus.
 
 Inactive blocks use a muted hairline border and normal title weight.
 
@@ -541,9 +537,12 @@ Mouse is a second input for the same grammar, never a separate mode. Clicking mo
 
 ### 9.1 StatusBar
 
-Purpose: identity and global session state in one row (`widgets/status.rs`).
+Purpose: centered repository/branch identity (`widgets/status.rs`). At comfortable
+heights a rounded, neutral frame surrounds the row; short terminals use one row.
 
-Includes: brand, repository/branch (polled, TTL-cached), turn lifecycle with glyph, busy phase, model/provider/effort, context pressure.
+Includes repository/branch (polled, TTL-cached) and the collapsed navigator's
+session-attention chip. Model, effort, lifecycle and context pressure live in
+the footer rather than being duplicated here.
 
 Avoid duplicating file counts, task details or provider telemetry already shown elsewhere.
 
@@ -590,15 +589,15 @@ Rules:
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
 - The home card is the first screen only: once the operator has sent a turn it retires, never pinned above the conversation for the rest of the session.
-- The transcript is borderless; when its content overflows the pane, a thin
+- The transcript has one rounded container frame; when its content overflows the pane, a thin
   track (`│`) with a solid thumb (`▐`) marks position in the column's right
   padding, and the thumb turns into the accent `█` while the Sidebar block owns
-  the keyboard. No overflow, no track.
+   the keyboard. No overflow, no track; focus remains visible on the frame.
 - While a turn runs, the live turn line (`widgets/turn_line.rs`) names the phase and counts up from the current turn's start — including supervised sessions, where the clock is anchored on the actor's `Running` state, never on process uptime. No placeholder shimmer rows in the transcript — the pane stays empty until content arrives. Gated behind the busy debounce so instant turns never flash it.
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
 - Do not render a permanent progress narration stream.
-- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, list items, fenced code and the `You` / `Answer` speaker labels widen by one blank row; distinct tool/activity groups are separated by one
+- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, fenced code and the `You` / `Answer` speaker labels widen by one blank row; distinct tool/activity groups are separated by one
 blank row while rows inside one group stay tight; the rule itself never stacks
 separators.
 - Lists, quotes, tables and fenced code share the prose left edge; only the code rail sits inside the block, never the whole block inset past its neighbours. A plan's explanation is separated from its `Plan · N of M done` header by one blank.
@@ -631,13 +630,21 @@ the single plan surface.
 
 ### 9.5 Composer
 
-- `surface` background; hairline border normally; `accent` border when focused; `waiting_border` while an approval pends ("paused" look — the composer visibly cannot accept a send).
+- `surface` background and a full rounded outline. Side and bottom borders stay
+  neutral; the top edge takes `accent` when focused and `waiting_border` while
+  an approval pends ("paused" look). Focus/attention also thickens the top rule,
+  so the state survives monochrome rendering. Waiting outranks focus colour.
 - Multi-line growth bounded by `MAX_COMPOSER_INPUT_H`.
 - Outbound messages queue below the input as a strip; `Ctrl+↑`/`Ctrl+↓` move the selection, `Ctrl+Backspace` cancels one.
 
 ### 9.6 File tree
 
-- Search is one surface row (`/ ` prefix plus query); the tree begins immediately below. No box, no separator.
+- Search is an inset, three-row rounded field (`/ ` prefix plus query). The
+  tree begins immediately below its bottom border. Search focus colours the
+  border and prefix and shows the caret; clicking the field focuses Search.
+- Navigator tabs have rounded outlines sharing the list's top edge. The
+  selected label is bold and underlined; a focused tab additionally carries
+  `>` and an accent border. Selection alone never claims keyboard ownership.
 - Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.
 - Active file and selected row may differ; distinguish them.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.
@@ -765,4 +772,3 @@ initiating worktree's committed `HEAD`.
   commit; startup reconciliation keeps it active. Cleanup verifies the worktree
   is still the session's — by branch once branched, or still-detached before.
 - The primary session and attached worktrees are unchanged.
-

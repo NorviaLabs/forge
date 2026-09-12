@@ -56,14 +56,13 @@ fn composer_input_height(
 ) -> u16 {
     let content_width =
         crate::layout::estimate_composer_region_width(area, show_files, expanded_conversation)
-            .saturating_sub(crate::widgets::input::TEXT_INSET as usize)
+            .saturating_sub(2 * crate::widgets::input::TEXT_INSET as usize)
             .max(1);
-    // DESIGN-012: the composer owns one chrome row (the top rule), not two
-    // border rows. Text grows to 10 rows max, then scrolls.
+    // Use the same width and border budget as the rendered composer.
     input
         .visual_lines_for_width(content_width)
         .min(crate::layout::MAX_COMPOSER_INPUT_H)
-        + crate::widgets::input::COMPOSER_RULE_H
+        + crate::design::COMPOSER_BORDER_H
 }
 
 fn queued_messages_for_render(app: &TuiApp) -> Vec<String> {
@@ -360,23 +359,45 @@ impl TuiApp {
                 let rows = ratatui::layout::Layout::default()
                     .direction(ratatui::layout::Direction::Vertical)
                     .constraints([
-                        ratatui::layout::Constraint::Length(1),
+                        ratatui::layout::Constraint::Length(2),
                         ratatui::layout::Constraint::Min(0),
                     ])
                     .split(files);
+                let tabs_area = ratatui::layout::Rect::new(
+                    rows[0].x,
+                    rows[0].y,
+                    rows[0].width,
+                    rows[0].height + 1,
+                );
                 self.navigator_tabs_area = Some(rows[0]);
                 self.navigator_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
                 frame.render_widget(
                     crate::widgets::NavigatorTabs {
                         tab: navigator_tab,
-                        focused: navigator_focused,
+                        focused: navigator_focused
+                            || (self.focus.block() == FocusBlock::Files && !modal_open),
                         needs_you,
                         hover: self.hover_navigator_tab,
                     },
-                    rows[0],
+                    tabs_area,
                 );
                 if navigator_sessions {
+                    let block = Block::default()
+                        .borders(ratatui::widgets::Borders::ALL)
+                        .border_type(ratatui::widgets::BorderType::Rounded)
+                        .border_style(if navigator_focused {
+                            theme::active_panel_border()
+                        } else {
+                            theme::inactive_panel_border()
+                        })
+                        .padding(ratatui::widgets::Padding::horizontal(
+                            crate::design::PANE_PAD_X,
+                        ))
+                        .style(theme::panel());
+                    let list_area = block.inner(rows[1]);
+                    frame.render_widget(block, rows[1]);
+                    self.navigator_list_area = Some(list_area);
                     let mut unnamed = 0usize;
                     let session_rows: Vec<crate::widgets::SessionRow> = self
                         .session_chrome
@@ -430,7 +451,7 @@ impl TuiApp {
                             })?;
                         Some(wrap_to_width(
                             last.content.trim(),
-                            rows[1].width.saturating_sub(3) as usize,
+                            list_area.width.saturating_sub(3) as usize,
                             6,
                         ))
                     });
@@ -447,7 +468,7 @@ impl TuiApp {
                             new_session: self.navigator_new_session.as_deref(),
                             hover: self.hover_session,
                         },
-                        rows[1],
+                        list_area,
                     );
                 } else {
                     frame.render_widget(
@@ -465,6 +486,19 @@ impl TuiApp {
                         },
                         rows[1],
                     );
+                }
+                // Tabs and list share one divider rather than stacking boxes.
+                let divider_y = rows[1].y;
+                if files.width > crate::widgets::navigator::SESSIONS_TAB_WIDTH && rows[1].height > 0
+                {
+                    let buf = frame.buffer_mut();
+                    buf[(files.x, divider_y)].set_symbol("├");
+                    buf[(files.right() - 1, divider_y)].set_symbol("┤");
+                    buf[(
+                        files.x + crate::widgets::navigator::SESSIONS_TAB_WIDTH - 1,
+                        divider_y,
+                    )]
+                        .set_symbol("┴");
                 }
             } else {
                 self.navigator_list_area = Some(files);
@@ -880,16 +914,18 @@ impl TuiApp {
                 self.focus.block() == FocusBlock::Sidebar,
                 modal_open,
             );
-            // The conversation is a flat surface: no border box. The text keeps
-            // the exact origin and measure the border used to provide
-            // (border + pad on each side, one row top/bottom); the right
-            // padding hosts a thin scrollbar instead of a border column.
+            // One frame for the transcript, with the scrollbar in its padding.
             let sidebar_block = Block::default()
-                .padding(ratatui::widgets::Padding::new(
-                    crate::design::PANE_PAD_X + 1,
-                    crate::design::PANE_PAD_X + 1,
-                    1,
-                    1,
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(if sidebar_focused {
+                    theme::active_panel_border()
+                } else {
+                    theme::inactive_panel_border()
+                })
+                .title(if sidebar_focused { "> Chat" } else { "" })
+                .padding(ratatui::widgets::Padding::horizontal(
+                    crate::design::PANE_PAD_X,
                 ))
                 .style(theme::panel());
             let conversation_area = sidebar_block.inner(sidebar);
@@ -924,6 +960,7 @@ impl TuiApp {
                 conversation_area,
             );
             sidebar_block.render(sidebar, frame.buffer_mut());
+            theme::fill(conversation_area, frame.buffer_mut(), theme::canvas());
             render_conversation_scrollbar(
                 sidebar,
                 conversation_area,
@@ -1736,20 +1773,17 @@ fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selectio
 
 /// Columns available to conversation text inside the sidebar.
 ///
-/// The borderless sidebar pads `PANE_PAD_X + 1` on each side (the origin and
-/// measure the old border + padding provided) and hosts the scrollbar inside
-/// that right padding. Wrapping to a wider measure produced lines the widget
-/// clipped at the tail.
+/// The frame and padding consume `PANE_PAD_X + 1` on each side. The scrollbar
+/// lives inside the right padding, so wrapping and selection share this measure.
 pub(crate) fn conversation_text_width(sidebar_width: u16) -> usize {
     sidebar_width.saturating_sub(2 + 2 * crate::design::PANE_PAD_X) as usize
 }
 
-/// Thin scroll indicator for the borderless conversation. Painted in the
+/// Thin scroll indicator for the conversation. Painted in the
 /// sidebar's right padding so it never overlaps transcript text, and only when
 /// the content actually overflows. `scroll_from_bottom` is the view's own
 /// offset (0 = pinned to the newest line). A focused conversation takes the
-/// solid thumb and accent track, so the borderless block still has a visible
-/// owner without a box.
+/// solid thumb and accent track to reinforce the frame's focus marker.
 fn render_conversation_scrollbar(
     sidebar: ratatui::layout::Rect,
     text_area: ratatui::layout::Rect,
@@ -1766,7 +1800,7 @@ fn render_conversation_scrollbar(
         return;
     }
     let position = max_scroll.saturating_sub((scroll_from_bottom as usize).min(max_scroll));
-    let track = ratatui::layout::Rect::new(sidebar.right() - 1, text_area.y, 1, text_area.height);
+    let track = ratatui::layout::Rect::new(sidebar.right() - 2, text_area.y, 1, text_area.height);
     let mut state = ratatui::widgets::ScrollbarState::new(total)
         .viewport_content_length(text_area.height as usize)
         .position(position);
@@ -1866,7 +1900,7 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::text::{Line, Span};
 
-    /// The borderless conversation signals overflow with a thin track and a
+    /// The conversation signals overflow with a thin track and a
     /// solid thumb, and a focused conversation takes the accent thumb. No
     /// overflow paints nothing.
     #[test]
@@ -1877,20 +1911,20 @@ mod tests {
         let mut fits = ratatui::buffer::Buffer::empty(sidebar);
         render_conversation_scrollbar(sidebar, text_area, 3, 0, false, &mut fits);
         assert!(
-            (0..5).all(|y| fits[(19, y)].symbol() == " "),
+            (0..5).all(|y| fits[(18, y)].symbol() == " "),
             "a fitting transcript must not paint a track"
         );
 
         let mut overflow = ratatui::buffer::Buffer::empty(sidebar);
         render_conversation_scrollbar(sidebar, text_area, 30, 0, false, &mut overflow);
         assert_eq!(
-            overflow[(19, 3)].symbol(),
+            overflow[(18, 3)].symbol(),
             "▐",
             "following view puts the thumb at the bottom"
         );
-        assert_eq!(overflow[(19, 1)].symbol(), "│", "track above the thumb");
+        assert_eq!(overflow[(18, 1)].symbol(), "│", "track above the thumb");
         assert_eq!(
-            overflow[(19, 0)].symbol(),
+            overflow[(18, 0)].symbol(),
             " ",
             "track stays inside the area"
         );
@@ -1898,7 +1932,7 @@ mod tests {
         let mut focused = ratatui::buffer::Buffer::empty(sidebar);
         render_conversation_scrollbar(sidebar, text_area, 30, 0, true, &mut focused);
         assert_eq!(
-            focused[(19, 3)].symbol(),
+            focused[(18, 3)].symbol(),
             "█",
             "focus takes the solid thumb (shape, not only colour)"
         );
@@ -1928,25 +1962,24 @@ mod tests {
                 .join(" "),
         );
 
-        // DESIGN-012: 8 visual lines + 1 top rule row. The round-2 inset
-        // costs one column of wrap width, so the same stress text adds a row.
+        // Eight visual lines plus two border rows at the actual text width.
         assert_eq!(
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, false),
-            9
+            10
         );
     }
 
     #[test]
-    fn short_composer_uses_a_compact_two_row_band() {
+    fn short_composer_reserves_both_border_rows() {
         let input = InputModel::default();
-        // DESIGN-012: 1 visual line + 1 top rule row (was a 3-row box band).
+        // One visual line plus both border rows.
         assert_eq!(
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, false),
-            2
+            3
         );
         assert_eq!(
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, true),
-            2
+            3
         );
     }
 
