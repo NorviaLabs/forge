@@ -399,13 +399,10 @@ impl TuiApp {
     /// queue store durably accepts the item.
     pub(super) async fn enqueue_user_message(&mut self, line: String) {
         if self.selected_is_supervised() {
-            if !self
-                .send_session_command(forge_session::SupervisorCommand::SubmitPrompt {
-                    session_id: self.selected_session_id,
-                    text: line.clone(),
-                })
-                .await
-            {
+            if !self.submit_session_command(forge_session::SupervisorCommand::SubmitPrompt {
+                session_id: self.selected_session_id,
+                text: line.clone(),
+            }) {
                 self.input.set_text(line);
             }
             return;
@@ -439,10 +436,9 @@ impl TuiApp {
     /// this only decides when to call it and how to kick off streaming.
     pub(super) async fn dequeue_and_send_next(&mut self) {
         if self.selected_is_supervised() {
-            self.send_session_command(forge_session::SupervisorCommand::ContinueTurn {
+            self.submit_session_command(forge_session::SupervisorCommand::ContinueTurn {
                 session_id: self.selected_session_id,
-            })
-            .await;
+            });
             return;
         }
         if self.busy_state.is_active() || self.pending_turn.has_prompt() {
@@ -522,11 +518,10 @@ impl TuiApp {
     /// Cancel a queued message by 0-based visible-position index.
     async fn cancel_queued_at(&mut self, index: usize) {
         if self.selected_is_supervised() {
-            self.send_session_command(forge_session::SupervisorCommand::CancelQueuedPrompt {
+            self.submit_session_command(forge_session::SupervisorCommand::CancelQueuedPrompt {
                 session_id: self.selected_session_id,
                 one_based: index + 1,
-            })
-            .await;
+            });
             self.poll_supervisor_events();
             self.clamp_queue_selection();
             return;
@@ -559,7 +554,7 @@ impl TuiApp {
         }
     }
 
-    fn clamp_queue_selection(&mut self) {
+    pub(super) fn clamp_queue_selection(&mut self) {
         self.task_selection
             .clamp_queue(self.selected_queue_messages().len());
     }
@@ -581,16 +576,13 @@ impl TuiApp {
         if self.selected_is_supervised() {
             let messages = self.selected_queue_messages();
             if let Some(text) = messages.last() {
-                if self
-                    .send_session_command(forge_session::SupervisorCommand::CancelQueuedPrompt {
+                self.submit_session_command_tracked(
+                    forge_session::SupervisorCommand::CancelQueuedPrompt {
                         session_id: self.selected_session_id,
                         one_based: messages.len(),
-                    })
-                    .await
-                {
-                    self.input.set_text(text.clone());
-                    self.focus.transition_to(FocusBlock::Composer);
-                }
+                    },
+                    CommandFollowUp::EditQueuedMessage { text: text.clone() },
+                );
             }
             return;
         }
@@ -665,11 +657,10 @@ impl TuiApp {
             return;
         };
         if self.selected_is_supervised() {
-            self.send_session_command(forge_session::SupervisorCommand::CancelBackgroundTask {
+            self.submit_session_command(forge_session::SupervisorCommand::CancelBackgroundTask {
                 session_id: self.selected_session_id,
                 task_id: id,
-            })
-            .await;
+            });
             return;
         }
         if self.session_runtime.cancel_background_task(id) {
@@ -784,19 +775,17 @@ impl TuiApp {
         let (line, continuing, attachments) = self.pending_turn.take();
         if self.selected_is_supervised() {
             if let Some(text) = line {
-                self.send_session_command(
+                self.submit_session_command(
                     forge_session::SupervisorCommand::SubmitPromptWithAttachments {
                         session_id: self.selected_session_id,
                         text,
                         attachments,
                     },
-                )
-                .await;
+                );
             } else if continuing {
-                self.send_session_command(forge_session::SupervisorCommand::ContinueTurn {
+                self.submit_session_command(forge_session::SupervisorCommand::ContinueTurn {
                     session_id: self.selected_session_id,
-                })
-                .await;
+                });
             }
             return Ok(());
         }

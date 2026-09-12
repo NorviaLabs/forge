@@ -435,8 +435,9 @@ impl AgentSession {
             .background
             .set_latest_message_cell(task_id, latest_message);
         self.tasks
-            .subagent_hitl_senders
-            .insert(task_id, hitl_sender);
+            .background
+            .control()
+            .track_hitl(task_id, hitl_sender);
         self.tasks
             .receivers
             .insert(task_id, std::sync::Mutex::new(rx));
@@ -452,7 +453,7 @@ impl AgentSession {
                 },
             );
             self.tasks.receivers.remove(&task_id);
-            self.tasks.subagent_hitl_senders.remove(&task_id);
+            self.tasks.background.control().forget_hitl(task_id);
             self.journal
                 .append_background_task_finished(
                     self.session_id,
@@ -602,7 +603,7 @@ impl AgentSession {
         let (tx, rx) = std::sync::mpsc::channel();
         let result_sink = Arc::new(std::sync::Mutex::new(Some(tx)));
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
-        self.tasks.subagent_hitl_senders.insert(task_id, hitl_tx);
+        self.tasks.background.control().track_hitl(task_id, hitl_tx);
         let prompt = spec.prompt.clone();
         spawn_subagent_actor(
             child,
@@ -1003,7 +1004,7 @@ mod tests {
     async fn resolve_subagent_hitl_on_an_unknown_id_returns_false() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path()).await;
-        let mut s = session_with_script(dir.path(), vec![]).await;
+        let s = session_with_script(dir.path(), vec![]).await;
         assert!(!s.resolve_subagent_hitl(BackgroundTaskId(999), forge_types::HitlDecision::Approve));
     }
 

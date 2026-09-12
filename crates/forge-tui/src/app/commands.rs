@@ -908,10 +908,11 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Fork) => {
                     if self.selected_is_supervised() {
-                        self.send_session_command(forge_session::SupervisorCommand::ForkSession {
-                            session_id: self.selected_session_id,
-                        })
-                        .await;
+                        self.submit_session_command(
+                            forge_session::SupervisorCommand::ForkSession {
+                                session_id: self.selected_session_id,
+                            },
+                        );
                         return Ok(());
                     }
                     match self.session_runtime.fork().await {
@@ -977,20 +978,12 @@ impl TuiApp {
                                     .count()
                             })
                             .unwrap_or(0);
-                        if self
-                            .send_session_command(forge_session::SupervisorCommand::CloseSession {
+                        self.submit_session_command_tracked(
+                            forge_session::SupervisorCommand::CloseSession {
                                 session_id: self.selected_session_id,
-                            })
-                            .await
-                        {
-                            if active_sessions <= 1 {
-                                self.exit.request();
-                                self.status_state.message = "quitting…".into();
-                            } else {
-                                self.poll_supervisor_events();
-                                self.status_state.message = "session closed".into();
-                            }
-                        }
+                            },
+                            CommandFollowUp::Quit { active_sessions },
+                        );
                     } else {
                         self.exit.request();
                         self.status_state.message = "quitting…".into();
@@ -1046,13 +1039,12 @@ impl TuiApp {
                     // Resume replaces the conversation bound to the selected
                     // workspace without changing that Session's Git identity.
                     if self.selected_is_supervised() {
-                        self.send_session_command(
+                        self.submit_session_command(
                             forge_session::SupervisorCommand::ResumeSession {
                                 current_session_id: self.selected_session_id,
                                 session_id,
                             },
-                        )
-                        .await;
+                        );
                         return Ok(());
                     }
                     match self.session_runtime.resume_session(session_id).await {

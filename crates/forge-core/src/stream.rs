@@ -220,8 +220,35 @@ impl AgentSession {
         // large stream burst. Once the model task has returned its sender is
         // dropped, so the relay eventually closes `rx` after preserving every
         // pending provider event.
-        while let Some(event) = rx.recv().await {
-            drain_ready_stream_events(&mut rx, event, self, forward.as_ref(), &mut acc);
+        //
+        // A provider that retains a sender clone keeps `rx` open past the
+        // response, so the drain must keep observing cancellation rather than
+        // waiting on a channel that can never close. Already-queued events are
+        // still preserved; cancellation only stops the drain from waiting
+        // forever on a source that will never end. Returning drops `rx`, which
+        // unblocks the relay's `blocking_send`/`recv` so its thread exits.
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    if let Some(event) = event {
+                        drain_ready_stream_events(&mut rx, event, self, forward.as_ref(), &mut acc);
+                    } else {
+                        break;
+                    }
+                }
+                _ = async {
+                    if let Some(token) = cancel_token.clone() {
+                        token.cancelled().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    return Err(LoopError::Cancelled);
+                }
+                _ = turn_cancel_token.cancelled() => {
+                    return Err(LoopError::Cancelled);
+                }
+            }
         }
         relay
             .await
@@ -302,5 +329,90 @@ mod tests {
             ModelStreamEvent::ThinkingDelta { text } if text == "ab"
         ));
         assert!(matches!(events[4], ModelStreamEvent::MessageEnd));
+    }
+
+    /// Models a provider that returns from `complete_with_stream` while a
+    /// clone of the synchronous sender stays alive past the response, so the
+    /// std channel never closes. The final drain must still observe
+    /// cancellation rather than waiting on a channel that can never end.
+    ///
+    /// The retained clone is handed back through `held` rather than leaked on
+    /// purpose: the relay's `std::sync::mpsc::Receiver::recv` parks while any
+    /// sender lives, and the Tokio runtime waits for blocking-pool tasks on
+    /// shutdown. The test drops the clone before returning so the relay exits.
+    struct LeakyStreamingModel {
+        held: std::sync::Arc<std::sync::Mutex<Option<forge_model::StreamEventTx>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl forge_model::ModelClient for LeakyStreamingModel {
+        async fn complete(
+            &self,
+            _req: forge_model::ModelRequest,
+        ) -> Result<ModelResponse, forge_model::ModelError> {
+            unreachable!("streaming path only")
+        }
+
+        async fn complete_with_stream(
+            &self,
+            _req: forge_model::ModelRequest,
+            tx: Option<forge_model::StreamEventTx>,
+        ) -> Result<ModelResponse, forge_model::ModelError> {
+            let tx = tx.expect("core supplies a stream sender");
+            tx.send(ModelStreamEvent::TextDelta { text: "x".into() })
+                .unwrap();
+            // Retain a clone: the channel stays open after this returns.
+            *self.held.lock().unwrap() = Some(tx.clone());
+            Ok(ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            })
+        }
+
+        fn clear_provider_env(&self) {}
+    }
+
+    #[tokio::test]
+    async fn final_drain_observes_turn_cancel_when_provider_retains_sender() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::LoopConfig {
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("j"),
+            enable_governance: false,
+            ..Default::default()
+        };
+        let held = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let mut session = AgentSession::create(
+            cfg,
+            std::sync::Arc::new(LeakyStreamingModel { held: held.clone() }),
+            forge_tools::ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        session.messages.push(forge_types::Message::new(
+            forge_types::MessageRole::User,
+            "hello",
+        ));
+
+        let token = session.begin_turn_cancellation_scope();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            token.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            session.run_model_step_with_stream(0, None),
+        )
+        .await
+        .expect("final drain must observe cancellation instead of hanging");
+
+        assert!(matches!(result, Err(LoopError::Cancelled)));
+
+        // Release the retained sender so the relay's blocking `recv` returns
+        // and runtime shutdown does not wait on a parked blocking thread.
+        drop(held.lock().unwrap().take());
     }
 }

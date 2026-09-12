@@ -304,6 +304,21 @@ async fn quit_closes_selected_session_before_exiting_on_last_session() {
     app.poll_supervisor_events();
 
     app.dispatch_line("/quit").await.unwrap();
+    // The close is queued rather than awaited, so its follow-up lands on a
+    // later application tick instead of blocking the terminal owner.
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        let closed = app.selected_session_id == primary_id
+            && !app
+                .session_chrome
+                .iter()
+                .any(|item| item.session_id == sibling_id);
+        if closed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(!app.exit.is_requested());
     assert_eq!(app.selected_session_id, primary_id);
     assert!(!app
@@ -312,6 +327,14 @@ async fn quit_closes_selected_session_before_exiting_on_last_session() {
         .any(|item| item.session_id == sibling_id));
 
     app.dispatch_line("/quit").await.unwrap();
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        if app.exit.is_requested() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(app.exit.is_requested());
     // Quitting the last session leaves no runtime selected; the shutdown-path
     // token report must not panic on the missing runtime.
@@ -1388,6 +1411,97 @@ async fn a_narrow_navigator_falls_back_to_a_status_chip() {
         .unwrap();
 }
 
+/// Regression: a UI action that mutates a busy Session must not block the
+/// terminal owner. Model selection used to await command completion, so a
+/// running turn deferred it while the TUI stopped reading keys and painting;
+/// it now queues immediately and its follow-up lands when the actor frees.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tracked_command_applies_after_a_busy_turn_without_blocking_input() {
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let model: Arc<dyn forge_model::ModelClient> = Arc::new(GateModel::new(vec![(
+        "hold open".to_string(),
+        gate.clone(),
+    )]));
+    let (_dir, app, handle) = app_with_supervisor_and_model(model).await;
+    let mut app = Box::new(app);
+    let session_id = app.selected_session_id;
+
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("hold open".to_string());
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    wait_for_turn_state(
+        &mut app,
+        session_id,
+        forge_session::SupervisorTurnState::Running,
+    )
+    .await;
+
+    // The actor holds its session mutex for the whole turn. Queueing the model
+    // change must return immediately and leave the command pending.
+    let started = std::time::Instant::now();
+    assert!(app.submit_session_command_tracked(
+        forge_session::SupervisorCommand::SetModel {
+            session_id,
+            model_id: "queued-model".into(),
+            route_id: String::new(),
+            reasoning_effort: None,
+        },
+        CommandFollowUp::Toast("model applied".into()),
+    ));
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(250),
+        "queueing the command blocked the terminal owner for {:?}",
+        started.elapsed()
+    );
+    assert_eq!(app.pending_command_completions.len(), 1);
+
+    // The TUI stays live: a key lands in the composer while the command waits.
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.input.text.contains('x'));
+    app.poll_pending_commands();
+    assert_eq!(
+        app.pending_command_completions.len(),
+        1,
+        "a command deferred by a busy actor must stay pending, not be dropped"
+    );
+
+    // Release the turn; the deferred command executes and its follow-up lands.
+    gate.notify_one();
+    wait_for_turn_state(
+        &mut app,
+        session_id,
+        forge_session::SupervisorTurnState::Completed,
+    )
+    .await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        let applied = app
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+            .and_then(|snapshot| snapshot.details.as_ref())
+            .is_some_and(|details| details.active_model == "queued-model");
+        if applied && app.pending_command_completions.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the deferred model change never applied"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// Create a prompt-less managed session directly, bypassing the inline
 /// composer — for tests that only need a sibling to exist (the composer's
 /// first prompt would otherwise start a model turn).
@@ -1398,11 +1512,10 @@ async fn create_promptless_session(app: &mut TuiApp) -> SessionChromeItem {
         .map(|item| item.session_id)
         .collect();
     app.focus_block(FocusBlock::TaskStrip);
-    app.send_session_command(forge_session::SupervisorCommand::CreateSession {
+    app.submit_session_command(forge_session::SupervisorCommand::CreateSession {
         label: String::new(),
         first_prompt: None,
-    })
-    .await;
+    });
     wait_for_chrome_session(app, |item| !before.contains(&item.session_id)).await
 }
 

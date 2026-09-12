@@ -5,6 +5,7 @@
 use super::prelude::*;
 
 use super::super::watch::path_is_ignored_by_file_watcher;
+use crate::file_explorer::RefreshTestGate;
 
 #[tokio::test]
 async fn file_change_event_refreshes_git_status() {
@@ -158,6 +159,7 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
 
     app.focus_block(FocusBlock::Composer);
     app.poll_file_changes();
+    install_pending_explorer_refresh(&mut app).await;
 
     assert!(app
         .workspace_files
@@ -239,4 +241,138 @@ fn forge_runtime_paths_are_ignored_by_file_watcher_filter() {
     assert!(!path_is_ignored_by_file_watcher(Path::new(
         "/tmp/repo/src/lib.rs"
     )));
+}
+
+/// Poll the terminal-thread side of the explorer until a background workspace
+/// refresh has been installed (or dropped), then return.
+async fn install_pending_explorer_refresh(app: &mut TuiApp) {
+    for _ in 0..5_000 {
+        app.poll_file_changes();
+        if !app.workspace_files.explorer.workspace_refresh_pending() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("background explorer refresh never landed");
+}
+
+async fn wait_for_gate_started(gate: &RefreshTestGate, expected: usize) {
+    for _ in 0..5_000 {
+        if gate.started() >= expected {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("explorer refresh worker never reached the test gate");
+}
+
+/// The explorer refresh walks the filesystem on a blocking worker, so a tick
+/// on the terminal thread must return immediately even while that walk is
+/// parked — and the result must install exactly once.
+#[tokio::test]
+async fn workspace_refresh_keeps_terminal_thread_responsive() {
+    use std::time::{Duration, Instant};
+
+    let (dir, mut app) = focus_test_app().await;
+    let gate = Arc::new(RefreshTestGate::new());
+    app.workspace_files
+        .explorer
+        .set_refresh_test_gate(gate.clone());
+    app.workspace_files.explorer.request_workspace_refresh();
+    wait_for_gate_started(&gate, 1).await;
+
+    // The worker is parked mid-refresh; a tick must not wait on it.
+    let started = Instant::now();
+    app.poll_file_changes();
+    let tick = started.elapsed();
+    assert!(
+        tick < Duration::from_millis(250),
+        "a terminal-thread tick blocked on the explorer refresh for {tick:?}"
+    );
+
+    fs::write(dir.path().join("appeared.txt"), "hi\n").unwrap();
+    gate.release();
+    install_pending_explorer_refresh(&mut app).await;
+
+    assert!(app
+        .workspace_files
+        .explorer
+        .visible_nodes()
+        .iter()
+        .any(|node| node.display_name == "appeared.txt"));
+    assert_eq!(app.workspace_files.explorer.refresh_install_count(), 1);
+    // A later poll must not re-install the consumed result.
+    app.poll_file_changes();
+    assert_eq!(app.workspace_files.explorer.refresh_install_count(), 1);
+}
+
+/// A refresh superseded while its worker is in flight must have its result
+/// dropped, with exactly the latest generation installing.
+#[tokio::test]
+async fn stale_workspace_refresh_result_is_dropped() {
+    let (_dir, mut app) = focus_test_app().await;
+    let gate = Arc::new(RefreshTestGate::new());
+    app.workspace_files
+        .explorer
+        .set_refresh_test_gate(gate.clone());
+
+    app.workspace_files.explorer.request_workspace_refresh();
+    wait_for_gate_started(&gate, 1).await;
+    // Supersede the parked worker; this coalesces into a follow-up.
+    app.workspace_files.explorer.request_workspace_refresh();
+    gate.release();
+
+    install_pending_explorer_refresh(&mut app).await;
+
+    assert_eq!(gate.started(), 2, "the coalesced follow-up should have run");
+    assert_eq!(
+        app.workspace_files.explorer.refresh_install_count(),
+        1,
+        "only the latest generation may install"
+    );
+}
+
+/// Expanding a directory while a refresh worker is mid-walk must not be
+/// overwritten by that worker's older snapshot.
+#[tokio::test]
+async fn expanding_during_refresh_drops_the_stale_snapshot() {
+    let (dir, mut app) = focus_test_app().await;
+    fs::create_dir(dir.path().join("subdir")).unwrap();
+    fs::write(dir.path().join("subdir").join("inside.txt"), "hi\n").unwrap();
+    app.workspace_files.explorer.load_root();
+
+    let gate = Arc::new(RefreshTestGate::new());
+    app.workspace_files
+        .explorer
+        .set_refresh_test_gate(gate.clone());
+    app.workspace_files.explorer.request_workspace_refresh();
+    wait_for_gate_started(&gate, 1).await;
+
+    let subdir_path = app
+        .workspace_files
+        .explorer
+        .visible_nodes()
+        .iter()
+        .find(|node| node.display_name == "subdir")
+        .map(|node| node.path.clone())
+        .expect("subdir visible after load_root");
+    app.workspace_files.explorer.selected_path = Some(subdir_path.clone());
+    app.workspace_files.explorer.expand_selected();
+
+    gate.release();
+    install_pending_explorer_refresh(&mut app).await;
+
+    assert_eq!(
+        app.workspace_files.explorer.refresh_install_count(),
+        0,
+        "a refresh snapshot older than the expansion must be dropped"
+    );
+    assert!(
+        app.workspace_files
+            .explorer
+            .visible_nodes()
+            .iter()
+            .any(|node| node.path == subdir_path.join("inside.txt")),
+        "the expansion must survive the dropped refresh"
+    );
 }

@@ -210,15 +210,13 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
-                if self
-                    .send_session_command(forge_session::SupervisorCommand::RenameSession {
+                self.submit_session_command_tracked(
+                    forge_session::SupervisorCommand::RenameSession {
                         session_id,
                         label: label.clone(),
-                    })
-                    .await
-                {
-                    self.set_feedback(FeedbackSeverity::Ok, format!("renamed to `{label}`"));
-                }
+                    },
+                    CommandFollowUp::Toast(format!("renamed to `{label}`")),
+                );
                 self.overlay = None;
             }
             OverlayAction::ArchiveSession { session_id } => {
@@ -226,14 +224,10 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
-                if self
-                    .send_session_command(forge_session::SupervisorCommand::ArchiveSession {
-                        session_id,
-                    })
-                    .await
-                {
-                    self.set_feedback(FeedbackSeverity::Ok, "session archived");
-                }
+                self.submit_session_command_tracked(
+                    forge_session::SupervisorCommand::ArchiveSession { session_id },
+                    CommandFollowUp::Toast("session archived".into()),
+                );
                 self.overlay = None;
             }
             OverlayAction::ApproveAll => {
@@ -254,14 +248,13 @@ impl TuiApp {
                 if !self.begin_session_view_retirement(session_id) {
                     return Ok(());
                 }
-                let removed = self
-                    .send_session_command(forge_session::SupervisorCommand::RemoveManagedWorktree {
-                        session_id,
-                    })
-                    .await;
-                self.finish_session_view_retirement(session_id, removed);
-                if removed {
-                    self.set_feedback(FeedbackSeverity::Ok, "worktree removed · branch kept");
+                let queued = self.submit_session_command_tracked(
+                    forge_session::SupervisorCommand::RemoveManagedWorktree { session_id },
+                    CommandFollowUp::Retirement { session_id },
+                );
+                if !queued {
+                    // Queue admission failed: release the parked view now.
+                    self.finish_session_view_retirement(session_id, false);
                 }
                 self.overlay = None;
             }
@@ -269,13 +262,10 @@ impl TuiApp {
                 label,
                 first_prompt,
             } => {
-                if self
-                    .send_session_command(forge_session::SupervisorCommand::CreateSession {
-                        label,
-                        first_prompt,
-                    })
-                    .await
-                {
+                if self.submit_session_command(forge_session::SupervisorCommand::CreateSession {
+                    label,
+                    first_prompt,
+                }) {
                     self.overlay = None;
                     self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");
                 }
@@ -289,37 +279,31 @@ impl TuiApp {
                 // where the launch directory is known, and its membership in
                 // the repository is settled by the supervisor.
                 let workspace = Overlay::normalize_workspace_path(&workspace, &self.runtime.cwd);
-                if self
-                    .send_session_command(forge_session::SupervisorCommand::AttachWorktree {
+                if self.submit_session_command_tracked(
+                    forge_session::SupervisorCommand::AttachWorktree {
                         workspace,
                         label,
                         branch,
-                    })
-                    .await
-                {
+                    },
+                    CommandFollowUp::Toast("worktree attached".into()),
+                ) {
                     self.overlay = None;
-                    self.set_feedback(FeedbackSeverity::Ok, "worktree attached");
                 }
             }
             OverlayAction::FinalizeSessionCreation { operation_id } => {
-                if self
-                    .send_session_command(forge_session::SupervisorCommand::FinalizeCreation {
-                        operation_id,
-                    })
-                    .await
-                {
-                    self.set_feedback(FeedbackSeverity::Ok, "session worktree trusted");
-                }
+                self.submit_session_command_tracked(
+                    forge_session::SupervisorCommand::FinalizeCreation { operation_id },
+                    CommandFollowUp::Toast("session worktree trusted".into()),
+                );
                 // The overlay closes either way: on failure the supervisor has
                 // already rolled the creation back, so there is nothing left
                 // to trust.
                 self.overlay = None;
             }
             OverlayAction::CancelSessionCreation { operation_id } => {
-                self.send_session_command(forge_session::SupervisorCommand::CancelCreation {
+                self.submit_session_command(forge_session::SupervisorCommand::CancelCreation {
                     operation_id,
-                })
-                .await;
+                });
                 self.overlay = None;
                 self.set_feedback(FeedbackSeverity::Info, "session creation cancelled");
             }
@@ -355,20 +339,24 @@ impl TuiApp {
                         .as_deref()
                         .map(super::connect::route_id_for_profile)
                         .unwrap_or_default();
-                    if self
-                        .send_session_command(forge_session::SupervisorCommand::SetModel {
+                    self.submit_session_command_tracked(
+                        forge_session::SupervisorCommand::SetModel {
                             session_id,
                             model_id: model.clone(),
                             route_id,
                             reasoning_effort: Some(self.reasoning_effort.value.to_string()),
-                        })
-                        .await
-                    {
-                        self.set_feedback(
-                            FeedbackSeverity::Ok,
-                            format!("{} · model {model}", self.selected_session_label()),
-                        );
-                    }
+                        },
+                        CommandFollowUp::Toast(format!(
+                            "{} · model {model}",
+                            self.selected_session_label()
+                        )),
+                    );
+                    // The actor can be mid-turn; the pending label is replaced
+                    // by the toast only once the change actually applies.
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        format!("applying model {model} when the session is free…"),
+                    );
                     self.overlay = None;
                     return Ok(());
                 }

@@ -200,13 +200,12 @@ impl TuiApp {
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     let text = self.navigator_new_session.take().unwrap_or_default();
                     if !text.trim().is_empty() {
-                        self.send_session_command(
+                        self.submit_session_command(
                             forge_session::SupervisorCommand::CreateSession {
                                 label: String::new(),
                                 first_prompt: Some(text),
                             },
-                        )
-                        .await;
+                        );
                         self.set_feedback(FeedbackSeverity::Info, "starting session…");
                     }
                     return Ok(true);
@@ -242,11 +241,12 @@ impl TuiApp {
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     let text = std::mem::take(&mut self.navigator_reply);
                     if !text.trim().is_empty() {
-                        self.send_session_command(forge_session::SupervisorCommand::SubmitPrompt {
-                            session_id: focused_id,
-                            text,
-                        })
-                        .await;
+                        self.submit_session_command(
+                            forge_session::SupervisorCommand::SubmitPrompt {
+                                session_id: focused_id,
+                                text,
+                            },
+                        );
                     }
                     self.navigator_peek = None;
                     return Ok(true);
@@ -294,12 +294,11 @@ impl TuiApp {
                     .is_some_and(|session| session.session_id == item.session_id)
                 {
                     if self.supervisor.is_some() {
-                        if !self
-                            .send_session_command(forge_session::SupervisorCommand::SelectSession {
+                        if !self.submit_session_command(
+                            forge_session::SupervisorCommand::SelectSession {
                                 session_id: Some(item.session_id),
-                            })
-                            .await
-                        {
+                            },
+                        ) {
                             return Ok(true);
                         }
                         if let Some(snapshot) = self
@@ -353,10 +352,9 @@ impl TuiApp {
                     );
                     return Ok(true);
                 }
-                self.send_session_command(forge_session::SupervisorCommand::StopTurn {
+                self.submit_session_command(forge_session::SupervisorCommand::StopTurn {
                     session_id,
-                })
-                .await;
+                });
                 Ok(true)
             }
             KeyCode::Char('c') if key.modifiers.is_empty() => {
@@ -372,10 +370,9 @@ impl TuiApp {
                     );
                     return Ok(true);
                 }
-                self.send_session_command(forge_session::SupervisorCommand::ContinueTurn {
+                self.submit_session_command(forge_session::SupervisorCommand::ContinueTurn {
                     session_id,
-                })
-                .await;
+                });
                 Ok(true)
             }
             KeyCode::Char('d') if key.modifiers.is_empty() => {
@@ -634,15 +631,37 @@ impl TuiApp {
         self.install_session_view_state(state);
     }
 
-    /// Send a supervisor command and report the outcome in the feedback strip.
+    /// Queue a supervisor command without waiting for execution.
     ///
-    /// A rejected command — an attach that names the wrong branch, an archive
-    /// of a running task — is operator error, not a TUI failure. Returning it
-    /// as `TuiError` would tear the session down over a typo, so failures
-    /// surface as feedback and the caller learns only whether it worked.
-    pub(super) async fn send_session_command(
+    /// The terminal owner must keep reading input and painting while a busy
+    /// actor drains a turn, so dispatch only reports whether the command
+    /// entered the supervisor's queue. Execution failures arrive as supervisor
+    /// error events; callers that need a specific success follow-up use
+    /// [`Self::submit_session_command_tracked`].
+    pub(super) fn submit_session_command(
         &mut self,
         command: forge_session::SupervisorCommand,
+    ) -> bool {
+        self.dispatch_session_command(command, None)
+    }
+
+    /// Queue a supervisor command and record what to do when it completes.
+    ///
+    /// The follow-up runs from [`Self::poll_pending_commands`] on a later
+    /// tick, so a command that must wait for a running actor can never stall
+    /// input or rendering.
+    pub(super) fn submit_session_command_tracked(
+        &mut self,
+        command: forge_session::SupervisorCommand,
+        follow_up: CommandFollowUp,
+    ) -> bool {
+        self.dispatch_session_command(command, Some(follow_up))
+    }
+
+    fn dispatch_session_command(
+        &mut self,
+        command: forge_session::SupervisorCommand,
+        follow_up: Option<CommandFollowUp>,
     ) -> bool {
         let Some(handle) = self
             .supervisor
@@ -652,26 +671,71 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "Sessions are unavailable");
             return false;
         };
-        let command_future = handle.command(command);
-        tokio::pin!(command_future);
-        let result = loop {
-            tokio::select! {
-                result = &mut command_future => break result,
-                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
-                    // A supervisor command can wait while an actor drains a
-                    // turn or its background resources. Keep every saved PTY
-                    // and watcher moving during that wait so cleanup and
-                    // other commands cannot stall live session resources.
-                    self.poll_interactive_terminals();
-                    self.poll_file_changes();
+        match handle.submit(command) {
+            Ok(reply) => {
+                if let Some(follow_up) = follow_up {
+                    self.pending_command_completions
+                        .push(PendingCommandCompletion { reply, follow_up });
                 }
+                true
             }
-        };
-        match result {
-            Ok(()) => true,
             Err(error) => {
                 self.set_feedback(FeedbackSeverity::Error, error.to_string());
                 false
+            }
+        }
+    }
+
+    /// Apply any supervisor commands that finished since the last tick.
+    /// Non-blocking, and bounded by the number of tracked commands.
+    pub(super) fn poll_pending_commands(&mut self) {
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let pending = std::mem::take(&mut self.pending_command_completions);
+        let mut waiting = Vec::with_capacity(pending.len());
+        for mut command in pending {
+            match command.reply.try_recv() {
+                Ok(Ok(())) => self.apply_command_follow_up(&command.follow_up, true),
+                Ok(Err(_)) => self.apply_command_follow_up(&command.follow_up, false),
+                Err(TryRecvError::Empty) => waiting.push(command),
+                Err(TryRecvError::Closed) => {
+                    self.apply_command_follow_up(&command.follow_up, false);
+                }
+            }
+        }
+        self.pending_command_completions = waiting;
+    }
+
+    fn apply_command_follow_up(&mut self, follow_up: &CommandFollowUp, succeeded: bool) {
+        match follow_up {
+            CommandFollowUp::Toast(message) => {
+                if succeeded {
+                    self.set_feedback(FeedbackSeverity::Ok, message.clone());
+                }
+            }
+            CommandFollowUp::Retirement { session_id } => {
+                self.finish_session_view_retirement(*session_id, succeeded);
+                if succeeded {
+                    self.set_feedback(FeedbackSeverity::Ok, "worktree removed · branch kept");
+                }
+            }
+            CommandFollowUp::Quit { active_sessions } => {
+                if succeeded {
+                    if *active_sessions <= 1 {
+                        self.exit.request();
+                        self.status_state.message = "quitting…".into();
+                    } else {
+                        self.poll_supervisor_events();
+                        self.status_state.message = "session closed".into();
+                    }
+                }
+            }
+            CommandFollowUp::EditQueuedMessage { text } => {
+                if succeeded {
+                    self.input.set_text(text.clone());
+                    self.focus.transition_to(FocusBlock::Composer);
+                }
+                self.clamp_queue_selection();
             }
         }
     }

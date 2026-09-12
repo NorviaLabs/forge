@@ -62,6 +62,8 @@ impl TuiApp {
     }
 
     pub(super) fn poll_file_changes(&mut self) {
+        // Install any refresh the blocking worker finished since the last tick.
+        self.workspace_files.explorer.poll_workspace_refresh();
         self.drain_inactive_file_watchers();
         let files_are_active = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
             && self.focus.mode() == FocusMode::Navigation;
@@ -91,7 +93,10 @@ impl TuiApp {
     }
 
     pub(super) fn note_workspace_changed(&mut self) {
-        self.workspace_files.explorer.refresh_workspace();
+        // Walking every loaded directory is filesystem-bound, so it runs on a
+        // blocking worker and lands on a later tick via
+        // `poll_workspace_refresh` — never on the terminal thread.
+        self.workspace_files.explorer.request_workspace_refresh();
     }
 
     fn tool_may_mutate_workspace(name: &str) -> bool {
