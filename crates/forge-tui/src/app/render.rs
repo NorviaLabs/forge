@@ -880,16 +880,17 @@ impl TuiApp {
                 self.focus.block() == FocusBlock::Sidebar,
                 modal_open,
             );
+            // The conversation is a flat surface: no border box. The text keeps
+            // the exact origin and measure the border used to provide
+            // (border + pad on each side, one row top/bottom); the right
+            // padding hosts a thin scrollbar instead of a border column.
             let sidebar_block = Block::default()
-                .borders(Borders::ALL)
-                .padding(ratatui::widgets::Padding::horizontal(
-                    crate::design::PANE_PAD_X,
+                .padding(ratatui::widgets::Padding::new(
+                    crate::design::PANE_PAD_X + 1,
+                    crate::design::PANE_PAD_X + 1,
+                    1,
+                    1,
                 ))
-                .border_style(if sidebar_focused {
-                    theme::active_panel_border()
-                } else {
-                    theme::inactive_panel_border()
-                })
                 .style(theme::panel());
             let conversation_area = sidebar_block.inner(sidebar);
             self.conversation_area = Some(conversation_area);
@@ -923,6 +924,17 @@ impl TuiApp {
                 conversation_area,
             );
             sidebar_block.render(sidebar, frame.buffer_mut());
+            render_conversation_scrollbar(
+                sidebar,
+                conversation_area,
+                cached_lines.len()
+                    + live_lines.len()
+                    + status_lines.len()
+                    + bottom_padding as usize,
+                self.conversation_view.scroll,
+                sidebar_focused,
+                frame.buffer_mut(),
+            );
             let option_sink = std::cell::RefCell::new(Vec::new());
             frame.render_widget(
                 crate::conversation::ConversationLinesWidget {
@@ -1724,12 +1736,57 @@ fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selectio
 
 /// Columns available to conversation text inside the sidebar.
 ///
-/// The sidebar block takes two columns for its borders and two per side for
-/// `Padding::horizontal(PANE_PAD_X)`. Wrapping to `width - 2` produced lines
-/// wider than the area they were drawn into, so the widget clipped the tail
-/// of every full-width line — losing characters silently.
+/// The borderless sidebar pads `PANE_PAD_X + 1` on each side (the origin and
+/// measure the old border + padding provided) and hosts the scrollbar inside
+/// that right padding. Wrapping to a wider measure produced lines the widget
+/// clipped at the tail.
 pub(crate) fn conversation_text_width(sidebar_width: u16) -> usize {
     sidebar_width.saturating_sub(2 + 2 * crate::design::PANE_PAD_X) as usize
+}
+
+/// Thin scroll indicator for the borderless conversation. Painted in the
+/// sidebar's right padding so it never overlaps transcript text, and only when
+/// the content actually overflows. `scroll_from_bottom` is the view's own
+/// offset (0 = pinned to the newest line). A focused conversation takes the
+/// solid thumb and accent track, so the borderless block still has a visible
+/// owner without a box.
+fn render_conversation_scrollbar(
+    sidebar: ratatui::layout::Rect,
+    text_area: ratatui::layout::Rect,
+    total: usize,
+    scroll_from_bottom: u16,
+    focused: bool,
+    buf: &mut ratatui::buffer::Buffer,
+) {
+    if sidebar.width == 0 || text_area.height == 0 || sidebar.right() <= text_area.right() {
+        return;
+    }
+    let max_scroll = total.saturating_sub(text_area.height as usize);
+    if max_scroll == 0 {
+        return;
+    }
+    let position = max_scroll.saturating_sub((scroll_from_bottom as usize).min(max_scroll));
+    let track = ratatui::layout::Rect::new(sidebar.right() - 1, text_area.y, 1, text_area.height);
+    let mut state = ratatui::widgets::ScrollbarState::new(total)
+        .viewport_content_length(text_area.height as usize)
+        .position(position);
+    let (thumb, thumb_style, track_style) = if focused {
+        ("█", theme::accent_style(), theme::accent_style())
+    } else {
+        ("▐", theme::muted(), theme::border_muted())
+    };
+    ratatui::widgets::StatefulWidget::render(
+        ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .track_style(track_style)
+            .thumb_symbol(thumb)
+            .thumb_style(thumb_style),
+        track,
+        buf,
+        &mut state,
+    );
 }
 
 /// The live preview is painted directly below the settled transcript, but it
@@ -1804,9 +1861,48 @@ fn relative_age(then: chrono::DateTime<chrono::Utc>) -> String {
 mod tests {
     use super::composer_input_height;
     use super::relative_age;
+    use super::render_conversation_scrollbar;
     use crate::widgets::InputModel;
     use ratatui::layout::Rect;
     use ratatui::text::{Line, Span};
+
+    /// The borderless conversation signals overflow with a thin track and a
+    /// solid thumb, and a focused conversation takes the accent thumb. No
+    /// overflow paints nothing.
+    #[test]
+    fn conversation_scrollbar_paints_only_on_overflow() {
+        let sidebar = Rect::new(0, 0, 20, 5);
+        let text_area = Rect::new(4, 1, 12, 3);
+
+        let mut fits = ratatui::buffer::Buffer::empty(sidebar);
+        render_conversation_scrollbar(sidebar, text_area, 3, 0, false, &mut fits);
+        assert!(
+            (0..5).all(|y| fits[(19, y)].symbol() == " "),
+            "a fitting transcript must not paint a track"
+        );
+
+        let mut overflow = ratatui::buffer::Buffer::empty(sidebar);
+        render_conversation_scrollbar(sidebar, text_area, 30, 0, false, &mut overflow);
+        assert_eq!(
+            overflow[(19, 3)].symbol(),
+            "▐",
+            "following view puts the thumb at the bottom"
+        );
+        assert_eq!(overflow[(19, 1)].symbol(), "│", "track above the thumb");
+        assert_eq!(
+            overflow[(19, 0)].symbol(),
+            " ",
+            "track stays inside the area"
+        );
+
+        let mut focused = ratatui::buffer::Buffer::empty(sidebar);
+        render_conversation_scrollbar(sidebar, text_area, 30, 0, true, &mut focused);
+        assert_eq!(
+            focused[(19, 3)].symbol(),
+            "█",
+            "focus takes the solid thumb (shape, not only colour)"
+        );
+    }
 
     #[test]
     fn relative_age_buckets_by_magnitude() {
