@@ -868,7 +868,9 @@ impl TuiApp {
             );
             let sidebar_block = Block::default()
                 .borders(Borders::ALL)
-                .padding(ratatui::widgets::Padding::horizontal(1))
+                .padding(ratatui::widgets::Padding::horizontal(
+                    crate::design::PANE_PAD_X,
+                ))
                 .border_style(if sidebar_focused {
                     theme::active_panel_border()
                 } else {
@@ -1699,12 +1701,12 @@ fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selectio
 
 /// Columns available to conversation text inside the sidebar.
 ///
-/// The sidebar block takes two columns for its borders and two more for
-/// `Padding::horizontal(1)`. Wrapping to `width - 2` produced lines two
-/// columns wider than the area they were drawn into, so the widget clipped
-/// the tail of every full-width line — losing characters silently.
+/// The sidebar block takes two columns for its borders and two per side for
+/// `Padding::horizontal(PANE_PAD_X)`. Wrapping to `width - 2` produced lines
+/// wider than the area they were drawn into, so the widget clipped the tail
+/// of every full-width line — losing characters silently.
 pub(crate) fn conversation_text_width(sidebar_width: u16) -> usize {
-    sidebar_width.saturating_sub(4) as usize
+    sidebar_width.saturating_sub(2 + 2 * crate::design::PANE_PAD_X) as usize
 }
 
 /// The live preview is painted directly below the settled transcript, but it

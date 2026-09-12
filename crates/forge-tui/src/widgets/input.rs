@@ -423,9 +423,10 @@ fn visual_row_col(model: &InputModel, width: u16, offset: usize) -> (u16, u16, u
     (0, 0, total_rows)
 }
 
-/// Left inset before composer text — simple breathing room from the border,
-/// replacing the removed prompt-glyph gutter column.
-pub(crate) const TEXT_INSET: u16 = 1;
+/// Left inset before composer text. Matches a bordered pane's text origin
+/// (one border column + `PANE_PAD_X`) so the composer and the transcript
+/// above it share a left edge.
+pub(crate) const TEXT_INSET: u16 = crate::design::PANE_PAD_X + 1;
 
 /// Composer geometry derived from `model`/`area`/`attachment` — no styling.
 /// Shared by [`InputBar::render`] and [`composer_cursor_position`] so the two

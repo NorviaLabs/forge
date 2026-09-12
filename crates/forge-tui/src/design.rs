@@ -5,8 +5,17 @@
 
 /// Outer frame gutter, each side.
 pub const FRAME_INSET_X: u16 = 1;
-/// Internal pane padding, each side.
-pub const PANE_PAD_X: u16 = 1;
+/// Internal pane padding, each side. 2026 airy pass: 1 → 2 so pane text no
+/// longer sits flush against its border.
+pub const PANE_PAD_X: u16 = 2;
+/// Blank column between adjacent columns (Files | Workspace | Sidebar).
+pub const PANE_GAP_X: u16 = 1;
+/// Blank row between vertically stacked panes (left column ↔ bottom panel,
+/// transcript ↔ composer).
+pub const PANE_GAP_Y: u16 = 1;
+/// Blank row between the content band and the chrome rows (StatusBar /
+/// Footer), so the chrome reads as separate from the work surface.
+pub const CHROME_GAP_Y: u16 = 1;
 /// Pane title height.
 pub const PANE_TITLE_H: u16 = 1;
 /// Shared vertical separator width.
@@ -57,7 +66,10 @@ mod tests {
     #[test]
     fn metrics_match_design_system() {
         assert_eq!(FRAME_INSET_X, 1);
-        assert_eq!(PANE_PAD_X, 1);
+        assert_eq!(PANE_PAD_X, 2);
+        assert_eq!(PANE_GAP_X, 1);
+        assert_eq!(PANE_GAP_Y, 1);
+        assert_eq!(CHROME_GAP_Y, 1);
         assert_eq!(PANE_TITLE_H, 1);
         assert_eq!(PANE_SEPARATOR_W, 1);
         assert_eq!(TRANSCRIPT_MAX_W, 88);

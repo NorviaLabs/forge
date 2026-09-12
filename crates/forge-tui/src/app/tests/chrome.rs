@@ -1429,7 +1429,9 @@ fn conversation_wraps_to_the_width_it_is_drawn_into() {
     for sidebar in [20u16, 40, 84, 120] {
         let block = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
-            .padding(ratatui::widgets::Padding::horizontal(1));
+            .padding(ratatui::widgets::Padding::horizontal(
+                crate::design::PANE_PAD_X,
+            ));
         let inner = block.inner(ratatui::layout::Rect::new(0, 0, sidebar, 10));
         assert_eq!(
             conversation_text_width(sidebar),

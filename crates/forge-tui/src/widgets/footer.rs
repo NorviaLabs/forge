@@ -168,9 +168,10 @@ fn running_dot_style(
 /// (The live turn line above the composer owns phase detail; the footer
 /// keeps the state word for every lifecycle, animated only while running.)
 /// with the composer's left/right edges above it, rather than running flush
-/// to the terminal border. Kept to 1 cell — the 76-col MIN_WIDTH floor must
-/// still fit the full model label plus every chip.
-const PAD: u16 = 1;
+/// to the terminal border. Matches `PANE_PAD_X`; the 78-col MIN_WIDTH floor
+/// (80-column frame minus the frame gutters) still fits the full model label
+/// plus every chip.
+const PAD: u16 = crate::design::PANE_PAD_X;
 
 /// Columns the model id needs to stay recognisable once middle-truncated
 /// (e.g. `…-luna`). Below this the footer drops the token unit label rather
@@ -732,9 +733,10 @@ mod tests {
     fn content_row_is_inset_from_both_edges() {
         let m = model(TurnLifecycle::Ready, 0.34);
         let out = rendered(&m, 90);
-        assert_eq!(&out[..PAD as usize], " ", "left inset: {out:?}");
+        let inset = " ".repeat(PAD as usize);
+        assert_eq!(&out[..PAD as usize], inset, "left inset: {out:?}");
         let trailing: String = out.chars().rev().take(PAD as usize).collect();
-        assert_eq!(trailing, " ", "right inset: {out:?}");
+        assert_eq!(trailing, inset, "right inset: {out:?}");
     }
 
     #[test]
@@ -897,7 +899,9 @@ mod tests {
         // the effort chip must stay fully visible.
         let mut m = model(TurnLifecycle::Working, 0.34);
         m.llm_label = "OpenCode/deepseek-v4-flash-free".into();
-        let out = rendered(&m, 76);
+        // 78 is the real MIN_WIDTH floor (80-col frame minus the 1-col frame
+        // gutters); the airy footer inset still fits the whole model name.
+        let out = rendered(&m, 78);
         assert!(out.contains("Medium"), "{out:?}");
         assert!(!out.contains("Auto") && !out.contains("Manual"), "{out:?}");
         // The vendor goes first and goes whole, so the model name stays
