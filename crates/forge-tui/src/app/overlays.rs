@@ -5,6 +5,7 @@
 //! moved verbatim.
 
 use super::*;
+use crate::design::MODAL_PAD_X;
 
 impl TuiApp {
     pub(super) fn render_help_overlay(
@@ -22,8 +23,8 @@ impl TuiApp {
                     .borders(Borders::ALL)
                     .border_style(theme::brand())
                     .style(theme::panel())
-                    .padding(ratatui::widgets::Padding::horizontal(1))
-                    .title(Span::styled(" Help ", theme::brand())),
+                    .padding(ratatui::widgets::Padding::horizontal(MODAL_PAD_X))
+                    .title(crate::theme::modal_title("Help")),
             )
             .render(r, buf);
     }

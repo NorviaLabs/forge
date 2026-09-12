@@ -445,10 +445,10 @@ async fn motion_hovers_a_queued_message_without_moving_focus() {
     let area = app.queue_area.expect("queue strip drawn");
     let before = app.focus.block();
 
-    // Row 0 is the strip title; row 2 is the second queued message.
-    app.handle_mouse(moved(area.x + 2, area.y + 2))
-        .await
-        .unwrap();
+    // Row 0 is the strip title; row 2 is the second queued message, and the
+    // strip's text starts at the shared sidebar inset.
+    let x = area.x + crate::widgets::input::TEXT_INSET + 1;
+    app.handle_mouse(moved(x, area.y + 2)).await.unwrap();
     assert_eq!(app.hover_queue, Some(1));
     assert_eq!(app.focus.block(), before, "hover must never move focus");
 
