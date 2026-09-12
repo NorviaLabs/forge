@@ -59,20 +59,18 @@ impl TuiApp {
                 | forge_session::SupervisorTurnState::Running
                 | forge_session::SupervisorTurnState::Waiting
         ) {
-            self.send_session_command(forge_session::SupervisorCommand::StopTurn { session_id })
-                .await;
+            self.submit_session_command(forge_session::SupervisorCommand::StopTurn { session_id });
             self.navigator_done_pending = Some(session_id);
             self.set_feedback(FeedbackSeverity::Info, "stopping to archive…");
         } else {
-            self.send_session_command(forge_session::SupervisorCommand::ArchiveSession {
+            self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
                 session_id,
-            })
-            .await;
+            });
         }
     }
 
     /// Archive a session the operator marked done once its turn has settled.
-    pub(crate) async fn flush_done_pending(&mut self) {
+    pub(crate) fn flush_done_pending(&mut self) {
         let Some(session_id) = self.navigator_done_pending else {
             return;
         };
@@ -92,10 +90,9 @@ impl TuiApp {
             )
         ) {
             self.navigator_done_pending = None;
-            self.send_session_command(forge_session::SupervisorCommand::ArchiveSession {
+            self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
                 session_id,
-            })
-            .await;
+            });
         }
     }
 

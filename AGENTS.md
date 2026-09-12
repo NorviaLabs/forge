@@ -35,15 +35,26 @@ Key crates:
 
 ## Validation
 
-Use focused checks first, then broader checks before handoff:
+Run only the tests that target the code you changed. Never run the full
+workspace test suite (`cargo test --workspace`); it is slow and agents should
+not spend time on it.
 
-- For any non-trivial code change, run at least the most relevant crate-level tests.
-- For significant changes, add or expand targeted test coverage and run the broader validation commands before handoff.
+- For any non-trivial code change, run the most relevant crate-level tests,
+  filtered to the modules/behaviors you touched where possible.
+- For significant changes, add or expand targeted test coverage and run those
+  new tests plus the directly affected ones.
+
+```sh
+cargo test --package forge-tui --locked <filter>
+cargo test --package forge-core --locked <filter>
+cargo test --package forge-session --locked <filter>
+```
+
+Static checks:
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --all-targets --locked --no-fail-fast
 ```
 
 For CLI/release-sensitive changes:
@@ -51,14 +62,6 @@ For CLI/release-sensitive changes:
 ```sh
 cargo build --release --locked --package forge-cli
 ./target/release/forge --version
-```
-
-For quick iteration on one crate:
-
-```sh
-cargo test --package forge-model
-cargo test --package forge-tui
-cargo build --package forge-cli
 ```
 
 ## Git Workflow

@@ -119,6 +119,68 @@ pub struct FileExplorer {
     /// collapsed directory must still be reachable, and the lazy tree only
     /// knows about directories someone has already expanded.
     diff_filter: Option<Vec<PathBuf>>,
+    /// Generation of the latest requested workspace refresh. A worker result
+    /// installs only while its generation still matches, so a superseded
+    /// request, a different root, or a different session's explorer can never
+    /// have its stale result overwrite newer state.
+    refresh_generation: u64,
+    /// The one workspace refresh currently running off the terminal thread.
+    /// At most one is in flight; later requests coalesce via `refresh_queued`.
+    pending_refresh: Option<PendingWorkspaceRefresh>,
+    /// A refresh requested while one was already in flight. Resolved into a
+    /// single follow-up after the current worker lands — never one per
+    /// filesystem event.
+    refresh_queued: bool,
+    /// Test-only gate that parks a worker mid-refresh so a test can prove the
+    /// terminal thread keeps ticking, and that stale results are dropped.
+    #[cfg(test)]
+    refresh_test_gate: Option<Arc<RefreshTestGate>>,
+    /// Test-only count of installed background refreshes.
+    #[cfg(test)]
+    refresh_install_count: usize,
+}
+
+/// A workspace refresh running on a blocking worker thread.
+#[derive(Debug)]
+struct PendingWorkspaceRefresh {
+    generation: u64,
+    root: PathBuf,
+    receiver: Receiver<FileNode>,
+}
+
+/// Parks a refresh worker until a test releases it. `started` counts workers
+/// that reached the gate, so a test can distinguish two stale requests from
+/// one coalesced request without sleeping.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct RefreshTestGate {
+    started: std::sync::atomic::AtomicUsize,
+    released: std::sync::Mutex<bool>,
+    release: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl RefreshTestGate {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn wait(&self) {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.release.wait(released).unwrap();
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.release.notify_all();
+    }
+
+    pub(crate) fn started(&self) -> usize {
+        self.started.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug)]
@@ -150,6 +212,13 @@ impl FileExplorer {
             search_loading: false,
             search_index: None,
             diff_filter: None,
+            refresh_generation: 0,
+            pending_refresh: None,
+            refresh_queued: false,
+            #[cfg(test)]
+            refresh_test_gate: None,
+            #[cfg(test)]
+            refresh_install_count: 0,
         };
         explorer.load_root();
         if let Some(root) = root_path {
@@ -159,6 +228,7 @@ impl FileExplorer {
     }
 
     pub fn load_root(&mut self) {
+        self.invalidate_workspace_refresh();
         self.cancel_search_load();
         self.search_index = None;
         if let Some(root) = self.root.as_mut() {
@@ -175,6 +245,7 @@ impl FileExplorer {
     }
 
     pub fn refresh_workspace(&mut self) {
+        self.invalidate_workspace_refresh();
         self.cancel_search_load();
         self.search_index = None;
         let root_path = self.root_path.clone();
@@ -186,7 +257,116 @@ impl FileExplorer {
         self.refresh_git_status();
     }
 
+    /// Refresh every loaded directory off the terminal thread.
+    ///
+    /// This is the non-blocking replacement for [`Self::refresh_workspace`]:
+    /// the worker walks a snapshot of the tree on a blocking thread and sends
+    /// the refreshed root back, where [`Self::poll_workspace_refresh`] installs
+    /// it on a later tick. Requests made while a refresh is in flight coalesce
+    /// into one follow-up, and any result whose generation no longer matches
+    /// the latest request (or whose root changed) is dropped on arrival.
+    pub fn request_workspace_refresh(&mut self) {
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+        self.refresh_git_status();
+        if self.pending_refresh.is_some() {
+            self.refresh_queued = true;
+            return;
+        }
+        let Some(root_path) = self.root_path.clone() else {
+            return;
+        };
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let generation = self.refresh_generation;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_root = root_path.clone();
+        #[cfg(test)]
+        let gate = self.refresh_test_gate.clone();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.wait();
+            }
+            let mut refreshed = root;
+            refresh_loaded_directories(Some(&worker_root), &mut refreshed);
+            let _ = tx.send(refreshed);
+        });
+        self.pending_refresh = Some(PendingWorkspaceRefresh {
+            generation,
+            root: root_path,
+            receiver: rx,
+        });
+    }
+
+    /// Install a completed background workspace refresh, if one is ready.
+    /// Non-blocking and safe to call from the terminal thread every tick.
+    /// Returns `true` when a fresh result was installed.
+    pub fn poll_workspace_refresh(&mut self) -> bool {
+        let Some(pending) = self.pending_refresh.take() else {
+            return false;
+        };
+        let installed = match pending.receiver.try_recv() {
+            Ok(root) => {
+                if pending.generation == self.refresh_generation
+                    && self.root_path.as_deref() == Some(pending.root.as_path())
+                {
+                    self.install_workspace_refresh(root);
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                self.pending_refresh = Some(pending);
+                return false;
+            }
+            Err(TryRecvError::Disconnected) => false,
+        };
+        if std::mem::take(&mut self.refresh_queued) {
+            self.request_workspace_refresh();
+        }
+        installed
+    }
+
+    /// Whether a background workspace refresh is still in flight.
+    pub fn workspace_refresh_pending(&self) -> bool {
+        self.pending_refresh.is_some()
+    }
+
+    /// Drop any in-flight background refresh. A synchronous tree mutation makes
+    /// the worker's snapshot stale even if its generation is unchanged, so the
+    /// pending receiver is discarded and its eventual send is ignored.
+    fn invalidate_workspace_refresh(&mut self) {
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+        self.pending_refresh = None;
+        self.refresh_queued = false;
+    }
+
+    fn install_workspace_refresh(&mut self, root: FileNode) {
+        self.cancel_search_load();
+        self.search_index = None;
+        self.root = Some(root);
+        self.restart_search_load_if_needed();
+        self.rebuild_visible();
+        #[cfg(test)]
+        {
+            self.refresh_install_count += 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_refresh_test_gate(&mut self, gate: Arc<RefreshTestGate>) {
+        self.refresh_test_gate = Some(gate);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_install_count(&self) -> usize {
+        self.refresh_install_count
+    }
+
     pub fn refresh_selected(&mut self) {
+        self.invalidate_workspace_refresh();
         self.cancel_search_load();
         self.search_index = None;
         let selected = self.selected_path.clone();
@@ -209,6 +389,7 @@ impl FileExplorer {
     }
 
     pub fn refresh_parent_and_select(&mut self, parent: &Path, selected: &Path) {
+        self.invalidate_workspace_refresh();
         self.cancel_search_load();
         self.search_index = None;
         let root_path = self.root_path.clone();
@@ -378,7 +559,7 @@ impl FileExplorer {
             return;
         };
         let root_path = self.root_path.clone();
-        let Some(node) = self.find_mut(&path) else {
+        let Some(node) = self.find(&path) else {
             return;
         };
         if node.kind != FileKind::Directory {
@@ -390,6 +571,12 @@ impl FileExplorer {
         if node.expanded && node.loaded {
             return;
         }
+        // The tree is about to change under any in-flight refresh snapshot,
+        // which must not install over this expansion.
+        self.invalidate_workspace_refresh();
+        let Some(node) = self.find_mut(&path) else {
+            return;
+        };
         if !node.loaded {
             load_children(root_path.as_deref(), node);
         }
@@ -420,6 +607,14 @@ impl FileExplorer {
             .iter()
             .position(|node| node.path == path)
             .unwrap_or(0);
+        let collapsing = self
+            .find(&path)
+            .is_some_and(|node| node.kind == FileKind::Directory && node.expanded);
+        if collapsing {
+            // A collapse must not be overwritten by an in-flight refresh that
+            // snapshotted the tree while this directory was still expanded.
+            self.invalidate_workspace_refresh();
+        }
         if let Some(node) = self.find_mut(&path) {
             if node.kind == FileKind::Directory && node.expanded {
                 node.expanded = false;
@@ -1047,6 +1242,7 @@ pub struct FileExplorerWidget<'a> {
 impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.explorer.poll_search_load();
+        self.explorer.poll_workspace_refresh();
         let block = Block::default()
             .borders(Borders::ALL)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
@@ -2006,6 +2202,11 @@ mod tests {
             search_loading: false,
             search_index: None,
             diff_filter: None,
+            refresh_generation: 0,
+            pending_refresh: None,
+            refresh_queued: false,
+            refresh_test_gate: None,
+            refresh_install_count: 0,
         };
         explorer.rebuild_visible();
         let root_node = explorer.root.as_ref().unwrap();

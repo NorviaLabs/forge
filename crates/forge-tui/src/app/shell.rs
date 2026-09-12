@@ -672,7 +672,8 @@ mod tests {
 /// chrome. Rendering and terminal input stay with the single Ratatui owner.
 pub(super) async fn tick_application(app: &mut TuiApp) -> Result<bool, TuiError> {
     app.poll_supervisor_events();
-    app.flush_done_pending().await;
+    app.poll_pending_commands();
+    app.flush_done_pending();
     app.poll_file_changes();
     let terminal_changed = app.poll_interactive_terminals();
     if let Some(editor) = app.editor_session.as_mut() {

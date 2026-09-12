@@ -1640,6 +1640,30 @@ impl std::ops::DerefMut for DirectSessionSlot {
     }
 }
 
+/// What to do once a queued supervisor command reports its execution result.
+///
+/// Failures are broadcast by the supervisor as `Error` events, so a variant
+/// only spells out the success path unless it must also roll back local state.
+pub(crate) enum CommandFollowUp {
+    /// Show success feedback. Execution failures surface through the
+    /// supervisor's own error event rather than duplicating it here.
+    Toast(String),
+    /// Release the parked view state for a session whose worktree removal
+    /// finished, on either outcome.
+    Retirement { session_id: uuid::Uuid },
+    /// Quit once the selected session's `CloseSession` succeeds.
+    Quit { active_sessions: usize },
+    /// Load a canceled queued message back into the composer, but only once
+    /// the supervisor confirms it left the queue.
+    EditQueuedMessage { text: String },
+}
+
+/// A supervisor command whose execution result still needs a UI follow-up.
+pub(crate) struct PendingCommandCompletion {
+    pub(crate) reply: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    pub(crate) follow_up: CommandFollowUp,
+}
+
 pub struct TuiApp {
     pub(crate) session_runtime: DirectSessionSlot,
     /// Repository session chrome. The current session is represented here first;
@@ -1706,6 +1730,11 @@ pub struct TuiApp {
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pub(crate) pending_turn: PendingTurnState,
     pub(crate) pending_interaction: PendingInteractionState,
+    /// Commands submitted without awaiting execution. Polled every tick so a
+    /// busy actor can never block input or rendering. App-level rather than
+    /// per-view: a completion must land for the session that submitted it even
+    /// if the operator has switched away.
+    pub(crate) pending_command_completions: Vec<PendingCommandCompletion>,
     /// External-editor request queued for the event loop (terminal suspend/resume).
     pub(crate) external_editor: ExternalEditorState,
     /// Approved HITL tool running off the event loop so frames keep painting.

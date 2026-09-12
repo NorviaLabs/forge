@@ -11,7 +11,8 @@ use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use forge_types::{BackgroundTaskId, HitlPayload, SessionId, TaskId};
+use forge_types::{BackgroundTaskId, HitlDecision, HitlPayload, SessionId, TaskId};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AgentSession, LoopError};
@@ -104,25 +105,135 @@ pub struct BackgroundTaskHandle {
     pub worktree_branch: Option<String>,
 }
 
+/// Control handles for a session's background work, shared with the session's
+/// owner.
+///
+/// The full [`BackgroundTaskRegistry`] lives inside the session and is only
+/// reachable through the session lock — which a running foreground turn holds
+/// for the whole turn. Cancelling a task or answering a subagent's approval
+/// request must not wait behind that unrelated work, so those handles are
+/// mirrored here at spawn/replace time and forgotten once a task turns
+/// terminal. Clones share state (`CancellationToken`, `UnboundedSender`), so
+/// signalling through this map reaches the same task the registry tracks.
+#[derive(Debug, Default)]
+pub struct BackgroundControl {
+    cancels: Mutex<HashMap<BackgroundTaskId, CancellationToken>>,
+    subagent_hitl: Mutex<HashMap<BackgroundTaskId, UnboundedSender<HitlDecision>>>,
+}
+
+impl BackgroundControl {
+    /// Mirror a task's cancellation token so it can be signalled without the
+    /// session lock. Called when a slot is created or its token replaced.
+    pub(crate) fn track_cancel(&self, id: BackgroundTaskId, cancel: CancellationToken) {
+        self.cancels
+            .lock()
+            .expect("background cancel lock poisoned")
+            .insert(id, cancel);
+    }
+
+    /// Forget every control handle for a task that is no longer live.
+    pub(crate) fn forget(&self, id: BackgroundTaskId) {
+        self.cancels
+            .lock()
+            .expect("background cancel lock poisoned")
+            .remove(&id);
+        self.forget_hitl(id);
+    }
+
+    /// Request cancellation without touching the session lock. Returns `false`
+    /// for unknown or already-terminal tasks, matching
+    /// [`BackgroundTaskRegistry::cancel`]'s contract.
+    pub fn cancel(&self, id: BackgroundTaskId) -> bool {
+        match self
+            .cancels
+            .lock()
+            .expect("background cancel lock poisoned")
+            .get(&id)
+        {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Mirror a subagent's decision sender while it can still be answered.
+    pub(crate) fn track_hitl(&self, id: BackgroundTaskId, tx: UnboundedSender<HitlDecision>) {
+        self.subagent_hitl
+            .lock()
+            .expect("subagent hitl lock poisoned")
+            .insert(id, tx);
+    }
+
+    pub(crate) fn forget_hitl(&self, id: BackgroundTaskId) {
+        self.subagent_hitl
+            .lock()
+            .expect("subagent hitl lock poisoned")
+            .remove(&id);
+    }
+
+    pub(crate) fn clear_hitl(&self) {
+        self.subagent_hitl
+            .lock()
+            .expect("subagent hitl lock poisoned")
+            .clear();
+    }
+
+    /// Route an approve/deny decision without the session lock. Returns
+    /// `false` if the task isn't a subagent currently waiting on one.
+    pub fn resolve_hitl(&self, id: BackgroundTaskId, decision: HitlDecision) -> bool {
+        match self
+            .subagent_hitl
+            .lock()
+            .expect("subagent hitl lock poisoned")
+            .get(&id)
+        {
+            Some(tx) => tx.send(decision).is_ok(),
+            None => false,
+        }
+    }
+}
+
 /// Map of in-flight and recently-finished background tasks for one session.
 /// Not itself durable — callers are responsible for journaling lifecycle
 /// transitions (`Journal::append_background_task_started/finished`) before
 /// or alongside mutating this registry, matching the record-before-side-
 /// effect discipline used elsewhere (see `TaskQueue`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BackgroundTaskRegistry {
     tasks: HashMap<BackgroundTaskId, BackgroundTaskHandle>,
     next_id: u64,
+    control: Arc<BackgroundControl>,
+}
+
+impl Default for BackgroundTaskRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BackgroundTaskRegistry {
     const MAX_TERMINAL_TASKS: usize = 64;
 
     pub fn new() -> Self {
+        Self::with_control(Arc::new(BackgroundControl::default()))
+    }
+
+    /// Build a registry whose control handles are mirrored into `control`,
+    /// which the session owner keeps so cancellation and subagent approvals
+    /// stay reachable while the session lock is held.
+    pub fn with_control(control: Arc<BackgroundControl>) -> Self {
         Self {
             tasks: HashMap::new(),
             next_id: 1,
+            control,
         }
+    }
+
+    /// The shared control surface for this registry.
+    pub fn control(&self) -> Arc<BackgroundControl> {
+        Arc::clone(&self.control)
     }
 
     /// Allocate a new task slot in `Queued` status. The caller journals
@@ -140,6 +251,7 @@ impl BackgroundTaskRegistry {
     ) -> BackgroundTaskId {
         let id = BackgroundTaskId(self.next_id);
         self.next_id += 1;
+        self.control.track_cancel(id, cancel.clone());
         self.tasks.insert(
             id,
             BackgroundTaskHandle {
@@ -182,6 +294,7 @@ impl BackgroundTaskRegistry {
         child_session_id: Option<SessionId>,
     ) -> BackgroundTaskId {
         self.next_id = self.next_id.max(id.0 + 1);
+        self.control.track_cancel(id, cancel.clone());
         self.tasks.insert(
             id,
             BackgroundTaskHandle {
@@ -246,11 +359,13 @@ impl BackgroundTaskRegistry {
             task.status = status;
         }
         if terminal {
+            self.control.forget(id);
             self.prune_terminal_tasks();
         }
     }
 
     pub fn replace_cancel_token(&mut self, id: BackgroundTaskId, cancel: CancellationToken) {
+        self.control.track_cancel(id, cancel.clone());
         if let Some(task) = self.tasks.get_mut(&id) {
             task.cancel = cancel;
         }
@@ -270,6 +385,7 @@ impl BackgroundTaskRegistry {
         terminal.sort_by_key(|(_, finished_at)| *finished_at);
         for (id, _) in terminal.into_iter().take(remove_count) {
             self.tasks.remove(&id);
+            self.control.forget(id);
         }
     }
 
@@ -278,7 +394,9 @@ impl BackgroundTaskRegistry {
     }
 
     pub fn remove(&mut self, id: BackgroundTaskId) -> Option<BackgroundTaskHandle> {
-        self.tasks.remove(&id)
+        let removed = self.tasks.remove(&id);
+        self.control.forget(id);
+        removed
     }
 
     pub fn list(&self) -> impl Iterator<Item = &BackgroundTaskHandle> {
@@ -551,7 +669,7 @@ impl AgentSession {
                 .is_some();
             if !is_subagent {
                 self.tasks.receivers.remove(&id);
-                self.tasks.subagent_hitl_senders.remove(&id);
+                self.tasks.background.control().forget_hitl(id);
             }
             self.finish_background_task(id, outcome).await?;
         }
@@ -590,7 +708,7 @@ impl AgentSession {
                 // at which that session-lifetime capability must end.
                 self.coordinator.shutdown_descendants(self.session_id);
                 self.tasks.receivers.clear();
-                self.tasks.subagent_hitl_senders.clear();
+                self.tasks.background.control().clear_hitl();
                 self.tasks.retained_subagents.clear();
                 self.tools.shutdown().await;
                 return Ok(());
@@ -609,14 +727,11 @@ impl AgentSession {
     /// it already finished, or was never a subagent) — a stale UI selection
     /// must not silently no-op without the caller knowing.
     pub fn resolve_subagent_hitl(
-        &mut self,
+        &self,
         id: BackgroundTaskId,
         decision: forge_types::HitlDecision,
     ) -> bool {
-        match self.tasks.subagent_hitl_senders.get(&id) {
-            Some(tx) => tx.send(decision).is_ok(),
-            None => false,
-        }
+        self.tasks.background.control().resolve_hitl(id, decision)
     }
 
     pub(crate) fn background_id_for_child(
@@ -774,6 +889,25 @@ mod tests {
 
     fn tid(n: u64) -> TaskId {
         TaskId(n)
+    }
+
+    /// The shared control map is the session owner's lock-free path to
+    /// background cancellation and subagent approvals.
+    #[test]
+    fn control_signals_cancel_and_hitl_without_a_session() {
+        let control = BackgroundControl::default();
+        let cancel = CancellationToken::new();
+        control.track_cancel(BackgroundTaskId(1), cancel.clone());
+        assert!(control.cancel(BackgroundTaskId(1)));
+        assert!(cancel.is_cancelled());
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        control.track_hitl(BackgroundTaskId(2), tx);
+        assert!(control.resolve_hitl(BackgroundTaskId(2), HitlDecision::Approve));
+        assert!(matches!(rx.try_recv(), Ok(HitlDecision::Approve)));
+
+        control.forget(BackgroundTaskId(1));
+        assert!(!control.cancel(BackgroundTaskId(1)));
     }
 
     mod session_tests {

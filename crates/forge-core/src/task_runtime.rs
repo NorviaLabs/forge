@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use forge_types::{BackgroundTaskId, HitlDecision, SessionId};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::background::{BackgroundTaskOutcome, BackgroundTaskRegistry};
+use crate::background::{BackgroundControl, BackgroundTaskOutcome, BackgroundTaskRegistry};
 use crate::TaskQueue;
 
 pub(crate) struct TaskRuntime {
@@ -20,7 +20,6 @@ pub(crate) struct TaskRuntime {
     pub(crate) background: BackgroundTaskRegistry,
     pub(crate) receivers:
         HashMap<BackgroundTaskId, std::sync::Mutex<Receiver<BackgroundTaskOutcome>>>,
-    pub(crate) subagent_hitl_senders: HashMap<BackgroundTaskId, UnboundedSender<HitlDecision>>,
     pub(crate) retained_subagents: HashMap<SessionId, RetainedSubagent>,
 }
 
@@ -38,9 +37,15 @@ impl TaskRuntime {
             queue: TaskQueue::new(),
             background: BackgroundTaskRegistry::new(),
             receivers: HashMap::new(),
-            subagent_hitl_senders: HashMap::new(),
             retained_subagents: HashMap::new(),
         }
+    }
+
+    /// Shared control handles for this session's background work, so an owner
+    /// (the repository supervisor) can cancel a task or answer a subagent's
+    /// approval while a foreground turn holds the session lock.
+    pub(crate) fn background_control(&self) -> Arc<BackgroundControl> {
+        self.background.control()
     }
 
     pub(crate) fn with_queue(queue: TaskQueue) -> Self {

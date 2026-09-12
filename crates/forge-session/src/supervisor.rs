@@ -265,11 +265,19 @@ impl SupervisorHandle {
         self.events.subscribe()
     }
 
-    /// Queue a command from synchronous UI code without blocking the terminal
-    /// owner. Failures in command execution are still published as supervisor
-    /// events; this only reports whether the command entered the actor queue.
-    pub fn try_command(&self, command: SupervisorCommand) -> Result<(), RepositorySupervisorError> {
-        let (reply, _response) = oneshot::channel();
+    /// Queue a command and hand back its completion receiver without awaiting
+    /// execution.
+    ///
+    /// The terminal owner must keep reading input and painting while a busy
+    /// actor drains a turn, so callers poll the receiver on their own tick
+    /// instead of blocking on it. [`Self::command`] stays the awaited
+    /// convenience for non-UI callers. Failures in command execution are still
+    /// published as supervisor events.
+    pub fn submit(
+        &self,
+        command: SupervisorCommand,
+    ) -> Result<oneshot::Receiver<Result<(), String>>, RepositorySupervisorError> {
+        let (reply, response) = oneshot::channel();
         self.commands
             .try_send(CommandEnvelope { command, reply })
             .map_err(|error| match error {
@@ -277,7 +285,15 @@ impl SupervisorHandle {
                 mpsc::error::TrySendError::Full(_) => {
                     RepositorySupervisorError::Command("supervisor command queue is full".into())
                 }
-            })
+            })?;
+        Ok(response)
+    }
+
+    /// Queue a command from synchronous UI code without blocking the terminal
+    /// owner. Failures in command execution are still published as supervisor
+    /// events; this only reports whether the command entered the actor queue.
+    pub fn try_command(&self, command: SupervisorCommand) -> Result<(), RepositorySupervisorError> {
+        self.submit(command).map(drop)
     }
 }
 
@@ -294,6 +310,10 @@ struct SessionActor {
     /// The session's own model client, so provider-env updates reach a busy
     /// actor without waiting on its session lock.
     model: Arc<dyn ModelClient>,
+    /// Cancellation tokens and subagent approval senders for this session's
+    /// background work, reachable without the session lock so a running
+    /// foreground turn cannot make them wait.
+    background_control: Arc<forge_core::BackgroundControl>,
 }
 
 /// Whether `workspace` is trusted, using the injected store when present and
@@ -320,6 +340,7 @@ impl SessionActor {
         // The trust gate is enforced in the core session, not only the TUI.
         session.set_workspace_trusted(workspace_trusted);
         let model = session.model_client();
+        let background_control = session.background_control();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
@@ -336,6 +357,7 @@ impl SessionActor {
             retiring: AtomicBool::new(false),
             running_cancel: StdMutex::new(None),
             model,
+            background_control,
         }
     }
 
@@ -1694,10 +1716,20 @@ async fn execute_command(
             task_id,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = try_session(&task_actor)?;
-            session.cancel_background_task(task_id);
-            session.poll_background_tasks().await?;
-            refresh_actor(&state, &task_actor, &session).await?;
+            // Signalled through the shared control map: a foreground turn
+            // holding the session lock must not make cancellation wait.
+            if !task_actor.background_control.cancel(task_id) {
+                return Err(RepositorySupervisorError::Command(
+                    "background task is not running".into(),
+                ));
+            }
+            // Publish immediately when the actor is free; a busy actor reports
+            // the terminal state at its next turn-boundary refresh.
+            let locked = task_actor.session.try_lock();
+            if let Ok(mut session) = locked {
+                session.poll_background_tasks().await?;
+                refresh_actor(&state, &task_actor, &session).await?;
+            }
         }
         SupervisorCommand::ResolveBackgroundApproval {
             session_id,
@@ -1705,9 +1737,18 @@ async fn execute_command(
             decision,
         } => {
             let task_actor = actor(&state, session_id).await?;
-            let mut session = try_session(&task_actor)?;
-            session.resolve_subagent_hitl(task_id, decision);
-            refresh_actor(&state, &task_actor, &session).await?;
+            if !task_actor
+                .background_control
+                .resolve_hitl(task_id, decision)
+            {
+                return Err(RepositorySupervisorError::Command(
+                    "background task isn't waiting for approval".into(),
+                ));
+            }
+            let locked = task_actor.session.try_lock();
+            if let Ok(session) = locked {
+                refresh_actor(&state, &task_actor, &session).await?;
+            }
         }
         SupervisorCommand::GrantEgressHost {
             session_id,
@@ -3860,6 +3901,54 @@ mod tests {
         assert!(
             progress_latency < std::time::Duration::from_secs(3),
             "B did not progress while A was gated: {progress_latency:?}"
+        );
+
+        // Background controls must reach a busy actor too. Before the shared
+        // control map these contended on A's session lock until the turn
+        // ended. Unknown task ids exercise the path without needing a live
+        // background task; the property under test is that the command is
+        // answered while A is still gated.
+        let control_started = std::time::Instant::now();
+        let cancel = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            handle.command(SupervisorCommand::CancelBackgroundTask {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+            }),
+        )
+        .await;
+        if cancel.is_err() {
+            release.notify_waiters();
+        }
+        let cancel = cancel.expect("background cancellation stalled behind A's turn");
+        assert!(
+            cancel.is_err(),
+            "an unknown background task must be reported, not silently accepted"
+        );
+        let cancel_latency = control_started.elapsed();
+
+        let approval = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            handle.command(SupervisorCommand::ResolveBackgroundApproval {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+                decision: HitlDecision::Approve,
+            }),
+        )
+        .await;
+        if approval.is_err() {
+            release.notify_waiters();
+        }
+        let approval = approval.expect("background approval stalled behind A's turn");
+        assert!(approval.is_err());
+        assert_eq!(
+            supervisor.snapshot(id_a).await.unwrap().task.turn_state,
+            SupervisorTurnState::Running,
+            "A must still be gated when its background controls were answered"
+        );
+        eprintln!(
+            "bg-control latencies: cancel={cancel_latency:?} approval={:?}",
+            control_started.elapsed()
         );
 
         release.notify_waiters();

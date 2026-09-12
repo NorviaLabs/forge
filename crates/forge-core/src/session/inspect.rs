@@ -211,6 +211,13 @@ impl AgentSession {
         self.model.clone()
     }
 
+    /// Shared control handles for this session's background work. The owner
+    /// (the repository supervisor) keeps a clone so cancellation and subagent
+    /// approvals stay reachable while a running turn holds the session lock.
+    pub fn background_control(&self) -> Arc<BackgroundControl> {
+        self.tasks.background_control()
+    }
+
     /// Active workspace root.
     pub fn workspace_root(&self) -> &std::path::Path {
         &self.tool_ctx.workspace_root
