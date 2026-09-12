@@ -365,6 +365,19 @@ pub fn scan_band_bg() -> Style {
     Style::default().bg(active_palette().scan_band)
 }
 
+/// Editorial emphasis hue for `**strong**` inside model prose (orange in the
+/// built-ins). Weight is added at the call site; colour is additive so a
+/// monochrome terminal still reads emphasis (FORGE-DESIGN §6, §9.4).
+pub fn md_strong() -> Style {
+    Style::default().fg(active_palette().md_strong)
+}
+
+/// Editorial emphasis hue for `*emphasis*` inside model prose (greenish
+/// yellow in the built-ins). Italic is added at the call site.
+pub fn md_emph() -> Style {
+    Style::default().fg(active_palette().md_emph)
+}
+
 /// Even-row tint zebra-striping a rendered table's body rows.
 pub fn zebra_row_bg() -> Style {
     Style::default().bg(active_palette().zebra_row)
@@ -856,6 +869,12 @@ pub struct Palette {
     pub scan_band: Color,
     /// Even-row table tint (see `ThemePalette::zebra_row`).
     pub zebra_row: Color,
+    /// Editorial emphasis: `**strong**` hue inside model prose
+    /// (see `ThemePalette::md_strong`).
+    pub md_strong: Color,
+    /// Editorial emphasis: `*emphasis*` hue inside model prose
+    /// (see `ThemePalette::md_emph`).
+    pub md_emph: Color,
 }
 
 /// Palette for a specific theme id. Used by the theme picker preview so the
@@ -898,6 +917,8 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         structure: to_color(src.structure),
         scan_band: to_color(src.scan_band),
         zebra_row: to_color(src.zebra_row),
+        md_strong: to_color(src.md_strong),
+        md_emph: to_color(src.md_emph),
     }
 }
 
@@ -967,6 +988,21 @@ mod tests {
                 .palette
                 .surface_hover,
             dark.surface_hover
+        );
+    }
+
+    /// The editorial-emphasis accessors expose the theme's own tokens, so a
+    /// custom theme drives prose colour without touching render code.
+    #[test]
+    fn editorial_emphasis_accessors_expose_theme_tokens() {
+        install_defaults();
+        let dark = dark_palette();
+        assert_eq!(md_strong().fg, Some(to_color(dark.md_strong)));
+        assert_eq!(md_emph().fg, Some(to_color(dark.md_emph)));
+        assert_eq!(
+            md_strong().add_modifier,
+            Modifier::empty(),
+            "weight belongs to the call site, not the token"
         );
     }
 

@@ -164,13 +164,7 @@ impl TuiApp {
     /// (`▌Sessions │ ▌Files`).
     fn click_navigator_tab(&mut self, col: u16, area: Rect) {
         use crate::widgets::NavigatorTab;
-        let sessions_w = 1 + NavigatorTab::Sessions.label().chars().count() as u16;
-        let files_x = area.x + sessions_w + " │ ".chars().count() as u16;
-        let tab = if col < files_x {
-            NavigatorTab::Sessions
-        } else {
-            NavigatorTab::Files
-        };
+        let tab = navigator_tab_at(col, area);
         self.navigator_tab = tab;
         self.navigator_tab_explicit = true;
         self.focus_block(match tab {
@@ -229,6 +223,7 @@ impl TuiApp {
         self.hover_session = None;
         self.hover_file = None;
         self.hover_chip = None;
+        self.hover_navigator_tab = None;
         self.hover_option = self.option_at(col, row);
         if self.pointer_blocked() {
             return;
@@ -236,6 +231,11 @@ impl TuiApp {
         if let Some(area) = self.footer_area {
             if cell_inside(area, col, row) {
                 self.hover_chip = self.footer_chip_at(col, row);
+            }
+        }
+        if let Some(area) = self.navigator_tabs_area {
+            if cell_inside(area, col, row) {
+                self.hover_navigator_tab = Some(navigator_tab_at(col, area));
             }
         }
         let Some(area) = self.navigator_list_area else {
@@ -651,6 +651,20 @@ impl TuiApp {
         }
         self.source_viewer
             .move_cursor_vertical(delta, page.max(1) as usize);
+    }
+}
+
+/// Which navigator tab sits under `col`. The tab bar has no per-tab rect, so
+/// the boundary is derived from the rendered labels (`▌Sessions │ ▌Files`) once
+/// and shared by click and hover routing so the two can never disagree.
+fn navigator_tab_at(col: u16, area: Rect) -> crate::widgets::NavigatorTab {
+    use crate::widgets::NavigatorTab;
+    let sessions_w = 1 + NavigatorTab::Sessions.label().chars().count() as u16;
+    let files_x = area.x + sessions_w + " │ ".chars().count() as u16;
+    if col < files_x {
+        NavigatorTab::Sessions
+    } else {
+        NavigatorTab::Files
     }
 }
 

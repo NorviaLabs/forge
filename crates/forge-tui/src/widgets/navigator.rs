@@ -49,6 +49,10 @@ pub struct NavigatorTabs {
     pub tab: NavigatorTab,
     pub focused: bool,
     pub needs_you: usize,
+    /// Tab under the pointer. The hovered *inactive* tab gets a raised ground
+    /// and a leading marker, so a pointer user can tell it is clickable; the
+    /// active tab keeps its own treatment and focus never moves on hover.
+    pub hover: Option<NavigatorTab>,
 }
 
 impl Widget for NavigatorTabs {
@@ -71,15 +75,24 @@ impl Widget for NavigatorTabs {
                 spans.push(Span::styled(" │ ", theme::border_muted()));
             }
             let is_active = tab == self.tab;
+            let hovered = !is_active && self.hover == Some(tab);
             if is_active {
                 spans.push(Span::styled("▌", theme::accent_style()));
+            } else if hovered {
+                // A pointer-only affordance: shape (`›`) plus ground, never
+                // colour alone, and never on the tab that already owns input.
+                spans.push(Span::styled("›", theme::accent_style()));
             } else {
                 spans.push(Span::raw(" "));
             }
-            spans.push(Span::styled(
-                tab.label(),
-                if is_active { active } else { inactive },
-            ));
+            let label_style = if is_active {
+                active
+            } else if hovered {
+                inactive.patch(theme::surface_hover())
+            } else {
+                inactive
+            };
+            spans.push(Span::styled(tab.label(), label_style));
         }
         if self.needs_you > 0 {
             let label = format!("{} need", self.needs_you);
@@ -321,6 +334,7 @@ mod tests {
                         tab: NavigatorTab::Sessions,
                         focused: false,
                         needs_you: 2,
+                        hover: None,
                     },
                     frame.area(),
                 );
@@ -349,6 +363,7 @@ mod tests {
                         tab: NavigatorTab::Files,
                         focused: false,
                         needs_you: 0,
+                        hover: None,
                     },
                     frame.area(),
                 );
@@ -362,6 +377,57 @@ mod tests {
             .iter()
             .any(|cell| cell.symbol() == "▌" && cell.style().fg == Some(accent));
         assert!(marker_accent, "active tab marker should be accented");
+    }
+
+    /// A hovered inactive tab must visibly differ from an unhovered one —
+    /// ground plus a leading marker — so a pointer user can tell it is
+    /// clickable. The active tab's treatment is untouched by hover.
+    #[test]
+    fn hovered_inactive_tab_takes_the_hover_ground() {
+        let render = |hover: Option<NavigatorTab>| {
+            let backend = TestBackend::new(40, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(
+                        NavigatorTabs {
+                            tab: NavigatorTab::Files,
+                            focused: false,
+                            needs_you: 0,
+                            hover,
+                        },
+                        frame.area(),
+                    );
+                })
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+        let base = render(None);
+        let hovered = render(Some(NavigatorTab::Sessions));
+        let hover_bg = theme::surface_hover().bg;
+
+        let sessions_label = |buffer: &ratatui::buffer::Buffer| {
+            buffer
+                .content()
+                .iter()
+                .find(|cell| cell.symbol() == "S")
+                .expect("Sessions label")
+                .style()
+        };
+        assert_eq!(
+            sessions_label(&hovered).bg,
+            hover_bg,
+            "hovered tab lost its ground"
+        );
+        assert_ne!(
+            sessions_label(&base).bg,
+            hover_bg,
+            "unhovered tab must not carry the hover ground"
+        );
+        assert!(
+            hovered.content().iter().any(|cell| cell.symbol() == "›"),
+            "hovered tab lost its leading marker"
+        );
     }
 
     #[test]

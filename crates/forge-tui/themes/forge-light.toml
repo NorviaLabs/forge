@@ -6,7 +6,9 @@ background = "#FAFAFA"
 background_deep = "#E8E8E8"
 surface = "#F0F0F0"
 surface_raised = "#FFFFFF"
-surface_hover = "#E2E2E2"
+# Hover stays a visible step below `surface` without colliding with the
+# `selection` token (#E2E2E2).
+surface_hover = "#D4D4D4"
 border = "#BDBDBD"
 border_muted = "#D8D8D8"
 text_primary = "#202020"
@@ -30,6 +32,9 @@ waiting_border = "#795B00"
 structure = "#545454"
 scan_band = "#FAFAFA"
 zebra_row = "#F0F0F0"
+# Editorial emphasis inside model prose (never chrome/status/code).
+md_strong = "#965300"
+md_emph = "#5F7300"
 
 [syntax]
 comment = "#545454"

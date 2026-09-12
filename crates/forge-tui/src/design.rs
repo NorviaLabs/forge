@@ -58,6 +58,11 @@ pub const FILES_VISIBLE_FRAME_W: u16 = 116;
 /// Minimum frame size.
 pub const MIN_FRAME_W: u16 = 80;
 pub const MIN_FRAME_H: u16 = 18;
+/// Conversation pane rows below which the transcript falls back to compact
+/// rhythm. Airy spacing (blank rows around headings, list items and code) is
+/// the default at comfortable heights; short terminals keep today's density so
+/// the 80×18 workflow never loses content rows to padding.
+pub const AIRY_MIN_ROWS: u16 = 24;
 
 #[cfg(test)]
 mod tests {
@@ -79,5 +84,6 @@ mod tests {
         assert_eq!(MODAL_PAD_X, 2);
         assert_eq!(TREE_INDENT_W, 2);
         assert_eq!(FILES_VISIBLE_FRAME_W, 116);
+        assert_eq!(AIRY_MIN_ROWS, 24);
     }
 }

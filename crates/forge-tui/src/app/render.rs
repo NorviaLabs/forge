@@ -371,6 +371,7 @@ impl TuiApp {
                         tab: navigator_tab,
                         focused: navigator_focused,
                         needs_you,
+                        hover: self.hover_navigator_tab,
                     },
                     rows[0],
                 );
@@ -518,11 +519,18 @@ impl TuiApp {
             } else {
                 None
             };
+        // Airy rhythm needs room to breathe; a short pane falls back to the
+        // compact spacing so 80×18 keeps its content budget (FORGE-DESIGN §7.5).
+        let conversation_rows = regions
+            .sidebar
+            .map(|rect| rect.height)
+            .unwrap_or(regions.chat.height);
+        let compact_conversation = conversation_rows < crate::design::AIRY_MIN_ROWS;
         let opts = ConversationViewOpts {
             busy: self.busy_state.is_active(),
             // Don't force-expand finished thinking just because busy (answer may be streaming)
             tool_expanded: self.tool_detail.is_expanded(),
-            compact: false,
+            compact: compact_conversation,
             stream_wait,
             stream_thought_secs: self.timing.thought_secs,
             pulse_dim: crate::conversation::plan_pulse_dim(self.busy_state.throbber()),
@@ -782,6 +790,7 @@ impl TuiApp {
                     width,
                     window_keep_from_end,
                     &mut self.stream.markdown,
+                    crate::conversation::transcript_density(compact_conversation),
                 );
                 open_preview_above_streamed_thinking(
                     &mut lines,

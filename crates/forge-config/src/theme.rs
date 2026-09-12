@@ -181,6 +181,13 @@ pub struct ThemePalette {
     pub scan_band: Rgb,
     /// Even-row tint zebra-striping a rendered table's body rows.
     pub zebra_row: Rgb,
+    /// Editorial emphasis inside model prose: `**strong**` takes this hue at
+    /// bold weight. Prose-only — never chrome, status or code (FORGE-DESIGN
+    /// §5, §9.4). Falls back to `text_primary` when a theme omits it.
+    pub md_strong: Rgb,
+    /// Editorial emphasis inside model prose: `*emphasis*` takes this hue at
+    /// italic weight. Prose-only, same scope as [`Self::md_strong`].
+    pub md_emph: Rgb,
     pub syntax: SyntaxPalette,
 }
 
@@ -275,6 +282,12 @@ struct ThemeFile {
     /// `surface`, derived from the theme rather than hardcoded.
     #[serde(default)]
     zebra_row: Option<Rgb>,
+    /// Optional editorial-emphasis hues. Older user themes omit them and keep
+    /// `text_primary` (bold/italic only), so the keys stay backward compatible.
+    #[serde(default)]
+    md_strong: Option<Rgb>,
+    #[serde(default)]
+    md_emph: Option<Rgb>,
     syntax: ThemeFileSyntax,
 }
 
@@ -332,6 +345,8 @@ impl From<ThemeFile> for ThemeDefinition {
                 zebra_row: file
                     .zebra_row
                     .unwrap_or(blend(file.background, file.surface)),
+                md_strong: file.md_strong.unwrap_or(file.text_primary),
+                md_emph: file.md_emph.unwrap_or(file.text_primary),
                 syntax: SyntaxPalette {
                     comment: file.syntax.comment,
                     keyword: file.syntax.keyword,
@@ -445,6 +460,8 @@ default = "#E6EDF3"
         assert_eq!(p.activity, Rgb(0xFF, 0xA3, 0x1D));
         assert_eq!(p.agent, Rgb(0xA0, 0xA0, 0xA0));
         assert_eq!(p.structure, Rgb(0xA0, 0xA0, 0xA0));
+        assert_eq!(p.md_strong, Rgb(0xFF, 0xA3, 0x1D));
+        assert_eq!(p.md_emph, Rgb(0xC7, 0xD9, 0x6B));
         assert_eq!(p.cursor, p.accent);
         assert!(p.accent_status_collision().is_none());
 
@@ -456,7 +473,18 @@ default = "#E6EDF3"
         assert_eq!(p.accent, Rgb(0x00, 0x5E, 0xB8));
         assert_eq!(p.activity, Rgb(0x96, 0x53, 0x00));
         assert_eq!(p.agent, Rgb(0x54, 0x54, 0x54));
+        assert_eq!(p.md_strong, Rgb(0x96, 0x53, 0x00));
+        assert_eq!(p.md_emph, Rgb(0x5F, 0x73, 0x00));
         assert!(p.accent_status_collision().is_none());
+    }
+
+    /// Themes that predate the emphasis tokens keep parsing; strong/emphasis
+    /// fall back to the theme's own primary text (weight still carries them).
+    #[test]
+    fn emphasis_tokens_fall_back_to_primary_text_for_older_themes() {
+        let theme = parse_theme_toml(SAMPLE_THEME).unwrap();
+        assert_eq!(theme.palette.md_strong, theme.palette.text_primary);
+        assert_eq!(theme.palette.md_emph, theme.palette.text_primary);
     }
 
     #[test]
