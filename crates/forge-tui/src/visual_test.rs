@@ -438,7 +438,7 @@ mod tests {
         assert!(text.contains("main.rs"), "missing path:\n{text}");
         assert!(text.contains("fn main()"), "missing content:\n{text}");
         assert!(
-            text.contains("│  1 fn main()"),
+            text.contains("│   1 fn main()"),
             "missing line numbers:\n{text}"
         );
     }

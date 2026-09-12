@@ -1832,6 +1832,8 @@ pub struct TuiApp {
     pub(crate) task_strip_area: Option<ratatui::layout::Rect>,
     /// Footer rect from the last draw.
     pub(crate) footer_area: Option<ratatui::layout::Rect>,
+    /// Outbound queue strip rect from the last draw.
+    pub(crate) queue_area: Option<ratatui::layout::Rect>,
     /// Last left-click `(when, column, row)` for double-click detection.
     pub(crate) last_click: Option<(Instant, u16, u16)>,
     /// Hovered navigator session index (pointer motion; never moves focus).
@@ -1845,6 +1847,8 @@ pub struct TuiApp {
     pub(crate) footer_chip_rects: Option<[(u16, u16); 2]>,
     /// Hovered footer chip index (0 = model, 1 = effort).
     pub(crate) hover_chip: Option<usize>,
+    /// Hovered queued-message index (pointer motion; never moves the selection).
+    pub(crate) hover_queue: Option<usize>,
     /// Option-row rects `(index, rect)` for the pending approval/question card,
     /// captured during the last conversation paint.
     pub(crate) option_rects: Vec<(usize, ratatui::layout::Rect)>,

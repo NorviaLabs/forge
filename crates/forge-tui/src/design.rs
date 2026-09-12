@@ -5,28 +5,28 @@
 
 /// Outer frame gutter, each side.
 pub const FRAME_INSET_X: u16 = 1;
-/// Internal pane padding, each side. 2026 airy pass: 1 → 2 so pane text no
-/// longer sits flush against its border.
-pub const PANE_PAD_X: u16 = 2;
+/// Internal pane padding, each side. Round 2 airy pass: 2 → 3 so pane text
+/// sits four cells from the pane edge (border + padding), matching the
+/// reference TUIs' message origin.
+pub const PANE_PAD_X: u16 = 3;
 /// Blank column between adjacent columns (Files | Workspace | Sidebar).
-pub const PANE_GAP_X: u16 = 1;
-/// Blank row between vertically stacked panes (left column ↔ bottom panel,
-/// transcript ↔ composer).
+pub const PANE_GAP_X: u16 = 2;
+/// Blank row between vertically stacked panes (left column ↔ bottom panel).
 pub const PANE_GAP_Y: u16 = 1;
 /// Blank row between the content band and the chrome rows (StatusBar /
 /// Footer), so the chrome reads as separate from the work surface.
-pub const CHROME_GAP_Y: u16 = 1;
+pub const CHROME_GAP_Y: u16 = 2;
+/// Blank rows between the transcript and the composer at comfortable heights;
+/// collapses to [`PANE_GAP_Y`] on short frames so the 80×18 workflow keeps its
+/// content rows.
+pub const COMPOSER_GAP_Y: u16 = 2;
 /// Pane title height.
 pub const PANE_TITLE_H: u16 = 1;
 /// Shared vertical separator width.
 pub const PANE_SEPARATOR_W: u16 = 1;
-/// Max transcript prose width; code/diff/terminal exempt.
-pub const TRANSCRIPT_MAX_W: u16 = 88;
-/// Blank rows between completed turns.
-pub const TURN_GAP_H: u16 = 1;
-/// Rows after a user request.
-pub const REQUEST_GAP_H: u16 = 1;
-/// Rows between related tools (0); 1 across narrative/approval boundaries.
+/// Blank rows between related tools (0); 1 across narrative/approval
+/// boundaries. The conversation's airy `gap` flag is the rhythm owner, so this
+/// metric is kept for callers that need the compact value.
 pub const ACTIVITY_GAP_H: u16 = 0;
 /// Plan items have no gap; continuation aligns after 4-col state prefix.
 pub const PLAN_ITEM_GAP_H: u16 = 0;
@@ -36,8 +36,6 @@ pub const PLAN_META_INDENT: u16 = 4;
 pub const COMPOSER_PAD_X: u16 = 2;
 /// Composer top rule height; no side/bottom border.
 pub const COMPOSER_RULE_H: u16 = 1;
-/// Composer vertical padding rows.
-pub const COMPOSER_PAD_Y: u16 = 0;
 /// Max composer input rows.
 pub const MAX_COMPOSER_INPUT_H: u16 = 10;
 /// Footer height; no separate separator row.
@@ -71,14 +69,13 @@ mod tests {
     #[test]
     fn metrics_match_design_system() {
         assert_eq!(FRAME_INSET_X, 1);
-        assert_eq!(PANE_PAD_X, 2);
-        assert_eq!(PANE_GAP_X, 1);
+        assert_eq!(PANE_PAD_X, 3);
+        assert_eq!(PANE_GAP_X, 2);
         assert_eq!(PANE_GAP_Y, 1);
-        assert_eq!(CHROME_GAP_Y, 1);
+        assert_eq!(CHROME_GAP_Y, 2);
+        assert_eq!(COMPOSER_GAP_Y, 2);
         assert_eq!(PANE_TITLE_H, 1);
         assert_eq!(PANE_SEPARATOR_W, 1);
-        assert_eq!(TRANSCRIPT_MAX_W, 88);
-        assert_eq!(TURN_GAP_H, 1);
         assert_eq!(MAX_COMPOSER_INPUT_H, 10);
         assert_eq!(FOOTER_H, 2);
         assert_eq!(MODAL_PAD_X, 2);

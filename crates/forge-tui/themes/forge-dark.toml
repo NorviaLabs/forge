@@ -6,10 +6,10 @@ background = "#141414"
 background_deep = "#080808"
 surface = "#1E1E1E"
 surface_raised = "#1E1E1E"
-# Hover is a pointer affordance, not a selection: it sits a clear step above
-# `surface` while staying below `selection` (#292929), so the two never read
-# as the same state.
-surface_hover = "#2E2E2E"
+# Ground hierarchy: surface < hover < selection, so a hovered row never reads
+# as a selected one. Selection stays at the darkest step that keeps the muted
+# `tag`/secondary grey at WCAG AA (4.5:1) on the selected ground.
+surface_hover = "#303030"
 border = "#343434"
 border_muted = "#292929"
 text_primary = "#EBEBEB"
@@ -25,7 +25,7 @@ error = "#F26D78"
 info = "#1DB0BB"
 diff_add = "#183A28"
 diff_remove = "#4A2026"
-selection = "#292929"
+selection = "#373737"
 cursor = "#439EFD"
 tag = "#A0A0A0"
 search_match = "#E6C66A"

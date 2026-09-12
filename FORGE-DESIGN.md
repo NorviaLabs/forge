@@ -176,7 +176,7 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `background_deep` | Terminal surround, deepest separators |
 | `surface` | Panels, composer, secondary areas |
 | `surface_raised` | Elevated content above the canvas |
-| `surface_hover` | Hover / subtle highlight treatment |
+| `surface_hover` | Hover / pointer affordance ground (weaker than `selection`) |
 | `border` | Standard dividers and inactive block borders |
 | `border_muted` | Low-priority internal separators |
 | `text_primary` | Main readable content |
@@ -187,7 +187,7 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `agent` | Agent narration voice |
 | `success` / `warning` / `error` / `info` | Outcome and state semantics |
 | `diff_add` / `diff_remove` | Diff line treatments |
-| `selection` | Selected text / rows |
+| `selection` | Selected text / rows — the strongest neutral ground in the theme |
 | `cursor` | Caret and cursor accents |
 | `tag` | Dedicated low-emphasis label step (neutral, never saturated) |
 | `search_match` | Search match highlights |
@@ -383,16 +383,20 @@ never sits flush against a border:
 
 - `0`: no gap; tightly related glyphs.
 - `1`: standard inline gap, the outer frame gutter (`FRAME_INSET_X`), and the
-  gutter between adjacent columns (`PANE_GAP_X`) or stacked panes /
-  chrome rows (`PANE_GAP_Y`, `CHROME_GAP_Y`).
-- `2`: block interior padding (`PANE_PAD_X`), including the composer's text
-  inset (`PANE_PAD_X + 1`, matching a bordered pane's text origin).
+  gutter between the left column and the bottom panel (`PANE_GAP_Y`).
+- `2`: block interior padding (`PANE_PAD_X`), the gutter between adjacent
+  columns (`PANE_GAP_X`), the gutter between the chrome rows and the content
+  band (`CHROME_GAP_Y`), and the transcript ↔ composer gutter
+  (`COMPOSER_GAP_Y`) at comfortable heights. `COMPOSER_GAP_Y` collapses to
+  `PANE_GAP_Y` when the frame is shorter than `AIRY_MIN_ROWS`, so 80×18 keeps
+  its content rows.
 
-Concretely (`design.rs`): a blank column separates Files, Workspace and the
-Sidebar; a blank row separates the status/approve-all chrome and the Footer
-from the content band, and the left column from the bottom panel; the
-transcript and composer are separated by a blank row. Pane contents are inset
-two cells from their border, and the Footer shares that inset.
+Concretely (`design.rs`): two blank columns separate Files, Workspace and the
+Sidebar; two blank rows separate the status/approve-all chrome and the Footer
+from the content band; pane contents are inset three cells from their border
+(border + `PANE_PAD_X` puts text four cells from the pane edge), and the
+Footer shares the same inset. The transcript and composer are separated by the
+height-gated `COMPOSER_GAP_Y`.
 
 Avoid double-padding a bordered block and its inner component.
 
@@ -402,8 +406,9 @@ The conversation has two densities (`markdown.rs::Density`):
 
 - **Airy** is the default at comfortable pane heights. It adds one blank row
   before a section heading, one after the heading rule, one between list
-  items (never before the first or after the last), and one on each side of a
-  fenced code block.
+  items (never before the first or after the last), one on each side of a
+  fenced code block, and one after each `You` / `Answer` speaker label so the
+  label reads as a heading rather than a prefix of its text.
 - **Compact** is the historical spacing and the fallback for short terminals.
   The app switches to it when the conversation pane is shorter than
   `design::AIRY_MIN_ROWS` (24 rows), so the enforced 80×18 minimum keeps its
@@ -522,7 +527,7 @@ Mouse is a second input for the same grammar, never a separate mode. Clicking mo
 - **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel). A second click at the same cell within the double-click window acts: a navigator session row attaches; a file-tree row opens on the first click.
 - **Wheel** scrolls the focused pane's content (conversation, file tree, source viewer), matching the keyboard page/step size. `Shift` pages.
 - **Right-click** opens the copy/clear context menu over a text selection.
-- **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, and the navigator tabs. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker and/or a weight step — so clickability is never colour-only. It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover, so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
+- **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, navigator tabs, and queued-message rows. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker in the reserved gutter and/or a weight step — so clickability is never colour-only; the marker column is pre-reserved, so hover never shifts text. It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover: `selection` is the strongest neutral ground in both built-in themes (`selection` outranks `surface_hover`), so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
 
 ## 9. Component Specifications
 
@@ -578,7 +583,7 @@ Rules:
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
 - Do not render a permanent progress narration stream.
-- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, list items and fenced code widen by one blank row; the rule itself never stacks separators.
+- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, list items, fenced code and the `You` / `Answer` speaker labels widen by one blank row; the rule itself never stacks separators.
 - Lists, quotes, tables and fenced code share the prose left edge; only the code rail sits inside the block, never the whole block inset past its neighbours. A plan's explanation is separated from its `Plan · N of M done` header by one blank.
 - Do not surround every message with a full-width box.
 

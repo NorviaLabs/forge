@@ -336,7 +336,9 @@ async fn the_pane_shows_its_own_keymap() {
     settle_git(&mut app);
     settle_patch(&mut app);
 
-    let rendered = render_app_text(&mut app, 120, 35);
+    // The round-2 insets cost the diff pane a few columns, so the comfortable
+    // width where hints keep every pair is 126 now.
+    let rendered = render_app_text(&mut app, 126, 35);
     assert!(rendered.contains("] [ hunk"), "{rendered}");
     assert!(rendered.contains("m done"), "{rendered}");
     assert!(rendered.contains("Esc close"), "{rendered}");

@@ -857,6 +857,9 @@ impl ConversationRenderInternals for ConversationModel {
                         "You",
                         theme::text().add_modifier(Modifier::BOLD),
                     )));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                     let theme_id = crate::theme::active();
                     let prefix_width = MESSAGE_PADDING;
                     let user_lines = user_message_gutter::render_user_message_lines(
@@ -901,6 +904,9 @@ impl ConversationRenderInternals for ConversationModel {
                             "Answer",
                             theme::text().add_modifier(Modifier::BOLD),
                         )));
+                        if gap {
+                            lines.push(Line::from(""));
+                        }
                     }
                     lines.extend(render_assistant_answer(
                         &p.text,
@@ -1515,7 +1521,11 @@ pub(super) fn render_visible_conversation_lines(
                         rects.push((option, rect));
                     }
                     if hover_option == Some(option) {
-                        line.clone().style(theme::surface_hover()).render(rect, buf);
+                        // Hover is a pointer affordance: raised ground, bold
+                        // weight and the shared `›` marker on the first row of
+                        // the option. The marker cell is reserved, so nothing
+                        // shifts; selection still outranks hover.
+                        hovered_option_line(line).render(rect, buf);
                     } else {
                         line.render(rect, buf);
                     }
@@ -2170,6 +2180,21 @@ const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
 /// and record its screen `Rect` for mouse click/hover. Same trick as the diff
 /// markers: zero width, so it never changes layout.
 const OPTION_ROW_MARKER: char = '\u{2061}';
+
+/// First row of a hovered approval/question option: raised ground, a weight
+/// step and the shared `›` marker in the reserved gutter. A row already
+/// carrying the selection marker (`>`) or a checkbox keeps it — selection
+/// outranks hover and the cell width never changes.
+fn hovered_option_line(line: &Line<'static>) -> Line<'static> {
+    let mut hovered = line.clone();
+    if let Some(gutter) = hovered.spans.get_mut(1) {
+        if gutter.content.as_ref() == "  " {
+            gutter.content = "› ".into();
+            gutter.style = theme::accent_style().add_modifier(Modifier::BOLD);
+        }
+    }
+    hovered.style(theme::surface_hover().add_modifier(Modifier::BOLD))
+}
 
 fn option_row_marker(index: usize) -> String {
     std::iter::repeat_n(OPTION_ROW_MARKER, index + 1).collect()
@@ -2926,9 +2951,14 @@ mod tests {
             "You",
             "renderer-owned author label: {lines:?}"
         );
+        assert_eq!(
+            line_text(&lines[1]),
+            "",
+            "airy rhythm puts one blank row after the author label: {lines:?}"
+        );
         let rendered_lines = lines
             .iter()
-            .skip(1)
+            .skip(2)
             .map(|line| {
                 line.spans
                     .iter()
@@ -2939,7 +2969,7 @@ mod tests {
         let rendered = rendered_lines.join("\n");
         assert_eq!(rendered_lines[0].trim_end(), "  hello world", "{rendered}");
         let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
-        let first = &lines[1];
+        let first = &lines[2];
         // No leading marker — a plain indent, background carried to the edge.
         assert_eq!(first.spans[0].content.as_ref(), "  ");
         assert_eq!(first.spans[0].style.bg, Some(dark.accent_soft));
@@ -2976,7 +3006,7 @@ mod tests {
         let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
         let user_rows: Vec<&Line<'static>> = lines
             .iter()
-            .skip(1)
+            .skip(2)
             .take_while(|line| {
                 line.spans
                     .first()
@@ -4258,6 +4288,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hovered_option_row_takes_the_marker_and_keeps_its_width() {
+        let p = ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "git push -u origin feature".into(),
+            cwd: "workspace".into(),
+            env_delta: "inherited".into(),
+            question: None,
+            reason: None,
+            failure: None,
+            options: vec![
+                ApprovalMenuRow {
+                    label: "Run once".into(),
+                    detail: None,
+                    help: None,
+                    key: None,
+                },
+                ApprovalMenuRow {
+                    label: "Always allow".into(),
+                    detail: None,
+                    help: None,
+                    key: None,
+                },
+            ],
+            selected: 0,
+            focused: true,
+        };
+        let lines = render_approval_card(&p, 72);
+        let unselected = lines
+            .iter()
+            .find(|l| option_row_index(l) == Some(1))
+            .expect("second option row");
+        let hovered = hovered_option_line(unselected);
+        assert_eq!(
+            hovered.width(),
+            unselected.width(),
+            "hover marker must live in a reserved cell"
+        );
+        assert!(
+            hovered.spans.iter().any(|s| s.content.as_ref() == "› "),
+            "hovered option lost its marker"
+        );
+        assert_eq!(
+            hovered
+                .spans
+                .iter()
+                .find(|s| s.content.as_ref() == "› ")
+                .map(|s| s.style.fg),
+            Some(Some(theme::accent_color())),
+            "hover marker must carry the pointer accent"
+        );
+        assert_eq!(hovered.style.bg, theme::surface_hover().bg);
+
+        // The selected row keeps its `>` — hover never impersonates selection.
+        let selected = lines
+            .iter()
+            .find(|l| option_row_index(l) == Some(0))
+            .expect("first, selected option row");
+        let hovered_selected = hovered_option_line(selected);
+        assert!(
+            hovered_selected
+                .spans
+                .iter()
+                .any(|s| s.content.as_ref() == "> "),
+            "hover overwrote the selection marker"
+        );
+    }
+
     /// The lead shares the row with the text it introduces, so it has to come
     /// out of the wrap width. It did not, and the reason's first line ran past
     /// the border and was clipped mid-word — "confined to the wo".
@@ -5242,14 +5340,20 @@ mod tests {
             .iter()
             .position(|l| line_text(l).contains("Root cause"))
             .unwrap();
-        // §5 Answer landmark sits directly above the final response.
+        // §5 Answer landmark sits above the final response with one airy blank
+        // row between the label and the prose.
         assert_eq!(
             line_text(&lines[answer_idx - 1]),
+            "",
+            "airy rhythm puts one blank row after the Answer label"
+        );
+        assert_eq!(
+            line_text(&lines[answer_idx - 2]),
             "Answer",
             "renderer-owned final-response label precedes the answer"
         );
         assert!(
-            lines[answer_idx - 2]
+            lines[answer_idx - 3]
                 .spans
                 .iter()
                 .all(|s| s.content.is_empty()),

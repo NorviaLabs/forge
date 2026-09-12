@@ -7,7 +7,10 @@ pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 18;
 /// 2026 geometry: 1-column frame gutters replace the legacy 95% inset.
 /// See `crate::design::FRAME_INSET_X` and `FILES_VISIBLE_FRAME_W`.
-use crate::design::{CHROME_GAP_Y, FILES_VISIBLE_FRAME_W, FRAME_INSET_X, PANE_GAP_X, PANE_GAP_Y};
+use crate::design::{
+    AIRY_MIN_ROWS, CHROME_GAP_Y, COMPOSER_GAP_Y, FILES_VISIBLE_FRAME_W, FRAME_INSET_X, PANE_GAP_X,
+    PANE_GAP_Y,
+};
 /// Composer text rows (visual lines), capped for normal chat. The band adds
 /// one top rule row on top of this (DESIGN-012).
 pub const MAX_COMPOSER_INPUT_H: u16 = 10;
@@ -348,7 +351,14 @@ fn split_areas_with_chrome_mode(
     };
 
     // sidebar: [transcript, feedback, queue, background, gutter, input] —
-    // always shows a composer when the sidebar itself is shown.
+    // always shows a composer when the sidebar itself is shown. The composer
+    // gutter widens at comfortable heights and collapses to `PANE_GAP_Y` on
+    // short frames (same height gate as the airy transcript rhythm).
+    let composer_gap = if content_area.height >= AIRY_MIN_ROWS {
+        COMPOSER_GAP_Y
+    } else {
+        PANE_GAP_Y
+    };
     let (sidebar, feedback, queue, background, input) = if let Some(sb) = sidebar {
         let sidebar_rows = Layout::default()
             .direction(Direction::Vertical)
@@ -357,7 +367,7 @@ fn split_areas_with_chrome_mode(
                 Constraint::Length(fb),
                 Constraint::Length(qh),
                 Constraint::Length(bg_h),
-                Constraint::Length(PANE_GAP_Y), // gutter above the composer
+                Constraint::Length(composer_gap), // gutter above the composer
                 Constraint::Length(input_h),
             ])
             .split(sb);
@@ -449,7 +459,7 @@ mod tests {
         assert_eq!(estimate_composer_region_width(area, false, true), 118);
         // Files visible: the conversation is the content width minus the
         // explorer column and the column gutter between them.
-        assert_eq!(estimate_composer_region_width(area, true, true), 88);
+        assert_eq!(estimate_composer_region_width(area, true, true), 87);
         assert_eq!(estimate_composer_region_width(area, false, false), 32);
     }
 
@@ -480,8 +490,8 @@ mod tests {
         // Chat gets the width left of the sidebar; taller than before since
         // the composer no longer eats vertical space from this column — it
         // lives in the sidebar's own split instead.
-        assert_eq!(r.chat, Rect::new(1, 2, 85, 38));
-        assert_eq!(r.sidebar, Some(Rect::new(87, 2, 32, 34)));
+        assert_eq!(r.chat, Rect::new(1, 3, 84, 37));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 3, 32, 32)));
         assert_eq!(r.footer.height, 0);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.bottom_panel.height, 0);
@@ -503,14 +513,14 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 40);
         assert_eq!(r.bottom_panel.height, 32);
-        assert_eq!(r.chat.height, 15);
+        assert_eq!(r.chat.height, 14);
     }
 
     #[test]
     fn bottom_panel_hides_when_height_is_tight() {
         let area = Rect::new(0, 0, 80, MIN_HEIGHT);
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 32);
-        assert_eq!(r.bottom_panel.height, 12);
+        assert_eq!(r.bottom_panel.height, 11);
         assert_eq!(r.input.height, 3);
     }
 
@@ -519,7 +529,7 @@ mod tests {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
         assert_eq!(r.status, Rect::new(1, 0, 198, 1));
-        assert_eq!(r.chat, Rect::new(1, 2, 109, 38));
+        assert_eq!(r.chat, Rect::new(1, 3, 108, 37));
         // The composer is scoped to the sidebar's width now, not the full
         // content column.
         assert_eq!(r.input.x, 111);
@@ -573,9 +583,9 @@ mod tests {
     fn files_panel_reserves_bounded_left_space() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0, true, 0);
-        assert_eq!(r.files, Some(Rect::new(1, 2, 29, 38)));
-        assert_eq!(r.chat, Rect::new(31, 2, 55, 38));
-        assert_eq!(r.sidebar, Some(Rect::new(87, 2, 32, 34)));
+        assert_eq!(r.files, Some(Rect::new(1, 3, 29, 37)));
+        assert_eq!(r.chat, Rect::new(32, 3, 53, 37));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 3, 32, 32)));
     }
 
     #[test]
@@ -583,7 +593,7 @@ mod tests {
         let narrow =
             split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, 0, 0, true, 0);
         assert!(narrow.files.is_none());
-        assert_eq!(narrow.chat.width, 65);
+        assert_eq!(narrow.chat.width, 64);
     }
 
     #[test]
@@ -600,10 +610,10 @@ mod tests {
             0,
             0,
         );
-        assert_eq!(r.files, Some(Rect::new(1, 2, 29, 38)));
+        assert_eq!(r.files, Some(Rect::new(1, 3, 29, 37)));
         assert_eq!(r.chat.width, 0);
-        assert_eq!(r.sidebar, Some(Rect::new(31, 2, 88, 34)));
-        assert_eq!(r.input.width, 88);
+        assert_eq!(r.sidebar, Some(Rect::new(32, 3, 87, 32)));
+        assert_eq!(r.input.width, 87);
     }
 
     #[test]

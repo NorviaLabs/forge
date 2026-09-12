@@ -6,9 +6,9 @@ background = "#FAFAFA"
 background_deep = "#E8E8E8"
 surface = "#F0F0F0"
 surface_raised = "#FFFFFF"
-# Hover stays a visible step below `surface` without colliding with the
-# `selection` token (#E2E2E2).
-surface_hover = "#D4D4D4"
+# Ground hierarchy: surface > hover > selection on a light canvas, mirroring
+# dark; selection stays light enough for the muted grey at WCAG AA on it.
+surface_hover = "#D0D0D0"
 border = "#BDBDBD"
 border_muted = "#D8D8D8"
 text_primary = "#202020"
@@ -24,7 +24,7 @@ error = "#B52C42"
 info = "#00717B"
 diff_add = "#D3EEDF"
 diff_remove = "#F1DAE2"
-selection = "#E2E2E2"
+selection = "#C8C8C8"
 cursor = "#005EB8"
 tag = "#545454"
 search_match = "#795B00"

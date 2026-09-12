@@ -1313,11 +1313,13 @@ impl Widget for FileExplorerWidget<'_> {
                         self.explorer.icon_mode,
                         &query,
                     );
-                    // Hover is a background tint only, never a marker:
-                    // selection wins and nothing about the row's layout or
-                    // focus changes.
+                    // Hover is a pointer affordance: raised ground plus a
+                    // weight step. Selection wins and nothing about the row's
+                    // layout or focus changes.
                     if self.hover == Some(self.explorer.scroll + offset) && !selected {
-                        line = line.style(theme::surface_hover());
+                        line = line.style(
+                            theme::surface_hover().add_modifier(ratatui::style::Modifier::BOLD),
+                        );
                     }
                     lines.push(line);
                     if let Some(error) = &node.error {
@@ -2228,6 +2230,69 @@ mod tests {
         buf
     }
 
+    fn render_widget_with_hover(
+        explorer: &mut FileExplorer,
+        area: Rect,
+        hover: Option<usize>,
+    ) -> Buffer {
+        let mut buf = Buffer::empty(area);
+        FileExplorerWidget {
+            explorer,
+            focused: true,
+            search_active: false,
+            hover,
+        }
+        .render(area, &mut buf);
+        buf
+    }
+
+    #[test]
+    fn hovered_file_row_takes_ground_and_weight_and_selection_outranks_it() {
+        use ratatui::style::Modifier;
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("a.txt"), "").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        let area = Rect::new(0, 0, 30, 10);
+        let hover_index = explorer
+            .visible_nodes()
+            .iter()
+            .position(|node| node.display_name == "a.txt")
+            .expect("file visible");
+        // Search surface row + tree offset.
+        let row_y = area.y + 2 + hover_index as u16;
+
+        let buf = render_widget_with_hover(&mut explorer, area, Some(hover_index));
+        let x = (0..area.width)
+            .find(|x| buf[(*x, row_y)].symbol() == "a")
+            .expect("file name cell");
+        assert_eq!(
+            buf[(x, row_y)].style().bg,
+            theme::surface_hover().bg,
+            "hovered file lost its ground"
+        );
+        assert!(
+            buf[(x, row_y)]
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "hovered file lost its weight step"
+        );
+
+        // Selection wins: hover never impersonates it.
+        while explorer.selected_relative_path().as_deref() != Some("a.txt") {
+            explorer.move_selection(1);
+        }
+        let buf = render_widget_with_hover(&mut explorer, area, Some(hover_index));
+        assert_ne!(
+            buf[(x, row_y)].style().bg,
+            theme::surface_hover().bg,
+            "selected row must not take the hover ground"
+        );
+    }
+
     fn row_text(buf: &Buffer, area: Rect, y: u16) -> String {
         (0..area.width)
             .map(|x| buf[(x, y)].symbol().to_string())
@@ -2272,8 +2337,8 @@ mod tests {
         }
 
         // The `/` prefix changes colour instead. Outer border (1) + padding
-        // (PANE_PAD_X) + text inset puts `/` at area.x + 6.
-        let prefix = (area.x + 6, area.y + 1);
+        // (PANE_PAD_X) + text inset (PANE_PAD_X + 1) puts `/` at area.x + 8.
+        let prefix = (area.x + 8, area.y + 1);
         assert_ne!(
             idle[prefix].style().fg,
             active[prefix].style().fg,
@@ -2297,17 +2362,19 @@ mod tests {
     #[test]
     fn search_row_shows_block_caret_and_placeholder_without_icon() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-        let area = Rect::new(0, 0, 24, 14);
+        // 28 columns: the round-2 inset costs two, and the placeholder must
+        // still be readable in the fixture.
+        let area = Rect::new(0, 0, 28, 14);
         let buf = render_widget(&mut explorer, area, true);
         let content_row = area.y + 1;
         let row = row_text(&buf, area, content_row);
         // Outer border (1) + padding (PANE_PAD_X) + text inset + `/ ` (2).
-        let cursor = &buf[(area.x + 8, content_row)];
+        let cursor = &buf[(area.x + 10, content_row)];
         assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
         assert_eq!(cursor.style().bg, theme::caret().bg);
         assert!(row.contains("/ "), "{row:?}");
-        // The airy pane inset clips the fixture's 24-col row before the
-        // trailing ellipsis; the placeholder is still present.
+        // The airy pane inset pushes the trailing ellipsis past the fixture;
+        // the placeholder text is still present.
         assert!(row.contains("Search files"), "{row:?}");
         assert!(!row.contains('⌕'));
     }

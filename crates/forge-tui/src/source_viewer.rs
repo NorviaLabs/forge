@@ -2570,7 +2570,7 @@ mod tests {
         .render(area, &mut command);
         assert!(buffer_text(&command, area).contains(":w"));
         // Panel border (1) + padding (PANE_PAD_X) + text inset + `:` (1) + `w` (1).
-        let cursor_style = command[(8, area.bottom() - 2)].style();
+        let cursor_style = command[(10, area.bottom() - 2)].style();
         let caret_style = theme::caret();
         assert_eq!(cursor_style.fg, caret_style.fg);
         assert_eq!(cursor_style.bg, caret_style.bg);
@@ -2586,7 +2586,7 @@ mod tests {
         }
         .render(area, &mut result);
         assert!(buffer_text(&result, area).contains("written notes.txt"));
-        assert_eq!(result[(3, area.bottom() - 2)].style().fg, theme::muted().fg);
+        assert_eq!(result[(4, area.bottom() - 2)].style().fg, theme::muted().fg);
     }
 
     fn buffer_text(buffer: &Buffer, area: Rect) -> String {
