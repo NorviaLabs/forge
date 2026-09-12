@@ -198,6 +198,8 @@ impl TuiApp {
             footer_chip_rects: None,
             hover_chip: None,
             hover_queue: None,
+            overlay_rows: std::cell::RefCell::new(Vec::new()),
+            hover_overlay: None,
             option_rects: Vec::new(),
             hover_option: None,
             catalog_fetch: CatalogFetchState {
@@ -403,6 +405,8 @@ impl TuiApp {
             footer_chip_rects: None,
             hover_chip: None,
             hover_queue: None,
+            overlay_rows: std::cell::RefCell::new(Vec::new()),
+            hover_overlay: None,
             option_rects: Vec::new(),
             hover_option: None,
             catalog_fetch: CatalogFetchState {

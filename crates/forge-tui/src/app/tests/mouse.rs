@@ -457,6 +457,73 @@ async fn motion_hovers_a_queued_message_without_moving_focus() {
 }
 
 #[tokio::test]
+async fn click_selects_an_overlay_row_and_hover_never_moves_it() {
+    use crate::overlays::ModelItem;
+    use forge_connect::CatalogSource;
+
+    let (_dir, mut app) = focus_test_app().await;
+    let item = |model: &str| ModelItem {
+        provider: "native".into(),
+        model: model.into(),
+        profile_id: Some("native".into()),
+        source: CatalogSource::Default,
+        route_label: "native".into(),
+    };
+    app.overlay = Some(Overlay::connect_model_open(
+        vec![],
+        vec![item("alpha"), item("beta"), item("gamma")],
+        Some("native"),
+        "alpha",
+        ReasoningEffort::default(),
+        ConnectModelColumn::Models,
+    ));
+    render_app_text(&mut app, 120, 40);
+
+    let rows = app.overlay_rows.borrow().clone();
+    let (_, rect) = rows
+        .iter()
+        .find(|(row, _)| *row == crate::overlays::OverlayRow::Model(2))
+        .expect("third model row captured");
+    let block_before = app.focus.block();
+
+    // Hover arms the pointer highlight but never the selection.
+    app.handle_mouse(moved(rect.x + 2, rect.y)).await.unwrap();
+    assert_eq!(
+        app.hover_overlay,
+        Some(crate::overlays::OverlayRow::Model(2))
+    );
+    match &app.overlay {
+        Some(Overlay::ConnectModel { model_selected, .. }) => {
+            assert_eq!(*model_selected, 0, "hover moved the model selection")
+        }
+        other => panic!("overlay lost: {other:?}"),
+    }
+
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+    match &app.overlay {
+        Some(Overlay::ConnectModel {
+            model_selected,
+            focus,
+            ..
+        }) => {
+            assert_eq!(*model_selected, 2);
+            assert_eq!(*focus, ConnectModelColumn::Models);
+        }
+        other => panic!("overlay lost: {other:?}"),
+    }
+    assert_eq!(
+        app.focus.block(),
+        block_before,
+        "an overlay click must not move pane focus"
+    );
+
+    app.handle_mouse(moved(0, 200)).await.unwrap();
+    assert_eq!(app.hover_overlay, None);
+}
+
+#[tokio::test]
 async fn click_selects_an_approval_option_row() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_hitl(&mut app, direct_hitl_payload("call-1", "/tmp/x"));

@@ -241,6 +241,7 @@ impl TuiApp {
         self.task_strip_area = None;
         self.footer_area = None;
         self.option_rects.clear();
+        self.overlay_rows.borrow_mut().clear();
         self.conversation_rows.clear();
         self.terminal_rows.clear();
         // Layout can hide a requested side/bottom panel. Focus must follow the
@@ -1216,6 +1217,8 @@ impl TuiApp {
                     items,
                     regions.input,
                     frame.buffer_mut(),
+                    Some(&self.overlay_rows),
+                    self.hover_overlay,
                 );
                 if let Some((id, _)) = items.get(*selected) {
                     let host = if regions.chat.width >= 24 {
@@ -1308,7 +1311,14 @@ impl TuiApp {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
                 // Theme dock already replaced the composer band above.
                 Overlay::Theme { .. } => {}
-                _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
+                _ => frame.render_widget(
+                    OverlayWidget {
+                        overlay: ov,
+                        row_sink: Some(&self.overlay_rows),
+                        hover_row: self.hover_overlay,
+                    },
+                    area,
+                ),
             }
         }
 

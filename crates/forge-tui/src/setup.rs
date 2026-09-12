@@ -191,7 +191,12 @@ fn draw_theme_setup(area: Rect, buf: &mut ratatui::buffer::Buffer, overlay: &Ove
         items,
     } = overlay
     else {
-        OverlayWidget { overlay }.render(area, buf);
+        OverlayWidget {
+            overlay,
+            row_sink: None,
+            hover_row: None,
+        }
+        .render(area, buf);
         return;
     };
     let title = Paragraph::new(Line::from(vec![
@@ -217,7 +222,7 @@ fn draw_theme_setup(area: Rect, buf: &mut ratatui::buffer::Buffer, overlay: &Ove
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(36), Constraint::Min(28)])
         .split(chunks[1]);
-    crate::overlays::render_theme_dock(*selected, current, items, body[0], buf);
+    crate::overlays::render_theme_dock(*selected, current, items, body[0], buf, None, None);
     if let Some((id, _)) = items.get(*selected) {
         render_theme_preview(id, body[1], buf);
     }
