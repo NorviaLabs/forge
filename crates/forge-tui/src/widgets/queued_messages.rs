@@ -210,10 +210,9 @@ mod tests {
 
     #[test]
     fn truncates_previews_to_the_available_width() {
-        // 26 wide leaves 18 inner columns after the shared inset; the prefix
-        // eats 5, so the preview middle-truncates.
+        // The shared inset and row prefix leave a bounded preview.
         let output = render(&["a very long queued message".into()], None, None, 26, 2);
-        assert!(output.contains("a very long…"), "{output:?}");
+        assert!(output.contains("a very long queu…"), "{output:?}");
     }
 
     #[test]

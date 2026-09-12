@@ -179,7 +179,7 @@ fn markdown_options() -> Options {
 /// Transcript density (FORGE-DESIGN §7.5).
 ///
 /// `Airy` is the app default at comfortable pane heights: extra breathing
-/// room around headings, list items and fenced code. `Compact` is the
+/// room around headings and fenced code. `Compact` is the
 /// historical spacing, used as the fallback on short terminals (and pinned by
 /// older renderer tests).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -285,9 +285,6 @@ struct ListFrame {
     indent: usize,
     marker_w: usize,
     saved_cont: String,
-    /// Items already emitted in this frame, so airy density can put one blank
-    /// row *between* items but never before the first.
-    items_seen: usize,
 }
 
 struct CodeBuffer {
@@ -353,7 +350,7 @@ struct MdRenderer {
     /// across their whole line range (`band_depth` nests).
     band_start: Option<usize>,
     band_depth: usize,
-    /// Airy adds breathing room around headings, list items and code; compact
+    /// Airy adds breathing room around headings and code; compact
     /// is the historical spacing for short terminals.
     density: Density,
 }
@@ -541,7 +538,6 @@ impl MdRenderer {
                     indent: display_width(&self.cont_prefix),
                     marker_w: 0,
                     saved_cont: self.cont_prefix.clone(),
-                    items_seen: 0,
                 };
                 self.list_stack.push(frame);
                 self.band_depth += 1;
@@ -558,15 +554,7 @@ impl MdRenderer {
                 // structure, so it takes the structure hue for the lifetime
                 // of the item; prose inside stays neutral.
                 self.marker_style = theme::response_marker();
-                let airy = self.airy();
                 if let Some(frame) = self.list_stack.last_mut() {
-                    // Airy density puts one blank row between items — never
-                    // before the first, and never after the last (the list's
-                    // own trailing separator covers that).
-                    if airy && frame.items_seen > 0 {
-                        ensure_blank_separator(&mut self.out);
-                    }
-                    frame.items_seen += 1;
                     let marker = if frame.ordered {
                         let marker = format!("{}. ", frame.index);
                         frame.index += 1;
@@ -2079,10 +2067,9 @@ After the table.
         assert_eq!(plain.style.fg, Some(palette.text));
     }
 
-    /// Airy density puts one blank row between list items — but never before
-    /// the first item or after the last, and compact keeps the old spacing.
+    /// Lists stay tight in both densities; section breaks carry the whitespace.
     #[test]
-    fn airy_density_separates_list_items() {
+    fn airy_density_keeps_list_items_tight() {
         let md = "- one\n- two\n- three\n";
         // The scan band paints interior blanks as spaces, so count
         // visually-empty rows rather than width-0 lines.
@@ -2096,8 +2083,8 @@ After the table.
         let airy = render_markdown_with_density(md, 40, Density::Airy);
         assert_eq!(
             blank_rows(&airy),
-            blank_rows(&compact) + 2,
-            "two gaps belong between three items"
+            blank_rows(&compact),
+            "airy density must not insert gaps between tight list items"
         );
         assert!(text(&airy).contains("one") && text(&airy).contains("three"));
     }

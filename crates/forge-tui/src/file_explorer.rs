@@ -17,7 +17,6 @@ use forge_config::FileIconMode;
 
 use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
-use crate::widgets::input::TEXT_INSET;
 use forge_workspace::git_status::{GitStatusCache, GitStatusKind};
 
 const HIDDEN_DIRS: &[&str] = &[".git", "target"];
@@ -1219,13 +1218,13 @@ fn match_byte_range_case_insensitive(haystack: &str, needle: &str) -> Option<(us
     })
 }
 
-/// Fixed chrome above the tree: the search surface is a single row; the tree
-/// begins immediately below it. (DESIGN-016 recovered the old 3-row bordered
-/// box plus its separator rule as tree rows.)
-const SEARCH_ROW_HEIGHT: u16 = 1;
+/// Search box followed immediately by the tree.
+const SEARCH_ROW_HEIGHT: u16 = 3;
 /// Display width of the `/ ` search affordance prefix.
 const SEARCH_PREFIX_WIDTH: u16 = 2;
 const TREE_TOP_OFFSET: u16 = SEARCH_ROW_HEIGHT;
+/// Tree origin relative to the explorer's outer rectangle, shared with mouse routing.
+pub(crate) const TREE_ROW_OFFSET: u16 = 1 + TREE_TOP_OFFSET;
 
 pub struct FileExplorerWidget<'a> {
     pub explorer: &'a mut FileExplorer,
@@ -1245,6 +1244,7 @@ impl Widget for FileExplorerWidget<'_> {
         self.explorer.poll_workspace_refresh();
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(if self.focused {
                 theme::active_panel_border()
@@ -1351,11 +1351,19 @@ impl Widget for FileExplorerWidget<'_> {
             }
         }
         if inner.height >= TREE_TOP_OFFSET {
-            // One surface row: a `/` affordance plus the query. No box, no
-            // separator — the tree begins on the very next row. Search focus
-            // shows in the caret; the `/` prefix marks the row as search even
-            // when the tree has focus and the caret is hidden.
             let search_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_ROW_HEIGHT);
+            let search_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .padding(Padding::horizontal(1))
+                .border_style(if self.search_active {
+                    theme::active_panel_border()
+                } else {
+                    theme::inactive_panel_border()
+                })
+                .style(theme::composer_surface());
+            let search_inner = search_block.inner(search_area);
+            search_block.render(search_area, buf);
             let text_focused = self.focused && self.explorer.search_focused;
             let (search, search_style) = if self.explorer.search_query.is_empty() {
                 let text = if text_focused {
@@ -1372,31 +1380,27 @@ impl Widget for FileExplorerWidget<'_> {
                 };
                 (text, theme::composer_text())
             };
-            // Search state lives on the `/` prefix now that the box border is
-            // gone: it carries the active border colour while the tree rows
-            // stay neutral.
+            // Prefix and border reinforce search focus while tree rows stay neutral.
             let prefix_style = if self.search_active {
                 theme::active_panel_border()
             } else {
                 theme::muted()
             };
             Paragraph::new(Line::from(vec![
-                Span::raw(" ".repeat(TEXT_INSET as usize)),
                 Span::styled("/ ", prefix_style),
                 Span::styled(search, search_style),
             ]))
-            .render(search_area, buf);
+            .render(search_inner, buf);
             if text_focused {
-                let cursor_x = search_area.x
-                    + TEXT_INSET
+                let cursor_x = search_inner.x
                     + SEARCH_PREFIX_WIDTH
                     + if self.explorer.search_query.is_empty() {
                         0
                     } else {
                         self.explorer.search_query.chars().count() as u16
                     };
-                if cursor_x < search_area.right() {
-                    theme::paint_caret(buf, cursor_x, search_area.y);
+                if cursor_x < search_inner.right() {
+                    theme::paint_caret(buf, cursor_x, search_inner.y);
                 }
             }
 
@@ -2262,7 +2266,7 @@ mod tests {
             .position(|node| node.display_name == "a.txt")
             .expect("file visible");
         // Search surface row + tree offset.
-        let row_y = area.y + 2 + hover_index as u16;
+        let row_y = area.y + TREE_ROW_OFFSET + hover_index as u16;
 
         let buf = render_widget_with_hover(&mut explorer, area, Some(hover_index));
         let x = (0..area.width)
@@ -2300,13 +2304,12 @@ mod tests {
     }
 
     #[test]
-    fn search_is_one_surface_row_with_tree_immediately_below() {
+    fn search_is_framed_with_tree_immediately_below() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 30, 14);
         let buf = render_widget(&mut explorer, area, true);
-        // Outer FILES block reserves 1 border row, so the search surface row
-        // is the first inner row and the tree starts on the very next one.
-        let search_row = row_text(&buf, area, area.y + 1);
+        // Outer border plus search border put the text on row two.
+        let search_row = row_text(&buf, area, area.y + 2);
         // (The focused block caret occupies its own cell between the prefix
         // and the placeholder, so match the two halves separately.)
         assert!(search_row.contains("/ "), "{search_row:?}");
@@ -2314,15 +2317,14 @@ mod tests {
         for corner in ['┌', '┐', '└', '┘'] {
             assert!(!search_row.contains(corner), "{search_row:?}");
         }
-        // No separator rule between search and tree: the next row already
-        // carries tree content (here the no-repository empty state).
-        let tree_row = row_text(&buf, area, area.y + 2);
+        // Tree content starts directly below the search field.
+        assert!(row_text(&buf, area, area.y + 1).contains('╭'));
+        assert!(row_text(&buf, area, area.y + 3).contains('╰'));
+        let tree_row = row_text(&buf, area, area.y + TREE_ROW_OFFSET);
         assert!(tree_row.contains("No repository detected"), "{tree_row:?}");
     }
 
-    /// Search state lives on the `/` prefix now that the box border is gone.
-    /// The old indicator — a rule with a dot centred in it — was the
-    /// universal shape of a slider, and invited dragging.
+    /// Search focus uses the border and prefix, never a slider-like dot.
     #[test]
     fn search_state_shows_on_the_search_prefix_not_a_knob() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
@@ -2336,9 +2338,8 @@ mod tests {
             assert!(!row.contains('○') && !row.contains('●'), "{row}");
         }
 
-        // The `/` prefix changes colour instead. Outer border (1) + padding
-        // (PANE_PAD_X) + text inset (PANE_PAD_X + 1) puts `/` at area.x + 8.
-        let prefix = (area.x + 8, area.y + 1);
+        // Outer border + pane padding + search border precede the prefix.
+        let prefix = (area.x + 3 + crate::design::PANE_PAD_X, area.y + 2);
         assert_ne!(
             idle[prefix].style().fg,
             active[prefix].style().fg,
@@ -2362,19 +2363,19 @@ mod tests {
     #[test]
     fn search_row_shows_block_caret_and_placeholder_without_icon() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-        // 28 columns: the round-2 inset costs two, and the placeholder must
-        // still be readable in the fixture.
+        // The placeholder must remain readable at the navigator's width floor.
         let area = Rect::new(0, 0, 28, 14);
         let buf = render_widget(&mut explorer, area, true);
-        let content_row = area.y + 1;
+        let content_row = area.y + 2;
         let row = row_text(&buf, area, content_row);
-        // Outer border (1) + padding (PANE_PAD_X) + text inset + `/ ` (2).
-        let cursor = &buf[(area.x + 10, content_row)];
+        // Outer border + padding + search border + `/ ` prefix.
+        let cursor = &buf[(
+            area.x + 3 + crate::design::PANE_PAD_X + SEARCH_PREFIX_WIDTH,
+            content_row,
+        )];
         assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
         assert_eq!(cursor.style().bg, theme::caret().bg);
         assert!(row.contains("/ "), "{row:?}");
-        // The airy pane inset pushes the trailing ellipsis past the fixture;
-        // the placeholder text is still present.
         assert!(row.contains("Search files"), "{row:?}");
         assert!(!row.contains('⌕'));
     }

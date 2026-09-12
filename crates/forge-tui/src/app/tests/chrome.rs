@@ -1365,6 +1365,49 @@ async fn a_running_turn_paints_a_live_line_in_the_transcript() {
 /// An idle app must not show a turn line — it is the one piece of chrome that
 /// means "something is happening right now".
 #[tokio::test]
+async fn framed_transcript_and_composer_keep_focus_and_content_inside_chrome() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "request"));
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::Assistant, "answer"));
+    for (width, height) in [(80, 18), (120, 40), (160, 50)] {
+        app.input.set_text("first line\nsecond line");
+        app.focus_block(FocusBlock::Composer);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buf = terminal.backend().buffer();
+        let composer = app.composer_area.expect("composer drawn");
+        let text = app.conversation_area.expect("transcript drawn");
+        let pane_x = text.x - crate::design::PANE_PAD_X - 1;
+        assert_eq!(buf[(pane_x, text.y - 1)].symbol(), "╭");
+        assert_eq!(buf[(pane_x, text.bottom())].symbol(), "╰");
+        assert_eq!(buf[(composer.x, composer.y)].symbol(), "╭");
+        assert_eq!(buf[(composer.x, composer.bottom() - 1)].symbol(), "╰");
+        let cursor = crate::widgets::composer_cursor_position(&app.input, composer, None).unwrap();
+        assert!(cursor.1 > composer.y && cursor.1 < composer.bottom() - 1);
+        assert_eq!(buf[(1, 0)].symbol(), if height >= 24 { "╭" } else { " " });
+
+        app.focus_block(FocusBlock::Sidebar);
+        let rendered = render_app_text(&mut app, width, height);
+        assert!(
+            rendered.contains("> Chat"),
+            "focus must be visible without overflow: {rendered}"
+        );
+        app.overlay = Some(Overlay::Help);
+        let rendered = render_app_text(&mut app, width, height);
+        assert!(
+            !rendered.contains("> Chat"),
+            "modal must suppress transcript focus"
+        );
+        app.overlay = None;
+    }
+}
+
+#[tokio::test]
 async fn an_idle_app_paints_no_turn_line() {
     let (_dir, mut app) = focus_test_app().await;
     let rendered = render_app_text(&mut app, 120, 40);

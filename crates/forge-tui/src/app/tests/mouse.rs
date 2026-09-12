@@ -337,9 +337,12 @@ async fn click_opens_a_file_tree_row() {
         .position(|node| node.display_name == "clickme.txt")
         .expect("test file should be visible");
     let list = app.navigator_list_area.expect("file list drawn");
-    app.handle_mouse(left_click(list.x + 3, list.y + 2 + index as u16))
-        .await
-        .unwrap();
+    app.handle_mouse(left_click(
+        list.x + 3,
+        list.y + crate::file_explorer::TREE_ROW_OFFSET + index as u16,
+    ))
+    .await
+    .unwrap();
 
     assert_eq!(
         app.workspace_files
@@ -375,9 +378,12 @@ async fn motion_sets_file_hover_without_moving_focus() {
     let list = app.navigator_list_area.expect("file list drawn");
     let before = app.focus.block();
 
-    app.handle_mouse(moved(list.x + 3, list.y + 2 + index as u16))
-        .await
-        .unwrap();
+    app.handle_mouse(moved(
+        list.x + 3,
+        list.y + crate::file_explorer::TREE_ROW_OFFSET + index as u16,
+    ))
+    .await
+    .unwrap();
 
     assert_eq!(app.hover_file, Some(index));
     assert_eq!(app.focus.block(), before, "hover must never move focus");
@@ -385,6 +391,23 @@ async fn motion_sets_file_hover_without_moving_focus() {
     // Motion away clears the highlight.
     app.handle_mouse(moved(0, 200)).await.unwrap();
     assert_eq!(app.hover_file, None);
+}
+
+#[tokio::test]
+async fn clicking_search_focuses_input_without_opening_a_tree_row() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_files.visible = true;
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.navigator_tab_explicit = true;
+    render_app_text(&mut app, 120, 40);
+    let list = app.navigator_list_area.expect("file list drawn");
+    let selected = app.workspace_files.explorer.selected_path.clone();
+    app.handle_mouse(left_click(list.x + 4, list.y + 2))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert_eq!(app.workspace_files.explorer.selected_path, selected);
+    assert!(!app.current_workspace_is_file());
 }
 
 #[tokio::test]
