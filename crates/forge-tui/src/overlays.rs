@@ -787,6 +787,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             is_skill: false,
         },
         PaletteItem {
+            cmd: "/approve-all".into(),
+            desc: "Toggle approve-all for this session (disables sandbox; asks first)".into(),
+            is_skill: false,
+        },
+        PaletteItem {
             cmd: "/compact".into(),
             desc: "Continue in a fresh context".into(),
             is_skill: false,
@@ -819,6 +824,21 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/clear".into(),
             desc: "Clear the TUI screen".into(),
+            is_skill: false,
+        },
+        PaletteItem {
+            cmd: "/refresh".into(),
+            desc: "Refresh the file explorer's Git state".into(),
+            is_skill: false,
+        },
+        PaletteItem {
+            cmd: "/edit".into(),
+            desc: "Open a workspace file in the embedded editor".into(),
+            is_skill: false,
+        },
+        PaletteItem {
+            cmd: "/context-file".into(),
+            desc: "Attach the active file to the next message".into(),
             is_skill: false,
         },
         PaletteItem {
@@ -2671,7 +2691,9 @@ impl Widget for OverlayWidget<'_> {
         }
         match self.overlay {
             Overlay::Help => {
-                let r = centered_rect(64, 58, area);
+                // Cell-capped (not percentage) so the welcome/help modal keeps
+                // a 2-cell margin and stays readable on 80x24 terminals.
+                let r = centered_capped_rect(area, 76, 46);
                 clear_modal(r, buf);
                 Paragraph::new(
                     "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• /status Session status\n• /context Token budget by category\n• Tab / Shift+Tab  Focus visible blocks\n• Ctrl+`  Toggle bottom panel\n• Alt+M  Quick-switch model\n• Alt+, / Alt+.  Change effort\n• Footer chips: Enter opens/cycles the selected chip\n• ← / →  Switch tab in the active block\n• Enter/i Interact\n• Tab     Complete (Chat composer)\n• ↑↓      Navigate local list or input\n• Esc     Leave one interaction level\n• F1      Help\n\nEditor (when a text file is open)\n• Normal mode on open; i  Insert mode\n• :w / :q / :wq  Save / quit / save and quit\n• :e [path]  Reload or open a workspace file\n• :s/.../.../  Replace on the current line\n• :%s/.../.../  Replace across the buffer\n• Alt+E  Open the external editor\n• Esc     Return to workspace\n\nText files are editable. Binary and invalid-UTF-8 files are read-only. Forge\nasks before leaving dirty buffers and offers reload or force-save when disk\ncontent changed.\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
@@ -4121,8 +4143,12 @@ mod tests {
 
     #[test]
     fn filter_palette_narrows() {
-        let items = filter_palette("app");
+        let items = filter_palette("zzz-no-such-command");
         assert!(items.is_empty());
+        assert!(!items.iter().any(|i| i.cmd == "/quit"));
+        // "app" matches /approve-all (and its description), not /quit.
+        let items = filter_palette("app");
+        assert!(items.iter().any(|i| i.cmd == "/approve-all"));
         assert!(!items.iter().any(|i| i.cmd == "/quit"));
     }
 

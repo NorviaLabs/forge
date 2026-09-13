@@ -1067,14 +1067,25 @@ impl TuiApp {
             && !suggestions.is_empty()
             && !self.input.text.contains(' ')
         {
-            let idx = self.slash_suggestions.selected.min(suggestions.len() - 1);
-            let cmd = suggestions[idx].cmd.clone();
             let cur = self.input.text.trim();
-            let line = if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
+            // A typed exact command (e.g. `/refresh`) must win over a fuzzy
+            // description match (e.g. a skill whose blurb contains "refresh").
+            // Only an unknown name falls through to the selected suggestion.
+            let typed_is_known = matches!(
+                crate::commands::parse_slash(cur),
+                Some(Ok(_)) | Some(Err(crate::commands::CommandError::Usage(_)))
+            );
+            let line = if typed_is_known {
                 self.input.take()
             } else {
-                self.input.set_text(cmd);
-                self.input.take()
+                let idx = self.slash_suggestions.selected.min(suggestions.len() - 1);
+                let cmd = suggestions[idx].cmd.clone();
+                if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
+                    self.input.take()
+                } else {
+                    self.input.set_text(cmd);
+                    self.input.take()
+                }
             };
             if !line.is_empty() {
                 self.record_submitted_line(&line).await;
@@ -1511,14 +1522,19 @@ impl TuiApp {
         // into a chat draft, and the Enter that was meant to run it sends it to
         // the model instead. Refuse the hijack: keep the focus the UI is
         // showing and drop the key, rather than doing something plausible in
-        // the wrong pane.
+        // the wrong pane. TaskStrip/Sidebar are control surfaces too: Vim
+        // `:q`/`:e` and `/quit` typed with session focus must not become chat
+        // drafts that the next Enter submits to the model.
         //
-        // Navigational blocks (Files/Search/Workspace/Sidebar) deliberately
+        // Navigational blocks (Files/Search/Workspace) deliberately
         // keep type-to-chat: there the keystroke has no local meaning, so
         // starting a message is the only thing it could have meant.
         if matches!(
             self.focus.block(),
-            FocusBlock::Footer | FocusBlock::BottomPanel
+            FocusBlock::Footer
+                | FocusBlock::BottomPanel
+                | FocusBlock::TaskStrip
+                | FocusBlock::Sidebar
         ) {
             return Ok(false);
         }
