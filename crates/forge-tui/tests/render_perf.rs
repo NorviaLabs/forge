@@ -569,6 +569,59 @@ fn perf_report_stream_preview_cost_by_answer_length() {
 /// The guard is set at 3.0 so it fails on a return to that shape while leaving
 /// room for the constant overhead that dominates the shorter samples.
 #[test]
+fn thinking_streaming_cost_does_not_grow_quadratically() {
+    let _guard = lock_measurement();
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let measure = |chunks: usize| {
+        let (_dir, mut app) = rt.block_on(app_with_turns(4));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        ALLOCS.store(0, Relaxed);
+        COUNTING.store(1, Relaxed);
+        for piece in stream_chunks(chunks) {
+            app.stream_thinking_for_tests(&piece);
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        COUNTING.store(0, Relaxed);
+        ALLOCS.load(Relaxed)
+    };
+    let short = measure(64);
+    let long = measure(128);
+    let growth = long as f64 / short as f64;
+    assert!(
+        growth < 3.0,
+        "thinking allocations grew {growth:.2}x ({short} -> {long})"
+    );
+}
+
+#[test]
+fn answer_streaming_reuses_finished_thinking() {
+    let _guard = lock_measurement();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let measure = |thinking_chunks| {
+        let (_dir, mut app) = rt.block_on(app_with_turns(4));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        app.stream_thinking_for_tests(&stream_chunks(thinking_chunks).concat());
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let pieces = stream_chunks(16);
+        ALLOCS.store(0, Relaxed);
+        COUNTING.store(1, Relaxed);
+        for piece in pieces {
+            app.stream_preview_for_tests(&piece);
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        COUNTING.store(0, Relaxed);
+        ALLOCS.load(Relaxed)
+    };
+    let short = measure(16);
+    let long = measure(256);
+    assert!(
+        long < short * 2,
+        "answer redraws reprocessed finished thinking: {short} -> {long}"
+    );
+}
+
+#[test]
 fn streaming_cost_does_not_grow_quadratically() {
     let _guard = lock_measurement();
     let rt = tokio::runtime::Runtime::new().expect("runtime");

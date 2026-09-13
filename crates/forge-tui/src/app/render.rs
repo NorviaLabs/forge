@@ -89,6 +89,13 @@ impl TuiApp {
         self.stream.live_lines = None;
     }
 
+    /// Drive streamed reasoning through the same preview path as production.
+    #[doc(hidden)]
+    pub fn stream_thinking_for_tests(&mut self, text: &str) {
+        self.stream.thinking.push_str(text);
+        self.stream_preview_for_tests("");
+    }
+
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         // One read of the active session per frame. Sibling sessions are
         // immutable supervisor snapshots; selecting one must not be undone by

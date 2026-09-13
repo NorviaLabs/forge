@@ -501,9 +501,6 @@ impl TuiApp {
                 Some(SemanticCommand::InsertComposerNewline)
             }
             KeyCode::Enter if key.modifiers.is_empty() => Some(SemanticCommand::SubmitMessage),
-            KeyCode::Tab if key.modifiers.is_empty() && self.busy_state.is_active() => {
-                Some(SemanticCommand::QueueMessage)
-            }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::EditLastQueuedMessage)
             }
@@ -612,7 +609,6 @@ impl TuiApp {
             SemanticCommand::FocusComposer => self.enter_chat_composer(),
             SemanticCommand::FocusPane(block) => self.focus_block(block),
             SemanticCommand::SubmitMessage => self.submit_composer_message().await?,
-            SemanticCommand::QueueMessage => self.queue_composer_message().await?,
             SemanticCommand::EditLastQueuedMessage => self.edit_last_queued_message().await,
             SemanticCommand::InsertComposerNewline => self.input.insert_newline(),
             SemanticCommand::OpenInlineSearch => {
@@ -1581,13 +1577,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn composer_uses_codex_queue_bindings_while_busy() {
+    async fn busy_composer_reserves_tab_for_navigation_and_enter_for_submit() {
         let (_d, mut app) = app().await;
         app.busy_state.start(BusyPhase::Model);
 
         assert_eq!(
             app.semantic_command_for_composer_key(key(KeyCode::Tab, NONE)),
-            Some(SemanticCommand::QueueMessage)
+            None
+        );
+        assert_eq!(
+            app.semantic_command_for_composer_key(key(KeyCode::Enter, NONE)),
+            Some(SemanticCommand::SubmitMessage)
         );
         assert_eq!(
             app.semantic_command_for_composer_key(key(KeyCode::Up, ALT)),

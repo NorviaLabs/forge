@@ -141,22 +141,6 @@ impl TuiApp {
         Ok(true)
     }
 
-    pub(super) async fn queue_composer_message(&mut self) -> Result<(), TuiError> {
-        if !self.selected_turn_running() {
-            return self.submit_composer_message().await;
-        }
-        let line = self.input.text.trim().to_string();
-        if line.is_empty() {
-            return Ok(());
-        }
-        self.input.clear();
-        self.record_submitted_line(&line).await;
-        self.slash_suggestions.selected = 0;
-        self.input.history_browse = false;
-        self.enqueue_user_message(line).await;
-        Ok(())
-    }
-
     pub(super) async fn handle_task_strip_key(
         &mut self,
         key: event::KeyEvent,
@@ -1629,7 +1613,7 @@ impl TuiApp {
             return Ok(consumed);
         }
         let consumed = match key.code {
-            KeyCode::Tab => {
+            KeyCode::Tab if key.modifiers.is_empty() => {
                 if self.input.text.starts_with('/') && !self.slash_suggestions().is_empty() {
                     self.complete_slash_suggestion();
                     true
@@ -1925,7 +1909,8 @@ impl TuiApp {
                 }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
                     Box::pin(self.execute_semantic_command(SemanticCommand::CycleFocus {
-                        forward: !matches!(key.code, KeyCode::BackTab),
+                        forward: key.code != KeyCode::BackTab
+                            && !key.modifiers.contains(KeyModifiers::SHIFT),
                     }))
                     .await?;
                     return Ok(());
@@ -1941,17 +1926,9 @@ impl TuiApp {
                 }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
                     Box::pin(self.execute_semantic_command(SemanticCommand::CycleFocus {
-                        forward: !matches!(key.code, KeyCode::BackTab),
+                        forward: key.code != KeyCode::BackTab
+                            && !key.modifiers.contains(KeyModifiers::SHIFT),
                     }))
-                    .await?;
-                    return Ok(());
-                }
-                if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) {
-                    Box::pin(
-                        self.execute_semantic_command(SemanticCommand::CycleFocus {
-                            forward: false,
-                        }),
-                    )
                     .await?;
                     return Ok(());
                 }

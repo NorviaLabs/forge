@@ -936,7 +936,15 @@ async fn run_loop(
             continue;
         }
 
-        let input_wait = if app.any_interactive_terminal_running() {
+        let input_wait = if app
+            .supervisor
+            .as_ref()
+            .is_some_and(|supervisor| !supervisor.events.is_empty())
+        {
+            // A bounded supervisor batch left work behind. Still dispatch ready
+            // input below, but do not sleep 200ms before servicing the next batch.
+            Duration::ZERO
+        } else if app.any_interactive_terminal_running() {
             Duration::from_millis(20)
         } else {
             Duration::from_millis(200)

@@ -463,6 +463,16 @@ pub struct StreamMarkdownCache {
     /// silently reusing the wrong lines.
     prefix: String,
     open_lines: Vec<Line<'static>>,
+    tail: String,
+    tail_suffix: String,
+    tail_lines: Vec<Line<'static>>,
+}
+
+/// Reasoning and answer are independent streams; neither may invalidate the other.
+#[derive(Default)]
+pub(crate) struct StreamPreviewCache {
+    thinking: StreamMarkdownCache,
+    answer: StreamMarkdownCache,
 }
 
 /// Map the app's compact flag onto the renderer's density.
@@ -489,7 +499,7 @@ impl StreamMarkdownCache {
         keep_from_end: usize,
         density: Density,
     ) -> Vec<Line<'static>> {
-        self.render_inner(text, width, keep_from_end, false, density)
+        self.render_inner(text, width, keep_from_end, "", density)
     }
 
     fn render_live(
@@ -499,7 +509,12 @@ impl StreamMarkdownCache {
         keep_from_end: usize,
         density: Density,
     ) -> Vec<Line<'static>> {
-        self.render_inner(text, width, keep_from_end, true, density)
+        let suffix = if text.ends_with(STREAM_CARET) {
+            String::new()
+        } else {
+            STREAM_CARET.to_string()
+        };
+        self.render_inner(text, width, keep_from_end, &suffix, density)
     }
 
     fn render_inner(
@@ -507,7 +522,7 @@ impl StreamMarkdownCache {
         text: &str,
         width: usize,
         keep_from_end: usize,
-        append_caret: bool,
+        suffix: &str,
         density: Density,
     ) -> Vec<Line<'static>> {
         // Grow the cache rather than rebuild it. Re-rendering the whole settled
@@ -515,7 +530,9 @@ impl StreamMarkdownCache {
         // quadratic this cache exists to remove. Appending is sound for the
         // same reason the split is: each advance lands on a top-level block
         // boundary, where the renderer's state is its initial state.
-        if self.width != width || self.density != density || !text.starts_with(&self.prefix) {
+        let reset =
+            self.width != width || self.density != density || !text.starts_with(&self.prefix);
+        if reset {
             self.width = width;
             self.density = density;
             self.prefix.clear();
@@ -534,18 +551,32 @@ impl StreamMarkdownCache {
             self.prefix.push_str(fresh);
         }
         let raw_tail = &text[cut..];
-        let caret_tail;
-        let tail_text = if append_caret && !raw_tail.ends_with(STREAM_CARET) {
-            caret_tail = format!("{raw_tail}{STREAM_CARET}");
-            &caret_tail
-        } else {
-            raw_tail
-        };
-        let mut tail = render_markdown_open_with(tail_text, width, density);
-        crate::markdown::fade_streaming_tail(&mut tail);
-        let from_prefix = keep_from_end.saturating_sub(tail.len());
+        // Reuse even the unsettled tail when only the other stream or the
+        // viewport changed. A duration/caret belongs to the tail, not the prefix.
+        if reset || self.tail != raw_tail || self.tail_suffix != suffix {
+            self.tail.clear();
+            self.tail.push_str(raw_tail);
+            self.tail_suffix.clear();
+            self.tail_suffix.push_str(suffix);
+            let suffixed;
+            let tail_text = if suffix.is_empty() {
+                raw_tail
+            } else {
+                suffixed = format!("{raw_tail}{suffix}");
+                &suffixed
+            };
+            // ponytail: an unfinished markdown block still reparses on each
+            // change; a stateful parser is needed if giant open blocks dominate.
+            self.tail_lines = render_markdown_open_with(tail_text, width, density);
+            crate::markdown::fade_streaming_tail(&mut self.tail_lines);
+        }
+        let from_prefix = keep_from_end.saturating_sub(self.tail_lines.len());
         let skip = self.open_lines.len().saturating_sub(from_prefix);
-        crate::markdown::render_markdown_join(&self.open_lines[skip..], tail)
+        let tail_skip = self.tail_lines.len().saturating_sub(keep_from_end);
+        crate::markdown::render_markdown_join(
+            &self.open_lines[skip..],
+            self.tail_lines[tail_skip..].to_vec(),
+        )
     }
 }
 
@@ -582,13 +613,17 @@ fn render_assistant_answer(
 }
 
 fn render_thinking(text: &str, duration_secs: Option<f64>, width: usize) -> Vec<Line<'static>> {
-    let indent = INDENT_UNIT.repeat(2);
-    let content_width = width.saturating_sub(indent.chars().count());
+    let content_width = width.saturating_sub(INDENT_UNIT.chars().count() * 2);
     let full_text = match duration_secs {
         Some(secs) => format!("{text} · {}", format_elapsed_tenths(secs)),
         None => text.to_string(),
     };
-    render_markdown(&full_text, content_width)
+    style_thinking_lines(render_markdown(&full_text, content_width))
+}
+
+fn style_thinking_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let indent = INDENT_UNIT.repeat(2);
+    lines
         .into_iter()
         .map(|line| {
             let mut spans = vec![Span::styled(
@@ -613,14 +648,24 @@ pub(crate) fn render_streaming_preview(
     thought_secs: Option<f64>,
     available_width: usize,
     keep_from_end: usize,
-    cache: &mut StreamMarkdownCache,
+    cache: &mut StreamPreviewCache,
     density: Density,
 ) -> Vec<Line<'static>> {
     let width = available_width.max(4);
     let prose_width = prose_width_for(width);
     let mut lines = Vec::new();
     if !thinking.trim().is_empty() {
-        lines.extend(render_thinking(thinking, thought_secs, width));
+        let suffix = thought_secs
+            .map(|secs| format!(" · {}", format_elapsed_tenths(secs)))
+            .unwrap_or_default();
+        let thinking_lines = cache.thinking.render_inner(
+            thinking,
+            width.saturating_sub(INDENT_UNIT.chars().count() * 2),
+            keep_from_end,
+            &suffix,
+            Density::Compact,
+        );
+        lines.extend(style_thinking_lines(thinking_lines));
         lines.push(Line::from(""));
     }
     if !text.is_empty() {
@@ -637,7 +682,7 @@ pub(crate) fn render_streaming_preview(
                 width,
                 prose_width,
                 keep_from_end,
-                Some(cache),
+                Some(&mut cache.answer),
                 false,
                 density,
             ));
@@ -648,7 +693,7 @@ pub(crate) fn render_streaming_preview(
                 width,
                 prose_width,
                 keep_from_end,
-                Some(cache),
+                Some(&mut cache.answer),
                 true,
                 density,
             ));
@@ -5650,6 +5695,79 @@ mod tests {
     }
 
     #[test]
+    fn streaming_thinking_matches_one_shot_across_prefixes_resizes_and_resets() {
+        let mut cache = StreamPreviewCache::default();
+        for full in [
+            "**Checking** café.\n\n- first\n- second\n\n```rust\nfn main() {}\n```\n\nDone.",
+            "Replacement reasoning.\n\nNew conclusion.",
+        ] {
+            for width in [72, 24] {
+                for end in 1..=full.len() {
+                    if !full.is_char_boundary(end) {
+                        continue;
+                    }
+                    let thinking = &full[..end];
+                    for duration in [None, Some(2.4), Some(12.5)] {
+                        let direct = render_streaming_preview(
+                            thinking,
+                            "",
+                            duration,
+                            width,
+                            usize::MAX,
+                            &mut cache,
+                            Density::Compact,
+                        );
+                        let mut expected = render_thinking(thinking, duration, width);
+                        expected.push(Line::from(""));
+                        assert_eq!(
+                            direct, expected,
+                            "{thinking:?}, width={width}, duration={duration:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_thinking_materializes_only_the_requested_tail() {
+        let mut cache = StreamPreviewCache::default();
+        // Cover both settled paragraphs and one long, still-unsettled block.
+        for thinking in [
+            "Reasoning paragraph.\n\n".repeat(100),
+            "reasoning ".repeat(1000),
+        ] {
+            let full = render_streaming_preview(
+                &thinking,
+                "",
+                None,
+                40,
+                usize::MAX,
+                &mut cache,
+                Density::Compact,
+            );
+            let tail =
+                render_streaming_preview(&thinking, "", None, 40, 12, &mut cache, Density::Compact);
+            assert!(!tail.is_empty());
+            assert!(tail.len() <= 13, "reasoning exceeded its viewport window");
+            assert!(full.ends_with(&tail));
+            // Scrolling back must recover the cached lines, not discard history.
+            assert_eq!(
+                full,
+                render_streaming_preview(
+                    &thinking,
+                    "",
+                    None,
+                    40,
+                    usize::MAX,
+                    &mut cache,
+                    Density::Compact,
+                )
+            );
+        }
+    }
+
+    #[test]
     fn direct_stream_preview_matches_transcript_projection() {
         let opts = ConversationViewOpts {
             busy: true,
@@ -5675,7 +5793,7 @@ mod tests {
             let mut projected_cache = StreamMarkdownCache::default();
             let projected =
                 model.lines_for_width_from_end_cached(72, usize::MAX, &mut projected_cache);
-            let mut direct_cache = StreamMarkdownCache::default();
+            let mut direct_cache = StreamPreviewCache::default();
             let direct = render_streaming_preview(
                 thinking,
                 answer,
