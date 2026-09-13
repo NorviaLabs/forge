@@ -415,20 +415,12 @@ fn maybe_emit_tool_call_start(
     }
 }
 
-/// Assemble streamed tool arguments without concatenating complete JSON snapshots.
+/// Append Chat Completions string deltas; replace only already-parsed snapshots.
+/// A string fragment can be a complete nested object (or `{}` inside a string),
+/// so parsing it in isolation cannot distinguish a snapshot from a delta.
 fn accumulate_tool_arguments(acc: &mut String, fragment: &Value) {
     match fragment {
-        Value::String(s) => {
-            if s.is_empty() {
-                return;
-            }
-            // Provider sent a full JSON object snapshot as a string (not a delta).
-            if matches!(serde_json::from_str::<Value>(s), Ok(Value::Object(_))) {
-                *acc = s.clone();
-                return;
-            }
-            acc.push_str(s);
-        }
+        Value::String(s) => acc.push_str(s),
         Value::Object(_) | Value::Array(_) => {
             // Non-delta providers may emit already-parsed argument objects.
             *acc = fragment.to_string();
@@ -671,6 +663,55 @@ mod tests {
         assert_eq!(calls[0].arguments["path"], "README.md");
         assert_eq!(calls[0].arguments["offset"], 1);
         assert_eq!(calls[0].arguments["limit"], 100);
+    }
+
+    #[test]
+    fn streamed_tool_arguments_preserve_json_object_fragments() {
+        let cases: &[&[&str]] = &[
+            &[r#"{"parameters":"#, "{}", "}"],
+            &[r#"{"parameters":"#, r#"{"nested":true}"#, "}"],
+            &[r#"{"items":["#, "{}", ",", r#"{"nested":true}"#, "]}"],
+            &[r#"{"command":"echo "#, "{}", r#""}"#],
+            &["", r#"{"parameters":{}}"#, ""],
+        ];
+        for fragments in cases {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut text = String::new();
+            let mut thinking = String::new();
+            let mut calls = BTreeMap::new();
+            let mut usage = None;
+            for fragment in *fragments {
+                consume_event(
+                    &json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"test_tool","arguments":fragment}}]}}]}),
+                    &mut text,
+                    &mut thinking,
+                    &mut calls,
+                    &mut usage,
+                    Some(&tx),
+                );
+            }
+            let expected = fragments.concat();
+            let calls = finalize_tool_calls(calls).unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].arguments,
+                serde_json::from_str::<Value>(&expected).unwrap()
+            );
+            let streamed: String = rx
+                .try_iter()
+                .filter_map(|event| match event {
+                    ModelStreamEvent::ToolCallDelta {
+                        id,
+                        arguments_delta,
+                    } => {
+                        assert_eq!(id, "c1");
+                        Some(arguments_delta)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(streamed, expected);
+        }
     }
 
     #[test]
