@@ -38,7 +38,10 @@ fn dump(app: &mut TuiApp, name: &str, w: u16, h: u16) {
     let _ = writeln!(
         cells,
         "# frame {name} {w}x{h} cursor {} {} visible {visible} focus {:?} navtab {:?}",
-        cursor.x, cursor.y, app.focus.block(), app.navigator_tab
+        cursor.x,
+        cursor.y,
+        app.focus.block(),
+        app.navigator_tab
     );
     let mut text = String::new();
     for y in 0..area.height {
@@ -90,8 +93,16 @@ async fn type_str(app: &mut TuiApp, s: &str) {
 
 fn seed_workspace(dir: &Path) {
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("README.md"), "# Demo\n\nA repo for visual review.\n").unwrap();
-    std::fs::write(dir.join("src/main.rs"), "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
+    std::fs::write(
+        dir.join("README.md"),
+        "# Demo\n\nA repo for visual review.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/main.rs"),
+        "fn main() {\n    println!(\"hi\");\n}\n",
+    )
+    .unwrap();
     std::fs::write(dir.join("src/skinny.rs"), "fn x() {}\n").unwrap();
 }
 
@@ -99,14 +110,26 @@ fn seed_workspace(dir: &Path) {
 fn seed_long_names(dir: &Path) {
     let long = "a-very-long-module-name-that-should-be-truncated-somewhere";
     std::fs::write(dir.join(format!("{long}.rs")), "fn long_name() {}\n").unwrap();
-    std::fs::write(dir.join("src").join(format!("{long}.rs")), "fn nested() {}\n").unwrap();
+    std::fs::write(
+        dir.join("src").join(format!("{long}.rs")),
+        "fn nested() {}\n",
+    )
+    .unwrap();
 }
 
 #[tokio::test]
 async fn dump_home_sizes() {
     let dir = TempDir::new().unwrap();
     seed_workspace(dir.path());
-    for (w, h) in [(80u16, 18u16), (80, 24), (100, 30), (116, 40), (120, 40), (160, 50), (200, 60)] {
+    for (w, h) in [
+        (80u16, 18u16),
+        (80, 24),
+        (100, 30),
+        (116, 40),
+        (120, 40),
+        (160, 50),
+        (200, 60),
+    ] {
         let (td, mut app) = focus_test_app().await;
         app.runtime.cwd = dir.path().to_path_buf();
         dump(&mut app, &format!("home-{w}x{h}"), w, h);
@@ -227,10 +250,7 @@ async fn dump_approval_and_question() {
     seed_workspace(dir.path());
     let (_td, mut app) = focus_test_app().await;
     app.runtime.cwd = dir.path().to_path_buf();
-    set_pending_hitl(
-        &mut app,
-        direct_hitl_payload("call-1", "src/main.rs"),
-    );
+    set_pending_hitl(&mut app, direct_hitl_payload("call-1", "src/main.rs"));
     dump(&mut app, "hitl-approval", 120, 40);
     dump(&mut app, "hitl-approval-wide", 160, 50);
     dump(&mut app, "hitl-approval-min", 80, 18);
@@ -343,10 +363,19 @@ async fn probe_modal_dim_accumulation() {
             for x in 0..120 {
                 let c = &buf[(x, y)];
                 if c.symbol() == "│" {
-                    sample.push((x, y, format!("{:?}", c.style().fg), format!("{:?}", c.style().bg)));
+                    sample.push((
+                        x,
+                        y,
+                        format!("{:?}", c.style().fg),
+                        format!("{:?}", c.style().bg),
+                    ));
                 }
             }
         }
-        println!("pass {pass}: {} vertical bars; first 6: {:?}", sample.len(), &sample[..sample.len().min(6)]);
+        println!(
+            "pass {pass}: {} vertical bars; first 6: {:?}",
+            sample.len(),
+            &sample[..sample.len().min(6)]
+        );
     }
 }
