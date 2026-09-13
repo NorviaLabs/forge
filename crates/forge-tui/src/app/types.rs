@@ -617,7 +617,6 @@ pub(crate) enum SemanticCommand {
     FocusComposer,
     FocusPane(FocusBlock),
     SubmitMessage,
-    QueueMessage,
     EditLastQueuedMessage,
     InsertComposerNewline,
     OpenInlineSearch,
@@ -1517,9 +1516,8 @@ pub(crate) struct StreamState {
     /// prefix too, and terminals emit one resize event per column during a
     /// drag, so those are debounced.
     pub(crate) last_preview_render: Option<Instant>,
-    /// Settled prefix of the streaming answer, so a rebuild re-parses only the
-    /// tail. See `StreamMarkdownCache`.
-    pub(crate) markdown: crate::conversation::StreamMarkdownCache,
+    /// Independent settled-prefix caches for reasoning and answer text.
+    pub(crate) markdown: crate::conversation::StreamPreviewCache,
 }
 impl StreamState {
     /// Characters per second the preview is allowed to appear at. Above a

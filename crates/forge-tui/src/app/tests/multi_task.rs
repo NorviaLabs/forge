@@ -609,6 +609,48 @@ async fn unchanged_transcript_update_reuses_cached_conversation_lines() {
 }
 
 #[tokio::test]
+async fn supervisor_stream_batches_leave_time_for_input_without_losing_events() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let (tx, rx) = tokio::sync::broadcast::channel(1024);
+    app.supervisor.as_mut().unwrap().events = rx;
+    let session_id = app.selected_session_id;
+    let mut expected = String::new();
+    for index in 0..300 {
+        let text = format!("{index},");
+        expected.push_str(&text);
+        tx.send(forge_session::SupervisorEvent::Stream {
+            session_id,
+            event: forge_types::ModelStreamEvent::TextDelta { text },
+        })
+        .unwrap();
+    }
+    app.poll_supervisor_events();
+    assert!(!app.stream.preview.is_empty());
+    assert!(
+        app.stream.preview.len() < expected.len(),
+        "one tick drained the entire burst"
+    );
+    assert!(expected.starts_with(&app.stream.preview));
+    app.focus_block(FocusBlock::Composer);
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.input.text, "x");
+    assert!(!app.supervisor.as_ref().unwrap().events.is_empty());
+    for _ in 0..300 {
+        if app.supervisor.as_ref().unwrap().events.is_empty() {
+            break;
+        }
+        app.poll_supervisor_events();
+    }
+    assert_eq!(app.stream.preview, expected);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn lagged_supervisor_events_resync_the_selected_snapshot() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let session_id = app.selected_session_id;

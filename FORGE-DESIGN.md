@@ -474,6 +474,9 @@ TaskStrip → Search → Files → Workspace(CHAT) → Sidebar → Approval → 
 - `Search` is a real Tab stop of its own so Tab has one consistent meaning everywhere instead of toggling a sub-mode inside Files.
 - Opening an interactive block focuses it; closing a block restores the previous valid owner, falling back to the Composer (never the Workspace, which is a modal editor).
 - A handled event never falls through to another block.
+- Model activity does not capture pane navigation: `Tab` / `Shift+Tab` still
+  leave the Composer while thinking, answering, or running tools. Plain `Tab`
+  completes an active slash suggestion; `Enter` submits or queues a draft.
 - `Esc` pops exactly one interaction level.
 
 The canonical label vocabulary is `SESSIONS SEARCH FILES CHAT SIDEBAR COMPOSER FOOTER PANEL APPROVAL` (`types.rs::FocusBlock::label`). Labels identify the active block in help and status contexts; panes themselves carry `>` title rows, not label tags.
@@ -596,6 +599,9 @@ Hierarchy:
 Rules:
 
 - Raw provider reasoning is hidden by default.
+- When reasoning is displayed during streaming, reasoning and answer text use
+  independent incremental markdown caches and viewport-tail rendering. Supervisor
+  events are processed in bounded batches so input runs between batches.
 - Assistant answers should visually dominate routine activity.
 - Group repetitive tools under a collapsible activity row.
 - Tool calls use concise verbs: `Read 4 files`, `Ran cargo test`.

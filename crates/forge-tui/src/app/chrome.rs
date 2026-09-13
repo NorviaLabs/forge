@@ -103,7 +103,10 @@ impl TuiApp {
         let mut events = Vec::new();
         let mut closed = false;
         let mut resync = false;
-        loop {
+        // Yield to keyboard dispatch and painting even while providers keep
+        // publishing. Leave the rest in the receiver, in order, for the next tick.
+        const MAX_SUPERVISOR_EVENTS_PER_TICK: usize = 128;
+        for _ in 0..MAX_SUPERVISOR_EVENTS_PER_TICK {
             let event = match supervisor.events.try_recv() {
                 Ok(event) => event,
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,

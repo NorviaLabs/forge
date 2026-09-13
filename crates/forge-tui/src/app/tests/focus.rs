@@ -68,6 +68,41 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
 }
 
 #[tokio::test]
+async fn busy_tab_navigation_preserves_the_composer_draft() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .append_user_message("working")
+        .await
+        .unwrap();
+    for phase in [
+        BusyPhase::Model,
+        BusyPhase::Tool {
+            name: "bash".into(),
+        },
+    ] {
+        app.busy_state.start(phase);
+        for draft in ["", "next task"] {
+            app.focus_block(FocusBlock::Composer);
+            app.input.set_text(draft);
+            app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+                .await
+                .unwrap();
+            assert_eq!(app.focus.block(), FocusBlock::Footer);
+            app.handle_key(press(KeyCode::BackTab, KeyModifiers::SHIFT))
+                .await
+                .unwrap();
+            assert_eq!(app.focus.block(), FocusBlock::Composer);
+            app.handle_key(press(KeyCode::Tab, KeyModifiers::SHIFT))
+                .await
+                .unwrap();
+            assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+            assert_eq!(app.input.text, draft);
+            assert!(app.selected_queue_messages().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
 async fn tabbing_into_footer_selects_which_llm_first() {
     // Entering FocusBlock::Footer (an ordinary Tab stop, not a separate
     // F3 side-channel) selects the first control (which-LLM, index 0).
