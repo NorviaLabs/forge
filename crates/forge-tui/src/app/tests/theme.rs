@@ -254,17 +254,23 @@ async fn light_theme_representative_layout_snapshot() {
     term.draw(|f| app.draw(f)).unwrap();
     assert_buffer_fully_themed(term.backend().buffer());
     let buf = term.backend().buffer();
+    // The user prompt sits on the neutral `selection` ground, not an accent
+    // tint: find its row and check the ground directly.
     let mut saw_user_message_background = false;
     let mut saw_selection = false;
     let light = crate::theme::palette(forge_config::THEME_FORGE_LIGHT);
     for y in 0..buf.area().height {
+        let mut row_text = String::new();
         for x in 0..buf.area().width {
-            if buf[(x, y)].style().bg == Some(light.accent_soft) {
-                saw_user_message_background = true;
-            }
+            row_text.push_str(buf[(x, y)].symbol());
             if buf[(x, y)].style().bg == Some(light.selection) {
                 saw_selection = true;
             }
+        }
+        if row_text.contains("Please review this change.")
+            && (0..buf.area().width).any(|x| buf[(x, y)].style().bg == Some(light.selection))
+        {
+            saw_user_message_background = true;
         }
     }
     assert!(

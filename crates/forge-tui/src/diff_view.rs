@@ -718,11 +718,7 @@ impl Widget for DiffViewWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
-            .border_style(if self.focused {
-                theme::active_panel_border()
-            } else {
-                theme::inactive_panel_border()
-            })
+            .border_style(theme::panel_border())
             .style(theme::panel());
         let inner = block.inner(area);
         block.render(area, buf);

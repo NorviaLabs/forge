@@ -554,6 +554,12 @@ impl Widget for InputBar<'_> {
             theme::composer_text()
         };
         let text_focused = self.focused;
+        // The top edge is the composer's only stateful chrome: accent while it
+        // owns the keyboard, `waiting_border` while an approval pends, warn
+        // when there is no provider to send to. Focus alone is a hue change on
+        // a hairline — the block caret is the monochrome signal. Attention
+        // states additionally thicken the rule, because they change what the
+        // input *does*, not merely where the keyboard is.
         let rule_style = if self.waiting {
             theme::waiting_border()
         } else if text_focused {
@@ -563,7 +569,7 @@ impl Widget for InputBar<'_> {
         } else {
             theme::composer_border_idle()
         };
-        let rule_glyph = if text_focused || self.waiting || self.not_connected {
+        let rule_glyph = if self.waiting || self.not_connected {
             "━"
         } else {
             "─"
@@ -1048,15 +1054,23 @@ mod tests {
     #[test]
     fn composer_uses_strong_rule_only_for_attention_states() {
         let model = InputModel::default();
+        let waiting = InputModel {
+            waiting: true,
+            ..Default::default()
+        };
         let idle = draw_input_bar(&model, 48, 5, false, false, None);
         let focused = draw_input_bar(&model, 48, 5, true, false, None);
+        let attention = draw_input_bar(&waiting, 48, 5, false, false, None);
 
-        // Attention changes the top edge's weight, keeping rounded corners.
+        // Focus alone is a hue change on a hairline (the caret carries it in
+        // monochrome); only attention states thicken the top edge.
         let idle_row: String = (0..48).map(|x| idle[(x, 0)].symbol()).collect();
         let focused_row: String = (0..48).map(|x| focused[(x, 0)].symbol()).collect();
+        let waiting_row: String = (0..48).map(|x| attention[(x, 0)].symbol()).collect();
         assert_eq!(idle_row, format!("╭{}╮", "─".repeat(46)));
-        assert_eq!(focused_row, format!("╭{}╮", "━".repeat(46)));
-        assert!(!idle_row.contains('┌') && !focused_row.contains('┏'));
+        assert_eq!(focused_row, format!("╭{}╮", "─".repeat(46)));
+        assert_eq!(waiting_row, format!("╭{}╮", "━".repeat(46)));
+        assert!(!idle_row.contains('┌') && !waiting_row.contains('┏'));
     }
 
     #[test]

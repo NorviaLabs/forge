@@ -878,24 +878,27 @@ impl ConversationRenderInternals for ConversationModel {
                         false,
                         wrap,
                     );
+                    // Restrained neutral ground (`selection`), not an accent
+                    // tint: the prompt is a transcript region, and a saturated
+                    // bar outranks the answer below it. Carried to the pane's
+                    // right edge so the block still reads as one seamless bar.
+                    let ground = theme::user_message();
                     for line in user_lines.into_iter() {
                         // No leading marker — just an indent matching
-                        // assistant messages' own left padding, with the
-                        // highlighted background carried all the way to the
-                        // edge so the block reads as one seamless bar.
+                        // assistant messages' own left padding.
                         let mut spans = vec![Span::styled(
                             " ".repeat(prefix_width),
-                            theme::text().bg(theme::accent_soft_bg()),
+                            theme::text().patch(ground),
                         )];
                         spans.extend(line.spans.into_iter().map(|mut span| {
-                            span.style = span.style.bg(theme::accent_soft_bg());
+                            span.style = span.style.patch(ground);
                             span
                         }));
                         let content_width = spans.iter().map(Span::width).sum::<usize>();
                         if content_width < width {
                             spans.push(Span::styled(
                                 " ".repeat(width - content_width),
-                                theme::text().bg(theme::accent_soft_bg()),
+                                theme::text().patch(ground),
                             ));
                         }
                         lines.push(Line::from(spans));
@@ -1506,7 +1509,7 @@ pub(super) fn render_visible_conversation_lines(
                 .title(title)
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .border_style(theme::inactive_panel_border())
+                .border_style(theme::panel_border())
                 .style(theme::panel());
             let inner = block.inner(block_area);
             block.render(block_area, buf);
@@ -2981,10 +2984,10 @@ mod tests {
         let first = &lines[2];
         // No leading marker — a plain indent, background carried to the edge.
         assert_eq!(first.spans[0].content.as_ref(), "  ");
-        assert_eq!(first.spans[0].style.bg, Some(dark.accent_soft));
+        assert_eq!(first.spans[0].style.bg, Some(dark.selection));
         assert_eq!(first.spans[1].content.as_ref(), "hello world");
         assert_eq!(first.spans[1].style.fg, Some(dark.text));
-        assert_eq!(first.spans[1].style.bg, Some(dark.accent_soft));
+        assert_eq!(first.spans[1].style.bg, Some(dark.selection));
         assert!(!rendered.contains('|'), "{rendered}");
         assert!(!rendered.contains('›'), "{rendered}");
         assert!(!rendered.contains(" │"), "{rendered}");
@@ -3019,7 +3022,7 @@ mod tests {
             .take_while(|line| {
                 line.spans
                     .first()
-                    .is_some_and(|s| s.style.bg == Some(dark.accent_soft))
+                    .is_some_and(|s| s.style.bg == Some(dark.selection))
             })
             .collect();
         assert!(
@@ -3028,7 +3031,7 @@ mod tests {
         );
         for row in &user_rows {
             assert_eq!(row.spans[0].content.as_ref(), "  ");
-            assert_eq!(row.spans[0].style.bg, Some(dark.accent_soft));
+            assert_eq!(row.spans[0].style.bg, Some(dark.selection));
         }
     }
 

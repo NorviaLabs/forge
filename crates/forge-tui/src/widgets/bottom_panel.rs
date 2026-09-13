@@ -54,7 +54,7 @@ impl Widget for BottomPanel<'_> {
             .border_style(if self.focused {
                 theme::active_panel_border()
             } else {
-                theme::inactive_panel_border()
+                theme::panel_border()
             })
             .style(theme::panel())
             .padding(Padding::horizontal(crate::widgets::input::TEXT_INSET))

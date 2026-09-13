@@ -164,7 +164,7 @@ These are not optional styling preferences. They are correctness requirements.
 8. **Approvals and failures outrank routine activity.**
 9. **Raw model reasoning is not ordinary chat content.**
 10. **The primary workflow remains usable at the enforced minimum of 80 × 18** (`layout.rs::MIN_WIDTH` / `MIN_HEIGHT`). Below that Forge refuses to render rather than drawing a broken screen.
-11. **Focus has to survive losing colour:** active panels use thick borders or title markers in addition to accent styling (see the bottom panel's plain/thick rule swap).
+11. **Focus has to survive losing colour:** focus markers use shape as well as hue — the `>` title marker, the block caret, the accent scrollbar thumb, the tab underline, the composer's attention-thickened top edge (see the bottom panel's plain/thick rule swap).
 
 ## 5. Colour System
 
@@ -177,7 +177,7 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `surface` | Panels, composer, secondary areas |
 | `surface_raised` | Elevated content above the canvas |
 | `surface_hover` | Hover / pointer affordance ground (weaker than `selection`) |
-| `border` | Standard dividers and inactive block borders |
+| `border` | Pane frames, dividers, neutral chrome |
 | `border_muted` | Low-priority internal separators |
 | `text_primary` | Main readable content |
 | `text_secondary` | Supporting copy, metadata |
@@ -503,24 +503,36 @@ Modified arrows do not switch tabs; text inputs retain normal arrow behaviour.
 
 ### 8.4 Active block treatment
 
-The active block must use at least two signals:
+Three border levels (`design.rs`, `theme::panel_border`):
 
-- accent-coloured or stronger/thicker border
+- **L1 — pane frame.** Every pane, focused or not, takes the same neutral
+  `border`. A box that changes hue when it takes the keyboard turns the whole
+  layout into a status display, so panes never take accent borders.
+- **L2 — inset field.** The composer outline and the explorer's search field
+  sit at the same neutral step as L1; a nested field never reads as a second,
+  louder box.
+- **L3 — local accent.** Only the element that owns the keyboard or the
+  selection: the active tab's underline, a focused search field's border, the
+  composer's top edge, a pane's `>` title marker, the scrollbar thumb. Thick
+  rules survive only where the region is a single rule (the bottom panel).
+
+The active block must use at least two signals from the L3 set:
+
 - accent or bold block title
-- explicit state marker where relevant (`> Terminal`)
+- explicit state marker where relevant (`> Terminal`, `> Chat`)
+- caret, scrollbar thumb, or tab underline at the point of interaction
 
-The transcript has one rounded frame. Focus adds an accent border and a
-`> Chat` title marker, including when the transcript has no overflow. Its
+The transcript has one rounded L1 frame. Focus adds the `> Chat` title marker
+(never an accent border), including when the transcript has no overflow. Its
 scrollbar also takes a solid accent thumb while the Sidebar block owns the
 keyboard, a muted half-block otherwise. Modals suppress background focus.
-
-Inactive blocks use a muted hairline border and normal title weight.
 
 Do not fill the entire active block with accent colour. Focus is structural, not a selection rectangle.
 
 ### 8.5 Selected tab versus focused block
 
-- **Block focus** is shown by the block border and title.
+- **Block focus** is shown by local L3 markers and the block title, never by
+  the pane outline.
 - **Selection** (a row, a list item, a diff entry) is shown inside the block.
 - A selection inside an inactive block stays visible but muted, and never implies keyboard ownership.
 
@@ -548,8 +560,9 @@ Avoid duplicating file counts, task details or provider telemetry already shown 
 
 ### 9.2 Block frame
 
-- Inactive border: `border_muted` / `border`.
-- Active border: `accent` (or thick border type where the region is a single rule).
+- L1 frame: neutral `border` at every focus state (`theme::panel_border()`).
+- L3 accents (single-rule regions only): the bottom panel's thick top rule,
+  the composer's top edge, a focused search field's border.
 - Active title: bold accent with the `>` marker, e.g. `> Terminal`; modals use `theme::modal_title`, panes `theme::pane_title`.
 - Modal bodies inset `MODAL_PAD_X` (2) horizontally; a titled modal adds one top
   row. A title never touches the rule it sits on — one space separates the
@@ -574,7 +587,7 @@ Two rows (`widgets/footer.rs`); the second row is the background activity line.
 
 Hierarchy:
 
-1. User request — left-aligned gutter treatment, distinct background.
+1. User request — left-aligned gutter treatment on the neutral `selection` ground (never an accent tint: the answer below must dominate).
 2. Final assistant-facing response — tinted background, visually dominant.
 3. Approval or failure.
 4. Grouped tool activity.
@@ -632,19 +645,23 @@ the single plan surface.
 
 - `surface` background and a full rounded outline. Side and bottom borders stay
   neutral; the top edge takes `accent` when focused and `waiting_border` while
-  an approval pends ("paused" look). Focus/attention also thickens the top rule,
-  so the state survives monochrome rendering. Waiting outranks focus colour.
+  an approval pends ("paused" look). Only attention states thicken the top
+  rule — focus alone is a hue change, with the block caret as the monochrome
+  signal. Waiting outranks focus colour.
 - Multi-line growth bounded by `MAX_COMPOSER_INPUT_H`.
 - Outbound messages queue below the input as a strip; `Ctrl+↑`/`Ctrl+↓` move the selection, `Ctrl+Backspace` cancels one.
 
 ### 9.6 File tree
 
-- Search is an inset, three-row rounded field (`/ ` prefix plus query). The
-  tree begins immediately below its bottom border. Search focus colours the
-  border and prefix and shows the caret; clicking the field focuses Search.
-- Navigator tabs have rounded outlines sharing the list's top edge. The
-  selected label is bold and underlined; a focused tab additionally carries
-  `>` and an accent border. Selection alone never claims keyboard ownership.
+- Search is an inset, three-row rounded field (`/ ` prefix plus query) at the
+  neutral L2 step. One blank resting row separates it from the first tree row,
+  and the whole tree sits one indent step (`LIST_INSET_X`) inside the field
+  above it. Search focus colours the border and prefix and shows the caret;
+  clicking the field focuses Search.
+- Navigator tabs have rounded outlines sharing the list's top edge, neutral
+  whether selected or not. The selected label is bold and underlined; a focused
+  tab additionally carries `>` in the reserved marker cell. Selection alone
+  never claims keyboard ownership.
 - Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.
 - Active file and selected row may differ; distinguish them.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.

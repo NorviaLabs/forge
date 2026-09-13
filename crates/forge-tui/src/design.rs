@@ -2,6 +2,36 @@
 //! `artifacts/astra-tui-2026/03-forge-design-system.md`).
 //!
 //! Presentation layer only — never config. All values are terminal cells.
+//!
+//! # The spacing system
+//!
+//! Three nested steps, applied by role rather than per screen, so every pane,
+//! chrome row and overlay shares one origin:
+//!
+//! 1. [`FRAME_INSET_X`] — the canvas gutter between the terminal edge and the
+//!    work surface. Identical in every mode.
+//! 2. [`PANE_PAD_X`] / [`PANE_GAP_X`] — a pane's own interior padding past its
+//!    border column, and the gutter between adjacent panes.
+//! 3. [`TEXT_INSET`](crate::widgets::input::TEXT_INSET) — the shared text origin
+//!    inside a bordered pane's padding. Composer, feedback, queue, transcript
+//!    and tree rows all resolve to it.
+//!
+//! # The border system
+//!
+//! Three levels, defined as theme accessors rather than literals:
+//!
+//! - **L1 — pane frame.** `theme::panel_border()`. Every pane, focused or not.
+//!   Carries the layout's structure and never changes hue with focus.
+//! - **L2 — inset field.** `theme::composer_border_idle()` for the composer and
+//!   the explorer's search field: the same neutral step as L1, so a nested
+//!   field never reads as a second, louder box.
+//! - **L3 — local accent.** `theme::active_panel_border()`. The active tab's
+//!   underline, a focused search field's border, the composer's top edge, a
+//!   pane's `>` title marker, a keyboard-bearing modal's title.
+//!
+//! A pane never takes L3: a bright rectangle around a whole panel is louder
+//! than the content inside it, and it makes focus the layout's only readable
+//! information.
 
 /// Outer frame gutter, each side.
 pub const FRAME_INSET_X: u16 = 1;
@@ -16,6 +46,15 @@ pub const PANE_GAP_Y: u16 = 1;
 pub const CHROME_GAP_Y: u16 = 1;
 /// Blank row between the transcript and the composer.
 pub const COMPOSER_GAP_Y: u16 = 1;
+/// Leading inset for nested list rows (the explorer's tree).
+///
+/// One extra indent step past [`PANE_PAD_X`], so the disclosure column clears
+/// the inset field above it (the search box keeps [`PANE_PAD_X`]) and the tree
+/// reads as nested *inside* the pane rather than flush against its edge. The
+/// per-level indent stays [`TREE_INDENT_W`].
+pub const LIST_INSET_X: u16 = 2;
+/// Blank rows between the explorer's search field and the first tree row.
+pub const TREE_TOP_GAP_Y: u16 = 1;
 /// Pane title height.
 pub const PANE_TITLE_H: u16 = 1;
 /// Shared vertical separator width.
@@ -70,6 +109,8 @@ mod tests {
         assert_eq!(PANE_GAP_Y, 1);
         assert_eq!(CHROME_GAP_Y, 1);
         assert_eq!(COMPOSER_GAP_Y, 1);
+        assert_eq!(LIST_INSET_X, crate::design::TREE_INDENT_W);
+        assert_eq!(TREE_TOP_GAP_Y, 1);
         assert_eq!(PANE_TITLE_H, 1);
         assert_eq!(PANE_SEPARATOR_W, 1);
         assert_eq!(MAX_COMPOSER_INPUT_H, 10);

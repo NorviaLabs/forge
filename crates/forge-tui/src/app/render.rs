@@ -386,11 +386,7 @@ impl TuiApp {
                     let block = Block::default()
                         .borders(ratatui::widgets::Borders::ALL)
                         .border_type(ratatui::widgets::BorderType::Rounded)
-                        .border_style(if navigator_focused {
-                            theme::active_panel_border()
-                        } else {
-                            theme::inactive_panel_border()
-                        })
+                        .border_style(theme::panel_border())
                         .padding(ratatui::widgets::Padding::horizontal(
                             crate::design::PANE_PAD_X,
                         ))
@@ -915,14 +911,12 @@ impl TuiApp {
                 modal_open,
             );
             // One frame for the transcript, with the scrollbar in its padding.
+            // The frame stays L1 neutral; focus is the `> Chat` title marker
+            // plus the accent scrollbar thumb (see `render_conversation_scrollbar`).
             let sidebar_block = Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
-                .border_style(if sidebar_focused {
-                    theme::active_panel_border()
-                } else {
-                    theme::inactive_panel_border()
-                })
+                .border_style(theme::panel_border())
                 .title(if sidebar_focused { "> Chat" } else { "" })
                 .padding(ratatui::widgets::Padding::horizontal(
                     crate::design::PANE_PAD_X,
@@ -1532,7 +1526,7 @@ impl TuiApp {
             buf,
             "No file open\n\nSelect one from the explorer.",
             theme::muted(),
-            theme::inactive_panel_border(),
+            theme::panel_border(),
         );
     }
 }
@@ -2052,7 +2046,7 @@ mod tests {
             &mut buf,
             "No file open\n\nSelect one from the explorer.",
             crate::theme::muted(),
-            crate::theme::inactive_panel_border(),
+            crate::theme::panel_border(),
         );
         let rendered: Vec<String> = (0..area.height)
             .map(|y| {
