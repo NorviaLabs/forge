@@ -13,7 +13,20 @@ impl TuiApp {
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        let r = centered_rect(64, 58, area);
+        let r = {
+            // Cell-capped instead of percentage-sized: at 80x24 a 64%-by-58%
+            // box is a 51x13 letterbox that clips the help text and collides
+            // with the underlying pane borders. Cap in cells with a 2-cell
+            // margin so the frame stays inside the screen at any size.
+            let width = area.width.saturating_sub(4).clamp(1, 76);
+            let height = area.height.saturating_sub(4).clamp(1, 46);
+            ratatui::layout::Rect::new(
+                area.x + area.width.saturating_sub(width) / 2,
+                area.y + area.height.saturating_sub(height) / 2,
+                width,
+                height,
+            )
+        };
         ratatui::widgets::Clear.render(r, buf);
         crate::theme::fill(r, buf, crate::theme::panel());
         Paragraph::new(self.help_text())

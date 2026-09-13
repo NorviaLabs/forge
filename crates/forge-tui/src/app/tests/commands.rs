@@ -790,6 +790,33 @@ async fn typing_at_the_footer_never_becomes_a_chat_message() {
 }
 
 #[tokio::test]
+async fn typing_at_session_or_sidebar_blocks_never_becomes_chat() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    // Regression: with session (TaskStrip) or Sidebar focus, Vim `:q`/`:e`
+    // and `/quit` fell through `type_to_compose` into the composer, and the
+    // Enter meant for the control surface submitted them to the model.
+    let (_dir, mut app) = focus_test_app().await;
+
+    app.focus_block(FocusBlock::TaskStrip);
+    for c in ":q".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.input.text, "");
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+
+    app.focus_block(FocusBlock::Sidebar);
+    for c in "/quit".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.input.text, "");
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+}
+
+#[tokio::test]
 async fn editor_uppercase_g_does_not_reach_chat_input() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (dir, session) = test_session().await;
