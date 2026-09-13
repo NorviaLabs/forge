@@ -81,14 +81,14 @@ impl Widget for NavigatorTabs {
                     area.height,
                 )
             };
+            // The tab strip is the navigator panel's own top edge, not a small
+            // box inside it: one neutral frame for the active and inactive
+            // tabs alike. Focus lives in the label (accent + underline + the
+            // reserved `>` marker cell), never in the tab's outline.
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(if self.focused && tab == self.tab {
-                    theme::active_panel_border()
-                } else {
-                    theme::inactive_panel_border()
-                })
+                .border_style(theme::panel_border())
                 .style(theme::panel());
             let inner = if area.height >= 3 {
                 block.inner(tab_area)

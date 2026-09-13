@@ -466,7 +466,7 @@ impl Widget for StatusBar<'_> {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(theme::inactive_panel_border())
+                .border_style(theme::panel_border())
                 .style(theme::status_bar());
             let inner = block.inner(area);
             block.render(area, buf);

@@ -240,16 +240,21 @@ mod tests {
     }
 
     #[test]
-    fn theme_matrix_keeps_request_text_unshaded() {
+    fn theme_matrix_shades_request_text_with_the_selection_ground() {
         for theme in [THEME_FORGE_DARK, THEME_FORGE_LIGHT] {
+            // The ground resolves through the active palette, like production.
+            crate::theme::set_active(theme);
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
-            assert!(
-                lines[0].spans[0].style.bg.is_none(),
-                "theme {:?} request text should be unshaded",
+            let expected = crate::theme::palette(theme).selection;
+            assert_eq!(
+                lines[0].spans[0].style.bg,
+                Some(expected),
+                "theme {:?} request text should sit on the neutral selection ground",
                 theme,
             );
         }
+        crate::theme::set_active(THEME_FORGE_DARK);
     }
 
     #[test]
@@ -377,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_request_text_has_no_background() {
+    fn snapshot_request_text_carries_the_selection_ground() {
         let lines = render_user_message_lines(
             "hello",
             40,
@@ -385,7 +390,10 @@ mod tests {
             false,
             crate::conversation::wrap,
         );
-        assert_eq!(lines[0].spans[0].style.bg, None);
+        assert_eq!(
+            lines[0].spans[0].style.bg,
+            Some(crate::theme::palette(THEME_FORGE_DARK).selection)
+        );
     }
 
     #[test]

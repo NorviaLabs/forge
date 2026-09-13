@@ -574,7 +574,7 @@ pub fn panel_alt() -> Style {
 }
 
 pub fn user_message() -> Style {
-    Style::default()
+    Style::default().bg(active_palette().selection)
 }
 
 pub fn assistant_message() -> Style {
@@ -608,6 +608,14 @@ pub fn diff_hunk() -> Style {
 
 // Transcript roles. Keep these semantic so widgets do not need to know the
 // palette and basic ANSI terminals still get hierarchy from modifiers/symbols.
+
+/// Ground behind a submitted user message.
+///
+/// A restrained dark neutral — the theme's `selection` step — rather than an
+/// accent tint. The prompt is a *region* of the transcript, not a focus state,
+/// and a saturated full-width bar outranks the answer beneath it, which is the
+/// content the operator actually has to read (§9.4). The `You` speaker label
+/// and the block's indent carry authorship without colour.
 pub fn user_message_style() -> Style {
     user_message().fg(active_palette().text)
 }
@@ -756,14 +764,28 @@ pub fn history_active() -> Style {
     Style::default().fg(p.text).bg(p.selection)
 }
 
-/// Active panel chrome: accent border.
-pub fn active_panel_border() -> Style {
-    Style::default().fg(active_palette().accent)
+/// Level 1 — the frame of every pane, focused or not.
+///
+/// One border level for all panel separation (`WORKSHEET` chrome): panes are
+/// boxes, and a box that changes hue when it takes the keyboard turns the
+/// whole layout into a status display. Focus is a *local* signal instead —
+/// the active tab's underline, the selected row, the caret, the pane title
+/// marker, the composer's top edge (see [`active_panel_border`]).
+///
+/// Uses the standard `border` token rather than `border_muted`: a muted frame
+/// against a `surface` panel on a `background` canvas merges the two surfaces,
+/// so pane boundaries stop being legible at all.
+pub fn panel_border() -> Style {
+    border()
 }
 
-/// Inactive panel chrome: muted border.
-pub fn inactive_panel_border() -> Style {
-    border_muted()
+/// Level 3 — accent chrome for a *local* element that owns the keyboard or the
+/// selection: the active tab's underline, the search field's border while
+/// Search holds focus, the composer's top edge, a pane's `>` title marker.
+///
+/// Never paint a whole pane frame with this.
+pub fn active_panel_border() -> Style {
+    Style::default().fg(active_palette().accent)
 }
 
 /// Composer border while an approval is pending — distinct from busy-dim and
@@ -778,15 +800,15 @@ pub fn status_bar() -> Style {
     panel_alt()
 }
 
-/// Composer border in its idle (unfocused, connected, not-waiting) state.
+/// Composer container border: neutral at every focus state.
 ///
-/// Sits between `border_muted()` and `active_panel_border()`'s full accent —
-/// the composer is the smallest panel in the IDE layout and competes for
-/// attention with a much larger editor pane, so it stays visually prominent
-/// even when `FocusBlock` has moved elsewhere (attention and app focus state
-/// aren't the same thing).
+/// The composer's *state* lives on its top edge (see `widgets/input.rs`):
+/// accent while it owns the keyboard, `waiting_border` while an approval
+/// pends. Sides and bottom stay at the same level as every other pane frame,
+/// so the composer reads as one more box in the layout rather than the
+/// brightest rectangle on screen.
 pub fn composer_border_idle() -> Style {
-    Style::default().fg(active_palette().accent_soft)
+    border()
 }
 
 /// Composer typed-text emphasis, applied regardless of focus state for the
@@ -1177,10 +1199,12 @@ mod tests {
         let dark = dark_palette();
         let light = light_palette();
         set_active(THEME_FORGE_DARK);
-        assert_eq!(user_message().bg, None);
+        // The submitted prompt sits on the neutral `selection` ground, not an
+        // accent tint — see `user_message_style`.
+        assert_eq!(user_message().bg, Some(to_color(dark.selection)));
         assert_eq!(assistant_message().bg, Some(to_color(dark.background)));
         set_active(THEME_FORGE_LIGHT);
-        assert_eq!(user_message().bg, None);
+        assert_eq!(user_message().bg, Some(to_color(light.selection)));
         assert_eq!(assistant_message().bg, Some(to_color(light.background)));
         set_active(THEME_FORGE_DARK);
     }

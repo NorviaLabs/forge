@@ -1218,11 +1218,17 @@ fn match_byte_range_case_insensitive(haystack: &str, needle: &str) -> Option<(us
     })
 }
 
-/// Search box followed immediately by the tree.
+/// Search box, one blank resting row, then the tree.
 const SEARCH_ROW_HEIGHT: u16 = 3;
 /// Display width of the `/ ` search affordance prefix.
 const SEARCH_PREFIX_WIDTH: u16 = 2;
-const TREE_TOP_OFFSET: u16 = SEARCH_ROW_HEIGHT;
+/// Vertical origin of the tree inside the explorer's inner rectangle: the
+/// search field plus one resting row, so the disclosure column is not welded
+/// to the field's bottom border (`design::TREE_TOP_GAP_Y`).
+const TREE_TOP_OFFSET: u16 = SEARCH_ROW_HEIGHT + crate::design::TREE_TOP_GAP_Y;
+/// Leading inset applied to every tree row, so the whole tree sits one indent
+/// step inside the field above it (`design::LIST_INSET_X`).
+const TREE_LEAD_INSET: u16 = crate::design::LIST_INSET_X;
 /// Tree origin relative to the explorer's outer rectangle, shared with mouse routing.
 pub(crate) const TREE_ROW_OFFSET: u16 = 1 + TREE_TOP_OFFSET;
 
@@ -1246,11 +1252,7 @@ impl Widget for FileExplorerWidget<'_> {
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
-            .border_style(if self.focused {
-                theme::active_panel_border()
-            } else {
-                theme::inactive_panel_border()
-            })
+            .border_style(theme::panel_border())
             .style(theme::panel());
         let inner = block.inner(area);
         block.render(area, buf);
@@ -1359,7 +1361,7 @@ impl Widget for FileExplorerWidget<'_> {
                 .border_style(if self.search_active {
                     theme::active_panel_border()
                 } else {
-                    theme::inactive_panel_border()
+                    theme::composer_border_idle()
                 })
                 .style(theme::composer_surface());
             let search_inner = search_block.inner(search_area);
@@ -1404,11 +1406,13 @@ impl Widget for FileExplorerWidget<'_> {
                 }
             }
 
+            // The whole tree sits one indent step inside the field above it,
+            // so the disclosure column clears the search box's own left edge.
             Paragraph::new(lines).render(
                 Rect::new(
-                    inner.x,
+                    inner.x.saturating_add(TREE_LEAD_INSET),
                     inner.y + TREE_TOP_OFFSET,
-                    inner.width,
+                    inner.width.saturating_sub(TREE_LEAD_INSET),
                     inner.height.saturating_sub(TREE_TOP_OFFSET + 1),
                 ),
                 buf,
@@ -2304,7 +2308,7 @@ mod tests {
     }
 
     #[test]
-    fn search_is_framed_with_tree_immediately_below() {
+    fn search_is_framed_with_tree_below_a_resting_row() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 30, 14);
         let buf = render_widget(&mut explorer, area, true);
