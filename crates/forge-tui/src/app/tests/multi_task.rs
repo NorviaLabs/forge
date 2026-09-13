@@ -700,6 +700,55 @@ async fn supervised_primary_has_no_direct_runtime_and_runs_one_turn() {
         .unwrap();
 }
 
+/// Regression: the operator's own message must reach the conversation when
+/// the turn starts, not when the answer lands. The actor appended the prompt
+/// to its session but published no snapshot until the turn's closing refresh,
+/// so the reply streamed in below a blank where the question should have been.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_operator_message_shows_before_the_answer_lands() {
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let model: Arc<dyn forge_model::ModelClient> = Arc::new(GateModel::new(vec![(
+        "hold open".to_string(),
+        gate.clone(),
+    )]));
+    let (_dir, mut app, handle) = app_with_supervisor_and_model(model).await;
+    let session_id = app.selected_session_id;
+
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("hold open".to_string());
+    app.submit_composer_message().await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    // The gate holds the model, so anything on screen now is the operator's
+    // own line. Publish it when the session records it, not a turn later.
+    wait_for_user_messages(&mut app, session_id, 1).await;
+    assert_eq!(
+        app.selected_snapshot()
+            .map(|snapshot| snapshot.task.turn_state),
+        Some(forge_session::SupervisorTurnState::Running),
+        "the answer landed before the model was released"
+    );
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(
+        rendered.contains("hold open"),
+        "conversation dropped the operator's message: {rendered}"
+    );
+    assert!(
+        app.selected_snapshot().is_some_and(|snapshot| snapshot
+            .transcript
+            .messages()
+            .iter()
+            .all(|message| message.role != forge_types::MessageRole::Assistant)),
+        "no answer should exist while the model is still gated"
+    );
+
+    gate.notify_one();
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
     let (_dir, mut app) = focus_test_app().await;
