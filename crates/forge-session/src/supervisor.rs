@@ -2182,7 +2182,14 @@ async fn run_one_inner(
             .append_user_message_with_attachments(text, prompt_attachments.unwrap_or_default())
             .await
         {
-            Ok(()) => session.run_agent_turns_in_scope(Some(stream_sender)).await,
+            Ok(()) => {
+                // The operator's line is part of the transcript, so publish it
+                // as soon as the session records it. Waiting for the turn's
+                // closing refresh streams the answer in under a conversation
+                // that never appears to have asked the question.
+                refresh_actor(&state, &task_actor, &session).await?;
+                session.run_agent_turns_in_scope(Some(stream_sender)).await
+            }
             Err(error) => Err(error),
         },
         None => session.run_agent_turns_in_scope(Some(stream_sender)).await,
