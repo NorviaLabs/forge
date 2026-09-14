@@ -531,8 +531,15 @@ impl TuiApp {
     }
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
-        let text = self.toast.show(FeedbackSeverity::Ok, text);
-        self.set_feedback(FeedbackSeverity::Ok, text);
+        self.push_toast_with(FeedbackSeverity::Ok, text);
+    }
+
+    /// Toast with an explicit severity. `push_toast` hardcodes `Ok`, which
+    /// would render a warning as a success notice and, because it also writes
+    /// the feedback strip, would overwrite the severity the caller set there.
+    pub(super) fn push_toast_with(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
+        let text = self.toast.show(severity, text);
+        self.set_feedback(severity, text);
     }
 
     pub(super) fn tick_toast(&mut self) {

@@ -105,6 +105,13 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
         .await
         .unwrap();
 
+    // The confirmation names the agent rather than its row id.
+    assert!(
+        app.feedback.text.contains("risky-runner"),
+        "approval feedback must name the task: {:?}",
+        app.feedback.text
+    );
+
     wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
     let task = app.session_runtime.background().get(id).unwrap();
     match &task.status {
@@ -113,6 +120,69 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
         }
         other => panic!("expected Succeeded, got {other:?}"),
     }
+}
+
+/// A subagent that stops for approval has to say so, and say who it is. Before
+/// this, a block changed nothing the operator could read: the footer chip's
+/// `· 1 need` was the only evidence, and that does not name the asker.
+#[tokio::test]
+async fn a_subagent_stopping_for_approval_names_itself() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path()).await;
+    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "".into(),
+        tool_calls: vec![forge_types::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "echo risky"}),
+        }],
+        usage: None,
+        thinking: None,
+    }]));
+    let session = session_for_workspace_with_model(dir.path(), model).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.session_runtime
+        .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
+
+    let id = app
+        .session_runtime
+        .spawn_subagent(forge_core::SubagentSpec {
+            role: "risky-runner".into(),
+            prompt: "run the risky command".into(),
+            tool_allowlist: None,
+        })
+        .await
+        .unwrap();
+    wait_for_task_status(&mut app, id, |s| {
+        matches!(
+            s,
+            forge_core::BackgroundTaskStatus::WaitingForApproval { .. }
+        )
+    })
+    .await;
+
+    assert!(
+        app.feedback.text.contains("risky-runner"),
+        "the block must name the agent that is asking: {:?}",
+        app.feedback.text
+    );
+    assert!(
+        app.feedback.text.contains("bash"),
+        "and say what it wants to run: {:?}",
+        app.feedback.text
+    );
+    assert_eq!(app.feedback.severity, FeedbackSeverity::Warn);
 }
 
 #[tokio::test]
