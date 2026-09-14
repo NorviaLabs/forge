@@ -451,9 +451,20 @@ fn maybe_emit_tool_call_start(
 /// Append Chat Completions string deltas; replace only already-parsed snapshots.
 /// A string fragment can be a complete nested object (or `{}` inside a string),
 /// so parsing it in isolation cannot distinguish a snapshot from a delta.
+/// But a fragment arriving after the accumulator already holds a *complete*
+/// document cannot continue it — concatenated JSON documents never parse —
+/// so it starts a new snapshot instead (a proxy may emit `arguments: {}` as a
+/// parsed object before the real string deltas; gluing them yields
+/// `{}{"command":...}` and fails every tool-calling turn).
 fn accumulate_tool_arguments(acc: &mut String, fragment: &Value) {
     match fragment {
-        Value::String(s) => acc.push_str(s),
+        Value::String(s) => {
+            if !s.trim().is_empty() && serde_json::from_str::<Value>(acc).is_ok() {
+                *acc = s.clone();
+            } else {
+                acc.push_str(s);
+            }
+        }
         Value::Object(_) | Value::Array(_) => {
             // Non-delta providers may emit already-parsed argument objects.
             *acc = fragment.to_string();
@@ -937,6 +948,47 @@ mod tests {
                 assert_eq!(response.text, "hello");
             }
         }
+    }
+
+    /// A proxy may open a tool call with already-parsed object `arguments`
+    /// (commonly `{}`) and follow with ordinary string deltas. The snapshot
+    /// must not glue onto the deltas: `{}` + `{"command":"ls"}` finalizes as
+    /// "trailing characters at line 1 column 3" and fails every tool-calling
+    /// turn. The later snapshot wins; the deltas then accumulate onto it.
+    #[tokio::test]
+    async fn opencode_tool_call_survives_object_snapshot_then_string_deltas() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":{}}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let Some((base_url, _)) = serve_once("200 OK", "text/event-stream", body).await else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[
+            ("OPENCODE_API_BASE".into(), base_url),
+            ("OPENCODE_API_KEY".into(), "test-key".into()),
+        ]);
+        let response = client
+            .complete(request("opencode-go/deepseek-test"))
+            .await
+            .unwrap();
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].arguments["command"], "ls");
+    }
+
+    #[test]
+    fn string_snapshot_after_object_snapshot_replaces_instead_of_concat() {
+        // Split deltas after the snapshot must still append to each other.
+        let mut acc = String::new();
+        accumulate_tool_arguments(&mut acc, &json!({}));
+        accumulate_tool_arguments(&mut acc, &json!("{\"command\":\""));
+        accumulate_tool_arguments(&mut acc, &json!("ls\"}"));
+        let parsed: Value = serde_json::from_str(&acc).unwrap();
+        assert_eq!(parsed["command"], "ls");
     }
 
     #[tokio::test]
