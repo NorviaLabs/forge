@@ -267,6 +267,59 @@ fn default_theme_id() -> String {
     DEFAULT_THEME_ID.to_string()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyMode {
+    /// Desktop notification where the terminal is known to render one, and
+    /// silence everywhere else.
+    ///
+    /// `auto` cannot probe the terminal — no escape sequence reports whether
+    /// an OSC 9 notification was understood — so it matches the terminal's
+    /// identity against a known-good list instead. The default is deliberately
+    /// silent rather than falling back to the bell: an unexpected audible bell
+    /// is worse than no notification.
+    #[default]
+    Auto,
+    /// Ring the terminal bell. Works everywhere, says nothing.
+    Bell,
+    /// Desktop notification regardless of the terminal.
+    Osc9,
+    /// Both channels, for multiplexers and SSH where one may be swallowed.
+    Both,
+    /// Never notify.
+    Off,
+}
+
+impl NotifyMode {
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "bell" => Ok(Self::Bell),
+            "osc9" => Ok(Self::Osc9),
+            "both" => Ok(Self::Both),
+            "off" => Ok(Self::Off),
+            other => Err(ConfigError::Message(format!(
+                "invalid notify `{other}` (expected auto | bell | osc9 | both | off)"
+            ))),
+        }
+    }
+
+    /// Whether this mode rings the bell.
+    pub fn bell(self) -> bool {
+        matches!(self, Self::Bell | Self::Both)
+    }
+
+    /// Whether this mode asks for a desktop notification, before the terminal
+    /// is considered.
+    pub fn desktop(self) -> bool {
+        matches!(self, Self::Osc9 | Self::Both)
+    }
+
+    pub fn is_off(self) -> bool {
+        matches!(self, Self::Off)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
     #[serde(default)]
@@ -278,6 +331,10 @@ pub struct TuiConfig {
     /// is not a committed theme.
     #[serde(default)]
     pub theme_committed: bool,
+    /// Out-of-band notification for background work that blocks or finishes
+    /// while the terminal is unfocused.
+    #[serde(default)]
+    pub notify: NotifyMode,
 }
 
 impl Default for TuiConfig {
@@ -286,6 +343,7 @@ impl Default for TuiConfig {
             file_icons: FileIconMode::Unicode,
             theme: default_theme_id(),
             theme_committed: false,
+            notify: NotifyMode::default(),
         }
     }
 }
@@ -302,6 +360,7 @@ struct TuiConfigFile {
     file_icons: Option<String>,
     theme: Option<String>,
     theme_committed: Option<bool>,
+    notify: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -767,6 +826,13 @@ impl ConfigFile {
             if let Some(file_icons) = tui.file_icons {
                 if let Ok(mode) = FileIconMode::parse(&file_icons) {
                     cfg.tui.file_icons = mode;
+                }
+            }
+            // Like `file_icons`, an unparseable value is ignored rather than
+            // fatal: a typo in the theme should not stop the TUI from starting.
+            if let Some(notify) = tui.notify {
+                if let Ok(mode) = NotifyMode::parse(&notify) {
+                    cfg.tui.notify = mode;
                 }
             }
             if let Some(theme) = tui.theme {
@@ -1665,6 +1731,7 @@ max_query_chars = 0
                 file_icons: Some("off".into()),
                 theme: Some("system".into()),
                 theme_committed: Some(true),
+                notify: Some("both".into()),
             }),
             ..Default::default()
         };
@@ -1672,6 +1739,7 @@ max_query_chars = 0
         assert_eq!(cfg.tui.file_icons, FileIconMode::Off);
         assert_eq!(cfg.tui.theme, THEME_SYSTEM);
         assert!(cfg.tui.theme_committed);
+        assert_eq!(cfg.tui.notify, NotifyMode::Both);
     }
 
     /// An invalid `file_icons` / `theme` string in the file is silently
@@ -1684,12 +1752,18 @@ max_query_chars = 0
                 file_icons: Some("bogus".into()),
                 theme: Some("bogus".into()),
                 theme_committed: None,
+                notify: Some("bogus".into()),
             }),
             ..Default::default()
         };
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.tui.file_icons, FileIconMode::Unicode);
         assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
+        assert_eq!(
+            cfg.tui.notify,
+            NotifyMode::Auto,
+            "a bad notify value must not stop the TUI from starting"
+        );
     }
 
     /// A `[validation]` section in the file replaces the whole

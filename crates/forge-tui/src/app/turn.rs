@@ -42,6 +42,18 @@ fn background_task_name(label: &str, id: forge_types::BackgroundTaskId) -> Strin
     }
 }
 
+/// A one-word outcome for a notification body. The notification says what
+/// happened, not just that something did.
+fn terminal_outcome(status: &forge_core::BackgroundTaskStatus) -> &'static str {
+    use forge_core::BackgroundTaskStatus;
+    match status {
+        BackgroundTaskStatus::Succeeded { .. } => "finished",
+        BackgroundTaskStatus::Failed { .. } => "failed",
+        BackgroundTaskStatus::Cancelled => "was cancelled",
+        _ => "stopped",
+    }
+}
+
 /// The closing summary for an actor-owned (supervised) turn, computed from the
 /// TUI's own per-turn counters plus the snapshot's cumulative usage less the
 /// count taken when the turn began. `None` until a turn clock is running.
@@ -648,10 +660,17 @@ impl TuiApp {
         for id in running_before {
             if let Some(task) = self.session_runtime.background().get(id) {
                 if task.status.is_terminal() {
-                    self.push_toast(format!(
-                        "background task #{} finished: {}",
-                        id.0, task.label
+                    let text = format!("background task #{} finished: {}", id.0, task.label);
+                    // Out of band only when the operator is away; the toast
+                    // below still fires either way, because the terminal
+                    // notification and the in-app notice answer different
+                    // questions.
+                    crate::notify::notify(&format!(
+                        "{} {}",
+                        background_task_name(&task.label, id),
+                        terminal_outcome(&task.status)
                     ));
+                    self.push_toast(text);
                 }
             }
         }
@@ -665,6 +684,7 @@ impl TuiApp {
                         background_task_name(&task.label, id),
                         payload.tool
                     );
+                    crate::notify::notify(&text);
                     self.push_toast_with(FeedbackSeverity::Warn, text);
                 }
             }

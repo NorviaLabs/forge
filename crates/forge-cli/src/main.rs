@@ -371,6 +371,7 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
                 .is_some()
                 && forge_connect::has_connected_profile()
         });
+    forge_tui::notify::install(cfg.tui.notify);
     let runtime = TuiRuntimeConfig {
         model_label: last
             .as_ref()
