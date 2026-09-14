@@ -916,13 +916,19 @@ impl TuiApp {
                 modal_open,
             );
             // One frame for the transcript, with the scrollbar in its padding.
-            // The frame stays L1 neutral; focus is the `> Chat` title marker
-            // plus the accent scrollbar thumb (see `render_conversation_scrollbar`).
+            // The frame stays L1 neutral; the title always names the block in
+            // the shared pane grammar (`> Chat` focused, neutral `  Chat`
+            // otherwise) plus the accent scrollbar thumb (see
+            // `render_conversation_scrollbar`).
             let sidebar_block = Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(theme::panel_border())
-                .title(if sidebar_focused { "> Chat" } else { "" })
+                .title(crate::widgets::panel::title(
+                    self.focus.block() == FocusBlock::Sidebar,
+                    modal_open,
+                    "Chat",
+                ))
                 .padding(ratatui::widgets::Padding::horizontal(
                     crate::design::PANE_PAD_X,
                 ))

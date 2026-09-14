@@ -525,8 +525,11 @@ The active block must use at least two signals from the L3 set:
 - explicit state marker where relevant (`> Terminal`, `> Chat`)
 - caret, scrollbar thumb, or the active tab's ground at the point of interaction
 
-The transcript has one rounded L1 frame. Focus adds the `> Chat` title marker
-(never an accent border), including when the transcript has no overflow. Its
+The transcript has one rounded L1 frame that always carries its block title
+in the shared pane grammar (`theme::pane_title`, same as the panel and diff
+header): `> Chat` in bold accent while the Sidebar block owns the keyboard,
+neutral two-space `  Chat` otherwise (never an accent border), including
+when the transcript has no overflow. Its
 scrollbar also takes a solid accent thumb while the Sidebar block owns the
 keyboard, a muted half-block otherwise. Modals suppress background focus.
 
@@ -683,6 +686,7 @@ the single plan surface.
 - Code remains the visual focus; syntax highlighting is restrained (`syntax.*` palette).
 - One blank row separates the pane title from the content, so the header reads as chrome rather than the first source line.
 - The title shows the exact file with an ASCII `*` unsaved marker that is never elided; there is no trailing "modified" word.
+- The header row follows the shared pane-title grammar (`theme::pane_title`): `>` marker in brand bold when the Workspace block owns the keyboard, neutral otherwise — the same treatment as the diff header and the transcript frame.
 - The NORMAL / INSERT mode row shares the composer's text inset so both baselines align.
 - Search matches rank: active match, other matches, current line.
 - Markdown (`.md` / `.markdown`) opens in a read-only rendered `PREVIEW` mode; `:preview` toggles between the rendered document and the editable source, which keeps any unsaved buffer. Other files are unaffected.

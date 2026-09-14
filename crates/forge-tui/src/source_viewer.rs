@@ -1183,6 +1183,13 @@ impl Widget for SourceViewerWidget<'_> {
 }
 
 impl SourceViewerWidget<'_> {
+    /// Header row in the shared pane-title grammar (`>` when this pane owns
+    /// the keyboard, two-space neutral otherwise) so File, editor and Preview
+    /// headers can never disagree about focus.
+    fn render_header(&self, area: Rect, buf: &mut Buffer, header: &str) {
+        Paragraph::new(theme::pane_title(self.focused, header)).render(area, buf);
+    }
+
     fn render_message(&self, area: Rect, buf: &mut Buffer, heading: &str, body: &str) {
         let lines: Vec<Line> = std::iter::once(Line::styled(heading, theme::heading()))
             .chain(body.lines().map(Line::raw))
@@ -1233,7 +1240,7 @@ impl SourceViewerWidget<'_> {
             },
             rows[0].width as usize,
         );
-        Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
+        self.render_header(rows[0], buf, &header);
 
         // Air pass: one blank row between the pane title and the content, so
         // the header reads as chrome rather than the first source line.
@@ -1377,7 +1384,7 @@ impl SourceViewerWidget<'_> {
             },
             rows[0].width as usize,
         );
-        Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
+        self.render_header(rows[0], buf, &header);
 
         // Air pass: keep the editor body aligned with the read-only viewer.
         let body = rows[1];
@@ -1484,7 +1491,7 @@ impl SourceViewerWidget<'_> {
             },
             rows[0].width as usize,
         );
-        Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
+        self.render_header(rows[0], buf, &header);
 
         let count = self.viewer.preview_lines.len();
         let start = self.viewer.preview_top.min(count.saturating_sub(1));
@@ -2635,6 +2642,41 @@ mod tests {
 
         viewer.enter_normal_mode();
         assert!(render_viewer(&mut viewer).contains("NORMAL"));
+    }
+
+    #[test]
+    fn header_carries_the_shared_focus_marker() {
+        let mut viewer = SourceViewer::new();
+        viewer.status = ViewerStatus::Ok;
+        viewer.rel_path = "src/lib.rs".into();
+        viewer.lines = vec!["fn main() {}".into()];
+        let area = Rect::new(0, 0, 80, 16);
+        let render = |viewer: &mut SourceViewer, focused: bool| {
+            let mut buf = Buffer::empty(area);
+            SourceViewerWidget {
+                viewer,
+                focused,
+                editor: None,
+                editor_command: None,
+                editor_message: None,
+            }
+            .render(area, &mut buf);
+            buffer_text(&buf, area)
+        };
+        let focused = render(&mut viewer, true);
+        assert!(
+            focused.lines().any(|line| line.contains("> NORMAL")),
+            "focused header must carry the marker:\n{focused}"
+        );
+        let idle = render(&mut viewer, false);
+        assert!(
+            idle.lines().any(|line| line.contains("  NORMAL")),
+            "idle header stays named but neutral:\n{idle}"
+        );
+        assert!(
+            !idle.contains("> NORMAL"),
+            "idle header must not carry the marker:\n{idle}"
+        );
     }
 
     #[test]
