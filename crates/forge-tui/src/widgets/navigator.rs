@@ -83,10 +83,10 @@ impl Widget for NavigatorTabs {
             let hovered = !is_active && self.hover == Some(tab);
             // The tab strip is the navigator panel's own top edge, not a small
             // box inside it: one neutral frame for the active and inactive
-            // tabs alike. The active tab is told apart by a chip of ground
-            // behind its label row only — the frame never takes the fill, so
-            // the accent stays on the text instead of flowing over and under
-            // it — plus a weight step and the accent hue for terminals that
+            // tabs alike. The active tab fills its inner row edge to edge —
+            // an unmistakable full-width signal that still stays inside the
+            // frame, never flowing over or under the text — and the label
+            // keeps a weight step and the accent hue for terminals that
             // render no colour (FORGE-DESIGN §5 rule 7).
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -116,6 +116,13 @@ impl Widget for NavigatorTabs {
             if inner.width == 0 || inner.height == 0 {
                 continue;
             }
+            // Ground first, edge to edge across the inner row; the label and
+            // badge repaint their own cells on top of it.
+            if is_active {
+                fill_inner_row(buf, inner, Some(theme::accent_soft_bg()));
+            } else if hovered {
+                fill_inner_row(buf, inner, theme::surface_hover().bg);
+            }
             let label = truncate(tab.label(), inner.width as usize);
             let label_width = label.chars().count() as u16;
             // Centred in the tab box, not in the space a badge would leave:
@@ -134,7 +141,12 @@ impl Widget for NavigatorTabs {
                 // Dropped rather than crowding the label when the tab cannot
                 // hold both.
                 if badge_width <= inner.width && badge_x > label_x + label_width {
-                    buf.set_string(badge_x, inner.y, &badge, theme::warn());
+                    buf.set_string(
+                        badge_x,
+                        inner.y,
+                        &badge,
+                        theme::warn().bg(theme::accent_soft_bg()),
+                    );
                 }
             }
         }
@@ -338,6 +350,17 @@ fn fill_selection(buf: &mut Buffer, x: u16, y: u16, width: u16) {
     }
 }
 
+/// Paint the tab's inner row edge to edge. The frame rows above and below
+/// keep the panel ground; only this row carries the tab's signal.
+fn fill_inner_row(buf: &mut Buffer, inner: Rect, bg: Option<ratatui::style::Color>) {
+    let Some(bg) = bg else {
+        return;
+    };
+    for col in inner.x..inner.right() {
+        buf[(col, inner.y)].set_bg(bg);
+    }
+}
+
 fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();
@@ -443,12 +466,12 @@ mod tests {
         );
     }
 
-    /// Selection is carried by a chip of ground behind the label row, not by
-    /// an underline and not by a reserved `>` cell: the label takes the
-    /// accent at bold weight on the soft ground, while the tab frame stays
-    /// neutral — the accent never flows over or under the text.
+    /// Selection is a full-width chip: the active tab's inner row carries the
+    /// soft ground edge to edge, so the active tab is unmistakable, while the
+    /// frame rows above and below stay neutral — no underline, no reserved
+    /// `>` cell, and the label stays centred in every state.
     #[test]
-    fn the_active_tab_marks_only_its_label_row() {
+    fn the_active_tab_fills_its_inner_row_edge_to_edge() {
         let buffer = render_tabs(40, NavigatorTab::Files, 0, None);
         let accent = theme::accent_color();
         let soft = theme::accent_soft_bg();
@@ -466,13 +489,20 @@ mod tests {
             "the active tab must not be underlined"
         );
 
-        // The chip ends where the label ends: the frame and the tab's empty
-        // cells keep the panel ground.
+        // The chip fits the tab completely: every inner cell of the row —
+        // padding included — carries the ground.
         assert_eq!(
             buffer[(35, 1)].style().bg,
-            theme::panel().bg,
-            "active tab ground leaks past the label"
+            Some(soft),
+            "active tab ground stops short of the tab edge"
         );
+        assert_eq!(
+            buffer[(12, 1)].style().bg,
+            Some(soft),
+            "active tab ground stops short of the tab edge"
+        );
+
+        // ...and nothing beyond the row: both border rows stay neutral.
         assert_eq!(
             buffer[(files, 0)].style().bg,
             theme::panel().bg,
@@ -559,6 +589,13 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::BOLD),
             "hovered tab lost its weight step"
+        );
+        // Hover fills the tab's inner row edge to edge, matching the active
+        // chip: the padding cell past the label carries it too.
+        assert_eq!(
+            hovered[(10, 1)].style().bg,
+            hover_bg,
+            "hovered tab ground stops short of the tab edge"
         );
         // Hover is ground and weight only: the centred label keeps its column.
         let label_x = |buffer: &ratatui::buffer::Buffer| {
