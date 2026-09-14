@@ -123,7 +123,11 @@ impl Widget for NavigatorTabs {
             // them on different axes.
             let label_x = inner.x + inner.width.saturating_sub(label_width) / 2;
             buf.set_string(label_x, inner.y, &label, label_style);
-            if index == 1 && self.needs_you > 0 {
+            if index == 1 && self.tab == NavigatorTab::Files && self.needs_you > 0 {
+                // The Sessions tab (12 wide, 8-cell label) cannot hold a
+                // badge beside its label, so the wide Files tab hosts it —
+                // shown only while viewing Files, when the session list's
+                // own need states are out of sight.
                 let badge = format!("{} need", self.needs_you);
                 let badge_width = badge.chars().count() as u16;
                 let badge_x = inner.right().saturating_sub(badge_width);
@@ -136,6 +140,7 @@ impl Widget for NavigatorTabs {
         }
         if area.height >= 3 && area.width > SESSIONS_TAB_WIDTH {
             buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y)].set_symbol("┬");
+            buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y + area.height - 1)].set_symbol("┴");
         }
     }
 }
@@ -398,7 +403,7 @@ mod tests {
 
     #[test]
     fn tabs_show_both_names_and_the_needs_you_count() {
-        let buffer = render_tabs(40, NavigatorTab::Sessions, 2, None);
+        let buffer = render_tabs(40, NavigatorTab::Files, 2, None);
         let text: String = buffer
             .content()
             .iter()
@@ -407,6 +412,35 @@ mod tests {
         assert!(text.contains("Sessions"), "{text:?}");
         assert!(text.contains("Files"), "{text:?}");
         assert!(text.contains("2 need"), "{text:?}");
+    }
+
+    #[test]
+    fn the_badge_hides_while_viewing_sessions() {
+        // The list already carries the need states; a badge on top would
+        // pull the eye to the inactive tab.
+        let buffer = render_tabs(40, NavigatorTab::Sessions, 2, None);
+        let text: String = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(text.contains("Sessions"), "{text:?}");
+        assert!(!text.contains("2 need"), "{text:?}");
+    }
+
+    #[test]
+    fn the_shared_edge_takes_tee_joints_top_and_bottom() {
+        let buffer = render_tabs(40, NavigatorTab::Sessions, 0, None);
+        assert_eq!(
+            buffer[(SESSIONS_TAB_WIDTH - 1, 0)].symbol(),
+            "┬",
+            "top joint must join the two tab frames"
+        );
+        assert_eq!(
+            buffer[(SESSIONS_TAB_WIDTH - 1, 2)].symbol(),
+            "┴",
+            "bottom joint must join the two tab frames"
+        );
     }
 
     /// Selection is carried by the ground, not by an underline and not by a
