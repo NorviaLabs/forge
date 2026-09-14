@@ -168,6 +168,11 @@ For OAuth providers, use `/connect` inside Forge. For Ollama, start the local
 Ollama service first, then choose the Ollama route and a locally available
 model.
 
+On Chat Completions routes (including OpenCode Go's DeepSeek models), a
+provider output limit or a stream that ends without a completion signal is
+reported as an incomplete-turn error rather than a successful answer. Use
+Continue to resume the task; tools from the incomplete response are not executed.
+
 Useful in-app commands:
 
 ```text
