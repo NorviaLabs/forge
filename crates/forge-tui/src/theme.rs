@@ -1446,6 +1446,30 @@ mod tests {
         }
     }
 
+    /// The active navigator tab is told apart by its ground and nothing else:
+    /// the underline and the reserved `>` marker are gone, so `accent_soft`
+    /// has to stay clear of both the inactive tab's `surface` and a hovered
+    /// tab's `surface_hover` in every theme. A theme that collapses them
+    /// leaves the active tab indistinguishable from an idle or hovered one.
+    #[test]
+    fn navigator_tab_grounds_stay_apart_in_every_theme() {
+        for theme in ThemeRegistry::builtin().themes() {
+            let palette = &theme.palette;
+            for (role, colour) in [
+                ("the inactive tab's surface", palette.surface),
+                ("a hovered tab's surface_hover", palette.surface_hover),
+            ] {
+                assert!(
+                    separable_from_accent(palette.accent_soft, colour),
+                    "{} accent_soft {} is indistinguishable from {role} {colour}: the active \
+                     navigator tab would read as idle or hovered",
+                    theme.id,
+                    palette.accent_soft
+                );
+            }
+        }
+    }
+
     // WCAG AA (4.5:1, normal text) contrast checks. These pin down the
     // actual rendered backgrounds each role appears on (canvas/panel/
     // panel_alt for the general case, plus SELECTED_BG for tag/selection_fg)

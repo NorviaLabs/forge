@@ -382,8 +382,6 @@ impl TuiApp {
                 frame.render_widget(
                     crate::widgets::NavigatorTabs {
                         tab: navigator_tab,
-                        focused: navigator_focused
-                            || (self.focus.block() == FocusBlock::Files && !modal_open),
                         needs_you,
                         hover: self.hover_navigator_tab,
                     },
