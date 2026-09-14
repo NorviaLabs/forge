@@ -839,9 +839,9 @@ dependencies = [
 
 [[package]]
 name = "dirs"
-version = "6.0.0"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
  "dirs-sys 0.5.0",
 ]
@@ -986,7 +986,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1234,7 +1234,7 @@ dependencies = [
 name = "forge-config"
 version = "0.1.0-beta.10"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "forge-types",
  "serde",
  "tempfile",
@@ -1247,7 +1247,7 @@ name = "forge-connect"
 version = "0.1.0-beta.10"
 dependencies = [
  "base64 0.23.1",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "forge-test-support",
  "serde",
  "serde_json",
@@ -1261,7 +1261,7 @@ dependencies = [
 name = "forge-context"
 version = "0.1.0-beta.10"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "forge-storage",
  "forge-types",
  "hex",
@@ -1400,7 +1400,7 @@ dependencies = [
 name = "forge-storage"
 version = "0.1.0-beta.10"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "forge-test-support",
  "tempfile",
  "thiserror 2.0.20",
@@ -1471,7 +1471,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "crossterm",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "edtui",
  "forge-config",
  "forge-connect",
@@ -1517,7 +1517,7 @@ dependencies = [
 name = "forge-workspace"
 version = "0.1.0-beta.10"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -2273,9 +2273,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.53.0"
+version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca2ea2207f8ccb34b6d4d041fe9deb08fff3cbc43750012caa2c3d1e860188e4"
+checksum = "b6a806f80c1f5560431009ce5ec29b59d38f950e0cd7db5f1b8925e6d8104e21"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2304,18 +2304,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.53.0"
+version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5426a01d944d044c9c5e459f603419d1b539358f5496b1041df45a7a86d2d38f"
+checksum = "cb862addfa7782108933abcf842fe25334523a9df5b89ea4d9620e3dd7b42181"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.53.0"
+version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65b6ec7deaeaab6320efc3084d8a9e91d5b4985ee36ffffef45dbff9516ff7a8"
+checksum = "a05cd404c5ff6e2731dbbf7e290a27417750acfb59e329560a1d0af384c93fb0"
 dependencies = [
  "ahash",
  "bytecount",
@@ -3186,7 +3186,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3424,9 +3424,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.53.0"
+version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb406ba984c08d1b91781d7507d103296cf6dec3256c33c388b468957f4b43bb"
+checksum = "a3b4a92fac7e28c27de3ad26df2ecb9e652f227b258e845af034052e5b22c96c"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -3587,7 +3587,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3646,7 +3646,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4344,7 +4344,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5372,7 +5372,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
