@@ -110,6 +110,8 @@ pub(super) async fn complete(
     let mut thinking = String::new();
     let mut tool_calls = BTreeMap::new();
     let mut usage = None;
+    let mut finished = false;
+    let mut done = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
         pending.push_str(&String::from_utf8_lossy(&chunk));
@@ -117,11 +119,32 @@ pub(super) async fn complete(
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                 return Ok(());
             };
-            if data.is_empty() || data == "[DONE]" {
+            if data.is_empty() || done {
+                return Ok(());
+            }
+            if data == "[DONE]" {
+                done = true;
                 return Ok(());
             }
             let event: Value = serde_json::from_str(data)
                 .map_err(|error| ModelError::Protocol(format!("invalid SSE JSON: {error}")))?;
+            if let Some(error) = event.get("error").filter(|error| !error.is_null()) {
+                return Err(ModelError::Provider(error.to_string()));
+            }
+            if let Some(reason) = event
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+            {
+                match reason {
+                    "stop" | "tool_calls" => finished = true,
+                    "length" => return Err(ModelError::Provider(
+                        "Response was cut off at the provider's output limit; the turn is incomplete. Continue to resume the task.".into(),
+                    )),
+                    other => return Err(ModelError::Provider(format!(
+                        "Response ended with finish_reason `{other}`; the turn is incomplete."
+                    ))),
+                }
+            }
             consume_event(
                 &event,
                 &mut text,
@@ -132,8 +155,18 @@ pub(super) async fn complete(
             );
             Ok(())
         })?;
+        if done {
+            break;
+        }
     }
 
+    // Some compatible providers send only [DONE], others a finish reason.
+    // Neither ordinary text nor valid tool JSON proves generation finished.
+    if !done && (!finished || !pending.trim().is_empty()) {
+        return Err(ModelError::Transport(
+            "Response stream ended before completion; the turn is incomplete. Continue to resume the task.".into(),
+        ));
+    }
     let tool_calls = finalize_tool_calls(tool_calls)?;
     if let Some(tx) = tx {
         for call in &tool_calls {
@@ -816,6 +849,94 @@ mod tests {
             !raw_request.contains("cache_control"),
             "OpenAI-compat must not send cache_control: {raw_request}"
         );
+    }
+
+    #[tokio::test]
+    async fn opencode_rejects_incomplete_streams_without_committing_tools() {
+        let partial = "data: {\"choices\":[{\"delta\":{\"content\":\"I will now\"}}]}\n\n";
+        // Even syntactically complete tool arguments cannot be executed until
+        // the provider confirms completion of the response.
+        let tool = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]}}]}\n\n";
+        for (body, expected) in [
+            (partial.to_string(), "stream ended before completion"),
+            (tool.to_string(), "stream ended before completion"),
+            (
+                format!("{partial}data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"length\"}}]}}\n\ndata: [DONE]\n\n"),
+                "output limit",
+            ),
+            (
+                format!("{tool}data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"length\"}}]}}\n\ndata: [DONE]\n\n"),
+                "output limit",
+            ),
+            (
+                format!("{partial}data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"content_filter\"}}]}}\n\ndata: [DONE]\n\n"),
+                "content_filter",
+            ),
+            (
+                format!("{partial}data: {{\"error\":{{\"message\":\"upstream failed\"}}}}\n\ndata: [DONE]\n\n"),
+                "upstream failed",
+            ),
+            (
+                format!("{partial}data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}"),
+                "stream ended before completion",
+            ),
+        ] {
+            let Some((base_url, _)) = serve_once("200 OK", "text/event-stream", &body).await else {
+                eprintln!("skipping: this host denies binding a mock listener");
+                return;
+            };
+            let client = NativeModelClient::from_config(&Config::default()).unwrap();
+            client.apply_provider_env(&[
+                ("OPENCODE_API_BASE".into(), base_url),
+                ("OPENCODE_API_KEY".into(), "test-key".into()),
+            ]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let error = client
+                .complete_with_stream(request("opencode-go/deepseek-test"), Some(tx))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(!rx.try_iter().any(|event| matches!(
+                event,
+                ModelStreamEvent::MessageEnd | ModelStreamEvent::ToolCallEnd { .. }
+            )));
+        }
+    }
+
+    #[tokio::test]
+    async fn opencode_accepts_finish_reason_and_preserves_trailing_usage() {
+        for reason in ["stop", "tool_calls"] {
+            let delta = if reason == "tool_calls" {
+                json!({"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]})
+            } else {
+                json!({"content":"hello"})
+            };
+            let body = format!(
+                "data: {}\n\ndata: {}\n\ndata: {}\n\n",
+                json!({"choices":[{"delta":delta}]}),
+                json!({"choices":[{"delta":{},"finish_reason":reason}]}),
+                json!({"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}),
+            );
+            let Some((base_url, _)) = serve_once("200 OK", "text/event-stream", &body).await else {
+                eprintln!("skipping: this host denies binding a mock listener");
+                return;
+            };
+            let client = NativeModelClient::from_config(&Config::default()).unwrap();
+            client.apply_provider_env(&[
+                ("OPENCODE_API_BASE".into(), base_url),
+                ("OPENCODE_API_KEY".into(), "test-key".into()),
+            ]);
+            let response = client
+                .complete(request("opencode-go/deepseek-test"))
+                .await
+                .unwrap();
+            assert_eq!(response.usage.unwrap().completion_tokens, 4);
+            if reason == "tool_calls" {
+                assert_eq!(response.tool_calls[0].arguments["command"], "ls");
+            } else {
+                assert_eq!(response.text, "hello");
+            }
+        }
     }
 
     #[tokio::test]
