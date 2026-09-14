@@ -26,7 +26,7 @@ pub struct InputModel {
 }
 
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
-const MAX_VISIBLE_ROWS: usize = 8;
+const MAX_VISIBLE_ROWS: usize = crate::design::MAX_COMPOSER_INPUT_H as usize;
 const CURSOR_GLYPH: &str = theme::CURSOR_GLYPH;
 
 #[derive(Debug, Clone)]
@@ -360,6 +360,8 @@ pub struct InputBar<'a> {
     pub focused: bool,
     /// Approval pending — show the distinct waiting border (see `InputModel.waiting`).
     pub waiting: bool,
+    /// Turn in flight — renders `esc to interrupt` right-inside the box.
+    pub running: bool,
 }
 
 fn composer_text(model: &InputModel, show_cursor: bool) -> String {
@@ -554,11 +556,11 @@ impl Widget for InputBar<'_> {
             theme::composer_text()
         };
         let text_focused = self.focused;
-        // The top edge is the composer's only stateful chrome: accent while it
-        // owns the keyboard, `waiting_border` while an approval pends, warn
-        // when there is no provider to send to. Focus alone is a hue change on
-        // a hairline — the block caret is the monochrome signal. Attention
-        // states additionally thicken the rule, because they change what the
+        // The border is the composer's stateful chrome: L3 while it owns the
+        // keyboard, `waiting_border` while an approval pends, warn when there
+        // is no provider to send to. Focus alone is a hue change on the box —
+        // the block caret is the monochrome signal. Attention states
+        // additionally thicken the top rule, because they change what the
         // input *does*, not merely where the keyboard is.
         let rule_style = if self.waiting {
             theme::waiting_border()
@@ -582,10 +584,11 @@ impl Widget for InputBar<'_> {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(theme::composer_border_idle())
+            .border_style(rule_style)
             .style(surface)
             .render(area, buf);
-        // Strong top edge carries focus even without colour; sides stay quiet.
+        // The full box carries focus; the top edge additionally thickens for
+        // attention states, which change what the input *does*.
         let rule = rule_glyph.repeat(area.width.saturating_sub(2) as usize);
         if area.width >= 2 {
             buf.set_string(area.x + 1, area.y, &rule, rule_style);
@@ -636,6 +639,21 @@ impl Widget for InputBar<'_> {
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
             .render(text_area, buf);
+        if self.running {
+            // While a turn runs, Esc interrupts it — said inside the box,
+            // bottom-right, where the eye already is. Drops (rather than
+            // wraps or overwrites text) when the last row has no room.
+            let hint = crate::widgets::turn_line::INTERRUPT_HINT;
+            let hint_w = hint.chars().count() as u16;
+            if text_area.width > hint_w + 2 && text_area.height > 0 {
+                let y = text_area.bottom().saturating_sub(1);
+                let x = text_area.right().saturating_sub(hint_w);
+                let clear = (0..hint_w).all(|dx| buf[(x + dx, y)].symbol() == " ");
+                if clear {
+                    buf.set_string(x, y, hint, theme::dim());
+                }
+            }
+        }
         if text_focused {
             // Paint the same solid block caret used by every other input.
             for y in text_area.top()..text_area.bottom() {
@@ -672,6 +690,26 @@ mod tests {
         not_connected: bool,
         attachment: Option<&str>,
     ) -> ratatui::buffer::Buffer {
+        draw_input_bar_running(
+            model,
+            width,
+            height,
+            focused,
+            not_connected,
+            attachment,
+            false,
+        )
+    }
+
+    fn draw_input_bar_running(
+        model: &InputModel,
+        width: u16,
+        height: u16,
+        focused: bool,
+        not_connected: bool,
+        attachment: Option<&str>,
+        running: bool,
+    ) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
@@ -683,6 +721,7 @@ mod tests {
                     not_connected,
                     focused,
                     waiting: model.waiting,
+                    running,
                 },
                 f.area(),
             );
@@ -1260,5 +1299,87 @@ mod tests {
         };
         let rows = render_lines(&m, 60, 5, true);
         assert!(rows.iter().any(|row| row.contains("line5")));
+    }
+
+    #[test]
+    fn composer_input_caps_at_ten_visual_lines() {
+        let m = InputModel {
+            text: (1..=15)
+                .map(|i| format!("line{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            ..Default::default()
+        };
+        assert_eq!(m.visual_lines(), crate::design::MAX_COMPOSER_INPUT_H);
+        assert_eq!(
+            m.visual_lines_for_width(60),
+            crate::design::MAX_COMPOSER_INPUT_H
+        );
+    }
+
+    #[test]
+    fn focused_composer_border_uses_the_existing_local_accent() {
+        let model = InputModel::default();
+        let idle = draw_input_bar(&model, 48, 5, false, false, None);
+        let focused = draw_input_bar(&model, 48, 5, true, false, None);
+        assert_eq!(
+            idle[(0, 2)].style().fg,
+            theme::composer_border_idle().fg,
+            "idle box stays neutral"
+        );
+        assert_eq!(
+            focused[(0, 2)].style().fg,
+            theme::active_panel_border().fg,
+            "focus is L3, no new hue"
+        );
+        assert_eq!(focused[(0, 0)].symbol(), "╭");
+    }
+
+    #[test]
+    fn running_composer_advertises_the_interrupt_inside() {
+        let mut m = InputModel::default();
+        m.set_text("hi");
+        let buf = draw_input_bar_running(&m, 40, 5, true, false, None, true);
+        let rendered: String = (0..buf.area().height)
+            .map(|y| {
+                (0..buf.area().width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains(crate::widgets::turn_line::INTERRUPT_HINT),
+            "{rendered}"
+        );
+        // Narrow box: the hint drops rather than wrapping or hiding text.
+        let tight = draw_input_bar_running(&m, 20, 5, true, false, None, true);
+        let tight_text: String = (0..tight.area().height)
+            .map(|y| {
+                (0..tight.area().width)
+                    .map(|x| tight[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !tight_text.contains(crate::widgets::turn_line::INTERRUPT_HINT),
+            "{tight_text}"
+        );
+        assert!(tight_text.contains("hi"), "{tight_text}");
+        // Idle box never advertises it.
+        let idle = draw_input_bar(&m, 40, 5, true, false, None);
+        let idle_text: String = (0..idle.area().height)
+            .map(|y| {
+                (0..idle.area().width)
+                    .map(|x| idle[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !idle_text.contains(crate::widgets::turn_line::INTERRUPT_HINT),
+            "{idle_text}"
+        );
     }
 }

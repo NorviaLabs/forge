@@ -289,7 +289,7 @@ impl StatusModel {
         Some(text)
     }
 
-    /// Top-bar identity line: `⌂ path  ·  ⎇ branch*`. Path is always
+    /// Top-bar identity line: `⌂ path  ·  ./branch*`. Path is always
     /// shown (falls back to `cwd_display` even with no git repo); branch
     /// is omitted when there isn't one.
     pub fn identity_line(&self) -> String {
@@ -321,7 +321,7 @@ impl StatusModel {
     fn identity_line_for(&self, cwd: &str) -> String {
         let mut line = format!("⌂ {cwd}");
         if let Some(branch) = self.branch.as_deref().filter(|b| !b.is_empty()) {
-            line.push_str("  ·  ⎇ ");
+            line.push_str("  ·  ./");
             line.push_str(branch);
             if self.dirty {
                 line.push('*');
@@ -474,7 +474,7 @@ impl Widget for StatusBar<'_> {
         } else {
             area
         };
-        // Centered single block: ⌂ path  ·  ⎇ branch — identity only,
+        // Centered single block: ⌂ path  ·  ./branch — identity only,
         // full window width, changes only on project/branch switch.
         let width = area.width as usize;
         let chip = self.sessions_chip.unwrap_or("");
@@ -603,7 +603,7 @@ mod tests {
         m.cwd_display = "~/Projects/forge".into();
         m.branch = Some("main".into());
         m.dirty = true;
-        assert_eq!(m.identity_line(), "⌂ ~/Projects/forge  ·  ⎇ main*");
+        assert_eq!(m.identity_line(), "⌂ ~/Projects/forge  ·  ./main*");
     }
 
     fn status_model(status: TaskLifecycle, busy: bool, busy_phase: BusyPhase) -> StatusModel {
@@ -1148,7 +1148,7 @@ mod tests {
         assert!(line.chars().count() <= 70, "{line}");
         assert!(line.contains('…'), "expected an elision: {line}");
         assert!(line.contains("lab"), "workspace name must survive: {line}");
-        assert!(line.contains("⎇ main"), "branch must survive: {line}");
+        assert!(line.contains("./main"), "branch must survive: {line}");
     }
 
     /// A long branch must not be able to squeeze the workspace out entirely.
@@ -1162,7 +1162,7 @@ mod tests {
         assert!(line.chars().count() <= 24, "{line}");
         assert!(line.contains("Projects/forge"), "{line}");
         assert!(
-            !line.contains('⎇'),
+            !line.contains("./"),
             "branch should have been dropped: {line}"
         );
     }

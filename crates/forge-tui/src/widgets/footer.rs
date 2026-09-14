@@ -51,6 +51,9 @@ pub struct FooterModel {
     pub hints: String,
     /// Blocking hints replace the entire row; footer-focus hints don't.
     pub hint_replaces_row: bool,
+    /// Session hint (task-strip bindings) sharing the row with the chips:
+    /// rendered in the `key verb` grammar with bold keys, degraded to fit.
+    pub hint_bold_keys: bool,
     /// `provider/model`, already short-formed — see [`footer_short_model_id`].
     pub llm_label: String,
     pub llm_connected: bool,
@@ -253,6 +256,65 @@ fn push_count_chip(
     spans.push(Span::styled("]", theme::border_muted()));
 }
 
+/// Render a `key verb · key verb` hint with bold keys.
+///
+/// Parses the ` · `-joined pairs the app hands over (see
+/// `TuiApp::contextual_hint`): the key is the pair's first token, bold; the
+/// rest of the pair is the verb, kept byte-identical so the text never drifts
+/// from what the key does. Degrades like [`crate::hints::hint_spans`] — verbs
+/// drop first, then trailing pairs — and never wraps; callers clip with
+/// `set_line`.
+fn styled_hint_spans(hints: &str, budget: usize) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::text::Span;
+    let pairs: Vec<(&str, &str)> = hints
+        .split(" · ")
+        .filter_map(|pair| {
+            let key = pair.split_whitespace().next()?;
+            Some((key, &pair[key.len()..]))
+        })
+        .collect();
+    fn build(pairs: &[(&str, &str)], verbs: bool) -> Vec<Span<'static>> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (key, rest) in pairs {
+            if !spans.is_empty() {
+                spans.push(Span::styled(
+                    if verbs {
+                        " · ".to_string()
+                    } else {
+                        " ".to_string()
+                    },
+                    theme::metadata_style(),
+                ));
+            }
+            spans.push(Span::styled(
+                (*key).to_string(),
+                theme::metadata_style().add_modifier(Modifier::BOLD),
+            ));
+            if verbs && !rest.trim().is_empty() {
+                spans.push(Span::styled((*rest).to_string(), theme::metadata_style()));
+            }
+        }
+        spans
+    }
+    let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
+
+    let full = build(&pairs, true);
+    if width(&full) <= budget {
+        return full;
+    }
+    let keys_only = build(&pairs, false);
+    if width(&keys_only) <= budget {
+        return keys_only;
+    }
+    for take in (1..pairs.len()).rev() {
+        let trimmed = build(&pairs[..take], false);
+        if width(&trimmed) <= budget {
+            return trimmed;
+        }
+    }
+    Vec::new()
+}
+
 impl Widget for FooterBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -282,20 +344,18 @@ impl Widget for FooterBar<'_> {
         // From here the renderer is single-row: row 0 only.
         let area = Rect::new(inner.x, inner.y, inner.width, 1);
 
-        // A blocking hint (HITL/dialog) takes over the whole row for this
-        // frame — the chips are dimmed and irrelevant then. The focused
-        // footer's per-chip hint is non-blocking: it shares the row,
-        // replacing only the right-side activity.
+        // A blocking hint (HITL/dialog/transient) takes over the whole row for
+        // this frame — the chips are dimmed and irrelevant then. The focused
+        // footer's per-chip hint and the task strip's session hint are
+        // non-blocking: they share the row, replacing only the right-side
+        // activity.
         let hints = m.hints.trim_end();
         if m.hint_replaces_row && !hints.is_empty() {
-            let hint_w = (hints.chars().count() as u16).min(area.width);
-            buf.set_stringn(
-                area.x + area.width - hint_w,
-                area.y,
-                hints,
-                hint_w as usize,
-                theme::muted(),
-            );
+            let line = ratatui::text::Line::from(styled_hint_spans(hints, area.width as usize));
+            let hint_w = (line.width() as u16).min(area.width);
+            if hint_w > 0 {
+                buf.set_line(area.x + area.width - hint_w, area.y, &line, hint_w);
+            }
             return;
         }
 
@@ -332,6 +392,10 @@ impl Widget for FooterBar<'_> {
             } else {
                 self.activity_line(false)
             }
+        } else if m.hint_bold_keys {
+            // Session hint: the chips keep full width; the hint degrades
+            // into the remainder. Built after the left below.
+            ratatui::text::Line::default()
         } else {
             // The focused footer's per-chip hint reads as a whisper: dimmed
             // and italic, clearly secondary to the chips it describes.
@@ -406,6 +470,16 @@ impl Widget for FooterBar<'_> {
 
         let left_line = ratatui::text::Line::from(left);
         let left_w = left_line.width() as u16;
+
+        // Session hint shares the row: degrade into what's left of the chips.
+        let (right, right_w) = if m.hint_bold_keys && !hints.is_empty() {
+            let budget = area.width.saturating_sub(left_w).saturating_sub(1) as usize;
+            let line = ratatui::text::Line::from(styled_hint_spans(hints, budget));
+            let w = line.width() as u16;
+            (line, w)
+        } else {
+            (right, right_w)
+        };
 
         if let Some(sink) = self.chip_sink {
             let model_x = area.x + 2;
@@ -1074,6 +1148,79 @@ mod tests {
             out[1].contains('✓') && out[1].contains("agents 2 done"),
             "{:?}",
             out[1]
+        );
+    }
+
+    #[test]
+    fn session_hint_shares_the_row_with_chips_and_bolds_keys() {
+        let mut m = model(TurnLifecycle::Ready, 0.1);
+        m.hints =
+            "↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs".into();
+        m.hint_bold_keys = true;
+        let out = rendered(&m, 120);
+        assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
+        assert!(out.contains("Medium"), "{out:?}");
+        assert!(out.contains("select"), "{out:?}");
+        assert!(out.contains("Ctrl+E tabs"), "{out:?}");
+        let area = Rect::new(0, 0, 120, 1);
+        let mut buf = Buffer::empty(area);
+        FooterBar {
+            model: &m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
+        let key_cell = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == "↑")
+            .expect("hint key should render");
+        assert!(
+            buf[(key_cell, 0)]
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "hint keys are bold"
+        );
+    }
+
+    #[test]
+    fn session_hint_degrades_before_the_chips_under_pressure() {
+        let mut m = model(TurnLifecycle::Working, 0.34);
+        m.hints =
+            "↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs".into();
+        m.hint_bold_keys = true;
+        let out = rendered(&m, 50);
+        assert!(out.contains("Medium"), "{out:?}");
+        assert!(out.contains("↑↓"), "{out:?}");
+        assert!(!out.contains("attach"), "verbs drop first: {out:?}");
+        assert!(!out.contains("Ctrl+E"), "trailing pairs drop next: {out:?}");
+    }
+
+    #[test]
+    fn blocking_hint_keeps_its_text_with_bold_keys() {
+        let mut m = model(TurnLifecycle::Ready, 0.1);
+        m.hint_replaces_row = true;
+        m.hints = "Enter confirm · Esc cancel".into();
+        let out = rendered(&m, 60);
+        assert!(
+            out.trim_end().ends_with("Enter confirm · Esc cancel"),
+            "{out:?}"
+        );
+        assert!(!out.contains("openai/gpt-5.6-luna"), "chips yield: {out:?}");
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = Buffer::empty(area);
+        FooterBar {
+            model: &m,
+            chip_sink: None,
+        }
+        .render(area, &mut buf);
+        let key_cell = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == "E")
+            .expect("hint key should render");
+        assert!(
+            buf[(key_cell, 0)]
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "hint keys are bold"
         );
     }
 
