@@ -1394,7 +1394,8 @@ pub(super) fn load_repo_header(cwd: &Path) -> RepoHeaderCache {
 }
 
 impl TuiApp {
-    /// Rows a `PageUp`/`PageDown` moves the conversation.
+    /// Rows a `PageUp`/`PageDown` — or a `Shift`+wheel — moves the
+    /// conversation.
     ///
     /// A page, not a constant. This used to be a hard-coded 5 rows, which on
     /// wrapped prose is about two sentences — paging back through a long

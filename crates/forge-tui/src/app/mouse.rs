@@ -25,8 +25,11 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// row makes scrolling feel stalled, especially in the conversation pane, so
 /// use the conventional three-row wheel increment.
 const WHEEL_NOTCH: isize = 3;
-/// Page size (rows) used for shift+wheel on the conversation and file explorer.
-/// Mirrors the keyboard `PageUp`/`PageDown` step so both inputs stay consistent.
+/// File-tree rows moved per shift+wheel.
+///
+/// The conversation's shift+wheel is a page instead — it uses the measured
+/// [`TuiApp::conversation_page_rows`], because a list selection has no page
+/// size to match.
 const WHEEL_PAGE: isize = 5;
 
 impl TuiApp {
@@ -697,9 +700,14 @@ impl TuiApp {
         }
 
         match self.focus.block() {
-            // The composer is the resting focus; the wheel over it scrolls the
-            // transcript behind it, same as PageUp/PageDown while composing.
-            FocusBlock::Composer => self.mouse_scroll_conversation(direction, shift),
+            // Composer and Sidebar are the two owners of the conversation
+            // column. The composer is its resting focus, and the wheel over it
+            // scrolls the transcript behind it; Sidebar is what a click on the
+            // transcript focuses, and §8.6 gives the focused pane's content to
+            // the wheel. Both page identically.
+            FocusBlock::Composer | FocusBlock::Sidebar => {
+                self.mouse_scroll_conversation(direction, shift);
+            }
             // Workspace is the CHAT panel; it hosts the source viewer when a
             // file is open and the conversation otherwise.
             FocusBlock::Workspace if self.current_workspace_is_file() => {
@@ -712,14 +720,23 @@ impl TuiApp {
                     .explorer
                     .move_selection(direction * step);
             }
-            // Sidebar / Approval / interactive-terminal (BottomPanel) are v1
-            // no-ops: focus-based routing has no scroll target there.
+            // Approval and interactive-terminal (BottomPanel) are deliberate
+            // no-ops: neither has a scroll target of its own. TaskStrip is one
+            // too — the session navigator moves its selection on ↑↓ and takes
+            // no wheel, unlike the file tree beside it.
             _ => {}
         }
     }
 
     fn mouse_scroll_conversation(&mut self, direction: isize, shift: bool) {
-        let amount = if shift { WHEEL_PAGE } else { WHEEL_NOTCH } as u16;
+        // Shift pages by the same amount keyboard `PageUp`/`PageDown` use in
+        // this pane. It cannot reuse the file tree's fixed `WHEEL_PAGE`: a page
+        // is measured from the drawn pane, not assumed.
+        let amount = if shift {
+            self.conversation_page_rows()
+        } else {
+            WHEEL_NOTCH as u16
+        };
         if direction < 0 {
             self.scroll_conversation_up(amount);
         } else {
