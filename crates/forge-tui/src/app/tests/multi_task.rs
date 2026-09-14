@@ -1373,6 +1373,20 @@ async fn d_archives_an_idle_managed_session() {
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling in list");
 
+    // Select the sibling so archiving it exercises the selected-session path:
+    // the navigator cursor and the prompt target must agree afterwards.
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.selected_session_id, sibling.session_id);
+
+    app.focus_block(FocusBlock::TaskStrip);
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling.session_id)
+        .expect("sibling still in list");
     app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -1412,6 +1426,29 @@ async fn d_archives_an_idle_managed_session() {
         }
     };
     assert!(removed, "the archived session should leave the navigator");
+
+    // Regression: archiving the selected session left `selected_session_id`
+    // pointed at the archived row while the navigator cursor fell back to
+    // index 0, so context and navigation disagreed.
+    let reselected = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.poll_supervisor_events();
+            let moved = app.selected_session_id != sibling.session_id
+                && app
+                    .session_chrome
+                    .iter()
+                    .any(|item| item.session_id == app.selected_session_id);
+            if moved || std::time::Instant::now() >= deadline {
+                break moved;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    assert!(
+        reselected,
+        "archiving the selected session should move selection to a live session"
+    );
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

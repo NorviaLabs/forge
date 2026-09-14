@@ -155,8 +155,15 @@ impl TuiApp {
                         .session_runtime
                         .as_ref()
                         .map(|session| session.session_id);
+                    // Archived/Removed rows stay in the roster for the switcher
+                    // filter but must not count as live selection: the navigator
+                    // hides them, so keeping them live leaves the cursor and the
+                    // prompt target pointed at different sessions.
                     let mut live_session_ids = roster
                         .iter()
+                        .filter(|snapshot| {
+                            snapshot.task.lifecycle == forge_session::SessionLifecycle::Active
+                        })
                         .map(|snapshot| snapshot.task.session_id)
                         .collect::<HashSet<_>>();
                     if let Some(session_id) = direct_session_id {
@@ -168,8 +175,12 @@ impl TuiApp {
                     let selected_removed = !live_session_ids.contains(&self.selected_session_id);
                     let fallback_session_id = if selected_removed {
                         roster
-                            .first()
+                            .iter()
+                            .filter(|snapshot| {
+                                snapshot.task.lifecycle == forge_session::SessionLifecycle::Active
+                            })
                             .map(|snapshot| snapshot.task.session_id)
+                            .next()
                             .or(direct_session_id)
                     } else {
                         None

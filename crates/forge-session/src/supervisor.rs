@@ -1348,9 +1348,27 @@ async fn execute_command(
             publish_actor(&state, session_id).await?;
             // A roster refresh lets the navigator drop the archived row instead
             // of leaving it listed with a stale state.
-            let _ = state
-                .events
-                .send(SupervisorEvent::Roster(snapshots(&state).await));
+            let roster = snapshots(&state).await;
+            let _ = state.events.send(SupervisorEvent::Roster(roster.clone()));
+            // Archiving the selected session must not leave selection (and the
+            // prompt target) pointed at an archived row the navigator hides.
+            if state.control.selected().await.ok() == Some(Some(session_id)) {
+                let fallback = roster
+                    .iter()
+                    .find(|snapshot| {
+                        snapshot.task.lifecycle == SessionLifecycle::Active
+                            && snapshot.task.session_id != session_id
+                    })
+                    .map(|snapshot| snapshot.task.session_id);
+                if let Err(error) = state.control.set_selected(fallback).await {
+                    let _ = state.events.send(SupervisorEvent::Error {
+                        session_id: Some(session_id),
+                        message: format!("archived Session could not update selection: {error}"),
+                    });
+                } else {
+                    let _ = state.events.send(SupervisorEvent::Selected(fallback));
+                }
+            }
         }
         SupervisorCommand::RenameSession { session_id, label } => {
             state.control.rename(session_id, &label).await?;
