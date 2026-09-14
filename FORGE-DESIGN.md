@@ -668,9 +668,10 @@ the single plan surface.
   above it. Search focus colours the border and prefix and shows the caret;
   clicking the field focuses Search.
 - Navigator tabs have rounded outlines sharing the list's top edge, neutral
-  whether selected or not. The selected tab is told apart by its `accent_soft`
-  ground, which fills the whole tab, and by a label at accent hue and bold
-  weight; no tab is underlined and no tab carries a marker glyph, so the
+  whether selected or not. The selected tab is told apart by a chip of
+  `accent_soft` ground behind its label row only — the frame stays neutral,
+  so the accent never flows over or under the text — and by a label at accent
+  hue and bold weight; no tab is underlined and no tab carries a marker glyph, so the
   label stays centred in its tab in every state. The tab bar shows which tab
   is active, not which block owns the keyboard.
 - Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.

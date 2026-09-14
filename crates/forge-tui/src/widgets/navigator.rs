@@ -83,18 +83,16 @@ impl Widget for NavigatorTabs {
             let hovered = !is_active && self.hover == Some(tab);
             // The tab strip is the navigator panel's own top edge, not a small
             // box inside it: one neutral frame for the active and inactive
-            // tabs alike. The active tab is told apart by its ground alone, so
-            // the label keeps a weight step and the accent hue for terminals
-            // that render no colour (FORGE-DESIGN §5 rule 7).
+            // tabs alike. The active tab is told apart by a chip of ground
+            // behind its label row only — the frame never takes the fill, so
+            // the accent stays on the text instead of flowing over and under
+            // it — plus a weight step and the accent hue for terminals that
+            // render no colour (FORGE-DESIGN §5 rule 7).
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(theme::panel_border())
-                .style(if is_active {
-                    theme::panel().bg(theme::accent_soft_bg())
-                } else {
-                    theme::panel()
-                });
+                .style(theme::panel());
             let inner = if area.height >= 3 {
                 block.inner(tab_area)
             } else {
@@ -104,7 +102,9 @@ impl Widget for NavigatorTabs {
                 block.render(tab_area, buf);
             }
             let label_style = if is_active {
-                theme::accent_style().add_modifier(Modifier::BOLD)
+                theme::accent_style()
+                    .add_modifier(Modifier::BOLD)
+                    .bg(theme::accent_soft_bg())
             } else if hovered {
                 // Ground plus weight, and the label keeps its column.
                 inactive
@@ -443,11 +443,12 @@ mod tests {
         );
     }
 
-    /// Selection is carried by the ground, not by an underline and not by a
-    /// reserved `>` cell: the label takes the accent at bold weight, and the
-    /// fill spans the whole tab so the tab reads as one raised surface.
+    /// Selection is carried by a chip of ground behind the label row, not by
+    /// an underline and not by a reserved `>` cell: the label takes the
+    /// accent at bold weight on the soft ground, while the tab frame stays
+    /// neutral — the accent never flows over or under the text.
     #[test]
-    fn the_active_tab_is_told_apart_by_its_ground_alone() {
+    fn the_active_tab_marks_only_its_label_row() {
         let buffer = render_tabs(40, NavigatorTab::Files, 0, None);
         let accent = theme::accent_color();
         let soft = theme::accent_soft_bg();
@@ -465,11 +466,22 @@ mod tests {
             "the active tab must not be underlined"
         );
 
-        // The fill is the tab box, not a chip behind the label.
+        // The chip ends where the label ends: the frame and the tab's empty
+        // cells keep the panel ground.
         assert_eq!(
             buffer[(35, 1)].style().bg,
-            Some(soft),
-            "active tab ground stops short of the tab edge"
+            theme::panel().bg,
+            "active tab ground leaks past the label"
+        );
+        assert_eq!(
+            buffer[(files, 0)].style().bg,
+            theme::panel().bg,
+            "active tab ground leaks onto the top border"
+        );
+        assert_eq!(
+            buffer[(files, 2)].style().bg,
+            theme::panel().bg,
+            "active tab ground leaks onto the bottom border"
         );
 
         // The inactive tab keeps the panel ground and gains nothing.
