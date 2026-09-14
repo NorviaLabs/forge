@@ -32,28 +32,50 @@ pub fn strip_protocol_markers(text: &str) -> String {
     out.trim().to_string()
 }
 
-/// Longest session title we keep, in characters.
+/// Defensive outer bound on a session title, in characters. The token cap in
+/// [`title_from_prompt`] decides the length of a normal first message; this
+/// only bites when the kept tokens are unusually long.
 pub const TITLE_MAX_CHARS: usize = 60;
 
-/// Derive a human-readable session title from the first user message.
+/// Most `-`-joined tokens a session title keeps. Measured on the normalized
+/// title, not on whitespace words: `src/main.rs breaks now` is four tokens.
+const TITLE_MAX_TOKENS: usize = 4;
+
+/// Derive the session label — and with it the `forge/<slug>` branch name —
+/// from the first user message.
 ///
 /// Cuts at the first newline, or at the first `.`/`!`/`?` followed by
-/// whitespace or end-of-input (so `src/main.rs` and `v1.2.3` survive), drops
-/// trailing punctuation, trims to a word boundary at [`TITLE_MAX_CHARS`], and
-/// sentence-cases the result. Falls back to `Untitled session` when nothing
-/// usable remains. Display-only: never used as a path or Git ref.
+/// whitespace or end-of-input (so a `.` inside `main.rs` or `v1.2.3` is not a
+/// boundary), drops trailing punctuation, then kebab-cases what is left:
+/// lowercase, every run of non-alphanumerics collapsed to a single `-`, no
+/// leading or trailing `-`, and at most [`TITLE_MAX_TOKENS`] tokens — so
+/// `src/main.rs breaks now` becomes `src-main-rs-breaks`. [`TITLE_MAX_CHARS`]
+/// is only an outer bound against long tokens. Falls back to
+/// `untitled-session` when nothing usable remains.
+///
+/// The result is not display-only. On the first filesystem change,
+/// `forge-session` materializes a worktree branch named `forge/<label>` from
+/// this string, so the output must stay a valid git ref segment and
+/// `forge_storage::sanitize_label` must return it unchanged:
+///
+/// ```text
+/// sanitize_label(title_from_prompt(prompt)) == title_from_prompt(prompt)
+/// ```
+///
+/// Titles and branch slugs are one value, never two: changing the shape of
+/// this output renames branches and breaks the invariant above.
 pub fn title_from_prompt(prompt: &str) -> String {
     let first_line = prompt.split('\n').next().unwrap_or("");
     let cut = sentence_end(first_line).unwrap_or(first_line.len());
     let head = trim_trailing(first_line[..cut].trim());
-    if head.is_empty() {
-        return "Untitled session".to_string();
-    }
-    let title = trim_trailing(truncate_at_word_boundary(head, TITLE_MAX_CHARS));
+    let title = kebab_tokens(
+        truncate_at_word_boundary(head, TITLE_MAX_CHARS),
+        TITLE_MAX_TOKENS,
+    );
     if title.is_empty() {
-        return "Untitled session".to_string();
+        return "untitled-session".to_string();
     }
-    sentence_case(title)
+    title
 }
 
 /// Byte index of the first sentence terminator followed by whitespace or the
@@ -102,25 +124,33 @@ fn truncate_at_word_boundary(text: &str, max: usize) -> &str {
     }
 }
 
-/// Uppercase the first character only when the first token is a plain
-/// alphanumeric word, so paths, flags, and versions keep their casing.
-fn sentence_case(text: &str) -> String {
-    let mut chars = text.chars();
-    let Some(first) = chars.next() else {
-        return String::new();
-    };
-    let plain_word = text
-        .split_whitespace()
-        .next()
-        .is_some_and(|token| token.chars().all(|c| c.is_ascii_alphanumeric()));
-    if plain_word && first.is_ascii_lowercase() {
-        let mut out = String::with_capacity(text.len() + 1);
-        out.extend(first.to_uppercase());
-        out.push_str(chars.as_str());
-        out
-    } else {
-        text.to_string()
+/// Lowercase `text` into kebab form, keeping at most `max_tokens` `-`-joined
+/// tokens: every run of non-alphanumerics collapses to one `-`, with no
+/// leading or trailing `-`. The output holds only lowercase ASCII
+/// alphanumerics and `-`, which is what lets `sanitize_label` return it
+/// unchanged.
+fn kebab_tokens(text: &str, max_tokens: usize) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut tokens = 0usize;
+    let mut in_token = false;
+    for c in text.chars() {
+        if !c.is_ascii_alphanumeric() {
+            in_token = false;
+            continue;
+        }
+        if !in_token {
+            if tokens == max_tokens {
+                break;
+            }
+            if tokens > 0 {
+                out.push('-');
+            }
+            tokens += 1;
+            in_token = true;
+        }
+        out.push(c.to_ascii_lowercase());
     }
+    out
 }
 
 use chrono::{DateTime, Utc};
@@ -887,61 +917,104 @@ pub struct BackgroundTaskId(pub u64);
 mod tests {
     use super::*;
 
-    #[test]
-    fn title_from_prompt_sentence_cases_the_opening() {
-        assert_eq!(title_from_prompt("rewrite the lexer"), "Rewrite the lexer");
-        assert_eq!(
-            title_from_prompt("fix the login bug and then run the tests"),
-            "Fix the login bug and then run the tests"
+    /// `forge-types` cannot call `forge_storage::sanitize_label` (the
+    /// dependency runs the other way), so assert the property that makes that
+    /// function a no-op: only `[a-z0-9-]`, no leading/trailing/`--`, and
+    /// within its 40-character cap.
+    fn assert_sanitize_label_stable(title: &str) {
+        assert!(
+            title
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "{title:?}"
         );
+        assert!(!title.starts_with('-'), "{title:?}");
+        assert!(!title.ends_with('-'), "{title:?}");
+        assert!(!title.contains("--"), "{title:?}");
+        assert!(title.chars().count() <= 40, "{title:?}");
     }
 
     #[test]
-    fn title_from_prompt_cuts_at_a_newline_or_sentence_end() {
+    fn title_from_prompt_kebab_cases_the_opening() {
+        assert_eq!(title_from_prompt("Rewrite the lexer"), "rewrite-the-lexer");
+        assert_eq!(title_from_prompt("API key missing"), "api-key-missing");
+        assert_eq!(title_from_prompt("foo_bar baz"), "foo-bar-baz");
         assert_eq!(
             title_from_prompt("Fix auth\nDetails follow here"),
-            "Fix auth"
+            "fix-auth"
         );
         assert_eq!(
             title_from_prompt("Fix the login bug. Then run tests"),
-            "Fix the login bug"
-        );
-        // Dots that are not sentence boundaries must survive.
-        assert_eq!(
-            title_from_prompt("Upgrade to v1.2.3 now"),
-            "Upgrade to v1.2.3 now"
-        );
-        assert_eq!(
-            title_from_prompt("fix src/main.rs parser"),
-            "Fix src/main.rs parser"
+            "fix-the-login-bug"
         );
     }
 
     #[test]
-    fn title_from_prompt_preserves_code_like_openings() {
-        assert_eq!(title_from_prompt("--help fails"), "--help fails");
+    fn title_from_prompt_keeps_at_most_four_tokens() {
         assert_eq!(
-            title_from_prompt("src/main.rs breaks"),
-            "src/main.rs breaks"
+            title_from_prompt("fix the login bug and then run the tests"),
+            "fix-the-login-bug"
         );
-        assert_eq!(title_from_prompt("API key missing"), "API key missing");
+        // Tokens are counted after normalization, not as whitespace words.
+        assert_eq!(
+            title_from_prompt("src/main.rs breaks now"),
+            "src-main-rs-breaks"
+        );
+        // A dotted version normalizes into separate tokens, so the token cap
+        // applies to it like any other text.
+        assert_eq!(
+            title_from_prompt("Upgrade to v1.2.3 now"),
+            "upgrade-to-v1-2"
+        );
+    }
+
+    #[test]
+    fn title_from_prompt_drops_leading_separators() {
+        // Trimming only the ends of the raw text used to leave `--help fails`
+        // as `-help-fails`, which `sanitize_label` turned into the branch
+        // `forge/-help-fails`.
+        assert_eq!(title_from_prompt("--help fails"), "help-fails");
+        assert_eq!(title_from_prompt("...run the tests"), "run-the-tests");
     }
 
     #[test]
     fn title_from_prompt_falls_back_when_empty() {
-        assert_eq!(title_from_prompt(""), "Untitled session");
-        assert_eq!(title_from_prompt("   "), "Untitled session");
-        assert_eq!(title_from_prompt("!!! ???"), "Untitled session");
-        assert_eq!(title_from_prompt("\nbody only"), "Untitled session");
+        for prompt in ["", "   ", "!!! ???", "\nbody only"] {
+            assert_eq!(title_from_prompt(prompt), "untitled-session", "{prompt:?}");
+        }
     }
 
     #[test]
-    fn title_from_prompt_truncates_at_a_word_boundary() {
+    fn title_from_prompt_is_already_a_branch_slug() {
+        let prompts = [
+            "Rewrite the lexer",
+            "fix the login bug and then run the tests",
+            "Fix auth\nDetails follow here",
+            "Fix the login bug. Then run tests",
+            "Upgrade to v1.2.3 now",
+            "src/main.rs breaks now",
+            "--help fails",
+            "API key missing",
+            "foo_bar baz",
+            "!!!",
+            "",
+            "   ",
+            "\nbody only",
+        ];
+        for prompt in prompts {
+            assert_sanitize_label_stable(&title_from_prompt(prompt));
+        }
+    }
+
+    #[test]
+    fn title_from_prompt_char_cap_is_an_outer_bound_only() {
         let long = "word ".repeat(40);
-        let title = title_from_prompt(&long);
-        assert!(title.chars().count() <= TITLE_MAX_CHARS, "{title:?}");
-        assert!(!title.ends_with(' '), "{title:?}");
-        // A single over-long token is hard-cut, not dropped.
+        // The token cap decides first: four tokens, far under the char bound.
+        assert_eq!(title_from_prompt(&long), "word-word-word-word");
+
+        // A single over-long token is hard-cut at the char bound, not dropped.
+        // `sanitize_label`'s own 40-char cap means this bound is deliberately
+        // the looser one: it only stops a pathological token from dominating.
         let token = "a".repeat(200);
         assert_eq!(title_from_prompt(&token).chars().count(), TITLE_MAX_CHARS);
     }
