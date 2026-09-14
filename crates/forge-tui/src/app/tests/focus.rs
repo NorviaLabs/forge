@@ -22,6 +22,10 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Sidebar);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -31,10 +35,6 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
         .await
         .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Footer);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();

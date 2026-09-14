@@ -118,7 +118,7 @@ impl TuiApp {
                 text.push_str("• !command  Run in the embedded terminal\n");
                 text.push_str("• ⇧Enter  Newline\n");
                 text.push_str("• Ctrl+R  Fuzzy-search input history\n");
-                text.push_str("• Tab  Next block (Footer, then Bottom Panel)\n");
+                text.push_str("• Tab  Next block (Footer, then Sessions)\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Footer => {
