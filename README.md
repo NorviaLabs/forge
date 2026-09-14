@@ -214,7 +214,8 @@ controls are:
 | `F1` | Open help |
 | `F3` | Open the session switcher |
 | `F4` | Open model picker |
-| `Ctrl+E` | Toggle the Files explorer |
+| `Ctrl+1` / `Ctrl+2` | Show the navigator's `Sessions` / `Files` tab (repository mode) |
+| `Ctrl+E` | Toggle the Files explorer (in a repository, flip the navigator tabs) |
 | `Ctrl+Backtick` | Toggle the terminal panel (or `/terminal`) |
 | `Ctrl+O` | Expand or collapse tool details |
 | `Alt+M` | Quick-switch model |

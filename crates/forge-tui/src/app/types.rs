@@ -517,22 +517,32 @@ impl FocusBlock {
 }
 
 impl FocusBlock {
-    // Sidebar sits right before Composer since they're the same physical
-    // column post-sidebar layout (background strip above the composer that
-    // lives inside it) — tabbing out of the transcript naturally lands in
-    // its own composer next. The approval card is reachable in the cycle
-    // while a decision is pending. Footer follows Composer — the natural
-    // next stop after typing is the row of dials right below it.
+    // The cycle follows the layout's own columns left to right, then top to
+    // bottom inside each one: the navigator (Sessions, Search, Files), the
+    // centre column (Workspace, then the terminal panel docked beneath it),
+    // and the sidebar column (transcript, approval card, composer). Footer is
+    // chrome and comes last, so the wrap back to Sessions reads as a restart
+    // at the top left.
+    //
+    // Panel sits next to Workspace because the layout docks it under
+    // `files`+`chat` only — never under the sidebar — making it the centre
+    // column's second band rather than chrome, and keeping it off the wrap
+    // edge. Sidebar stays directly before Composer because they are one
+    // column; the approval card is reachable there while a decision is
+    // pending. Conditional blocks (Panel when closed, Approval while a
+    // decision pends) must stay inside their own group, so the number of Tab
+    // presses between always-available blocks never changes with the panel's
+    // open state.
     pub(crate) const ORDER: [Self; 9] = [
         Self::TaskStrip,
         Self::Search,
         Self::Files,
         Self::Workspace,
+        Self::BottomPanel,
         Self::Sidebar,
         Self::Approval,
         Self::Composer,
         Self::Footer,
-        Self::BottomPanel,
     ];
 }
 

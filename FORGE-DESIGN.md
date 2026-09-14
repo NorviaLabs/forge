@@ -40,7 +40,7 @@ layout-blocks:
   - BottomPanel (interactive terminal)
   - StatusBar / Footer (chrome rows)
 focus-blocks:
-  order: [TaskStrip, Search, Files, Workspace, Sidebar, Approval, Composer, Footer, BottomPanel]
+  order: [TaskStrip, Search, Files, Workspace, BottomPanel, Sidebar, Approval, Composer, Footer]
   labels:
     TaskStrip: SESSIONS
     Search: SEARCH
@@ -54,8 +54,9 @@ focus-blocks:
 navigation:
   next-block: Tab
   previous-block: Shift+Tab
-  previous-tab: Left
-  next-tab: Right
+  sessions-tab: Ctrl+1
+  files-tab: Ctrl+2
+  toggle-navigator-tab: Ctrl+E
   go-back: Alt+Left
   enter-interaction:
     - Enter
@@ -437,11 +438,12 @@ Verify layouts at least at these sizes (tests pin `80×18`):
 The left column is a two-tab **navigator**; it is the single multi-session
 surface. The old top task strip is superseded (`§11`).
 
-- Tabs: `Sessions` and `Files`, toggled with `Ctrl+1` / `Ctrl+2` (and by
-  focusing the navigator and pressing `Tab`/`Enter`). They never show side by
-  side: the layout already carries three content columns (navigator | Workspace
-  | conversation) and cannot afford a fourth, and `Files` is the first thing to
-  collapse (`§7.3`).
+- Tabs: `Sessions` and `Files`, switched in repository mode with `Ctrl+1` /
+  `Ctrl+2`, or flipped with `Ctrl+E` (`input.rs`, `workspace.rs`). Neither
+  `Tab` (unconditional block cycling) nor `Enter` (which attaches the selected
+  session) switches tabs. They never show side by side: the layout already
+  carries three content columns (navigator | Workspace | conversation) and
+  cannot afford a fourth, and `Files` is the first thing to collapse (`§7.3`).
 - Default tab: `Sessions` when more than one session exists, `Files` otherwise.
   The choice is remembered for the session.
 - **Sessions tab** is a vertical, attention-ordered list. Only three states are
@@ -454,9 +456,9 @@ surface. The old top task strip is superseded (`§11`).
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
 - Below `files_fit()` the whole navigator collapses exactly as `Files` does
-  today: the `Sessions` list falls back to a one-line status-line chip
-  (`⌄ 2 need · 1 working`, `←` opens the full-height Sessions panel) so sessions
-  are never unreachable.
+  today: the `Sessions` list falls back to a one-line status-row chip
+  (`⌄ 2 need · 1 working`) so session attention stays visible, and the session
+  switcher (`F3`, `/sessions`) keeps every session reachable.
 - The conversation sidebar stays permanent; the Workspace stays
   `File`/`Diff`. The navigator introduces no new column.
 
@@ -467,7 +469,7 @@ surface. The old top task strip is superseded (`§11`).
 Nine spatially stable focus blocks (`types.rs::FocusBlock`), cycled by `Tab` / `Shift+Tab` through a fixed order that skips unavailable blocks:
 
 ```
-TaskStrip → Search → Files → Workspace(CHAT) → Sidebar → Approval → Composer → Footer → BottomPanel
+TaskStrip → Search → Files → Workspace(CHAT) → BottomPanel(PANEL) → Sidebar → Approval → Composer → Footer
 ```
 
 - `Approval` enters the cycle only while a HITL request or agent question is pending.
@@ -494,15 +496,20 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 
 | Action | Binding |
 |---|---|
-| Next visible block | `Tab` |
+| Next visible block | `Tab` (while the `Panel` block holds the keyboard, plain `Tab` goes to its shell) |
 | Previous visible block | `Shift+Tab` |
-| Previous/next tab within a block | `←` / `→` (plain, no modifiers — chords are explicitly rejected) |
+| Navigator tabs `Sessions` / `Files` (repository mode) | `Ctrl+1` / `Ctrl+2`; `Ctrl+E` flips the two (`Ctrl+1` also focuses the list) |
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |
 | Contextual help | `/help` |
 
-Modified arrows do not switch tabs; text inputs retain normal arrow behaviour.
+No block switches tabs on `←` / `→`. Plain arrows keep their in-block meaning:
+the session cursor in `Sessions` (`←`/`→` as well as `↑`/`↓`), tree
+collapse/expand in `Files` and its `Search` row, chip selection in `Footer`,
+the composer caret (its text input keeps normal arrow behaviour), and
+pass-through to its shell in `Panel`. In the file view a plain `←` is the same
+history-back as `Alt+←`. Modified arrows never switch tabs.
 
 ### 8.4 Active block treatment
 
