@@ -593,7 +593,7 @@ Two rows (`widgets/footer.rs`); the second row is the background activity line.
   - **Hints:** the §6 hint grammar. Blocking dialogs take over the whole row; footer-focus hints share the row with the chips.
   - **Working meter:** one quarter-circle glyph from the same ◐◓◑◒ family the turn line speaks, stepped once per event-loop tick while a turn runs (`throbber-widgets-tui` state, forge styling). Motion pauses with work instead of free-running on the wall clock.
   - When an approval pends, the row dims — it must not look interactive.
-- **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — terminal/background jobs, agents/subagents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `◆` agent, `⇥` queued); the bracket is shared chrome so the chips read as a segmented strip. The row is blank when nothing is in flight, so an idle footer is unchanged. Per-item detail (command, elapsed, live subagent activity) lives in the task view, not the footer.
+- **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — terminal/background jobs, agents/subagents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `◆` agent, `⇥` queued); the bracket is shared chrome so the chips read as a segmented strip. The row is blank when nothing is in flight, so an idle footer is unchanged. Per-item detail (command, elapsed, live subagent activity) lives in the background strip (§9.12), not the footer.
   - **A completion is an observation, not a queued prompt.** Finishing a background task does not inject a user-role prompt. The result stays in the background strip and the operator attaches it to the composer explicitly (`i` on the selected task). Only approve-all — no human in the loop — auto-continues by enqueuing the result at the next turn boundary.
 
 ### 9.4 Chat transcript (sidebar)
@@ -740,6 +740,71 @@ Rules:
 - While a session's approve-all mode is on, one full-width row renders directly under the StatusBar: `⚠ SANDBOX OFF · approvals, filesystem and network unconfined · this session only · /approve-all to re-enable`.
 - Error-coloured (`theme::danger()`), one row, full frame width, and part of the fixed chrome — the conversation scroll cannot move it off screen.
 - It is the persistent record that the sandbox is off; it disappears the moment approve-all is disabled.
+
+### 9.12 Background activity strip
+
+What the footer's counts-only chip deliberately omits: one row per background
+task, docked between the outbound-message queue and the composer and scoped to
+the sidebar's width (`layout.rs::regions.background`, built by
+`tasks_strip.rs`, drawn by `widgets/background_strip.rs`).
+
+Every rule here exists to protect something the operator is relying on.
+
+- **Height is derived, never requested.** The renderer asks for one row per
+  live task plus a header; `layout.rs` clamps that against the transcript's
+  `Min` floor. A job that is merely running can never take a row from the
+  conversation, which is why this is the only fixed-height strip the caller
+  specifies rather than the layout deriving.
+- **The header tells the truth about truncation:** ` Background · 8 ` with
+  `+N more` right-aligned when the row cap (8) or the available space hides
+  some. The count is what survived expiry, not what was spawned.
+- **Ordering is blocked → failed → active → queued → done**, stable by task id
+  inside a band so a running row never jumps when a sibling finishes. `failed`
+  outranks `active` because it is the only other state that can need an
+  operator, and truncation takes from the tail — naive ordering hides the
+  failure first. `cancelled` is its own state rather than folded into `done`,
+  so a cancellation the operator did not perform (a stopped session, an
+  interrupted turn) stays visible instead of ageing out.
+- **Row anatomy:** `> [|] ◆ explore · audit auth deps  needs you` — the
+  navigator's selection grammar, the §5.3 marker, the kind glyph the footer
+  chip also uses, then the label and a right-aligned elapsed. A **blocked row
+  adds exactly one line underneath**, carrying the tool and its already-redacted
+  arguments. That case is the only one where a label is not enough to act on.
+- **Expiry:** a `[✓]` row retires one minute after `finished_at`; `[!]`, `[-]`
+  and `[|]` wait for `x`. The strip is a status, not a log — but a completion
+  has to still be there when the operator looks back, which is what the timer
+  is measured against.
+- **Elapsed freezes at `finished_at`**, so a finished row shows how long it took
+  rather than creeping upward while it is read.
+- **Selection** is the `>` pointer plus the neutral `selection` ground, muted to
+  secondary text when the Sidebar block does not own the keyboard (§8.5). The
+  keys (`↑↓ x a d i`) predate this surface; before it the operator selected and
+  acted on rows that nothing drew.
+- **An empty registry draws nothing at all** — no header, no reserved gap — so
+  an idle sidebar is unchanged, the same contract Row 1 of the footer keeps.
+
+### 9.13 Out-of-band notification
+
+Reaching an operator who is looking at another window. `notify.rs`; configured
+by `[tui] notify = auto | bell | osc9 | both | off`.
+
+- **Fires on two transitions only** — a task entering `WaitingForApproval`, and
+  a task becoming terminal — detected by diffing the task set each tick. Never
+  on steady state: a notification per frame is not a notification.
+- **Gated on lost focus.** Forge requests focus events (`EnableFocusChange`) for
+  this purpose alone. Default focus is *focused*, so a terminal that never
+  reports focus changes never notifies.
+- **`auto` is silent, not the bell, on an unrecognised terminal**, matching the
+  terminal against a known-good allowlist. Terminal support for OSC 9 cannot be
+  probed, and an unexpected audible bell is worse than no notification; `bell`
+  is the opt-in universal fallback.
+- **The body carries the same source label as the strip** —
+  `explore needs approval: bash` — so the notification and the strip agree.
+- **Text is sanitized, not trusted.** Labels come from the model, and an
+  embedded `ESC` or `BEL` would terminate the OSC 9 sequence early and leave
+  the remainder to be read as terminal commands.
+- The in-app toast and feedback strip still fire while focused. The terminal
+  notification and the in-app notice answer different questions.
 
 ## 10. Theme Policy
 
