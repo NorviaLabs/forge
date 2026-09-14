@@ -189,8 +189,10 @@ impl Widget for SessionList<'_> {
             } else {
                 glyph_style
             };
+            // Selection owns the accent edge even without cursor: the
+            // workspace-visible session stays identifiable while browsing.
             let cursor = if (row.focused && self.focused) || row.selected {
-                Span::styled("›", theme::accent_style())
+                Span::styled("›", theme::active_panel_border())
             } else {
                 Span::raw(" ")
             };
@@ -204,7 +206,7 @@ impl Widget for SessionList<'_> {
             let room = (area.width as usize).saturating_sub(prefix);
             spans.push(Span::styled(truncate(&row.label, room), label_style));
             let mut line = Line::from(spans);
-            if row.focused && self.focused {
+            if (row.focused && self.focused) || row.selected {
                 line = line.style(theme::focused_selection_style());
                 buf.set_line(area.x, y, &line, area.width);
                 fill_selection(buf, area.x, y, area.width);

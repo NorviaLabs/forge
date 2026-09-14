@@ -46,7 +46,7 @@ pub fn render_theme_preview(theme_id: &str, area: Rect, buf: &mut Buffer) {
         x,
         y,
         w,
-        "⌂ ~/demo  ·  ⎇ main*",
+        "⌂ ~/demo  ·  ./main*",
         Style::default().fg(palette.text).bg(palette.panel),
     );
     y = y.saturating_add(1);

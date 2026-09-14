@@ -1300,6 +1300,13 @@ impl TuiApp {
                     not_connected: !connected,
                     focused: composer_focused,
                     waiting: self.session_view.is_awaiting_approval(),
+                    // Same debounce as the pinned busy line: the in-box
+                    // interrupt hint must not flash on near-instant turns.
+                    running: self.busy_state.is_active()
+                        && self
+                            .timing
+                            .turn_started
+                            .is_some_and(|t| t.elapsed() >= BUSY_STATUS_DEBOUNCE),
                 },
                 regions.input,
             );
@@ -1316,11 +1323,15 @@ impl TuiApp {
 
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
-            // The footer's own per-chip hint shares the row; every other
-            // hint source (HITL/dialog/transient) is blocking and takes the
-            // whole row.
-            hint_replaces_row: !(self.focus.mode() == FocusMode::Navigation
-                && self.focus.block() == FocusBlock::Footer),
+            // The footer's own per-chip hint and the task strip's session
+            // hint share the row with the chips; every other hint source
+            // (HITL/dialog/transient) is blocking and takes the whole row.
+            hint_replaces_row: !((self.focus.mode() == FocusMode::Navigation
+                && self.focus.block() == FocusBlock::Footer)
+                || (self.focus.mode() == FocusMode::Navigation
+                    && self.focus.block() == FocusBlock::TaskStrip)),
+            hint_bold_keys: self.focus.mode() == FocusMode::Navigation
+                && self.focus.block() == FocusBlock::TaskStrip,
             llm_label,
             llm_connected: connected,
             effort_label,

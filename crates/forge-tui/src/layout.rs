@@ -59,7 +59,7 @@ const FILES_WIDTH_THRESHOLD: u16 = FILES_VISIBLE_FRAME_W;
 /// itself doesn't hide on narrow-width precedence like `files` does — the
 /// composer lives inside it — so this is only a defensive floor against
 /// negative-width arithmetic on pathologically narrow terminals.
-const SIDEBAR_MIN_CONTENT_WIDTH: u16 = 40;
+const SIDEBAR_MIN_CONTENT_WIDTH: u16 = 44;
 
 fn content_width(area: Rect) -> u16 {
     content_width_for(area.width)
@@ -279,7 +279,7 @@ fn split_areas_with_chrome_mode(
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Min(40),
+                Constraint::Min(44),
                 Constraint::Length(PANE_GAP_X),
                 Constraint::Length(sidebar_width),
             ])
@@ -311,7 +311,7 @@ fn split_areas_with_chrome_mode(
     let bottom_panel = left_rows[2];
 
     let show_files =
-        show_files && area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + PANE_GAP_X + 40;
+        show_files && area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + PANE_GAP_X + 44;
     let file_width = (content_area.width / 4).clamp(28, 37);
     let (files, chat) = if show_files {
         let columns = Layout::default()
@@ -319,7 +319,7 @@ fn split_areas_with_chrome_mode(
             .constraints([
                 Constraint::Length(file_width),
                 Constraint::Length(PANE_GAP_X),
-                Constraint::Min(40),
+                Constraint::Min(44),
             ])
             .split(top);
         (Some(columns[0]), columns[2])
@@ -334,7 +334,7 @@ fn split_areas_with_chrome_mode(
                 .constraints([
                     Constraint::Length(file_width),
                     Constraint::Length(PANE_GAP_X),
-                    Constraint::Min(40),
+                    Constraint::Min(44),
                 ])
                 .split(top);
             (Some(columns[0]), columns[2])
@@ -407,7 +407,7 @@ pub fn estimate_composer_region_width(
     let width = content_width(area);
     if expanded_conversation {
         let file_width = (width / 4).clamp(28, 37);
-        if show_files && area.width >= FILES_WIDTH_THRESHOLD && width >= file_width + 40 {
+        if show_files && area.width >= FILES_WIDTH_THRESHOLD && width >= file_width + 44 {
             width
                 .saturating_sub(file_width)
                 .saturating_sub(PANE_GAP_X)
