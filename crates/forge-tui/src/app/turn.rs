@@ -29,6 +29,19 @@ fn background_task_result_text(task: &forge_session::BackgroundTaskSnapshot) -> 
     }
 }
 
+/// The operator-facing name of a background task.
+///
+/// The id is an implementation detail. "explore needs approval" tells the
+/// operator which of several agents is asking; "#4" does not, and the point of
+/// surfacing a block is to say who is blocked.
+fn background_task_name(label: &str, id: forge_types::BackgroundTaskId) -> String {
+    if label.trim().is_empty() {
+        format!("task #{}", id.0)
+    } else {
+        label.to_string()
+    }
+}
+
 /// The closing summary for an actor-owned (supervised) turn, computed from the
 /// TUI's own per-turn counters plus the snapshot's cumulative usage less the
 /// count taken when the turn began. `None` until a turn clock is running.
@@ -615,6 +628,22 @@ impl TuiApp {
             .filter(|t| !t.status.is_terminal())
             .map(|t| t.id)
             .collect();
+        // A blocked task is not terminal, so the completion sweep below cannot
+        // see it. Without this second set, a subagent stopping for approval
+        // changed nothing the operator could read: the footer chip's `· 1 need`
+        // was the only evidence, and it does not say who is asking.
+        let not_waiting_before: std::collections::HashSet<_> = self
+            .session_runtime
+            .background()
+            .list()
+            .filter(|t| {
+                !matches!(
+                    t.status,
+                    forge_core::BackgroundTaskStatus::WaitingForApproval { .. }
+                )
+            })
+            .map(|t| t.id)
+            .collect();
         self.session_runtime.poll_background_tasks().await?;
         for id in running_before {
             if let Some(task) = self.session_runtime.background().get(id) {
@@ -623,6 +652,20 @@ impl TuiApp {
                         "background task #{} finished: {}",
                         id.0, task.label
                     ));
+                }
+            }
+        }
+        for id in not_waiting_before {
+            if let Some(task) = self.session_runtime.background().get(id) {
+                if let forge_core::BackgroundTaskStatus::WaitingForApproval { payload } =
+                    &task.status
+                {
+                    let text = format!(
+                        "{} needs approval: {}",
+                        background_task_name(&task.label, id),
+                        payload.tool
+                    );
+                    self.push_toast_with(FeedbackSeverity::Warn, text);
                 }
             }
         }
@@ -696,6 +739,14 @@ impl TuiApp {
         let Some(id) = ids.get(idx).copied() else {
             return;
         };
+        // Name the task, not its id: the operator is answering *this* agent,
+        // and with several in flight "#4" is not enough to be sure which.
+        let name = self
+            .selected_background_tasks()
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| background_task_name(&task.label, id))
+            .unwrap_or_else(|| background_task_name("", id));
         let verb = match decision {
             HitlDecision::Approve => "approve",
             HitlDecision::Deny => "deny",
@@ -712,19 +763,16 @@ impl TuiApp {
             return;
         }
         if self.session_runtime.resolve_subagent_hitl(id, decision) {
-            self.set_feedback(
-                FeedbackSeverity::Ok,
-                format!("{verb} sent to task #{}", id.0),
-            );
+            self.set_feedback(FeedbackSeverity::Ok, format!("{verb} sent to {name}"));
             self.push_activity(
                 ActivityKind::System,
                 FeedbackSeverity::Ok,
-                format!("background task #{} {verb}d", id.0),
+                format!("{name} {verb}d"),
             );
         } else {
             self.set_feedback(
                 FeedbackSeverity::Warn,
-                format!("task #{} isn't waiting for approval", id.0),
+                format!("{name} isn't waiting for approval"),
             );
         }
     }
