@@ -270,6 +270,7 @@ model = "openai/gpt-4.1-mini"
 [tui]
 theme = "forge-dark"
 file_icons = "unicode"
+notify = "auto"
 
 [journal]
 path = ".forge/sessions"
@@ -286,6 +287,14 @@ Agent orchestration is enabled by default. The model can use `spawn_agent`,
 `interrupt_agent`. Each child runs in an isolated Git worktree and inherits the
 parent model, governance, and workspace policy. `spawn_agent` can narrow a
 child's tools with `tool_allowlist`.
+
+`notify` controls whether Forge reaches you when a background task blocks on
+approval or stops while the terminal is unfocused: `auto` (the default) sends a
+desktop notification where the terminal is known to support one and stays
+silent elsewhere, `bell` rings the terminal bell, `osc9` forces a desktop
+notification, `both` sends both, and `off` disables it. `auto` is silent rather
+than falling back to the bell, because an unexpected audible bell is worse than
+no notification; set `bell` if your terminal is not on the known-good list.
 
 `max_depth` bounds nested work. `send_message` queues a
 mailbox message without waking its target; `followup_task` wakes an idle or

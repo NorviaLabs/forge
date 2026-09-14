@@ -238,7 +238,8 @@ async fn dispatch_terminal_event<B: ratatui::backend::Backend>(
                     .map_err(|error| TuiError::Other(error.to_string()))?;
             }
         }
-        _ => {}
+        Event::FocusGained => crate::notify::set_focused(true),
+        Event::FocusLost => crate::notify::set_focused(false),
     }
     Ok(())
 }
@@ -835,7 +836,11 @@ async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSum
         EnterAlternateScreen,
         SetCursorStyle::SteadyBlock,
         EnableBracketedPaste,
-        EnableMouseCapture
+        EnableMouseCapture,
+        // Needed for the background-task notifications: without focus events
+        // the TUI cannot tell whether the operator is looking, and it must not
+        // alert someone who is already watching.
+        crossterm::event::EnableFocusChange
     )?;
     execute!(
         stdout,

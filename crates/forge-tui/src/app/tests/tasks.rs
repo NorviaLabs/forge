@@ -122,23 +122,14 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     }
 }
 
-/// A subagent that stops for approval has to say so, and say who it is. Before
-/// this, a block changed nothing the operator could read: the footer chip's
-/// `· 1 need` was the only evidence, and that does not name the asker.
-#[tokio::test]
-async fn a_subagent_stopping_for_approval_names_itself() {
-    let dir = TempDir::new().unwrap();
+/// An app whose only background task is a subagent that blocks on a `bash`
+/// approval, gated by governance so it cannot run unasked.
+async fn app_with_a_blocking_subagent(
+    dir: &TempDir,
+    script: Vec<ModelResponse>,
+) -> (TuiApp, forge_types::BackgroundTaskId) {
     init_repo(dir.path()).await;
-    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
-        text: "".into(),
-        tool_calls: vec![forge_types::ToolCall {
-            id: "1".into(),
-            name: "bash".into(),
-            arguments: serde_json::json!({"command": "echo risky"}),
-        }],
-        usage: None,
-        thinking: None,
-    }]));
+    let model = Arc::new(MockModelClient::script(script));
     let session = session_for_workspace_with_model(dir.path(), model).await;
     let mut app = TuiApp::new(
         session,
@@ -154,7 +145,6 @@ async fn a_subagent_stopping_for_approval_names_itself() {
     );
     app.session_runtime
         .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
-
     let id = app
         .session_runtime
         .spawn_subagent(forge_core::SubagentSpec {
@@ -164,13 +154,87 @@ async fn a_subagent_stopping_for_approval_names_itself() {
         })
         .await
         .unwrap();
-    wait_for_task_status(&mut app, id, |s| {
-        matches!(
-            s,
-            forge_core::BackgroundTaskStatus::WaitingForApproval { .. }
-        )
-    })
-    .await;
+    (app, id)
+}
+
+/// A model step that calls `bash`, which governance will hold for approval.
+fn risky_bash_call() -> ModelResponse {
+    ModelResponse {
+        text: "".into(),
+        tool_calls: vec![forge_types::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "echo risky"}),
+        }],
+        usage: None,
+        thinking: None,
+    }
+}
+
+fn is_waiting(status: &forge_core::BackgroundTaskStatus) -> bool {
+    matches!(
+        status,
+        forge_core::BackgroundTaskStatus::WaitingForApproval { .. }
+    )
+}
+
+/// The feature's whole point: an operator in another window learns which agent
+/// is blocked, and what it wants.
+///
+/// Focus and mode live in thread-locals, and `#[tokio::test]`'s default
+/// current-thread runtime keeps this test's future on one thread, so the
+/// values set here are the ones the app reads.
+#[tokio::test]
+async fn a_block_notifies_an_unfocused_operator() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+
+    let _ = crate::notify::take_captured();
+    crate::notify::install(forge_config::NotifyMode::Bell);
+    crate::notify::set_focused(false);
+
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    let captured = crate::notify::take_captured();
+
+    crate::notify::set_focused(true);
+    crate::notify::install(forge_config::NotifyMode::Auto);
+
+    assert_eq!(
+        captured,
+        vec!["risky-runner needs approval: bash".to_string()]
+    );
+}
+
+/// Alerting someone who is looking at Forge is the noise this feature exists
+/// to avoid.
+#[tokio::test]
+async fn a_block_is_silent_while_the_operator_is_watching() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+
+    let _ = crate::notify::take_captured();
+    crate::notify::install(forge_config::NotifyMode::Both);
+    crate::notify::set_focused(true);
+
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    let captured = crate::notify::take_captured();
+
+    crate::notify::install(forge_config::NotifyMode::Auto);
+
+    assert!(captured.is_empty(), "a focused terminal must stay quiet");
+    // The in-app notice still fires, because the two surfaces answer
+    // different questions.
+    assert!(app.feedback.text.contains("risky-runner"));
+}
+
+/// A subagent that stops for approval has to say so, and say who it is. Before
+/// this, a block changed nothing the operator could read: the footer chip's
+/// `· 1 need` was the only evidence, and that does not name the asker.
+#[tokio::test]
+async fn a_subagent_stopping_for_approval_names_itself() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
 
     assert!(
         app.feedback.text.contains("risky-runner"),

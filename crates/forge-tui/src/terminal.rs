@@ -6,7 +6,9 @@ use std::panic;
 use std::sync::Arc;
 
 use crossterm::cursor::{SetCursorStyle, Show};
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, PopKeyboardEnhancementFlags};
+use crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, PopKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 
@@ -18,6 +20,7 @@ pub fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = stdout.execute(PopKeyboardEnhancementFlags);
     let _ = stdout.execute(DisableBracketedPaste);
+    let _ = stdout.execute(DisableFocusChange);
     // Mouse capture must be relinquished before leaving the alternate screen so
     // the user's next shell session is not left reporting mouse events.
     let _ = stdout.execute(DisableMouseCapture);

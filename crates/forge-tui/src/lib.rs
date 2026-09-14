@@ -18,6 +18,7 @@ mod interactive_terminal;
 mod launch;
 mod layout;
 mod markdown;
+pub mod notify;
 mod overlays;
 mod path_display;
 mod selection;
