@@ -1407,6 +1407,23 @@ async fn framed_transcript_and_composer_keep_focus_and_content_inside_chrome() {
     }
 }
 
+/// Off-focus the transcript keeps its name in the shared neutral grammar —
+/// the block stays identifiable without claiming the keyboard.
+#[tokio::test]
+async fn idle_transcript_keeps_a_neutral_chat_title() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(
+        rendered.contains("Chat"),
+        "block must stay named off-focus:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("> Chat"),
+        "idle must not carry the focus marker:\n{rendered}"
+    );
+}
+
 #[tokio::test]
 async fn an_idle_app_paints_no_turn_line() {
     let (_dir, mut app) = focus_test_app().await;
