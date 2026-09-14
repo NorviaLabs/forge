@@ -1,3 +1,4 @@
+pub mod background_strip;
 pub mod bottom_panel;
 pub mod feedback;
 pub mod footer;
@@ -10,6 +11,7 @@ pub mod task_strip;
 pub mod toasts;
 pub mod turn_line;
 
+pub use background_strip::BackgroundStripWidget;
 pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState};
 pub use feedback::{classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity};
 pub use footer::{footer_short_model_id, FooterActivity, FooterBar, FooterFocus, FooterModel};

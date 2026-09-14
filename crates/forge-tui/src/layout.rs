@@ -55,6 +55,9 @@ pub struct LayoutRegions {
 /// threshold applied after the 95% inset (effective 116 frame columns);
 /// the inset is gone but the frame gate is preserved byte-for-byte.
 const FILES_WIDTH_THRESHOLD: u16 = FILES_VISIBLE_FRAME_W;
+/// The transcript's floor. It is the only `Min` in the sidebar's stack, so
+/// this is what every other strip there is measured against.
+const TRANSCRIPT_MIN_ROWS: u16 = 3;
 /// Minimum chat/files width the sidebar must leave behind. The sidebar
 /// itself doesn't hide on narrow-width precedence like `files` does — the
 /// composer lives inside it — so this is only a defensive floor against
@@ -352,10 +355,20 @@ fn split_areas_with_chrome_mode(
 
     // sidebar: [transcript, feedback, queue, background, gutter, input].
     let (sidebar, feedback, queue, background, input) = if let Some(sb) = sidebar {
+        // The background strip yields before the transcript does. It is the
+        // only strip here whose height the caller asks for rather than derives,
+        // so it is the one that has to be clamped against the transcript's
+        // `Min(3)` floor — otherwise the constraint solver would honour the
+        // strip first and shrink the conversation instead.
+        let bg_h = bg_h.min(
+            sb.height
+                .saturating_sub(fb + qh + COMPOSER_GAP_Y + input_h)
+                .saturating_sub(TRANSCRIPT_MIN_ROWS),
+        );
         let sidebar_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(3),
+                Constraint::Min(TRANSCRIPT_MIN_ROWS),
                 Constraint::Length(fb),
                 Constraint::Length(qh),
                 Constraint::Length(bg_h),
