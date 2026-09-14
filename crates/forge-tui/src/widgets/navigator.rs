@@ -50,12 +50,11 @@ pub(crate) const SESSIONS_TAB_WIDTH: u16 = 12;
 /// Framed tabs across the top of the navigator column.
 pub struct NavigatorTabs {
     pub tab: NavigatorTab,
-    pub focused: bool,
     pub needs_you: usize,
     /// Tab under the pointer. The hovered *inactive* tab gets a raised ground
     /// and a weight step, so a pointer user can tell it is clickable; the
     /// active tab keeps its own treatment and focus never moves on hover.
-    /// Labels reserve a marker cell, so focus and hover never shift text.
+    /// Neither state moves the label: it is centred in the tab box either way.
     pub hover: Option<NavigatorTab>,
 }
 
@@ -64,7 +63,6 @@ impl Widget for NavigatorTabs {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let active = theme::accent_style().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
         let inactive = theme::metadata_style();
         for (index, tab) in [NavigatorTab::Sessions, NavigatorTab::Files]
             .into_iter()
@@ -81,15 +79,22 @@ impl Widget for NavigatorTabs {
                     area.height,
                 )
             };
+            let is_active = tab == self.tab;
+            let hovered = !is_active && self.hover == Some(tab);
             // The tab strip is the navigator panel's own top edge, not a small
             // box inside it: one neutral frame for the active and inactive
-            // tabs alike. Focus lives in the label (accent + underline + the
-            // reserved `>` marker cell), never in the tab's outline.
+            // tabs alike. The active tab is told apart by its ground alone, so
+            // the label keeps a weight step and the accent hue for terminals
+            // that render no colour (FORGE-DESIGN §5 rule 7).
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(theme::panel_border())
-                .style(theme::panel());
+                .style(if is_active {
+                    theme::panel().bg(theme::accent_soft_bg())
+                } else {
+                    theme::panel()
+                });
             let inner = if area.height >= 3 {
                 block.inner(tab_area)
             } else {
@@ -98,35 +103,35 @@ impl Widget for NavigatorTabs {
             if area.height >= 3 {
                 block.render(tab_area, buf);
             }
-            let is_active = tab == self.tab;
-            let hovered = !is_active && self.hover == Some(tab);
             let label_style = if is_active {
-                active
+                theme::accent_style().add_modifier(Modifier::BOLD)
             } else if hovered {
-                // Ground plus weight: no reserved marker cell, so the label
-                // never moves and the bar stays flush with the column edge.
+                // Ground plus weight, and the label keeps its column.
                 inactive
                     .patch(theme::surface_hover())
                     .add_modifier(Modifier::BOLD)
             } else {
                 inactive
             };
-            let marker = if self.focused && is_active { ">" } else { " " };
-            let mut spans = vec![Span::styled(
-                format!("{marker}{}", tab.label()),
-                label_style,
-            )];
-            if index == 1 && self.needs_you > 0 {
-                let label = format!("{} need", self.needs_you);
-                let used: usize = spans.iter().map(Span::width).sum();
-                let pad = (inner.width as usize).saturating_sub(used + label.len());
-                if pad > 0 {
-                    spans.push(Span::raw(" ".repeat(pad)));
-                    spans.push(Span::styled(label, theme::warn()));
-                }
+            if inner.width == 0 || inner.height == 0 {
+                continue;
             }
-            if inner.width > 0 && inner.height > 0 {
-                buf.set_line(inner.x, inner.y, &Line::from(spans), inner.width);
+            let label = truncate(tab.label(), inner.width as usize);
+            let label_width = label.chars().count() as u16;
+            // Centred in the tab box, not in the space a badge would leave:
+            // the two tabs own different widths, so the latter would centre
+            // them on different axes.
+            let label_x = inner.x + inner.width.saturating_sub(label_width) / 2;
+            buf.set_string(label_x, inner.y, &label, label_style);
+            if index == 1 && self.needs_you > 0 {
+                let badge = format!("{} need", self.needs_you);
+                let badge_width = badge.chars().count() as u16;
+                let badge_x = inner.right().saturating_sub(badge_width);
+                // Dropped rather than crowding the label when the tab cannot
+                // hold both.
+                if badge_width <= inner.width && badge_x > label_x + label_width {
+                    buf.set_string(badge_x, inner.y, &badge, theme::warn());
+                }
             }
         }
         if area.height >= 3 && area.width > SESSIONS_TAB_WIDTH {
@@ -355,26 +360,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tabs_show_both_names_and_the_needs_you_count() {
-        let backend = TestBackend::new(40, 3);
+    /// Render the tab bar at an explicit width and hand back the buffer.
+    fn render_tabs(
+        width: u16,
+        tab: NavigatorTab,
+        needs_you: usize,
+        hover: Option<NavigatorTab>,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
                 frame.render_widget(
                     NavigatorTabs {
-                        tab: NavigatorTab::Sessions,
-                        focused: false,
-                        needs_you: 2,
-                        hover: None,
+                        tab,
+                        needs_you,
+                        hover,
                     },
                     frame.area(),
                 );
             })
             .unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
+        terminal.backend().buffer().clone()
+    }
+
+    /// First column carrying `symbol` on row `y`.
+    fn cell_x(buffer: &ratatui::buffer::Buffer, symbol: &str, y: u16) -> u16 {
+        let width = buffer.area.width as usize;
+        buffer
+            .content()
+            .iter()
+            .enumerate()
+            .find(|(index, cell)| index / width == y as usize && cell.symbol() == symbol)
+            .map(|(index, _)| (index % width) as u16)
+            .unwrap_or_else(|| panic!("no {symbol:?} on row {y}"))
+    }
+
+    #[test]
+    fn tabs_show_both_names_and_the_needs_you_count() {
+        let buffer = render_tabs(40, NavigatorTab::Sessions, 2, None);
+        let text: String = buffer
             .content()
             .iter()
             .map(|cell| cell.symbol().to_string())
@@ -384,57 +409,85 @@ mod tests {
         assert!(text.contains("2 need"), "{text:?}");
     }
 
+    /// Selection is carried by the ground, not by an underline and not by a
+    /// reserved `>` cell: the label takes the accent at bold weight, and the
+    /// fill spans the whole tab so the tab reads as one raised surface.
     #[test]
-    fn the_active_tab_carries_the_accent() {
-        let backend = TestBackend::new(40, 3);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    NavigatorTabs {
-                        tab: NavigatorTab::Files,
-                        focused: false,
-                        needs_you: 0,
-                        hover: None,
-                    },
-                    frame.area(),
-                );
-            })
-            .unwrap();
+    fn the_active_tab_is_told_apart_by_its_ground_alone() {
+        let buffer = render_tabs(40, NavigatorTab::Files, 0, None);
         let accent = theme::accent_color();
-        let marker_accent = terminal.backend().buffer().content().iter().any(|cell| {
-            cell.symbol() == "F"
-                && cell.style().fg == Some(accent)
-                && cell.style().add_modifier.contains(Modifier::UNDERLINED)
-        });
-        assert!(marker_accent, "active tab marker should be accented");
+        let soft = theme::accent_soft_bg();
+        let files = cell_x(&buffer, "F", 1);
+
+        let label = buffer[(files, 1)].style();
+        assert_eq!(label.fg, Some(accent), "active label lost the accent");
+        assert!(
+            label.add_modifier.contains(Modifier::BOLD),
+            "active label lost its weight step"
+        );
+        assert_eq!(label.bg, Some(soft), "active label lost the ground");
+        assert!(
+            !label.add_modifier.contains(Modifier::UNDERLINED),
+            "the active tab must not be underlined"
+        );
+
+        // The fill is the tab box, not a chip behind the label.
+        assert_eq!(
+            buffer[(35, 1)].style().bg,
+            Some(soft),
+            "active tab ground stops short of the tab edge"
+        );
+
+        // The inactive tab keeps the panel ground and gains nothing.
+        let sessions = cell_x(&buffer, "S", 1);
+        assert_eq!(buffer[(sessions, 1)].style().bg, theme::panel().bg);
+        assert_eq!(buffer[(1, 1)].style().bg, theme::panel().bg);
+        assert!(
+            !buffer[(sessions, 1)]
+                .style()
+                .add_modifier
+                .contains(Modifier::UNDERLINED),
+            "no tab is underlined any more"
+        );
+    }
+
+    /// Each label sits in the middle of its own tab. The two tabs own
+    /// different widths — Sessions is fixed, Files takes the remainder — and
+    /// the label is centred in that width rather than in the space a badge
+    /// would leave, so the axes stay the tab's own.
+    #[test]
+    fn each_label_is_centred_in_its_own_tab() {
+        let buffer = render_tabs(40, NavigatorTab::Sessions, 0, None);
+        // Sessions: x 0..12, inner 1..10, eight cells of label -> one pad each side.
+        assert_eq!(cell_x(&buffer, "S", 1), 2);
+        // Files: x 11..40, inner 12..38, five cells of label -> eleven spaces.
+        assert_eq!(cell_x(&buffer, "F", 1), 23);
+    }
+
+    /// The needs-you badge keeps its right edge and the label keeps its
+    /// centre; a tab too narrow for both drops the badge rather than letting
+    /// it run into the label.
+    #[test]
+    fn the_badge_holds_the_right_edge_and_yields_to_a_narrow_tab() {
+        let wide = render_tabs(40, NavigatorTab::Files, 2, None);
+        assert_eq!(cell_x(&wide, "2", 1), 33);
+        assert_eq!(cell_x(&wide, "F", 1), 23, "the badge moved the label");
+
+        let narrow = render_tabs(20, NavigatorTab::Files, 2, None);
+        assert_eq!(cell_x(&narrow, "F", 1), 13, "label is not centred");
+        assert!(
+            !narrow.content().iter().any(|cell| cell.symbol() == "2"),
+            "the badge should be dropped when it cannot clear the label"
+        );
     }
 
     /// A hovered inactive tab must visibly differ from an unhovered one —
-    /// ground plus a leading marker — so a pointer user can tell it is
-    /// clickable. The active tab's treatment is untouched by hover.
+    /// ground plus a weight step — so a pointer user can tell it is clickable.
+    /// The active tab's treatment is untouched by hover.
     #[test]
     fn hovered_inactive_tab_takes_the_hover_ground_without_moving_the_label() {
-        let render = |hover: Option<NavigatorTab>| {
-            let backend = TestBackend::new(40, 3);
-            let mut terminal = Terminal::new(backend).unwrap();
-            terminal
-                .draw(|frame| {
-                    frame.render_widget(
-                        NavigatorTabs {
-                            tab: NavigatorTab::Files,
-                            focused: false,
-                            needs_you: 0,
-                            hover,
-                        },
-                        frame.area(),
-                    );
-                })
-                .unwrap();
-            terminal.backend().buffer().clone()
-        };
-        let base = render(None);
-        let hovered = render(Some(NavigatorTab::Sessions));
+        let base = render_tabs(40, NavigatorTab::Files, 0, None);
+        let hovered = render_tabs(40, NavigatorTab::Files, 0, Some(NavigatorTab::Sessions));
         let hover_bg = theme::surface_hover().bg;
 
         let sessions_label = |buffer: &ratatui::buffer::Buffer| {
@@ -461,8 +514,7 @@ mod tests {
                 .contains(Modifier::BOLD),
             "hovered tab lost its weight step"
         );
-        // No reserved hover cell: the label stays on the column's left edge
-        // whether or not the pointer is over it.
+        // Hover is ground and weight only: the centred label keeps its column.
         let label_x = |buffer: &ratatui::buffer::Buffer| {
             buffer
                 .content()

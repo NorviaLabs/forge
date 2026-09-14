@@ -164,7 +164,7 @@ These are not optional styling preferences. They are correctness requirements.
 8. **Approvals and failures outrank routine activity.**
 9. **Raw model reasoning is not ordinary chat content.**
 10. **The primary workflow remains usable at the enforced minimum of 80 × 18** (`layout.rs::MIN_WIDTH` / `MIN_HEIGHT`). Below that Forge refuses to render rather than drawing a broken screen.
-11. **Focus has to survive losing colour:** focus markers use shape as well as hue — the `>` title marker, the block caret, the accent scrollbar thumb, the tab underline, the composer's attention-thickened top edge (see the bottom panel's plain/thick rule swap).
+11. **Focus has to survive losing colour:** focus markers use shape as well as hue — the `>` title marker, the block caret, the accent scrollbar thumb, the composer's attention-thickened top edge (see the bottom panel's plain/thick rule swap).
 
 ## 5. Colour System
 
@@ -515,7 +515,7 @@ Three border levels (`design.rs`, `theme::panel_border`):
   sit at the same neutral step as L1; a nested field never reads as a second,
   louder box.
 - **L3 — local accent.** Only the element that owns the keyboard or the
-  selection: the active tab's underline, a focused search field's border, the
+  selection: the active tab's ground, a focused search field's border, the
   composer's top edge, a pane's `>` title marker, the scrollbar thumb. Thick
   rules survive only where the region is a single rule (the bottom panel).
 
@@ -523,7 +523,7 @@ The active block must use at least two signals from the L3 set:
 
 - accent or bold block title
 - explicit state marker where relevant (`> Terminal`, `> Chat`)
-- caret, scrollbar thumb, or tab underline at the point of interaction
+- caret, scrollbar thumb, or the active tab's ground at the point of interaction
 
 The transcript has one rounded L1 frame. Focus adds the `> Chat` title marker
 (never an accent border), including when the transcript has no overflow. Its
@@ -665,9 +665,11 @@ the single plan surface.
   above it. Search focus colours the border and prefix and shows the caret;
   clicking the field focuses Search.
 - Navigator tabs have rounded outlines sharing the list's top edge, neutral
-  whether selected or not. The selected label is bold and underlined; a focused
-  tab additionally carries `>` in the reserved marker cell. Selection alone
-  never claims keyboard ownership.
+  whether selected or not. The selected tab is told apart by its `accent_soft`
+  ground, which fills the whole tab, and by a label at accent hue and bold
+  weight; no tab is underlined and no tab carries a marker glyph, so the
+  label stays centred in its tab in every state. The tab bar shows which tab
+  is active, not which block owns the keyboard.
 - Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.
 - Active file and selected row may differ; distinguish them.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.
