@@ -24,6 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use forge_core::{
     AgentSession, BackgroundTaskHandle, CompactionTelemetry, QueuedTask, SessionContextState,
     TokenUsageReport, TurnEvent,
@@ -186,6 +187,12 @@ pub struct BackgroundTaskSnapshot {
     pub latest_message: Option<String>,
     pub worktree_path: Option<PathBuf>,
     pub worktree_branch: Option<String>,
+    /// When the task was spawned. Feeds the strip's live elapsed column.
+    pub started_at: DateTime<Utc>,
+    /// When the task reached a terminal status. `None` while it is still
+    /// running, and the clock the strip's row-expiry timer reads — a finished
+    /// row ages from when it *finished*, never from when it started.
+    pub finished_at: Option<DateTime<Utc>>,
 }
 
 impl BackgroundTaskSnapshot {
@@ -203,6 +210,8 @@ impl BackgroundTaskSnapshot {
                 .and_then(|message| message.clone()),
             worktree_path: task.worktree_path.clone(),
             worktree_branch: task.worktree_branch.clone(),
+            started_at: task.started_at,
+            finished_at: task.finished_at,
         }
     }
 }
@@ -307,7 +316,7 @@ mod tests {
     use forge_core::LoopConfig;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
-    use forge_types::{ModelResponse, ToolCall};
+    use forge_types::{ModelResponse, TaskId, ToolCall};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -319,6 +328,66 @@ mod tests {
             usage: None,
             thinking: None,
         }
+    }
+
+    /// The strip ages a finished row from `finished_at` and counts a running
+    /// one up from `started_at`, so `capture` has to carry both — the handle
+    /// has, and the snapshot used to drop them.
+    #[test]
+    fn capture_carries_timestamps_for_the_strip() {
+        let started_at = Utc::now() - chrono::Duration::seconds(90);
+        let finished_at = started_at + chrono::Duration::seconds(31);
+        let handle = BackgroundTaskHandle {
+            id: forge_types::BackgroundTaskId(7),
+            parent_task_id: TaskId(3),
+            kind: forge_core::BackgroundTaskKind::Shell {
+                command: "cargo clippy --all-targets".into(),
+            },
+            label: "cargo clippy --all-targets".into(),
+            status: forge_core::BackgroundTaskStatus::Succeeded {
+                summary: "clean".into(),
+            },
+            started_at,
+            finished_at: Some(finished_at),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            child_session_id: None,
+            latest_message: Arc::new(std::sync::Mutex::new(None)),
+            worktree_path: None,
+            worktree_branch: None,
+        };
+
+        let snapshot = BackgroundTaskSnapshot::capture(&handle);
+
+        assert_eq!(snapshot.started_at, started_at);
+        assert_eq!(snapshot.finished_at, Some(finished_at));
+    }
+
+    /// A running task has no `finished_at`, and the strip must read that as
+    /// "still counting up" rather than "finished long ago".
+    #[test]
+    fn capture_leaves_finished_at_open_while_a_task_runs() {
+        let handle = BackgroundTaskHandle {
+            id: forge_types::BackgroundTaskId(1),
+            parent_task_id: TaskId(1),
+            kind: forge_core::BackgroundTaskKind::Subagent {
+                role: "explore".into(),
+                prompt: "find auth code".into(),
+            },
+            label: "explore".into(),
+            status: forge_core::BackgroundTaskStatus::Running,
+            started_at: Utc::now(),
+            finished_at: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            child_session_id: Some(SessionId::new_v4()),
+            latest_message: Arc::new(std::sync::Mutex::new(Some("reading".into()))),
+            worktree_path: None,
+            worktree_branch: None,
+        };
+
+        let snapshot = BackgroundTaskSnapshot::capture(&handle);
+
+        assert_eq!(snapshot.finished_at, None);
+        assert_eq!(snapshot.latest_message.as_deref(), Some("reading"));
     }
 
     async fn session_with(script: Vec<ModelResponse>, dir: &Path) -> AgentSession {

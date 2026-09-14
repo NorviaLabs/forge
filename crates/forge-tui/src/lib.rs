@@ -24,6 +24,7 @@ mod selection;
 mod setup;
 mod source_viewer;
 mod status_glyph;
+mod tasks_strip;
 mod terminal;
 mod theme;
 mod theme_preview;

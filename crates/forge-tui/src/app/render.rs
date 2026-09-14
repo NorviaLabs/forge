@@ -10,6 +10,8 @@
 
 use super::*;
 
+use crate::tasks_strip;
+
 /// Most rows the slash palette will draw, however much room is above the
 /// composer. Past this a palette stops being a menu and becomes a page.
 const SLASH_PALETTE_MAX_ROWS: u16 = 16;
@@ -180,6 +182,21 @@ impl TuiApp {
         // else (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
         let task_mode = self.supervisor.is_some();
+        // The strip's height is requested before the split because `layout.rs`
+        // has to clamp it against the transcript's floor, and it is built after
+        // the split because only then is the height that actually fit known.
+        let background_tasks = self.selected_background_tasks();
+        let strip_now = chrono::Utc::now();
+        let strip_live = tasks_strip::BackgroundStrip::build(
+            &background_tasks,
+            strip_now,
+            tasks_strip::STRIP_ROW_CAP,
+        );
+        let background_h = if strip_live.is_empty() {
+            0
+        } else {
+            (1 + strip_live.total.min(tasks_strip::STRIP_ROW_CAP)) as u16
+        };
         let regions = if expand_conversation && task_mode {
             split_areas_with_expanded_conversation(
                 area,
@@ -190,7 +207,7 @@ impl TuiApp {
                 panel_h,
                 hint_h,
                 true,
-                0,
+                background_h,
                 approve_all_warning_h,
             )
         } else if task_mode {
@@ -203,7 +220,7 @@ impl TuiApp {
                 panel_h,
                 hint_h,
                 true,
-                0,
+                background_h,
                 approve_all_warning_h,
             )
         } else if expand_conversation {
@@ -216,7 +233,7 @@ impl TuiApp {
                 panel_h,
                 hint_h,
                 true,
-                0,
+                background_h,
                 approve_all_warning_h,
             )
         } else {
@@ -229,7 +246,7 @@ impl TuiApp {
                 panel_h,
                 hint_h,
                 true,
-                0,
+                background_h,
                 approve_all_warning_h,
             )
         };
@@ -785,6 +802,21 @@ impl TuiApp {
             );
         } else {
             self.queue_area = None;
+        }
+
+        // The background strip. Only drawn when the layout gave it room: a
+        // zero-height region means the transcript needed it more.
+        if regions.background.height > 1 {
+            let visible = (regions.background.height - 1) as usize;
+            let strip = tasks_strip::BackgroundStrip::build(&background_tasks, strip_now, visible);
+            frame.render_widget(
+                BackgroundStripWidget {
+                    strip: &strip,
+                    selected: self.task_selection.task(),
+                    focused: self.focus.block() == FocusBlock::Sidebar,
+                },
+                regions.background,
+            );
         }
         let width = conversation_text_width(sidebar_width);
         // Tail-only changes use `StreamMarkdownCache` and must become visible
