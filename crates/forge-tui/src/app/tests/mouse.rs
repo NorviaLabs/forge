@@ -60,16 +60,75 @@ async fn wheel_down_to_bottom_refollows_conversation() {
 }
 
 #[tokio::test]
-async fn shift_wheel_pages_conversation_like_pagedown() {
+async fn wheel_up_over_the_focused_transcript_scrolls_it() {
     let (_dir, mut app) = focus_test_app().await;
-    app.focus_block(FocusBlock::Composer);
-    // Start scrolled up so a page-down notch has room to move.
-    app.conversation_view.scroll = 10;
+    // Sidebar is what a click on the transcript focuses.
+    app.focus_block(FocusBlock::Sidebar);
+    app.conversation_view.follow = true;
+
+    app.handle_mouse(wheel_up()).await.unwrap();
+
+    assert!(!app.conversation_view.follow);
+    assert_eq!(app.conversation_view.scroll, 3);
+}
+
+#[tokio::test]
+async fn shift_wheel_pages_the_focused_transcript_by_the_measured_page() {
+    let (_dir, mut app) = focus_test_app().await;
+    // Drawing first is the point: an unrendered app only ever proves the
+    // pre-draw fallback, which is what made this test pass for the wrong
+    // reason before.
+    draw_app(&mut app, 120, 40);
+    let page = app.conversation_page_rows();
+    assert!(page > 3, "fixture pane is worth paging: {page}");
+    app.focus_block(FocusBlock::Sidebar);
+    app.conversation_view.follow = false;
+    // Start scrolled up so a page-down has room to move.
+    app.conversation_view.scroll = 100;
 
     app.handle_mouse(shift_wheel_down()).await.unwrap();
 
-    // Shift+wheel pages by the same step keyboard PageUp/PageDown uses.
-    assert_eq!(app.conversation_view.scroll, 5);
+    assert_eq!(app.conversation_view.scroll, 100 - page);
+}
+
+/// §8.6: the wheel matches the keyboard page/step size for the pane it
+/// scrolls. Same pane, two inputs, identical distance.
+#[tokio::test]
+async fn shift_wheel_moves_the_transcript_by_the_same_page_as_pagedown() {
+    let (_dir, mut app) = focus_test_app().await;
+    draw_app(&mut app, 120, 40);
+    let page = app.conversation_page_rows();
+    assert!(page > 3, "fixture pane is worth paging: {page}");
+
+    app.focus_block(FocusBlock::Composer);
+    app.conversation_view.follow = false;
+    app.conversation_view.scroll = 100;
+    app.handle_mouse(shift_wheel_down()).await.unwrap();
+    let wheel_target = app.conversation_view.scroll;
+
+    app.conversation_view.scroll = 100;
+    app.handle_key(press(KeyCode::PageDown, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.conversation_view.scroll, wheel_target);
+    assert_eq!(wheel_target, 100 - page);
+}
+
+/// Scope pin: the session navigator is a deliberate wheel no-op, while the
+/// file tree beside it moves its selection. Only the transcript was in scope.
+#[tokio::test]
+async fn wheel_over_the_session_navigator_is_a_noop() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::TaskStrip);
+    app.conversation_view.scroll = 0;
+    let selection = app.task_strip_selection;
+
+    app.handle_mouse(wheel_up()).await.unwrap();
+    app.handle_mouse(wheel_down()).await.unwrap();
+
+    assert_eq!(app.conversation_view.scroll, 0);
+    assert_eq!(app.task_strip_selection, selection);
 }
 
 #[tokio::test]

@@ -1499,6 +1499,29 @@ async fn paging_the_conversation_moves_a_page_not_five_rows() {
     assert_eq!(app.conversation_view.scroll, before + (area.height - 2));
 }
 
+/// The transcript's own block — what a click on the transcript focuses — pages
+/// too. `↑↓` belong to the background-task strip inside it, so paging is the
+/// only way the block's own pane moves.
+#[tokio::test]
+async fn paging_moves_the_conversation_with_the_transcript_focused() {
+    let (_dir, mut app) = focus_test_app().await;
+    draw_app(&mut app, 120, 40);
+    let area = app.conversation_area.expect("conversation was drawn");
+    app.focus_block(FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+
+    let before = app.conversation_view.scroll;
+    app.handle_key(press(KeyCode::PageUp, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.conversation_view.scroll, before + (area.height - 2));
+
+    app.handle_key(press(KeyCode::PageDown, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.conversation_view.scroll, before);
+}
+
 #[tokio::test]
 async fn a_page_falls_back_to_a_sane_step_before_the_first_draw() {
     let (_dir, app) = focus_test_app().await;

@@ -467,6 +467,15 @@ impl TuiApp {
             KeyCode::Down if key.modifiers.is_empty() => {
                 Some(SemanticCommand::MoveTasksSelection(1))
             }
+            // The strip above is the block's only selection; the pane the
+            // block owns is the transcript, so paging stays reachable without
+            // stealing ↑↓ from the background tasks.
+            KeyCode::PageUp if key.modifiers.is_empty() => {
+                Some(SemanticCommand::PageConversation(true))
+            }
+            KeyCode::PageDown if key.modifiers.is_empty() => {
+                Some(SemanticCommand::PageConversation(false))
+            }
             KeyCode::Char('x') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelSelectedBackgroundTask)
             }
@@ -601,6 +610,14 @@ impl TuiApp {
                 self.conversation_view.scroll = 0;
                 self.conversation_view.follow = true;
                 self.set_feedback(FeedbackSeverity::Info, "conversation: latest");
+            }
+            SemanticCommand::PageConversation(up) => {
+                let page = self.conversation_page_rows();
+                if up {
+                    self.scroll_conversation_up(page);
+                } else {
+                    self.scroll_conversation_down(page);
+                }
             }
             SemanticCommand::CloseOverlay => {
                 self.dismiss_overlay();
@@ -1718,7 +1735,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sidebar_key_bindings_drive_background_task_selection() {
+    async fn sidebar_key_bindings_drive_background_tasks_and_transcript_paging() {
         let (_d, app) = app().await;
         for (k, expected) in [
             (
@@ -1728,6 +1745,14 @@ mod tests {
             (
                 key(KeyCode::Down, NONE),
                 SemanticCommand::MoveTasksSelection(1),
+            ),
+            (
+                key(KeyCode::PageUp, NONE),
+                SemanticCommand::PageConversation(true),
+            ),
+            (
+                key(KeyCode::PageDown, NONE),
+                SemanticCommand::PageConversation(false),
             ),
             (
                 key(KeyCode::Char('x'), NONE),
