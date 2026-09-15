@@ -762,6 +762,11 @@ impl TuiApp {
             ExplorerDialog::DirtyExit => ("Unsaved Changes", theme::warn()),
             ExplorerDialog::DirtySwitch { .. } => ("Unsaved Changes", theme::warn()),
             ExplorerDialog::SaveConflict => ("File Changed on Disk", theme::warn()),
+            // Untouched buffers are a warning; unsaved ones are loss.
+            ExplorerDialog::QuitAll { summary, .. } if summary.dirty_sessions.is_empty() => {
+                ("Quit All Sessions", theme::warn())
+            }
+            ExplorerDialog::QuitAll { .. } => ("Quit All Sessions", theme::danger()),
         };
         match dialog {
             ExplorerDialog::Name {
@@ -918,6 +923,38 @@ impl TuiApp {
                 lines.push(Line::from(""));
                 lines.push(Line::styled(
                     "Reload disk?  r reload · f force save · Esc cancel",
+                    theme::muted(),
+                ));
+            }
+            ExplorerDialog::QuitAll { summary, choice } => {
+                lines.push(Line::styled("Quitting stops every session.", theme::text()));
+                let losses = summary.loss_lines();
+                if !losses.is_empty() {
+                    lines.push(Line::from(""));
+                    for loss in losses {
+                        lines.push(Line::styled(format!("•  {loss}"), theme::warn()));
+                    }
+                }
+                lines.push(Line::from(""));
+                for (row, label) in [
+                    (
+                        QuitAllChoice::QuitAll,
+                        format!("Quit all {}", counted_noun(summary.sessions, "session")),
+                    ),
+                    (QuitAllChoice::Cancel, "Cancel".to_string()),
+                ] {
+                    if row == *choice {
+                        lines.push(Line::styled(
+                            format!("▶ {label}"),
+                            theme::focused_selection_style(),
+                        ));
+                    } else {
+                        lines.push(Line::styled(format!("  {label}"), theme::text()));
+                    }
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    crate::hints::hint_text(crate::hints::QUIT_ALL),
                     theme::muted(),
                 ));
             }

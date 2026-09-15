@@ -365,10 +365,11 @@ fn fail_pending_close(app: &mut TuiApp, message: &str) {
 /// `/quit` on the last session must exit even when its close fails.
 ///
 /// Retirement is best-effort and time-boxed in the supervisor, so a workspace
-/// that takes longer than that deadline to release makes `CloseSession` fail.
+/// that takes longer than that deadline to release makes the close fail.
 /// Because the exit used to be gated on that success, the follow-up did
 /// nothing and the app loop kept running — an unquittable session. The leftover
-/// actor is reconciled on the next launch, so exiting is always safe here.
+/// actor is reconciled on the next launch, so exiting is always safe; the
+/// failure rides out in the exit summary instead of dying on the last frame.
 #[tokio::test]
 async fn quit_exits_even_when_the_last_session_close_fails() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
@@ -383,7 +384,11 @@ async fn quit_exits_even_when_the_last_session_close_fails() {
         app.exit.is_requested(),
         "a failed close on the last session must still quit"
     );
-    assert_eq!(app.status_state.message, "quitting · cleanup deferred");
+    assert_eq!(
+        app.quit_failure.as_deref(),
+        Some("session resources did not stop before workspace retirement"),
+        "the failure must reach the exit summary, not die on the last frame"
+    );
 
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
@@ -426,6 +431,386 @@ async fn quit_with_a_sibling_stays_running_when_the_close_fails() {
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
         .unwrap();
+}
+
+/// A quit-all summary names only the categories that actually lose something:
+/// a `0` line is noise, and the dialog exists to be read.
+#[test]
+fn quit_all_loss_lines_only_name_what_is_actually_lost() {
+    let quiet = QuitAllSummary {
+        sessions: 3,
+        ..Default::default()
+    };
+    assert!(quiet.loss_lines().is_empty());
+    assert!(
+        !quiet.needs_confirmation(),
+        "sessions that are idle are not worth a dialog"
+    );
+
+    let one_working = QuitAllSummary {
+        in_flight: 1,
+        ..quiet.clone()
+    };
+    assert!(
+        !one_working.needs_confirmation(),
+        "one busy session the operator is watching is the ordinary case"
+    );
+
+    let busy = QuitAllSummary {
+        sessions: 4,
+        in_flight: 2,
+        queued_prompts: 1,
+        pending_requests: 1,
+        dirty_sessions: vec!["api-refactor".into(), "docs".into()],
+    };
+    assert!(busy.needs_confirmation());
+    assert_eq!(
+        busy.loss_lines(),
+        vec![
+            "2 sessions with a turn running — cancelled".to_string(),
+            "1 queued prompt never dispatched".to_string(),
+            "1 request waiting on you — dismissed".to_string(),
+            "unsaved changes in api-refactor, docs".to_string(),
+        ]
+    );
+}
+
+/// The counters come from the roster, not from the focused view, and archived
+/// rows are history rather than sessions the quit will stop.
+#[tokio::test]
+async fn quit_all_summary_reads_the_whole_roster() {
+    let (dir, mut app, handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+    let template = app
+        .supervisor
+        .as_ref()
+        .unwrap()
+        .snapshots
+        .get(&primary_id)
+        .unwrap()
+        .clone();
+
+    let running_id = uuid::Uuid::new_v4();
+    let mut running = template.clone();
+    running.task.session_id = running_id;
+    running.task.label = "api-refactor".into();
+    running.task.ownership = forge_session::WorktreeOwnership::Managed;
+    running.task.turn_state = forge_session::SupervisorTurnState::Running;
+    running.queued_prompts = vec![(1, "queued behind it".into())];
+
+    let archived_id = uuid::Uuid::new_v4();
+    let mut archived = template.clone();
+    archived.task.session_id = archived_id;
+    archived.task.lifecycle = forge_session::SessionLifecycle::Archived;
+    archived.task.turn_state = forge_session::SupervisorTurnState::Running;
+
+    {
+        let snapshots = &mut app.supervisor.as_mut().unwrap().snapshots;
+        snapshots.insert(primary_id, {
+            let mut primary = template.clone();
+            primary.task.turn_state = forge_session::SupervisorTurnState::Running;
+            primary
+        });
+        snapshots.insert(running_id, running);
+        snapshots.insert(archived_id, archived);
+    }
+
+    // An unsaved buffer on the selected session counts like any other.
+    let path = dir.path().join("a.txt");
+    app.open_file_in_editor(&path);
+    app.editor_session
+        .as_mut()
+        .expect("primary editor")
+        .substitute("one", "edited", true, true);
+    assert!(app
+        .editor_session
+        .as_ref()
+        .is_some_and(|editor| editor.is_dirty()));
+
+    let summary = app.quit_all_summary();
+    assert_eq!(summary.sessions, 2, "archived sessions are not stopped");
+    assert_eq!(summary.in_flight, 2);
+    assert_eq!(summary.queued_prompts, 1);
+    assert_eq!(summary.dirty_sessions, vec!["main".to_string()]);
+    assert!(summary.needs_confirmation());
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// One busy session is not worth interrupting the operator; quitting is the
+/// ordinary way to leave a session that is still working.
+#[tokio::test]
+async fn one_working_session_quits_without_a_confirm() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+    set_primary_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Running,
+    );
+
+    app.begin_quit();
+    assert!(
+        app.explorer_dialog.current().is_none(),
+        "one running session must quit without a dialog"
+    );
+    assert!(app.quitting, "the quit itself must still be under way");
+    assert!(
+        app.status_state.message.contains("closing"),
+        "the sweep reports progress: {}",
+        app.status_state.message
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// The second one is work that dies without anyone watching it, so the confirm
+/// appears — and defaults to leaving it alone.
+#[tokio::test]
+async fn the_quit_all_confirm_defaults_to_cancel() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+    set_primary_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Running,
+    );
+    inject_synthetic_session(&mut app, "docs", forge_session::SupervisorTurnState::Queued);
+
+    app.begin_quit();
+    match app.explorer_dialog.current() {
+        Some(ExplorerDialog::QuitAll { summary, choice }) => {
+            assert_eq!(summary.sessions, 2);
+            assert_eq!(summary.in_flight, 2);
+            assert_eq!(
+                *choice,
+                QuitAllChoice::Cancel,
+                "the destructive row must never be the default"
+            );
+        }
+        other => panic!("expected the quit-all confirm, got {other:?}"),
+    }
+    assert!(!app.exit.is_requested());
+    assert!(!app.quitting, "nothing is swept until the row is confirmed");
+
+    // Enter on an untouched dialog confirms Cancel.
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.explorer_dialog.current().is_none());
+    assert!(!app.exit.is_requested());
+    assert!(!app.quitting);
+
+    // Esc dismisses it too.
+    app.begin_quit();
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.explorer_dialog.current().is_none());
+    assert!(!app.quitting);
+
+    // Only the explicit Quit-all row starts the sweep.
+    app.begin_quit();
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.explorer_dialog.current().is_none());
+    assert!(app.quitting, "confirming starts the sweep");
+    assert!(
+        app.status_state.message.contains("closing"),
+        "the sweep reports progress: {}",
+        app.status_state.message
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// Confirming runs the real sweep against the live supervisor and exits once
+/// it reports, however many sessions the roster held.
+#[tokio::test]
+async fn confirming_quit_all_sweeps_the_sessions_and_exits() {
+    // The sweep closes the primary itself, so there is nothing left to shut
+    // down: the handle's channel closing is the supervisor's exit.
+    let (_dir, mut app, _handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+    set_primary_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Running,
+    );
+    inject_synthetic_session(
+        &mut app,
+        "docs",
+        forge_session::SupervisorTurnState::Running,
+    );
+
+    app.begin_quit();
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        if app.exit.is_requested() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(app.exit.is_requested(), "quit-all must end in exit");
+    assert!(
+        app.supervisor
+            .as_ref()
+            .is_none_or(|supervisor| supervisor.snapshots.is_empty()
+                || !supervisor.snapshots.contains_key(&primary_id)),
+        "the primary session must have been closed, not just left behind"
+    );
+}
+
+/// `/quit` on the primary session is a request to leave Forge, so it takes the
+/// same gate as `Ctrl+D` instead of closing the session the operator is
+/// looking at. The same command in a managed session view still closes only
+/// that session.
+#[tokio::test]
+async fn slash_quit_on_the_primary_session_takes_the_quit_gate() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+    set_primary_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Running,
+    );
+    inject_synthetic_session(&mut app, "docs", forge_session::SupervisorTurnState::Queued);
+
+    app.dispatch_line("/quit").await.unwrap();
+
+    assert!(
+        matches!(
+            app.explorer_dialog.current(),
+            Some(ExplorerDialog::QuitAll { .. })
+        ),
+        "the primary session's /quit must ask before stopping every session"
+    );
+    assert!(!app.quitting, "nothing is swept until the row is confirmed");
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// The dialog body is the whole point: the operator sees the bill before
+/// agreeing to it.
+#[tokio::test]
+async fn the_quit_all_confirm_names_what_is_lost() {
+    let (dir, mut app, handle) = app_with_supervisor().await;
+    let primary_id = app.selected_session_id;
+    set_primary_turn_state(
+        &mut app,
+        primary_id,
+        forge_session::SupervisorTurnState::Running,
+    );
+    let sibling_id = inject_synthetic_session(
+        &mut app,
+        "docs",
+        forge_session::SupervisorTurnState::Running,
+    );
+    app.supervisor
+        .as_mut()
+        .unwrap()
+        .snapshots
+        .get_mut(&sibling_id)
+        .unwrap()
+        .queued_prompts = vec![(1, "never dispatched".into())];
+
+    let path = dir.path().join("a.txt");
+    app.open_file_in_editor(&path);
+    app.editor_session
+        .as_mut()
+        .expect("primary editor")
+        .substitute("one", "edited", true, true);
+
+    app.begin_quit();
+    let text = render_app_text(&mut app, 100, 40);
+
+    assert!(text.contains("Quit All Sessions"), "missing title: {text}");
+    assert!(text.contains("Quitting stops every session."));
+    assert!(text.contains("2 sessions with a turn running — cancelled"));
+    assert!(text.contains("1 queued prompt never dispatched"));
+    assert!(
+        text.contains("unsaved changes in main"),
+        "the unsaved buffer must be named: {text}"
+    );
+    assert!(text.contains("Quit all 2 sessions"));
+    assert!(text.contains("Cancel"));
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// Put the selected session into a turn state the roster would report, so the
+/// gate can be exercised without racing a real turn.
+fn set_primary_turn_state(
+    app: &mut TuiApp,
+    session_id: uuid::Uuid,
+    state: forge_session::SupervisorTurnState,
+) {
+    app.supervisor
+        .as_mut()
+        .unwrap()
+        .snapshots
+        .get_mut(&session_id)
+        .expect("selected session in the roster")
+        .task
+        .turn_state = state;
+}
+
+/// Add a roster entry that no actor backs. Quit-all reads the roster, so this
+/// is enough to pose the "work elsewhere" question the gate answers.
+fn inject_synthetic_session(
+    app: &mut TuiApp,
+    label: &str,
+    state: forge_session::SupervisorTurnState,
+) -> uuid::Uuid {
+    let template = app
+        .supervisor
+        .as_ref()
+        .unwrap()
+        .snapshots
+        .values()
+        .next()
+        .expect("a roster entry to copy")
+        .clone();
+    let session_id = uuid::Uuid::new_v4();
+    let mut snapshot = template;
+    snapshot.task.session_id = session_id;
+    snapshot.task.label = label.into();
+    snapshot.task.ownership = forge_session::WorktreeOwnership::Managed;
+    snapshot.task.turn_state = state;
+    app.supervisor
+        .as_mut()
+        .unwrap()
+        .snapshots
+        .insert(session_id, snapshot);
+    session_id
 }
 
 /// Supervised turns are driven by supervisor events, not the local submit

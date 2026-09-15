@@ -405,6 +405,9 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         None => run_tui_with_launch(opened.session, runtime, launch).await,
     }
     .map_err(|e| anyhow::anyhow!(e))?;
+    if let Some(quit_failure) = &summary.quit_failure {
+        eprintln!("quit all sessions: {quit_failure}");
+    }
     if let Some(token_usage) = summary.token_usage {
         println!("{token_usage}");
         println!(

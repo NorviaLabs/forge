@@ -472,7 +472,9 @@ impl TuiApp {
             .retain(|session_id, _| live_session_ids.contains(session_id));
         self.retiring_session_view_states
             .retain(|session_id, _| live_session_ids.contains(session_id));
-        if removed_dirty {
+        // A quit-all sweep removes every session on purpose, so the warning
+        // would fire once per session for changes the confirm already named.
+        if removed_dirty && !self.quitting {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "a removed Session had unsaved editor changes; save or discard them before cleanup",
@@ -639,7 +641,16 @@ impl TuiApp {
         for mut command in pending {
             match command.reply.try_recv() {
                 Ok(Ok(())) => self.apply_command_follow_up(&command.follow_up, true),
-                Ok(Err(_)) => self.apply_command_follow_up(&command.follow_up, false),
+                Ok(Err(message)) => {
+                    // The quit path is the one place a supervisor failure has
+                    // to outlive the frame it arrived in: the app exits
+                    // immediately, so the text rides out in the exit summary
+                    // instead of a toast nobody will read.
+                    if matches!(command.follow_up, CommandFollowUp::QuitAll) {
+                        self.quit_failure = Some(message);
+                    }
+                    self.apply_command_follow_up(&command.follow_up, false)
+                }
                 Err(TryRecvError::Empty) => waiting.push(command),
                 Err(TryRecvError::Closed) => {
                     self.apply_command_follow_up(&command.follow_up, false);
@@ -674,6 +685,13 @@ impl TuiApp {
                     self.poll_supervisor_events();
                     self.status_state.message = "session closed".into();
                 }
+            }
+            CommandFollowUp::QuitAll => {
+                // Exits on either outcome. A refused session cannot keep an
+                // app the operator asked to close open; the failures were
+                // published as error events and travel out in the exit summary.
+                self.exit.request();
+                self.status_state.message = "quitting…".into();
             }
             CommandFollowUp::EditQueuedMessage { text } => {
                 if succeeded {
@@ -994,6 +1012,20 @@ impl TuiApp {
                     }
                 }
                 _ => Some(ExplorerDialog::SaveConflict),
+            },
+            ExplorerDialog::QuitAll { summary, choice } => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Up | KeyCode::Down => Some(ExplorerDialog::QuitAll {
+                    summary,
+                    choice: choice.toggle(),
+                }),
+                KeyCode::Enter => {
+                    if choice == QuitAllChoice::QuitAll {
+                        self.start_quit_all();
+                    }
+                    None
+                }
+                _ => Some(ExplorerDialog::QuitAll { summary, choice }),
             },
         };
         self.explorer_dialog.replace(next);

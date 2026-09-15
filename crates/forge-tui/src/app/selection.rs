@@ -192,6 +192,17 @@ impl TuiApp {
         matches!(self.selected_runtime(), SelectedRuntime::Supervised(_))
     }
 
+    /// Whether the selected session is the workspace's own, rather than one
+    /// the supervisor created in a managed worktree.
+    ///
+    /// Quitting from here means quitting Forge; `/quit` in any other session
+    /// view stays a per-session action.
+    pub(crate) fn selected_is_primary(&self) -> bool {
+        self.selected_snapshot().is_some_and(|snapshot| {
+            snapshot.task.ownership == forge_session::WorktreeOwnership::Primary
+        })
+    }
+
     /// The supervisor's latest view of the selected Session, when that
     /// Session is actor-owned rather than directly owned by the TUI.
     pub(crate) fn selected_snapshot(&self) -> Option<&forge_session::SessionRuntimeSnapshot> {

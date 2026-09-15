@@ -616,6 +616,102 @@ pub(crate) enum ExplorerDialog {
         path: PathBuf,
     },
     SaveConflict,
+    /// Quit-all confirm, raised only when quitting would discard work in
+    /// sessions the operator is not looking at.
+    QuitAll {
+        summary: QuitAllSummary,
+        choice: QuitAllChoice,
+    },
+}
+
+/// What quitting Forge right now would discard.
+///
+/// Quitting has always torn every session down — the process exit retires
+/// every actor. The operator never had a chance to see the cost first: turns
+/// running in sessions they are not watching, prompts still queued behind
+/// them, approvals and agent questions waiting on an answer, and unsaved
+/// editor buffers in other session views.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct QuitAllSummary {
+    /// Sessions the supervisor will stop managing.
+    pub(crate) sessions: usize,
+    /// The subset with a turn running or queued.
+    pub(crate) in_flight: usize,
+    pub(crate) queued_prompts: usize,
+    /// Sessions parked on an approval or an agent question.
+    pub(crate) pending_requests: usize,
+    /// Labels of sessions holding unsaved editor buffers.
+    pub(crate) dirty_sessions: Vec<String>,
+}
+
+impl QuitAllSummary {
+    /// Whether this is worth a dialog. One busy session that the operator is
+    /// looking at is the ordinary case, and prompting for it would put a
+    /// dialog in front of every quit; a second one is work dying unseen.
+    pub(crate) fn needs_confirmation(&self) -> bool {
+        self.in_flight > 1
+    }
+
+    /// The "what will be lost" lines, in the order the dialog reads them.
+    /// Empty when quitting discards nothing beyond stopping the sessions.
+    pub(crate) fn loss_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.in_flight > 0 {
+            lines.push(format!(
+                "{} with a turn running — cancelled",
+                counted_noun(self.in_flight, "session")
+            ));
+        }
+        if self.queued_prompts > 0 {
+            lines.push(format!(
+                "{} never dispatched",
+                counted_noun(self.queued_prompts, "queued prompt")
+            ));
+        }
+        if self.pending_requests > 0 {
+            lines.push(format!(
+                "{} waiting on you — dismissed",
+                counted_noun(self.pending_requests, "request")
+            ));
+        }
+        if !self.dirty_sessions.is_empty() {
+            lines.push(format!(
+                "unsaved changes in {}",
+                self.dirty_sessions.join(", ")
+            ));
+        }
+        lines
+    }
+}
+
+/// `2 sessions`, `1 session`. Keeps the counts in the dialog readable without
+/// a second copy of each noun.
+pub(crate) fn counted_noun(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// The two rows of the quit-all confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum QuitAllChoice {
+    QuitAll,
+    /// The default row: the dialog exists to protect work, so an Enter the
+    /// operator did not mean must not destroy any.
+    #[default]
+    Cancel,
+}
+
+impl QuitAllChoice {
+    /// Two rows, so moving in either direction selects the other one.
+    pub(crate) fn toggle(self) -> Self {
+        match self {
+            Self::QuitAll => Self::Cancel,
+            Self::Cancel => Self::QuitAll,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -846,6 +942,10 @@ pub struct ExitSummary {
     pub exit_code: ExitCode,
     pub session_id: String,
     pub token_usage: Option<String>,
+    /// Sessions a quit-all sweep could not close. Reported by the launcher
+    /// once the terminal is restored — the operator has no frame left to
+    /// read it in.
+    pub quit_failure: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1685,6 +1785,10 @@ pub(crate) enum CommandFollowUp {
     Retirement { session_id: uuid::Uuid },
     /// Quit once the selected session's `CloseSession` succeeds.
     Quit { active_sessions: usize },
+    /// Quit once `CloseAllSessions` reports its sweep, successful or not. The
+    /// process exits either way; a session that refused to retire is reported
+    /// rather than allowed to keep an app the operator asked to close open.
+    QuitAll,
     /// Load a canceled queued message back into the composer, but only once
     /// the supervisor confirms it left the queue.
     EditQueuedMessage { text: String },
@@ -1760,6 +1864,13 @@ pub struct TuiApp {
     /// connect screens return to it first.
     pub(crate) onboarding_connect: bool,
     pub(crate) exit: ExitState,
+    /// A quit-all sweep is under way: sessions are being retired on the way
+    /// out, so the roster shrinking is expected rather than a session
+    /// vanishing underneath the operator.
+    pub(crate) quitting: bool,
+    /// Sessions the quit-all sweep could not close, carried out in the exit
+    /// summary. Nothing is left on screen to report them once the app exits.
+    pub(crate) quit_failure: Option<String>,
     pub(crate) startup_resume: StartupResumeState,
     pub(crate) busy_state: BusyState,
     pub(crate) status_state: StatusMessageState,

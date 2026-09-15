@@ -130,6 +130,10 @@ pub enum SupervisorCommand {
     CloseSession {
         session_id: SessionId,
     },
+    /// Stop managing every session this supervisor owns. Attempts the whole
+    /// roster rather than stopping at the first that refuses to retire, and
+    /// reports how many did not close.
+    CloseAllSessions,
     StopTurn {
         session_id: SessionId,
     },
@@ -947,6 +951,7 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
             },
         };
         let shutdown = matches!(envelope.command, SupervisorCommand::Shutdown);
+        let stops_everything = stops_every_session(&envelope.command);
         if runs_outside_command_loop(&envelope.command) {
             let command = envelope.command.clone();
             let reply = envelope.reply;
@@ -974,7 +979,7 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
         let result: Result<(), RepositorySupervisorError> = loop {
             tokio::select! {
                 result = &mut command => break result,
-                next = receiver.recv(), if !shutdown => {
+                next = receiver.recv(), if !stops_everything => {
                     if let Some(next) = next {
                         if let SupervisorCommand::StopTurn { session_id } = next.command {
                             let cancelled = actor(&state, session_id).await
@@ -985,7 +990,7 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                                 deferred.push_back(next);
                             }
                         } else {
-                            if matches!(next.command, SupervisorCommand::Shutdown) {
+                            if stops_every_session(&next.command) {
                                 for actor in state.actors.read().await.values() {
                                     actor.request_cancel();
                                 }
@@ -1006,7 +1011,7 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                 next = receiver.recv() => {
                     match next {
                         Some(next) => {
-                            if matches!(next.command, SupervisorCommand::Shutdown) {
+                            if stops_every_session(&next.command) {
                                 for actor in state.actors.read().await.values() {
                                     actor.request_cancel();
                                 }
@@ -1052,6 +1057,17 @@ fn runs_outside_command_loop(command: &SupervisorCommand) -> bool {
             | SupervisorCommand::RemoveManagedWorktree { .. }
             | SupervisorCommand::CompactContext { .. }
             | SupervisorCommand::CloseSession { .. }
+            | SupervisorCommand::CloseAllSessions
+    )
+}
+
+/// Commands that end every session, so a turn still running anywhere must
+/// cancel rather than delay them. Both are operator-initiated and both have
+/// already decided that in-flight work is expendable.
+fn stops_every_session(command: &SupervisorCommand) -> bool {
+    matches!(
+        command,
+        SupervisorCommand::Shutdown | SupervisorCommand::CloseAllSessions
     )
 }
 
@@ -1611,6 +1627,9 @@ async fn execute_command(
         SupervisorCommand::CloseSession { session_id } => {
             close_session(&state, session_id).await?;
         }
+        SupervisorCommand::CloseAllSessions => {
+            close_all_sessions(&state).await?;
+        }
         SupervisorCommand::StopTurn { session_id } => {
             let actor = actor(&state, session_id).await?;
             if !actor.request_cancel() {
@@ -1823,22 +1842,88 @@ async fn execute_command(
             let _ = state.events.send(SupervisorEvent::Selected(selected));
         }
         SupervisorCommand::Shutdown => {
-            let session_ids: Vec<_> = state.actors.read().await.keys().copied().collect();
-            for session_id in session_ids {
-                let Some(task_actor) = wait_for_actor_retirement(&state, session_id, true).await?
-                else {
-                    continue;
-                };
-                let refresh = {
-                    let session = task_actor.session.lock().await;
-                    refresh_actor(&state, &task_actor, &session).await
-                };
-                task_actor.finish_retirement();
-                refresh?;
+            // Attempt every session. Propagating the first failure out of
+            // this loop stranded every session after it, so one actor that
+            // would not retire (provider hang, contended lock) left a
+            // half-closed repository behind an exit that reported success.
+            for (session_id, error) in retire_every_actor(&state, true).await {
+                let _ = state.events.send(SupervisorEvent::Error {
+                    session_id: Some(session_id),
+                    message: format!("session did not retire at shutdown: {error}"),
+                });
             }
         }
     }
     Ok(())
+}
+
+/// Retire every actor currently registered, returning the failures rather
+/// than stopping at the first one.
+///
+/// Used by `Shutdown`, where a partial sweep is invisible, and by
+/// `CloseAllSessions`, where it is reported to the operator.
+async fn retire_every_actor(
+    state: &Arc<SupervisorState>,
+    allow_pending_interaction: bool,
+) -> Vec<(SessionId, RepositorySupervisorError)> {
+    let session_ids: Vec<SessionId> = state.actors.read().await.keys().copied().collect();
+    let mut failures = Vec::new();
+    for session_id in session_ids {
+        let retired =
+            match wait_for_actor_retirement(state, session_id, allow_pending_interaction).await {
+                Ok(retired) => retired,
+                Err(error) => {
+                    failures.push((session_id, error));
+                    continue;
+                }
+            };
+        // `None` means another retirer won the race and already removed the
+        // actor; the session is closed either way.
+        let Some(task_actor) = retired else {
+            continue;
+        };
+        let refresh = {
+            let session = task_actor.session.lock().await;
+            refresh_actor(state, &task_actor, &session).await
+        };
+        task_actor.finish_retirement();
+        if let Err(error) = refresh {
+            failures.push((session_id, error));
+        }
+    }
+    failures
+}
+
+/// Close every active session, reporting every failure instead of stopping
+/// at the first.
+async fn close_all_sessions(state: &Arc<SupervisorState>) -> Result<(), RepositorySupervisorError> {
+    let session_ids: Vec<SessionId> = snapshots(state)
+        .await
+        .into_iter()
+        .filter(|snapshot| snapshot.task.lifecycle == SessionLifecycle::Active)
+        .map(|snapshot| snapshot.task.session_id)
+        .collect();
+    let total = session_ids.len();
+    let mut failed = 0usize;
+    for session_id in session_ids {
+        match close_session(state, session_id).await {
+            Ok(()) | Err(RepositorySupervisorError::NoActor(_)) => {}
+            Err(error) => {
+                failed += 1;
+                let _ = state.events.send(SupervisorEvent::Error {
+                    session_id: Some(session_id),
+                    message: format!("session did not close: {error}"),
+                });
+            }
+        }
+    }
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(RepositorySupervisorError::Command(format!(
+            "{failed} of {total} sessions did not close"
+        )))
+    }
 }
 
 async fn poll_background_tasks(state: &SupervisorState) {
@@ -3784,6 +3869,188 @@ mod tests {
                 .unwrap_or("a done");
             Ok(text_response(text))
         }
+    }
+
+    /// Two registered sessions on one repository lease: `id_a` runs the
+    /// caller's model, `id_b` is scripted and idle.
+    async fn two_session_supervisor(
+        model_a: Arc<dyn ModelClient>,
+    ) -> (
+        TempDir,
+        RepositorySupervisor,
+        SupervisorHandle,
+        SessionId,
+        SessionId,
+    ) {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg_a = Config {
+            resolved_workspace: temp.path().join("a"),
+            workspace_root: Some(temp.path().join("a").display().to_string()),
+            ..Default::default()
+        };
+        cfg_a.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg_a.resolved_workspace).unwrap();
+        let mut cfg_b = cfg_a.clone();
+        cfg_b.resolved_workspace = temp.path().join("b");
+        cfg_b.workspace_root = Some(temp.path().join("b").display().to_string());
+        std::fs::create_dir_all(&cfg_b.resolved_workspace).unwrap();
+
+        let session_a = open_session_with_model(&cfg_a, SessionTarget::New, model_a)
+            .await
+            .unwrap()
+            .session;
+        let id_a = session_a.session_id;
+        let mut task_a = task_for(id_a, "a", &cfg_a.resolved_workspace);
+        task_a.ownership = WorktreeOwnership::Primary;
+        let session_b = scripted_session_with(&cfg_b, vec![text_response("b done")]).await;
+        let id_b = session_b.session_id;
+        let task_b = task_for(id_b, "b", &cfg_b.resolved_workspace);
+        for task in [&task_a, &task_b] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: task.session_id,
+                        label: task.label.clone(),
+                        workspace: task.workspace.clone(),
+                        branch: task.branch.clone(),
+                        ownership: task.ownership,
+                        slot: task.slot,
+                        model_id: task.model_id.clone(),
+                        route_id: task.route_id.clone(),
+                        reasoning_effort: task.reasoning_effort.clone(),
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![]));
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(task_a, session_a), (task_b, session_b)],
+            2,
+            cfg_a,
+            model,
+        )
+        .await
+        .unwrap();
+        (temp, supervisor, handle, id_a, id_b)
+    }
+
+    /// Quit-all is one command for the whole roster rather than one per
+    /// session, so a session that never sees the sweep would simply survive
+    /// the exit.
+    #[tokio::test]
+    async fn close_all_sessions_retires_every_session() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate: Arc<dyn ModelClient> = Arc::new(GateModel {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let (_temp, supervisor, handle, id_a, id_b) = two_session_supervisor(gate).await;
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: id_a,
+                text: "hold a".into(),
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("a turn never started");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while supervisor.snapshot(id_a).await.unwrap().task.turn_state
+            != SupervisorTurnState::Running
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a never reported a running turn"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // Let the turn finish its step so retirement is not waiting on a
+        // model call that will never return; the cancel lands between steps.
+        release.notify_one();
+
+        handle
+            .command(SupervisorCommand::CloseAllSessions)
+            .await
+            .unwrap();
+
+        assert!(
+            supervisor.snapshot(id_a).await.is_none(),
+            "the session that was running must close too"
+        );
+        assert!(
+            supervisor.snapshot(id_b).await.is_none(),
+            "every session must close, not just the running one"
+        );
+        assert!(supervisor.snapshots().await.is_empty());
+    }
+
+    /// The sweep exists so a session that will not retire is reported instead
+    /// of stranding every session after it — the shape `Shutdown` had when it
+    /// propagated the first failure out of its loop.
+    ///
+    /// The refusal is a held session lock, the same shape as a provider or MCP
+    /// call that will not let go. Actor iteration order is a `HashMap`'s, so
+    /// the "B still closed" assertion only proves the fan-out when the refusal
+    /// happens to be attempted first; the `1 of 2` count proves every session
+    /// was attempted regardless of order.
+    #[tokio::test]
+    async fn close_all_sessions_reports_a_refusal_without_stranding_the_rest() {
+        let model_a: Arc<dyn ModelClient> =
+            Arc::new(MockModelClient::script(vec![text_response("a done")]));
+        let (_temp, supervisor, handle, id_a, id_b) = two_session_supervisor(model_a).await;
+        let mut events = handle.subscribe();
+
+        let held_actor = supervisor
+            .state
+            .actors
+            .read()
+            .await
+            .get(&id_a)
+            .cloned()
+            .expect("session a is registered");
+        let held = held_actor.session.lock().await;
+
+        let error = handle
+            .command(SupervisorCommand::CloseAllSessions)
+            .await
+            .expect_err("a session that will not retire must be reported");
+        assert!(
+            error.to_string().contains("1 of 2 sessions did not close"),
+            "unexpected error: {error}"
+        );
+
+        assert!(
+            supervisor.snapshot(id_b).await.is_none(),
+            "a refused session must not strand the ones after it"
+        );
+        assert!(
+            supervisor.snapshot(id_a).await.is_some(),
+            "the session that refused stays open so the operator can retry"
+        );
+
+        let mut reported = false;
+        while let Ok(event) = events.try_recv() {
+            if let SupervisorEvent::Error {
+                session_id,
+                message,
+            } = event
+            {
+                if session_id == Some(id_a) && message.contains("did not close") {
+                    reported = true;
+                }
+            }
+        }
+        assert!(reported, "the refusal must be published per session");
+        drop(held);
     }
 
     /// Foreground sessions must stay responsive while another session's turn

@@ -859,7 +859,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/quit".into(),
-            desc: "Close the current session (exit when it is the last one)".into(),
+            desc: "Close the current session; on the primary session, quit Forge".into(),
             is_skill: false,
         },
     ]
