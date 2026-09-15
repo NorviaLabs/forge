@@ -156,20 +156,7 @@ impl TuiApp {
             self.focus.set_navigation(FocusBlock::TaskStrip);
             self.navigator_peek = None;
             self.navigator_reply.clear();
-            let known = self
-                .session_chrome
-                .iter()
-                .map(|task| task.session_id)
-                .collect();
-            if self.submit_session_command_tracked(
-                forge_session::SupervisorCommand::CreateSession {
-                    label: String::new(),
-                    first_prompt: None,
-                },
-                CommandFollowUp::FocusCreatedSession { known },
-            ) {
-                self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");
-            }
+            self.create_session_now();
             return Ok(true);
         }
         // `↑` at the top of the list reaches the navigator's tab row instead of
@@ -586,6 +573,34 @@ impl TuiApp {
         command: forge_session::SupervisorCommand,
     ) -> bool {
         self.dispatch_session_command(command, None)
+    }
+
+    /// Create a session with no prompt and hand the cursor to its composer.
+    ///
+    /// The one create verb behind the Sessions tab's `n`, the navigator row's
+    /// `+`, and `/new`, so the three cannot drift apart. Creation stays
+    /// prompt-less on purpose: a prompt is what parks creation on the trust
+    /// modal, and the session is named later from the first prompt submitted in
+    /// its composer.
+    ///
+    /// Reports whether the command entered the supervisor's queue.
+    pub(super) fn create_session_now(&mut self) -> bool {
+        let known = self
+            .session_chrome
+            .iter()
+            .map(|task| task.session_id)
+            .collect();
+        let queued = self.submit_session_command_tracked(
+            forge_session::SupervisorCommand::CreateSession {
+                label: String::new(),
+                first_prompt: None,
+            },
+            CommandFollowUp::FocusCreatedSession { known },
+        );
+        if queued {
+            self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");
+        }
+        queued
     }
 
     /// Queue a supervisor command and record what to do when it completes.
@@ -1521,10 +1536,11 @@ impl TuiApp {
 
     /// Keys while the navigator's **tab row** holds the keyboard.
     ///
-    /// The row is horizontal, so `↑`/`↓` step back into the pane instead of
-    /// moving between tabs. Every other key is swallowed on purpose: the row is
-    /// a place you pass through, and a session verb firing from it would act on
-    /// the list the row is covering.
+    /// The row is horizontal, so `←`/`→` move between its stops — the two tabs
+    /// and the `+` cell — and `Enter` activates the one the cursor rests on.
+    /// `↑`/`↓` step back into the pane instead. Every other key is swallowed on
+    /// purpose: the row is a place you pass through, and a session verb firing
+    /// from it would act on the list the row is covering.
     async fn handle_navigator_tab_row_key(
         &mut self,
         key: event::KeyEvent,
@@ -1536,11 +1552,21 @@ impl TuiApp {
         }
         match key.code {
             KeyCode::Left => {
-                self.select_navigator_tab_from_row(crate::widgets::NavigatorTab::Sessions);
+                self.move_navigator_row_stop(false);
                 Ok(true)
             }
             KeyCode::Right => {
-                self.select_navigator_tab_from_row(crate::widgets::NavigatorTab::Files);
+                self.move_navigator_row_stop(true);
+                Ok(true)
+            }
+            // `Enter` activates the stop the cursor rests on: a tab steps back
+            // into its pane (unchanged), the `+` cell creates a session.
+            KeyCode::Enter
+                if self.navigator_row_stop == crate::widgets::NavigatorRowStop::NewSession =>
+            {
+                if self.create_session_now() {
+                    self.leave_navigator_tab_row();
+                }
                 Ok(true)
             }
             KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Esc => {
@@ -1939,11 +1965,13 @@ impl TuiApp {
                     self.navigator_tab = crate::widgets::NavigatorTab::Sessions;
                     self.navigator_tab_explicit = true;
                     self.focus.set_navigation(FocusBlock::TaskStrip);
+                    self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Sessions);
                     return Ok(());
                 }
                 KeyCode::Char('2') => {
                     self.navigator_tab = crate::widgets::NavigatorTab::Files;
                     self.navigator_tab_explicit = true;
+                    self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Files);
                     return Ok(());
                 }
                 _ => {}

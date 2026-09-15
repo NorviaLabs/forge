@@ -95,6 +95,10 @@ impl TuiApp {
         // drops it (`Tab` cycles, clicks, panels and overlays all pass through
         // `normalize_focus`).
         self.navigator_tab_row_block = self.focus.block();
+        // `↑` always lands on the tab on screen, never on the `+` cell a
+        // previous visit left the cursor on.
+        self.navigator_row_stop =
+            crate::widgets::NavigatorRowStop::for_tab(self.effective_navigator_tab());
         self.navigator_tab_row_focused = true;
         self.normalize_focus();
     }
@@ -111,6 +115,7 @@ impl TuiApp {
     pub(super) fn select_navigator_tab_from_row(&mut self, tab: crate::widgets::NavigatorTab) {
         self.navigator_tab = tab;
         self.navigator_tab_explicit = true;
+        self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
         self.navigator_peek = None;
         self.navigator_reply.clear();
         let pane = match tab {
@@ -121,6 +126,68 @@ impl TuiApp {
         // travels with it instead of being dropped as a block change.
         self.navigator_tab_row_block = pane;
         self.focus_block(pane);
+    }
+
+    /// Whether the row renders its `+` cell. The navigator column is laid out
+    /// at the width the cell needs (`layout.rs` clamps it to 28–37 columns), so
+    /// this tracks the row's own availability rather than the last paint — the
+    /// keyboard can never rest on a stop the frame did not draw.
+    pub(crate) fn navigator_row_has_new_session(&self) -> bool {
+        self.navigator_tab_row_available()
+    }
+
+    /// Rest the row's cursor on its `+` cell. Unlike a tab stop this does not
+    /// move the active tab or `focus.block()`: the pane under the row stays the
+    /// one on screen, so the row never covers an invisible key owner.
+    pub(super) fn select_navigator_row_new_session(&mut self) {
+        self.navigator_row_stop = crate::widgets::NavigatorRowStop::NewSession;
+        self.navigator_peek = None;
+        self.navigator_reply.clear();
+    }
+
+    /// Keep the row's cursor on the tab a chord just switched to (`Ctrl+1` /
+    /// `Ctrl+2` / `Ctrl+E`). Without this the cursor could rest on a tab that is
+    /// no longer the one drawn as active, and `←`/`→` would then step from
+    /// somewhere other than where the eye is. The `+` stop is tab-independent,
+    /// so it is left where it is.
+    pub(super) fn retarget_navigator_row_stop(&mut self, tab: crate::widgets::NavigatorTab) {
+        if self.navigator_row_stop == crate::widgets::NavigatorRowStop::NewSession {
+            return;
+        }
+        self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
+    }
+
+    /// Move the row's cursor one stop. Stops run `Sessions · Files · +` left to
+    /// right and the cursor stops at each end rather than wrapping, so the
+    /// movement always matches what the eye sees on the row. The `+` is skipped
+    /// when the row does not render it.
+    pub(super) fn move_navigator_row_stop(&mut self, forward: bool) {
+        use crate::widgets::{NavigatorRowStop, NavigatorTab};
+        let stops: &[NavigatorRowStop] = if self.navigator_row_has_new_session() {
+            &[
+                NavigatorRowStop::Sessions,
+                NavigatorRowStop::Files,
+                NavigatorRowStop::NewSession,
+            ]
+        } else {
+            &[NavigatorRowStop::Sessions, NavigatorRowStop::Files]
+        };
+        let current = stops
+            .iter()
+            .position(|stop| *stop == self.navigator_row_stop)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1).min(stops.len() - 1)
+        } else {
+            current.saturating_sub(1)
+        };
+        match stops[next] {
+            NavigatorRowStop::Sessions => {
+                self.select_navigator_tab_from_row(NavigatorTab::Sessions)
+            }
+            NavigatorRowStop::Files => self.select_navigator_tab_from_row(NavigatorTab::Files),
+            NavigatorRowStop::NewSession => self.select_navigator_row_new_session(),
+        }
     }
 
     pub(super) fn enter_chat_composer(&mut self) {

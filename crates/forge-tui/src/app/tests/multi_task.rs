@@ -1074,6 +1074,59 @@ async fn n_allocates_an_unnamed_session_and_hands_the_cursor_to_its_composer() {
         .unwrap();
 }
 
+/// `/new` is the composer-reachable twin of `n` in the Sessions tab: same
+/// prompt-less creation, same cursor hand-off, so the first prompt can be
+/// typed without visiting the navigator at all.
+#[tokio::test]
+async fn slash_new_allocates_the_same_unnamed_session_as_the_strip_key() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let known: Vec<uuid::Uuid> = app
+        .session_chrome
+        .iter()
+        .map(|task| task.session_id)
+        .collect();
+
+    app.dispatch_line("/new").await.unwrap();
+
+    assert!(app.overlay.is_none(), "prompt-less creation never parks");
+    assert!(
+        app.pending_turn.prompt().is_none(),
+        "the command itself must not become the first prompt"
+    );
+
+    let created = wait_for_chrome_session(&mut app, |task| !known.contains(&task.session_id)).await;
+    assert!(!created.session_id.is_nil());
+    assert!(
+        created.label.is_empty(),
+        "the session is named later, from its first prompt"
+    );
+    let snapshot = app
+        .supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&created.session_id))
+        .expect("created session snapshot");
+    assert!(
+        snapshot.queued_prompts.is_empty(),
+        "creation must not carry a prompt into the queue"
+    );
+
+    // The created session is selected and its composer holds the cursor.
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        if app.selected_session_id == created.session_id {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(app.selected_session_id, created.session_id);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// A model client that parks turns whose prompt contains a registered marker
 /// behind a notify, so a test can hold a session in `Running` across a
 /// session switch. Keyed by prompt text (not call order): sibling sessions
@@ -1488,6 +1541,186 @@ async fn the_tab_row_switches_tabs_without_leaving_the_row() {
         app.workspace_files.explorer.search_focused,
         "…which takes the keyboard and its caret back"
     );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A chord can switch tabs while the row holds the keyboard. The cursor has to
+/// move with the tab, or `←`/`→` would step from a tab the cursor is not drawn
+/// on; the `+` stop is tab-independent and stays put.
+#[tokio::test]
+async fn a_tab_chord_moves_the_rows_cursor_with_the_tab() {
+    use crate::widgets::{NavigatorRowStop, NavigatorTab};
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
+
+    app.handle_key(press(KeyCode::Char('2'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
+
+    // Resting on `+` and then switching tabs keeps the cursor on `+`.
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    app.handle_key(press(KeyCode::Char('1'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// The drawn row and the pointer's hit target are one geometry: three segments
+/// sharing their edges, the `+` in the last of them, and its joint surviving the
+/// list's top border, which repaints that whole row (`§9.6`).
+#[tokio::test]
+async fn the_drawn_tab_row_carries_the_plus_cell() {
+    use ratatui::backend::TestBackend;
+
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    app.tick_render_state();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let cell = app
+        .navigator_new_session_area
+        .expect("a repository frame draws the cell");
+    let (x, y) = (cell.x, cell.y);
+    assert_eq!(buffer[(x, y)].symbol(), "┬", "top joint");
+    assert_eq!(buffer[(x + 1, y + 1)].symbol(), "+", "the glyph");
+    assert_eq!(buffer[(x, y + 2)].symbol(), "┴", "bottom joint");
+    assert_eq!(buffer[(x, y + 1)].symbol(), "│");
+    assert_eq!(buffer[(x + 2, y + 1)].symbol(), "│");
+    assert_ne!(
+        buffer[(x + 1, y + 1)].style().bg,
+        Some(theme::accent_soft_bg()),
+        "the cell never takes a tab's active ground"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// The row's third stop is the `+` cell: `←`/`→` walk `Sessions · Files · +`,
+/// stop at each end, and `Enter` on the cell creates a session — the same
+/// prompt-less create the Sessions list's `n` runs (`FORGE-DESIGN §7.7`).
+#[tokio::test]
+async fn the_tab_rows_plus_cell_creates_a_session() {
+    use crate::widgets::{NavigatorRowStop, NavigatorTab};
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Files;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::Search);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    // `↑` lands on the tab on screen, never on the `+` cell.
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    assert_eq!(
+        app.effective_navigator_tab(),
+        NavigatorTab::Files,
+        "the cell leaves the active tab where it was"
+    );
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Search,
+        "so the pane under the row keeps the keys it had"
+    );
+    assert!(app.navigator_tab_row_focused, "the row keeps the keyboard");
+
+    // The right end of the row does not wrap back to `Sessions`.
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let known: Vec<uuid::Uuid> = app
+        .session_chrome
+        .iter()
+        .map(|task| task.session_id)
+        .collect();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    let created = wait_for_chrome_session(&mut app, |task| !known.contains(&task.session_id)).await;
+    assert!(
+        created.label.is_empty(),
+        "the cell creates unnamed, like `n` and `/new`"
+    );
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        if app.selected_session_id == created.session_id {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(app.selected_session_id, created.session_id);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A click on the `+` cell is the same verb the row's `Enter` runs there, and it
+/// has to beat the `Files` tab branch it sits inside.
+#[tokio::test]
+async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    draw_app(&mut app, 120, 40);
+    let cell = app
+        .navigator_new_session_area
+        .expect("a repository frame draws the cell");
+    let known: Vec<uuid::Uuid> = app
+        .session_chrome
+        .iter()
+        .map(|task| task.session_id)
+        .collect();
+
+    app.handle_mouse(left_click(cell.x + 1, cell.y + 1))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.effective_navigator_tab(),
+        NavigatorTab::Sessions,
+        "the click must not switch to the tab the cell sits inside"
+    );
+    let created = wait_for_chrome_session(&mut app, |task| !known.contains(&task.session_id)).await;
+    assert!(created.label.is_empty());
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

@@ -105,6 +105,15 @@ impl TuiApp {
         if self.pointer_blocked() {
             return Ok(());
         }
+        // The `+` cell is checked before the tab row: it sits inside the
+        // `Files` tab's column range, so the tab branch would otherwise claim
+        // the click as a switch to `Files`.
+        if let Some(area) = self.navigator_new_session_area {
+            if cell_inside(area, col, row) {
+                self.click_navigator_new_session();
+                return Ok(());
+            }
+        }
         if let Some(area) = self.navigator_tabs_area {
             if cell_inside(area, col, row) {
                 self.click_navigator_tab(col, area);
@@ -185,6 +194,17 @@ impl TuiApp {
         });
     }
 
+    /// A click on the navigator row's `+` cell creates a session: the same verb
+    /// the row's `Enter` runs on that cell, and the same one `n` runs in the
+    /// Sessions list.
+    fn click_navigator_new_session(&mut self) {
+        // A click stops the row holding the keyboard, exactly as a tab click
+        // does, so the pane on screen takes the keys back with the click.
+        self.navigator_tab_row_focused = false;
+        self.select_navigator_tab_from_row(self.effective_navigator_tab());
+        self.create_session_now();
+    }
+
     /// Session rows are two visual lines each. Peek expansion shifts later
     /// rows, so the mapping is approximate below the focused row — good
     /// enough for a click, and Enter remains the exact path.
@@ -238,6 +258,7 @@ impl TuiApp {
         self.hover_file = None;
         self.hover_chip = None;
         self.hover_navigator_tab = None;
+        self.hover_navigator_new_session = false;
         self.hover_queue = None;
         self.hover_option = self.option_at(col, row);
         self.hover_overlay = self.overlay_row_at(col, row);
@@ -259,9 +280,16 @@ impl TuiApp {
                 self.hover_chip = self.footer_chip_at(col, row);
             }
         }
-        if let Some(area) = self.navigator_tabs_area {
+        if let Some(area) = self.navigator_new_session_area {
             if cell_inside(area, col, row) {
-                self.hover_navigator_tab = Some(navigator_tab_at(col, area));
+                self.hover_navigator_new_session = true;
+            }
+        }
+        if !self.hover_navigator_new_session {
+            if let Some(area) = self.navigator_tabs_area {
+                if cell_inside(area, col, row) {
+                    self.hover_navigator_tab = Some(navigator_tab_at(col, area));
+                }
             }
         }
         let Some(area) = self.navigator_list_area else {

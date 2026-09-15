@@ -1734,6 +1734,10 @@ pub struct TuiApp {
     /// `focus.block()` is still this block, so any block change — a `Tab`
     /// cycle, a click, a panel or overlay — drops the row with it.
     pub(crate) navigator_tab_row_block: FocusBlock,
+    /// Which stop on the tab row holds the row's cursor: the two tabs or the
+    /// `+` cell. The tabs move the active tab with them; `NewSession` leaves it
+    /// alone, so the pane under the row stays the one on screen.
+    pub(crate) navigator_row_stop: crate::widgets::NavigatorRowStop,
     /// Session whose last answer is expanded inline in the navigator (`Space`).
     pub(crate) navigator_peek: Option<uuid::Uuid>,
     /// Inline reply buffer for the peeked session.
@@ -1898,6 +1902,10 @@ pub struct TuiApp {
     pub(crate) hover_file: Option<usize>,
     /// Hovered navigator tab (pointer motion; never moves focus).
     pub(crate) hover_navigator_tab: Option<crate::widgets::NavigatorTab>,
+    /// `+` cell of the navigator row under the pointer, from the last draw.
+    pub(crate) navigator_new_session_area: Option<ratatui::layout::Rect>,
+    /// Whether that cell is hovered (pointer motion; never moves focus).
+    pub(crate) hover_navigator_new_session: bool,
     /// x-ranges `(model, effort)` of the footer's left chips, from the last
     /// draw, for pointer hit-testing.
     pub(crate) footer_chip_rects: Option<[(u16, u16); 2]>,

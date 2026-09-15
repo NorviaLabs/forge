@@ -260,6 +260,7 @@ impl TuiApp {
         self.conversation_area = None;
         self.terminal_area = None;
         self.navigator_tabs_area = None;
+        self.navigator_new_session_area = None;
         self.navigator_list_area = None;
         self.task_strip_area = None;
         self.footer_area = None;
@@ -402,6 +403,8 @@ impl TuiApp {
                     rows[0].height + 1,
                 );
                 self.navigator_tabs_area = Some(rows[0]);
+                self.navigator_new_session_area =
+                    crate::widgets::navigator::new_session_cell(tabs_area);
                 self.navigator_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
                 frame.render_widget(
@@ -410,6 +413,8 @@ impl TuiApp {
                         needs_you,
                         focused: self.navigator_tab_row_focused,
                         hover: self.hover_navigator_tab,
+                        row_stop: self.navigator_row_stop,
+                        hover_new_session: self.hover_navigator_new_session,
                     },
                     tabs_area,
                 );
@@ -527,6 +532,11 @@ impl TuiApp {
                         divider_y,
                     )]
                         .set_symbol("┴");
+                    // The list's top border repaints the divider row, so the
+                    // `+` cell's joint is stamped here too, beside the other two.
+                    if let Some(cell) = self.navigator_new_session_area {
+                        buf[(cell.x, divider_y)].set_symbol("┴");
+                    }
                 }
             } else {
                 self.navigator_list_area = Some(files);

@@ -180,6 +180,7 @@ Useful in-app commands:
 /model         Browse or change models
 /resume        Browse previous sessions in the current journal
 /continue     Resume the most recent previous session
+/new           Start a new session in its own worktree
 /fork         Start a new session from this conversation
 /clear         Clear the visible transcript
 /compact       Compact the active context
@@ -217,7 +218,7 @@ controls are:
 | `F4` | Open model picker |
 | `Ctrl+1` / `Ctrl+2` | Show the navigator's `Sessions` / `Files` tab (repository mode) |
 | `Ctrl+E` | Toggle the Files explorer (in a repository, flip the navigator tabs) |
-| `↑` at the first row, then `←` / `→` | Move onto the navigator tab row and switch `Sessions` / `Files` (repository mode) |
+| `↑` at the first row, then `←` / `→` | Move onto the navigator tab row and step through `Sessions` / `Files` / `+`; `Enter` switches tab or, on `+`, starts a session (repository mode) |
 | `Ctrl+Backtick` | Toggle the terminal panel (or `/terminal`) |
 | `Ctrl+O` | Expand or collapse tool details |
 | `Alt+M` | Quick-switch model |
@@ -566,6 +567,11 @@ there independently.
 Use `F3` to open the session switcher. Session presentation and input routing
 stay session-local: switching sessions does not move drafts, queued prompts,
 approvals, questions, or model state into another session.
+
+Start a new session with `n` in the navigator's `Sessions` list, the `+` cell on
+the navigator tab row (reachable with `↑` from the first list row), or `/new`
+from the composer. The session is created straight away and named from the first
+prompt submitted in it.
 
 If Forge stops unexpectedly, start it with:
 

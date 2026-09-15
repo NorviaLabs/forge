@@ -57,6 +57,7 @@ impl TuiApp {
                     crate::widgets::NavigatorTab::Files
                 };
             self.navigator_tab_explicit = true;
+            self.retarget_navigator_row_stop(self.navigator_tab);
             if self.navigator_tab == crate::widgets::NavigatorTab::Files {
                 self.workspace_files.visible = true;
                 self.focus_block(FocusBlock::Search);
