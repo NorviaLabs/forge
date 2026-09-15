@@ -4606,7 +4606,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|task| task.label == "rewrite-the-lexer")
+            .find(|task| task.label == "rewrite-lexer")
             .expect("prompt-derived label");
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
         wait_for_task_state(&handle, task.session_id, |snapshot| {
@@ -4777,7 +4777,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|task| task.label == "rewrite-the-lexer")
+            .find(|task| task.label == "rewrite-lexer")
             .expect("prompt-derived label");
         assert!(task.branch.is_empty(), "branch: {:?}", task.branch);
         assert!(task.base_sha.is_some(), "detached base sha missing");
@@ -4955,11 +4955,11 @@ mod tests {
 
         let task = control.session(session_id).await.unwrap();
         assert_eq!(
-            task.label, "fix-the-login-bug",
+            task.label, "fix-login-bug-run",
             "label came from the prompt"
         );
         assert_eq!(
-            task.branch, "forge/fix-the-login-bug",
+            task.branch, "forge/fix-login-bug-run",
             "the turn that named the session also named its branch"
         );
         // The slug still comes from the label through the one naming path, so
@@ -4969,7 +4969,7 @@ mod tests {
             format!("forge/{}", forge_storage::session_branch_slug(&task.label)),
             "the branch slug must be derived from the session label"
         );
-        assert!(forge_storage::branch_exists(repo.path(), "forge/fix-the-login-bug").unwrap());
+        assert!(forge_storage::branch_exists(repo.path(), "forge/fix-login-bug-run").unwrap());
         assert!(task.workspace.join("new.txt").exists());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }

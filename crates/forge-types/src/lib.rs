@@ -41,17 +41,29 @@ pub const TITLE_MAX_CHARS: usize = 60;
 /// title, not on whitespace words: `src/main.rs breaks now` is four tokens.
 const TITLE_MAX_TOKENS: usize = 4;
 
+/// Most words [`title_from_prompt`] draws from the first sentence before
+/// normalizing. Filler words do not count against it, so a prompt that spends
+/// its first ten words on pleasantries still names the session after the noun
+/// that follows them.
+const TITLE_MAX_WORDS: usize = 4;
+
 /// Derive the session label — and with it the `forge/<slug>` branch name —
 /// from the first user message.
 ///
 /// Cuts at the first newline, or at the first `.`/`!`/`?` followed by
 /// whitespace or end-of-input (so a `.` inside `main.rs` or `v1.2.3` is not a
-/// boundary), drops trailing punctuation, then kebab-cases what is left:
-/// lowercase, every run of non-alphanumerics collapsed to a single `-`, no
-/// leading or trailing `-`, and at most [`TITLE_MAX_TOKENS`] tokens — so
-/// `src/main.rs breaks now` becomes `src-main-rs-breaks`. [`TITLE_MAX_CHARS`]
-/// is only an outer bound against long tokens. Falls back to
-/// `untitled-session` when nothing usable remains.
+/// boundary), drops trailing punctuation, then keeps the *meaningful* opening:
+/// at most [`TITLE_MAX_WORDS`] words, with the filler in [`FILLER_WORDS`] —
+/// articles, conjunctions, prepositions, pronouns, auxiliaries, question words,
+/// pleasantries — skipped so the name says what the prompt is *about* rather
+/// than how it is phrased. `Can you please fix the login bug?` becomes
+/// `fix-login-bug`, not `can-you-please-fix`.
+///
+/// The surviving words are then kebab-cased: lowercase, every run of
+/// non-alphanumerics collapsed to a single `-`, no leading or trailing `-`, and
+/// at most [`TITLE_MAX_TOKENS`] tokens — so `src/main.rs breaks now` becomes
+/// `src-main-rs-breaks`. [`TITLE_MAX_CHARS`] is only an outer bound against
+/// long tokens. Falls back to `untitled-session` when nothing usable remains.
 ///
 /// The result is not display-only. On the first filesystem change,
 /// `forge-session` materializes a worktree branch named `forge/<label>` from
@@ -74,8 +86,9 @@ pub fn title_from_prompt(prompt: &str) -> String {
     let first_line = prompt.split('\n').next().unwrap_or("");
     let cut = sentence_end(first_line).unwrap_or(first_line.len());
     let head = trim_trailing(first_line[..cut].trim());
+    let selected = meaningful_head(head);
     let title = kebab_tokens(
-        truncate_at_word_boundary(head, TITLE_MAX_CHARS),
+        truncate_at_word_boundary(&selected, TITLE_MAX_CHARS),
         TITLE_MAX_TOKENS,
     );
     if title.is_empty() {
@@ -109,6 +122,224 @@ fn is_trailing_punct(c: char) -> bool {
 
 fn trim_trailing(text: &str) -> &str {
     text.trim_end_matches(|c: char| c.is_whitespace() || is_trailing_punct(c))
+}
+
+/// Words that name no topic on their own, so [`title_from_prompt`] skips them
+/// while picking the words for a session name: closed-class words (articles,
+/// conjunctions, prepositions, pronouns, question words, auxiliaries), the
+/// pleasantries and hedges that open so many prompts, and the opener verbs
+/// (`want`, `need`, `try`) that introduce a request without describing it.
+///
+/// A word belongs here only when it is filler in nearly every prompt. `help`
+/// is deliberately absent: `--help fails` uses it as the subject, and dropping
+/// it would leave the session called `fails`. Matching is on the lowercased
+/// word with surrounding punctuation stripped, so `"The"` and `the,` both hit.
+const FILLER_WORDS: &[&str] = &[
+    // Articles and determiners.
+    "a",
+    "an",
+    "the",
+    "this",
+    "that",
+    "these",
+    "those",
+    // Conjunctions and connectives.
+    "and",
+    "or",
+    "but",
+    "nor",
+    "so",
+    "yet",
+    "then",
+    "than",
+    "as",
+    "if",
+    "because",
+    "while",
+    "since",
+    "though",
+    "although",
+    "whether",
+    "plus",
+    "also",
+    "too",
+    "either",
+    "neither",
+    "both",
+    "however",
+    "therefore",
+    "thus",
+    "hence",
+    "otherwise",
+    // Prepositions.
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "with",
+    "from",
+    "by",
+    "about",
+    "into",
+    "over",
+    "under",
+    "after",
+    "before",
+    "between",
+    "during",
+    "without",
+    "within",
+    "across",
+    "along",
+    "around",
+    "behind",
+    "below",
+    "beside",
+    "beyond",
+    "through",
+    "toward",
+    "towards",
+    "upon",
+    "up",
+    "down",
+    "out",
+    "off",
+    "per",
+    "via",
+    "onto",
+    "versus",
+    "vs",
+    // Pronouns and question words.
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "me",
+    "him",
+    "her",
+    "us",
+    "them",
+    "my",
+    "mine",
+    "your",
+    "yours",
+    "his",
+    "hers",
+    "its",
+    "our",
+    "ours",
+    "their",
+    "theirs",
+    "myself",
+    "yourself",
+    "ourselves",
+    "themselves",
+    "there",
+    "here",
+    "who",
+    "whom",
+    "whose",
+    "which",
+    "what",
+    "when",
+    "where",
+    "why",
+    "how",
+    // Auxiliary and modal verbs.
+    "am",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "will",
+    "would",
+    "can",
+    "could",
+    "should",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "let",
+    "lets",
+    "gonna",
+    "wanna",
+    "gotta",
+    "going",
+    // Prompt pleasantries, hedges, and opener verbs.
+    "please",
+    "kindly",
+    "just",
+    "really",
+    "very",
+    "actually",
+    "basically",
+    "simply",
+    "literally",
+    "maybe",
+    "perhaps",
+    "probably",
+    "definitely",
+    "want",
+    "wants",
+    "wanted",
+    "need",
+    "needs",
+    "needed",
+    "try",
+    "tries",
+    "trying",
+    "hey",
+    "hi",
+    "hello",
+    "thanks",
+    "thank",
+];
+
+/// Whether `word` carries no topic on its own — see [`FILLER_WORDS`].
+fn is_filler_word(word: &str) -> bool {
+    let trimmed = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if trimmed.is_empty() {
+        return true;
+    }
+    FILLER_WORDS.contains(&trimmed.to_ascii_lowercase().as_str())
+}
+
+/// The informative opening of `head`, as a single space-joined string: at most
+/// [`TITLE_MAX_WORDS`] words, with [`FILLER_WORDS`] skipped so the name reflects
+/// the subject rather than the phrasing. A first sentence made only of filler
+/// falls back to its literal opening, so `please just do it` still names the
+/// session something instead of reaching `untitled-session`.
+fn meaningful_head(head: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut opening: Vec<&str> = Vec::new();
+    for word in head.split_whitespace() {
+        if opening.len() < TITLE_MAX_WORDS {
+            opening.push(word);
+        }
+        if kept.len() < TITLE_MAX_WORDS && !is_filler_word(word) {
+            kept.push(word);
+        }
+        if kept.len() == TITLE_MAX_WORDS {
+            break;
+        }
+    }
+    let words = if kept.is_empty() { opening } else { kept };
+    words.join(" ")
 }
 
 /// Cut `text` to at most `max` characters, preferring the last whitespace
@@ -942,7 +1173,7 @@ mod tests {
 
     #[test]
     fn title_from_prompt_kebab_cases_the_opening() {
-        assert_eq!(title_from_prompt("Rewrite the lexer"), "rewrite-the-lexer");
+        assert_eq!(title_from_prompt("Rewrite the lexer"), "rewrite-lexer");
         assert_eq!(title_from_prompt("API key missing"), "api-key-missing");
         assert_eq!(title_from_prompt("foo_bar baz"), "foo-bar-baz");
         assert_eq!(
@@ -951,15 +1182,16 @@ mod tests {
         );
         assert_eq!(
             title_from_prompt("Fix the login bug. Then run tests"),
-            "fix-the-login-bug"
+            "fix-login-bug"
         );
     }
 
     #[test]
     fn title_from_prompt_keeps_at_most_four_tokens() {
+        // Four meaningful words, so the filler among them is simply dropped.
         assert_eq!(
             title_from_prompt("fix the login bug and then run the tests"),
-            "fix-the-login-bug"
+            "fix-login-bug-run"
         );
         // Tokens are counted after normalization, not as whitespace words.
         assert_eq!(
@@ -967,11 +1199,9 @@ mod tests {
             "src-main-rs-breaks"
         );
         // A dotted version normalizes into separate tokens, so the token cap
-        // applies to it like any other text.
-        assert_eq!(
-            title_from_prompt("Upgrade to v1.2.3 now"),
-            "upgrade-to-v1-2"
-        );
+        // applies to it like any other text: dropping the preposition lets the
+        // whole version through, and `now` is what the cap cuts instead.
+        assert_eq!(title_from_prompt("Upgrade to v1.2.3 now"), "upgrade-v1-2-3");
     }
 
     #[test]
@@ -980,7 +1210,40 @@ mod tests {
         // as `-help-fails`, which `sanitize_label` turned into the branch
         // `forge/-help-fails`.
         assert_eq!(title_from_prompt("--help fails"), "help-fails");
-        assert_eq!(title_from_prompt("...run the tests"), "run-the-tests");
+        assert_eq!(title_from_prompt("...run the tests"), "run-tests");
+    }
+
+    #[test]
+    fn title_from_prompt_skips_filler_words() {
+        // The name should read as the subject of the request, not as the
+        // pleasantries and auxiliaries that introduce it.
+        assert_eq!(
+            title_from_prompt("Can you please fix the login bug?"),
+            "fix-login-bug"
+        );
+        assert_eq!(
+            title_from_prompt("I want to rewrite the parser"),
+            "rewrite-parser"
+        );
+        assert_eq!(
+            title_from_prompt("Could you take a look at the auth flow"),
+            "take-look-auth-flow"
+        );
+        // Filler does not consume one of the four word slots: the scan keeps
+        // going until it has found four words that carry the topic.
+        assert_eq!(
+            title_from_prompt("Hi there, could you please kindly and then rewrite the lexer"),
+            "rewrite-lexer"
+        );
+    }
+
+    #[test]
+    fn title_from_prompt_falls_back_to_the_opening_for_pure_filler() {
+        // Nothing but filler: keep the literal opening rather than give up and
+        // call every such session `untitled-session`.
+        assert_eq!(title_from_prompt("please just do it"), "please-just-do-it");
+        // `help` is not filler — `--help fails` means the flag, not a request.
+        assert_eq!(title_from_prompt("help me fix this"), "help-fix");
     }
 
     #[test]
@@ -1000,6 +1263,9 @@ mod tests {
             "Upgrade to v1.2.3 now",
             "src/main.rs breaks now",
             "--help fails",
+            "Can you please fix the login bug?",
+            "I want to rewrite the parser",
+            "please just do it",
             "API key missing",
             "foo_bar baz",
             "!!!",

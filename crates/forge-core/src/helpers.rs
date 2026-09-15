@@ -534,7 +534,7 @@ mod tests {
 
         assert_eq!(
             session_title_hint(&journal_dir, sid).await.as_deref(),
-            Some("fix-the-login-bug")
+            Some("fix-login-bug")
         );
     }
 
