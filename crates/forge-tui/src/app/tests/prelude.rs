@@ -6,7 +6,7 @@ pub use crate::widgets::status::TurnLifecycle;
 pub use forge_core::LoopConfig;
 pub use forge_model::MockModelClient;
 pub use forge_tools::ToolRegistry;
-pub use forge_types::{Message, MessageRole, ModelResponse};
+pub use forge_types::{HitlDecision, Message, MessageRole, ModelResponse};
 pub use forge_workspace::git_status::GitStatusKind;
 pub use std::sync::Arc;
 pub use tempfile::TempDir;

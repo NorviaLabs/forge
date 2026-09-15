@@ -358,6 +358,81 @@ async fn the_composer_refuses_input_while_viewing_a_subagent() {
     );
 }
 
+/// A live child's transcript advances under the operator's eyes: the view is
+/// re-read on the poll tick while the task is non-terminal.
+#[tokio::test]
+async fn a_running_child_view_advances_across_a_poll() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+
+    app.focus_block(FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.child_view.is_some(), "{}", app.feedback.text);
+
+    let messages_open = app.transcript_view.messages().len();
+    let revision_open = app.transcript_view.revision();
+
+    // The subagent is still blocked on approval, so nothing new is written —
+    // a refresh then leaves the revision untouched.
+    app.poll_background_tasks().await.unwrap();
+    assert_eq!(
+        app.transcript_view.revision(),
+        revision_open,
+        "an unchanged journal must not invalidate the render cache"
+    );
+
+    // Denying ends the child, and the view still stands: it keeps its final
+    // snapshot rather than re-reading or closing out from under the operator.
+    app.resolve_selected_task_hitl(HitlDecision::Deny);
+    app.poll_background_tasks().await.unwrap();
+    app.poll_background_tasks().await.unwrap();
+
+    assert!(app.child_view.is_some(), "{}", app.feedback.text);
+    assert!(
+        app.transcript_view.messages().len() >= messages_open,
+        "the view should never lose messages: {}",
+        app.feedback.text
+    );
+    assert!(
+        app.conversation_view.scroll == 0,
+        "a refresh must not steal the operator's place"
+    );
+}
+
+/// `session_messages` returns `None` for an unreadable journal rather than an
+/// error, so one bad session cannot fail the caller. The journal lives in a
+/// file named for the session, so pointing at someone else's file is the
+/// unreadable case: `open` succeeds (the file exists, has the wrong shape) and
+/// the replay reads it as nothing.
+#[tokio::test]
+async fn an_unreadable_journal_reads_as_nothing() {
+    let dir = TempDir::new().unwrap();
+    let path = dir
+        .path()
+        .join(format!("{}.db", forge_types::SessionId::new_v4()));
+    std::fs::write(&path, b"this is not a sqlite database").unwrap();
+
+    let missing = forge_core::session_messages(
+        dir.path(),
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.parse().ok())
+            .unwrap(),
+    )
+    .await;
+
+    assert!(
+        missing.is_none(),
+        "the caller falls back; it never fails the whole listing"
+    );
+}
+
 #[tokio::test]
 async fn sidebar_down_then_cancel_targets_the_selected_row() {
     let (_dir, mut app) = focus_test_app().await;
