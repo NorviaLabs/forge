@@ -62,6 +62,12 @@ const TITLE_MAX_TOKENS: usize = 4;
 /// sanitize_label(title_from_prompt(prompt)) == title_from_prompt(prompt)
 /// ```
 ///
+/// That equality holds for any name of at most 40 characters, which is every
+/// ordinary prompt. It does not hold for a name longer than that — a single
+/// over-long token reaching [`TITLE_MAX_CHARS`] is truncated by
+/// `sanitize_label` and the label then differs from the branch. Raise both caps
+/// together or not at all.
+///
 /// Titles and branch slugs are one value, never two: changing the shape of
 /// this output renames branches and breaks the invariant above.
 pub fn title_from_prompt(prompt: &str) -> String {
