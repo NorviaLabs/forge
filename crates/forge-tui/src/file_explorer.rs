@@ -544,6 +544,21 @@ impl FileExplorer {
         self.select_visible_index(next);
     }
 
+    /// True when `↑` has nowhere left to go: the cursor already sits on the
+    /// first row. An empty tree counts as at the top, so the key can still reach
+    /// the navigator's tab row (`FORGE-DESIGN §8.3`) instead of doing nothing. A
+    /// tree with no selection yet is *not* at the top — the first `↑` still
+    /// selects row 0, exactly as it did before the tab row existed.
+    pub fn selection_at_first_row(&self) -> bool {
+        // Compares the selected path with the first visible node rather than
+        // going through `selected_visible_index`, which caches its answer and
+        // so needs `&mut self`.
+        let Some(first) = self.visible.first() else {
+            return true;
+        };
+        self.selected_path.as_ref() == Some(&first.path)
+    }
+
     pub fn expand_selected(&mut self) {
         if let Some(index) = self.selected_visible_index() {
             let node = &self.visible[index];

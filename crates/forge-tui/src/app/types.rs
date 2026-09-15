@@ -1687,6 +1687,20 @@ pub struct TuiApp {
     /// Set once the operator picks a tab explicitly; until then the default
     /// derives from the number of sessions (`Sessions` when >1, else `Files`).
     pub(crate) navigator_tab_explicit: bool,
+    /// True while the navigator's **tab row** owns the keyboard: `↑` at the top
+    /// of either tab's list moves up into the row, where `←`/`→` switch tabs and
+    /// `Enter`/`↓` step back into the pane (`FORGE-DESIGN §8.3`).
+    ///
+    /// A sub-focus of the navigator column, never a block of its own: it does
+    /// not enter `FocusBlock::ORDER`, so `Tab` keeps cycling blocks and the row
+    /// is never a Tab stop. `normalize_focus` clears it as soon as the keyboard
+    /// leaves the navigator, and the pane under it paints as unfocused while it
+    /// is set.
+    pub(crate) navigator_tab_row_focused: bool,
+    /// The pane the tab row sits above. The row holds the keyboard only while
+    /// `focus.block()` is still this block, so any block change — a `Tab`
+    /// cycle, a click, a panel or overlay — drops the row with it.
+    pub(crate) navigator_tab_row_block: FocusBlock,
     /// Session whose last answer is expanded inline in the navigator (`Space`).
     pub(crate) navigator_peek: Option<uuid::Uuid>,
     /// Inline reply buffer for the peeked session.

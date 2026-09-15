@@ -33,11 +33,23 @@ impl TuiApp {
         } else if self.source_viewer.jump.open {
             self.focus.set_transient(TransientOwner::JumpToLine);
         }
-        self.workspace_files.explorer.focused =
-            matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
-                && self.focus.mode() == FocusMode::Navigation
-                && self.workspace_files.visible;
-        self.workspace_files.explorer.search_focused = self.focus.block() == FocusBlock::Search
+        // The navigator's tab row is a sub-focus of the navigator column, like
+        // the explorer's search field: it holds the keyboard only while a
+        // navigator block would otherwise own it, in `Navigation` mode, and only
+        // where the column renders a tab bar at all. While it is up the pane
+        // under it paints as unfocused, so exactly one thing on screen claims
+        // the keyboard.
+        self.navigator_tab_row_focused = self.navigator_tab_row_focused
+            && self.navigator_tab_row_available()
+            && self.focus.mode() == FocusMode::Navigation
+            && self.focus.block() == self.navigator_tab_row_block;
+        let pane_owns_keys = !self.navigator_tab_row_focused;
+        self.workspace_files.explorer.focused = pane_owns_keys
+            && matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
+            && self.focus.mode() == FocusMode::Navigation
+            && self.workspace_files.visible;
+        self.workspace_files.explorer.search_focused = pane_owns_keys
+            && self.focus.block() == FocusBlock::Search
             && self.focus.mode() == FocusMode::Navigation
             && self.workspace_files.visible;
         self.bottom_panel.focused = self.focus.block() == FocusBlock::BottomPanel
@@ -64,6 +76,51 @@ impl TuiApp {
     pub(crate) fn focus_block(&mut self, block: FocusBlock) {
         self.focus.transition_to(block);
         self.normalize_focus();
+    }
+
+    /// Whether the navigator renders a tab bar to focus: repository mode only —
+    /// a single session keeps today's plain `Files` explorer with no tabs.
+    pub(crate) fn navigator_tab_row_available(&self) -> bool {
+        self.supervisor.is_some() && self.workspace_files.visible
+    }
+
+    /// Move the keyboard onto the navigator's tab row (`↑` at the top of either
+    /// tab's list). The pane keeps `focus.block()`, so `Tab` still cycles from
+    /// it, but it paints as unfocused while the row is up.
+    pub(super) fn focus_navigator_tab_row(&mut self) {
+        if !self.navigator_tab_row_available() {
+            return;
+        }
+        // The row belongs to the pane it sits above: any later block change
+        // drops it (`Tab` cycles, clicks, panels and overlays all pass through
+        // `normalize_focus`).
+        self.navigator_tab_row_block = self.focus.block();
+        self.navigator_tab_row_focused = true;
+        self.normalize_focus();
+    }
+
+    /// Step back down into the pane the row sits above (`Enter`, `↓`, `Esc`).
+    pub(super) fn leave_navigator_tab_row(&mut self) {
+        self.navigator_tab_row_focused = false;
+        self.normalize_focus();
+    }
+
+    /// Switch the navigator's tab from the row without leaving it. `focus.block()`
+    /// follows the tab, so the pane under the row is always the one on screen and
+    /// the row never hides an invisible key owner.
+    pub(super) fn select_navigator_tab_from_row(&mut self, tab: crate::widgets::NavigatorTab) {
+        self.navigator_tab = tab;
+        self.navigator_tab_explicit = true;
+        self.navigator_peek = None;
+        self.navigator_reply.clear();
+        let pane = match tab {
+            crate::widgets::NavigatorTab::Sessions => FocusBlock::TaskStrip,
+            crate::widgets::NavigatorTab::Files => FocusBlock::Search,
+        };
+        // Moving the keyboard to the new tab's pane is deliberate, so the row
+        // travels with it instead of being dropped as a block change.
+        self.navigator_tab_row_block = pane;
+        self.focus_block(pane);
     }
 
     pub(super) fn enter_chat_composer(&mut self) {

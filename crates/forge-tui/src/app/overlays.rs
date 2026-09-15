@@ -76,6 +76,9 @@ impl TuiApp {
         text.push_str("Active block\n");
         match self.focus.block() {
             FocusBlock::TaskStrip => {
+                if self.navigator_tab_row_available() {
+                    text.push_str("• ↑ at the first row  Move onto the navigator tab row\n");
+                }
                 text.push_str("• ←/→  Select session slot\n");
                 text.push_str("• Enter  Switch session\n");
                 text.push_str("• n  New session — instant, named from its first prompt\n");
@@ -96,11 +99,17 @@ impl TuiApp {
                 text.push_str("• Type  Fuzzy-filter files by workspace path\n");
                 text.push_str("• Ctrl+U  Clear file search\n");
                 text.push_str("• ↑/↓  Move tree selection without leaving search\n");
+                if self.navigator_tab_row_available() {
+                    text.push_str("• ↑ at the first row  Move onto the navigator tab row\n");
+                }
                 text.push_str("• Enter  Open the selected file\n");
                 text.push_str("• Tab / Shift+Tab  Next / previous block\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Files => {
+                if self.navigator_tab_row_available() {
+                    text.push_str("• ↑ at the first row  Move onto the navigator tab row\n");
+                }
                 text.push_str("• ↑/↓  Move selection\n");
                 text.push_str("• ←/→  Collapse / expand directory\n");
                 text.push_str("• Enter  Open file or expand directory\n");

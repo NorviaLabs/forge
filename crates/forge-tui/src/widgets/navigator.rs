@@ -51,6 +51,11 @@ pub(crate) const SESSIONS_TAB_WIDTH: u16 = 12;
 pub struct NavigatorTabs {
     pub tab: NavigatorTab,
     pub needs_you: usize,
+    /// The row itself holds the keyboard (`↑` at the top of either tab's list,
+    /// `FORGE-DESIGN §8.3`). Both outlines then take the L3 accent step while
+    /// the active tab keeps its `accent_soft` ground, so the row reads as the
+    /// thing being driven without impersonating a different active tab.
+    pub focused: bool,
     /// Tab under the pointer. The hovered *inactive* tab gets a raised ground
     /// and a weight step, so a pointer user can tell it is clickable; the
     /// active tab keeps its own treatment and focus never moves on hover.
@@ -82,8 +87,9 @@ impl Widget for NavigatorTabs {
             let is_active = tab == self.tab;
             let hovered = !is_active && self.hover == Some(tab);
             // The tab strip is the navigator panel's own top edge, not a small
-            // box inside it: one neutral frame for the active and inactive
-            // tabs alike. The active tab fills its inner row edge to edge —
+            // box inside it: one frame for the active and inactive tabs alike,
+            // neutral until the row itself holds the keyboard. The active tab
+            // fills its inner row edge to edge —
             // an unmistakable full-width signal that still stays inside the
             // frame, never flowing over or under the text — and the label
             // keeps a weight step and the accent hue for terminals that
@@ -91,7 +97,11 @@ impl Widget for NavigatorTabs {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(theme::panel_border())
+                .border_style(if self.focused {
+                    theme::accent_style()
+                } else {
+                    theme::panel_border()
+                })
                 .style(theme::panel());
             let inner = if area.height >= 3 {
                 block.inner(tab_area)
@@ -395,6 +405,17 @@ mod tests {
         needs_you: usize,
         hover: Option<NavigatorTab>,
     ) -> ratatui::buffer::Buffer {
+        render_tabs_with_focus(width, tab, needs_you, hover, false)
+    }
+
+    /// Same, with the row itself holding the keyboard.
+    fn render_tabs_with_focus(
+        width: u16,
+        tab: NavigatorTab,
+        needs_you: usize,
+        hover: Option<NavigatorTab>,
+        focused: bool,
+    ) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(width, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -403,6 +424,7 @@ mod tests {
                     NavigatorTabs {
                         tab,
                         needs_you,
+                        focused,
                         hover,
                     },
                     frame.area(),
@@ -463,6 +485,39 @@ mod tests {
             buffer[(SESSIONS_TAB_WIDTH - 1, 2)].symbol(),
             "┴",
             "bottom joint must join the two tab frames"
+        );
+    }
+
+    /// While the row holds the keyboard both outlines take the L3 accent step
+    /// (`FORGE-DESIGN §8.3`, §9.6). It is a border-level signal only: the active
+    /// tab keeps its ground and hue, so the row never displaces the active-tab
+    /// signal with its own.
+    #[test]
+    fn a_focused_row_steps_both_outlines_to_the_accent() {
+        let idle = render_tabs(40, NavigatorTab::Files, 0, None);
+        let focused = render_tabs_with_focus(40, NavigatorTab::Files, 0, None, true);
+
+        assert_ne!(
+            idle[(0u16, 0u16)].fg,
+            focused[(0u16, 0u16)].fg,
+            "the inactive tab's outline takes the accent too"
+        );
+        assert_ne!(
+            idle[(39u16, 0u16)].fg,
+            focused[(39u16, 0u16)].fg,
+            "the active tab's outline steps with it"
+        );
+
+        let label = cell_x(&idle, "F", 1);
+        assert_eq!(
+            idle[(label, 1)].bg,
+            focused[(label, 1)].bg,
+            "the active tab keeps its ground"
+        );
+        assert_eq!(
+            idle[(label, 1)].fg,
+            focused[(label, 1)].fg,
+            "and its label treatment"
         );
     }
 
