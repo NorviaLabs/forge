@@ -1688,6 +1688,11 @@ pub(crate) enum CommandFollowUp {
     /// Load a canceled queued message back into the composer, but only once
     /// the supervisor confirms it left the queue.
     EditQueuedMessage { text: String },
+    /// Select the session a new-session command allocated and hand the cursor
+    /// to its composer. Creation reports the new task in the roster and
+    /// nowhere else, so the follow-up carries the sessions that already
+    /// existed when the command was queued to recognise it.
+    SelectCreatedSession { known: Vec<uuid::Uuid> },
 }
 
 /// A supervisor command whose execution result still needs a UI follow-up.
@@ -1731,9 +1736,6 @@ pub struct TuiApp {
     /// Session the operator marked done while its turn was still running; it is
     /// archived once the turn reaches a terminal state.
     pub(crate) navigator_done_pending: Option<uuid::Uuid>,
-    /// Inline "new session" task buffer for the navigator (`n`). `Some` while
-    /// the create composer is open.
-    pub(crate) navigator_new_session: Option<String>,
     pub(crate) selected_session_id: uuid::Uuid,
     pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) retiring_session_view_states:

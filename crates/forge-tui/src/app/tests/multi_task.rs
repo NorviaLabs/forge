@@ -938,33 +938,54 @@ async fn wait_for_chrome_session(
 }
 
 #[tokio::test]
-async fn n_opens_the_inline_composer_and_starts_a_named_session() {
+async fn n_allocates_an_unnamed_session_and_hands_the_cursor_to_its_composer() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
+    let known: Vec<uuid::Uuid> = app
+        .session_chrome
+        .iter()
+        .map(|task| task.session_id)
+        .collect();
     app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(
-        app.navigator_new_session.is_some(),
-        "n must open the inline composer"
-    );
 
-    for ch in "rename the parser".chars() {
-        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
-            .await
-            .unwrap();
-    }
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(
-        app.navigator_new_session.is_none(),
-        "the composer closes on Enter"
-    );
+    // `n` creates with no prompt at all, so nothing can park the creation on
+    // the trust modal.
+    assert!(app.overlay.is_none(), "prompt-less creation never parks");
 
-    // The typed task becomes the session's first prompt, which names it.
-    let created = wait_for_chrome_session(&mut app, |task| task.label == "Rename the parser").await;
+    let created = wait_for_chrome_session(&mut app, |task| !known.contains(&task.session_id)).await;
     assert!(!created.session_id.is_nil());
+    assert!(
+        created.label.is_empty(),
+        "the session is named later, from its first prompt"
+    );
+    let snapshot = app
+        .supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&created.session_id))
+        .expect("created session snapshot");
+    assert!(
+        snapshot.queued_prompts.is_empty(),
+        "creation must not carry a prompt into the queue"
+    );
+    assert_eq!(
+        snapshot.task.turn_state,
+        forge_session::SupervisorTurnState::Idle
+    );
+
+    // The created session is selected and its composer holds the cursor, so
+    // the first prompt can be typed straight away.
+    for _ in 0..300 {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        if app.selected_session_id == created.session_id {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(app.selected_session_id, created.session_id);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

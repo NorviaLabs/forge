@@ -146,19 +146,30 @@ impl TuiApp {
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
         let count = self.session_chrome.len();
-        // `n` opens the navigator's inline composer; the typed task is the
-        // session's first prompt (and names it). A trusted repo needs no modal.
-        // Guarded on the composer being closed, so an `n` typed into the task
-        // does not reset the buffer.
-        if self.navigator_new_session.is_none()
-            && matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty())
-        {
+        // `n` allocates a session and its worktree with no prompt. Creation
+        // stays prompt-less on purpose: a prompt is what parks creation on the
+        // trust modal, and the session is named later from the first prompt
+        // submitted in its composer.
+        if matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty()) {
             self.navigator_tab = crate::widgets::NavigatorTab::Sessions;
             self.navigator_tab_explicit = true;
             self.focus.set_navigation(FocusBlock::TaskStrip);
             self.navigator_peek = None;
             self.navigator_reply.clear();
-            self.navigator_new_session = Some(String::new());
+            let known = self
+                .session_chrome
+                .iter()
+                .map(|task| task.session_id)
+                .collect();
+            if self.submit_session_command_tracked(
+                forge_session::SupervisorCommand::CreateSession {
+                    label: String::new(),
+                    first_prompt: None,
+                },
+                CommandFollowUp::SelectCreatedSession { known },
+            ) {
+                self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");
+            }
             return Ok(true);
         }
         // `↑` at the top of the list reaches the navigator's tab row instead of
@@ -181,42 +192,6 @@ impl TuiApp {
         // navigation to the explorer.
         if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions {
             return Ok(false);
-        }
-        if self.navigator_new_session.is_some() {
-            match key.code {
-                KeyCode::Esc if key.modifiers.is_empty() => {
-                    self.navigator_new_session = None;
-                    return Ok(true);
-                }
-                KeyCode::Backspace if key.modifiers.is_empty() => {
-                    if let Some(buffer) = self.navigator_new_session.as_mut() {
-                        buffer.pop();
-                    }
-                    return Ok(true);
-                }
-                KeyCode::Enter if key.modifiers.is_empty() => {
-                    let text = self.navigator_new_session.take().unwrap_or_default();
-                    if !text.trim().is_empty() {
-                        self.submit_session_command(
-                            forge_session::SupervisorCommand::CreateSession {
-                                label: String::new(),
-                                first_prompt: Some(text),
-                            },
-                        );
-                        self.set_feedback(FeedbackSeverity::Info, "starting session…");
-                    }
-                    return Ok(true);
-                }
-                KeyCode::Char(c)
-                    if key.modifiers.is_empty() || key.modifiers == event::KeyModifiers::SHIFT =>
-                {
-                    if let Some(buffer) = self.navigator_new_session.as_mut() {
-                        buffer.push(c);
-                    }
-                    return Ok(true);
-                }
-                _ => {}
-            }
         }
         let focused_id = self.session_chrome[self.task_strip_selection].session_id;
         if self.navigator_peek == Some(focused_id) {
@@ -290,36 +265,8 @@ impl TuiApp {
                     .as_ref()
                     .is_some_and(|session| session.session_id == item.session_id)
                 {
-                    if self.supervisor.is_some() {
-                        if !self.submit_session_command(
-                            forge_session::SupervisorCommand::SelectSession {
-                                session_id: Some(item.session_id),
-                            },
-                        ) {
-                            return Ok(true);
-                        }
-                        if let Some(snapshot) = self
-                            .supervisor
-                            .as_ref()
-                            .and_then(|supervisor| supervisor.snapshots.get(&item.session_id))
-                            .cloned()
-                        {
-                            self.save_session_view_state(self.selected_session_id);
-                            self.restore_session_view_state(item.session_id);
-                            self.selected_session_id = item.session_id;
-                            for task in &mut self.session_chrome {
-                                task.selected = task.session_id == item.session_id;
-                            }
-                            self.session_view = snapshot.session.clone();
-                            self.transcript_view = snapshot.transcript.clone();
-                            // Reconcile immediately: the restored view may
-                            // carry a busy flag from when this session ran
-                            // before it finished unselected, and the
-                            // supervisor's `Selected` echo only arrives on
-                            // the next poll.
-                            self.sync_supervised_presentation(&snapshot);
-                            self.sync_selected_workspace();
-                        }
+                    if self.supervisor.is_some() && self.select_supervised_session(item.session_id)
+                    {
                         self.set_feedback(
                             FeedbackSeverity::Info,
                             format!("session selected · {}", item.label),
@@ -734,7 +681,73 @@ impl TuiApp {
                 }
                 self.clamp_queue_selection();
             }
+            CommandFollowUp::SelectCreatedSession { known } => {
+                if succeeded {
+                    self.select_created_session(known);
+                }
+            }
         }
+    }
+
+    /// Move the selected view to a supervised session.
+    ///
+    /// The supervisor's `Selected` echo only arrives on the next poll, so the
+    /// local view moves now from the cached snapshot, which is authoritative
+    /// until then.
+    fn select_supervised_session(&mut self, session_id: uuid::Uuid) -> bool {
+        if !self.submit_session_command(forge_session::SupervisorCommand::SelectSession {
+            session_id: Some(session_id),
+        }) {
+            return false;
+        }
+        let snapshot = self
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+            .cloned();
+        if let Some(snapshot) = snapshot {
+            self.save_session_view_state(self.selected_session_id);
+            self.restore_session_view_state(session_id);
+            self.selected_session_id = session_id;
+            for task in &mut self.session_chrome {
+                task.selected = task.session_id == session_id;
+            }
+            self.task_strip_selection = self
+                .session_chrome
+                .iter()
+                .position(|task| task.session_id == session_id)
+                .unwrap_or(self.task_strip_selection);
+            self.session_view = snapshot.session.clone();
+            self.transcript_view = snapshot.transcript.clone();
+            // Reconcile immediately: the restored view may carry a busy flag
+            // from when this session ran before it finished unselected.
+            self.sync_supervised_presentation(&snapshot);
+            self.sync_selected_workspace();
+        }
+        true
+    }
+
+    /// Select the session a new-session command allocated and hand the cursor
+    /// to its composer, ready for the first prompt that names it.
+    ///
+    /// Creation reports the new task in the roster and nowhere else, so the
+    /// sessions that existed when the command was queued are what identify it;
+    /// the newest of those is the one this command made.
+    fn select_created_session(&mut self, known: &[uuid::Uuid]) {
+        self.poll_supervisor_events();
+        let Some(created) = self
+            .session_chrome
+            .iter()
+            .rev()
+            .find(|task| !known.contains(&task.session_id))
+            .map(|task| task.session_id)
+        else {
+            return;
+        };
+        if created != self.selected_session_id && !self.select_supervised_session(created) {
+            return;
+        }
+        self.enter_chat_composer();
     }
 
     fn handle_explorer_dialog_key(&mut self, key: event::KeyEvent) -> bool {
