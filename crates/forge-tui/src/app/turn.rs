@@ -739,6 +739,101 @@ impl TuiApp {
         self.clamp_tasks_selection();
     }
 
+    /// Open the selected background subagent's own session, read-only.
+    ///
+    /// Read-only by construction: this replays the child's journal rather than
+    /// opening a second runtime against a session the child still owns. See
+    /// `forge_session::replayed_transcript`.
+    pub(super) async fn open_selected_child_session(&mut self) {
+        if self.child_view.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                "already viewing a subagent · ← to return",
+            );
+            return;
+        }
+        let Some(idx) = self.task_selection.task() else {
+            self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
+            return;
+        };
+        let mut ids: Vec<_> = self
+            .selected_background_tasks()
+            .iter()
+            .map(|task| task.id)
+            .collect();
+        ids.sort_by_key(|id| id.0);
+        let Some(id) = ids.get(idx).copied() else {
+            self.clamp_tasks_selection();
+            return;
+        };
+        let Some(task) = self
+            .selected_background_tasks()
+            .into_iter()
+            .find(|task| task.id == id)
+        else {
+            return;
+        };
+        let name = background_task_name(&task.label, id);
+        let Some(session_id) = task.child_session_id else {
+            // Shell tasks have no session of their own to show.
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("{name} has no session to open"),
+            );
+            return;
+        };
+        // The child's revision has to differ from the one it replaces: the
+        // conversation render cache keys on it, so reusing the parent's would
+        // serve the parent's rendered lines for the child.
+        let revision = self.transcript_view.revision().wrapping_add(1);
+        let Some(transcript) =
+            forge_session::replayed_transcript(&self.selected_journal_dir(), session_id, revision)
+                .await
+        else {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("could not read {name}'s session"),
+            );
+            return;
+        };
+
+        let parent_transcript = std::mem::replace(&mut self.transcript_view, transcript);
+        let parent_hint = std::mem::replace(
+            &mut self.input.hint,
+            format!("read-only · viewing {name} · ← to return"),
+        );
+        self.child_view = Some(ChildSessionView {
+            label: name,
+            parent_transcript,
+            parent_hint,
+        });
+        self.reset_conversation_window();
+    }
+
+    /// Leave the read-only child view, restoring the owning session's transcript.
+    pub(super) fn close_child_session(&mut self) {
+        let Some(view) = self.child_view.take() else {
+            return;
+        };
+        self.transcript_view = view.parent_transcript;
+        self.input.hint = view.parent_hint;
+        self.reset_conversation_window();
+        self.set_feedback(
+            FeedbackSeverity::Info,
+            format!("back to your session · {} is still running", view.label),
+        );
+    }
+
+    /// Put the transcript back at its top. Switching which session is rendered
+    /// keeps neither the old scroll offset nor the old follow mode.
+    fn reset_conversation_window(&mut self) {
+        self.conversation_view.message_start = 0;
+        self.conversation_view.event_start = 0;
+        self.conversation_view.scroll = 0;
+        self.conversation_view.follow = true;
+        self.render_cache.conversation = None;
+    }
+
     /// Approve/deny whatever the currently selected background task is
     /// waiting on. A no-op (with feedback) if nothing is selected or the
     /// selected task isn't actually waiting — e.g. it finished between the

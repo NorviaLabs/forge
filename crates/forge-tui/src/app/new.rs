@@ -60,6 +60,7 @@ impl TuiApp {
                 attention: false,
                 updated_at: chrono::Utc::now(),
             }],
+            child_view: None,
             task_strip_selection: 0,
             navigator_tab: crate::widgets::NavigatorTab::Files,
             navigator_tab_explicit: false,
@@ -267,6 +268,7 @@ impl TuiApp {
 
         let mut app = Self {
             session_chrome,
+            child_view: None,
             task_strip_selection: 0,
             navigator_tab: crate::widgets::NavigatorTab::Files,
             navigator_tab_explicit: false,

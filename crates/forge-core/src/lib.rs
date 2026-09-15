@@ -82,7 +82,7 @@ mod helpers;
 mod session;
 mod types;
 
-pub use helpers::{session_title_hint, TURN_FAILED_MARKER};
+pub use helpers::{session_messages, session_title_hint, TURN_FAILED_MARKER};
 pub use types::*;
 
 pub(crate) use helpers::*;
