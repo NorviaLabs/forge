@@ -592,7 +592,11 @@ impl RepositorySupervisor {
                     SessionLifecycle::Unavailable => {
                         control.forget_unavailable_primary(stale.session_id).await?
                     }
-                    SessionLifecycle::Archived | SessionLifecycle::Removed => {}
+                    // Only a managed Session can be retained, so a retained row
+                    // can never be the stale primary this loop is looking for.
+                    SessionLifecycle::Archived
+                    | SessionLifecycle::Removed
+                    | SessionLifecycle::Retained => {}
                 }
             }
             let branch = worktrees
@@ -1440,15 +1444,38 @@ async fn execute_command(
                 }
                 return Ok(());
             }
-            if task.ownership != WorktreeOwnership::Managed
-                || task.lifecycle != SessionLifecycle::Archived
-            {
+            if task.ownership != WorktreeOwnership::Managed {
+                return Err(RepositorySupervisorError::Command(
+                    "only archived managed Sessions can remove a worktree".into(),
+                ));
+            }
+            // Archiving and removal are dispatched as separate commands, so
+            // this one can arrive while the archive is still queued behind a
+            // stopping turn. Waiting for it keeps ordinary sequencing from
+            // failing spuriously: a failure here would leave the checkout on
+            // disk with the row still live and nothing left to retry it.
+            let task = await_archive(&state, session_id).await?;
+            if !matches!(
+                task.lifecycle,
+                SessionLifecycle::Archived | SessionLifecycle::Retained
+            ) {
                 return Err(RepositorySupervisorError::Command(
                     "only archived managed Sessions can remove a worktree".into(),
                 ));
             }
 
             let task_actor = retire_actor_resources(&state, session_id, false).await?;
+            // Read the child checkouts after the drain, so every child still in
+            // the registry is finished and this list is exactly what is safe to
+            // remove. A child cancelled by the drain counts as finished, and
+            // its checkout is what this removal is for.
+            let child_worktrees = match &task_actor {
+                Some(task_actor) => {
+                    let session = task_actor.session.lock().await;
+                    session.descendant_worktrees()
+                }
+                None => Vec::new(),
+            };
 
             let storage = match RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace) {
                 Ok(storage) => storage,
@@ -1459,7 +1486,7 @@ async fn execute_command(
                     return Err(error.into());
                 }
             };
-            let removal = {
+            let blocked = {
                 let _git_mutation = state.git_mutation.lock().await;
                 let worktrees = match forge_storage::list_worktree_records(storage.main_worktree())
                 {
@@ -1471,10 +1498,88 @@ async fn execute_command(
                         return Err(error.into());
                     }
                 };
-                if worktrees
-                    .iter()
-                    .any(|worktree| same_path(&worktree.path, &task.workspace))
-                {
+                let registered = |path: &std::path::Path| {
+                    worktrees
+                        .iter()
+                        .any(|worktree| same_path(&worktree.path, path))
+                };
+                // Preflight every checkout this Session owns before removing any
+                // of them. Cleanup is all-or-nothing per Session so that
+                // `retained` keeps meaning one thing: this Session still owns a
+                // checkout on disk. Removing children while leaving the parent's
+                // own checkout behind would make the row unable to describe what
+                // is actually there.
+                let mut blocked_paths: Vec<std::path::PathBuf> = Vec::new();
+                let own_is_registered = registered(&task.workspace);
+                if own_is_registered && task.workspace.exists() {
+                    match forge_storage::worktree_is_dirty(&task.workspace) {
+                        Ok(true) => blocked_paths.push(task.workspace.clone()),
+                        Ok(false) => {}
+                        Err(error) => {
+                            if let Some(task_actor) = &task_actor {
+                                task_actor.finish_retirement();
+                            }
+                            return Err(error.into());
+                        }
+                    }
+                }
+                for child in &child_worktrees {
+                    if !child.path.exists() {
+                        // Already gone: a retried cleanup must treat a missing
+                        // child checkout as done rather than as a failure.
+                        continue;
+                    }
+                    if !registered(&child.path) {
+                        // Git no longer tracks this path, so there is nothing
+                        // here Forge can safely remove.
+                        continue;
+                    }
+                    match forge_storage::worktree_is_dirty(&child.path) {
+                        Ok(true) => blocked_paths.push(child.path.clone()),
+                        Ok(false) => {}
+                        Err(error) => {
+                            if let Some(task_actor) = &task_actor {
+                                task_actor.finish_retirement();
+                            }
+                            return Err(error.into());
+                        }
+                    }
+                }
+                blocked_paths
+            };
+            let removal = if blocked.is_empty() {
+                let _git_mutation = state.git_mutation.lock().await;
+                // Children first: the Session's own checkout is the binding the
+                // roster describes, so it is the last thing given up.
+                let mut result = Ok(());
+                for child in &child_worktrees {
+                    if !child.path.exists() {
+                        continue;
+                    }
+                    let removed = match child.branch.as_deref() {
+                        Some(branch) => forge_storage::remove_clean_worktree_if_branch(
+                            storage.main_worktree(),
+                            &child.path,
+                            branch,
+                        ),
+                        // A child whose branch was never recorded can still be
+                        // removed, but only when Git agrees it is clean; the
+                        // preflight above already refused anything with
+                        // uncommitted work.
+                        None => forge_storage::remove_clean_worktree(
+                            storage.main_worktree(),
+                            &child.path,
+                        ),
+                    };
+                    if let Err(error) = removed {
+                        result = Err(error);
+                        break;
+                    }
+                }
+                result.and_then(|()| {
+                    if !task.workspace.exists() {
+                        return Ok(());
+                    }
                     if task.branch.is_empty() {
                         // Branchless managed session: verify it is still the
                         // detached worktree this session owns, not one rebound
@@ -1490,16 +1595,46 @@ async fn execute_command(
                             &task.branch,
                         )
                     }
-                } else if task.workspace.exists() {
-                    Err(forge_storage::WorktreeError::RemoveFailed(format!(
-                        "{} is no longer a registered worktree; refusing to remove it",
-                        task.workspace.display()
-                    )))
-                } else {
-                    Ok(())
-                }
+                })
+            } else {
+                // Refused before anything was touched. Carried as `Dirty` so a
+                // preflight refusal and a write that lands mid-removal are
+                // handled through one path below.
+                Err(forge_storage::WorktreeError::Dirty(
+                    blocked
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ))
             };
             if let Err(error) = removal {
+                // A `Dirty` outcome is the blocked-cleanup case, whether it came
+                // from the preflight or from a write that landed between the
+                // check and the removal. Uncommitted work is never discarded:
+                // the Session becomes retained so the roster reports it and the
+                // removal can be retried.
+                if let forge_storage::WorktreeError::Dirty(_) = &error {
+                    if let Err(error) = state.control.mark_retained(session_id).await {
+                        if let Some(task_actor) = &task_actor {
+                            task_actor.finish_retirement();
+                        }
+                        return Err(error.into());
+                    }
+                    publish_actor(&state, session_id).await?;
+                    let _ = state
+                        .events
+                        .send(SupervisorEvent::Roster(snapshots(&state).await));
+                    // The Session stays live so the operator can resolve the
+                    // uncommitted work and retry, so the actor has to come out
+                    // of retirement: a retiring actor refuses every later
+                    // command, including that retry.
+                    if let Some(task_actor) = &task_actor {
+                        task_actor.finish_retirement();
+                    }
+                    drop(task_actor);
+                    return Ok(());
+                }
                 if let Some(task_actor) = &task_actor {
                     task_actor.finish_retirement();
                 }
@@ -2479,6 +2614,30 @@ async fn actor(
         .get(&session_id)
         .cloned()
         .ok_or(RepositorySupervisorError::NoActor(session_id))
+}
+
+/// Wait for an in-flight archive to land before removing a Session's checkout.
+///
+/// Archiving and removal are dispatched as separate commands, so the removal
+/// can be waiting behind an archive that is still queued behind a stopping
+/// turn. Waiting here keeps that ordinary sequencing from failing spuriously.
+/// The deadline keeps a turn that never settles from parking the removal
+/// forever: the caller sees an ordinary "not archived yet" error instead.
+async fn await_archive(
+    state: &SupervisorState,
+    session_id: SessionId,
+) -> Result<RepositorySession, RepositorySupervisorError> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let task = state.control.session(session_id).await?;
+        if task.lifecycle != SessionLifecycle::Active {
+            return Ok(task);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(task);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// Close the runtime handles owned by an actor before Git is allowed to
@@ -5570,7 +5729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dirty_archived_cleanup_preserves_the_worktree_and_task_binding() {
+    async fn dirty_cleanup_retains_the_session_and_preserves_the_worktree() {
         let repo = TempDir::new().unwrap();
         forge_test_support::init_repo_with_commit(repo.path());
         let scratch = TempDir::new().unwrap();
@@ -5601,20 +5760,27 @@ mod tests {
             })
             .await
             .unwrap();
-        let error = handle
+        // Uncommitted work is never discarded, so the removal does not fail —
+        // it declines, and the Session is left in a state the roster can report
+        // and the operator can retry.
+        handle
             .command(SupervisorCommand::RemoveManagedWorktree {
                 session_id: task.session_id,
             })
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap();
 
-        assert!(error.contains("dirty"), "unexpected cleanup error: {error}");
         assert!(task.workspace.exists());
         assert_eq!(
             control.session(task.session_id).await.unwrap().lifecycle,
-            SessionLifecycle::Archived
+            SessionLifecycle::Retained
         );
+        // The checkout is still bound to this Session, so a retry has something
+        // to work with once the operator has dealt with it.
+        assert!(forge_storage::list_worktree_records(repo.path())
+            .unwrap()
+            .iter()
+            .any(|record| record.path == task.workspace));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 

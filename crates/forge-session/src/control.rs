@@ -49,6 +49,13 @@ pub enum SessionLifecycle {
     Archived,
     Unavailable,
     Removed,
+    /// An archived session whose managed checkout could not be removed
+    /// because it holds uncommitted work. Distinct from `archived` on
+    /// purpose: `archived` is a settled end state with nothing left to do,
+    /// while `retained` names an unfinished cleanup that only the operator
+    /// can resolve, so the roster can surface it as needing attention and
+    /// removal can be retried against the same row.
+    Retained,
 }
 
 impl SessionLifecycle {
@@ -58,6 +65,7 @@ impl SessionLifecycle {
             "archived" => Ok(Self::Archived),
             "unavailable" => Ok(Self::Unavailable),
             "removed" => Ok(Self::Removed),
+            "retained" => Ok(Self::Retained),
             value => Err(RepositorySessionError::InvalidStoredValue {
                 field: "lifecycle",
                 value: value.into(),
@@ -271,6 +279,8 @@ pub enum RepositorySessionError {
     TrustRequired(SessionId),
     #[error("session `{0}` is archived")]
     Archived(SessionId),
+    #[error("session `{0}` still owns a checkout with uncommitted work")]
+    Retained(SessionId),
     #[error("slot {slot} is already assigned to session `{session_id}`")]
     SlotOccupied { slot: u8, session_id: SessionId },
 }
@@ -678,8 +688,17 @@ impl RepositoryControl {
         attachments: &str,
     ) -> Result<u64, RepositorySessionError> {
         let session = self.session(session_id).await?;
-        if session.lifecycle == SessionLifecycle::Archived {
-            return Err(RepositorySessionError::Archived(session_id));
+        // A retained Session is finished too: its checkout is only still on
+        // disk because cleanup could not remove it, so it must not accept work
+        // that would run in a workspace the operator is being asked to empty.
+        match session.lifecycle {
+            SessionLifecycle::Archived => {
+                return Err(RepositorySessionError::Archived(session_id));
+            }
+            SessionLifecycle::Retained => {
+                return Err(RepositorySessionError::Retained(session_id));
+            }
+            _ => {}
         }
         let awaiting_trust = sqlx::query(
             "SELECT 1 FROM pending_operations WHERE session_id = ? \
@@ -1211,10 +1230,16 @@ impl RepositoryControl {
         if !session.turn_state.archive_allowed() {
             return Err(RepositorySessionError::MustStopBeforeArchive(session_id));
         }
+        if session.lifecycle == SessionLifecycle::Retained {
+            // Archiving a retained row would overwrite the only record that a
+            // checkout is still on disk waiting for the operator, turning a
+            // blocked cleanup into a silent leak.
+            return Err(RepositorySessionError::Retained(session_id));
+        }
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "UPDATE sessions SET lifecycle = 'archived', slot = NULL, archived_at = ?, \
-             updated_at = ? WHERE session_id = ?",
+             updated_at = ? WHERE session_id = ? AND lifecycle <> 'retained'",
         )
         .bind(&now)
         .bind(&now)
@@ -1224,17 +1249,39 @@ impl RepositoryControl {
         Ok(())
     }
 
+    /// Record that the session's managed checkout could not be removed. The
+    /// row keeps its identity and its worktree binding so removal can be
+    /// retried; only the lifecycle changes, which is what moves the session
+    /// from a settled end state into one the roster reports as needing the
+    /// operator.
+    pub async fn mark_retained(&self, session_id: SessionId) -> Result<(), RepositorySessionError> {
+        let result = sqlx::query(
+            "UPDATE sessions SET lifecycle = 'retained', slot = NULL, updated_at = ? \
+             WHERE session_id = ? AND lifecycle IN ('archived', 'retained')",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(RepositorySessionError::NotFound(session_id));
+        }
+        Ok(())
+    }
+
     /// Record that the managed checkout has been removed. The session row stays
     /// as durable history, but it no longer represents a workspace binding.
     /// Keeping this state distinct from `archived` makes cleanup idempotent
     /// across a process crash between Git removal and the database update.
+    /// `retained` is accepted so a retried cleanup can finish a session whose
+    /// first attempt was blocked by uncommitted work.
     pub async fn mark_worktree_removed(
         &self,
         session_id: SessionId,
     ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
             "UPDATE sessions SET lifecycle = 'removed', slot = NULL, updated_at = ? \
-             WHERE session_id = ? AND lifecycle IN ('archived', 'removed')",
+             WHERE session_id = ? AND lifecycle IN ('archived', 'retained', 'removed')",
         )
         .bind(Utc::now().to_rfc3339())
         .bind(session_id.to_string())
@@ -1370,7 +1417,9 @@ impl RepositoryControl {
         for session in sessions.into_iter().filter(|session| {
             matches!(
                 session.lifecycle,
-                SessionLifecycle::Active | SessionLifecycle::Unavailable
+                SessionLifecycle::Active
+                    | SessionLifecycle::Unavailable
+                    | SessionLifecycle::Retained
             )
         }) {
             let valid = worktrees.iter().any(|worktree| {
@@ -1390,10 +1439,16 @@ impl RepositoryControl {
                 && active_workspaces.iter().any(|(session_id, workspace)| {
                     *session_id != session.session_id && same_path(workspace, &session.workspace)
                 });
-            let lifecycle = if valid && !occupied_by_other {
-                "active"
-            } else {
-                "unavailable"
+            // A retained Session is an archived one whose cleanup is still
+            // outstanding, so a checkout that is still bound to it has to keep
+            // the row retained rather than promoting it back to active. A
+            // checkout that has gone away blocks nothing any more, so the row
+            // drops to unavailable like any other row whose workspace is
+            // unusable.
+            let lifecycle = match (session.lifecycle, valid && !occupied_by_other) {
+                (SessionLifecycle::Retained, true) => "retained",
+                (_, true) => "active",
+                _ => "unavailable",
             };
             sqlx::query(
                 "UPDATE sessions SET lifecycle = ?, slot = CASE WHEN ? = 'active' THEN slot ELSE NULL END, \
@@ -1706,6 +1761,111 @@ mod tests {
         assert_eq!(
             control.session(session_id).await.unwrap().lifecycle,
             SessionLifecycle::Removed
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_survives_archiving_and_finishes_through_a_retried_removal() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("session");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&workspace, "blocked", Some(1));
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
+        control.archive(session_id).await.unwrap();
+        control.mark_retained(session_id).await.unwrap();
+        assert_eq!(
+            control.session(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Retained
+        );
+
+        // Re-archiving a retained Session would erase the only record that its
+        // checkout is still on disk.
+        assert!(matches!(
+            control.archive(session_id).await,
+            Err(RepositorySessionError::Retained(id)) if id == session_id
+        ));
+
+        // The retry path has to accept the retained row, not only archived ones.
+        control.mark_worktree_removed(session_id).await.unwrap();
+        assert_eq!(
+            control.session(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Removed
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_sessions_reject_new_prompts() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("session");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&workspace, "blocked", Some(1));
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
+        control.archive(session_id).await.unwrap();
+        control.mark_retained(session_id).await.unwrap();
+
+        assert!(matches!(
+            control.enqueue_prompt(session_id, "keep going").await,
+            Err(RepositorySessionError::Retained(id)) if id == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn reconcile_keeps_retained_until_its_checkout_goes_away() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("session");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&workspace, "blocked", Some(1));
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
+        control.archive(session_id).await.unwrap();
+        control.mark_retained(session_id).await.unwrap();
+
+        let bound = [WorktreeRecord {
+            path: workspace.clone(),
+            branch: Some("forge/blocked".to_string()),
+            head: None,
+            prunable: false,
+        }];
+        control.reconcile_worktrees(&bound).await.unwrap();
+        // A retained Session whose checkout is still bound stays retained: it is
+        // not a live Session again, and it is not finished either.
+        assert_eq!(
+            control.session(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Retained
+        );
+
+        // Once the checkout is gone the row no longer describes anything on
+        // disk, so it drops to unavailable rather than claiming to be retained.
+        control.reconcile_worktrees(&[]).await.unwrap();
+        assert_eq!(
+            control.session(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Unavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retained_session_does_not_occupy_a_live_workspace_or_slot() {
+        // The unique indexes that keep one live Session per workspace and slot
+        // are partial on `active`, so a retained row must not be treated as
+        // occupying either. A second Session may take the freed slot.
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let first = new_session(&dir.path().join("first"), "first", Some(1));
+        let first_id = first.session_id;
+        control.register_session(first, None).await.unwrap();
+        control.archive(first_id).await.unwrap();
+        control.mark_retained(first_id).await.unwrap();
+
+        let second = new_session(&dir.path().join("second"), "second", Some(1));
+        control.register_session(second, None).await.unwrap();
+        assert_eq!(
+            control.session(first_id).await.unwrap().lifecycle,
+            SessionLifecycle::Retained
         );
     }
 

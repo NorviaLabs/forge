@@ -328,7 +328,7 @@ impl TuiApp {
             // panes leave the footer's activity line alone, so the config
             // chips and turn state stay visible while you navigate.
             FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => Some(
-                "↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs"
+                "↑↓ select · Enter attach · Space peek · n new · s stop · x done · Ctrl+E tabs"
                     .into(),
             ),
             FocusMode::Navigation => None,

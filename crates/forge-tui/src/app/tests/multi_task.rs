@@ -232,32 +232,24 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
         .position(|item| item.session_id == sibling_id)
         .expect("sibling in task strip");
     app.focus_block(FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+    // `x` confirms before it does anything; the archive and the checkout
+    // removal are then dispatched together from that confirmation.
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            app.overlay,
+            Some(crate::overlays::Overlay::SessionConfirm { .. })
+        ),
+        "`x` must confirm before archiving and removing"
+    );
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
     for _ in 0..300 {
         app.poll_supervisor_events();
-        if app.supervisor.as_ref().is_some_and(|supervisor| {
-            supervisor
-                .snapshots
-                .get(&sibling_id)
-                .is_some_and(|snapshot| {
-                    snapshot.task.lifecycle == forge_session::SessionLifecycle::Archived
-                })
-        }) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    handle
-        .command(forge_session::SupervisorCommand::RemoveManagedWorktree {
-            session_id: sibling_id,
-        })
-        .await
-        .unwrap();
-    for _ in 0..300 {
-        app.poll_supervisor_events();
+        app.poll_pending_commands();
         if !app
             .session_chrome
             .iter()
@@ -2170,7 +2162,7 @@ async fn session_verbs_do_not_fire_from_the_tab_row() {
         .await
         .unwrap();
     assert!(
-        app.navigator_done_pending.is_none(),
+        app.navigator_done_pending.is_empty(),
         "`x` is inert on the row"
     );
     assert!(app.navigator_tab_row_focused, "the row keeps the keyboard");
@@ -2292,9 +2284,9 @@ async fn the_peek_renders_the_last_answer_and_reply() {
         .unwrap();
 }
 
-/// `d` on an idle managed session archives it; the primary is refused.
+/// `x` on an idle managed session archives and cleans it; the primary is refused.
 #[tokio::test]
-async fn d_archives_an_idle_managed_session() {
+async fn x_archives_and_cleans_an_idle_managed_session() {
     use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let sibling = create_promptless_session(&mut app).await;
@@ -2320,7 +2312,10 @@ async fn d_archives_an_idle_managed_session() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
-    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
 

@@ -279,6 +279,36 @@ impl SessionSwitcherGroup {
     }
 }
 
+/// What `x` does to a switcher row, and where that row ranks among the rows
+/// that need the operator. Made explicit on the item because the confirm copy
+/// and the dispatched command both differ per case, and neither is derivable
+/// from the row's group once `retained` shares "Needs you" with a stopped turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSwitcherCleanup {
+    /// Live: archiving the session also removes its checkout.
+    ArchiveAndClean,
+    /// Already finished: `x` only removes the checkout.
+    CleanOnly,
+    /// Cleanup was blocked: `x` retries the removal.
+    Retry,
+    /// Forge may not remove this row's checkout — the primary session's
+    /// checkout is the repository itself, and an attached worktree is never
+    /// deleted by Forge.
+    ReadOnly,
+}
+
+impl SessionSwitcherCleanup {
+    /// Rank within a group. A blocked cleanup shares "Needs you" with a turn
+    /// that stopped for an answer, but ranks below it: an approval or an open
+    /// question is always the more urgent thing to deal with.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Retry => 1,
+            _ => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSwitcherItem {
     pub session_id: String,
@@ -291,6 +321,8 @@ pub struct SessionSwitcherItem {
     /// Only a Forge-created worktree may be removed on cleanup; an attached
     /// one is never deleted by Forge.
     pub managed: bool,
+    /// What `x` does to this row.
+    pub cleanup: SessionSwitcherCleanup,
 }
 
 /// A destructive session action awaiting confirmation.
@@ -1290,6 +1322,7 @@ impl Overlay {
         items.sort_by(|left, right| {
             left.group
                 .cmp(&right.group)
+                .then_with(|| left.cleanup.rank().cmp(&right.cleanup.rank()))
                 .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
         });
         Self::SessionSwitcher {
@@ -1619,38 +1652,44 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 label: item.label.clone(),
             })
             .unwrap_or(OverlayAction::None),
-        Key::Char('x') if matches!(overlay, Overlay::SessionSwitcher { .. }) => overlay
-            .session_switcher_selection()
-            .map(|item| OverlayAction::OpenSessionConfirm {
-                kind: SessionConfirmKind::Archive,
-                session_id: item.session_id.clone(),
-                label: item.label.clone(),
-                detail: format!(
-                    "Archiving is final — `{}` cannot be reopened.\nIts branch and worktree are kept.",
-                    item.branch
-                ),
-            })
-            .unwrap_or(OverlayAction::None),
-        Key::Char('d') if matches!(overlay, Overlay::SessionSwitcher { .. }) => {
+        // `x` is the one verb for finishing a session: it means "archive and
+        // clean up" on a live row, a plain removal on one that already
+        // finished, and a retry on one whose cleanup was blocked. The row
+        // carries which case applies, because the operator cannot tell a
+        // blocked cleanup from any other row once it sits in "Needs you".
+        Key::Char('x') if matches!(overlay, Overlay::SessionSwitcher { .. }) => {
             match overlay.session_switcher_selection() {
-                Some(item) if item.managed && item.group == SessionSwitcherGroup::Archived => {
-                    OverlayAction::OpenSessionConfirm {
-                        kind: SessionConfirmKind::Cleanup,
+                Some(item) => match item.cleanup {
+                    SessionSwitcherCleanup::ArchiveAndClean => OverlayAction::OpenSessionConfirm {
+                        kind: SessionConfirmKind::Archive,
                         session_id: item.session_id.clone(),
                         label: item.label.clone(),
                         detail: format!(
-                            "Removes the worktree at\n{}\nThe branch `{}` is kept. Uncommitted work blocks removal.",
-                            item.workspace, item.branch
+                            "Archiving is final — `{}` cannot be reopened.\nIts branch `{}` is kept; \
+                             a clean worktree is removed.\nUncommitted work blocks removal.",
+                            item.label, item.branch
                         ),
+                    },
+                    SessionSwitcherCleanup::CleanOnly | SessionSwitcherCleanup::Retry => {
+                        OverlayAction::OpenSessionConfirm {
+                            kind: SessionConfirmKind::Cleanup,
+                            session_id: item.session_id.clone(),
+                            label: item.label.clone(),
+                            detail: format!(
+                                "Removes the worktree at\n{}\nThe branch `{}` is kept. Uncommitted work blocks removal.",
+                                item.workspace, item.branch
+                            ),
+                        }
                     }
-                }
-                // Attached worktrees are never deleted by Forge, and a live
-                // task still needs its checkout — say which rule applies
-                // instead of offering a key that does nothing.
-                Some(item) if !item.managed => OverlayAction::Toast(
-                    "attached worktrees are never removed by Forge".into(),
-                ),
-                Some(_) => OverlayAction::Toast("archive the session before cleaning it up".into()),
+                    // Say which rule applies instead of offering a key that
+                    // does nothing.
+                    SessionSwitcherCleanup::ReadOnly if !item.managed => OverlayAction::Toast(
+                        "attached worktrees are never removed by Forge".into(),
+                    ),
+                    SessionSwitcherCleanup::ReadOnly => OverlayAction::Toast(
+                        "only Forge-managed session worktrees are removed".into(),
+                    ),
+                },
                 None => OverlayAction::None,
             }
         }
@@ -1777,9 +1816,14 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 error,
             } = overlay
             {
-                if let Some(target) =
-                    Overlay::session_input_field(*mode, *field, label, branch, workspace, first_prompt)
-                {
+                if let Some(target) = Overlay::session_input_field(
+                    *mode,
+                    *field,
+                    label,
+                    branch,
+                    workspace,
+                    first_prompt,
+                ) {
                     if !c.is_control() && c != '\n' {
                         target.push(c);
                         // Typing is the operator answering the complaint;
@@ -1802,9 +1846,14 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 error,
             } = overlay
             {
-                if let Some(target) =
-                    Overlay::session_input_field(*mode, *field, label, branch, workspace, first_prompt)
-                {
+                if let Some(target) = Overlay::session_input_field(
+                    *mode,
+                    *field,
+                    label,
+                    branch,
+                    workspace,
+                    first_prompt,
+                ) {
                     // A pasted path or prompt often carries a trailing
                     // newline; treat every control character as a space so a
                     // multi-line paste lands as one legible line.
@@ -1825,9 +1874,14 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 error,
             } = overlay
             {
-                if let Some(target) =
-                    Overlay::session_input_field(*mode, *field, label, branch, workspace, first_prompt)
-                {
+                if let Some(target) = Overlay::session_input_field(
+                    *mode,
+                    *field,
+                    label,
+                    branch,
+                    workspace,
+                    first_prompt,
+                ) {
                     target.pop();
                     *error = None;
                 }
@@ -2024,7 +2078,8 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     *error = Some("Label is required.".into());
                     OverlayAction::None
                 } else if trimmed.contains('/') || trimmed.chars().count() > 80 {
-                    *error = Some("Label cannot contain `/` and must be 80 characters or fewer.".into());
+                    *error =
+                        Some("Label cannot contain `/` and must be 80 characters or fewer.".into());
                     OverlayAction::None
                 } else {
                     OverlayAction::RenameSession {
@@ -3799,6 +3854,7 @@ mod tests {
             attention: false,
             group: SessionSwitcherGroup::Idle,
             managed: true,
+            cleanup: SessionSwitcherCleanup::ArchiveAndClean,
         };
         let mut overlay = Overlay::session_switcher(vec![
             item("Bug Hunt"),
@@ -4016,6 +4072,12 @@ mod tests {
         group: SessionSwitcherGroup,
         managed: bool,
     ) -> SessionSwitcherItem {
+        let cleanup = match (group, managed) {
+            (SessionSwitcherGroup::Archived, true) => SessionSwitcherCleanup::CleanOnly,
+            (SessionSwitcherGroup::Archived, false) => SessionSwitcherCleanup::ReadOnly,
+            (_, true) => SessionSwitcherCleanup::ArchiveAndClean,
+            (_, false) => SessionSwitcherCleanup::ReadOnly,
+        };
         SessionSwitcherItem {
             session_id: uuid::Uuid::new_v4().to_string(),
             label: label.into(),
@@ -4025,6 +4087,23 @@ mod tests {
             attention: group == SessionSwitcherGroup::NeedsYou,
             group,
             managed,
+            cleanup,
+        }
+    }
+
+    /// A row whose cleanup was blocked, which is the one case where `x` has to
+    /// retry rather than archive anything.
+    fn retained_switcher_item(label: &str) -> SessionSwitcherItem {
+        SessionSwitcherItem {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            label: label.into(),
+            branch: format!("forge/{label}"),
+            workspace: format!("/repo/{label}"),
+            state: "completed".into(),
+            attention: true,
+            group: SessionSwitcherGroup::NeedsYou,
+            managed: true,
+            cleanup: SessionSwitcherCleanup::Retry,
         }
     }
 
@@ -4065,23 +4144,13 @@ mod tests {
 
     #[test]
     fn cleanup_is_offered_only_for_an_archived_managed_worktree() {
-        let mut live = Overlay::session_switcher(vec![switcher_item(
-            "parser",
-            SessionSwitcherGroup::Idle,
-            true,
-        )]);
-        assert!(matches!(
-            handle_overlay_key(&mut live, Key::Char('d')),
-            OverlayAction::Toast(_)
-        ));
-
         let mut attached = Overlay::session_switcher(vec![switcher_item(
             "linked",
             SessionSwitcherGroup::Archived,
             false,
         )]);
         assert!(matches!(
-            handle_overlay_key(&mut attached, Key::Char('d')),
+            handle_overlay_key(&mut attached, Key::Char('x')),
             OverlayAction::Toast(_)
         ));
 
@@ -4091,12 +4160,70 @@ mod tests {
             true,
         )]);
         assert!(matches!(
-            handle_overlay_key(&mut managed, Key::Char('d')),
+            handle_overlay_key(&mut managed, Key::Char('x')),
             OverlayAction::OpenSessionConfirm {
                 kind: SessionConfirmKind::Cleanup,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_live_managed_row_archives_and_cleans_under_one_key() {
+        let mut overlay = Overlay::session_switcher(vec![switcher_item(
+            "parser",
+            SessionSwitcherGroup::Idle,
+            true,
+        )]);
+        let OverlayAction::OpenSessionConfirm { kind, detail, .. } =
+            handle_overlay_key(&mut overlay, Key::Char('x'))
+        else {
+            panic!("a live managed row must confirm before anything happens");
+        };
+        assert_eq!(kind, SessionConfirmKind::Archive);
+        // The old copy promised the worktree was kept, which stops being true
+        // the moment archiving also cleans up.
+        assert!(detail.contains("clean worktree is removed"), "{detail}");
+    }
+
+    #[test]
+    fn a_retained_row_retries_cleanup_under_the_same_key() {
+        let mut overlay = Overlay::session_switcher(vec![retained_switcher_item("blocked")]);
+        let OverlayAction::OpenSessionConfirm {
+            kind,
+            detail,
+            label,
+            ..
+        } = handle_overlay_key(&mut overlay, Key::Char('x'))
+        else {
+            panic!("a retained row must confirm before a retry");
+        };
+        // A retry removes a checkout; it must not archive the row again, which
+        // would overwrite the state that records the block.
+        assert_eq!(kind, SessionConfirmKind::Cleanup);
+        assert_eq!(label, "blocked");
+        assert!(detail.contains("Removes the worktree at"), "{detail}");
+    }
+
+    #[test]
+    fn a_retained_row_ranks_below_a_turn_that_needs_an_answer() {
+        // Both rows are "Needs you". The operator answering a stopped turn is
+        // more urgent than clearing a stranded directory, so the turn sorts
+        // first even though its label sorts later.
+        let overlay = Overlay::session_switcher(vec![
+            retained_switcher_item("aaa-blocked"),
+            switcher_item("zzz-waiting", SessionSwitcherGroup::NeedsYou, true),
+        ]);
+        let Overlay::SessionSwitcher { items, .. } = &overlay else {
+            panic!("expected the session switcher");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zzz-waiting", "aaa-blocked"]
+        );
     }
 
     #[test]
