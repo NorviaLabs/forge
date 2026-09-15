@@ -926,6 +926,23 @@ impl TuiApp {
                         );
                     }
                 }
+                Ok(SlashCommand::New) => {
+                    // The composer-reachable twin of `n` in the Sessions tab
+                    // and of the navigator row's `+`: one create verb, one
+                    // prompt-less creation, one cursor hand-off.
+                    if self.selected_is_supervised() {
+                        self.create_session_now();
+                    } else {
+                        // A new session needs a repository to allocate its
+                        // worktree. Say what does work here rather than
+                        // letting the shared dispatcher answer with the
+                        // generic "Sessions are unavailable".
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            "/new needs a repository · /fork starts a separate conversation here",
+                        );
+                    }
+                }
                 Ok(SlashCommand::Fork) => {
                     if self.selected_is_supervised() {
                         self.submit_session_command(

@@ -286,6 +286,27 @@ pub(crate) fn press(code: KeyCode, mods: KeyModifiers) -> event::KeyEvent {
     }
 }
 
+/// A left-button press at a cell. Shared so pointer routing can be exercised
+/// from any test module, supervised or not.
+pub(crate) fn left_click(column: u16, row: u16) -> event::MouseEvent {
+    event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// A bare pointer move. Terminals without motion reporting never send one.
+pub(crate) fn moved(column: u16, row: u16) -> event::MouseEvent {
+    event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
 /// Serialise every test that reads or writes process environment, including
 /// `HOME` / `dirs::home_dir()`. Recover poison so one failing test does not
 /// cascade into the rest of the suite.

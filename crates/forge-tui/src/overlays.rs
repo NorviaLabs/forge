@@ -807,6 +807,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             is_skill: false,
         },
         PaletteItem {
+            cmd: "/new".into(),
+            desc: "Start a new session".into(),
+            is_skill: false,
+        },
+        PaletteItem {
             cmd: "/fork".into(),
             desc: "Start a new session from this conversation".into(),
             is_skill: false,

@@ -942,6 +942,25 @@ async fn question_mark_types_into_an_empty_composer() {
 }
 
 #[tokio::test]
+async fn new_without_a_repository_explains_instead_of_doing_nothing() {
+    let (_dir, mut app) = focus_test_app().await;
+
+    app.dispatch_line("/new").await.unwrap();
+
+    // The generic dispatcher would answer "Sessions are unavailable", which
+    // reads as a broken command rather than a mode difference.
+    assert!(
+        app.feedback.text.contains("needs a repository"),
+        "feedback={}",
+        app.feedback.text
+    );
+    assert!(
+        app.pending_turn.prompt().is_none(),
+        "an unactionable verb must not submit itself as a prompt"
+    );
+}
+
+#[tokio::test]
 async fn slash_command_info_feedback_expires() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

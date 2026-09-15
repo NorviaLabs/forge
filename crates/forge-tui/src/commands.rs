@@ -18,6 +18,9 @@ pub enum SlashCommand {
     Help,
     Continue,
     Fork,
+    /// Start a new session from scratch, allocating its worktree — the
+    /// composer-reachable twin of `n` in the navigator's Sessions tab.
+    New,
     ResumeList,
     Sessions,
     Resume {
@@ -124,6 +127,13 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 Ok(SlashCommand::Fork)
             }
         }
+        "new" => {
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/new".into()))
+            } else {
+                Ok(SlashCommand::New)
+            }
+        }
         "sessions" | "tasks" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/sessions".into()))
@@ -228,6 +238,12 @@ mod tests {
     }
 
     #[test]
+    fn parses_new_session_command() {
+        assert_eq!(parse_slash("/new").unwrap().unwrap(), SlashCommand::New);
+        assert!(parse_slash("/new now").unwrap().is_err());
+    }
+
+    #[test]
     fn parses_phase1_commands() {
         assert!(parse_slash("/tools").unwrap().is_err());
         assert!(parse_slash("/journal").unwrap().is_err());
@@ -253,6 +269,9 @@ mod tests {
             SlashCommand::Connect,
             SlashCommand::Help,
             SlashCommand::Sessions,
+            // Creating a session does not disturb the running turn, and
+            // `/sessions` already reaches the same verb while busy.
+            SlashCommand::New,
             SlashCommand::Quit,
             SlashCommand::Clear,
             SlashCommand::Refresh,

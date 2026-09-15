@@ -172,27 +172,9 @@ async fn wheel_over_overlay_is_a_noop() {
     assert_eq!(app.conversation_view.scroll, 0);
 }
 
-fn left_click(column: u16, row: u16) -> event::MouseEvent {
-    event::MouseEvent {
-        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        column,
-        row,
-        modifiers: KeyModifiers::NONE,
-    }
-}
-
 fn left_release(column: u16, row: u16) -> event::MouseEvent {
     event::MouseEvent {
         kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
-        column,
-        row,
-        modifiers: KeyModifiers::NONE,
-    }
-}
-
-fn moved(column: u16, row: u16) -> event::MouseEvent {
-    event::MouseEvent {
-        kind: crossterm::event::MouseEventKind::Moved,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -361,6 +343,30 @@ async fn click_navigator_tab_switches_between_sessions_and_files() {
     assert_eq!(
         app.effective_navigator_tab(),
         crate::widgets::NavigatorTab::Files
+    );
+}
+
+/// The `+` cell sits inside the `Files` tab's columns, so pointer routing has to
+/// claim it before the tab branch — for hover and for the click alike.
+#[tokio::test]
+async fn hovering_the_new_session_cell_does_not_read_as_the_files_tab() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.navigator_tabs_area = Some(ratatui::layout::Rect::new(0, 0, 40, 2));
+    app.navigator_new_session_area = Some(ratatui::layout::Rect::new(37, 0, 3, 3));
+
+    app.handle_mouse(moved(38, 1)).await.unwrap();
+    assert!(app.hover_navigator_new_session);
+    assert_eq!(
+        app.hover_navigator_tab, None,
+        "the cell must not read as a hovered tab"
+    );
+
+    // Cells left of the cell still belong to the tabs.
+    app.handle_mouse(moved(20, 1)).await.unwrap();
+    assert!(!app.hover_navigator_new_session);
+    assert_eq!(
+        app.hover_navigator_tab,
+        Some(crate::widgets::NavigatorTab::Files)
     );
 }
 
