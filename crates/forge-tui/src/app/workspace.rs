@@ -162,6 +162,20 @@ impl TuiApp {
         self.exit.request();
     }
 
+    /// Finish a `/quit` whose session close could not be completed.
+    ///
+    /// Closing the selected session before quitting is cleanup, not a
+    /// precondition for quitting: retirement is best-effort, so it can fail
+    /// (a turn that ignores cancellation past the retirement deadline, a full
+    /// command queue) or be rejected outright. Leaving the app running in that
+    /// case strands the operator in the session they explicitly asked to
+    /// leave, with no visible way out. Exit anyway — the leftover actor and
+    /// worktree are reconciled by the supervisor on the next launch.
+    pub(super) fn request_quit_after_deferred_cleanup(&mut self) {
+        self.exit.request();
+        self.status_state.message = "quitting · cleanup deferred".into();
+    }
+
     pub(super) fn go_back_workspace(&mut self) {
         if self
             .editor_session

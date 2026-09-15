@@ -346,6 +346,88 @@ async fn quit_closes_selected_session_before_exiting_on_last_session() {
         .unwrap();
 }
 
+/// Overwrite the tracked close's completion with a failure, the way a
+/// retirement that blew its deadline reports one.
+fn fail_pending_close(app: &mut TuiApp, message: &str) {
+    assert_eq!(
+        app.pending_command_completions.len(),
+        1,
+        "expected exactly one pending close to fail"
+    );
+    let (reply, response) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    reply
+        .send(Err(message.to_string()))
+        .expect("the pending completion still holds the receiver");
+    app.pending_command_completions[0].reply = response;
+    app.poll_pending_commands();
+}
+
+/// `/quit` on the last session must exit even when its close fails.
+///
+/// Retirement is best-effort and time-boxed in the supervisor, so a workspace
+/// that takes longer than that deadline to release makes `CloseSession` fail.
+/// Because the exit used to be gated on that success, the follow-up did
+/// nothing and the app loop kept running — an unquittable session. The leftover
+/// actor is reconciled on the next launch, so exiting is always safe here.
+#[tokio::test]
+async fn quit_exits_even_when_the_last_session_close_fails() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+
+    app.dispatch_line("/quit").await.unwrap();
+    fail_pending_close(
+        &mut app,
+        "session resources did not stop before workspace retirement",
+    );
+
+    assert!(
+        app.exit.is_requested(),
+        "a failed close on the last session must still quit"
+    );
+    assert_eq!(app.status_state.message, "quitting · cleanup deferred");
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// With a sibling still active, `/quit` closes the selected session and stays.
+/// A close that fails must leave the operator in the app — only the
+/// last-session case trades cleanup for an exit.
+#[tokio::test]
+async fn quit_with_a_sibling_stays_running_when_the_close_fails() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+
+    let sibling = create_promptless_session(&mut app).await;
+    let sibling_id = sibling.session_id;
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling_id)
+        .expect("sibling in task strip");
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.poll_supervisor_events();
+
+    app.dispatch_line("/quit").await.unwrap();
+    fail_pending_close(
+        &mut app,
+        "session resources did not stop before workspace retirement",
+    );
+
+    assert!(
+        !app.exit.is_requested(),
+        "a failed close must not take the whole app down while a sibling is live"
+    );
+    assert_eq!(app.selected_session_id, sibling_id);
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// Supervised turns are driven by supervisor events, not the local submit
 /// path, so the turn clock must be anchored when the actor reports Running.
 /// Before this, the live line counted from `timing.started` (app uptime) and

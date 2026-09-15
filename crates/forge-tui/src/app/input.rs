@@ -663,14 +663,16 @@ impl TuiApp {
                 }
             }
             CommandFollowUp::Quit { active_sessions } => {
-                if succeeded {
-                    if *active_sessions <= 1 {
+                if *active_sessions <= 1 {
+                    if succeeded {
                         self.exit.request();
                         self.status_state.message = "quitting…".into();
                     } else {
-                        self.poll_supervisor_events();
-                        self.status_state.message = "session closed".into();
+                        self.request_quit_after_deferred_cleanup();
                     }
+                } else if succeeded {
+                    self.poll_supervisor_events();
+                    self.status_state.message = "session closed".into();
                 }
             }
             CommandFollowUp::EditQueuedMessage { text } => {

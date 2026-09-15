@@ -1003,12 +1003,18 @@ impl TuiApp {
                                     .count()
                             })
                             .unwrap_or(0);
-                        self.submit_session_command_tracked(
+                        let queued = self.submit_session_command_tracked(
                             forge_session::SupervisorCommand::CloseSession {
                                 session_id: self.selected_session_id,
                             },
                             CommandFollowUp::Quit { active_sessions },
                         );
+                        // A close that never reached the supervisor must not
+                        // swallow the quit either — the same deferred-cleanup
+                        // exit applies.
+                        if !queued && active_sessions <= 1 {
+                            self.request_quit_after_deferred_cleanup();
+                        }
                     } else {
                         self.exit.request();
                         self.status_state.message = "quitting…".into();
