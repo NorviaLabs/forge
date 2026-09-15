@@ -689,6 +689,19 @@ impl TuiApp {
                 }
             }
         }
+        // The read-only child view is a snapshot, so a live subagent's
+        // transcript only advances when re-read. Guarded on the live handle:
+        // non-terminal tasks only, so a finished child keeps its final
+        // snapshot instead of re-reading an unchanged journal on every tick.
+        let viewed_running = self.child_view.as_ref().is_some_and(|view| {
+            self.session_runtime
+                .background()
+                .get(view.task_id)
+                .is_some_and(|task| !task.status.is_terminal())
+        });
+        if viewed_running {
+            self.refresh_child_view().await;
+        }
         Ok(())
     }
 
@@ -804,10 +817,52 @@ impl TuiApp {
         );
         self.child_view = Some(ChildSessionView {
             label: name,
+            task_id: id,
+            session_id,
             parent_transcript,
             parent_hint,
         });
         self.reset_conversation_window();
+    }
+
+    /// Re-read the viewed child's journal on the poll tick while its task is
+    /// non-terminal, so a live subagent's transcript advances under the
+    /// operator's eyes.
+    ///
+    /// Silent by design: it runs on the same tick that already updates the
+    /// strip, so the strip's own refresh is the evidence. It stays quiet on
+    /// failures too — an unreadable journal should not knock a view the
+    /// operator is still reading out from under them.
+    ///
+    /// A swap only replaces when the child's messages actually changed;
+    /// otherwise every tick would invalidate the render cache for nothing. And
+    /// it never touches the conversation window: the operator may be reading
+    /// an older page, and a refresh must not steal their place.
+    pub(super) async fn refresh_child_view(&mut self) {
+        let Some(session_id) = self.child_view.as_ref().map(|view| view.session_id) else {
+            return;
+        };
+        let Some(messages) =
+            forge_core::session_messages(&self.selected_journal_dir(), session_id).await
+        else {
+            return;
+        };
+        let current = self.transcript_view.messages();
+        if current.len() == messages.len()
+            && current
+                .last()
+                .map(|message| message.content.len())
+                .unwrap_or(0)
+                == messages
+                    .last()
+                    .map(|message| message.content.len())
+                    .unwrap_or(0)
+        {
+            return;
+        }
+        let revision = self.transcript_view.revision().wrapping_add(1);
+        self.transcript_view = forge_session::TranscriptSnapshot::from_messages(messages, revision);
+        self.render_cache.conversation = None;
     }
 
     /// Leave the read-only child view, restoring the owning session's transcript.

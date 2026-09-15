@@ -15,6 +15,11 @@ pub(crate) const UI_STATE_VERSION: u32 = 2;
 /// revision intact.
 pub(crate) struct ChildSessionView {
     pub(crate) label: String,
+    /// The task being viewed, so the poll tick refreshes only while it is
+    /// non-terminal — read from the live handle, never trusted from the view.
+    pub(crate) task_id: forge_types::BackgroundTaskId,
+    /// The child session being viewed, so the poll tick can re-read it.
+    pub(crate) session_id: forge_types::SessionId,
     /// The transcript to put back when the operator leaves.
     pub(crate) parent_transcript: forge_session::TranscriptSnapshot,
     /// The composer hint the child view replaced with its read-only notice.
