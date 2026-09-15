@@ -901,6 +901,50 @@ by `[tui] notify = auto | bell | osc9 | both | off`.
 - The in-app toast and feedback strip still fire while focused. The terminal
   notification and the in-app notice answer different questions.
 
+### 9.15 Quit-all confirm
+Quitting Forge has always stopped every session — process exit retires every
+actor, so the sessions the operator is not looking at die with the one they
+are. What was missing was the bill: neither `Ctrl+D` nor `/quit` said how many
+turns, queued prompts, pending approvals, or unsaved buffers went with it.
+
+- **Raised by the quit gate**, one path shared by `Ctrl+D`, `/quit` on the
+  primary session, and the exit that follows a resolved unsaved-changes
+  dialog. `/quit` in any other session view stays a per-session close, so the
+  dialog exists in exactly one place.
+- **Only when a second session has work in flight.** The condition is "more
+  than one Active session with a `Running` or `Queued` turn". Quitting one
+  busy session that the operator is watching is the ordinary case; prompting
+  for it would put a dialog in front of every quit and the dialog would stop
+  meaning anything.
+- **Two rows, `Cancel` selected first.** The dialog exists to protect work, so
+  an `Enter` the operator did not mean must not destroy any. `↑↓` moves,
+  `Enter` confirms the highlighted row, `Esc` cancels; the binding line comes
+  from `hints::QUIT_ALL`, which is the same set the dialog documents.
+- **The body names what is lost, and only what is lost.** A headline
+  (`Quitting stops every session.`), then one line per non-empty category:
+  sessions with a turn running, queued prompts never dispatched, requests
+  waiting on the operator, and unsaved changes by session label. Categories at
+  zero are absent rather than shown as `0`, so the dialog stays short when
+  quitting is cheap.
+- **Border severity follows the loss.** `warn` while every buffer is saved,
+  `danger` once any session view holds unsaved changes. Counts come from the
+  supervisor's roster, never from the focused view, so the numbers describe
+  every session rather than the visible one.
+- **Progress is the status line, not a second dialog.** While the sweep runs
+  the message counts down against the roster (`closing 3 sessions…`). The same
+  flag suppresses the per-session "removed with unsaved editor changes"
+  warnings, which the confirm has already accounted for and which would
+  otherwise fire once per session on the way out.
+- **Exit is not negotiable, and failure is not silent.** The process leaves
+  whether or not every session retired. Failures travel out in the exit
+  summary and print after the terminal is restored
+  (`quit all sessions: 2 of 5 sessions did not close`), because a toast on the
+  final frame is a report nobody reads. The supervisor's sweep attempts the
+  whole roster; one session that will not retire never strands the rest.
+- **The double-`Ctrl+C` escalation stays ungated.** The operator has already
+  seen `Ctrl+C again to quit` and insisted; interposing a dialog there would
+  fight the one binding whose whole purpose is to stop asking.
+
 ## 10. Theme Policy
 
 Built-in themes ship as TOML in `crates/forge-tui/themes/` and compile into the binary:

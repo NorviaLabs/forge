@@ -81,6 +81,8 @@ impl TuiApp {
             overlay: startup_items.clone().map(Overlay::resume_picker),
             onboarding_connect: false,
             exit: ExitState::default(),
+            quitting: false,
+            quit_failure: None,
             startup_resume: StartupResumeState {
                 picker: startup_items.is_some(),
                 session_id: startup_resume_session_id,
@@ -296,6 +298,8 @@ impl TuiApp {
             overlay: None,
             onboarding_connect: false,
             exit: ExitState::default(),
+            quitting: false,
+            quit_failure: None,
             startup_resume: StartupResumeState {
                 picker: false,
                 session_id: None,

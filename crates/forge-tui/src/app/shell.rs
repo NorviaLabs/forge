@@ -886,6 +886,7 @@ async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSum
         session_id: app.selected_session_id.to_string(),
         token_usage: (usage.api.total_api_tokens() > 0)
             .then(|| format_exit_token_usage(&usage.api)),
+        quit_failure: app.quit_failure.clone(),
     };
 
     drop(guard);

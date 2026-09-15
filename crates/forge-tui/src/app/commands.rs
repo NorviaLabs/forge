@@ -57,11 +57,7 @@ impl TuiApp {
                         // Unnamed tasks show a placeholder until their first
                         // prompt names them; the branch column carries the id
                         // (`forge/task-7`) so rows stay distinguishable.
-                        label: if snapshot.task.label.is_empty() {
-                            "session".into()
-                        } else {
-                            snapshot.task.label.clone()
-                        },
+                        label: Self::session_display_label(snapshot),
                         branch: snapshot.task.branch.clone(),
                         workspace: snapshot.task.workspace.display().to_string(),
                         state: snapshot.task.turn_state.label().into(),
@@ -1005,7 +1001,10 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Quit) => {
-                    if self.selected_is_supervised() {
+                    if self.selected_is_supervised() && !self.selected_is_primary() {
+                        // An ordinary session view: `/quit` closes the session
+                        // being viewed and leaves the rest of the repository
+                        // running.
                         let active_sessions = self
                             .supervisor
                             .as_ref()
@@ -1033,8 +1032,10 @@ impl TuiApp {
                             self.request_quit_after_deferred_cleanup();
                         }
                     } else {
-                        self.exit.request();
-                        self.status_state.message = "quitting…".into();
+                        // The workspace's own session, or the single-session
+                        // launcher: this is a request to quit Forge, so it
+                        // takes the same gate as `Ctrl+D`.
+                        self.request_quit();
                     }
                 }
                 Ok(SlashCommand::Compact) => {

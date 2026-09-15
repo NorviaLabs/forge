@@ -196,10 +196,15 @@ impl TuiApp {
                         drop(self.take_session_view_state());
                     }
                     if selected_was_dirty {
-                        self.set_feedback(
-                            FeedbackSeverity::Warn,
-                            "the selected Session was removed with unsaved editor changes",
-                        );
+                        // During a quit-all sweep every session is expected to
+                        // leave, and the confirm already accounted for what
+                        // goes with it; a warning per session would be noise.
+                        if !self.quitting {
+                            self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                "the selected Session was removed with unsaved editor changes",
+                            );
+                        }
                     }
                     let selected_snapshot = roster
                         .iter()
@@ -210,6 +215,19 @@ impl TuiApp {
                             .iter()
                             .map(|snapshot| (snapshot.task.session_id, snapshot.clone()))
                             .collect();
+                    }
+                    if self.quitting {
+                        // The sweep retires one session at a time. Count down
+                        // against the roster so the exit looks like progress
+                        // rather than a UI losing its sessions.
+                        self.status_state.message = if live_session_ids.is_empty() {
+                            "quitting…".into()
+                        } else {
+                            format!(
+                                "closing {}…",
+                                counted_noun(live_session_ids.len(), "session")
+                            )
+                        };
                     }
                     let direct = self.session_runtime.as_ref().and_then(|session| {
                         self.session_chrome
@@ -401,14 +419,15 @@ impl TuiApp {
                             }
                         }
                         self.push_toast(message);
-                    } else {
+                    } else if let Some(session_id) = session_id {
                         self.set_feedback(
                             FeedbackSeverity::Error,
-                            format!(
-                                "Session {}: {message}",
-                                session_id.map_or_else(|| "unknown".into(), |id| id.to_string())
-                            ),
+                            format!("Session {session_id}: {message}"),
                         );
+                    } else {
+                        // A command that spans sessions (quit-all) reports for
+                        // the repository, so naming a session would be wrong.
+                        self.set_feedback(FeedbackSeverity::Error, message);
                     }
                 }
                 forge_session::SupervisorEvent::TrustRequired {

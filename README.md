@@ -194,7 +194,7 @@ Useful in-app commands:
 /effort        Set model effort
 /thinking      Toggle model thinking generation
 /help          Open help
-/quit          Close the current session (exit when it is the last one)
+/quit          Close the current session; on the primary session, quit Forge
 ```
 
 `/resume <session-id>` resumes a specific session. The command-line form
@@ -227,7 +227,7 @@ controls are:
 | `Ctrl+↑` / `Ctrl+↓` | Move the selection in the queued-message list |
 | `Ctrl+Backspace` | Cancel the selected queued message |
 | `Ctrl+C` | Interrupt the running turn, or quit when idle |
-| `Ctrl+D` | Quit |
+| `Ctrl+D` | Quit — confirms first when other sessions have work in flight |
 | `Ctrl+Shift+V` | Attach a screenshot from the local OS clipboard |
 
 Typing is always one step from anywhere: a printable key the focused block has

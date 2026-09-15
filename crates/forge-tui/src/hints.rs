@@ -112,6 +112,9 @@ pub const THEME: &[Hint] = &[("↑↓", "preview"), ("Enter", "apply"), ("Esc", 
 /// First-run trust prompt. Enter confirms the highlighted choice — which is
 /// "exit" when the No row is selected — so the verb is `confirm`, not `trust`.
 pub const TRUST: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "quit")];
+/// Quit-all confirm. The highlighted row defaults to `Cancel`, so `Enter`
+/// confirms whatever is selected rather than always quitting.
+pub const QUIT_ALL: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "cancel")];
 pub const COMMANDS: &[Hint] = &[("↑↓", "move"), ("Tab", "complete"), ("Enter", "run")];
 pub const BROWSE: &[Hint] = &[
     ("↑↓", "move"),

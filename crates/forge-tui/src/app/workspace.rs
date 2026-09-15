@@ -137,8 +137,9 @@ impl TuiApp {
     pub(super) fn complete_dirty_editor_exit(&mut self) {
         if self.pending_editor_quit {
             self.pending_editor_quit = false;
-            self.exit.request();
-            self.status_state.message = "quitting…".into();
+            // The buffer is resolved; the quit itself still goes through the
+            // gate, which may have other sessions' work to account for.
+            self.begin_quit();
         } else if self.pending_editor_home {
             self.pending_editor_home = false;
             self.go_home_workspace();
@@ -147,9 +148,9 @@ impl TuiApp {
         }
     }
 
-    /// Global quit (`Ctrl+D`). A dirty editor buffer raises the existing
-    /// Save/Discard/Cancel dialog first; exit is only requested once the
-    /// operator resolves it (#647).
+    /// Global quit (`Ctrl+D`, and `/quit` on the primary session). A dirty
+    /// editor buffer raises the existing Save/Discard/Cancel dialog first;
+    /// work in flight elsewhere raises the quit-all confirm (#647).
     pub(super) fn request_quit(&mut self) {
         if self
             .editor_session
@@ -160,7 +161,7 @@ impl TuiApp {
             self.explorer_dialog.show(ExplorerDialog::DirtyExit);
             return;
         }
-        self.exit.request();
+        self.begin_quit();
     }
 
     /// Finish a `/quit` whose session close could not be completed.
