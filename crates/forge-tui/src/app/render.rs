@@ -195,7 +195,7 @@ impl TuiApp {
         let background_h = if strip_live.is_empty() {
             0
         } else {
-            (1 + strip_live.total.min(tasks_strip::STRIP_ROW_CAP)) as u16
+            strip_live.height()
         };
         let regions = if expand_conversation && task_mode {
             split_areas_with_expanded_conversation(
