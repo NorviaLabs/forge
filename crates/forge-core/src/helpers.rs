@@ -497,6 +497,24 @@ pub async fn session_title_hint(
     }
 }
 
+/// The replayed conversation of a session this process does not own.
+///
+/// For viewing a background subagent's own session. The child owns that session
+/// and may still be writing to it, so opening a second *runtime* against it
+/// would be a second writer — `open_session` constructs one, it does not merely
+/// read. Replaying the journal is a second reader, which is what the durable
+/// store's WAL mode permits. Same shape as [`session_title_hint`]: no tools,
+/// model or governance needed, and `None` rather than an error so one
+/// unreadable session cannot fail the caller.
+pub async fn session_messages(
+    journal_dir: &Path,
+    session_id: forge_types::SessionId,
+) -> Option<Vec<forge_types::Message>> {
+    let journal = Journal::open(journal_dir, session_id).await.ok()?;
+    let state = journal.replay(session_id).await.ok()?;
+    Some(state.messages)
+}
+
 #[cfg(test)]
 mod tests {
     use super::hash_file;

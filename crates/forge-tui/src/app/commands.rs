@@ -467,6 +467,12 @@ impl TuiApp {
             KeyCode::Down if key.modifiers.is_empty() => {
                 Some(SemanticCommand::MoveTasksSelection(1))
             }
+            // `→` opens the selected subagent's own session; `←` (handled
+            // globally while a child view is open) returns. The strip is the
+            // block's only selection, so `→` has nothing else to mean here.
+            KeyCode::Right if key.modifiers.is_empty() => {
+                Some(SemanticCommand::OpenSelectedChildSession)
+            }
             // The strip above is the block's only selection; the pane the
             // block owns is the transcript, so paging stays reachable without
             // stealing ↑↓ from the background tasks.
@@ -751,6 +757,7 @@ impl TuiApp {
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
             SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
             SemanticCommand::CancelSelectedBackgroundTask => self.cancel_selected_task().await,
+            SemanticCommand::OpenSelectedChildSession => self.open_selected_child_session().await,
             SemanticCommand::ApproveSelectedBackgroundTask => {
                 self.resolve_selected_task_hitl(HitlDecision::Approve)
             }

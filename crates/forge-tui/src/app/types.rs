@@ -8,6 +8,19 @@ use super::*;
 pub(crate) const WORKSPACE_HISTORY_LIMIT: usize = 32;
 pub(crate) const UI_STATE_VERSION: u32 = 2;
 
+/// An open read-only view of a background subagent's own session.
+///
+/// Holding the parent's transcript here, rather than re-capturing it on the way
+/// back, makes `←` a restore instead of a reload and keeps the parent's
+/// revision intact.
+pub(crate) struct ChildSessionView {
+    pub(crate) label: String,
+    /// The transcript to put back when the operator leaves.
+    pub(crate) parent_transcript: forge_session::TranscriptSnapshot,
+    /// The composer hint the child view replaced with its read-only notice.
+    pub(crate) parent_hint: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionChromeItem {
     pub(crate) session_id: uuid::Uuid,
@@ -682,6 +695,8 @@ pub(crate) enum SemanticCommand {
     CancelSelectedBackgroundTask,
     ApproveSelectedBackgroundTask,
     DenySelectedBackgroundTask,
+    /// Show the selected subagent's own session, read-only. `←` returns.
+    OpenSelectedChildSession,
     /// Move a finished background task's result into the composer for the
     /// operator to send explicitly (completions no longer auto-queue — #589).
     AttachSelectedBackgroundTask,
@@ -1681,6 +1696,9 @@ pub struct TuiApp {
     /// Repository session chrome. The current session is represented here first;
     /// supervisor roster events can add siblings without changing render code.
     pub(crate) session_chrome: Vec<SessionChromeItem>,
+    /// An open read-only view of a background subagent's own session. While
+    /// this is `Some`, the transcript pane shows that session, not this one's.
+    pub(crate) child_view: Option<ChildSessionView>,
     pub(crate) task_strip_selection: usize,
     /// Which tab the left navigator shows (`FORGE-DESIGN §7.7`).
     pub(crate) navigator_tab: crate::widgets::NavigatorTab,

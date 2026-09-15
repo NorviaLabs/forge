@@ -339,6 +339,24 @@ impl TranscriptSnapshot {
     }
 }
 
+/// A read-only transcript for a session this process does not own, rebuilt from
+/// its journal.
+///
+/// The TUI's view of a background subagent's session. Read-only by
+/// construction: this replays the journal rather than opening a runtime, so it
+/// cannot become a second writer against a session the child still owns.
+///
+/// `revision` identifies the projection and must differ from the snapshot the
+/// caller is replacing — see [`TranscriptSnapshot::from_messages`].
+pub async fn replayed_transcript(
+    journal_dir: &std::path::Path,
+    session_id: SessionId,
+    revision: u64,
+) -> Option<TranscriptSnapshot> {
+    let messages = forge_core::session_messages(journal_dir, session_id).await?;
+    Some(TranscriptSnapshot::from_messages(messages, revision))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -249,6 +249,115 @@ async fn a_subagent_stopping_for_approval_names_itself() {
     assert_eq!(app.feedback.severity, FeedbackSeverity::Warn);
 }
 
+/// The operator can read what a subagent actually did, without this TUI
+/// pretending to own a session it does not.
+#[tokio::test]
+async fn opening_a_subagent_shows_its_own_session_read_only() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+
+    let parent_messages = app.transcript_view.messages().len();
+    let parent_revision = app.transcript_view.revision();
+
+    app.focus_block(FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(
+        app.child_view.is_some(),
+        "the view did not open: {}",
+        app.feedback.text
+    );
+    assert_ne!(
+        app.transcript_view.revision(),
+        parent_revision,
+        "the render cache keys on revision, so the child's must differ"
+    );
+    assert!(
+        app.transcript_view.messages().len() > parent_messages,
+        "the child's own conversation is on screen: {}",
+        app.feedback.text
+    );
+    assert!(
+        app.input.hint.contains("read-only"),
+        "the composer has to say it cannot act: {}",
+        app.input.hint
+    );
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(app.child_view.is_none());
+    assert_eq!(
+        app.transcript_view.revision(),
+        parent_revision,
+        "the parent's snapshot came back, not a re-capture"
+    );
+    assert_eq!(app.transcript_view.messages().len(), parent_messages);
+    assert!(!app.input.hint.contains("read-only"));
+}
+
+/// A shell task has no session of its own, and saying so beats opening an
+/// empty view.
+#[tokio::test]
+async fn a_shell_task_has_no_session_to_open() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .spawn_background_shell("sleep 5".into(), "first".into())
+        .await
+        .unwrap();
+
+    app.focus_block(FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(app.child_view.is_none());
+    assert!(
+        app.feedback.text.contains("no session to open"),
+        "{}",
+        app.feedback.text
+    );
+}
+
+/// The composer must not look as though it can change a session this TUI does
+/// not own.
+#[tokio::test]
+async fn the_composer_refuses_input_while_viewing_a_subagent() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+
+    app.focus_block(FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.child_view.is_some(), "{}", app.feedback.text);
+
+    app.focus_block(FocusBlock::Composer);
+    app.handle_key(press(KeyCode::Char('h'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(
+        app.feedback.text.contains("read-only"),
+        "the guard has to fire before the composer takes the character: {}",
+        app.feedback.text
+    );
+}
+
 #[tokio::test]
 async fn sidebar_down_then_cancel_targets_the_selected_row() {
     let (_dir, mut app) = focus_test_app().await;
