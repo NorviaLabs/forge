@@ -59,7 +59,10 @@ mod tests {
         )
     }
 
-    fn line_plain(line: &Line<'static>) -> String {
+    fn line_plain<R>(line: &R) -> String
+    where
+        R: std::ops::Deref<Target = Line<'static>>,
+    {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())

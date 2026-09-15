@@ -906,7 +906,7 @@ impl TuiApp {
         // moves it, so the caches above (both keyed by content length)
         // would freeze it — and cheap enough to be: one line, no markdown,
         // no wrapping.
-        let status_lines: Vec<Line<'static>> =
+        let status_lines: Vec<crate::links::HyperlinkLine> =
             if self.busy_state.is_active() && !self.pending_turn.has_prompt() && busy_long_enough {
                 // The whole turn's age, not the current step's: `started` is reset
                 // at every continuation, so a turn that ran three tools kept
@@ -945,8 +945,8 @@ impl TuiApp {
                 // "esc to interru".
                 let line_width = width.saturating_sub(2);
                 vec![
-                    Line::from(""),
-                    crate::widgets::turn_line(&model, line_width, millis),
+                    Line::from("").into(),
+                    crate::widgets::turn_line(&model, line_width, millis).into(),
                 ]
             } else {
                 Vec::new()
@@ -1044,6 +1044,7 @@ impl TuiApp {
                     lines: &cached_lines,
                     tail_lines: &live_lines,
                     status_lines: &status_lines,
+                    hyperlinks: crate::links::hyperlinks_enabled(),
                     anchor_bottom,
                     scroll: self.conversation_view.scroll,
                     follow: self.conversation_view.follow,
@@ -1615,9 +1616,9 @@ impl TuiApp {
 }
 
 fn visible_conversation_copy_rows(
-    lines: &[Line<'static>],
-    tail_lines: &[Line<'static>],
-    status_lines: &[Line<'static>],
+    lines: &[crate::links::HyperlinkLine],
+    tail_lines: &[crate::links::HyperlinkLine],
+    status_lines: &[crate::links::HyperlinkLine],
     scroll_from_bottom: u16,
     follow: bool,
     bottom_padding: u16,
@@ -1908,18 +1909,19 @@ fn render_conversation_scrollbar(
 /// the seam: open the preview with a blank line unless the settled line above
 /// (or the preview itself) is already blank.
 fn open_preview_above_streamed_thinking(
-    preview: &mut Vec<Line<'static>>,
+    preview: &mut Vec<crate::links::HyperlinkLine>,
     streaming_thoughts: &str,
-    line_above: Option<&Line<'static>>,
+    line_above: Option<&crate::links::HyperlinkLine>,
 ) {
     if streaming_thoughts.trim().is_empty() {
         return;
     }
-    let is_blank = |line: &Line<'static>| line.spans.iter().all(|span| span.content.is_empty());
+    let is_blank =
+        |line: &crate::links::HyperlinkLine| line.spans.iter().all(|span| span.content.is_empty());
     let above_blank = line_above.is_none_or(is_blank);
     let preview_blank = preview.first().is_none_or(is_blank);
     if !above_blank && !preview_blank {
-        preview.insert(0, Line::from(""));
+        preview.insert(0, Line::from("").into());
     }
 }
 
@@ -2156,11 +2158,11 @@ mod tests {
 
     #[test]
     fn streamed_thinking_opens_with_a_blank_above_a_settled_row() {
-        let mut preview = vec![Line::from("planning the fix")];
+        let mut preview = vec![Line::from("planning the fix").into()];
         super::open_preview_above_streamed_thinking(
             &mut preview,
             "planning the fix",
-            Some(&Line::from(Span::raw("│ Explored repository"))),
+            Some(&Line::from(Span::raw("│ Explored repository")).into()),
         );
         let text: Vec<String> = preview
             .iter()
@@ -2176,11 +2178,11 @@ mod tests {
 
     #[test]
     fn no_blank_when_the_settled_line_above_is_already_blank() {
-        let mut preview = vec![Line::from("planning the fix")];
+        let mut preview = vec![Line::from("planning the fix").into()];
         super::open_preview_above_streamed_thinking(
             &mut preview,
             "planning the fix",
-            Some(&Line::from("")),
+            Some(&Line::from("").into()),
         );
         let text: Vec<String> = preview
             .iter()
@@ -2196,11 +2198,11 @@ mod tests {
 
     #[test]
     fn no_blank_without_streaming_thoughts() {
-        let mut preview = vec![Line::from("partial answer")];
+        let mut preview = vec![Line::from("partial answer").into()];
         super::open_preview_above_streamed_thinking(
             &mut preview,
             "   ",
-            Some(&Line::from(Span::raw("│ Explored repository"))),
+            Some(&Line::from(Span::raw("│ Explored repository")).into()),
         );
         let text: Vec<String> = preview
             .iter()

@@ -17,6 +17,7 @@ mod history;
 mod interactive_terminal;
 mod launch;
 mod layout;
+pub mod links;
 mod markdown;
 pub mod notify;
 mod overlays;

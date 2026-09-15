@@ -1036,7 +1036,7 @@ pub(crate) struct ConversationRenderCache {
     pub(crate) key: ConversationRenderKey,
     /// Shared so the render path can hold the lines without copying them. A
     /// frame clones the handle, not the ~940KB of `Line`/`Span` data behind it.
-    pub(crate) lines: Arc<Vec<Line<'static>>>,
+    pub(crate) lines: Arc<Vec<crate::links::HyperlinkLine>>,
     /// Whether `lines` contains the complete settled transcript rather than a
     /// tail window. Complete caches can clamp scroll against their real height.
     pub(crate) complete: bool,
@@ -1644,7 +1644,7 @@ pub(crate) struct StreamState {
     /// rather than in frames (which arrive irregularly).
     pub(crate) revealed_at: Option<Instant>,
     pub(crate) thinking: String,
-    pub(crate) live_lines: Option<(u16, usize, usize, Arc<Vec<Line<'static>>>)>,
+    pub(crate) live_lines: Option<(u16, usize, usize, Arc<Vec<crate::links::HyperlinkLine>>)>,
     /// When the preview last rebuilt at a *new width*. Tail-only rebuilds are
     /// cheap enough to run every frame; a width change re-renders the settled
     /// prefix too, and terminals emit one resize event per column during a

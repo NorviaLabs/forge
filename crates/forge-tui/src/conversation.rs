@@ -7,8 +7,10 @@
 
 pub use forge_transcript::*;
 
+use crate::links::{self, HyperlinkLine};
 use crate::markdown::{
-    render_markdown, render_markdown_open_with, render_markdown_with_density, Density, STREAM_CARET,
+    render_markdown, render_markdown_links, render_markdown_open_with,
+    render_markdown_with_density_links, Density, STREAM_CARET,
 };
 use crate::status_glyph::{lifecycle_marker, Lifecycle};
 use crate::theme;
@@ -54,12 +56,50 @@ pub(super) fn compact_count(n: usize) -> String {
 }
 
 /// Add a blank separator line unless the last line is already blank.
-pub(super) fn ensure_blank_line(lines: &mut Vec<Line<'static>>) {
+pub(super) fn ensure_blank_line(lines: &mut TranscriptRows) {
     let last_blank = lines
         .last()
         .is_none_or(|l| l.spans.iter().all(|s| s.content.is_empty()));
     if !last_blank {
         lines.push(Line::from(""));
+    }
+}
+
+/// The rows of one rendered transcript, under construction.
+///
+/// Most rows are plain text. A few — the ones rendered from markdown — also
+/// carry the destinations their columns hide, and those destinations have to
+/// survive assembly: the transcript is scrolled, windowed, joined and padded
+/// before it is painted, and a destination lost at any of those steps is a link
+/// the reader can see but not use. `push` and `extend` accept both, so a row's
+/// links travel with the row and no call site has to say which kind it is
+/// building.
+#[derive(Default)]
+pub(super) struct TranscriptRows(Vec<HyperlinkLine>);
+
+impl TranscriptRows {
+    fn push(&mut self, line: impl Into<HyperlinkLine>) {
+        self.0.push(line.into());
+    }
+
+    fn extend<I>(&mut self, lines: I)
+    where
+        I: IntoIterator,
+        I::Item: Into<HyperlinkLine>,
+    {
+        self.0.extend(lines.into_iter().map(Into::into));
+    }
+
+    fn into_inner(self) -> Vec<HyperlinkLine> {
+        self.0
+    }
+}
+
+impl std::ops::Deref for TranscriptRows {
+    type Target = Vec<HyperlinkLine>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -590,24 +630,42 @@ fn render_assistant_answer(
     stream_cache: Option<&mut StreamMarkdownCache>,
     append_stream_caret: bool,
     density: Density,
-) -> Vec<Line<'static>> {
-    let parts = match stream_cache {
-        Some(cache) if streaming && append_stream_caret => {
-            cache.render_live(text, prose_width, keep_from_end, density)
-        }
-        Some(cache) if streaming => cache.render(text, prose_width, keep_from_end, density),
-        _ => render_markdown_with_density(text, prose_width, density),
+) -> Vec<HyperlinkLine> {
+    // Only the settled branch carries destinations. The streaming branches come
+    // out of `StreamMarkdownCache`, which holds plain lines: a link written into
+    // an answer that is still arriving becomes clickable when the block settles.
+    // The destination is never lost to the reader either way — the picker reads
+    // the transcript's source text, not its rendered columns.
+    let parts: Vec<HyperlinkLine> = match stream_cache {
+        Some(cache) if streaming && append_stream_caret => cache
+            .render_live(text, prose_width, keep_from_end, density)
+            .into_iter()
+            .map(HyperlinkLine::from)
+            .collect(),
+        Some(cache) if streaming => cache
+            .render(text, prose_width, keep_from_end, density)
+            .into_iter()
+            .map(HyperlinkLine::from)
+            .collect(),
+        _ => render_markdown_with_density_links(text, prose_width, density),
     };
     parts
         .into_iter()
-        .map(|line| {
+        .map(|mut row| {
             let mut spans = vec![Span::raw(" ".repeat(MESSAGE_PADDING))];
-            spans.extend(line.spans);
+            spans.extend(std::mem::take(&mut row.line.spans));
             let used = spans.iter().map(Span::width).sum::<usize>();
             if used < width {
                 spans.push(Span::raw(" ".repeat(width - used)));
             }
-            Line::from(spans).style(theme::assistant_answer_style())
+            // The indent is part of the row, so every column it moves — the
+            // link's included — moves with it.
+            for link in &mut row.links {
+                link.columns =
+                    link.columns.start + MESSAGE_PADDING..link.columns.end + MESSAGE_PADDING;
+            }
+            row.line = Line::from(spans).style(theme::assistant_answer_style());
+            row
         })
         .collect()
 }
@@ -650,10 +708,10 @@ pub(crate) fn render_streaming_preview(
     keep_from_end: usize,
     cache: &mut StreamPreviewCache,
     density: Density,
-) -> Vec<Line<'static>> {
+) -> Vec<HyperlinkLine> {
     let width = available_width.max(4);
     let prose_width = prose_width_for(width);
-    let mut lines = Vec::new();
+    let mut lines = TranscriptRows::default();
     if !thinking.trim().is_empty() {
         let suffix = thought_secs
             .map(|secs| format!(" · {}", format_elapsed_tenths(secs)))
@@ -700,7 +758,7 @@ pub(crate) fn render_streaming_preview(
         }
         lines.push(Line::from(""));
     }
-    lines
+    lines.into_inner()
 }
 
 /// Render-cache details needed by the TUI frame renderer.
@@ -709,14 +767,14 @@ pub(crate) trait ConversationRenderInternals {
         &self,
         available_width: usize,
         keep_from_end: usize,
-    ) -> (Vec<Line<'static>>, Option<PlanDock>, bool);
+    ) -> (Vec<HyperlinkLine>, Option<PlanDock>, bool);
 
     fn render_lines_with_completeness(
         &self,
         available_width: usize,
         keep_from_end: usize,
         stream_cache: Option<&mut StreamMarkdownCache>,
-    ) -> (Vec<Line<'static>>, bool);
+    ) -> (Vec<HyperlinkLine>, bool);
 }
 
 /// Drawing a [`ConversationModel`].
@@ -726,9 +784,9 @@ pub(crate) trait ConversationRenderInternals {
 /// `forge-transcript`. Callers need this trait in scope.
 pub trait ConversationRender {
     /// Render at the transcript's default width.
-    fn lines(&self) -> Vec<Line<'static>>;
+    fn lines(&self) -> Vec<HyperlinkLine>;
     /// Render wrapped to `available_width` columns.
-    fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>>;
+    fn lines_for_width(&self, available_width: usize) -> Vec<HyperlinkLine>;
     /// Render only the last `keep_from_end` estimated lines, walking blocks
     /// from the tail. Follow-mode frames use this so a long transcript does
     /// not rebuild off-screen history.
@@ -736,7 +794,7 @@ pub trait ConversationRender {
         &self,
         available_width: usize,
         keep_from_end: usize,
-    ) -> Vec<Line<'static>>;
+    ) -> Vec<HyperlinkLine>;
     /// As [`Self::lines_for_width_from_end`], reusing `cache` for the settled
     /// prefix of a streaming answer. Only the live preview passes one.
     fn lines_for_width_from_end_cached(
@@ -744,31 +802,31 @@ pub trait ConversationRender {
         available_width: usize,
         keep_from_end: usize,
         cache: &mut StreamMarkdownCache,
-    ) -> Vec<Line<'static>>;
+    ) -> Vec<HyperlinkLine>;
     /// Shared body of the two above. Not called directly.
     fn render_lines(
         &self,
         available_width: usize,
         keep_from_end: usize,
         stream_cache: Option<&mut StreamMarkdownCache>,
-    ) -> Vec<Line<'static>>;
+    ) -> Vec<HyperlinkLine>;
     /// As [`Self::lines_for_width_from_end`], also reporting where the plan
     /// card sits so it can be docked once it scrolls away.
     fn lines_and_plan_dock(
         &self,
         available_width: usize,
         keep_from_end: usize,
-    ) -> (Vec<Line<'static>>, Option<PlanDock>);
+    ) -> (Vec<HyperlinkLine>, Option<PlanDock>);
 }
 
 impl ConversationRender for ConversationModel {
-    fn lines(&self) -> Vec<Line<'static>> {
+    fn lines(&self) -> Vec<HyperlinkLine> {
         self.lines_for_width(if self.opts.compact { 88 } else { 100 })
     }
 
     /// Build display lines for the actual conversation viewport. Prose gets a
     /// readable cap; code and structured blocks keep the full pane width.
-    fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
+    fn lines_for_width(&self, available_width: usize) -> Vec<HyperlinkLine> {
         self.lines_for_width_from_end(available_width, usize::MAX)
     }
 
@@ -776,7 +834,7 @@ impl ConversationRender for ConversationModel {
         &self,
         available_width: usize,
         keep_from_end: usize,
-    ) -> Vec<Line<'static>> {
+    ) -> Vec<HyperlinkLine> {
         self.render_lines_with_completeness(available_width, keep_from_end, None)
             .0
     }
@@ -786,7 +844,7 @@ impl ConversationRender for ConversationModel {
         available_width: usize,
         keep_from_end: usize,
         cache: &mut StreamMarkdownCache,
-    ) -> Vec<Line<'static>> {
+    ) -> Vec<HyperlinkLine> {
         self.render_lines_with_completeness(available_width, keep_from_end, Some(cache))
             .0
     }
@@ -795,7 +853,7 @@ impl ConversationRender for ConversationModel {
         &self,
         available_width: usize,
         keep_from_end: usize,
-    ) -> (Vec<Line<'static>>, Option<PlanDock>) {
+    ) -> (Vec<HyperlinkLine>, Option<PlanDock>) {
         let (lines, dock, _) =
             self.lines_and_plan_dock_with_completeness(available_width, keep_from_end);
         (lines, dock)
@@ -806,7 +864,7 @@ impl ConversationRender for ConversationModel {
         available_width: usize,
         keep_from_end: usize,
         stream_cache: Option<&mut StreamMarkdownCache>,
-    ) -> Vec<Line<'static>> {
+    ) -> Vec<HyperlinkLine> {
         self.render_lines_with_completeness(available_width, keep_from_end, stream_cache)
             .0
     }
@@ -817,7 +875,7 @@ impl ConversationRenderInternals for ConversationModel {
         &self,
         available_width: usize,
         keep_from_end: usize,
-    ) -> (Vec<Line<'static>>, Option<PlanDock>, bool) {
+    ) -> (Vec<HyperlinkLine>, Option<PlanDock>, bool) {
         let (lines, complete) =
             self.render_lines_with_completeness(available_width, keep_from_end, None);
         let dock = plan_dock_for(self, available_width, &lines);
@@ -829,10 +887,10 @@ impl ConversationRenderInternals for ConversationModel {
         available_width: usize,
         keep_from_end: usize,
         mut stream_cache: Option<&mut StreamMarkdownCache>,
-    ) -> (Vec<Line<'static>>, bool) {
+    ) -> (Vec<HyperlinkLine>, bool) {
         let width = available_width.max(4);
         let prose_width = prose_width_for(width);
-        let mut lines = Vec::new();
+        let mut lines = TranscriptRows::default();
         let gap = !self.opts.compact;
         let density = transcript_density(self.opts.compact);
         let rail = width >= RAIL_MIN_WIDTH;
@@ -1155,7 +1213,9 @@ impl ConversationRenderInternals for ConversationModel {
                     // `render_markdown` already renders a fenced block with
                     // its rail and syntax colours. Styling the returned lines
                     // again painted a second ground over the top of it.
-                    for line in render_markdown(&p.text, width) {
+                    // Tool output is markdown-rendered too, so a URL the tool
+                    // printed is a link here exactly as it is in an answer.
+                    for line in render_markdown_links(&p.text, width) {
                         lines.push(line);
                     }
                     if gap {
@@ -1290,7 +1350,7 @@ impl ConversationRenderInternals for ConversationModel {
                 }
             }
         }
-        (lines, start_block == 0)
+        (lines.into_inner(), start_block == 0)
     }
 }
 
@@ -1300,11 +1360,14 @@ pub struct ConversationWidget<'a> {
 }
 
 pub struct ConversationLinesWidget<'a> {
-    pub lines: &'a [Line<'static>],
-    pub tail_lines: &'a [Line<'static>],
+    pub lines: &'a [HyperlinkLine],
+    pub tail_lines: &'a [HyperlinkLine],
     /// Rebuilt every frame and never cached: the live turn line animates, so
     /// caching it by content length would freeze it.
-    pub status_lines: &'a [Line<'static>],
+    pub status_lines: &'a [HyperlinkLine],
+    /// Whether this terminal renders `OSC 8`. Resolved by the caller so a test
+    /// can pin the behaviour instead of inheriting the environment.
+    pub hyperlinks: bool,
     pub scroll: u16,
     pub follow: bool,
     pub bottom_padding: u16,
@@ -1325,9 +1388,13 @@ pub struct ConversationLinesWidget<'a> {
 /// settled history, the in-flight preview, and the live turn line.
 #[derive(Clone, Copy)]
 pub(super) struct TranscriptSlices<'a> {
-    pub lines: &'a [Line<'static>],
-    pub tail_lines: &'a [Line<'static>],
-    pub status_lines: &'a [Line<'static>],
+    pub lines: &'a [HyperlinkLine],
+    pub tail_lines: &'a [HyperlinkLine],
+    pub status_lines: &'a [HyperlinkLine],
+    /// Whether the surrounding terminal renders `OSC 8` at all. Resolved once
+    /// per paint rather than once per row, and `false` leaves every row exactly
+    /// as it renders today.
+    pub hyperlinks: bool,
 }
 
 /// Locate the latest visible plan card inside `lines`, and build its dock row.
@@ -1338,7 +1405,7 @@ pub(super) struct TranscriptSlices<'a> {
 fn plan_dock_for(
     model: &ConversationModel,
     available_width: usize,
-    lines: &[Line<'static>],
+    lines: &[HyperlinkLine],
 ) -> Option<PlanDock> {
     // §3/§8: pin only an unfinished plan belonging to the active turn.
     // A completed plan stays as one compact muted block in history — it
@@ -1390,10 +1457,12 @@ fn plan_dock_for(
     let card = render_plan_checklist(&plan, width);
     let located = card.first().zip(card.last()).and_then(|(first, last)| {
         let (first, last) = (line_plain(first), line_plain(last));
-        let head = lines.iter().rposition(|line| line_plain(line) == first)?;
+        let head = lines
+            .iter()
+            .rposition(|line| line_plain(&line.line) == first)?;
         lines[head..]
             .iter()
-            .position(|line| line_plain(line) == last)
+            .position(|line| line_plain(&line.line) == last)
             .map(|offset| head + offset + 1)
     });
     let end = located.unwrap_or(0);
@@ -1423,7 +1492,7 @@ fn plan_dock_for(
     }
     Some(PlanDock {
         end,
-        summary: Line::from(spans),
+        summary: Line::from(spans).into(),
     })
 }
 
@@ -1447,7 +1516,7 @@ fn line_plain(line: &Line<'static>) -> String {
 pub struct PlanDock {
     /// Index just past the plan card's last line, within the rendered slice.
     pub(super) end: usize,
-    pub(super) summary: Line<'static>,
+    pub(super) summary: HyperlinkLine,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1468,6 +1537,7 @@ pub(super) fn render_conversation_lines(
         lines,
         tail_lines,
         status_lines,
+        hyperlinks,
     } = slices;
     let tail_end = lines.len().saturating_add(tail_lines.len());
     let content_len = tail_end.saturating_add(status_lines.len());
@@ -1482,7 +1552,7 @@ pub(super) fn render_conversation_lines(
     // Borrowed, not cloned: these lines come from the render cache and are
     // reused every frame. Deep-copying each visible one (and every owned string
     // inside its spans) was pure per-frame waste.
-    let blank = Line::from("");
+    let blank = HyperlinkLine::default();
     let mut visible = (scroll..end)
         .map(|index| {
             if index < lines.len() {
@@ -1520,15 +1590,28 @@ pub(super) fn render_conversation_lines(
     } else {
         area
     };
-    render_visible_conversation_lines(&visible, area, buf, option_rects, hover_option);
+    render_visible_conversation_lines(&visible, area, buf, option_rects, hover_option, hyperlinks);
+}
+
+/// Paint one row, then attach the destinations its columns hide.
+///
+/// The marking happens after the row is painted because the escape sequence has
+/// no width: it wraps the cell symbols that are already in place, so the row's
+/// geometry is settled before any of it is emitted.
+fn paint_row(line: &HyperlinkLine, rect: Rect, buf: &mut Buffer, hyperlinks: bool) {
+    (&line.line).render(rect, buf);
+    if hyperlinks {
+        links::mark_buffer_hyperlinks(buf, rect, &line.links);
+    }
 }
 
 pub(super) fn render_visible_conversation_lines(
-    lines: &[&Line<'static>],
+    lines: &[&HyperlinkLine],
     area: Rect,
     buf: &mut Buffer,
     mut option_rects: Option<&mut Vec<(usize, Rect)>>,
     hover_option: Option<usize>,
+    hyperlinks: bool,
 ) {
     let mut index = 0;
     let mut y = area.y;
@@ -1565,7 +1648,12 @@ pub(super) fn render_visible_conversation_lines(
                 if row >= inner.bottom() {
                     break;
                 }
-                (*line).render(Rect::new(inner.x, row, inner.width, 1), buf);
+                paint_row(
+                    line,
+                    Rect::new(inner.x, row, inner.width, 1),
+                    buf,
+                    hyperlinks,
+                );
             }
             y = y.saturating_add(block_height);
             index = end.saturating_add(1);
@@ -1581,13 +1669,17 @@ pub(super) fn render_visible_conversation_lines(
                         // Hover is a pointer affordance: raised ground, bold
                         // weight and the shared `›` marker on the first row of
                         // the option. The marker cell is reserved, so nothing
-                        // shifts; selection still outranks hover.
+                        // shifts and the row's own link columns still point at
+                        // the cells they named; selection still outranks hover.
                         hovered_option_line(line).render(rect, buf);
+                        if hyperlinks {
+                            links::mark_buffer_hyperlinks(buf, rect, &line.links);
+                        }
                     } else {
-                        line.render(rect, buf);
+                        paint_row(line, rect, buf, hyperlinks);
                     }
                 }
-                None => line.render(rect, buf),
+                None => paint_row(line, rect, buf, hyperlinks),
             }
             y = y.saturating_add(1);
             index += 1;
@@ -1603,6 +1695,7 @@ impl Widget for ConversationLinesWidget<'_> {
                 lines: self.lines,
                 tail_lines: self.tail_lines,
                 status_lines: self.status_lines,
+                hyperlinks: self.hyperlinks,
             },
             self.scroll,
             self.follow,
@@ -1636,6 +1729,10 @@ impl Widget for ConversationWidget<'_> {
                 lines: &lines,
                 tail_lines: &[],
                 status_lines: &[],
+                // A test paints what the renderer produced; the capability is
+                // the caller's, and pinning it here keeps the assertion from
+                // depending on the terminal the test happens to run in.
+                hyperlinks: true,
             },
             self.model.scroll,
             self.model.follow,
@@ -2461,9 +2558,9 @@ mod tests {
                 tool_calls: vec![],
                 attachments: Vec::new(),
             },
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::User,
+                role: forge_types::MessageRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
                 name: None,
@@ -2472,9 +2569,9 @@ mod tests {
                 tool_calls: vec![],
                 attachments: Vec::new(),
             },
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::Assistant,
+                role: forge_types::MessageRole::Assistant,
                 content: "yo".into(),
                 tool_call_id: None,
                 name: None,
@@ -3061,7 +3158,7 @@ mod tests {
         );
         let lines = m.lines_for_width(WIDTH);
         let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
-        let user_rows: Vec<&Line<'static>> = lines
+        let user_rows: Vec<&HyperlinkLine> = lines
             .iter()
             .skip(2)
             .take_while(|line| {
@@ -3571,9 +3668,9 @@ mod tests {
     #[test]
     fn update_plan_tool_messages_render_as_checklist() {
         let msgs = vec![
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::Assistant,
+                role: forge_types::MessageRole::Assistant,
                 content: String::new(),
                 tool_call_id: None,
                 name: None,
@@ -3827,6 +3924,10 @@ mod tests {
                 lines: &lines,
                 tail_lines: &[],
                 status_lines: &[],
+                // A test paints what the renderer produced; the capability is
+                // the caller's, and pinning it here keeps the assertion from
+                // depending on the terminal the test happens to run in.
+                hyperlinks: true,
             },
             0,
             true,
@@ -4131,12 +4232,13 @@ mod tests {
             .into_iter()
             .chain(render_numbered_diff("src/lib.rs", &diff, 38))
             .chain(std::iter::once(Line::from(DIFF_BLOCK_END_MARKER)))
+            .map(HyperlinkLine::from)
             .collect::<Vec<_>>();
         let area = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(area);
 
-        let lines = lines.iter().collect::<Vec<_>>();
-        render_visible_conversation_lines(&lines, area, &mut buf, None, None);
+        let lines: Vec<&HyperlinkLine> = lines.iter().collect();
+        render_visible_conversation_lines(&lines, area, &mut buf, None, None, true);
 
         assert_eq!(buf[(0, 0)].symbol(), "┌");
         assert_eq!(buf[(39, 0)].symbol(), "┐");
@@ -4156,15 +4258,39 @@ mod tests {
     }
 
     /// Text of every rendered line, for asserting on content rather than styling.
-    fn lines_text(lines: &[Line<'static>]) -> String {
+    /// The visible text of one row. Tests read rows for their text, and a row
+    /// is either a plain `Line` or a `HyperlinkLine` depending on whether the
+    /// renderer that produced it had a destination to carry.
+    trait RowText {
+        fn row_text(&self) -> String;
+    }
+
+    impl RowText for Line<'static> {
+        fn row_text(&self) -> String {
+            self.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        }
+    }
+
+    impl RowText for HyperlinkLine {
+        fn row_text(&self) -> String {
+            self.line.row_text()
+        }
+    }
+
+    /// `find`/`filter` hand out a reference to the reference they were given.
+    impl<R: RowText + ?Sized> RowText for &R {
+        fn row_text(&self) -> String {
+            (**self).row_text()
+        }
+    }
+
+    fn lines_text<R: RowText>(lines: &[R]) -> String {
         lines
             .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
+            .map(RowText::row_text)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -4989,9 +5115,9 @@ mod tests {
     #[test]
     fn repair_task_renders_evaluator_report_and_generator_response() {
         let messages = vec![
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::User,
+                role: forge_types::MessageRole::User,
                 content: "[REPAIR TASK EVAL-01]\nSENSOR · DETERMINISTIC\ncargo test · failed\nEVALUATOR REPORT\nCriteria: public API returns 429\nFinding: layer is registered too late\nRepair: attach layer to public router".into(),
                 tool_call_id: None,
                 name: None,
@@ -5000,9 +5126,9 @@ mod tests {
                 tool_calls: vec![],
             attachments: Vec::new(),
             },
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::Assistant,
+                role: forge_types::MessageRole::Assistant,
                 content: "Moving the layer onto the public router.".into(),
                 tool_call_id: None,
                 name: None,
@@ -5033,9 +5159,9 @@ mod tests {
 
     fn three_block_model() -> ConversationModel {
         let msgs = vec![
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::User,
+                role: forge_types::MessageRole::User,
                 content: "first".into(),
                 tool_call_id: None,
                 name: None,
@@ -5044,9 +5170,9 @@ mod tests {
                 tool_calls: vec![],
                 attachments: Vec::new(),
             },
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::Assistant,
+                role: forge_types::MessageRole::Assistant,
                 content: "second".into(),
                 tool_call_id: None,
                 name: None,
@@ -5055,9 +5181,9 @@ mod tests {
                 tool_calls: vec![],
                 attachments: Vec::new(),
             },
-            Message {
+            forge_types::Message {
                 outcome: Default::default(),
-                role: MessageRole::User,
+                role: forge_types::MessageRole::User,
                 content: "third".into(),
                 tool_call_id: None,
                 name: None,
@@ -5080,8 +5206,11 @@ mod tests {
         !text.is_empty() && text.chars().all(|c| c == '─')
     }
 
-    fn rule_lines<'a>(lines: &'a [Line<'static>]) -> Vec<&'a Line<'static>> {
-        lines.iter().filter(|line| is_rule_line(line)).collect()
+    fn rule_lines(lines: &[HyperlinkLine]) -> Vec<&HyperlinkLine> {
+        lines
+            .iter()
+            .filter(|line| is_rule_line(&line.line))
+            .collect()
     }
 
     fn rendered_text(model: &ConversationModel) -> String {
@@ -5093,12 +5222,8 @@ mod tests {
             .collect::<String>()
     }
 
-    fn line_text(line: &Line<'static>) -> String {
-        line.spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<String>()
-            .replace(OPTION_ROW_MARKER, "")
+    fn line_text<R: RowText>(line: &R) -> String {
+        line.row_text().replace(OPTION_ROW_MARKER, "")
     }
 
     fn tool_turn_items() -> Vec<ChatItem> {
@@ -5215,7 +5340,10 @@ mod tests {
         let first = lines.first().expect("non-empty transcript");
         assert!(!is_rule_line(first), "no separator before the first entry");
 
-        let rule_pos = lines.iter().position(is_rule_line).expect("rule present");
+        let rule_pos = lines
+            .iter()
+            .position(|line| is_rule_line(&line.line))
+            .expect("rule present");
         let after = lines[rule_pos + 1..]
             .iter()
             .map(line_text)
@@ -5717,8 +5845,12 @@ mod tests {
                             &mut cache,
                             Density::Compact,
                         );
-                        let mut expected = render_thinking(thinking, duration, width);
-                        expected.push(Line::from(""));
+                        let mut expected: Vec<HyperlinkLine> =
+                            render_thinking(thinking, duration, width)
+                                .into_iter()
+                                .map(HyperlinkLine::from)
+                                .collect();
+                        expected.push(Line::from("").into());
                         assert_eq!(
                             direct, expected,
                             "{thinking:?}, width={width}, duration={duration:?}"
@@ -5816,7 +5948,7 @@ mod tests {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
 
-        let lines = vec![Line::from("only line")];
+        let lines = vec![Line::from("only line").into()];
         let area = Rect::new(0, 0, 20, 10);
         let row_of = |anchor_bottom: bool| {
             let mut buf = Buffer::empty(area);
@@ -5825,6 +5957,7 @@ mod tests {
                     lines: &lines,
                     tail_lines: &[],
                     status_lines: &[],
+                    hyperlinks: true,
                 },
                 0,
                 true,
@@ -6278,5 +6411,110 @@ mod verification_card_tests {
             let w: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert!(w <= 50, "line overflows the pane: {w}");
         }
+    }
+
+    /// The whole claim, end to end: a link written in an answer reaches the
+    /// terminal as an OSC 8 sequence over exactly the cells the label occupies.
+    /// Every step between the markdown and the cell — wrapping, assembly, the
+    /// message indent, the paint — moves columns, and each one that forgot would
+    /// leave the sequence pointing at the wrong text.
+    #[test]
+    fn an_answer_link_reaches_the_buffer_as_a_sequence() {
+        let url = "https://example.com/docs";
+        let msgs = vec![
+            forge_types::Message {
+                outcome: Default::default(),
+                role: forge_types::MessageRole::User,
+                content: "where are the docs?".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+            forge_types::Message {
+                outcome: Default::default(),
+                role: forge_types::MessageRole::Assistant,
+                content: format!("Read [the docs]({url}) first."),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+        ];
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            forge_types::TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        );
+        let lines = model.lines_for_width(80);
+        let (row, hyperlink) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(index, line)| {
+                line.links
+                    .first()
+                    .map(|hyperlink| (index, hyperlink.clone()))
+            })
+            .expect("the answer's link survived rendering");
+        assert_eq!(hyperlink.destination, url);
+
+        let area = Rect::new(0, 0, 80, lines.len().max(1) as u16);
+        let mut buf = Buffer::empty(area);
+        let visible: Vec<&HyperlinkLine> = lines.iter().collect();
+        render_visible_conversation_lines(&visible, area, &mut buf, None, None, true);
+
+        // The columns the link claims hold the sequence wrapped around the
+        // label's own characters, in the row it was reported on.
+        let text: String = lines[row]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(
+            &text[hyperlink.columns.clone()],
+            "the docs",
+            "columns must cover the label"
+        );
+        let cell = buf
+            .cell(ratatui::layout::Position::new(
+                hyperlink.columns.start as u16,
+                row as u16,
+            ))
+            .expect("cell inside the pane");
+        assert_eq!(
+            cell.symbol(),
+            crate::links::osc8(url, &text[hyperlink.columns.clone()][..1])
+        );
+    }
+
+    /// A terminal that cannot render hyperlinks gets today's rendering: the link
+    /// keeps its underline and no escape byte is written anywhere.
+    #[test]
+    fn an_unsupported_terminal_receives_no_escape_bytes() {
+        let lines = [HyperlinkLine::with_links(
+            Line::from("see the docs"),
+            vec![crate::links::TerminalHyperlink::new(
+                4..12,
+                "https://example.com/docs",
+            )],
+        )];
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let visible: Vec<&HyperlinkLine> = lines.iter().collect();
+        render_visible_conversation_lines(&visible, area, &mut buf, None, None, false);
+
+        let written: String = (0..area.width)
+            .map(|x| {
+                buf.cell(ratatui::layout::Position::new(x, 0))
+                    .unwrap()
+                    .symbol()
+            })
+            .collect();
+        assert_eq!(written, "see the docs        ");
     }
 }
