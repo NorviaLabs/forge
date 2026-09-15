@@ -1215,6 +1215,19 @@ async fn execute_command(
             ));
             state.actors.write().await.insert(task.session_id, actor);
             drop(_git_mutation);
+            // Select the new session before the trust branch below, not after:
+            // the TUI only opens the trust overlay for the session it has
+            // already selected. It resolves a `Selected` event against the
+            // roster it already holds, so the row is published first — the
+            // same order `Refresh` and `replace_conversation` use. Ownership is
+            // a row property: `Primary` is untouched, only the selection moves.
+            let _ = state
+                .events
+                .send(SupervisorEvent::Roster(snapshots(&state).await));
+            state.control.set_selected(Some(task.session_id)).await?;
+            let _ = state
+                .events
+                .send(SupervisorEvent::Selected(Some(task.session_id)));
             // Trust is inherited by descendants (`is_trusted_at` walks
             // ancestors). A managed worktree lives under the repository's
             // `.forge/local/worktrees`, so when the repository is trusted the
@@ -1900,6 +1913,14 @@ async fn rollback_creation(
         .await?;
     if let Some(session_id) = session_id {
         state.actors.write().await.remove(&session_id);
+        // Creation selects the new session before trust is confirmed, so a
+        // rolled-back creation would otherwise leave the durable selection
+        // naming a row that no longer exists. `None` is a state the selection
+        // already supports: the next start falls back to the primary.
+        if state.control.selected().await.ok() == Some(Some(session_id)) {
+            state.control.set_selected(None).await?;
+            let _ = state.events.send(SupervisorEvent::Selected(None));
+        }
     }
     if let Some(workspace) = workspace {
         let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
@@ -4585,7 +4606,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|task| task.label == "Rewrite the lexer")
+            .find(|task| task.label == "rewrite-the-lexer")
             .expect("prompt-derived label");
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
         wait_for_task_state(&handle, task.session_id, |snapshot| {
@@ -4682,10 +4703,14 @@ mod tests {
         // fires, the task is registered, and its worktree is trusted before
         // the operator can type anything in it.
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        let mut selected = None;
         while std::time::Instant::now() < deadline {
             match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
                 Ok(Ok(SupervisorEvent::TrustRequired { .. })) => {
                     panic!("prompt-less creation must not park on trust")
+                }
+                Ok(Ok(SupervisorEvent::Selected(session_id))) => {
+                    selected = session_id.or(selected);
                 }
                 Ok(Ok(_)) => continue,
                 _ => break,
@@ -4698,6 +4723,11 @@ mod tests {
             .into_iter()
             .find(|task| task.label.is_empty())
             .expect("unnamed task row");
+        assert_eq!(
+            selected,
+            Some(task.session_id),
+            "one-key creation must leave the new session selected"
+        );
         assert!(task.workspace.exists());
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
         // Managed sessions start detached: no branch, and the path keeps the
@@ -4747,7 +4777,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|task| task.label == "Rewrite the lexer")
+            .find(|task| task.label == "rewrite-the-lexer")
             .expect("prompt-derived label");
         assert!(task.branch.is_empty(), "branch: {:?}", task.branch);
         assert!(task.base_sha.is_some(), "detached base sha missing");
@@ -4849,6 +4879,101 @@ mod tests {
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
+    /// The unnamed-session flow end to end: creation is prompt-less, so the
+    /// label only arrives with the first prompt — and the branch materialized
+    /// at the end of that same turn must carry the new name rather than the
+    /// empty label the session was created with.
+    #[tokio::test]
+    async fn a_created_prompt_less_session_takes_its_label_and_branch_from_the_first_prompt() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![forge_types::ToolCall {
+                    id: "1".into(),
+                    name: "write_file".into(),
+                    arguments: serde_json::json!({"path": "new.txt", "content": "hi"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response("done"),
+        ]));
+        let (_supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store.clone()),
+        )
+        .await
+        .unwrap();
+
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: String::new(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let session_id = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label.is_empty())
+            .expect("prompt-less session row")
+            .session_id;
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "Fix the login bug and then run the tests".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+
+        let task = control.session(session_id).await.unwrap();
+        assert_eq!(
+            task.label, "fix-the-login-bug",
+            "label came from the prompt"
+        );
+        assert_eq!(
+            task.branch, "forge/fix-the-login-bug",
+            "the turn that named the session also named its branch"
+        );
+        // The slug still comes from the label through the one naming path, so
+        // the branch can never drift from the confirmed name.
+        assert_eq!(
+            task.branch,
+            format!("forge/{}", forge_storage::session_branch_slug(&task.label)),
+            "the branch slug must be derived from the session label"
+        );
+        assert!(forge_storage::branch_exists(repo.path(), "forge/fix-the-login-bug").unwrap());
+        assert!(task.workspace.join("new.txt").exists());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
     /// Read-only/research sessions never create a branch.
     #[tokio::test]
     async fn a_read_only_managed_session_stays_detached() {
@@ -4926,14 +5051,21 @@ mod tests {
                 _ => continue,
             }
         };
-        let workspace = control
+        let task = control
             .sessions()
             .await
             .unwrap()
             .into_iter()
             .find(|task| task.label == "parser")
-            .expect("provisional task row")
-            .workspace;
+            .expect("provisional task row");
+        let workspace = task.workspace.clone();
+        // The session waiting on trust is already the selected conversation,
+        // which is what lets the TUI raise the modal instead of a toast.
+        assert_eq!(
+            control.selected().await.unwrap(),
+            Some(task.session_id),
+            "a creation waiting on trust must already be selected"
+        );
 
         handle
             .command(SupervisorCommand::CancelCreation { operation_id })
@@ -4941,6 +5073,11 @@ mod tests {
             .unwrap();
 
         assert!(!workspace.exists(), "cancelled worktree should be removed");
+        assert_ne!(
+            control.selected().await.unwrap(),
+            Some(task.session_id),
+            "a rolled-back creation must not stay selected"
+        );
         assert!(control
             .sessions()
             .await
@@ -5357,6 +5494,18 @@ mod tests {
         assert_eq!(task.model_id, "mock-v2");
         assert_eq!(task.route_id, "native-v2");
         assert_eq!(task.reasoning_effort.as_deref(), Some("high"));
+        // Auto-selecting the new managed session moves the selection only: the
+        // primary keeps its ownership, its slot, and its place as the trust
+        // ancestor and roster root of every managed worktree.
+        assert_eq!(
+            control.selected().await.unwrap(),
+            Some(task.session_id),
+            "the created session must become the selected conversation"
+        );
+        let primary_row = control.session(primary_id).await.unwrap();
+        assert_eq!(primary_row.ownership, WorktreeOwnership::Primary);
+        assert_eq!(primary_row.slot, Some(1));
+        assert_eq!(primary_row.label, "main");
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
