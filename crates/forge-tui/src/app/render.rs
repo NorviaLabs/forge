@@ -296,6 +296,12 @@ impl TuiApp {
         if expand_conversation && self.focus.block() == FocusBlock::Workspace {
             self.focus.set_navigation(FocusBlock::Sidebar);
         }
+        // The tab row holds the keyboard only while the navigator column is on
+        // screen: a collapsed column (or a mode without tabs) must not leave it
+        // owning keys nothing is drawing.
+        if !(task_mode && regions.files.is_some()) {
+            self.navigator_tab_row_focused = false;
+        }
         self.normalize_focus();
         let status = self.refresh_status_model_with_connected(connected);
         // When the navigator column is collapsed there is no session list on
@@ -376,7 +382,9 @@ impl TuiApp {
             );
         }
         if let Some(files) = regions.files {
-            let navigator_focused = self.focus.block() == FocusBlock::TaskStrip && !modal_open;
+            let navigator_focused = self.focus.block() == FocusBlock::TaskStrip
+                && !modal_open
+                && !self.navigator_tab_row_focused;
             if task_mode {
                 // The left column is the navigator: a tab bar over either the
                 // session list or the file explorer (FORGE-DESIGN §7.7).
@@ -400,6 +408,7 @@ impl TuiApp {
                     crate::widgets::NavigatorTabs {
                         tab: navigator_tab,
                         needs_you,
+                        focused: self.navigator_tab_row_focused,
                         hover: self.hover_navigator_tab,
                     },
                     tabs_area,
@@ -498,8 +507,10 @@ impl TuiApp {
                                     FocusBlock::Files | FocusBlock::Search
                                 ),
                                 modal_open,
-                            ),
-                            search_active: self.focus.block() == FocusBlock::Search && !modal_open,
+                            ) && !self.navigator_tab_row_focused,
+                            search_active: self.focus.block() == FocusBlock::Search
+                                && !modal_open
+                                && !self.navigator_tab_row_focused,
                             hover: self.hover_file,
                         },
                         rows[1],

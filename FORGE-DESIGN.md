@@ -57,6 +57,7 @@ navigation:
   sessions-tab: Ctrl+1
   files-tab: Ctrl+2
   toggle-navigator-tab: Ctrl+E
+  navigator-tab-row: Up (at the first row of either tab's list)
   go-back: Alt+Left
   enter-interaction:
     - Enter
@@ -444,6 +445,11 @@ surface. The old top task strip is superseded (`§11`).
   session) switches tabs. They never show side by side: the layout already
   carries three content columns (navigator | Workspace | conversation) and
   cannot afford a fourth, and `Files` is the first thing to collapse (`§7.3`).
+- The tab row is reachable from the keyboard: `↑` at the first row of either
+  tab's list moves onto the row, where `←` / `→` switch tabs, `Enter` / `↓` /
+  `Esc` step back into the pane the active tab shows, and every other key is
+  inert on the row. The row is a sub-focus of the column, never a `Tab` stop
+  (`§8.3`).
 - Default tab: `Sessions` when more than one session exists, `Files` otherwise.
   The choice is remembered for the session.
 - **Sessions tab** is a vertical, attention-ordered list. Only three states are
@@ -499,17 +505,24 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 | Next visible block | `Tab` (while the `Panel` block holds the keyboard, plain `Tab` goes to its shell) |
 | Previous visible block | `Shift+Tab` |
 | Navigator tabs `Sessions` / `Files` (repository mode) | `Ctrl+1` / `Ctrl+2`; `Ctrl+E` flips the two (`Ctrl+1` also focuses the list) |
+| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` switch tabs, `Enter` / `↓` / `Esc` step back into the pane |
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |
 | Contextual help | `/help` |
 
-No block switches tabs on `←` / `→`. Plain arrows keep their in-block meaning:
-the session cursor in `Sessions` (`←`/`→` as well as `↑`/`↓`), tree
-collapse/expand in `Files` and its `Search` row, chip selection in `Footer`,
-the composer caret (its text input keeps normal arrow behaviour), and
-pass-through to its shell in `Panel`. In the file view a plain `←` is the same
-history-back as `Alt+←`. Modified arrows never switch tabs.
+No block switches tabs on `←` / `→` while its pane holds the keyboard. Plain
+arrows keep their in-block meaning: the session cursor in `Sessions` (`←`/`→`
+as well as `↑`/`↓`), tree collapse/expand in `Files` and its `Search` row, chip
+selection in `Footer`, the composer caret (its text input keeps normal arrow
+behaviour), and pass-through to its shell in `Panel`. In the file view a plain
+`←` is the same history-back as `Alt+←`. Modified arrows never switch tabs.
+
+The one place `←` / `→` switch tabs is the tab row itself, reached with plain
+`↑` at the first row. The row is a sub-focus of the navigator column rather
+than a block: `Tab` / `Shift+Tab` still cycle blocks from it (it is never a Tab
+stop), only `←` / `→` / `Enter` / `↓` / `Esc` are bound on it, and the pane
+under it paints as unfocused while it is up.
 
 ### 8.4 Active block treatment
 
@@ -522,7 +535,8 @@ Three border levels (`design.rs`, `theme::panel_border`):
   sit at the same neutral step as L1; a nested field never reads as a second,
   louder box.
 - **L3 — local accent.** Only the element that owns the keyboard or the
-  selection: the active tab's ground, a focused search field's border, the
+  selection: the active tab's ground, the navigator tab row's outlines while
+  the row itself holds the keyboard, a focused search field's border, the
   composer's top edge, a pane's `>` title marker, the scrollbar thumb. Thick
   rules survive only where the region is a single rule (the bottom panel).
 
@@ -680,7 +694,11 @@ the single plan surface.
   never flowing over or under the text — and carries its label at accent hue
   and bold weight; no tab is underlined and no tab carries a marker glyph, so the
   label stays centred in its tab in every state. The tab bar shows which tab
-  is active, not which block owns the keyboard.
+  is active, not which block owns the keyboard — with one exception: while the
+  row itself holds the keyboard (`↑` at the first row of either tab's list,
+  `§8.3`), both outlines step to the L3 accent so the row reads as the thing
+  being driven. The active tab keeps its ground and hue in that state, so the
+  focus signal never stands in for the active-tab signal.
 - Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.
 - Active file and selected row may differ; distinguish them.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.

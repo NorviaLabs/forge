@@ -1291,6 +1291,215 @@ async fn ctrl_tab_switches_the_navigator() {
         .unwrap();
 }
 
+/// `↑` at the top of the session list reaches the navigator's tab row; below the
+/// first row it keeps its cursor meaning (`FORGE-DESIGN §8.3`).
+#[tokio::test]
+async fn up_at_the_top_of_the_session_list_reaches_the_tab_row() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let _ = create_promptless_session(&mut app).await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+
+    app.task_strip_selection = 1;
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.task_strip_selection, 0, "the cursor moves first");
+    assert!(
+        !app.navigator_tab_row_focused,
+        "a `↑` that still has somewhere to go must not jump into the row"
+    );
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        app.navigator_tab_row_focused,
+        "the second `↑` reaches the row"
+    );
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::TaskStrip,
+        "the pane keeps focus.block(), so `Tab` still cycles from it"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// From the file tree the same `↑` reaches the row, `←`/`→` switch tabs without
+/// leaving it, and `↓` drops back into the pane the tab shows.
+#[tokio::test]
+async fn the_tab_row_switches_tabs_without_leaving_the_row() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Files;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::Search);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        app.navigator_tab_row_focused,
+        "an empty tree is already at the top, so one `↑` reaches the row"
+    );
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Sessions);
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::TaskStrip,
+        "the pane under the row follows the tab, so no invisible block owns keys"
+    );
+    assert!(
+        app.navigator_tab_row_focused,
+        "`←`/`→` keep the keyboard on the row"
+    );
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert!(
+        !app.workspace_files.explorer.search_focused,
+        "the pane under the row paints unfocused while the row holds the keys"
+    );
+    assert!(app.navigator_tab_row_focused);
+
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        !app.navigator_tab_row_focused,
+        "`↓` steps back into the pane"
+    );
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert!(
+        app.workspace_files.explorer.search_focused,
+        "…which takes the keyboard and its caret back"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// `Tab` still cycles blocks from the row: it is never a Tab stop of its own
+/// (`FORGE-DESIGN §8.3`).
+#[tokio::test]
+async fn tab_still_cycles_blocks_from_the_tab_row() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.navigator_tab_row_focused);
+
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.navigator_tab_row_focused, "the cycle clears the row");
+    assert_ne!(
+        app.focus.block(),
+        FocusBlock::TaskStrip,
+        "`Tab` moves to the next block"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// Session verbs are inert on the row: they would act on the list it covers.
+#[tokio::test]
+async fn session_verbs_do_not_fire_from_the_tab_row() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.navigator_tab_row_focused);
+
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        app.navigator_new_session.is_none(),
+        "`n` is inert on the row"
+    );
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        app.navigator_done_pending.is_none(),
+        "`x` is inert on the row"
+    );
+    assert!(app.navigator_tab_row_focused, "the row keeps the keyboard");
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// Leaving the navigator drops the row with it: the row is a sub-focus of the
+/// navigator column, not a block that can linger off-screen.
+#[tokio::test]
+async fn leaving_the_navigator_clears_the_tab_row() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.navigator_tab_row_focused);
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        !app.navigator_tab_row_focused,
+        "`Esc` steps back into the pane"
+    );
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.navigator_tab_row_focused);
+    app.focus_block(FocusBlock::Composer);
+    assert!(!app.navigator_tab_row_focused);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A single session has no tab bar, so there is no row to reach.
+#[tokio::test]
+async fn a_single_session_has_no_tab_row_to_reach() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Files);
+    app.focus_navigator_tab_row();
+    assert!(!app.navigator_tab_row_focused, "no repository, no tab bar");
+}
+
 /// `Space` opens the inline peek; typing fills the reply; `Esc` collapses.
 #[tokio::test]
 async fn space_peeks_and_esc_collapses_in_the_navigator() {

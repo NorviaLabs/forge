@@ -161,6 +161,19 @@ impl TuiApp {
             self.navigator_new_session = Some(String::new());
             return Ok(true);
         }
+        // `↑` at the top of the list reaches the navigator's tab row instead of
+        // being a no-op (`FORGE-DESIGN §8.3`). The inline composer and an open
+        // peek own `↑` first, so this fires on the press after those close.
+        if self.navigator_new_session.is_none()
+            && self.navigator_peek.is_none()
+            && self.task_strip_selection == 0
+            && self.navigator_tab_row_available()
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Up
+        {
+            self.focus_navigator_tab_row();
+            return Ok(true);
+        }
         if count == 0 {
             return Ok(false);
         }
@@ -1438,6 +1451,17 @@ impl TuiApp {
                 }
             }
         }
+        // `↑` at the top of the tree reaches the navigator's tab row instead of
+        // being a no-op (`FORGE-DESIGN §8.3`). Search keeps its own keys; this
+        // fires only once the tree cursor already sits on the first row.
+        if key.modifiers.is_empty()
+            && key.code == KeyCode::Up
+            && self.navigator_tab_row_available()
+            && self.workspace_files.explorer.selection_at_first_row()
+        {
+            self.focus_navigator_tab_row();
+            return Ok(true);
+        }
         let Some(command) = self.semantic_command_for_file_key(key) else {
             return Ok(false);
         };
@@ -1464,6 +1488,13 @@ impl TuiApp {
     }
 
     async fn handle_active_block_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        // The navigator's tab row owns the keyboard while it is up. It is a
+        // sub-focus of the navigator column rather than a block, so `Tab` and
+        // `Shift+Tab` are consumed by the cycle above this and the row is never
+        // a stop of its own (`FORGE-DESIGN §8.3`).
+        if self.navigator_tab_row_focused {
+            return self.handle_navigator_tab_row_key(key).await;
+        }
         match self.focus.block() {
             FocusBlock::TaskStrip => self.handle_task_strip_key(key).await,
             FocusBlock::Search | FocusBlock::Files => self.handle_file_explorer_key(key).await,
@@ -1475,6 +1506,38 @@ impl TuiApp {
             // Menu keys (↑↓ Enter Esc) are consumed by `handle_approval_menu_key`
             // before routing; everything else is ignored here.
             FocusBlock::Approval => Ok(false),
+        }
+    }
+
+    /// Keys while the navigator's **tab row** holds the keyboard.
+    ///
+    /// The row is horizontal, so `↑`/`↓` step back into the pane instead of
+    /// moving between tabs. Every other key is swallowed on purpose: the row is
+    /// a place you pass through, and a session verb firing from it would act on
+    /// the list the row is covering.
+    async fn handle_navigator_tab_row_key(
+        &mut self,
+        key: event::KeyEvent,
+    ) -> Result<bool, TuiError> {
+        if !key.modifiers.is_empty() {
+            // Chords (Ctrl+1/Ctrl+2, Ctrl+E, F1 …) keep their meaning; only the
+            // bare keys below belong to the row.
+            return Ok(false);
+        }
+        match key.code {
+            KeyCode::Left => {
+                self.select_navigator_tab_from_row(crate::widgets::NavigatorTab::Sessions);
+                Ok(true)
+            }
+            KeyCode::Right => {
+                self.select_navigator_tab_from_row(crate::widgets::NavigatorTab::Files);
+                Ok(true)
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Esc => {
+                self.leave_navigator_tab_row();
+                Ok(true)
+            }
+            _ => Ok(true),
         }
     }
 
