@@ -53,7 +53,8 @@ pub enum StripState {
 }
 
 impl StripState {
-    fn of(status: &BackgroundTaskStatus) -> Self {
+    /// Which rank a task's status sorts under.
+    pub fn of(status: &BackgroundTaskStatus) -> Self {
         match status {
             BackgroundTaskStatus::WaitingForApproval { .. } => Self::Blocked,
             BackgroundTaskStatus::Failed { .. } => Self::Failed,
@@ -157,22 +158,17 @@ impl BackgroundStrip {
         now: DateTime<Utc>,
         visible_rows: usize,
     ) -> Self {
-        let mut live: Vec<(StripState, BackgroundTaskId, StripRow)> = tasks
-            .iter()
-            .filter(|task| !expired(task, now))
-            .map(|task| {
-                let state = StripState::of(&task.status);
-                (state, task.id, row_for(task, now, state))
-            })
-            .collect();
-
-        // Stable by id inside a state band, so a running row never jumps
-        // because a sibling finished.
-        live.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1 .0.cmp(&b.1 .0)));
+        // Rows map after the shared filter-and-sort, so the drawn rows and
+        // the selection below address tasks in the same order.
+        let live = ordered_live(tasks, now);
 
         let total = live.len();
         let shown = visible_rows.min(total);
-        let rows: Vec<StripRow> = live.into_iter().take(shown).map(|(_, _, r)| r).collect();
+        let rows: Vec<StripRow> = live
+            .into_iter()
+            .take(shown)
+            .map(|(state, _, task)| row_for(task, now, state))
+            .collect();
 
         // Truncation takes from the tail, and the sort puts blocked and failed
         // first, so the rows that get cut are always the ones that are still
@@ -186,6 +182,28 @@ impl BackgroundStrip {
             rows,
         }
     }
+}
+
+/// The single filter-and-sort both the drawn strip and the `↑↓ i` selection
+/// share: drop TTL-retired `done` rows, rank the rest `blocked → failed →
+/// active → queued → done → cancelled`, stable by task id inside a band.
+pub fn ordered_live(
+    tasks: &[BackgroundTaskSnapshot],
+    now: DateTime<Utc>,
+) -> Vec<(StripState, BackgroundTaskId, &BackgroundTaskSnapshot)> {
+    let mut live: Vec<(StripState, BackgroundTaskId, &BackgroundTaskSnapshot)> = tasks
+        .iter()
+        .filter(|task| !expired(task, now))
+        .map(|task| {
+            let state = StripState::of(&task.status);
+            (state, task.id, task)
+        })
+        .collect();
+
+    // Stable by id inside a state band, so a running row never jumps
+    // because a sibling finished.
+    live.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1 .0.cmp(&b.1 .0)));
+    live
 }
 
 /// A `done` row leaves `DONE_ROW_TTL_SECS` after it finished. Everything else
@@ -614,5 +632,42 @@ mod tests {
         assert!(strip.is_empty());
         assert_eq!(strip.total, 0);
         assert_eq!(strip.hidden, 0);
+    }
+
+    /// `↑↓ i` addresses the strip by drawn row, not by raw task id — so the
+    /// selection shares the strip's filter-and-sort, and a TTL-retired `done`
+    /// row is gone from both at once.
+    #[test]
+    fn ordered_live_matches_draw_order_and_drops_retired_done_rows() {
+        let now = Utc::now();
+        let started = now - Duration::seconds(600);
+        let fresh = now - Duration::seconds(DONE_ROW_TTL_SECS - 1);
+        let stale = now - Duration::seconds(DONE_ROW_TTL_SECS);
+        let tasks = vec![
+            task(5, "done-fresh", succeeded(), started, Some(fresh)),
+            task(1, "running", BackgroundTaskStatus::Running, started, None),
+            task(
+                3,
+                "failed",
+                BackgroundTaskStatus::Failed {
+                    error: "boom".into(),
+                },
+                started,
+                Some(now),
+            ),
+            task(9, "done-stale", succeeded(), started, Some(stale)),
+        ];
+
+        let ordered = ordered_live(&tasks, now);
+        let ids: Vec<u64> = ordered.iter().map(|(_, id, _)| id.0).collect();
+        assert_eq!(
+            ids,
+            vec![3, 1, 5],
+            "failed outranks running outranks done, and the retired row is gone"
+        );
+
+        let strip = BackgroundStrip::build(&tasks, now, STRIP_ROW_CAP);
+        let labels: Vec<&str> = strip.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["failed", "running", "done-fresh"]);
     }
 }
