@@ -1556,6 +1556,16 @@ impl TuiApp {
         }
     }
 
+    /// The one block that keeps an unconsumed printable key instead of
+    /// letting it start a chat draft.
+    ///
+    /// The interactive terminal's PTY takes every byte the panel does not
+    /// claim itself, so a shell command typed there must never become a
+    /// composer draft that the next `Enter` submits to the model.
+    fn keeps_unconsumed_typing(&self) -> bool {
+        self.focus.block() == FocusBlock::BottomPanel
+    }
+
     async fn type_to_compose(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         // While an approval is pending the composer is not the answer input;
         // typing must neither move focus off the approval card nor accumulate
@@ -1563,26 +1573,16 @@ impl TuiApp {
         if self.selected_pending_hitl().is_some() {
             return Ok(false);
         }
-        // Control surfaces own their own keystrokes. Falling through to the
-        // composer from here silently *moves focus* and inserts, so a command
-        // typed at the footer — or at a terminal whose PTY has exited — turns
-        // into a chat draft, and the Enter that was meant to run it sends it to
-        // the model instead. Refuse the hijack: keep the focus the UI is
-        // showing and drop the key, rather than doing something plausible in
-        // the wrong pane. TaskStrip/Sidebar are control surfaces too: Vim
-        // `:q`/`:e` and `/quit` typed with session focus must not become chat
-        // drafts that the next Enter submits to the model.
-        //
-        // Navigational blocks (Files/Search/Workspace) deliberately
-        // keep type-to-chat: there the keystroke has no local meaning, so
-        // starting a message is the only thing it could have meant.
-        if matches!(
-            self.focus.block(),
-            FocusBlock::Footer
-                | FocusBlock::BottomPanel
-                | FocusBlock::TaskStrip
-                | FocusBlock::Sidebar
-        ) {
+        // Every block except the terminal hands an unbound printable key to
+        // the composer — the control surfaces included. A keystroke with no
+        // local meaning has only one reading ("start a message"), and the
+        // block's own verbs are matched before this runs, so a bound key
+        // still wins over a draft. Focus moves with the character, so the
+        // block that renders the keyboard is always the block that owns it;
+        // the command that used to be swallowed here (a shell line typed at
+        // the footer, Vim `:q` at the session strip) now shows up where it
+        // went instead of vanishing.
+        if self.keeps_unconsumed_typing() {
             return Ok(false);
         }
         let Some(c) = Self::printable_chat_char(key) else {

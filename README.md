@@ -208,6 +208,7 @@ controls are:
 | Key | Action |
 | --- | --- |
 | `Tab` / `Shift+Tab` | Move between visible blocks |
+| Any printable key | Start (or continue) a draft in the composer — from any block except the terminal panel |
 | `Enter` / `i` | Interact with the focused block or control |
 | `Esc` | Leave the current interaction level |
 | `↑` / `↓` | Navigate a local list or input |
@@ -227,6 +228,13 @@ controls are:
 | `Ctrl+C` | Interrupt the running turn, or quit when idle |
 | `Ctrl+D` | Quit |
 | `Ctrl+Shift+V` | Attach a screenshot from the local OS clipboard |
+
+Typing is always one step from anywhere: a printable key the focused block has
+no binding for starts (or continues) a draft in the composer, and focus moves
+with it, so a chat message never lands behind a pane that still looks active.
+The block's own keys win — `d` in the session list still marks a session done,
+`x` in the chat transcript still stops a background task. The terminal panel is
+the exception: its shell takes every byte.
 
 The footer carries a chip row: model and effort. It is an ordinary `Tab`
 stop — `Tab` to it, `←`/`→` to pick a chip, `Enter` to open the picker.

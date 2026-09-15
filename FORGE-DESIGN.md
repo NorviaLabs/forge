@@ -509,7 +509,16 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |
+| Start a draft | any printable key the active block has no binding for (`input.rs::type_to_compose`) |
 | Contextual help | `/help` |
+
+Type-to-chat is the rule for every block except `Panel`: an unconsumed
+printable key starts a message, because with no local meaning that is the only
+reading it has. The block's own bindings are matched first, so a displayed
+shortcut never loses to a draft, and focus moves with the character — the block
+that renders the keyboard is always the block that owns it. `Panel` is the one
+exception: its PTY takes every byte the panel does not claim, so a shell command
+typed there can never become a draft the next `Enter` submits to the model.
 
 No block switches tabs on `←` / `→` while its pane holds the keyboard. Plain
 arrows keep their in-block meaning: the session cursor in `Sessions` (`←`/`→`
