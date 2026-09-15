@@ -405,6 +405,46 @@ async fn a_running_child_view_advances_across_a_poll() {
     );
 }
 
+/// The frame title says whose session is on screen: `Chat ‹ explore` names
+/// the child, and the parent's own `Chat` comes back with it on `←`.
+#[tokio::test]
+async fn the_frame_title_names_the_viewed_child() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+
+    let rendered = super::helpers::render_app_text(&mut app, 120, 40);
+    assert!(
+        rendered.contains("Chat") && !rendered.contains("‹"),
+        "the parent's own title carries no breadcrumb:\n{rendered}"
+    );
+
+    app.focus_block(FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.child_view.is_some(), "{}", app.feedback.text);
+
+    let label = app.child_view.as_ref().unwrap().label.clone();
+    let rendered = super::helpers::render_app_text(&mut app, 120, 40);
+    assert!(
+        rendered.contains(&format!("Chat ‹ {label}")),
+        "the title must name the child on screen:\n{rendered}"
+    );
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let rendered = super::helpers::render_app_text(&mut app, 120, 40);
+    assert!(
+        rendered.contains("Chat") && !rendered.contains("‹"),
+        "leaving restores the parent's title:\n{rendered}"
+    );
+}
+
 /// `session_messages` returns `None` for an unreadable journal rather than an
 /// error, so one bad session cannot fail the caller. The journal lives in a
 /// file named for the session, so pointing at someone else's file is the

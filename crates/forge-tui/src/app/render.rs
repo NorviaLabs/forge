@@ -963,6 +963,15 @@ impl TuiApp {
             // the shared pane grammar (`> Chat` focused, neutral `  Chat`
             // otherwise) plus the accent scrollbar thumb (see
             // `render_conversation_scrollbar`).
+            // A child view replaces which session is on screen, so the frame
+            // title says whose: `Chat ‹ explore` names the child, and the
+            // parent's own title comes back with it on `←`. The `‹` reads as
+            // "drilled into" rather than a path — there is no parent-task
+            // lineage to draw, and inventing one would be a lie.
+            let chat_title = match self.child_view.as_ref() {
+                Some(view) => format!("Chat ‹ {}", view.label),
+                None => "Chat".to_string(),
+            };
             let sidebar_block = Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
@@ -970,7 +979,7 @@ impl TuiApp {
                 .title(crate::widgets::panel::title(
                     self.focus.block() == FocusBlock::Sidebar,
                     modal_open,
-                    "Chat",
+                    &chat_title,
                 ))
                 .padding(ratatui::widgets::Padding::horizontal(
                     crate::design::PANE_PAD_X,

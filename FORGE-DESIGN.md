@@ -820,8 +820,39 @@ Every rule here exists to protect something the operator is relying on.
 - **An empty registry draws nothing at all** — no header, no reserved gap — so
   an idle sidebar is unchanged, the same contract Row 1 of the footer keeps.
 
-### 9.13 Out-of-band notification
+### 9.13 Child session view
 
+What the strip's two-line activity summary deliberately omits: the subagent's
+full transcript. `→` on a background task row replaces the transcript pane with
+that child's own session, read-only; `←`/`Esc` returns. Read-only by
+construction — the view is a journal replay (`forge_core::session_messages` →
+`forge_session::replayed_transcript`), never a second runtime, so there is no
+second writer against a session the child still owns.
+
+Every rule here exists to keep the operator oriented about whose session is on
+screen.
+
+- **The frame title says whose.** `Chat ‹ explore` names the child; the
+  parent's own `Chat` comes back with it on `←`. `‹` reads as "drilled into",
+  not a path — there is no parent-task lineage to draw, and inventing one
+  would be a lie. The composer hint carries the same notice
+  (`read-only · viewing explore · ← to return`), and the composer refuses input
+  while the view is open.
+- **The view refreshes while the child is live.** The poll tick re-reads the
+  child's journal while its task is non-terminal; a finished child keeps its
+  final snapshot. The refresh is silent, swaps only when the messages actually
+  changed (else every tick would invalidate the render cache for nothing), and
+  never touches scroll or follow — the operator may be reading an older page.
+- **The header still describes the parent session** (workspace, branch): the
+  child runs in its own worktree, so those do not match while the view is
+  open. The frame title names the child that *is* on screen.
+- **A replayed child carries no live activity rows.** `TurnEvent`s are not
+  replayed, so the view shows the conversation without the streaming
+  second-lines the owning session carries — the right trade for a view that
+  cannot act. Shell tasks have no session of their own and are refused with a
+  reason rather than opening an empty view.
+
+### 9.14 Out-of-band notification
 Reaching an operator who is looking at another window. `notify.rs`; configured
 by `[tui] notify = auto | bell | osc9 | both | off`.
 
