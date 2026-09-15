@@ -43,13 +43,17 @@ impl Widget for BackgroundStripWidget<'_> {
         if area.height < 2 {
             return;
         }
+        let mut lines_above = 0u16;
         for (index, row) in self.strip.rows.iter().enumerate() {
-            let y = area.y + 1 + index as u16;
+            let y = area.y + 1 + lines_above;
             if y >= area.y + area.height {
                 break;
             }
             let selected = self.selected == Some(index);
             self.render_row(row, selected, area.x, y, width, buf);
+            // A row with a second line is two lines tall; advancing by one
+            // would draw the next row over that line.
+            lines_above += 1 + u16::from(row.detail.is_some());
         }
     }
 }
@@ -158,13 +162,21 @@ impl BackgroundStripWidget<'_> {
         }
         buf.set_line(x, y, &spans.into(), width as u16);
 
-        // A blocked row names what it is waiting for, on the line under it.
+        // A second line under the row: the request a blocked row is waiting on,
+        // or what an active subagent is doing. A request is something the
+        // operator has to answer, so it is coloured as a warning; reported
+        // activity is not a problem and stays secondary, so the two never look
+        // alike.
         if let Some(detail) = row.detail.as_deref() {
             if y + 1 < buf.area.height {
                 let indent = GUTTER + MARKER + 1;
                 let text = format!("{}{}", " ".repeat(indent), detail);
-                let line =
-                    ratatui::text::Line::from(Span::styled(truncate(&text, width), theme::warn()));
+                let style = if row.state == StripState::Blocked {
+                    theme::warn()
+                } else {
+                    theme::text_secondary()
+                };
+                let line = ratatui::text::Line::from(Span::styled(truncate(&text, width), style));
                 buf.set_line(x, y + 1, &line, width as u16);
             }
         }
@@ -300,6 +312,37 @@ mod tests {
         assert!(
             text.contains("bash · rm -rf target/debug"),
             "the pending request must be visible: {text}"
+        );
+    }
+
+    /// A row with a second line is two lines tall. Advancing one line per row
+    /// drew the next row straight over the line underneath — which is why this
+    /// only ever looked right on a one-row strip.
+    #[test]
+    fn a_second_line_is_not_overwritten_by_the_next_row() {
+        let mut blocked = row(StripState::Blocked, "explore", "9s");
+        blocked.detail = Some("bash · echo risky".into());
+        let verify = row(StripState::Active, "verify", "31s");
+        let strip = strip_of(vec![blocked, verify], 0);
+
+        // Header + two rows + one second line.
+        let text = draw(&strip, None, false, 44, 4);
+
+        assert!(
+            text.contains("bash · echo risky"),
+            "the second line survived: {text}"
+        );
+        assert!(
+            text.contains("verify"),
+            "and the row after it is still drawn: {text}"
+        );
+        // `draw` flattens the buffer into one string in row order, so the
+        // second line has to appear before the row that follows it.
+        let detail_at = text.find("bash · echo risky").expect("detail line");
+        let verify_at = text.find("verify").expect("next row");
+        assert!(
+            detail_at < verify_at,
+            "the second line belongs to the row above, not below: {text}"
         );
     }
 

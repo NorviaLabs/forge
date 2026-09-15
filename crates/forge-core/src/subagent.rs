@@ -18,7 +18,10 @@ use forge_durable::Journal;
 use forge_governance::AclPolicy;
 use forge_storage::RuntimeStorage;
 use forge_tools::ToolContext;
-use forge_types::{BackgroundTaskId, HitlDecision, Message, MessageRole, SessionId, TaskLifecycle};
+use forge_types::{
+    BackgroundTaskId, HitlDecision, Message, MessageRole, ModelStreamEvent, SessionId,
+    TaskLifecycle,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_coordinator::AgentCommand;
@@ -26,7 +29,8 @@ use crate::background::{BackgroundTaskKind, BackgroundTaskOutcome, BackgroundTas
 use crate::persistence::SessionPersistence;
 use crate::turn_state::TurnState;
 use crate::{
-    assemble_system_prompt, ActiveTaskState, AgentSession, LoopError, SessionTokenUsage, TaskQueue,
+    assemble_system_prompt, ActiveTaskState, AgentSession, LoopError, SessionTokenUsage,
+    StreamEventTx, TaskQueue,
 };
 use crate::{AgentCoordinator, AgentStatus};
 
@@ -704,7 +708,13 @@ fn spawn_subagent_actor(
             if messages.is_empty() {
                 continue;
             }
-            let result = child.run_user_message(&messages.join("\n\n")).await;
+            // Give the child a viewer for the length of this run, so the strip
+            // can show what it is doing and not only what it finished.
+            let probe = ActivityProbe::start(latest_message.clone());
+            let result = child
+                .run_user_message_with_stream(&messages.join("\n\n"), Some(probe.sender()))
+                .await;
+            probe.finish();
             child = drive_subagent(
                 child,
                 result,
@@ -718,6 +728,103 @@ fn spawn_subagent_actor(
         }
     });
     Ok(())
+}
+
+/// How much of the in-progress assistant text the activity cell keeps. The
+/// strip shows one line; keeping the whole message would clone a growing string
+/// on every delta to hold text nobody can read.
+const ACTIVITY_TAIL_CHARS: usize = 240;
+
+/// The trailing `ACTIVITY_TAIL_CHARS` of `text`, trimmed.
+fn activity_tail(text: &str) -> String {
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count <= ACTIVITY_TAIL_CHARS {
+        return trimmed.to_string();
+    }
+    trimmed.chars().skip(count - ACTIVITY_TAIL_CHARS).collect()
+}
+
+/// A live view of what a subagent is doing, for the background strip.
+///
+/// `run_agent_turns` drives an entire run internally, so the `snapshot`
+/// checkpoints around it fire only once the run is over: `latest_message` was
+/// `None` for exactly the window it exists to describe, which is why a running
+/// subagent had no readable activity.
+///
+/// `StreamEventTx` is a `std::sync::mpsc` sender and std receivers cannot be
+/// awaited, hence the drain thread. It ends when the sender is dropped at the
+/// end of the run, or when `done` is set — the flag is what keeps `finish`
+/// from blocking if a future change ever retains a sender past the call.
+struct ActivityProbe {
+    events: Option<StreamEventTx>,
+    done: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ActivityProbe {
+    fn start(cell: Arc<std::sync::Mutex<Option<String>>>) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = done.clone();
+        let handle = std::thread::spawn(move || {
+            let mut text = String::new();
+            loop {
+                match rx.recv_timeout(std::time::Duration::from_millis(25)) {
+                    Ok(ModelStreamEvent::TextDelta { text: delta }) => {
+                        text.push_str(&delta);
+                        *cell.lock().unwrap() = Some(activity_tail(&text));
+                    }
+                    // The model has stopped talking and is about to act. What
+                    // it asked for is more useful than the prose it wrote.
+                    Ok(ModelStreamEvent::ToolCallStart { name, .. }) => {
+                        text.clear();
+                        *cell.lock().unwrap() = Some(format!("running {name}…"));
+                    }
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        });
+        Self {
+            events: Some(tx),
+            done,
+            handle: Some(handle),
+        }
+    }
+
+    /// A sender for one run. The session clones what it hands to each model
+    /// step, so the drain thread outlives any single one of them.
+    fn sender(&self) -> StreamEventTx {
+        self.events
+            .as_ref()
+            .expect("an unfinished probe still holds its sender")
+            .clone()
+    }
+
+    fn finish(mut self) {
+        self.stop();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+
+    fn stop(&mut self) {
+        self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.events = None;
+    }
+}
+
+impl Drop for ActivityProbe {
+    fn drop(&mut self) {
+        // Never leave the thread waiting on a sender that will not be dropped.
+        self.stop();
+    }
 }
 
 async fn drive_subagent(
@@ -762,7 +869,9 @@ async fn drive_subagent(
                         result = Err(e);
                         break;
                     }
-                    result = child.run_agent_turns(None).await;
+                    let probe = ActivityProbe::start(latest_message.clone());
+                    result = child.run_agent_turns(Some(probe.sender())).await;
+                    probe.finish();
                     snapshot(&child);
                     if child.active_task.lifecycle == TaskLifecycle::Working {
                         let _ = coordinator.update(child_session_id, AgentStatus::Running, None);
@@ -868,6 +977,66 @@ mod tests {
 
     use super::*;
     use crate::LoopConfig;
+
+    /// Poll until the cell holds `expected`. The probe drains on its own
+    /// thread, so a bare read would race it.
+    fn wait_for_activity(cell: &Arc<std::sync::Mutex<Option<String>>>, expected: &str) -> bool {
+        for _ in 0..400 {
+            if cell.lock().unwrap().as_deref() == Some(expected) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    /// Without the probe `latest_message` was written only after a run ended,
+    /// so a working subagent had nothing to show.
+    #[test]
+    fn the_activity_probe_follows_text_and_tool_calls() {
+        let cell = Arc::new(std::sync::Mutex::new(None));
+        let probe = ActivityProbe::start(cell.clone());
+        let tx = probe.sender();
+
+        tx.send(ModelStreamEvent::TextDelta {
+            text: "reading ".into(),
+        })
+        .unwrap();
+        tx.send(ModelStreamEvent::TextDelta {
+            text: "the manifest".into(),
+        })
+        .unwrap();
+        assert!(
+            wait_for_activity(&cell, "reading the manifest"),
+            "assistant text accumulates as it streams: {:?}",
+            cell.lock().unwrap()
+        );
+
+        // What it asked for is more useful than the prose it wrote.
+        tx.send(ModelStreamEvent::ToolCallStart {
+            id: "1".into(),
+            name: "bash".into(),
+        })
+        .unwrap();
+        assert!(
+            wait_for_activity(&cell, "running bash…"),
+            "a tool call replaces the text: {:?}",
+            cell.lock().unwrap()
+        );
+
+        drop(tx);
+        probe.finish();
+    }
+
+    /// The cell is read at render time, so it keeps a tail rather than a
+    /// growing transcript.
+    #[test]
+    fn activity_tail_keeps_the_end_of_a_message() {
+        let long = "x".repeat(ACTIVITY_TAIL_CHARS + 50);
+        assert_eq!(activity_tail(&long).chars().count(), ACTIVITY_TAIL_CHARS);
+        assert_eq!(activity_tail("  short  "), "short");
+        assert_eq!(activity_tail(""), "");
+    }
 
     async fn git(dir: &std::path::Path, args: &[&str]) {
         let status = tokio::process::Command::new("git")

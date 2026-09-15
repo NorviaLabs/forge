@@ -93,10 +93,17 @@ pub struct BackgroundTaskHandle {
     pub cancel: CancellationToken,
     /// `Some` for a `Subagent` task — its own independent session/journal.
     pub child_session_id: Option<SessionId>,
-    /// Live snapshot of the subagent's most recent assistant message —
-    /// `None` for shell tasks. Shared (not polled through a channel) so a
-    /// cheap lock+clone at render time is enough; `drive_subagent` updates
-    /// it at each natural checkpoint (start, and after every HITL resume).
+    /// Live view of what the subagent is doing — `None` for shell tasks.
+    /// Shared (not polled through a channel) so a cheap lock+clone at render
+    /// time is enough.
+    ///
+    /// `drive_subagent` writes it from two directions: an `ActivityProbe`
+    /// drains the model stream for the length of each run, so assistant text
+    /// accumulates as it is generated and a tool call shows as
+    /// `running <tool>…`; `snapshot` then overwrites it with the last complete
+    /// assistant message at each run boundary. The probe is what makes the
+    /// field live — the run boundaries alone left it `None` for the entire
+    /// time a subagent was working.
     pub latest_message: Arc<Mutex<Option<String>>>,
     /// `Some` for a `Subagent` task once its worktree exists — surfaced so
     /// a finished subagent's work can be found and reviewed manually (no

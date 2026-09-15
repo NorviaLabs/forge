@@ -23,6 +23,9 @@ pub const STRIP_ROW_CAP: usize = 7;
 
 /// Longest argument summary drawn on a blocked row's detail line.
 const DETAIL_CHARS: usize = 28;
+/// What an active subagent's activity line keeps. Longer than a request's,
+/// because it is prose rather than a command, but still one line.
+const ACTIVITY_CHARS: usize = 60;
 
 /// A row's state, and its sort rank in one.
 ///
@@ -128,6 +131,22 @@ impl BackgroundStrip {
         self.total == 0
     }
 
+    /// Lines the strip needs: the header, plus one for each row, plus one more
+    /// for every row that carries a second line.
+    ///
+    /// Rows are not all one line tall, and the caller cannot work that out from
+    /// a count. Getting this wrong does not clip gracefully — a row's second
+    /// line is drawn where the next row's first line goes, so the budget has to
+    /// agree with the widget's own row advance.
+    pub fn height(&self) -> u16 {
+        let rows: u16 = self
+            .rows
+            .iter()
+            .map(|row| 1 + u16::from(row.detail.is_some()))
+            .sum();
+        1 + rows
+    }
+
     /// Build the strip from the selected session's background tasks.
     ///
     /// `visible_rows` is what the layout says actually fits after the
@@ -191,10 +210,28 @@ fn row_for(task: &BackgroundTaskSnapshot, now: DateTime<Utc>, state: StripState)
         label: task.label.clone(),
         elapsed: elapsed_for(task, now),
         detail: match &task.status {
+            // The pending request is what the operator has to answer, so it
+            // outranks the activity line — but the two states are mutually
+            // exclusive, so this is ordering of precedence rather than of
+            // competition.
             BackgroundTaskStatus::WaitingForApproval { payload } => Some(detail_for(payload)),
+            _ if state == StripState::Active => activity_for(task),
             _ => None,
         },
     }
+}
+
+/// What an active subagent is doing, when it has told us.
+///
+/// Assistant text arrives as it streams, so it carries the newlines of prose;
+/// a row's second line is one line, so runs of whitespace collapse.
+fn activity_for(task: &BackgroundTaskSnapshot) -> Option<String> {
+    let text = task.latest_message.as_deref()?;
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(truncate(&collapsed, ACTIVITY_CHARS))
 }
 
 /// Counts up while the task runs, then freezes: a finished row's age is its
@@ -453,6 +490,73 @@ mod tests {
 
         assert_eq!(soon.rows[0].elapsed, later.rows[0].elapsed);
         assert_eq!(soon.rows[0].elapsed, "31s");
+    }
+
+    /// A subagent's activity is the one thing its label cannot tell you, so a
+    /// running row shows it.
+    #[test]
+    fn an_active_subagent_shows_what_it_is_doing() {
+        let now = Utc::now();
+        let started = now - Duration::seconds(5);
+        let mut running = task(1, "explore", BackgroundTaskStatus::Running, started, None);
+        running.latest_message = Some("reading\nthe   manifest".into());
+
+        let strip = BackgroundStrip::build(&[running], now, STRIP_ROW_CAP);
+        assert_eq!(
+            strip.rows[0].detail.as_deref(),
+            Some("reading the manifest"),
+            "streamed prose collapses onto the one line the row has"
+        );
+    }
+
+    /// The request is what the operator has to answer, so it wins the second
+    /// line over whatever the agent happened to say last.
+    #[test]
+    fn a_blocked_row_shows_the_request_not_the_activity() {
+        let now = Utc::now();
+        let started = now - Duration::seconds(5);
+        let mut waiting = task(1, "explore", blocked("bash", "echo risky"), started, None);
+        waiting.latest_message = Some("I am about to run a command".into());
+
+        let strip = BackgroundStrip::build(&[waiting], now, STRIP_ROW_CAP);
+        assert_eq!(strip.rows[0].detail.as_deref(), Some("bash · echo risky"));
+    }
+
+    /// Silence is the normal case for the first moments of a run, and a row
+    /// must not reserve a line it has nothing to put on.
+    #[test]
+    fn an_active_row_with_nothing_to_report_has_no_second_line() {
+        let now = Utc::now();
+        let started = now - Duration::seconds(5);
+        let strip = BackgroundStrip::build(
+            &[task(
+                1,
+                "explore",
+                BackgroundTaskStatus::Running,
+                started,
+                None,
+            )],
+            now,
+            STRIP_ROW_CAP,
+        );
+        assert!(strip.rows[0].detail.is_none());
+        assert_eq!(strip.height(), 2, "header plus one row");
+    }
+
+    /// The strip's height has to agree with the widget's row advance: a row
+    /// with a second line is two lines tall, and a budget that assumes one
+    /// draws the next row over that line.
+    #[test]
+    fn height_counts_second_lines() {
+        let now = Utc::now();
+        let started = now - Duration::seconds(5);
+        let rows = vec![
+            task(1, "explore", blocked("bash", "echo risky"), started, None),
+            task(2, "verify", BackgroundTaskStatus::Running, started, None),
+        ];
+        let strip = BackgroundStrip::build(&rows, now, STRIP_ROW_CAP);
+        assert_eq!(strip.rows.len(), 2);
+        assert_eq!(strip.height(), 4, "header + two rows + one second line");
     }
 
     /// The detail line is what tells the operator *what* a subagent wants, and

@@ -750,11 +750,14 @@ the sidebar's width (`layout.rs::regions.background`, built by
 
 Every rule here exists to protect something the operator is relying on.
 
-- **Height is derived, never requested.** The renderer asks for one row per
-  live task plus a header; `layout.rs` clamps that against the transcript's
-  `Min` floor. A job that is merely running can never take a row from the
+- **Height is derived, never requested.** The renderer asks for the lines the
+  strip actually needs — header, one per row, plus one more for each row with a
+  second line — and `layout.rs` clamps that against the transcript's `Min`
+  floor. A job that is merely running can never take a row from the
   conversation, which is why this is the only fixed-height strip the caller
-  specifies rather than the layout deriving.
+  specifies rather than the layout deriving. Rows are one *or* two lines, so a
+  count of rows is not a height: a budget that assumed one line each drew the
+  next row straight over the line underneath.
 - **The header tells the truth about truncation:** ` Background · 8 ` with
   `+N more` right-aligned when the row cap (8) or the available space hides
   some. The count is what survived expiry, not what was spawned.
@@ -767,9 +770,16 @@ Every rule here exists to protect something the operator is relying on.
   interrupted turn) stays visible instead of ageing out.
 - **Row anatomy:** `> [|] ◆ explore · audit auth deps  needs you` — the
   navigator's selection grammar, the §5.3 marker, the kind glyph the footer
-  chip also uses, then the label and a right-aligned elapsed. A **blocked row
-  adds exactly one line underneath**, carrying the tool and its already-redacted
-  arguments. That case is the only one where a label is not enough to act on.
+  chip also uses, then the label and a right-aligned elapsed. A row grows a
+  **second line** in exactly two cases, and the styling tells them apart:
+  - **A blocked row** shows the pending request (tool and its already-redacted
+    arguments) in the warning hue. That is the one case where a label is not
+    enough to act on, because the operator has to answer it.
+  - **An active subagent** shows what it is doing, in secondary text: the
+    assistant text as it streams, or `running bash…` while a tool is out. The
+    request outranks the activity if both exist, which they cannot.
+  - Reported activity is not a problem, so it is never warning-coloured; only
+    the blocked line is.
 - **Expiry:** a `[✓]` row retires one minute after `finished_at`; `[!]`, `[-]`
   and `[|]` wait for `x`. The strip is a status, not a log — but a completion
   has to still be there when the operator looks back, which is what the timer

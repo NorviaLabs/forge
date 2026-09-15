@@ -631,9 +631,22 @@ impl AgentSession {
 
     /// Run until no tool calls, HITL pause, or an error.
     pub async fn run_user_message(&mut self, text: &str) -> Result<ModelResponse, LoopError> {
+        self.run_user_message_with_stream(text, None).await
+    }
+
+    /// [`Self::run_user_message`] with token deltas forwarded to `stream_tx`.
+    ///
+    /// Background subagents use this to keep a live view of their own progress:
+    /// without a sender the caller cannot see anything until the whole run
+    /// returns, which is far too coarse to show "what is it doing now".
+    pub async fn run_user_message_with_stream(
+        &mut self,
+        text: &str,
+        stream_tx: Option<StreamEventTx>,
+    ) -> Result<ModelResponse, LoopError> {
         self.reset_turn_cancel();
         self.append_user_message(text).await?;
-        self.run_agent_turns(None).await
+        self.run_agent_turns(stream_tx).await
     }
 
     /// Context-reset (if needed) + journal a model request; returns the request to send.
