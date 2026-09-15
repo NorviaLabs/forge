@@ -468,9 +468,10 @@ surface. The old top task strip is superseded (`§11`).
   short qualifier; branch, worktree and ownership are never shown here.
   Selection (`›`) is the only cursor; `Enter` attaches, `Space` peeks and
   replies inline, `n` creates a session and opens its composer (the session is
-  named from the first prompt submitted in that composer), `s` stops, `d` marks
-  done, `r` renames. The same create verb is the row's `+` cell and the
-  composer's `/new`, so starting a session never requires visiting the list.
+  named from the first prompt submitted in that composer), `s` stops, `c`
+  continues, `x` archives and cleans (confirmed), `r` renames. The same create
+  verb is the row's `+` cell and the composer's `/new`, so starting a session
+  never requires visiting the list.
 - **Files tab** is today's explorer, unchanged.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
@@ -1035,4 +1036,25 @@ initiating worktree's committed `HEAD`.
 - While branchless, the session's identity is its worktree path plus the base
   commit; startup reconciliation keeps it active. Cleanup verifies the worktree
   is still the session's — by branch once branched, or still-detached before.
+- **Cleanup runs at the session's retirement boundary**, not when a key is
+  pressed: `x` ("archive and clean up") requests retirement, and the removal
+  executes where the session's actors have stopped and its workspace is being
+  released (`supervisor.rs`). Archive and cleanup are one confirmed verb, not
+  two steps.
+- **Removal is clean-only.** A managed worktree holding uncommitted changes —
+  staged, unstaged or untracked — is never deleted, and Forge never passes
+  `--force`. Only the checkout is removed; the branch is always kept.
+- **Removal is all-or-nothing per session.** The session's own checkout and
+  every finished child agent's worktree are preflighted together. If any one of
+  them is dirty, nothing is removed and the session becomes `retained` instead
+  of `archived`.
+- **`retained` is the fifth lifecycle state** (`control.rs::SessionLifecycle`)
+  and a failure surface, not a resting state: the session retired but its
+  checkout is still on disk. The navigator renders such a row as `● needs you`
+  with the qualifier `cleanup blocked`, `x` on the row retries the removal, and
+  because the preflight is all-or-nothing, `retained` always implies the
+  session's own worktree is still present.
+- Child worktrees are reclaimed at the same boundary, because that is where the
+  session-lifetime follow-up capability ends. A child that itself spawned
+  children reports only its own worktree; nested descendants are not covered.
 - The primary session and attached worktrees are unchanged.

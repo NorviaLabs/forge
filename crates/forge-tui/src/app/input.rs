@@ -305,9 +305,13 @@ impl TuiApp {
                 });
                 Ok(true)
             }
-            KeyCode::Char('d') if key.modifiers.is_empty() => {
+            // `x` finishes a session: archive and clean up, always confirmed.
+            // `d` used to sit here and meant "marks done"; it is unbound now so
+            // the same verb means the same thing in the navigator and in the
+            // session switcher.
+            KeyCode::Char('x') if key.modifiers.is_empty() => {
                 let session_id = self.session_chrome[self.task_strip_selection].session_id;
-                self.request_session_done(session_id).await;
+                self.request_session_cleanup(session_id).await;
                 Ok(true)
             }
             _ => Ok(false),
@@ -683,9 +687,32 @@ impl TuiApp {
                 }
             }
             CommandFollowUp::Retirement { session_id } => {
-                self.finish_session_view_retirement(*session_id, succeeded);
-                if succeeded {
+                // The command result is not the whole story: a cleanup blocked by
+                // uncommitted work still returns success, because archiving
+                // succeeded and the checkout was deliberately kept. `removed` in
+                // the roster is the one signal that means the checkout is gone,
+                // so the parked view is only dropped when the row says so.
+                let removed = self
+                    .supervisor
+                    .as_ref()
+                    .and_then(|supervisor| supervisor.snapshots.get(session_id))
+                    .is_some_and(|snapshot| {
+                        snapshot.task.lifecycle == forge_session::SessionLifecycle::Removed
+                    });
+                if removed {
+                    self.finish_session_view_retirement(*session_id, true);
                     self.set_feedback(FeedbackSeverity::Ok, "worktree removed · branch kept");
+                } else {
+                    // Restoring is the safe reading of an uncertain outcome: the
+                    // session is still live, so dropping its parked view would
+                    // discard buffers the operator can still use.
+                    self.finish_session_view_retirement(*session_id, false);
+                    if succeeded {
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            "worktree kept — it has uncommitted work",
+                        );
+                    }
                 }
             }
             CommandFollowUp::Quit { active_sessions } => {

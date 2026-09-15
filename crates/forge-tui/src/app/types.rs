@@ -1846,9 +1846,13 @@ pub struct TuiApp {
     pub(crate) navigator_peek: Option<uuid::Uuid>,
     /// Inline reply buffer for the peeked session.
     pub(crate) navigator_reply: String,
-    /// Session the operator marked done while its turn was still running; it is
-    /// archived once the turn reaches a terminal state.
-    pub(crate) navigator_done_pending: Option<uuid::Uuid>,
+    /// Sessions the operator marked done while their turns were still running;
+    /// each is archived once its turn reaches a terminal state.
+    ///
+    /// A set rather than a single slot: marking a second session done while the
+    /// first is still stopping used to overwrite the first intent, which
+    /// silently dropped a confirmed action.
+    pub(crate) navigator_done_pending: std::collections::BTreeSet<uuid::Uuid>,
     pub(crate) selected_session_id: uuid::Uuid,
     pub(crate) session_view_states: std::collections::HashMap<uuid::Uuid, SessionViewState>,
     pub(crate) retiring_session_view_states:

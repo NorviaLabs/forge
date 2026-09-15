@@ -1157,7 +1157,7 @@ mod tests {
     fn session_hint_shares_the_row_with_chips_and_bolds_keys() {
         let mut m = model(TurnLifecycle::Ready, 0.1);
         m.hints =
-            "↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs".into();
+            "↑↓ select · Enter attach · Space peek · n new · s stop · x done · Ctrl+E tabs".into();
         m.hint_bold_keys = true;
         let out = rendered(&m, 120);
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
@@ -1187,7 +1187,7 @@ mod tests {
     fn session_hint_degrades_before_the_chips_under_pressure() {
         let mut m = model(TurnLifecycle::Working, 0.34);
         m.hints =
-            "↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs".into();
+            "↑↓ select · Enter attach · Space peek · n new · s stop · x done · Ctrl+E tabs".into();
         m.hint_bold_keys = true;
         let out = rendered(&m, 50);
         assert!(out.contains("Medium"), "{out:?}");

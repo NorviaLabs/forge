@@ -60,7 +60,8 @@ use crate::layout::{split_areas_with_chrome, split_areas_with_expanded_conversat
 use crate::overlays::{
     centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalOverlayState,
     ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction,
-    OverlayWidget, PaletteItem, ResumeSessionItem, SessionSwitcherGroup, SessionSwitcherItem,
+    OverlayWidget, PaletteItem, ResumeSessionItem, SessionSwitcherCleanup, SessionSwitcherGroup,
+    SessionSwitcherItem,
 };
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;

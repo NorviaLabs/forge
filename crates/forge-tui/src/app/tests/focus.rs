@@ -760,7 +760,7 @@ async fn files_and_search_focus_do_not_hint_on_the_footer() {
     app.focus_block(FocusBlock::TaskStrip);
     assert_eq!(
         app.contextual_hint().as_deref(),
-        Some("↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs")
+        Some("↑↓ select · Enter attach · Space peek · n new · s stop · x done · Ctrl+E tabs")
     );
 
     // Files and search leave the footer's activity line alone: the config

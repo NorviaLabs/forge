@@ -26,21 +26,30 @@ impl TuiApp {
                 .values()
                 .map(|snapshot| {
                     use forge_session::{SessionLifecycle, SupervisorTurnState};
+                    let lifecycle = snapshot.task.lifecycle;
+                    let managed =
+                        snapshot.task.ownership == forge_session::WorktreeOwnership::Managed;
+                    // A retained Session is finished but still owns a checkout,
+                    // which is the operator's problem to resolve, so it belongs
+                    // in "Needs you" alongside a turn that stopped for an answer.
+                    let retained = lifecycle == SessionLifecycle::Retained;
                     // "Needs you" is a turn that stopped for a reason the
                     // operator has to answer; a task the operator is already
                     // looking at is never in it. Shared with the sidebar rows
                     // so both surfaces agree (#643).
-                    let attention = session_needs_attention(
-                        snapshot.task.session_id == selected_session_id,
-                        snapshot.task.turn_state,
-                        !snapshot.interrupted_prompts.is_empty(),
-                    );
-                    let group = match snapshot.task.lifecycle {
+                    let attention = retained
+                        || session_needs_attention(
+                            snapshot.task.session_id == selected_session_id,
+                            snapshot.task.turn_state,
+                            !snapshot.interrupted_prompts.is_empty(),
+                        );
+                    let group = match lifecycle {
                         SessionLifecycle::Archived | SessionLifecycle::Removed => {
                             SessionSwitcherGroup::Archived
                         }
                         // Drift shows on the row's state, not as its own group.
                         SessionLifecycle::Unavailable => SessionSwitcherGroup::Idle,
+                        SessionLifecycle::Retained => SessionSwitcherGroup::NeedsYou,
                         SessionLifecycle::Active if attention => SessionSwitcherGroup::NeedsYou,
                         SessionLifecycle::Active
                             if matches!(
@@ -51,6 +60,17 @@ impl TuiApp {
                             SessionSwitcherGroup::Working
                         }
                         SessionLifecycle::Active => SessionSwitcherGroup::Idle,
+                    };
+                    // What `x` means for this row. Only a Forge-managed worktree
+                    // is ever removable, and an already-finished row is never
+                    // archived again.
+                    let cleanup = match lifecycle {
+                        SessionLifecycle::Retained => SessionSwitcherCleanup::Retry,
+                        SessionLifecycle::Archived if managed => SessionSwitcherCleanup::CleanOnly,
+                        SessionLifecycle::Active if managed => {
+                            SessionSwitcherCleanup::ArchiveAndClean
+                        }
+                        _ => SessionSwitcherCleanup::ReadOnly,
                     };
                     SessionSwitcherItem {
                         session_id: snapshot.task.session_id.to_string(),
@@ -63,8 +83,8 @@ impl TuiApp {
                         state: snapshot.task.turn_state.label().into(),
                         attention,
                         group,
-                        managed: snapshot.task.ownership
-                            == forge_session::WorktreeOwnership::Managed,
+                        managed,
+                        cleanup,
                     }
                 })
                 .collect();

@@ -515,6 +515,21 @@ async fn run_shell_job(
     }
 }
 
+/// A child agent's Git worktree, reported for session-end cleanup.
+///
+/// Produced by [`AgentSession::descendant_worktrees`] so a caller can reclaim
+/// a session's child checkouts without reading any journal: the task registry
+/// already records where each child's worktree lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescendantWorktree {
+    pub session_id: SessionId,
+    pub path: std::path::PathBuf,
+    /// The branch the child's checkout was created on, when it was recorded.
+    /// `None` means the caller cannot verify the checkout's identity by
+    /// branch, so it must not remove it on that basis.
+    pub branch: Option<String>,
+}
+
 impl AgentSession {
     /// Reconcile background tasks left in flight by a crash/restart. A shell
     /// job's process cannot survive a process restart (no PID
@@ -681,6 +696,57 @@ impl AgentSession {
             self.finish_background_task(id, outcome).await?;
         }
         Ok(())
+    }
+
+    /// Every child worktree this session owns: finished (or cancelled)
+    /// children from the task registry, plus children retained for a later
+    /// follow-up. Reported so session-end cleanup can reclaim a child's
+    /// checkout together with the session's own.
+    ///
+    /// Only terminal children are reported. A running child still owns its
+    /// checkout, so handing its path to a caller that deletes what it is
+    /// given would destroy work in progress. Callers that need those as well
+    /// must retire the session first, which cancels and drains them.
+    ///
+    /// A child that itself spawned children reports only its own worktree
+    /// here: its children's checkouts belong to that child's own
+    /// [`AgentSession`], which this session cannot reach. That limit is
+    /// deliberate — nested descendants are not covered by session-end
+    /// cleanup.
+    pub fn descendant_worktrees(&self) -> Vec<DescendantWorktree> {
+        let mut worktrees: Vec<DescendantWorktree> = self
+            .tasks
+            .background
+            .list()
+            .filter(|task| task.status.is_terminal())
+            .filter_map(|task| {
+                Some(DescendantWorktree {
+                    session_id: task.child_session_id?,
+                    path: task.worktree_path.clone()?,
+                    branch: task.worktree_branch.clone(),
+                })
+            })
+            .collect();
+        // A child that finished and was retained appears in both places; the
+        // same checkout must be reported once, or cleanup would try to remove
+        // it twice.
+        for (session_id, retained) in &self.tasks.retained_subagents {
+            if worktrees
+                .iter()
+                .any(|worktree| worktree.path == retained.workspace)
+            {
+                continue;
+            }
+            worktrees.push(DescendantWorktree {
+                session_id: *session_id,
+                path: retained.workspace.clone(),
+                branch: None,
+            });
+        }
+        // Deterministic order so callers and tests never depend on registry or
+        // hash-map iteration order.
+        worktrees.sort_by(|left, right| left.path.cmp(&right.path));
+        worktrees
     }
 
     /// Stop every resource owned by this session before its workspace is

@@ -35,14 +35,26 @@ impl TuiApp {
         }
     }
 
-    /// `d` in the navigator: stop a running turn, then archive. Idle/terminal
-    /// sessions archive immediately; a running one archives when it settles.
-    pub(crate) async fn request_session_done(&mut self, session_id: uuid::Uuid) {
-        let Some((ownership, state)) = self
+    /// `x` in the navigator: archive the session and clean up its checkout.
+    ///
+    /// Every rule that can refuse the action runs *before* the confirmation, so
+    /// the operator is never asked to confirm something that is then refused.
+    /// The confirmation is the last thing that happens here; the work itself
+    /// runs from the confirm overlay's action.
+    pub(crate) async fn request_session_cleanup(&mut self, session_id: uuid::Uuid) {
+        let Some((ownership, lifecycle, label, branch, workspace)) = self
             .supervisor
             .as_ref()
             .and_then(|supervisor| supervisor.snapshots.get(&session_id))
-            .map(|snapshot| (snapshot.task.ownership, snapshot.task.turn_state))
+            .map(|snapshot| {
+                (
+                    snapshot.task.ownership,
+                    snapshot.task.lifecycle,
+                    snapshot.task.label.clone(),
+                    snapshot.task.branch.clone(),
+                    snapshot.task.workspace.display().to_string(),
+                )
+            })
         else {
             return;
         };
@@ -53,47 +65,98 @@ impl TuiApp {
             );
             return;
         }
-        if matches!(
-            state,
-            forge_session::SupervisorTurnState::Queued
-                | forge_session::SupervisorTurnState::Running
-                | forge_session::SupervisorTurnState::Waiting
-        ) {
-            self.submit_session_command(forge_session::SupervisorCommand::StopTurn { session_id });
-            self.navigator_done_pending = Some(session_id);
-            self.set_feedback(FeedbackSeverity::Info, "stopping to archive…");
+        if ownership != forge_session::WorktreeOwnership::Managed {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "attached worktrees are never removed by Forge",
+            );
+            return;
+        }
+        // The editor guard runs before the confirmation so no confirm is ever
+        // shown for something that will then be refused. Parking the view waits
+        // for the confirmation itself: a cancelled confirmation has to leave the
+        // session's editor exactly where it was.
+        if self.session_view_state_is_dirty(session_id) {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "save or discard the open editor before removing this worktree",
+            );
+            return;
+        }
+        let kind = if lifecycle == forge_session::SessionLifecycle::Retained {
+            // Already finished: the confirmation is for a retry, which removes a
+            // checkout rather than archiving anything.
+            crate::overlays::SessionConfirmKind::Cleanup
         } else {
-            self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
-                session_id,
-            });
+            crate::overlays::SessionConfirmKind::Archive
+        };
+        let detail = if kind == crate::overlays::SessionConfirmKind::Cleanup {
+            format!(
+                "Removes the worktree at\n{workspace}\nThe branch `{branch}` is kept. \
+                 Uncommitted work blocks removal."
+            )
+        } else {
+            format!(
+                "Archiving is final — `{label}` cannot be reopened.\nIts branch `{branch}` is \
+                 kept; a clean worktree is removed.\nUncommitted work blocks removal."
+            )
+        };
+        self.overlay = Some(Overlay::SessionConfirm {
+            kind,
+            session_id: session_id.to_string(),
+            label,
+            detail,
+        });
+    }
+
+    /// Archive and clean up every session the operator marked done once its turn
+    /// has settled.
+    ///
+    /// Every pending session is drained, not just one: each was confirmed by the
+    /// operator, so dropping any of them would be dropping a confirmed action.
+    pub(crate) fn flush_done_pending(&mut self) {
+        let settled: Vec<uuid::Uuid> = self
+            .navigator_done_pending
+            .iter()
+            .copied()
+            .filter(|session_id| {
+                let state = self
+                    .supervisor
+                    .as_ref()
+                    .and_then(|supervisor| supervisor.snapshots.get(session_id))
+                    .map(|snapshot| snapshot.task.turn_state);
+                matches!(
+                    state,
+                    None | Some(
+                        forge_session::SupervisorTurnState::Idle
+                            | forge_session::SupervisorTurnState::Completed
+                            | forge_session::SupervisorTurnState::Failed
+                            | forge_session::SupervisorTurnState::Cancelled
+                            | forge_session::SupervisorTurnState::Interrupted
+                    )
+                )
+            })
+            .collect();
+        for session_id in settled {
+            self.navigator_done_pending.remove(&session_id);
+            self.submit_archive_and_cleanup(session_id);
         }
     }
 
-    /// Archive a session the operator marked done once its turn has settled.
-    pub(crate) fn flush_done_pending(&mut self) {
-        let Some(session_id) = self.navigator_done_pending else {
-            return;
-        };
-        let state = self
-            .supervisor
-            .as_ref()
-            .and_then(|supervisor| supervisor.snapshots.get(&session_id))
-            .map(|snapshot| snapshot.task.turn_state);
-        if matches!(
-            state,
-            None | Some(
-                forge_session::SupervisorTurnState::Idle
-                    | forge_session::SupervisorTurnState::Completed
-                    | forge_session::SupervisorTurnState::Failed
-                    | forge_session::SupervisorTurnState::Cancelled
-                    | forge_session::SupervisorTurnState::Interrupted
-            )
-        ) {
-            self.navigator_done_pending = None;
-            self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
-                session_id,
-            });
-        }
+    /// Submit the two supervisor commands that finish a session.
+    ///
+    /// Archiving and removal stay separate commands, but they are dispatched
+    /// together so there is no window in which the operator could quit between
+    /// them and strand a checkout. The removal tolerates arriving before its
+    /// archive lands.
+    pub(crate) fn submit_archive_and_cleanup(&mut self, session_id: uuid::Uuid) {
+        self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
+            session_id,
+        });
+        self.submit_session_command_tracked(
+            forge_session::SupervisorCommand::RemoveManagedWorktree { session_id },
+            super::types::CommandFollowUp::Retirement { session_id },
+        );
     }
 
     pub(super) fn poll_supervisor_events(&mut self) {
@@ -246,20 +309,34 @@ impl TuiApp {
                                     | forge_session::SessionLifecycle::Removed
                             )
                         })
-                        .map(|snapshot| SessionChromeItem {
-                            session_id: snapshot.task.session_id,
-                            slot: snapshot.task.slot,
-                            label: snapshot.task.label,
-                            branch: snapshot.task.branch,
-                            lifecycle: snapshot.session.lifecycle,
-                            selected: snapshot.task.session_id == self.selected_session_id,
-                            secondary: Some(snapshot.task.turn_state.label().into()),
-                            attention: session_needs_attention(
-                                snapshot.task.session_id == self.selected_session_id,
-                                snapshot.task.turn_state,
-                                !snapshot.interrupted_prompts.is_empty(),
-                            ),
-                            updated_at: snapshot.task.updated_at,
+                        .map(|snapshot| {
+                            // A retained Session is finished but still owns a
+                            // checkout, so the row has to report it. The
+                            // qualifier is one string, so the block displaces
+                            // the turn state and the relative-time qualifier
+                            // rather than sharing the row with them.
+                            let retained = snapshot.task.lifecycle
+                                == forge_session::SessionLifecycle::Retained;
+                            SessionChromeItem {
+                                session_id: snapshot.task.session_id,
+                                slot: snapshot.task.slot,
+                                label: snapshot.task.label,
+                                branch: snapshot.task.branch,
+                                lifecycle: snapshot.session.lifecycle,
+                                selected: snapshot.task.session_id == self.selected_session_id,
+                                secondary: Some(if retained {
+                                    "cleanup blocked".into()
+                                } else {
+                                    snapshot.task.turn_state.label().into()
+                                }),
+                                attention: retained
+                                    || session_needs_attention(
+                                        snapshot.task.session_id == self.selected_session_id,
+                                        snapshot.task.turn_state,
+                                        !snapshot.interrupted_prompts.is_empty(),
+                                    ),
+                                updated_at: snapshot.task.updated_at,
+                            }
                         })
                         .collect();
                     if let Some(primary) = direct {

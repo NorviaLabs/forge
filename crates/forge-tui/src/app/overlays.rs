@@ -247,11 +247,35 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
-                self.submit_session_command_tracked(
-                    forge_session::SupervisorCommand::ArchiveSession { session_id },
-                    CommandFollowUp::Toast("session archived".into()),
-                );
                 self.overlay = None;
+                // The operator confirmed, so this is where the view is parked —
+                // not before the confirmation, which a cancel must leave alone.
+                if !self.begin_session_view_retirement(session_id) {
+                    return Ok(());
+                }
+                let state = self
+                    .supervisor
+                    .as_ref()
+                    .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+                    .map(|snapshot| snapshot.task.turn_state);
+                if matches!(
+                    state,
+                    Some(
+                        forge_session::SupervisorTurnState::Queued
+                            | forge_session::SupervisorTurnState::Running
+                            | forge_session::SupervisorTurnState::Waiting
+                    )
+                ) {
+                    // Stop first, then archive and clean up once the turn
+                    // settles, so the removal never races the archive.
+                    self.submit_session_command(forge_session::SupervisorCommand::StopTurn {
+                        session_id,
+                    });
+                    self.navigator_done_pending.insert(session_id);
+                    self.set_feedback(FeedbackSeverity::Info, "stopping to archive…");
+                    return Ok(());
+                }
+                self.submit_archive_and_cleanup(session_id);
             }
             OverlayAction::ApproveAll => {
                 self.overlay = None;
