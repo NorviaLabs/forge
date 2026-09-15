@@ -670,6 +670,26 @@ Rules:
 - Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, fenced code and the `You` / `Answer` speaker labels widen by one blank row; distinct tool/activity groups are separated by one
 blank row while rows inside one group stay tight; the rule itself never stacks
 separators.
+- **Links carry destinations out of band, never inside the text.** An `OSC 8`
+  sequence is zero columns wide on screen but its bytes are characters to every
+  width measurement, so a destination written into a `Span` would be measured as
+  columns and shift every wrapped row after it. Destinations therefore travel
+  beside the rendered rows as column ranges and are attached to the buffer's
+  cells after layout (`crates/forge-tui/src/links.rs`); nothing in the visible
+  text, and nothing in the copy path, ever contains an escape byte.
+- **The underline is a promise.** A link renders as `text_primary` plus
+  underline only when its destination may actually be emitted — `http`/`https`,
+  no control bytes, a real host. Every other scheme (`file:`, `mailto:`,
+  `javascript:`, an injected `BEL`) renders as plain text with no underline,
+  because an affordance that cannot be acted on is worse than none. `accent`
+  stays out of it: it means focus ("where am I"), not "this is clickable".
+- **The click belongs to the terminal, so it is never advertised.** Forge emits
+  the sequence only for terminals known to render it, resolved once per process
+  from `TERM_PROGRAM` with any multiplexer disqualifying (`tmux` before 3.4
+  cannot forward hyperlinks, and `TERM_PROGRAM` names the outer terminal inside
+  one either way). On anything else the underline stays and nothing else
+  happens, which is why no hint row names a click: §4.5 forbids advertising a
+  binding the current context cannot reach.
 - Lists, quotes, tables and fenced code share the prose left edge; only the code rail sits inside the block, never the whole block inset past its neighbours. A plan's explanation is separated from its `Plan · N of M done` header by one blank.
 - Do not surround every message with a full-width box.
 

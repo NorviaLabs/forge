@@ -11,6 +11,7 @@
 //! parser tolerates unclosed constructs: a fenced block that never closes
 //! still renders its body (no synthetic closing fence is emitted).
 
+use crate::links::{destination_for, HyperlinkLine, TerminalHyperlink};
 use crate::theme;
 use forge_syntax::highlight_to_lines;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -159,12 +160,12 @@ fn block_start_at_or_before(starts: &[usize], offset: usize) -> usize {
 
 /// Trailing blanks are separators with nothing after them; a finished render
 /// drops them, and never returns an empty vector.
-fn trim_trailing_blanks(mut out: Vec<Line<'static>>) -> Vec<Line<'static>> {
+fn trim_trailing_blanks(mut out: Vec<HyperlinkLine>) -> Vec<HyperlinkLine> {
     while out.last().is_some_and(|line| line.width() == 0) {
         out.pop();
     }
     if out.is_empty() {
-        out.push(Line::from(String::new()));
+        out.push(Line::from(String::new()).into());
     }
     out
 }
@@ -201,6 +202,15 @@ pub(crate) fn render_markdown_open_with(
     width: usize,
     density: Density,
 ) -> Vec<Line<'static>> {
+    strip_links(render_markdown_open_links(text, width, density))
+}
+
+/// [`render_markdown_open_with`], keeping the destinations.
+pub(crate) fn render_markdown_open_links(
+    text: &str,
+    width: usize,
+    density: Density,
+) -> Vec<HyperlinkLine> {
     let mut renderer = MdRenderer::new(width.max(1), density);
     renderer.feed(Parser::new_ext(text, markdown_options()));
     renderer.finish_open()
@@ -219,9 +229,17 @@ pub(crate) fn render_markdown_join(
     settled_open: &[Line<'static>],
     tail: Vec<Line<'static>>,
 ) -> Vec<Line<'static>> {
-    let mut out = settled_open.to_vec();
+    let mut out: Vec<Line<'static>> = settled_open.to_vec();
     out.extend(tail);
-    trim_trailing_blanks(out)
+    // The same trim `finish` performs, on the plain form: the streaming path
+    // joins text that was never asked to carry destinations.
+    while out.last().is_some_and(|line| line.width() == 0) {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push(Line::from(String::new()));
+    }
+    out
 }
 
 /// The streaming caret appended to the live preview by `forge-transcript`.
@@ -269,14 +287,37 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     render_markdown_with_density(text, width, Density::Compact)
 }
 
+/// Render `text` with each link's destination carried beside its columns.
+///
+/// Callers that paint into a terminal buffer want this one: the destination has
+/// to survive layout, because an OSC 8 sequence written into a `Span` would be
+/// measured as columns and shift every wrapped line after it.
+pub(crate) fn render_markdown_links(text: &str, width: usize) -> Vec<HyperlinkLine> {
+    render_markdown_with_density_links(text, width, Density::Compact)
+}
+
 pub(crate) fn render_markdown_with_density(
     text: &str,
     width: usize,
     density: Density,
 ) -> Vec<Line<'static>> {
+    strip_links(render_markdown_with_density_links(text, width, density))
+}
+
+pub(crate) fn render_markdown_with_density_links(
+    text: &str,
+    width: usize,
+    density: Density,
+) -> Vec<HyperlinkLine> {
     let mut renderer = MdRenderer::new(width.max(1), density);
     renderer.feed(Parser::new_ext(text, markdown_options()));
     renderer.finish()
+}
+
+/// Drop link metadata for callers that only want the text. Measuring, copying
+/// and counting all read the `Line`; only the terminal buffer needs the rest.
+fn strip_links(lines: Vec<HyperlinkLine>) -> Vec<Line<'static>> {
+    lines.into_iter().map(|line| line.line).collect()
 }
 
 struct ListFrame {
@@ -327,8 +368,14 @@ impl TableBuilder {
 
 struct MdRenderer {
     width: usize,
-    out: Vec<Line<'static>>,
+    out: Vec<HyperlinkLine>,
     inline: Vec<Span<'static>>,
+    /// Destination per entry of `inline`, index for index. Links travel beside
+    /// the spans rather than inside them: an OSC 8 sequence in a `Span` would
+    /// be counted by `Span::width` and shift every column after it.
+    inline_links: Vec<Option<String>>,
+    /// Destination of the link currently open, if any.
+    current_link: Option<String>,
     style_stack: Vec<Style>,
     list_stack: Vec<ListFrame>,
     quote_depth: usize,
@@ -370,17 +417,17 @@ fn heading_rank(level: pulldown_cmark::HeadingLevel) -> u8 {
 
 /// Append one blank separator line unless the last line is already blank.
 /// No-op at the very top, so a block never opens with a leading blank.
-fn ensure_blank_separator(out: &mut Vec<Line<'static>>) {
+fn ensure_blank_separator(out: &mut Vec<HyperlinkLine>) {
     match out.last() {
         None => {}
         Some(last) if last.width() == 0 => {}
-        Some(_) => out.push(Line::from("")),
+        Some(_) => out.push(Line::from("").into()),
     }
 }
 
 /// Pad the output so it ends with exactly `n` blank lines. No-op when the
 /// output is empty, so a block never opens with a leading blank.
-fn ensure_blank_lines(out: &mut Vec<Line<'static>>, n: usize) {
+fn ensure_blank_lines(out: &mut Vec<HyperlinkLine>, n: usize) {
     if out.is_empty() {
         return;
     }
@@ -390,7 +437,7 @@ fn ensure_blank_lines(out: &mut Vec<Line<'static>>, n: usize) {
         .take_while(|line| line.width() == 0)
         .count();
     for _ in existing..n {
-        out.push(Line::from(""));
+        out.push(Line::from("").into());
     }
 }
 
@@ -400,6 +447,8 @@ impl MdRenderer {
             width,
             out: Vec::new(),
             inline: Vec::new(),
+            inline_links: Vec::new(),
+            current_link: None,
             style_stack: Vec::new(),
             list_stack: Vec::new(),
             quote_depth: 0,
@@ -448,23 +497,24 @@ impl MdRenderer {
                 Event::HardBreak => self.flush_para(),
                 Event::Rule => {
                     self.flush_para();
-                    self.out.push(Line::from(Span::styled(
-                        "─".repeat(self.width),
-                        theme::muted(),
-                    )));
+                    self.out.push(
+                        Line::from(Span::styled("─".repeat(self.width), theme::muted())).into(),
+                    );
                     self.blank_after_top_level_block();
                 }
                 Event::TaskListMarker(checked) => {
                     let mark = if checked { "[✓]" } else { "[ ]" };
-                    self.inline.push(Span::styled(
-                        mark.to_string(),
-                        theme::text().add_modifier(Modifier::BOLD),
-                    ));
-                    self.inline.push(Span::raw(" "));
+                    self.push_inline(
+                        Span::styled(mark.to_string(), theme::text().add_modifier(Modifier::BOLD)),
+                        None,
+                    );
+                    self.push_inline(Span::raw(" "), None);
                 }
                 Event::FootnoteReference(name) => {
-                    self.inline
-                        .push(Span::styled(format!("[^{name}]"), theme::text_secondary()));
+                    self.push_inline(
+                        Span::styled(format!("[^{name}]"), theme::text_secondary()),
+                        None,
+                    );
                 }
                 Event::InlineMath(_) | Event::DisplayMath(_) => {}
             }
@@ -579,16 +629,25 @@ impl MdRenderer {
             Tag::Strikethrough => {
                 self.push_style(Style::default().add_modifier(Modifier::CROSSED_OUT))
             }
-            // Links read as links through underline alone. The accent is the
-            // focus color ("where am I"), never content emphasis — painting
-            // answer-body links with it makes every URL look interactive in
-            // the pane that owns the caret. Primary text + underline keeps
-            // the affordance without borrowing focus meaning.
-            Tag::Link { .. } => self.push_style(
-                Style::default()
-                    .fg(theme::text_primary_color())
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
+            // A link is styled as a link only when its destination may actually
+            // be emitted: the underline is the promise that something can be
+            // clicked or copied, and a scheme the policy refuses (`file:`,
+            // `mailto:`, an injected control byte) must not make that promise.
+            // The accent stays out of it — it is the focus color ("where am
+            // I"), so painting prose links with it makes every URL look
+            // interactive in the pane that owns the caret. Primary text +
+            // underline keeps the affordance without borrowing focus meaning.
+            Tag::Link { dest_url, .. } => {
+                self.current_link = destination_for(&dest_url);
+                let linkable = self.current_link.is_some();
+                self.push_style(if linkable {
+                    Style::default()
+                        .fg(theme::text_primary_color())
+                        .add_modifier(Modifier::UNDERLINED)
+                } else {
+                    Style::default().fg(theme::text_primary_color())
+                });
+            }
             Tag::Image { .. } => {
                 self.push_span("[".into());
                 self.push_style(
@@ -613,6 +672,7 @@ impl MdRenderer {
             }
             Tag::TableCell => {
                 self.inline.clear();
+                self.inline_links.clear();
             }
             Tag::FootnoteDefinition(_) => {
                 self.flush_para();
@@ -632,7 +692,7 @@ impl MdRenderer {
             TagEnd::Paragraph => {
                 self.flush_para();
                 if self.list_stack.is_empty() && self.quote_depth == 0 {
-                    self.out.push(Line::from(""));
+                    self.out.push(Line::from("").into());
                 }
             }
             TagEnd::Heading(_) => {
@@ -641,10 +701,10 @@ impl MdRenderer {
                 self.prefix.clear();
                 self.cont_prefix.clear();
                 if self.heading_level.take().is_some_and(|rank| rank <= 2) {
-                    self.out.push(Line::from(Span::styled(
-                        "─".repeat(self.width),
-                        theme::border_muted(),
-                    )));
+                    self.out.push(
+                        Line::from(Span::styled("─".repeat(self.width), theme::border_muted()))
+                            .into(),
+                    );
                 }
                 if self.airy() {
                     ensure_blank_lines(&mut self.out, 2);
@@ -687,7 +747,10 @@ impl MdRenderer {
                 }
             }
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.pop_style(),
-            TagEnd::Link => self.pop_style(),
+            TagEnd::Link => {
+                self.current_link = None;
+                self.pop_style();
+            }
             TagEnd::Image => {
                 self.pop_style();
                 self.push_span("]".into());
@@ -698,14 +761,24 @@ impl MdRenderer {
                     // Indent every table line with the quote rail plus the
                     // list continuation so the left wall stays a straight line.
                     let prefix = format!("{}{}", "│ ".repeat(self.quote_depth), self.cont_prefix);
-                    self.out
-                        .extend(render_table(&table, self.width, &prefix, &prefix));
+                    self.out.extend(
+                        render_table(&table, self.width, &prefix, &prefix)
+                            .into_iter()
+                            .map(HyperlinkLine::from),
+                    );
                 }
                 self.blank_after_top_level_block();
             }
             TagEnd::TableRow => {}
             TagEnd::TableCell => {
                 if let Some(table) = &mut self.table {
+                    // A table's columns are laid out by `render_table`, which
+                    // re-wraps and re-aligns every cell against its own
+                    // geometry — so a cell's link would need its columns
+                    // recomputed there. Until that exists, cells keep the
+                    // underline they have always had and the picker remains
+                    // the way to a destination written inside one.
+                    self.inline_links.clear();
                     table.end_cell(std::mem::take(&mut self.inline));
                 }
             }
@@ -717,6 +790,7 @@ impl MdRenderer {
                             std::mem::take(&mut self.html_buf),
                             theme::muted(),
                         )],
+                        &[],
                         self.width,
                         "",
                         "",
@@ -730,7 +804,7 @@ impl MdRenderer {
         }
     }
 
-    fn finish(self) -> Vec<Line<'static>> {
+    fn finish(self) -> Vec<HyperlinkLine> {
         trim_trailing_blanks(self.finish_open())
     }
 
@@ -741,7 +815,7 @@ impl MdRenderer {
     /// whatever comes next, so a prefix rendered with `finish` has already lost
     /// its separator and cannot be concatenated with a continuation. Keeping
     /// the open form is what makes [`render_markdown_split`] exact.
-    fn finish_open(mut self) -> Vec<Line<'static>> {
+    fn finish_open(mut self) -> Vec<HyperlinkLine> {
         self.flush_para();
         if let Some(code) = self.code.take() {
             self.render_code(code);
@@ -779,7 +853,16 @@ impl MdRenderer {
     }
 
     fn push_span(&mut self, text: String) {
-        self.inline.push(Span::styled(text, self.current_style()));
+        let link = self.current_link.clone();
+        self.push_inline(Span::styled(text, self.current_style()), link);
+    }
+
+    /// Add one span to the open paragraph, carrying the link it belongs to (if
+    /// any). Every push goes through here so `inline` and `inline_links` can
+    /// never drift apart.
+    fn push_inline(&mut self, span: Span<'static>, link: Option<String>) {
+        self.inline.push(span);
+        self.inline_links.push(link);
     }
 
     fn flush_para(&mut self) {
@@ -789,10 +872,18 @@ impl MdRenderer {
         let quote = "│ ".repeat(self.quote_depth);
         let prefix = format!("{quote}{}", self.prefix);
         let cont = format!("{quote}{}", self.cont_prefix);
-        for line in wrap_spans(&self.inline, self.width, &prefix, &cont, self.marker_style) {
+        for line in wrap_spans(
+            &self.inline,
+            &self.inline_links,
+            self.width,
+            &prefix,
+            &cont,
+            self.marker_style,
+        ) {
             self.out.push(line);
         }
         self.inline.clear();
+        self.inline_links.clear();
     }
 
     /// One row of a fenced block: indent, gutter rule, content, then padding
@@ -843,7 +934,7 @@ impl MdRenderer {
             // gutter and gave it the code tint — so it read as a line of code
             // that says "rust". It belongs above the block, outside the rail,
             // right-aligned to the block's own width.
-            self.out.push(self.language_chip(&code.language));
+            self.out.push(self.language_chip(&code.language).into());
         }
         let body = code.body.trim_end_matches('\n');
         if body.is_empty() {
@@ -852,18 +943,18 @@ impl MdRenderer {
         let theme = theme::syntax_theme();
         for line_segments in highlight_to_lines(&code.language, body, &theme).iter() {
             let row = self.code_row(render_highlighted_line(line_segments));
-            self.out.push(row);
+            self.out.push(row.into());
         }
         // A block opens with air above it and used to close with none, so the
         // prose that follows started on the row under the last line of code —
         // touching a tinted slab it has nothing to do with. Unlike a heading,
         // which belongs to what comes after it, a fenced block belongs to
         // itself.
-        self.out.push(Line::from(""));
+        self.out.push(Line::from("").into());
         if self.airy() {
             // Match the blank row added before the block, so code sits in an
             // even band of air rather than one-sided padding.
-            self.out.push(Line::from(""));
+            self.out.push(Line::from("").into());
         }
     }
 }
@@ -884,7 +975,7 @@ const CODE_GUTTER: &str = "▌ ";
 /// Rows are padded out to the full prose width on the right so the band
 /// reads as one slab, not a halo behind glyphs; the prefix column already
 /// starts at the left edge, so its own cells carry the band once filled.
-fn paint_scan_band(lines: &mut [Line<'static>], width: usize) {
+fn paint_scan_band(lines: &mut [HyperlinkLine], width: usize) {
     let band = theme::scan_band_bg();
     let fill = |span: &mut Span<'static>| {
         if span.style.bg.is_none() {
@@ -940,11 +1031,12 @@ fn split_at_width(s: &str, max: usize) -> (&str, &str) {
 /// take the structure hue, everything else stays muted.
 fn wrap_spans(
     spans: &[Span<'static>],
+    links: &[Option<String>],
     width: usize,
     prefix: &str,
     cont: &str,
     marker_style: Style,
-) -> Vec<Line<'static>> {
+) -> Vec<HyperlinkLine> {
     if spans.is_empty() {
         return Vec::new();
     }
@@ -952,12 +1044,24 @@ fn wrap_spans(
     let cont_span = Span::styled(cont.to_string(), marker_style);
     let prefix_w = display_width(prefix);
     let cont_w = display_width(cont);
-    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut out: Vec<HyperlinkLine> = Vec::new();
     let mut cur: Vec<Span<'static>> = vec![prefix_span];
+    // Link columns for the line under construction. A destination recorded
+    // here is a column range on *this* row; when a wrap splits a link across
+    // rows the range is closed on the row it started on and a fresh one opens
+    // on the row after, which is exactly what the terminal needs.
+    let mut cur_links: Vec<TerminalHyperlink> = Vec::new();
     let mut cur_w = prefix_w;
     let mut has_content = false;
 
-    for Token { word, style, glued } in tokenize(spans) {
+    for Token {
+        word,
+        style,
+        glued,
+        span_index,
+    } in tokenize(spans)
+    {
+        let destination = links.get(span_index).and_then(|link| link.as_deref());
         let mut remaining = word.as_str();
         // `glued` only ever suppresses the separating space, and that space is
         // only considered while `has_content` holds. Every wrap below clears
@@ -973,34 +1077,85 @@ fn wrap_spans(
                     cur_w += 1;
                 }
                 cur.push(Span::styled(remaining.to_string(), style));
+                extend_link(&mut cur_links, destination, cur_w, cur_w + wlen);
                 cur_w += wlen;
                 has_content = true;
                 break;
             }
             if has_content {
-                out.push(Line::from(std::mem::take(&mut cur)));
+                out.push(HyperlinkLine::with_links(
+                    Line::from(std::mem::take(&mut cur)),
+                    std::mem::take(&mut cur_links),
+                ));
                 cur.push(cont_span.clone());
                 cur_w = cont_w;
                 has_content = false;
                 continue;
             }
             if room == 0 {
-                out.push(Line::from(std::mem::take(&mut cur)));
+                out.push(HyperlinkLine::with_links(
+                    Line::from(std::mem::take(&mut cur)),
+                    std::mem::take(&mut cur_links),
+                ));
                 cur.push(cont_span.clone());
                 cur_w = cont_w;
                 continue;
             }
             let (chunk, rest) = split_at_width(remaining, room);
             cur.push(Span::styled(chunk.to_string(), style));
-            out.push(Line::from(std::mem::take(&mut cur)));
+            extend_link(
+                &mut cur_links,
+                destination,
+                cur_w,
+                cur_w + display_width(chunk),
+            );
+            out.push(HyperlinkLine::with_links(
+                Line::from(std::mem::take(&mut cur)),
+                std::mem::take(&mut cur_links),
+            ));
             cur.push(cont_span.clone());
             cur_w = cont_w;
             has_content = false;
             remaining = rest;
         }
     }
-    out.push(Line::from(cur));
+    out.push(HyperlinkLine::with_links(
+        Line::from(cur),
+        std::mem::take(&mut cur_links),
+    ));
     out
+}
+
+/// Record `[start, end)` as part of `destination`'s run on the current row,
+/// merging with the run it continues.
+///
+/// Wrapping splits a link into several spans — and a space between two words of
+/// the same link is its own span — so a row's links arrive in pieces. Pieces are
+/// merged across the single column the wrapper's separator occupies, so a
+/// two-word label is one range rather than two, while two different
+/// destinations are never joined.
+fn extend_link(
+    links: &mut Vec<TerminalHyperlink>,
+    destination: Option<&str>,
+    start: usize,
+    end: usize,
+) {
+    let Some(destination) = destination else {
+        return;
+    };
+    if end <= start {
+        return;
+    }
+    if let Some(last) = links.last_mut() {
+        // `+ 1` tolerates the separator space the wrapper inserted between two
+        // words: it is the link's own text that is underlined, and the range
+        // spanning it keeps one clickable run per row.
+        if last.destination == destination && start <= last.columns.end + 1 {
+            last.columns.end = last.columns.end.max(end);
+            return;
+        }
+    }
+    links.push(TerminalHyperlink::new(start..end, destination));
 }
 
 /// A word to place, its style, and whether it was written flush against the
@@ -1010,6 +1165,10 @@ struct Token {
     style: Style,
     /// No whitespace separated this token from its predecessor in the source.
     glued: bool,
+    /// Which input span the word came from, so its link — carried beside the
+    /// spans in `inline_links` — can be found without copying a destination
+    /// into every word.
+    span_index: usize,
 }
 
 /// Split a styled run into words, remembering where the source had no space.
@@ -1024,7 +1183,7 @@ fn tokenize(spans: &[Span<'static>]) -> Vec<Token> {
     let mut out: Vec<Token> = Vec::new();
     // Leading whitespace is not a join, so the first token is never glued.
     let mut prev_ended_ws = true;
-    for span in spans {
+    for (span_index, span) in spans.iter().enumerate() {
         let content = span.content.as_ref();
         let starts_ws = content.starts_with(char::is_whitespace);
         let mut words = content.split_whitespace();
@@ -1033,12 +1192,14 @@ fn tokenize(spans: &[Span<'static>]) -> Vec<Token> {
                 word: first.to_string(),
                 style: span.style,
                 glued: !starts_ws && !prev_ended_ws,
+                span_index,
             });
             for word in words {
                 out.push(Token {
                     word: word.to_string(),
                     style: span.style,
                     glued: false,
+                    span_index,
                 });
             }
             prev_ended_ws = content.ends_with(char::is_whitespace);
@@ -1210,7 +1371,12 @@ fn render_boxed_row(
             if *w == 0 {
                 return vec![Line::from("")];
             }
-            let lines = wrap_spans(cell, *w, "", "", theme::muted());
+            // Table cells keep the renderer's plain geometry: their links are
+            // recovered by the picker from the source, not marked here.
+            let lines: Vec<Line<'static>> = wrap_spans(cell, &[], *w, "", "", theme::muted())
+                .into_iter()
+                .map(|line| line.line)
+                .collect();
             if lines.is_empty() {
                 vec![Line::from("")]
             } else {
@@ -1505,6 +1671,15 @@ mod tests {
             .join("\n")
     }
 
+    /// One row's text, for slicing against the columns a link claims. The
+    /// destination is never in the text, so the slice is what the reader sees.
+    fn row_text(line: &HyperlinkLine) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
     #[test]
     fn renders_blocks_without_literal_markup() {
         let md = "\
@@ -1567,6 +1742,102 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         );
         assert_ne!(link.style.fg, Some(theme::accent_color()));
         assert!(link.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    /// The columns a link claims must be the columns its label occupies. The
+    /// terminal marks whatever is in those cells, so an off-by-one here paints
+    /// the link over the word next to it.
+    #[test]
+    fn a_link_carries_its_destination_beside_its_own_columns() {
+        let rendered = render_markdown_links("see [the docs](https://example.com/a) now", 80);
+        let line = rendered
+            .iter()
+            .find(|line| !line.links.is_empty())
+            .expect("a row carrying the link");
+        assert_eq!(
+            line.links,
+            vec![crate::links::TerminalHyperlink::new(
+                4..12,
+                "https://example.com/a"
+            )]
+        );
+        assert_eq!(row_text(line), "see the docs now");
+        assert_eq!(&row_text(line)[4..12], "the docs");
+    }
+
+    /// A wrapped link is two ranges on two rows, both pointing at the same
+    /// destination: the terminal cannot be told about a link that starts on one
+    /// row and ends on another.
+    #[test]
+    fn link_columns_follow_a_wrapped_label() {
+        let text = "[a considerably longer label than fits](https://example.com/a)";
+        let rendered = render_markdown_links(text, 24);
+        let rows: Vec<&HyperlinkLine> = rendered
+            .iter()
+            .filter(|line| !line.links.is_empty())
+            .collect();
+        assert!(rows.len() > 1, "the label was expected to wrap");
+        for row in &rows {
+            for link in &row.links {
+                assert_eq!(link.destination, "https://example.com/a");
+                // Every claimed column is inside the row it claims it on.
+                assert!(link.columns.end <= row.width(), "{link:?} past the row");
+            }
+        }
+        // Reading the covered columns row by row rebuilds the label.
+        let mut covered = String::new();
+        for row in &rows {
+            let text = row_text(row);
+            for link in &row.links {
+                covered.push_str(&text[link.columns.clone()]);
+            }
+        }
+        assert_eq!(covered.replace(' ', ""), "aconsiderablylongerlabelthanfits");
+    }
+
+    /// The underline is a promise that the destination can be acted on. A
+    /// scheme the policy refuses must not make it.
+    #[test]
+    fn a_rejected_scheme_stays_plain_text() {
+        let rendered = render_markdown_links("[write me](mailto:someone@example.com)", 80);
+        assert!(rendered.iter().all(|line| line.links.is_empty()));
+        // The label still renders — the reader sees the words, they simply
+        // carry no affordance — and nothing in the row is underlined.
+        assert_eq!(
+            rendered.iter().map(row_text).collect::<String>(),
+            "write me"
+        );
+        let underlined = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(!underlined, "a refused destination must not look clickable");
+    }
+
+    /// Two destinations on one row must not merge into one range, or the first
+    /// link's cells would answer with the second link's URL.
+    #[test]
+    fn two_links_on_one_row_stay_separate() {
+        let rendered = render_markdown_links(
+            "[one](https://example.com/1) and [two](https://example.com/2)",
+            80,
+        );
+        let line = rendered
+            .iter()
+            .find(|line| line.links.len() == 2)
+            .expect("both links on one row");
+        assert_eq!(line.links[0].destination, "https://example.com/1");
+        assert_eq!(line.links[1].destination, "https://example.com/2");
+        let text = row_text(line);
+        assert_eq!(&text[line.links[0].columns.clone()], "one");
+        assert_eq!(&text[line.links[1].columns.clone()], "two");
+    }
+
+    /// Plain text never invents a destination.
+    #[test]
+    fn prose_without_links_carries_none() {
+        let rendered = render_markdown_links("just a sentence about https://example.com", 80);
+        assert!(rendered.iter().all(|line| line.links.is_empty()));
     }
 
     /// Inline code carries file paths and identifiers — the tokens a reader
