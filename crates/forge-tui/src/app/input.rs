@@ -166,7 +166,7 @@ impl TuiApp {
                     label: String::new(),
                     first_prompt: None,
                 },
-                CommandFollowUp::SelectCreatedSession { known },
+                CommandFollowUp::FocusCreatedSession { known },
             ) {
                 self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");
             }
@@ -681,9 +681,9 @@ impl TuiApp {
                 }
                 self.clamp_queue_selection();
             }
-            CommandFollowUp::SelectCreatedSession { known } => {
+            CommandFollowUp::FocusCreatedSession { known } => {
                 if succeeded {
-                    self.select_created_session(known);
+                    self.focus_created_session(known);
                 }
             }
         }
@@ -727,24 +727,20 @@ impl TuiApp {
         true
     }
 
-    /// Select the session a new-session command allocated and hand the cursor
-    /// to its composer, ready for the first prompt that names it.
+    /// Hand the cursor to the composer of the session a new-session command
+    /// allocated, ready for the first prompt that names it.
     ///
-    /// Creation reports the new task in the roster and nowhere else, so the
-    /// sessions that existed when the command was queued are what identify it;
-    /// the newest of those is the one this command made.
-    fn select_created_session(&mut self, known: &[uuid::Uuid]) {
+    /// The supervisor owns selection: `CreateSession` emits a roster and then
+    /// `Selected`, and the `Selected` arm moves the view. This only adopts
+    /// focus, and only for the session the supervisor has already made
+    /// selected, so it cannot disagree with it about which session is active.
+    /// A lagged or truncated event batch therefore degrades to "no focus
+    /// hand-off" rather than to focusing or selecting the wrong session; the
+    /// cursor still reaches the composer on the next `Selected`.
+    fn focus_created_session(&mut self, known: &[uuid::Uuid]) {
         self.poll_supervisor_events();
-        let Some(created) = self
-            .session_chrome
-            .iter()
-            .rev()
-            .find(|task| !known.contains(&task.session_id))
-            .map(|task| task.session_id)
-        else {
-            return;
-        };
-        if created != self.selected_session_id && !self.select_supervised_session(created) {
+        let selected = self.selected_session_id;
+        if known.contains(&selected) {
             return;
         }
         self.enter_chat_composer();

@@ -499,7 +499,10 @@ async fn bare_resume_list_shows_title_hint_from_first_user_message() {
         panic!("expected ResumePicker overlay, got {:?}", app.overlay);
     };
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].title.as_deref(), Some("fix the login bug please"));
+    // `/resume` derives its hint from the same naming rule as the session
+    // label, so a resume row agrees with the navigator instead of echoing the
+    // raw first message.
+    assert_eq!(items[0].title.as_deref(), Some("fix-the-login-bug"));
 }
 
 #[tokio::test]

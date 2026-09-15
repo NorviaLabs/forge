@@ -1688,11 +1688,16 @@ pub(crate) enum CommandFollowUp {
     /// Load a canceled queued message back into the composer, but only once
     /// the supervisor confirms it left the queue.
     EditQueuedMessage { text: String },
-    /// Select the session a new-session command allocated and hand the cursor
-    /// to its composer. Creation reports the new task in the roster and
-    /// nowhere else, so the follow-up carries the sessions that already
-    /// existed when the command was queued to recognise it.
-    SelectCreatedSession { known: Vec<uuid::Uuid> },
+    /// Hand the cursor to a just-created session's composer, so the operator
+    /// can type the first prompt that names it.
+    ///
+    /// Selection is the supervisor's job: `CreateSession` emits a roster and
+    /// then `Selected` for the new session, and the `Selected` arm moves the
+    /// view. This follow-up deliberately only adopts local focus, and only
+    /// once the new session is the selected one, so it can never disagree
+    /// with the supervisor about which session is active. The pre-command
+    /// sessions identify the created task.
+    FocusCreatedSession { known: Vec<uuid::Uuid> },
 }
 
 /// A supervisor command whose execution result still needs a UI follow-up.
