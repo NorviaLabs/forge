@@ -753,13 +753,12 @@ async fn focused_bottom_panel_alt_arrows_do_not_type_into_chat() {
 }
 
 #[tokio::test]
-async fn typing_at_the_footer_never_becomes_a_chat_message() {
+async fn unbound_typing_at_the_footer_starts_a_draft() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    // Regression: Tab from the composer lands on the Footer, which has no
-    // Char handler, so every letter fell through to `type_to_compose` — which
-    // silently moved focus back to the composer and inserted there. A shell
-    // command typed after one Tab became a chat draft, and the Enter meant to
-    // run it submitted it to the model instead.
+    // The footer binds `←→`/`Enter`/`Esc` and no printable key, so a letter
+    // typed there has no local meaning and starts a draft. Focus moves with
+    // the character, so the draft can never be inserted behind a block the UI
+    // still paints as the keyboard owner.
     let (dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -783,18 +782,17 @@ async fn typing_at_the_footer_never_becomes_a_chat_message() {
             .unwrap();
     }
 
-    // Nothing typed into the composer...
-    assert_eq!(app.input.text, "");
-    // ...and focus never silently moved out from under the user.
-    assert_eq!(app.focus.block(), FocusBlock::Footer);
+    assert_eq!(app.input.text, "git status");
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
 }
 
 #[tokio::test]
-async fn typing_at_session_or_sidebar_blocks_never_becomes_chat() {
+async fn unbound_typing_at_session_and_sidebar_blocks_starts_a_draft() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    // Regression: with session (TaskStrip) or Sidebar focus, Vim `:q`/`:e`
-    // and `/quit` fell through `type_to_compose` into the composer, and the
-    // Enter meant for the control surface submitted them to the model.
+    // Both blocks bind single letters of their own, but those are matched
+    // before type-to-chat; every other printable key starts a draft rather
+    // than being dropped, which is what a click on the transcript column
+    // (SIDEBAR) or the session list makes the operator expect.
     let (_dir, mut app) = focus_test_app().await;
 
     app.focus_block(FocusBlock::TaskStrip);
@@ -803,17 +801,69 @@ async fn typing_at_session_or_sidebar_blocks_never_becomes_chat() {
             .await
             .unwrap();
     }
-    assert_eq!(app.input.text, "");
-    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    assert_eq!(app.input.text, ":q");
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
 
+    let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Sidebar);
     for c in "/quit".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
             .await
             .unwrap();
     }
-    assert_eq!(app.input.text, "");
+    assert_eq!(app.input.text, "/quit");
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+}
+
+#[tokio::test]
+async fn control_surface_verbs_still_beat_type_to_chat() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    // A block's own keys are matched before `type_to_compose`, so widening
+    // type-to-chat never shadows a displayed binding.
+    let (_dir, mut app) = focus_test_app().await;
+
+    // `n` at the session strip opens its inline new-session composer, and the
+    // letters that follow belong to that buffer.
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for c in "task".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.navigator_new_session.as_deref(), Some("task"));
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    assert!(app.input.text.is_empty());
+
+    // `x` at the sidebar stops a background task instead of typing an `x`.
+    app.navigator_new_session = None;
+    app.focus_block(FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert!(app.input.text.is_empty());
+}
+
+#[tokio::test]
+async fn terminal_panel_keeps_unbound_typing() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    // The only block that never hands an unbound printable key to the
+    // composer: its PTY takes every byte the panel does not claim itself.
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_bottom_panel();
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+
+    for c in "ls".chars() {
+        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+
+    assert!(app.input.text.is_empty());
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
 }
 
 #[tokio::test]
