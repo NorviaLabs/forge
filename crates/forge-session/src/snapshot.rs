@@ -296,6 +296,35 @@ impl TranscriptSnapshot {
         snapshot
     }
 
+    /// A transcript for a session this process does not own, re-projected from
+    /// a journal replay.
+    ///
+    /// This is the read-only path for looking at a background subagent's
+    /// session. The child owns that session and may still be writing to it, so
+    /// the TUI must not open a second runtime against it — `open_session`
+    /// builds a runtime, it does not merely read. Replaying the journal is a
+    /// second *reader*, which is what the durable store's WAL mode permits.
+    ///
+    /// Two consequences of coming from a replay rather than a live session:
+    ///
+    /// - **`events` is empty.** `TurnEvent`s are not replayed, so this shows
+    ///   the conversation without the live activity rows the owning session
+    ///   carries. That is the right trade for a view that cannot act.
+    /// - **`revision` is the caller's**, and the caller must pass a value
+    ///   distinct from the snapshot it is replacing: the conversation render
+    ///   cache keys on revision, so reusing the parent's would serve the
+    ///   parent's rendered lines for the child.
+    pub fn from_messages(messages: Vec<Message>, revision: u64) -> Self {
+        Self {
+            messages: SharedMessages::from(messages),
+            events: Arc::from(Vec::<TurnEvent>::new()),
+            // Never refreshed from a session, so there is no fingerprint to
+            // compare against and no reason to copy-on-write.
+            fingerprint: None,
+            revision,
+        }
+    }
+
     pub fn messages(&self) -> &[Message] {
         self.messages.as_slice()
     }
@@ -316,7 +345,7 @@ mod tests {
     use forge_core::LoopConfig;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
-    use forge_types::{ModelResponse, TaskId, ToolCall};
+    use forge_types::{Message, MessageRole, ModelResponse, TaskId, ToolCall};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -328,6 +357,40 @@ mod tests {
             usage: None,
             thinking: None,
         }
+    }
+
+    /// The read-only view a child session is rendered from: a replay's
+    /// messages, no live events, and a revision the caller controls.
+    #[test]
+    fn a_replayed_transcript_carries_messages_and_no_events() {
+        let messages = vec![
+            Message::new(MessageRole::User, "audit the auth deps"),
+            Message::new(MessageRole::Assistant, "checking the manifest"),
+        ];
+
+        let snapshot = TranscriptSnapshot::from_messages(messages, 9);
+
+        assert_eq!(snapshot.messages().len(), 2);
+        assert_eq!(snapshot.messages()[1].content, "checking the manifest");
+        assert!(
+            snapshot.events().is_empty(),
+            "a replay carries no live turn events"
+        );
+        assert_eq!(
+            snapshot.revision(),
+            9,
+            "the caller owns the revision so it can differ from the parent's"
+        );
+    }
+
+    /// An in-flight child has no assistant message yet, and the view still has
+    /// to render — an empty transcript, not a panic.
+    #[test]
+    fn a_replayed_transcript_can_be_empty() {
+        let snapshot = TranscriptSnapshot::from_messages(Vec::new(), 1);
+
+        assert!(snapshot.messages().is_empty());
+        assert!(snapshot.events().is_empty());
     }
 
     /// The strip ages a finished row from `finished_at` and counts a running
