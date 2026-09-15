@@ -754,7 +754,7 @@ async fn footer_focus_hint_is_relevant_to_the_selected_chip() {
 }
 
 #[tokio::test]
-async fn navigation_hints_match_the_active_chrome_surface() {
+async fn files_and_search_focus_do_not_hint_on_the_footer() {
     let (_dir, mut app) = focus_test_app().await;
 
     app.focus_block(FocusBlock::TaskStrip);
@@ -763,15 +763,11 @@ async fn navigation_hints_match_the_active_chrome_surface() {
         Some("↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs")
     );
 
-    app.focus_block(FocusBlock::Files);
-    assert_eq!(
-        app.contextual_hint().as_deref(),
-        Some("↑↓ navigate · Enter open · ⇧Tab search · Esc cancel")
-    );
-
-    app.focus_block(FocusBlock::Search);
-    assert_eq!(
-        app.contextual_hint().as_deref(),
-        Some("Type to filter · Enter open · Esc cancel")
-    );
+    // Files and search leave the footer's activity line alone: the config
+    // chips and the live turn state stay on screen while you navigate them.
+    for block in [FocusBlock::Files, FocusBlock::Search] {
+        app.focus_block(block);
+        assert_eq!(app.focus.block(), block, "{block:?} should take focus");
+        assert_eq!(app.contextual_hint(), None, "{block:?} should not hint");
+    }
 }

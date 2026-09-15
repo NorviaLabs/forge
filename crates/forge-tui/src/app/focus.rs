@@ -256,20 +256,14 @@ impl TuiApp {
                     _ => "Hit Enter ⏎ to change effort".into(),
                 })
             }
+            // The task strip is the one other block that hints: its keys
+            // aren't readable off the rows themselves. Files, search and the
+            // panes leave the footer's activity line alone, so the config
+            // chips and turn state stay visible while you navigate.
             FocusMode::Navigation if self.focus.block() == FocusBlock::TaskStrip => Some(
                 "↑↓ select · Enter attach · Space peek · n new · s stop · d done · Ctrl+E tabs"
                     .into(),
             ),
-            // No `/`-to-search binding exists: `/` typed here falls through
-            // to the composer. Search is one ⇧Tab away (proven by
-            // `tab_cycles_visible_blocks_and_skips_hidden_ones`), and Esc
-            // backs out to the previous block without hiding the pane.
-            FocusMode::Navigation if self.focus.block() == FocusBlock::Files => {
-                Some("↑↓ navigate · Enter open · ⇧Tab search · Esc cancel".into())
-            }
-            FocusMode::Navigation if self.focus.block() == FocusBlock::Search => {
-                Some("Type to filter · Enter open · Esc cancel".into())
-            }
             FocusMode::Navigation => None,
         }
     }
