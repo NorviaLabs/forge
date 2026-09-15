@@ -472,12 +472,16 @@ pub(crate) fn restored_queue_items(
 }
 
 /// A short, human-readable hint for a resumable session — its first user
-/// message, truncated — so a `/resume` list can show more than a raw UUID
-/// and timestamp. Cheap: opens and replays only the one session's journal,
-/// independent of any live `AgentSession` (no tools/model/governance
-/// needed). Returns `None` on any read/replay error or an empty journal —
-/// callers should fall back to showing just the id/timestamp in that case,
-/// never fail the whole listing over one unreadable session.
+/// message — so a `/resume` list can show more than a raw UUID and
+/// timestamp. Delegates to [`forge_types::title_from_prompt`] so a row never
+/// disagrees with the session label the navigator shows, or with the
+/// `forge/<slug>` branch the session would materialize. Cheap: opens and
+/// replays only the one session's journal, independent of any live
+/// `AgentSession` (no tools/model/governance needed). Returns `None` on any
+/// read/replay error or an empty journal — callers should fall back to
+/// showing just the id/timestamp in that case, never fail the whole listing
+/// over one unreadable session. A blank first message is `None` too, not
+/// `title_from_prompt`'s `untitled-session` placeholder.
 pub async fn session_title_hint(
     journal_dir: &Path,
     session_id: forge_types::SessionId,
@@ -485,16 +489,10 @@ pub async fn session_title_hint(
     let journal = Journal::open(journal_dir, session_id).await.ok()?;
     let state = journal.replay(session_id).await.ok()?;
     let first = state.user_messages.into_iter().next()?;
-    let mut title: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX_LEN: usize = 60;
-    if title.chars().count() > MAX_LEN {
-        title = title.chars().take(MAX_LEN).collect::<String>() + "…";
+    if first.trim().is_empty() {
+        return None;
     }
-    if title.is_empty() {
-        None
-    } else {
-        Some(title)
-    }
+    Some(forge_types::title_from_prompt(&first))
 }
 
 /// The replayed conversation of a session this process does not own.
@@ -517,9 +515,46 @@ pub async fn session_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::hash_file;
+    use super::{hash_file, session_title_hint};
+    use forge_durable::{new_session_id, Journal};
     use std::hash::{Hash, Hasher};
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn session_title_hint_matches_the_session_label() {
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("j");
+        let sid = new_session_id();
+        let journal = Journal::open(&journal_dir, sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        journal
+            .append_user_message(sid, "Fix the login bug. Then run tests")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            session_title_hint(&journal_dir, sid).await.as_deref(),
+            Some("fix-the-login-bug")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_title_hint_is_none_without_a_usable_title() {
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("j");
+        let sid = new_session_id();
+        let journal = Journal::open(&journal_dir, sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        journal.append_user_message(sid, "   ").await.unwrap();
+
+        // A blank first message must not leak `untitled-session` into a row.
+        assert_eq!(session_title_hint(&journal_dir, sid).await, None);
+        // An unreadable journal is also just "no hint", never an error.
+        assert_eq!(
+            session_title_hint(&dir.path().join("missing"), new_session_id()).await,
+            None
+        );
+    }
 
     #[tokio::test]
     async fn hash_file_preserves_slice_hash_for_chunked_reads() {

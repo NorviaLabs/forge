@@ -499,7 +499,10 @@ async fn bare_resume_list_shows_title_hint_from_first_user_message() {
         panic!("expected ResumePicker overlay, got {:?}", app.overlay);
     };
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].title.as_deref(), Some("fix the login bug please"));
+    // `/resume` derives its hint from the same naming rule as the session
+    // label, so a resume row agrees with the navigator instead of echoing the
+    // raw first message.
+    assert_eq!(items[0].title.as_deref(), Some("fix-the-login-bug"));
 }
 
 #[tokio::test]
@@ -822,23 +825,16 @@ async fn control_surface_verbs_still_beat_type_to_chat() {
     // type-to-chat never shadows a displayed binding.
     let (_dir, mut app) = focus_test_app().await;
 
-    // `n` at the session strip opens its inline new-session composer, and the
-    // letters that follow belong to that buffer.
+    // `n` at the session strip is a session verb: it must not leak into the
+    // composer as a chat draft.
     app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
-    for c in "task".chars() {
-        app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
-            .await
-            .unwrap();
-    }
-    assert_eq!(app.navigator_new_session.as_deref(), Some("task"));
     assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
     assert!(app.input.text.is_empty());
 
     // `x` at the sidebar stops a background task instead of typing an `x`.
-    app.navigator_new_session = None;
     app.focus_block(FocusBlock::Sidebar);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await

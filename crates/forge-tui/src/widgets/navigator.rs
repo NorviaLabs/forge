@@ -184,8 +184,6 @@ pub struct SessionList<'a> {
     pub focused: bool,
     /// Rendered immediately under the focused row when set.
     pub peek: Option<&'a PeekPanel<'a>>,
-    /// Inline "new session" task buffer; rendered on the bottom row when set.
-    pub new_session: Option<&'a str>,
     /// Session index under the pointer (hover); tints its two lines only.
     pub hover: Option<usize>,
 }
@@ -319,32 +317,6 @@ impl Widget for SessionList<'_> {
                     );
                     y += 1;
                 }
-            }
-        }
-        if let Some(buffer) = self.new_session {
-            let row = area.bottom().saturating_sub(1);
-            if row >= area.y {
-                let prefix = "› ";
-                let room = (area.width as usize).saturating_sub(prefix.chars().count());
-                let text = if buffer.is_empty() {
-                    "type a task to start a session…"
-                } else {
-                    buffer
-                };
-                let style = if buffer.is_empty() {
-                    theme::muted()
-                } else {
-                    theme::text()
-                };
-                buf.set_line(
-                    area.x,
-                    row,
-                    &Line::from(vec![
-                        Span::styled(prefix, theme::accent_style()),
-                        Span::styled(truncate(text, room), style),
-                    ]),
-                    area.width,
-                );
             }
         }
     }
@@ -688,7 +660,6 @@ mod tests {
                         rows: &rows,
                         focused: true,
                         peek: Some(&peek),
-                        new_session: None,
                         hover: None,
                     },
                     frame.area(),
@@ -719,7 +690,6 @@ mod tests {
                         rows: &rows,
                         focused: true,
                         peek: None,
-                        new_session: None,
                         hover: None,
                     },
                     frame.area(),
@@ -750,7 +720,6 @@ mod tests {
                         rows: &rows,
                         focused: true,
                         peek: None,
-                        new_session: None,
                         hover: None,
                     },
                     frame.area(),

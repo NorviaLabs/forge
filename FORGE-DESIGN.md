@@ -456,8 +456,9 @@ surface. The old top task strip is superseded (`§11`).
   user-facing: `● needs you`, `◐ working`, `○ idle`. Rows carry the label and a
   short qualifier; branch, worktree and ownership are never shown here.
   Selection (`›`) is the only cursor; `Enter` attaches, `Space` peeks and
-  replies inline, `n` opens an inline composer whose typed task becomes the
-  session's first prompt (and names it), `s` stops, `d` marks done, `r` renames.
+  replies inline, `n` creates a session and opens its composer (the session is
+  named from the first prompt submitted in that composer), `s` stops, `d` marks
+  done, `r` renames.
 - **Files tab** is today's explorer, unchanged.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
@@ -937,7 +938,10 @@ initiating worktree's committed `HEAD`.
   are caught equally.
 - A read-only / research session therefore adds **no ref**. The branch is named
   from the session label (disambiguated with the short session id on collision),
-  never a random UUID.
+  never a random UUID. A session created prompt-less, before its composer has
+  been used, is unnamed only until the first prompt is submitted; the branch
+  materializes on that first turn's first filesystem change, by which point the
+  session has its real name — so the temporary unnamed state never reaches Git.
 - While branchless, the session's identity is its worktree path plus the base
   commit; startup reconciliation keeps it active. Cleanup verifies the worktree
   is still the session's — by branch once branched, or still-detached before.

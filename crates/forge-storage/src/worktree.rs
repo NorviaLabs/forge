@@ -491,6 +491,27 @@ mod tests {
         assert_eq!(sanitize_label("---"), "task");
         let long = "a".repeat(100);
         assert_eq!(sanitize_label(&long).len(), 40);
+
+        // A label already in the session naming rule's shape — lowercase
+        // alphanumerics joined by single hyphens — must survive byte for byte.
+        // `session_branch_slug` is the last step between a session label and
+        // the `forge/<slug>` ref, so a silent rewrite here would rename the
+        // operator's branch out from under the confirmed label.
+        for slug in [
+            "foo-bar-baz",
+            "fix-the-parser",
+            "rename-the-parser",
+            "fix-the-login-bug",
+            "untitled-session",
+            "v1-2-3",
+        ] {
+            assert_eq!(sanitize_label(slug), slug, "{slug:?} was rewritten");
+        }
+
+        // `_` is permitted, so an underscored label is passed through rather
+        // than folded to `-`: subagent labels (the other caller) may contain it.
+        assert_eq!(sanitize_label("foo_bar"), "foo_bar");
+        assert_eq!(sanitize_label("foo_bar-baz"), "foo_bar-baz");
     }
 
     #[test]
