@@ -45,11 +45,13 @@ pub struct FooterActivity {
 #[derive(Debug, Clone, Default)]
 pub struct FooterModel {
     /// Contextual action hints. When `hint_replaces_row` is set (blocking
-    /// dialog/HITL states) the hint takes over the whole row; the focused
-    /// footer's per-chip hint instead shares the row, swapping out only the
-    /// right-side activity so the chips stay visible.
+    /// dialog/HITL states) the hint takes over the whole row; otherwise it
+    /// shares the row with the chips, swapping out only the right-side
+    /// activity so the chips stay visible — the task strip's session hint
+    /// (bold keys) or the focused chip's own action.
     pub hints: String,
-    /// Blocking hints replace the entire row; footer-focus hints don't.
+    /// Blocking hints replace the entire row; the footer's per-chip hint and
+    /// the task strip's session hint share it with the chips.
     pub hint_replaces_row: bool,
     /// Session hint (task-strip bindings) sharing the row with the chips:
     /// rendered in the `key verb` grammar with bold keys, degraded to fit.
