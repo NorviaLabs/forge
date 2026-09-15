@@ -1459,10 +1459,13 @@ async fn session_verbs_do_not_fire_from_the_tab_row() {
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
+    // The row swallows every bare key, so `n` is never a session verb there.
+    // A leaked printable would surface as a chat draft.
     assert!(
-        app.navigator_new_session.is_none(),
-        "`n` is inert on the row"
+        app.input.text.is_empty(),
+        "`n` is inert on the row and must not start a draft"
     );
+    assert!(app.navigator_tab_row_focused, "the row keeps the keyboard");
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();

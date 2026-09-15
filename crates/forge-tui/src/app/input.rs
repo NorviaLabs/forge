@@ -173,10 +173,9 @@ impl TuiApp {
             return Ok(true);
         }
         // `↑` at the top of the list reaches the navigator's tab row instead of
-        // being a no-op (`FORGE-DESIGN §8.3`). The inline composer and an open
-        // peek own `↑` first, so this fires on the press after those close.
-        if self.navigator_new_session.is_none()
-            && self.navigator_peek.is_none()
+        // being a no-op (`FORGE-DESIGN §8.3`). An open peek owns `↑` first, so
+        // this fires on the press after the peek closes.
+        if self.navigator_peek.is_none()
             && self.task_strip_selection == 0
             && self.navigator_tab_row_available()
             && key.modifiers.is_empty()
