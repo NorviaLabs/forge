@@ -706,29 +706,30 @@ impl TuiApp {
     }
 
     fn clamp_tasks_selection(&mut self) {
-        self.task_selection
-            .clamp_tasks(self.selected_background_tasks().len());
+        let now = chrono::Utc::now();
+        let len = crate::tasks_strip::ordered_live(&self.selected_background_tasks(), now).len();
+        self.task_selection.clamp_tasks(len);
     }
 
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
-        self.task_selection
-            .move_tasks(self.selected_background_tasks().len(), delta);
+        let now = chrono::Utc::now();
+        let len = crate::tasks_strip::ordered_live(&self.selected_background_tasks(), now).len();
+        self.task_selection.move_tasks(len, delta);
     }
 
-    /// Cancel the background task at the currently selected row. Rows are
-    /// sorted by id ascending, matching `tasks_lines`'s render order.
+    /// Cancel the background task at the currently selected row. Rows follow
+    /// the strip's draw order (state rank, then id), not raw id ascending.
     pub(super) async fn cancel_selected_task(&mut self) {
         let Some(idx) = self.task_selection.task() else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut ids: Vec<_> = self
-            .selected_background_tasks()
-            .iter()
-            .map(|t| t.id)
-            .collect();
-        ids.sort_by_key(|id| id.0);
-        let Some(id) = ids.get(idx).copied() else {
+        let tasks = self.selected_background_tasks();
+        let now = chrono::Utc::now();
+        let Some(id) = crate::tasks_strip::ordered_live(&tasks, now)
+            .get(idx)
+            .map(|(_, id, _)| *id)
+        else {
             self.clamp_tasks_selection();
             return;
         };
@@ -769,23 +770,14 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut ids: Vec<_> = self
-            .selected_background_tasks()
-            .iter()
-            .map(|task| task.id)
-            .collect();
-        ids.sort_by_key(|id| id.0);
-        let Some(id) = ids.get(idx).copied() else {
+        let tasks = self.selected_background_tasks();
+        let ordered_now = chrono::Utc::now();
+        let ordered = crate::tasks_strip::ordered_live(&tasks, ordered_now);
+        let Some(task) = ordered.get(idx).map(|(_, _, task)| (*task).clone()) else {
             self.clamp_tasks_selection();
             return;
         };
-        let Some(task) = self
-            .selected_background_tasks()
-            .into_iter()
-            .find(|task| task.id == id)
-        else {
-            return;
-        };
+        let id = task.id;
         let name = background_task_name(&task.label, id);
         let Some(session_id) = task.child_session_id else {
             // Shell tasks have no session of their own to show.
@@ -900,23 +892,16 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut ids: Vec<_> = self
-            .selected_background_tasks()
-            .iter()
-            .map(|t| t.id)
-            .collect();
-        ids.sort_by_key(|id| id.0);
-        let Some(id) = ids.get(idx).copied() else {
+        let tasks = self.selected_background_tasks();
+        let ordered_now = chrono::Utc::now();
+        let ordered = crate::tasks_strip::ordered_live(&tasks, ordered_now);
+        let Some(task) = ordered.get(idx).map(|(_, _, task)| (*task).clone()) else {
             return;
         };
+        let id = task.id;
         // Name the task, not its id: the operator is answering *this* agent,
         // and with several in flight "#4" is not enough to be sure which.
-        let name = self
-            .selected_background_tasks()
-            .iter()
-            .find(|task| task.id == id)
-            .map(|task| background_task_name(&task.label, id))
-            .unwrap_or_else(|| background_task_name("", id));
+        let name = background_task_name(&task.label, id);
         let verb = match decision {
             HitlDecision::Approve => "approve",
             HitlDecision::Deny => "deny",
@@ -951,18 +936,23 @@ impl TuiApp {
     /// operator can send it to the model explicitly. Completions are no longer
     /// injected as queued user prompts (#589); this is the deliberate hand-off.
     /// Appends rather than replaces, so an in-progress draft survives.
+    ///
+    /// Indexing follows the strip's draw order (state rank, then id); a row
+    /// that retired on its TTL is gone from the strip and has nothing to
+    /// attach, so `i` clamps the selection to what is still drawn.
     pub(super) fn attach_selected_task(&mut self) {
         let Some(idx) = self.task_selection.task() else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut tasks = self.selected_background_tasks();
-        tasks.sort_by_key(|task| task.id.0);
-        let Some(task) = tasks.get(idx) else {
+        let tasks = self.selected_background_tasks();
+        let ordered_now = chrono::Utc::now();
+        let ordered = crate::tasks_strip::ordered_live(&tasks, ordered_now);
+        let Some(task) = ordered.get(idx).map(|(_, _, task)| (*task).clone()) else {
             self.clamp_tasks_selection();
             return;
         };
-        let Some(text) = background_task_result_text(task) else {
+        let Some(text) = background_task_result_text(&task) else {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 format!("task #{} hasn't finished yet", task.id.0),
