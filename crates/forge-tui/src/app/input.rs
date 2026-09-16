@@ -725,6 +725,31 @@ impl TuiApp {
                     }
                 } else if succeeded {
                     self.poll_supervisor_events();
+                    // The roster echo may lag the close reply, so reconcile the
+                    // selection locally: the closed session is gone, the next
+                    // live sibling is selected, and the composer is usable
+                    // immediately instead of after the deferred roster lands.
+                    let closed_id = self.selected_session_id;
+                    let stale_close = self
+                        .supervisor
+                        .as_ref()
+                        .is_some_and(|supervisor| supervisor.snapshots.contains_key(&closed_id));
+                    if stale_close {
+                        let next = self.supervisor.as_ref().and_then(|supervisor| {
+                            supervisor
+                                .snapshots
+                                .values()
+                                .find(|snapshot| {
+                                    snapshot.task.session_id != closed_id
+                                        && snapshot.task.lifecycle
+                                            == forge_session::SessionLifecycle::Active
+                                })
+                                .map(|snapshot| snapshot.task.session_id)
+                        });
+                        if let Some(next) = next {
+                            self.select_supervised_session(next);
+                        }
+                    }
                     self.status_state.message = "session closed".into();
                 }
             }
