@@ -628,7 +628,11 @@ impl TuiApp {
     }
 
     pub(super) fn paste_clipboard_image(&mut self) {
-        match crate::clipboard_image::read_os_clipboard_image() {
+        // The reader's transient file goes to the system temp directory, never
+        // into the workspace: it is deleted before the reader returns, and a
+        // crash mid-read leaves nothing in the repository.
+        let scratch = std::env::temp_dir();
+        match crate::clipboard_image::read_os_clipboard_image(&scratch) {
             Ok(bytes) => self.attach_image_bytes(&bytes),
             Err(err) => self.set_feedback(FeedbackSeverity::Warn, err),
         }
