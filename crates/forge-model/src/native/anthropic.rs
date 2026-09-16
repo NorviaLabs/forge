@@ -16,6 +16,34 @@ struct ToolUseAccumulator {
     start_sent: bool,
 }
 
+/// How a Messages-protocol request authenticates and identifies itself.
+pub(super) enum MessagesAuth {
+    /// Anthropic's own API: `x-api-key` plus the interleaved-thinking beta.
+    Anthropic { api_key: String },
+    /// OpenCode's Anthropic-compatible gateway (`/zen/go/v1/messages`):
+    /// Bearer auth, the client's user agent, and the routing session header.
+    Opencode {
+        api_key: String,
+        session_id: String,
+        user_agent: &'static str,
+    },
+}
+
+/// `{base}/messages`, tolerating a base that already ends in `/v1`.
+pub(super) fn messages_endpoint(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if base.ends_with("/v1") {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/v1/messages")
+    }
+}
+
+/// The bare model id the wire expects, dropping Forge's provider prefix.
+fn wire_model_id(model: &str) -> &str {
+    model.split_once('/').map(|(_, id)| id).unwrap_or(model)
+}
+
 pub(super) async fn complete(
     client: &NativeModelClient,
     req: ModelRequest,
@@ -30,14 +58,32 @@ pub(super) async fn complete(
         .clone()
         .or_else(|| client.injected_or_env(&["ANTHROPIC_API_BASE"]))
         .unwrap_or_else(|| "https://api.anthropic.com".into());
-    let endpoint = if base_url.trim_end_matches('/').ends_with("/v1") {
-        format!("{}/messages", base_url.trim_end_matches('/'))
-    } else {
-        format!("{}/v1/messages", base_url.trim_end_matches('/'))
-    };
+    let endpoint = messages_endpoint(&base_url);
+    complete_messages(
+        client,
+        req,
+        model,
+        tx,
+        endpoint,
+        MessagesAuth::Anthropic { api_key },
+    )
+    .await
+}
+
+/// POST an Anthropic Messages request and stream the reply. Shared by the
+/// Anthropic transport and OpenCode's Messages-compatible gateway, which
+/// differ only in endpoint and auth.
+pub(super) async fn complete_messages(
+    client: &NativeModelClient,
+    req: ModelRequest,
+    model: &str,
+    tx: Option<StreamEventTx>,
+    endpoint: String,
+    auth: MessagesAuth,
+) -> Result<ModelResponse, ModelError> {
     let (system, messages) = messages_body(&req, Some(client));
     let mut body = json!({
-        "model": model.trim_start_matches("anthropic/"),
+        "model": wire_model_id(model),
         "max_tokens": 8192,
         "messages": messages,
         "stream": true
@@ -65,12 +111,24 @@ pub(super) async fn complete(
     let reasoning_effort = req.reasoning_effort.as_deref();
     apply_reasoning_settings(&mut body, model, reasoning_effort, req.thinking_enabled);
 
-    let response = client
+    let request = client
         .http
         .post(endpoint)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("anthropic-beta", "interleaved-thinking-2025-05-14")
+        .header("anthropic-version", "2023-06-01");
+    let request = match &auth {
+        MessagesAuth::Anthropic { api_key } => request
+            .header("x-api-key", api_key)
+            .header("anthropic-beta", "interleaved-thinking-2025-05-14"),
+        MessagesAuth::Opencode {
+            api_key,
+            session_id,
+            user_agent,
+        } => request
+            .header("User-Agent", *user_agent)
+            .header("x-opencode-session", session_id.as_str())
+            .bearer_auth(api_key),
+    };
+    let response = request
         .json(&body)
         .send()
         .await
@@ -394,7 +452,7 @@ fn apply_reasoning_settings(
     if effort == "minimal" {
         effort = "low".into();
     }
-    let model_id = model.trim_start_matches("anthropic/");
+    let model_id = wire_model_id(model);
     let supported = catalog_supports_anthropic_effort(model).unwrap_or_else(|| {
         [
             "sonnet-5",
@@ -440,6 +498,18 @@ mod tests {
         );
         assert_eq!(body["thinking"]["type"], "disabled");
         assert_eq!(body["output_config"]["effort"], "high");
+    }
+
+    #[test]
+    fn messages_endpoint_appends_v1_only_when_absent() {
+        assert_eq!(
+            messages_endpoint("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            messages_endpoint("https://opencode.ai/zen/go/v1/"),
+            "https://opencode.ai/zen/go/v1/messages"
+        );
     }
 
     #[test]

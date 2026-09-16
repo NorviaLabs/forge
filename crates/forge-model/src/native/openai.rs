@@ -5,7 +5,7 @@ use forge_types::{ModelResponse, ModelStreamEvent, ToolCall, Usage};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::{process_sse_lines, NativeModelClient};
+use super::{anthropic, process_sse_lines, NativeModelClient};
 use crate::normalize::tools_to_openai_functions;
 use crate::prompt_cache::{usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
@@ -50,8 +50,20 @@ pub(super) async fn complete(
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
     let route = route(client, model)?;
-    if is_opencode_responses_model(model) {
+    if is_opencode_responses_model(model) || opencode_go_responses_model(model) {
         return complete_responses(client, req, route, tx).await;
+    }
+    if opencode_go_messages_model(model) {
+        // OpenCode Go serves these models on the Anthropic Messages API; the
+        // OpenAI-compatible body would be rejected upstream.
+        let endpoint = anthropic::messages_endpoint(&route.base_url);
+        let api_key = route.api_key.clone().ok_or(ModelError::MissingApiKey)?;
+        let auth = anthropic::MessagesAuth::Opencode {
+            api_key,
+            session_id: opencode_session_id(&req).to_string(),
+            user_agent: OPENCODE_USER_AGENT,
+        };
+        return anthropic::complete_messages(client, req, model, tx, endpoint, auth).await;
     }
     let mut body = json!({
         "model": route.model,
@@ -197,6 +209,36 @@ fn is_opencode_responses_model(model: &str) -> bool {
     matches!(prefix, "opencode" | "opencode-go" | "opencode-zen")
         && (model_id.starts_with("muse-spark-1.2-contributor")
             || model_id.starts_with("muse-spark-1.3-contributor"))
+}
+
+// OpenCode Go serves each model on one of three endpoints, but its `/models`
+// listing exposes no protocol metadata, so the endpoint is mapped by id from
+// the table OpenCode publishes. Everything unlisted stays on chat/completions.
+const OPENCODE_GO_MESSAGES_MODELS: &[&str] = &[
+    "union-alpha",
+    "minimax-m3",
+    "minimax-m2.7",
+    "minimax-m2.5",
+    "qwen3.8-max",
+    "qwen3.8-flash",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+];
+
+const OPENCODE_GO_RESPONSES_MODELS: &[&str] = &["grok-4.6", "gpt-5.6-luna"];
+
+fn opencode_go_model_id(model: &str) -> Option<&str> {
+    let (prefix, model_id) = model.split_once('/')?;
+    matches!(prefix, "opencode-go" | "opencode").then_some(model_id)
+}
+
+fn opencode_go_messages_model(model: &str) -> bool {
+    opencode_go_model_id(model).is_some_and(|id| OPENCODE_GO_MESSAGES_MODELS.contains(&id))
+}
+
+fn opencode_go_responses_model(model: &str) -> bool {
+    opencode_go_model_id(model).is_some_and(|id| OPENCODE_GO_RESPONSES_MODELS.contains(&id))
 }
 
 async fn complete_responses(
@@ -1093,6 +1135,101 @@ mod tests {
         assert!(raw_request
             .to_ascii_lowercase()
             .contains("x-opencode-session: session-muse"));
+    }
+
+    #[tokio::test]
+    async fn sends_union_alpha_to_opencode_go_messages() {
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n"
+        );
+        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[
+            ("OPENCODE_API_BASE".into(), format!("{base_url}/v1")),
+            ("OPENCODE_API_KEY".into(), "opencode-secret".into()),
+        ]);
+        let mut request = request("opencode-go/union-alpha");
+        request.route_id = Some("opencode-go".into());
+        request.session_id = Some("session-union".into());
+
+        let response = client.complete(request).await.unwrap();
+        assert_eq!(response.text, "hi");
+        assert_eq!(response.usage.unwrap().completion_tokens, 4);
+
+        let raw_request = request_rx.await.unwrap();
+        assert!(
+            raw_request.starts_with("POST /v1/messages HTTP/1.1"),
+            "{raw_request}"
+        );
+        assert!(
+            raw_request.contains("\"model\":\"union-alpha\""),
+            "{raw_request}"
+        );
+        assert!(!raw_request.contains("/chat/completions"));
+        let lower = raw_request.to_ascii_lowercase();
+        assert!(lower.contains("authorization: bearer opencode-secret"));
+        assert!(lower.contains("x-opencode-session: session-union"));
+        assert!(lower.contains(&format!("user-agent: forge/{}", env!("CARGO_PKG_VERSION"))));
+        assert!(
+            !lower.contains("x-api-key"),
+            "OpenCode auth must be Bearer, not x-api-key: {raw_request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sends_grok_to_opencode_go_responses() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[
+            ("OPENCODE_API_BASE".into(), format!("{base_url}/v1")),
+            ("OPENCODE_API_KEY".into(), "opencode-secret".into()),
+        ]);
+        let mut request = request("opencode-go/grok-4.6");
+        request.route_id = Some("opencode-go".into());
+        request.session_id = Some("session-grok".into());
+
+        let response = client.complete(request).await.unwrap();
+        assert_eq!(response.text, "hello");
+
+        let raw_request = request_rx.await.unwrap();
+        assert!(
+            raw_request.starts_with("POST /v1/responses HTTP/1.1"),
+            "{raw_request}"
+        );
+        assert!(raw_request.contains("\"model\":\"grok-4.6\""));
+        assert!(!raw_request.contains("/chat/completions"));
+        assert!(raw_request
+            .to_ascii_lowercase()
+            .contains("x-opencode-session: session-grok"));
+    }
+
+    #[test]
+    fn opencode_go_models_map_to_their_endpoint() {
+        assert!(opencode_go_messages_model("opencode-go/union-alpha"));
+        assert!(opencode_go_messages_model("opencode-go/minimax-m3"));
+        assert!(opencode_go_messages_model("opencode-go/qwen3.7-plus"));
+        assert!(opencode_go_responses_model("opencode-go/grok-4.6"));
+        assert!(opencode_go_responses_model("opencode-go/gpt-5.6-luna"));
+        // Chat models and other providers' routes keep the default endpoint.
+        assert!(!opencode_go_messages_model("opencode-go/kimi-k3"));
+        assert!(!opencode_go_responses_model("opencode-go/kimi-k3"));
+        assert!(!opencode_go_messages_model("opencode-zen/union-alpha"));
+        assert!(!opencode_go_messages_model("openai/gpt-5"));
     }
 
     #[tokio::test]

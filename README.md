@@ -168,6 +168,11 @@ For OAuth providers, use `/connect` inside Forge. For Ollama, start the local
 Ollama service first, then choose the Ollama route and a locally available
 model.
 
+OpenCode Go serves its models on more than one protocol. Forge routes each
+model to the endpoint OpenCode publishes for it — Chat Completions, Responses,
+or the Anthropic Messages API — so models such as `opencode-go/union-alpha`
+work without extra configuration.
+
 On Chat Completions routes (including OpenCode Go's DeepSeek models), a
 provider output limit or a stream that ends without a completion signal is
 reported as an incomplete-turn error rather than a successful answer. Use
