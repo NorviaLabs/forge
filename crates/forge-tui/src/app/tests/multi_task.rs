@@ -2499,6 +2499,123 @@ async fn a_narrow_navigator_falls_back_to_a_status_chip() {
         .unwrap();
 }
 
+/// The chip is one row: its spinner is the only way a collapsed column still
+/// separates "work in flight" from "work waiting on you" (`§482`), and it steps
+/// on the same clock as the rows it replaces.
+#[tokio::test]
+async fn the_collapsed_chip_keeps_the_working_spinner_moving() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Working;
+    app.session_chrome[0].secondary = Some("running".to_string());
+
+    app.session_row_step = 0;
+    let first = render_app_text(&mut app, 100, 40);
+    app.session_row_step = 3;
+    let second = render_app_text(&mut app, 100, 40);
+
+    assert!(first.contains("working"), "chip missing: {first}");
+    assert!(
+        crate::widgets::turn_line::SPINNER_FRAMES
+            .iter()
+            .any(|frame| first.contains(frame)),
+        "the chip carries no spinner frame: {first}"
+    );
+    assert_ne!(first, second, "the chip's spinner did not step");
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A row's marker comes from what the session did, not from whether a turn is
+/// live. Reading it from the live-turn flags alone rendered every finished
+/// session `○`, so a turn that failed and a turn that finished cleanly looked
+/// identical in the column the operator scans.
+#[tokio::test]
+async fn a_finished_session_keeps_the_outcome_its_marker_reports() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.session_chrome[0].label = "Fix login redirect".into();
+    app.session_chrome[0].attention = false;
+
+    let row_of = |rendered: &str| {
+        rendered
+            .lines()
+            .find(|line| line.contains("Fix login redirect"))
+            .expect("session row")
+            .to_string()
+    };
+
+    app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Failed;
+    app.session_chrome[0].secondary = Some("failed".into());
+    let failed = row_of(&render_app_text(&mut app, 120, 40));
+    assert!(failed.contains('✗'), "a failed session: {failed:?}");
+    assert!(
+        !failed.contains('○'),
+        "a failed session still renders the idle ring: {failed:?}"
+    );
+
+    app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Completed;
+    app.session_chrome[0].secondary = Some("completed".into());
+    let completed = row_of(&render_app_text(&mut app, 120, 40));
+    assert!(
+        completed.contains('✓'),
+        "a completed session: {completed:?}"
+    );
+    assert!(
+        !completed.contains('✗'),
+        "a completed session still renders the failure mark: {completed:?}"
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A row that says "running" has to look like it. The marker steps one frame
+/// per event-loop tick, so two frames of the same app show two different
+/// glyphs — and it steps off the tick, not the wall clock, so the motion stops
+/// with the work.
+#[tokio::test]
+async fn a_running_session_row_turns_its_spinner() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.session_chrome[0].label = "Fix login redirect".into();
+    app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Working;
+    app.session_chrome[0].secondary = Some("running".into());
+    app.session_chrome[0].attention = false;
+
+    // The marker cell is the char before the space that precedes the label.
+    let glyph_of = |rendered: &str| {
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("Fix login redirect"))
+            .expect("session row");
+        let label = line.find("Fix login redirect").expect("label");
+        line[..label].chars().rev().nth(1).expect("marker cell")
+    };
+
+    let first = glyph_of(&render_app_text(&mut app, 120, 40));
+    let second = glyph_of(&render_app_text(&mut app, 120, 40));
+    for glyph in [first, second] {
+        assert!(
+            crate::widgets::turn_line::SPINNER_FRAMES
+                .iter()
+                .any(|frame| frame.starts_with(glyph)),
+            "{glyph:?} is not a frame the running marker speaks"
+        );
+    }
+    assert_ne!(first, second, "the running row is frozen");
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// Regression: a UI action that mutates a busy Session must not block the
 /// terminal owner. Model selection used to await command completion, so a
 /// running turn deferred it while the TUI stopped reading keys and painting;

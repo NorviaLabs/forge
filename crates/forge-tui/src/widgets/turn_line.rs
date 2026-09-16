@@ -64,14 +64,19 @@ fn elapsed(model: &TurnLineModel) -> String {
     forge_transcript::format_elapsed_tenths(model.elapsed_secs)
 }
 
+/// The running marker's frame set: heavy braille, one cell per frame.
+///
+/// Shared with the navigator's session rows, so the two surfaces that mean
+/// "work is happening" cannot drift apart. One step per event-loop tick.
+pub(crate) const SPINNER_FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+
 /// Build the line, right-aligning the interrupt hint to `width`.
 ///
 /// The leading marker is a braille spinner frame (`⣾⣽⣻⢿⡿⣟⣯⣷`),
 /// stepped once per 200ms event-loop tick. Every frame is one cell wide in
 /// the activity token, so the row never shifts width.
 pub fn turn_line(model: &TurnLineModel, width: usize, millis: u128) -> Line<'static> {
-    const FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
-    let frame = FRAMES[(millis / 200 % FRAMES.len() as u128) as usize];
+    let frame = SPINNER_FRAMES[(millis / 200 % SPINNER_FRAMES.len() as u128) as usize];
     let marker_style = theme::activity().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled(frame, marker_style),

@@ -49,6 +49,15 @@ impl SessionChromeItem {
     pub(crate) fn is_working(&self) -> bool {
         !self.attention && matches!(self.secondary.as_deref(), Some("running") | Some("queued"))
     }
+
+    /// A prompt waiting for the current turn to finish. This sits on a
+    /// different axis from the lifecycle — the task itself is still `Ready`
+    /// while a queued prompt waits — so it is asked for separately rather than
+    /// inferred from `lifecycle`. `is_working` is true here too; a row that
+    /// renders both should ask this one first.
+    pub(crate) fn is_queued(&self) -> bool {
+        !self.attention && self.secondary.as_deref() == Some("queued")
+    }
 }
 
 /// The single source of truth for a session's "needs you" state, shared by the
@@ -1881,6 +1890,11 @@ pub struct TuiApp {
     pub(crate) quit_failure: Option<String>,
     pub(crate) startup_resume: StartupResumeState,
     pub(crate) busy_state: BusyState,
+    /// How far the session rows' running spinner has stepped. The rows show
+    /// every session, not only the workspace-visible one, so this cannot ride
+    /// on [`BusyState`] — that clock only runs while the *visible* session has
+    /// a turn in flight.
+    pub(crate) session_row_step: usize,
     pub(crate) status_state: StatusMessageState,
     pub(crate) runtime: TuiRuntimeConfig,
     pub(crate) connect: connect::ConnectionModel,

@@ -2,12 +2,15 @@
 //! §7.7`). This module owns the tab bar and the session list; the file tree is
 //! the existing explorer widget, composed by the renderer under the tab bar.
 //!
-//! Only three session states are user-facing here — `● needs you`,
-//! `◐ working`, `○ idle`. Branch, worktree and ownership never appear.
+//! Every session state is user-facing here — `● needs you`, `⣾ working`,
+//! `⇥ queued`, `○ idle`, `✓ completed`, `✗ failed`, `■ cancelled`,
+//! `∅ interrupted` ([`SessionRowState`]). Branch, worktree and ownership never
+//! appear.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Widget};
@@ -51,12 +54,108 @@ impl NavigatorRowStop {
     }
 }
 
+/// One session row's state, as the list renders it.
+///
+/// The four states whose marker already means the same thing here and in the
+/// status bar borrow it from [`TurnLifecycle`], so a change to that table
+/// reaches both surfaces at once. The other four are the list's own:
+/// `Waiting` and `Working` because the list is where the operator scans them
+/// and it carries a mark for each (`●`, the turn line's spinner) where the
+/// status bar carries a word; `Idle` because a row's state cell is never
+/// blank; and `Queued` because a queued prompt exists while the task itself is
+/// still `Ready`, so it has no `TaskLifecycle` equivalent at all.
+///
+/// Every state has a different glyph: two states sharing a marker is how this
+/// list came to render `failed` as `○`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRowState {
+    /// No active turn.
+    Idle,
+    /// A turn is running.
+    Working,
+    /// A turn is running but stopped for the operator.
+    Waiting,
+    /// A prompt waiting for the current turn to finish.
+    Queued,
+    /// Turn finished with a final answer.
+    Completed,
+    /// Turn finished in failure, including retry exhaustion.
+    Failed,
+    /// Operator cancelled the in-flight turn.
+    Cancelled,
+    /// Persisted active task with no recoverable runtime.
+    Interrupted,
+}
+
+impl SessionRowState {
+    /// Map the session's lifecycle. Unknown future lifecycles read as
+    /// `Interrupted` — never as idle or working, which would claim a runtime
+    /// Forge cannot confirm.
+    ///
+    /// The live-turn flags outrank this: see the renderer, which prefers
+    /// `Waiting` and `Working` over whatever the lifecycle last recorded.
+    pub fn from_lifecycle(lifecycle: forge_types::TaskLifecycle) -> Self {
+        match crate::widgets::TurnLifecycle::from_task_lifecycle(lifecycle) {
+            crate::widgets::TurnLifecycle::Ready => Self::Idle,
+            crate::widgets::TurnLifecycle::Working => Self::Working,
+            crate::widgets::TurnLifecycle::Waiting => Self::Waiting,
+            crate::widgets::TurnLifecycle::Completed => Self::Completed,
+            crate::widgets::TurnLifecycle::Failed => Self::Failed,
+            crate::widgets::TurnLifecycle::Cancelled => Self::Cancelled,
+            crate::widgets::TurnLifecycle::Interrupted => Self::Interrupted,
+        }
+    }
+
+    /// The one-cell marker for this state.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Idle => "○",
+            // The turn line's spinner, held at its first frame. The widget
+            // steps it per row; see `SessionList::step`.
+            Self::Working => Self::spinner_frame(0),
+            Self::Waiting => "●",
+            Self::Queued => "⇥",
+            Self::Completed => crate::widgets::TurnLifecycle::Completed.symbol(),
+            Self::Failed => crate::widgets::TurnLifecycle::Failed.symbol(),
+            Self::Cancelled => crate::widgets::TurnLifecycle::Cancelled.symbol(),
+            Self::Interrupted => crate::widgets::TurnLifecycle::Interrupted.symbol(),
+        }
+    }
+
+    /// The running marker's frame `step` steps into, from the turn line's own
+    /// set — the row and the live turn it is running speak one vocabulary.
+    pub fn spinner_frame(step: usize) -> &'static str {
+        let frames = crate::widgets::turn_line::SPINNER_FRAMES;
+        frames[step % frames.len()]
+    }
+
+    /// The marker's style. Selection overrides this — see `SessionList`.
+    pub fn style(self) -> ratatui::style::Style {
+        match self {
+            // The turn line's active-work hue, so the row and the turn it is
+            // running read as the same activity.
+            Self::Working => theme::activity().add_modifier(Modifier::BOLD),
+            Self::Idle => crate::widgets::TurnLifecycle::Ready.style(),
+            Self::Waiting => crate::widgets::TurnLifecycle::Waiting.style(),
+            Self::Queued => theme::info(),
+            Self::Completed => crate::widgets::TurnLifecycle::Completed.style(),
+            Self::Failed => crate::widgets::TurnLifecycle::Failed.style(),
+            Self::Cancelled => crate::widgets::TurnLifecycle::Cancelled.style(),
+            Self::Interrupted => crate::widgets::TurnLifecycle::Interrupted.style(),
+        }
+    }
+
+    /// Whether this state is asking the operator for something.
+    pub fn needs_you(self) -> bool {
+        self == Self::Waiting
+    }
+}
+
 /// One session's row in the list. Two visual lines: identity, then qualifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRow {
-    /// `●` needs you · `◐` working · `○` idle.
-    pub glyph: char,
-    pub need: bool,
+    /// What this row is doing; carries the marker and its style.
+    pub state: SessionRowState,
     /// `None` renders a dimmer qualifier (archived/idle).
     pub label: String,
     pub qualifier: String,
@@ -300,7 +399,17 @@ pub struct SessionList<'a> {
     pub peek: Option<&'a PeekPanel<'a>>,
     /// Session index under the pointer (hover); tints its two lines only.
     pub hover: Option<usize>,
+    /// How far the running rows' spinner has stepped. Advanced by the event
+    /// loop, never by the wall clock, so pausing work pauses the motion.
+    pub step: usize,
 }
+
+/// Where a row's text begins: the prefix is `bar marker space glyph space`,
+/// all five cells reserved on every row, selected or not (`§604`'s
+/// pre-reservation rule, which hover already follows). Only the label is
+/// elastic, so no state — selection, hover, expansion — can move another row's
+/// label column.
+pub(crate) const TEXT_COL: usize = 5;
 
 impl Widget for SessionList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
@@ -314,121 +423,166 @@ impl Widget for SessionList<'_> {
                 break;
             }
             let hovered = self.hover == Some(index);
-            let (glyph_style, label_style) = if row.need {
-                (theme::warn(), theme::text())
+            // The peek hangs under the row it belongs to. Its height is decided
+            // here, before anything is painted, because a frame costs a line
+            // above the row and a line below it — and a half-drawn box is worse
+            // than no box, so the frame is drawn only when the whole block fits.
+            let peek = self.peek.filter(|_| row.focused && self.focused);
+            let peek_height = peek.map_or(0usize, |panel| panel.lines.len() + 3);
+            let framed = peek.is_some() && (y as usize) + 4 + peek_height <= bottom as usize;
+            let frame_top = y;
+            if framed {
+                y += 1;
+            }
+            // The active block owns the selection treatment; a selection that
+            // lost the keyboard keeps the bar and the weight step and gives up
+            // the ground (`§8.5`). An expanded row's frame replaces both.
+            let active_selection = row.selected && self.focused && !framed;
+            // Selection is the bar plus the ground. The cursor cell is
+            // disclosure, not selection (`D3`): `›` collapsed, `⌄` expanded,
+            // and `›` again under the pointer, which is `§8.6`'s non-colour
+            // signal for a hover.
+            let expanded = row.focused && self.focused && self.peek.is_some();
+            let marker = if expanded {
+                Span::styled("⌄", theme::active_panel_border())
+            } else if (row.focused && self.focused) || hovered {
+                Span::styled("›", theme::active_panel_border())
             } else {
-                (theme::muted(), theme::text_secondary())
+                Span::raw(" ")
+            };
+            // The bar yields the gutter to the frame when the row is expanded;
+            // two signals for one row would fight in the same cell.
+            let bar = if row.selected && !framed {
+                Span::styled("▌", theme::accent_style())
+            } else {
+                Span::raw(" ")
+            };
+            let label_style = if row.state.needs_you() && !row.selected {
+                theme::text()
+            } else {
+                theme::text_secondary()
             };
             let label_style = if row.selected {
-                theme::text().add_modifier(Modifier::BOLD)
-            } else if hovered && !(row.focused && self.focused) {
+                // The viewed session stays the loudest label in the column even
+                // without the keyboard: accent while the list is focused, a
+                // weight step alone when it is not.
+                if self.focused {
+                    theme::accent_style().add_modifier(Modifier::BOLD)
+                } else {
+                    theme::text().add_modifier(Modifier::BOLD)
+                }
+            } else if hovered {
                 // Hover is a pointer affordance: ground plus a weight step,
                 // never the selection treatment.
                 label_style.add_modifier(Modifier::BOLD)
             } else {
                 label_style
             };
+            // Selection owns the marker's hue while it is on screen; the state
+            // is still readable from the glyph and from the qualifier.
             let glyph_style = if row.selected {
                 theme::accent_style()
             } else {
-                glyph_style
+                row.state.style()
             };
-            // Selection owns the accent edge even without cursor: the
-            // workspace-visible session stays identifiable while browsing.
-            let cursor = if (row.focused && self.focused) || row.selected {
-                Span::styled("›", theme::active_panel_border())
+            // Running rows turn: the frame is offset by the row so a column of
+            // running sessions does not blink as one blanket, and every frame
+            // is one cell wide so the labels stay in their column.
+            let glyph = match row.state {
+                SessionRowState::Working => SessionRowState::spinner_frame(self.step + index),
+                state => state.glyph(),
+            };
+            // One ground per row, covering both of its lines, so a selected
+            // row reads as one band instead of a name on a strip with its
+            // qualifier left floating below it. Applied as a background at the
+            // end, so the bar, the glyph and the label keep the hues that
+            // carry their state.
+            let ground = if active_selection {
+                theme::focused_selection_style().bg
+            } else if hovered && !framed {
+                theme::surface_hover().bg
             } else {
-                Span::raw(" ")
+                None
             };
+            // Inside a frame the label needs its own cell back for the frame's
+            // right edge.
+            let room = text_room(area).saturating_sub(usize::from(framed));
             let mut spans = vec![
-                cursor,
+                bar,
+                marker,
                 Span::raw(" "),
-                Span::styled(row.glyph.to_string(), glyph_style),
-                Span::raw(" "),
+                Span::styled(glyph, glyph_style),
             ];
-            let prefix: usize = spans.iter().map(Span::width).sum();
-            let room = (area.width as usize).saturating_sub(prefix);
-            spans.push(Span::styled(truncate(&row.label, room), label_style));
-            let mut line = Line::from(spans);
-            if (row.focused && self.focused) || row.selected {
-                line = line.style(theme::focused_selection_style());
-                buf.set_line(area.x, y, &line, area.width);
-                fill_selection(buf, area.x, y, area.width);
-            } else {
-                if hovered {
-                    line = line.style(theme::surface_hover());
-                }
-                buf.set_line(area.x, y, &line, area.width);
-            }
+            pad_to_label(&mut spans);
+            spans.push(Span::styled(
+                truncate(&row.label, text_room(area)),
+                label_style,
+            ));
+            let line = Line::from(spans);
+            buf.set_line(area.x, y, &line, area.width);
             y += 1;
             if y >= bottom {
                 break;
             }
-            if !row.qualifier.is_empty() {
-                let indent = 3usize.min(area.width as usize);
-                let room = (area.width as usize).saturating_sub(indent);
-                let text = truncate(&row.qualifier, room);
-                let mut qual = Line::from(vec![
-                    Span::raw(" ".repeat(indent)),
-                    Span::styled(text, theme::metadata_style()),
-                ]);
-                if hovered && !(row.focused && self.focused) {
-                    qual = qual.style(theme::surface_hover());
-                }
-                buf.set_line(area.x, y, &qual, area.width);
+            let qual_style = if active_selection {
+                theme::text_secondary()
+            } else {
+                theme::metadata_style()
+            };
+            let qual = Line::from(vec![
+                Span::raw(" ".repeat(TEXT_COL.min(area.width as usize))),
+                Span::styled(truncate(&row.qualifier, room), qual_style),
+            ]);
+            buf.set_line(area.x, y, &qual, area.width);
+            if let Some(bg) = ground {
+                fill_row_ground(buf, area, y.saturating_sub(1), 2, bg);
             }
             y += 1;
-            if let Some(peek) = self.peek.filter(|_| row.focused && self.focused) {
-                let indent = 3usize.min(area.width as usize);
+            if framed {
+                draw_expanded_frame(buf, area, frame_top, y, theme::accent_style());
+                // The peek hangs below the frame's bottom edge.
+                y += 1;
+            }
+            if let Some(peek) = peek {
                 for line in peek.lines {
                     if y >= bottom {
                         break;
                     }
-                    let room = (area.width as usize).saturating_sub(indent);
-                    buf.set_line(
-                        area.x,
-                        y,
-                        &Line::from(vec![
-                            Span::raw(" ".repeat(indent)),
-                            Span::styled(truncate(line, room), theme::text_secondary()),
-                        ]),
-                        area.width,
-                    );
+                    paint_peek_line(buf, area, y, peek_body_spans(line, text_room(area)));
                     y += 1;
                 }
                 if y < bottom {
-                    let prefix = "› ";
-                    let used = indent + prefix.chars().count();
-                    let room = (area.width as usize).saturating_sub(used);
+                    let room = text_room(area).saturating_sub(2);
                     let reply = if peek.reply.is_empty() {
                         Span::styled(truncate(peek.placeholder, room), theme::muted())
                     } else {
                         Span::styled(truncate(peek.reply, room), theme::text())
                     };
-                    buf.set_line(
-                        area.x,
+                    paint_peek_line(
+                        buf,
+                        area,
                         y,
-                        &Line::from(vec![
-                            Span::raw(" ".repeat(indent)),
-                            Span::styled(prefix, theme::accent_style()),
-                            reply,
-                        ]),
-                        area.width,
+                        vec![Span::styled("› ", theme::accent_style()), reply],
+                    );
+                    y += 1;
+                }
+                // The reply box stops reading as transcript behind a rule, and
+                // the hints come from the one hint grammar every other surface
+                // uses, so the verbs cannot drift apart.
+                if y < bottom {
+                    paint_peek_line(
+                        buf,
+                        area,
+                        y,
+                        vec![Span::styled(
+                            "─".repeat(text_room(area)),
+                            theme::border_muted(),
+                        )],
                     );
                     y += 1;
                 }
                 if y < bottom {
-                    let hint = "Enter send · Esc collapse";
-                    let room = (area.width as usize).saturating_sub(indent);
-                    buf.set_line(
-                        area.x,
-                        y,
-                        &Line::from(vec![
-                            Span::raw(" ".repeat(indent)),
-                            Span::styled(truncate(hint, room), theme::metadata_style()),
-                        ]),
-                        area.width,
-                    );
+                    paint_peek_line(buf, area, y, peek_hints(text_room(area)));
                     y += 1;
                 }
             }
@@ -436,12 +590,101 @@ impl Widget for SessionList<'_> {
     }
 }
 
-/// Extend the selection ground across the row so it reads as one band.
-fn fill_selection(buf: &mut Buffer, x: u16, y: u16, width: u16) {
-    let style = theme::focused_selection_style();
-    for col in x..x.saturating_add(width) {
-        if let Some(cell) = buf.cell_mut((col, y)) {
-            cell.set_style(style);
+/// Frame an expanded row's two lines: a rounded box whose left edge occupies
+/// the reserved gutter and whose right edge the list's last column. Both edges
+/// land in cells no label ever reaches, so expanding a row moves nothing.
+fn draw_expanded_frame(buf: &mut Buffer, area: Rect, top: u16, bottom: u16, style: Style) {
+    if area.width == 0 || top >= bottom {
+        return;
+    }
+    let rule = "─".repeat(area.width.saturating_sub(2) as usize);
+    let edge = |left: &str, right: &str| {
+        vec![
+            Span::styled(left.to_string(), style),
+            Span::styled(rule.clone(), style),
+            Span::styled(right.to_string(), style),
+        ]
+    };
+    buf.set_line(area.x, top, &Line::from(edge("╭", "╮")), area.width);
+    buf.set_line(area.x, bottom, &Line::from(edge("╰", "╯")), area.width);
+    let right = area.right().saturating_sub(1);
+    for y in top.saturating_add(1)..bottom {
+        for col in [area.x, right] {
+            if let Some(cell) = buf.cell_mut((col, y)) {
+                cell.set_symbol("│");
+                cell.set_style(style);
+            }
+        }
+    }
+}
+
+/// Paint one line of the peek: the guide rule in the cell left of
+/// [`TEXT_COL`], then the spans, so the whole peek hangs off one rule instead
+/// of reading as transcript that leaked into the column.
+fn paint_peek_line(buf: &mut Buffer, area: Rect, y: u16, spans: Vec<Span<'static>>) {
+    let col = TEXT_COL.min(area.width as usize);
+    let mut all: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    if col > 1 {
+        all.push(Span::raw(" ".repeat(col - 1)));
+        all.push(Span::styled("│", theme::border_muted()));
+    }
+    all.extend(spans);
+    buf.set_line(area.x, y, &Line::from(all), area.width);
+}
+
+/// A peek body line. The one marker that says a turn died takes the danger hue
+/// so it reads as a failure rather than as prose; the rest stays secondary.
+fn peek_body_spans(line: &str, room: usize) -> Vec<Span<'static>> {
+    let marker = forge_core::TURN_FAILED_MARKER;
+    match line.strip_prefix(marker) {
+        Some(rest) => {
+            let marker_room = marker.chars().count().min(room);
+            vec![
+                Span::styled(marker.to_string(), theme::danger()),
+                Span::styled(
+                    truncate(rest, room.saturating_sub(marker_room)),
+                    theme::text_secondary(),
+                ),
+            ]
+        }
+        None => vec![Span::styled(truncate(line, room), theme::text_secondary())],
+    }
+}
+
+/// The peek's hints, degraded for the navigator's width. The shared grammar
+/// drops verbs before it drops pairs, and the navigator is narrow enough that
+/// both pairs never fit — leaving `Enter Esc`, which says nothing about what
+/// either key does. Sending is what the reply box is for, so its pair is the
+/// one asked for when only one fits.
+fn peek_hints(room: usize) -> Vec<Span<'static>> {
+    let pairs: [crate::hints::Hint; 2] = [("Enter", "send"), ("Esc", "collapse")];
+    if crate::hints::hint_text(&pairs).chars().count() <= room {
+        return crate::hints::hint_spans(&pairs, room);
+    }
+    crate::hints::hint_spans(&pairs[..1], room)
+}
+
+/// Pad a row's fixed prefix out to [`TEXT_COL`], so every label starts in the
+/// same cell whatever the row's state draws in the prefix.
+fn pad_to_label(spans: &mut Vec<Span<'static>>) {
+    let used: usize = spans.iter().map(Span::width).sum();
+    spans.push(Span::raw(" ".repeat(TEXT_COL.saturating_sub(used))));
+}
+
+/// Width left for a row's text once the reserved columns are taken; the label,
+/// the qualifier and the peek all share it.
+fn text_room(area: Rect) -> usize {
+    (area.width as usize).saturating_sub(TEXT_COL)
+}
+
+/// Ground a row's two lines edge to edge. Background only, so the bar, the
+/// glyph and the label keep the hues that carry their state.
+fn fill_row_ground(buf: &mut Buffer, area: Rect, y: u16, height: u16, bg: ratatui::style::Color) {
+    for row_y in y..y.saturating_add(height).min(area.bottom()) {
+        for col in area.x..area.right() {
+            if let Some(cell) = buf.cell_mut((col, row_y)) {
+                cell.set_bg(bg);
+            }
         }
     }
 }
@@ -475,13 +718,75 @@ mod tests {
 
     fn row(label: &str, qualifier: &str) -> SessionRow {
         SessionRow {
-            glyph: '●',
-            need: true,
+            state: SessionRowState::Waiting,
             label: label.into(),
             qualifier: qualifier.into(),
             selected: false,
             focused: false,
         }
+    }
+
+    /// The cells of a row, in order: the selection bar, the cursor/disclosure
+    /// marker, a space, the state glyph, a space, then the label at
+    /// [`TEXT_COL`]. Assertions name them so a layout change is one edit.
+    const BAR_COL: u16 = 0;
+    const MARKER_COL: u16 = 1;
+    const GLYPH_COL: u16 = 3;
+
+    /// A row in a named state, for the marker tests.
+    fn state_row(state: SessionRowState, label: &str) -> SessionRow {
+        SessionRow {
+            state,
+            label: label.into(),
+            qualifier: String::new(),
+            selected: false,
+            focused: false,
+        }
+    }
+
+    /// Render the session list at an explicit geometry and hand back the
+    /// buffer.
+    fn render_list(rows: &[SessionRow], width: u16, height: u16) -> ratatui::buffer::Buffer {
+        render_list_at(rows, width, height, 0)
+    }
+
+    /// The list at a pinned spinner step, so a frame is asserted exactly.
+    fn render_list_at(
+        rows: &[SessionRow],
+        width: u16,
+        height: u16,
+        step: usize,
+    ) -> ratatui::buffer::Buffer {
+        render_list_with(rows, width, height, step, true, None, None)
+    }
+
+    /// The list with the block focus, the pointer and the peek under test.
+    fn render_list_with(
+        rows: &[SessionRow],
+        width: u16,
+        height: u16,
+        step: usize,
+        focused: bool,
+        hover: Option<usize>,
+        peek: Option<&PeekPanel<'_>>,
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    SessionList {
+                        rows,
+                        focused,
+                        peek,
+                        hover,
+                        step,
+                    },
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
     }
 
     /// Render the tab bar at an explicit width and hand back the buffer.
@@ -900,8 +1205,7 @@ mod tests {
     #[test]
     fn the_peek_shows_the_last_answer_and_reply_box() {
         let rows = vec![SessionRow {
-            glyph: '●',
-            need: true,
+            state: SessionRowState::Waiting,
             label: "Fix login redirect".into(),
             qualifier: "needs you".into(),
             selected: true,
@@ -923,6 +1227,7 @@ mod tests {
                         focused: true,
                         peek: Some(&peek),
                         hover: None,
+                        step: 0,
                     },
                     frame.area(),
                 );
@@ -953,6 +1258,7 @@ mod tests {
                         focused: true,
                         peek: None,
                         hover: None,
+                        step: 0,
                     },
                     frame.area(),
                 );
@@ -983,6 +1289,7 @@ mod tests {
                         focused: true,
                         peek: None,
                         hover: None,
+                        step: 0,
                     },
                     frame.area(),
                 );
@@ -996,5 +1303,478 @@ mod tests {
             .map(|cell| cell.symbol().to_string())
             .collect();
         assert!(text.contains('…'), "long label should elide: {text:?}");
+    }
+
+    /// Every state the list can render, in the order the enum declares them.
+    /// [`SessionRowState::glyph`] and [`SessionRowState::style`] match on the
+    /// enum exhaustively, so a new state cannot reach a row without a marker
+    /// and a style — but add it here too, or it escapes the tests below.
+    const ALL_STATES: [SessionRowState; 8] = [
+        SessionRowState::Idle,
+        SessionRowState::Working,
+        SessionRowState::Waiting,
+        SessionRowState::Queued,
+        SessionRowState::Completed,
+        SessionRowState::Failed,
+        SessionRowState::Cancelled,
+        SessionRowState::Interrupted,
+    ];
+
+    /// Two states sharing a marker is the bug this table replaced: `failed`,
+    /// `completed` and `idle` all rendered `○`, so a turn that died and a turn
+    /// that finished read the same in the one column an operator scans.
+    #[test]
+    fn no_two_states_share_a_glyph() {
+        let mut seen: Vec<(&'static str, SessionRowState)> = Vec::new();
+        for state in ALL_STATES {
+            if let Some((glyph, other)) = seen.iter().find(|(glyph, _)| *glyph == state.glyph()) {
+                panic!("{state:?} and {other:?} both render {glyph:?}");
+            }
+            seen.push((state.glyph(), state));
+        }
+    }
+
+    /// The marker sits in a fixed cell, so it has to be exactly one column —
+    /// a two-column glyph would shift the label for that row alone.
+    #[test]
+    fn every_marker_occupies_one_column() {
+        for state in ALL_STATES {
+            assert_eq!(
+                Span::raw(state.glyph()).width(),
+                1,
+                "{state:?} renders {:?}",
+                state.glyph()
+            );
+        }
+    }
+
+    /// The marker's style, one state at a time. Selection overrides this in
+    /// the widget, but the table itself is what a row falls back to.
+    #[test]
+    fn each_state_carries_its_own_style() {
+        for (state, expected) in [
+            (SessionRowState::Idle, theme::muted()),
+            (
+                SessionRowState::Working,
+                theme::activity().add_modifier(Modifier::BOLD),
+            ),
+            (
+                SessionRowState::Waiting,
+                theme::warn().add_modifier(Modifier::BOLD),
+            ),
+            (SessionRowState::Queued, theme::info()),
+            (SessionRowState::Completed, theme::ok()),
+            (SessionRowState::Failed, theme::danger()),
+            (SessionRowState::Cancelled, theme::muted()),
+            (SessionRowState::Interrupted, theme::warn()),
+        ] {
+            assert_eq!(state.style(), expected, "{state:?}");
+        }
+    }
+
+    /// Colour is the second channel. The pairs an operator must never confuse
+    /// — a failed turn against a completed one, a turn stopped for them
+    /// against a turn that is running — differ in hue as well as in shape.
+    #[test]
+    fn the_states_that_must_not_be_confused_do_not_share_a_hue() {
+        assert_ne!(
+            SessionRowState::Failed.style().fg,
+            SessionRowState::Completed.style().fg
+        );
+        assert_ne!(
+            SessionRowState::Failed.style().fg,
+            SessionRowState::Idle.style().fg
+        );
+        assert_ne!(
+            SessionRowState::Waiting.style().fg,
+            SessionRowState::Working.style().fg
+        );
+    }
+
+    /// A running row carries the turn line's spinner, so the row and the turn
+    /// it is running read as the same activity rather than two temperatures.
+    #[test]
+    fn a_working_row_borrows_the_turn_lines_spinner() {
+        assert_eq!(
+            SessionRowState::Working.glyph(),
+            crate::widgets::turn_line::SPINNER_FRAMES[0]
+        );
+        assert_eq!(
+            SessionRowState::Working.style().fg,
+            theme::activity().fg,
+            "the running row left the activity token"
+        );
+    }
+
+    /// The marker column carries the state: a failed row renders `✗` and a
+    /// completed one `✓`, and neither renders the `○` idle owns.
+    #[test]
+    fn a_failed_row_renders_the_failure_marker_and_not_an_idle_ring() {
+        let rows = vec![
+            state_row(SessionRowState::Failed, "Fix login redirect"),
+            state_row(SessionRowState::Completed, "Add the guard"),
+            state_row(SessionRowState::Idle, "Ship the release"),
+        ];
+        let buffer = render_list(&rows, 30, 6);
+
+        // Each row's marker cell: cursor, one space, then the glyph.
+        for (y, expected, style) in [
+            (0u16, "✗", theme::danger()),
+            (2, "✓", theme::ok()),
+            (4, "○", theme::muted()),
+        ] {
+            assert_eq!(buffer[(GLYPH_COL, y)].symbol(), expected, "row {y}");
+            assert_eq!(buffer[(GLYPH_COL, y)].style().fg, style.fg, "row {y}");
+        }
+    }
+
+    /// The list's states follow the task's lifecycle; the live-turn flags the
+    /// renderer layers on top are tested at the app level.
+    #[test]
+    fn the_row_state_follows_the_task_lifecycle() {
+        for (lifecycle, expected) in [
+            (forge_types::TaskLifecycle::Ready, SessionRowState::Idle),
+            (
+                forge_types::TaskLifecycle::Working,
+                SessionRowState::Working,
+            ),
+            (
+                forge_types::TaskLifecycle::Waiting,
+                SessionRowState::Waiting,
+            ),
+            (
+                forge_types::TaskLifecycle::Completed,
+                SessionRowState::Completed,
+            ),
+            (forge_types::TaskLifecycle::Failed, SessionRowState::Failed),
+            (
+                forge_types::TaskLifecycle::Cancelled,
+                SessionRowState::Cancelled,
+            ),
+            (
+                forge_types::TaskLifecycle::Interrupted,
+                SessionRowState::Interrupted,
+            ),
+        ] {
+            assert_eq!(
+                SessionRowState::from_lifecycle(lifecycle),
+                expected,
+                "{lifecycle:?}"
+            );
+        }
+    }
+
+    /// Only a turn stopped for the operator asks for the operator.
+    #[test]
+    fn only_the_waiting_state_needs_you() {
+        for state in ALL_STATES {
+            assert_eq!(
+                state.needs_you(),
+                state == SessionRowState::Waiting,
+                "{state:?}"
+            );
+        }
+    }
+
+    /// Every frame a running row can show is one column wide and none of them
+    /// collides with a state's own marker — the spinner turns through the same
+    /// cell the other states sit in.
+    #[test]
+    fn every_spinner_frame_is_one_column_and_unclaimed() {
+        for frame in crate::widgets::turn_line::SPINNER_FRAMES {
+            assert_eq!(Span::raw(frame).width(), 1, "{frame:?}");
+            for state in ALL_STATES
+                .into_iter()
+                .filter(|state| *state != SessionRowState::Working)
+            {
+                assert_ne!(frame, state.glyph(), "{state:?} collides with {frame:?}");
+            }
+        }
+    }
+
+    /// The running row turns: consecutive steps show consecutive frames, the
+    /// frame is the running state's, and a row that is not running holds still
+    /// while the running ones move around it.
+    #[test]
+    fn a_running_row_steps_while_the_others_hold_still() {
+        let rows = vec![
+            state_row(SessionRowState::Working, "one"),
+            state_row(SessionRowState::Working, "two"),
+            state_row(SessionRowState::Idle, "three"),
+        ];
+        let frames = crate::widgets::turn_line::SPINNER_FRAMES;
+        for step in 0..frames.len() {
+            let buffer = render_list_at(&rows, 30, 8, step);
+            assert_eq!(buffer[(GLYPH_COL, 0)].symbol(), frames[step % frames.len()]);
+            // The second row is one frame ahead: a column of running sessions
+            // must not blink as one blanket.
+            assert_eq!(
+                buffer[(GLYPH_COL, 2)].symbol(),
+                frames[(step + 1) % frames.len()]
+            );
+            assert_eq!(buffer[(GLYPH_COL, 4)].symbol(), "○", "the idle row moved");
+        }
+    }
+
+    /// A step past the end of the set wraps rather than panicking; the step is
+    /// a running counter, never index-bounded.
+    #[test]
+    fn the_spinner_step_wraps() {
+        let rows = vec![state_row(SessionRowState::Working, "one")];
+        let frames = crate::widgets::turn_line::SPINNER_FRAMES;
+        let far = render_list_at(&rows, 30, 4, frames.len() + 3);
+        assert_eq!(far[(GLYPH_COL, 0)].symbol(), frames[3]);
+    }
+
+    /// The regression this phase exists to prevent: no state — selection,
+    /// hover, expansion — may move a row's label column, because the bar and
+    /// the marker are reserved on every row.
+    #[test]
+    fn no_state_moves_the_label_column() {
+        let plain = |label: &str| state_row(SessionRowState::Idle, label);
+        let mut selected = plain("second");
+        selected.selected = true;
+
+        let buffer = render_list_at(&[plain("first"), selected], 30, 6, 0);
+        assert_eq!(buffer[(TEXT_COL as u16, 0)].symbol(), "f", "plain row");
+        assert_eq!(buffer[(TEXT_COL as u16, 2)].symbol(), "s", "selected row");
+
+        let hovered = render_list_with(&[plain("first")], 30, 4, 0, true, Some(0), None);
+        assert_eq!(hovered[(TEXT_COL as u16, 0)].symbol(), "f", "hovered row");
+
+        let mut cursor = plain("first");
+        cursor.focused = true;
+        let lines = vec!["I added the guard in src/auth.rs.".to_string()];
+        let peek = PeekPanel {
+            lines: &lines,
+            reply: "",
+            placeholder: "reply…",
+        };
+        // Expanded, the label sits inside the frame's top edge — same column.
+        let expanded = render_list_with(&[cursor], 30, 8, 0, true, None, Some(&peek));
+        assert_eq!(expanded[(TEXT_COL as u16, 1)].symbol(), "f", "expanded row");
+    }
+
+    /// Selection is the bar in the reserved gutter plus the ground; hover is
+    /// the ground plus the marker. Neither borrows the other's signal.
+    #[test]
+    fn selection_paints_the_bar_and_hover_never_does() {
+        let mut selected = state_row(SessionRowState::Idle, "viewed");
+        selected.selected = true;
+        let plain = state_row(SessionRowState::Idle, "other");
+
+        let buffer = render_list_at(&[selected, plain.clone()], 30, 6, 0);
+        assert_eq!(buffer[(BAR_COL, 0)].symbol(), "▌");
+        assert_eq!(buffer[(BAR_COL, 0)].style().fg, theme::accent_style().fg);
+        assert_eq!(
+            buffer[(BAR_COL, 2)].symbol(),
+            " ",
+            "an idle row took the bar"
+        );
+
+        let hovered = render_list_with(&[plain], 30, 4, 0, true, Some(0), None);
+        assert_eq!(hovered[(BAR_COL, 0)].symbol(), " ", "hover took the bar");
+        assert_eq!(
+            hovered[(MARKER_COL, 0)].symbol(),
+            "›",
+            "hover lost its shape"
+        );
+        assert_eq!(hovered[(BAR_COL, 0)].style().bg, theme::surface_hover().bg);
+    }
+
+    /// The ground covers both lines of the row, so a selected row reads as one
+    /// band instead of a name on a strip with its qualifier floating below it.
+    #[test]
+    fn the_selection_ground_covers_both_lines() {
+        let ground = theme::focused_selection_style().bg;
+        let mut selected = state_row(SessionRowState::Working, "viewed");
+        selected.selected = true;
+        selected.qualifier = "running · 2m".into();
+        let mut plain = state_row(SessionRowState::Idle, "other");
+        plain.qualifier = "idle · 4m".into();
+
+        let buffer = render_list_at(&[selected, plain], 30, 6, 0);
+        assert_eq!(buffer[(BAR_COL, 0)].style().bg, ground, "label line");
+        assert_eq!(buffer[(BAR_COL, 1)].style().bg, ground, "qualifier line");
+        assert_ne!(
+            buffer[(BAR_COL, 3)].style().bg,
+            ground,
+            "an idle row took the ground"
+        );
+    }
+
+    /// `§8.5`: a selection that lost the keyboard stays visible but muted. The
+    /// bar and the weight step stay; the ground and the cursor go.
+    #[test]
+    fn an_unfocused_selection_keeps_the_bar_and_gives_up_the_ground() {
+        let mut selected = state_row(SessionRowState::Idle, "viewed");
+        selected.selected = true;
+        selected.focused = true;
+
+        let buffer = render_list_with(&[selected], 30, 4, 0, false, None, None);
+        assert_eq!(buffer[(BAR_COL, 0)].symbol(), "▌");
+        assert_eq!(
+            buffer[(MARKER_COL, 0)].symbol(),
+            " ",
+            "the cursor survived losing the keyboard"
+        );
+        assert_ne!(
+            buffer[(BAR_COL, 0)].style().bg,
+            theme::focused_selection_style().bg
+        );
+        assert!(
+            buffer[(TEXT_COL as u16, 0)]
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "the label lost its weight step"
+        );
+    }
+
+    /// The expanded row is framed instead of grounded: the frame's left edge
+    /// takes the reserved gutter and its right edge the list's last column, so
+    /// expanding a row moves neither the bar's cell nor the label's.
+    #[test]
+    fn the_expanded_row_is_framed_in_the_reserved_gutter() {
+        let mut cursor = state_row(SessionRowState::Working, "peeked");
+        cursor.focused = true;
+        cursor.selected = true;
+        cursor.qualifier = "running · 2m".into();
+        let lines = vec!["the last answer".to_string()];
+        let peek = PeekPanel {
+            lines: &lines,
+            reply: "",
+            placeholder: "reply…",
+        };
+        let buffer = render_list_with(&[cursor], 30, 10, 0, true, None, Some(&peek));
+
+        assert_eq!(buffer[(0, 0)].symbol(), "╭");
+        assert_eq!(buffer[(29, 0)].symbol(), "╮");
+        assert_eq!(buffer[(0, 3)].symbol(), "╰");
+        assert_eq!(buffer[(29, 3)].symbol(), "╯");
+        assert_eq!(buffer[(0, 1)].symbol(), "│");
+        assert_eq!(buffer[(29, 1)].symbol(), "│");
+        assert_eq!(buffer[(0, 0)].style().fg, theme::accent_style().fg);
+        // The frame replaces the bar and flips the cursor to disclosure.
+        assert_eq!(buffer[(MARKER_COL, 1)].symbol(), "⌄");
+        assert_eq!(
+            buffer[(TEXT_COL as u16, 1)].symbol(),
+            "p",
+            "the label moved"
+        );
+        // The peek hangs under the frame behind one guide rule.
+        assert_eq!(buffer[((TEXT_COL - 1) as u16, 4)].symbol(), "│");
+        assert_eq!(buffer[(TEXT_COL as u16, 4)].symbol(), "t");
+    }
+
+    /// A frame costs the block two lines. At a height where it does not fit it
+    /// is dropped whole — a half-drawn box is worse than none — and the reply
+    /// box still renders.
+    #[test]
+    fn a_frame_that_does_not_fit_is_dropped_whole() {
+        let mut cursor = state_row(SessionRowState::Waiting, "peeked");
+        cursor.focused = true;
+        cursor.selected = true;
+        let lines = vec!["done".to_string()];
+        let peek = PeekPanel {
+            lines: &lines,
+            reply: "push it",
+            placeholder: "reply…",
+        };
+        let buffer = render_list_with(&[cursor], 30, 6, 0, true, None, Some(&peek));
+        let text: String = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(!text.contains('╭'), "a half-drawn frame: {text:?}");
+        assert!(!text.contains('╰'), "a stray edge: {text:?}");
+        assert!(text.contains("push it"), "the reply box went missing");
+        // The same block one line taller takes the frame.
+        let mut cursor = state_row(SessionRowState::Waiting, "peeked");
+        cursor.focused = true;
+        cursor.selected = true;
+        let buffer = render_list_with(&[cursor], 30, 8, 0, true, None, Some(&peek));
+        let text: String = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+        assert!(
+            text.contains('╭'),
+            "the frame was dropped with room to spare"
+        );
+    }
+
+    /// A peek line that opens with the failure marker takes the danger hue for
+    /// the marker; the detail behind it stays secondary, so the one line that
+    /// says a turn died reads as an error rather than as prose.
+    #[test]
+    fn a_failed_peek_line_colours_its_marker() {
+        let mut cursor = state_row(SessionRowState::Failed, "peeked");
+        cursor.focused = true;
+        let lines = vec![format!(
+            "{}model call failed",
+            forge_core::TURN_FAILED_MARKER
+        )];
+        let peek = PeekPanel {
+            lines: &lines,
+            reply: "",
+            placeholder: "reply…",
+        };
+        let buffer = render_list_with(&[cursor], 40, 10, 0, true, None, Some(&peek));
+        let marker_end = forge_core::TURN_FAILED_MARKER.chars().count() as u16;
+        assert_eq!(buffer[(TEXT_COL as u16, 4)].symbol(), "[");
+        assert_eq!(buffer[(TEXT_COL as u16, 4)].style().fg, theme::danger().fg);
+        assert_eq!(buffer[(TEXT_COL as u16 + marker_end, 4)].symbol(), "m");
+        assert_eq!(
+            buffer[(TEXT_COL as u16 + marker_end, 4)].style().fg,
+            theme::text_secondary().fg
+        );
+    }
+
+    /// The shared grammar drops verbs before pairs, which at the navigator's
+    /// width would leave `Enter Esc`. The reply is what this box is for, so its
+    /// pair is the one that keeps its verb.
+    #[test]
+    fn the_peek_hints_keep_the_reply_verb_when_only_one_pair_fits() {
+        let text = |room: usize| -> String {
+            peek_hints(room)
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect()
+        };
+        assert_eq!(text(40), "Enter send · Esc collapse");
+        assert_eq!(text(20), "Enter send");
+    }
+
+    /// The cursor cell is disclosure, not selection (`D3`): `›` collapsed,
+    /// `⌄` expanded, blank on a row the keyboard is not on.
+    #[test]
+    fn the_cursor_cell_shows_disclosure() {
+        let mut cursor = state_row(SessionRowState::Idle, "first");
+        cursor.focused = true;
+        let second = state_row(SessionRowState::Idle, "second");
+
+        let collapsed = render_list_with(
+            &[cursor.clone(), second.clone()],
+            30,
+            6,
+            0,
+            true,
+            None,
+            None,
+        );
+        assert_eq!(collapsed[(MARKER_COL, 0)].symbol(), "›");
+        assert_eq!(collapsed[(MARKER_COL, 2)].symbol(), " ");
+
+        let lines = vec!["the last answer".to_string()];
+        let peek = PeekPanel {
+            lines: &lines,
+            reply: "",
+            placeholder: "reply…",
+        };
+        let expanded = render_list_with(&[cursor, second], 30, 8, 0, true, None, Some(&peek));
+        assert_eq!(expanded[(MARKER_COL, 1)].symbol(), "⌄");
     }
 }
