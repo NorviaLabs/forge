@@ -159,7 +159,7 @@ These are not optional styling preferences. They are correctness requirements.
 1. **Exactly one effective keyboard owner exists at a time.**
 2. **The visually active block matches the actual event owner** (`focus.rs::normalize_focus`).
 3. **Selected content and focused content are visually distinct.**
-4. **Input, transient and blocked states are distinguishable** without colour alone.
+4. **Input, transient and blocked states are distinguishable** without colour alone, and one state keeps one shape across surfaces (`§5.3`): `running` is the braille spinner wherever it appears, never a second family.
 5. **A displayed shortcut always invokes a reachable command in the current context** (hints degrade by dropping verbs, then pairs — never by advertising dead keys).
 6. **Hidden or unavailable blocks cannot retain focus**; Tab cycles only available blocks.
 7. **Colour never provides the only indication of state.**
@@ -254,6 +254,16 @@ Rules:
 | `[|]` | Blocked |
 
 Git status is single letters from the same module: `M` `A` `D` `?` `!` `U` (modified / added / deleted / untracked / ignored / conflicted), bold and semantically coloured. The `✓` tick lives inside the `[✓]` completion marker as well as reviewed files and status-bar outcomes; `✗` only for a failed status outcome. Animation is restrained and never changes layout width.
+
+**One glyph means *running*, on every surface that shows it.** The braille
+spinner `⣾⣽⣻⢿⡿⣟⣯⣷` (`widgets/turn_line.rs::SPINNER_FRAMES`) is the whole
+family: the live turn line, the navigator's session rows (one step per row, so
+a column of running sessions does not read as one metronome), and the collapsed
+navigator's chip. Every frame is one cell wide, so motion never shifts a label.
+No quarter-circle family (`◐◓◑◒`) exists anywhere in the TUI, and the footer's
+lifecycle is a state *word* with a fixed-width `●` whose brightness pulses —
+it is not a rotating glyph. Nothing else may introduce a second running
+indicator.
 
 ### 5.4 Limited-colour fallback
 
@@ -466,22 +476,57 @@ surface. The old top task strip is superseded (`§11`).
   more columns before it reappears beside the cell.
 - Default tab: `Sessions` when more than one session exists, `Files` otherwise.
   The choice is remembered for the session.
-- **Sessions tab** is a vertical, attention-ordered list. Only three states are
-  user-facing: `● needs you`, `◐ working`, `○ idle`. Rows carry the label and a
-  short qualifier; branch, worktree and ownership are never shown here.
-  Selection (`›`) is the only cursor; `Enter` attaches, `Space` peeks and
-  replies inline, `n` creates a session and opens its composer (the session is
-  named from the first prompt submitted in that composer), `s` stops, `c`
-  continues, `x` archives and cleans (confirmed), `r` renames. The same create
-  verb is the row's `+` cell and the composer's `/new`, so starting a session
-  never requires visiting the list.
+- **Sessions tab** is a vertical, attention-ordered list. A row is five
+  reserved cells and an elastic label — `bar marker space glyph space label` —
+  so no state (selection, hover, expansion) can move another row's label. The
+  glyph is the row's state, one shape per state, never colour alone:
+
+  | Glyph | State | Source |
+  |---|---|---|
+  | `○` | idle | list-local |
+  | `⣾⣽⣻⢿⡿⣟⣯⣷` | working | the turn line's frames (`§5.3`) |
+  | `●` | needs you | list-local |
+  | `⇥` | queued | list-local |
+  | `✓` | completed | `TurnLifecycle` |
+  | `✗` | failed | `TurnLifecycle` |
+  | `■` | cancelled | `TurnLifecycle` |
+  | `∅` | interrupted | `TurnLifecycle` |
+
+  Only the first four are the list's own; the four outcomes borrow the turn's
+  vocabulary so the list and the transcript cannot disagree about how a turn
+  ended. Precedence is attention → queued → working → lifecycle. Rows carry the
+  label and a short qualifier; branch, worktree and ownership are never shown
+  here.
+- **Selection is the bar plus the ground; the cursor cell is disclosure.**
+  Selection is the accent bar in the reserved gutter plus a ground across both
+  of the row's lines, and the cursor cell is `›` collapsed, `⌄` expanded — the
+  same two glyphs the `+` cell's row uses for `§9.6`. While the navigator owns
+  the keyboard the ground is the neutral `selection` step; when the block loses
+  the keyboard the row keeps the bar and a weight step and gives up the ground
+  (`§8.5`). A selected row therefore never takes an accent wash (`§8.4`), and
+  hover keeps its raised ground and its `›` and never takes the bar (`§8.6`).
+  `Enter` attaches, `Space` peeks and replies inline, `n` creates a session and
+  opens its composer (the session is named from the first prompt submitted in
+  that composer), `s` stops, `c` continues, `x` archives and cleans
+  (confirmed), `r` renames. The same create verb is the row's `+` cell and the
+  composer's `/new`, so starting a session never requires visiting the list.
+- **The expanded row is framed.** `Space` frames the peeking row in a rounded
+  accent box whose left edge takes the reserved gutter and whose right edge the
+  list's last column, so expanding a row moves nothing; the peek hangs under it
+  behind one guide rule — the last answer, then the reply box, a hairline, and
+  the `§6` hint grammar. A frame costs a line above and below the row, so it is
+  drawn only when the whole block fits: a short pane falls back to the unframed
+  layout rather than painting half a box.
 - **Files tab** is today's explorer, unchanged.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
 - Below `files_fit()` the whole navigator collapses exactly as `Files` does
   today: the `Sessions` list falls back to a one-line status-row chip
-  (`⌄ 2 need · 1 working`) so session attention stays visible, and the session
-  switcher (`F3`, `/sessions`) keeps every session reachable.
+  (`⌄ 2 need · ⣾ 1 working`) so session attention stays visible, and the session
+  switcher (`F3`, `/sessions`) keeps every session reachable. The chip carries
+  the same live spinner frame as the rows it replaces, on the same tick: on a
+  collapsed column it is the only thing that still separates work in flight
+  from work waiting on you.
 - The conversation sidebar stays permanent; the Workspace stays
   `File`/`Diff`. The navigator introduces no new column.
 
@@ -601,7 +646,7 @@ Mouse is a second input for the same grammar, never a separate mode. Clicking mo
 - **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel). A second click at the same cell within the double-click window acts: a navigator session row attaches; a file-tree row opens on the first click. Overlay list rows (model picker providers/models/effort, resume picker, session switcher, theme dock) are pointer-actionable too: a single click moves the highlight (and the picker's focused column), a double-click confirms through the same `Enter` path the keyboard uses.
 - **Wheel** scrolls the focused pane's content (conversation, file tree, source viewer), matching the keyboard page/step size. `Shift` pages.
 - **Right-click** opens the copy/clear context menu over a text selection.
-- **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, navigator tabs, queued-message rows, and overlay list rows. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker in the reserved gutter and/or a weight step — so clickability is never colour-only; the marker column is pre-reserved, so hover never shifts text. It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover: `selection` is the strongest neutral ground in both built-in themes (`selection` outranks `surface_hover`), so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
+- **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, navigator tabs, queued-message rows, and overlay list rows. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker in the row's reserved marker cell and/or a weight step — so clickability is never colour-only; the marker cell is pre-reserved, so hover never shifts text (`§7.7`). It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover: `selection` is the strongest neutral ground in both built-in themes (`selection` outranks `surface_hover`), so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
 
 ## 9. Component Specifications
 
@@ -636,7 +681,7 @@ Two rows (`widgets/footer.rs`); the second row is the background activity line.
   - **Lifecycle:** turn state glyph plus short detail qualifier, styled secondary — severity lives in the glyph, never duplicated in colour.
   - **Context pressure:** a word, not a meter — `context` / `context high` / `context full`, coloured ok/warn/error at the 70% and 90% thresholds. (The old nine-cell shade-bar was removed: at typical single-digit percentages it read as stipple texture.)
   - **Hints:** the §6 hint grammar. Blocking dialogs take over the whole row; the footer's own per-chip hint and the task strip's session hint share the row with the chips. Focusing any other block — files, search, the panes — leaves the activity line alone.
-  - **Working meter:** one quarter-circle glyph from the same ◐◓◑◒ family the turn line speaks, stepped once per event-loop tick while a turn runs (`throbber-widgets-tui` state, forge styling). Motion pauses with work instead of free-running on the wall clock.
+  - **Working meter:** the lifecycle is a state *word* (`running`, `waiting`, `failed`) with one fixed-width `●` beside it, whose brightness pulses bright/dim once per event-loop tick while a turn runs (`throbber-widgets-tui` state, forge styling). The glyph row is byte-identical on every frame, so the pulse never moves a column. (This line used to claim a quarter-circle `◐◓◑◒` meter — no such rotation exists in Forge, and the braille spinner family is the only running indicator; see §5.3.)
   - When an approval pends, the row dims — it must not look interactive.
 - **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — terminal/background jobs, agents/subagents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `◆` agent, `⇥` queued); the bracket is shared chrome so the chips read as a segmented strip. The row is blank when nothing is in flight, so an idle footer is unchanged. Per-item detail (command, elapsed, live subagent activity) lives in the background strip (§9.12), not the footer.
   - **A completion is an observation, not a queued prompt.** Finishing a background task does not inject a user-role prompt. The result stays in the background strip and the operator attaches it to the composer explicitly (`i` on the selected task). Only approve-all — no human in the loop — auto-continues by enqueuing the result at the next turn boundary.
