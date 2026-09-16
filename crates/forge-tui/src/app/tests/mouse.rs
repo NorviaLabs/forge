@@ -346,23 +346,27 @@ async fn click_navigator_tab_switches_between_sessions_and_files() {
     );
 }
 
-/// The `+` cell sits inside the `Files` tab's columns, so pointer routing has to
+/// The `+` cell shares an edge with the tab boxes, so pointer routing has to
 /// claim it before the tab branch — for hover and for the click alike.
 #[tokio::test]
-async fn hovering_the_new_session_cell_does_not_read_as_the_files_tab() {
+async fn hovering_the_new_session_cell_does_not_read_as_a_tab() {
     let (_dir, mut app) = focus_test_app().await;
     app.navigator_tabs_area = Some(ratatui::layout::Rect::new(0, 0, 40, 2));
-    app.navigator_new_session_area = Some(ratatui::layout::Rect::new(37, 0, 3, 3));
+    let cell = crate::widgets::navigator::new_session_cell(ratatui::layout::Rect::new(0, 0, 40, 3))
+        .expect("the row is wide enough");
+    app.navigator_new_session_area = Some(cell);
 
-    app.handle_mouse(moved(38, 1)).await.unwrap();
+    app.handle_mouse(moved(cell.x + 1, cell.y + 1))
+        .await
+        .unwrap();
     assert!(app.hover_navigator_new_session);
     assert_eq!(
         app.hover_navigator_tab, None,
         "the cell must not read as a hovered tab"
     );
 
-    // Cells left of the cell still belong to the tabs.
-    app.handle_mouse(moved(20, 1)).await.unwrap();
+    // Cells clear of the cell still belong to the tabs.
+    app.handle_mouse(moved(cell.right() + 1, 1)).await.unwrap();
     assert!(!app.hover_navigator_new_session);
     assert_eq!(
         app.hover_navigator_tab,

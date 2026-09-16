@@ -218,7 +218,7 @@ controls are:
 | `F4` | Open model picker |
 | `Ctrl+1` / `Ctrl+2` | Show the navigator's `Sessions` / `Files` tab (repository mode) |
 | `Ctrl+E` | Toggle the Files explorer (in a repository, flip the navigator tabs) |
-| `↑` at the first row, then `←` / `→` | Move onto the navigator tab row and step through `Sessions` / `Files` / `+`; `Enter` switches tab or, on `+`, starts a session (repository mode) |
+| `↑` at the first row, then `←` / `→` | Move onto the navigator tab row and step through `Sessions` / `+` / `Files`; `Enter` switches tab or, on `+`, starts a session (repository mode) |
 | `Ctrl+Backtick` | Toggle the terminal panel (or `/terminal`) |
 | `Ctrl+O` | Expand or collapse tool details |
 | `Alt+M` | Quick-switch model |

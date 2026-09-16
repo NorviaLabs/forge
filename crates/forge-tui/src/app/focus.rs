@@ -157,7 +157,7 @@ impl TuiApp {
         self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
     }
 
-    /// Move the row's cursor one stop. Stops run `Sessions · Files · +` left to
+    /// Move the row's cursor one stop. Stops run `Sessions · + · Files` left to
     /// right and the cursor stops at each end rather than wrapping, so the
     /// movement always matches what the eye sees on the row. The `+` is skipped
     /// when the row does not render it.
@@ -166,8 +166,8 @@ impl TuiApp {
         let stops: &[NavigatorRowStop] = if self.navigator_row_has_new_session() {
             &[
                 NavigatorRowStop::Sessions,
-                NavigatorRowStop::Files,
                 NavigatorRowStop::NewSession,
+                NavigatorRowStop::Files,
             ]
         } else {
             &[NavigatorRowStop::Sessions, NavigatorRowStop::Files]

@@ -1869,11 +1869,11 @@ async fn up_at_the_top_of_the_session_list_reaches_the_tab_row() {
         .unwrap();
 }
 
-/// From the file tree the same `↑` reaches the row, `←`/`→` switch tabs without
+/// From the file tree the same `↑` reaches the row, `←`/`→` walk it without
 /// leaving it, and `↓` drops back into the pane the tab shows.
 #[tokio::test]
 async fn the_tab_row_switches_tabs_without_leaving_the_row() {
-    use crate::widgets::NavigatorTab;
+    use crate::widgets::{NavigatorRowStop, NavigatorTab};
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.navigator_tab = NavigatorTab::Files;
     app.navigator_tab_explicit = true;
@@ -1887,6 +1887,14 @@ async fn the_tab_row_switches_tabs_without_leaving_the_row() {
         "an empty tree is already at the top, so one `↑` reaches the row"
     );
 
+    // The row's stops run `Sessions · + · Files`, so `←` reaches the `+` cell
+    // before the `Sessions` tab — and resting there leaves the pane alone.
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+
     app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -1899,6 +1907,17 @@ async fn the_tab_row_switches_tabs_without_leaving_the_row() {
     assert!(
         app.navigator_tab_row_focused,
         "`←`/`→` keep the keyboard on the row"
+    );
+
+    // Stepping back the other way walks the `+` cell on the way through.
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    assert_eq!(
+        app.effective_navigator_tab(),
+        NavigatorTab::Sessions,
+        "the cell never carries the active tab with it"
     );
 
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
@@ -1952,7 +1971,7 @@ async fn a_tab_chord_moves_the_rows_cursor_with_the_tab() {
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
 
     // Resting on `+` and then switching tabs keeps the cursor on `+`.
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
@@ -1967,8 +1986,8 @@ async fn a_tab_chord_moves_the_rows_cursor_with_the_tab() {
 }
 
 /// The drawn row and the pointer's hit target are one geometry: three segments
-/// sharing their edges, the `+` in the last of them, and its joint surviving the
-/// list's top border, which repaints that whole row (`§9.6`).
+/// sharing their edges, the `+` between the two tabs, and its joints surviving
+/// the list's top border, which repaints that whole row (`§9.6`).
 #[tokio::test]
 async fn the_drawn_tab_row_carries_the_plus_cell() {
     use ratatui::backend::TestBackend;
@@ -1983,11 +2002,22 @@ async fn the_drawn_tab_row_carries_the_plus_cell() {
         .navigator_new_session_area
         .expect("a repository frame draws the cell");
     let (x, y) = (cell.x, cell.y);
-    assert_eq!(buffer[(x, y)].symbol(), "┬", "top joint");
+    let right = cell.x + cell.width - 1;
+    assert_eq!(buffer[(x, y)].symbol(), "┬", "top joint with `Sessions`");
+    assert_eq!(buffer[(right, y)].symbol(), "┬", "top joint with `Files`");
     assert_eq!(buffer[(x + 1, y + 1)].symbol(), "+", "the glyph");
-    assert_eq!(buffer[(x, y + 2)].symbol(), "┴", "bottom joint");
+    assert_eq!(
+        buffer[(x, y + 2)].symbol(),
+        "┴",
+        "the bottom joint with `Sessions` survives the list's top border"
+    );
+    assert_eq!(
+        buffer[(right, y + 2)].symbol(),
+        "┴",
+        "so does the one with `Files`"
+    );
     assert_eq!(buffer[(x, y + 1)].symbol(), "│");
-    assert_eq!(buffer[(x + 2, y + 1)].symbol(), "│");
+    assert_eq!(buffer[(right, y + 1)].symbol(), "│");
     assert_ne!(
         buffer[(x + 1, y + 1)].style().bg,
         Some(theme::accent_soft_bg()),
@@ -1999,8 +2029,8 @@ async fn the_drawn_tab_row_carries_the_plus_cell() {
         .unwrap();
 }
 
-/// The row's third stop is the `+` cell: `←`/`→` walk `Sessions · Files · +`,
-/// stop at each end, and `Enter` on the cell creates a session — the same
+/// The row's stops run `Sessions · + · Files` left to right: `←`/`→` walk them,
+/// stop at each end, and `Enter` on the `+` cell creates a session — the same
 /// prompt-less create the Sessions list's `n` runs (`FORGE-DESIGN §7.7`).
 #[tokio::test]
 async fn the_tab_rows_plus_cell_creates_a_session() {
@@ -2016,7 +2046,13 @@ async fn the_tab_rows_plus_cell_creates_a_session() {
     // `↑` lands on the tab on screen, never on the `+` cell.
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
 
+    // The right end of the row does not wrap back to the `+` cell.
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
@@ -2032,19 +2068,6 @@ async fn the_tab_rows_plus_cell_creates_a_session() {
     );
     assert!(app.navigator_tab_row_focused, "the row keeps the keyboard");
 
-    // The right end of the row does not wrap back to `Sessions`.
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
     let known: Vec<uuid::Uuid> = app
         .session_chrome
         .iter()
@@ -2076,12 +2099,15 @@ async fn the_tab_rows_plus_cell_creates_a_session() {
 }
 
 /// A click on the `+` cell is the same verb the row's `Enter` runs there, and it
-/// has to beat the `Files` tab branch it sits inside.
+/// has to beat the tab branch: the cell shares an edge with each tab, so a
+/// mis-route would read as a tab switch.
 #[tokio::test]
 async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
     use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Sessions;
+    // `Files` is the stricter case: the cell sits beside the `Sessions` tab,
+    // so a mis-route there would switch tabs instead of creating.
+    app.navigator_tab = NavigatorTab::Files;
     app.navigator_tab_explicit = true;
     draw_app(&mut app, 120, 40);
     let cell = app
@@ -2099,8 +2125,8 @@ async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
 
     assert_eq!(
         app.effective_navigator_tab(),
-        NavigatorTab::Sessions,
-        "the click must not switch to the tab the cell sits inside"
+        NavigatorTab::Files,
+        "the click must not switch to the tab the cell sits beside"
     );
     let created = wait_for_chrome_session(&mut app, |task| !known.contains(&task.session_id)).await;
     assert!(created.label.is_empty());
