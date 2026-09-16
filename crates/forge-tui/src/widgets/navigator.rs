@@ -80,14 +80,16 @@ pub(crate) const NEW_SESSION_CELL_WIDTH: u16 = 3;
 pub(crate) const MIN_NEW_SESSION_ROW_WIDTH: u16 = 28;
 
 /// The `+` cell's rect on the navigator tab row, or `None` when the row cannot
-/// carry it. Painting, keyboard stops and pointer routing all read this, so the
-/// three can never disagree about whether the cell exists or where it is.
+/// carry it. The cell sits directly beside the `Sessions` tab, sharing its
+/// edge with it, so the create verb reads as acting on sessions. Painting,
+/// keyboard stops and pointer routing all read this, so the three can never
+/// disagree about whether the cell exists or where it is.
 pub(crate) fn new_session_cell(area: Rect) -> Option<Rect> {
     if area.width < MIN_NEW_SESSION_ROW_WIDTH || area.height == 0 {
         return None;
     }
     Some(Rect::new(
-        area.right() - NEW_SESSION_CELL_WIDTH,
+        area.x + SESSIONS_TAB_WIDTH.saturating_sub(1),
         area.y,
         NEW_SESSION_CELL_WIDTH,
         area.height,
@@ -123,23 +125,26 @@ impl Widget for NavigatorTabs {
             return;
         }
         let inactive = theme::metadata_style();
-        // The `+` cell takes its columns from the `Files` tab, which is the
-        // only elastic box on the row. One source of truth for both.
+        // The `+` cell sits directly beside the `Sessions` tab, sharing its
+        // edge with it, so the create verb reads as acting on sessions.
+        // One source of truth for painting, keyboard stops and pointer routing.
         let new_session = new_session_cell(area);
-        let files_right = new_session
-            .map(|cell| cell.x + 1)
-            .unwrap_or_else(|| area.right());
-        for (index, tab) in [NavigatorTab::Sessions, NavigatorTab::Files]
-            .into_iter()
-            .enumerate()
+        let split = SESSIONS_TAB_WIDTH.min(area.width);
+        let sessions_area = Rect::new(area.x, area.y, split, area.height);
+        let files_area = if let Some(cell) = new_session {
+            let x = cell.x + cell.width.saturating_sub(1);
+            Rect::new(x, area.y, area.right().saturating_sub(x), area.height)
+        } else {
+            let x = area.x + split.saturating_sub(1);
+            Rect::new(x, area.y, area.right().saturating_sub(x), area.height)
+        };
+        for (index, (tab, tab_area)) in [
+            (NavigatorTab::Sessions, sessions_area),
+            (NavigatorTab::Files, files_area),
+        ]
+        .into_iter()
+        .enumerate()
         {
-            let split = SESSIONS_TAB_WIDTH.min(area.width);
-            let tab_area = if index == 0 {
-                Rect::new(area.x, area.y, split, area.height)
-            } else {
-                let x = area.x + split.saturating_sub(1);
-                Rect::new(x, area.y, files_right.saturating_sub(x), area.height)
-            };
             let is_active = tab == self.tab;
             let hovered = !is_active && self.hover == Some(tab);
             // The tab strip is the navigator panel's own top edge, not a small
@@ -217,11 +222,11 @@ impl Widget for NavigatorTabs {
             }
         }
         if let Some(cell) = new_session {
-            // A third segment of the row's frame, sharing its edge with the
-            // `Files` tab. It is not a tab: it never takes the `accent_soft`
-            // ground, so it cannot be mistaken for one. It takes the row's
-            // focus step with the outlines (`§9.6`) and adds the accent to the
-            // glyph only while the row's cursor rests here.
+            // A segment of the row's frame beside the `Sessions` tab, sharing
+            // its edge with it. It is not a tab: it never takes the
+            // `accent_soft` ground, so it cannot be mistaken for one. It takes
+            // the row's focus step with the outlines (`§9.6`) and adds the
+            // accent to the glyph only while the row's cursor rests here.
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -257,14 +262,20 @@ impl Widget for NavigatorTabs {
                 buf.set_string(glyph_x, inner.y, "+", glyph_style);
             }
         }
-        if area.height >= 3 && area.width > SESSIONS_TAB_WIDTH {
-            buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y)].set_symbol("┬");
-            buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y + area.height - 1)].set_symbol("┴");
+        if area.height >= 3 {
             if let Some(cell) = new_session {
-                // Re-stamp the joint the `Files` tab's right corner would
-                // otherwise round off, exactly as the first one does.
+                // The cell sits directly after the `Sessions` tab, so the
+                // shared edge is the Sessions tab's right edge; the `Files`
+                // tab starts on the cell's own right edge. Re-stamp both
+                // joints the tab corners would otherwise round off.
                 buf[(cell.x, area.y)].set_symbol("┬");
                 buf[(cell.x, area.y + area.height - 1)].set_symbol("┴");
+                let right = cell.x + cell.width.saturating_sub(1);
+                buf[(right, area.y)].set_symbol("┬");
+                buf[(right, area.y + area.height - 1)].set_symbol("┴");
+            } else if area.width > SESSIONS_TAB_WIDTH {
+                buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y)].set_symbol("┬");
+                buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y + area.height - 1)].set_symbol("┴");
             }
         }
     }
@@ -583,22 +594,29 @@ mod tests {
         );
     }
 
-    /// The `+` cell is the row's third segment: its own frame, its own joints,
-    /// and a glyph — but never the active tab's `accent_soft` ground, so it
-    /// cannot be read as a third tab (`FORGE-DESIGN §7.7`, §9.6).
+    /// The `+` cell is its own segment of the row: its own frame, its own
+    /// joints, and a glyph — but never the active tab's `accent_soft` ground,
+    /// so it cannot be read as a third tab (`FORGE-DESIGN §7.7`, §9.6). It sits
+    /// directly beside the `Sessions` tab, sharing that tab's right edge, so
+    /// the create verb reads as acting on sessions.
     #[test]
     fn the_row_carries_a_new_session_cell_that_is_not_a_tab() {
         let buffer = render_tabs(40, NavigatorTab::Sessions, 0, None);
         let cell = new_session_cell(buffer.area).expect("the row is wide enough");
-        assert_eq!(cell.x, 37, "the cell sits at the row's right end");
+        assert_eq!(
+            cell.x,
+            SESSIONS_TAB_WIDTH - 1,
+            "the cell shares the `Sessions` tab's right edge"
+        );
 
-        // Joined to the `Files` tab's frame on its own left edge.
+        // Joined to the `Sessions` tab's frame on its own left edge, and to the
+        // `Files` tab's on its right.
         assert_eq!(buffer[(cell.x, 0)].symbol(), "┬");
         assert_eq!(buffer[(cell.x, 2)].symbol(), "┴");
         assert_eq!(buffer[(cell.x + 1, 1)].symbol(), "+");
         assert_eq!(
             buffer[(cell.x + 1, 1)].bg,
-            render_tabs(40, NavigatorTab::Files, 0, None)[(39, 1)].bg,
+            theme::panel().bg.expect("panel ground"),
             "the cell is unfilled: it never takes a tab's active ground"
         );
         assert!(
@@ -757,13 +775,15 @@ mod tests {
 
         // The chip fits the tab completely: every inner cell of the row —
         // padding included — carries the ground.
+        let cell = new_session_cell(buffer.area).expect("the row is wide enough");
+        let files_left = cell.x + cell.width - 1;
         assert_eq!(
-            buffer[(35, 1)].style().bg,
+            buffer[(files_left + 1, 1)].style().bg,
             Some(soft),
             "active tab ground stops short of the tab edge"
         );
         assert_eq!(
-            buffer[(12, 1)].style().bg,
+            buffer[(buffer.area.right() - 2, 1)].style().bg,
             Some(soft),
             "active tab ground stops short of the tab edge"
         );
@@ -794,17 +814,17 @@ mod tests {
     }
 
     /// Each label sits in the middle of its own tab. The two tabs own
-    /// different widths — Sessions is fixed, Files takes the remainder — and
-    /// the label is centred in that width rather than in the space a badge
-    /// would leave, so the axes stay the tab's own.
+    /// different widths — Sessions is fixed, Files takes the remainder minus
+    /// the `+` cell — and the label is centred in that width rather than in the
+    /// space a badge would leave, so the axes stay the tab's own.
     #[test]
     fn each_label_is_centred_in_its_own_tab() {
         let buffer = render_tabs(40, NavigatorTab::Sessions, 0, None);
         // Sessions: x 0..12, inner 1..10, eight cells of label -> one pad each side.
         assert_eq!(cell_x(&buffer, "S", 1), 2);
-        // Files: x 11..38 — the `+` cell owns 37..40 — inner 12..37, five cells
-        // of label -> ten spaces either side.
-        assert_eq!(cell_x(&buffer, "F", 1), 22);
+        // The `+` cell owns x 11..14, so Files runs x 13..40 — inner 14..39,
+        // five cells of label -> ten spaces either side.
+        assert_eq!(cell_x(&buffer, "F", 1), 24);
     }
 
     /// The needs-you badge keeps its right edge and the label keeps its
@@ -813,10 +833,10 @@ mod tests {
     #[test]
     fn the_badge_holds_the_right_edge_and_yields_to_a_narrow_tab() {
         let wide = render_tabs(40, NavigatorTab::Files, 2, None);
-        // The badge keeps the right edge of the `Files` tab, which the `+` cell
-        // now bounds rather than the column edge.
-        assert_eq!(cell_x(&wide, "2", 1), 31);
-        assert_eq!(cell_x(&wide, "F", 1), 22, "the badge moved the label");
+        // The badge keeps the right edge of the `Files` tab, which the column
+        // edge bounds.
+        assert_eq!(cell_x(&wide, "2", 1), 33);
+        assert_eq!(cell_x(&wide, "F", 1), 24, "the badge moved the label");
 
         let narrow = render_tabs(20, NavigatorTab::Files, 2, None);
         assert_eq!(cell_x(&narrow, "F", 1), 13, "label is not centred");

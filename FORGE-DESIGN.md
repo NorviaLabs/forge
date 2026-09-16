@@ -447,7 +447,7 @@ surface. The old top task strip is superseded (`§11`).
   cannot afford a fourth, and `Files` is the first thing to collapse (`§7.3`).
 - The tab row is reachable from the keyboard: `↑` at the first row of either
   tab's list moves onto the row, where `←` / `→` walk its stops left to right —
-  `Sessions`, `Files`, `+` — `Enter` activates the stop the cursor rests on,
+  `Sessions`, `+`, `Files` — `Enter` activates the stop the cursor rests on,
   `↓` / `Esc` step back into the pane the active tab shows, and every other key
   is inert on the row. The row is a sub-focus of the column, never a `Tab` stop
   (`§8.3`).
@@ -456,11 +456,14 @@ surface. The old top task strip is superseded (`§11`).
   marks it, so the tab bar keeps showing which tab is active (`§9.6`). It runs
   the same prompt-less create as `n` in the list and `/new` in the composer, so
   all three stay one verb; the session is named from the first prompt submitted
-  in its composer. It is the row's rightmost stop, reachable from either tab
-  without switching tabs, and clickable. Its three columns come from the
-  `Files` tab — the only elastic box on the row — so on navigators narrow
-  enough for the need badge to fit, the badge needs three more columns before
-  it reappears beside the cell.
+  in its composer. It is docked to the `Sessions` tab — sharing that tab's
+  right edge, immediately left of `Files` — so the create verb reads as acting
+  on sessions rather than on the row at large or on `Files`, which is the one
+  thing that was ambiguous when it sat at the row's far right. It stays
+  reachable from either tab without switching tabs, and clickable. Its three
+  columns come from the `Files` tab — the only elastic box on the row — so on
+  navigators narrow enough for the need badge to fit, the badge needs three
+  more columns before it reappears beside the cell.
 - Default tab: `Sessions` when more than one session exists, `Files` otherwise.
   The choice is remembered for the session.
 - **Sessions tab** is a vertical, attention-ordered list. Only three states are
@@ -519,7 +522,7 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 | Next visible block | `Tab` (while the `Panel` block holds the keyboard, plain `Tab` goes to its shell) |
 | Previous visible block | `Shift+Tab` |
 | Navigator tabs `Sessions` / `Files` (repository mode) | `Ctrl+1` / `Ctrl+2`; `Ctrl+E` flips the two (`Ctrl+1` also focuses the list) |
-| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `Files` · `+`, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
+| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `+` · `Files`, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |
@@ -747,15 +750,15 @@ the single plan surface.
   `§8.3`), both outlines step to the L3 accent so the row reads as the thing
   being driven. The active tab keeps its ground and hue in that state, so the
   focus signal never stands in for the active-tab signal.
-- The row's `+` cell is the row's third segment, sharing its frame edges with
-  the tab boxes and taking the same focus step on its outline while the row
-  holds the keyboard. It is not a tab and never carries a tab's treatment: no
-  `accent_soft` ground in any state, so the active-tab signal stays the tab
-  bar's alone. Its glyph is muted by default, takes the hover ground plus a
-  weight step under the pointer, and steps to accent and bold only while the
-  row's cursor rests on it. Below the width the navigator column is laid out at
-  the cell is dropped rather than drawn cramped, and it is then skipped as a
-  cursor stop, so the frame and the keyboard can never disagree.
+- The row's `+` cell shares the `Sessions` tab's right edge and the `Files`
+  tab's left edge, so it reads as the `Sessions` tab's own create affordance.
+  It is not a tab and never carries a tab's treatment: no `accent_soft` ground
+  in any state, so the active-tab signal stays the tab bar's alone. Its glyph
+  is muted by default, takes the hover ground plus a weight step under the
+  pointer, and steps to accent and bold only while the row's cursor rests on
+  it. Below the width the navigator column is laid out at the cell is dropped
+  rather than drawn cramped, and it is then skipped as a cursor stop, so the
+  frame and the keyboard can never disagree.
 - Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.
 - Active file and selected row may differ; distinguish them.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.

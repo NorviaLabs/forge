@@ -105,9 +105,9 @@ impl TuiApp {
         if self.pointer_blocked() {
             return Ok(());
         }
-        // The `+` cell is checked before the tab row: it sits inside the
-        // `Files` tab's column range, so the tab branch would otherwise claim
-        // the click as a switch to `Files`.
+        // The `+` cell is checked before the tab row: it shares the `Sessions`
+        // tab's right edge and the `Files` tab's left edge, so the tab branch
+        // would otherwise claim the click as a tab switch.
         if let Some(area) = self.navigator_new_session_area {
             if cell_inside(area, col, row) {
                 self.click_navigator_new_session();
@@ -817,6 +817,9 @@ impl TuiApp {
 }
 
 /// Tab boundary shared with painting, used by both click and hover routing.
+/// The `+` cell straddles these columns and is claimed before this runs, so
+/// anything that reaches here is either left of the `Sessions` tab's edge or
+/// right of the `Files` tab's, never the cell itself.
 fn navigator_tab_at(col: u16, area: Rect) -> crate::widgets::NavigatorTab {
     use crate::widgets::NavigatorTab;
     let files_x = area.x + crate::widgets::navigator::SESSIONS_TAB_WIDTH;

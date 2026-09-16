@@ -533,9 +533,12 @@ impl TuiApp {
                     )]
                         .set_symbol("┴");
                     // The list's top border repaints the divider row, so the
-                    // `+` cell's joint is stamped here too, beside the other two.
+                    // `+` cell's own right-edge joint is stamped here too. The
+                    // cell's left edge is the `Sessions` tab's right edge, which
+                    // the stamp above already covers.
                     if let Some(cell) = self.navigator_new_session_area {
-                        buf[(cell.x, divider_y)].set_symbol("┴");
+                        let right = cell.x + cell.width.saturating_sub(1);
+                        buf[(right, divider_y)].set_symbol("┴");
                     }
                 }
             } else {
