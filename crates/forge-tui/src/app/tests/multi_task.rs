@@ -301,16 +301,22 @@ async fn quit_closes_selected_session_before_exiting_on_last_session() {
     for _ in 0..300 {
         app.poll_supervisor_events();
         app.poll_pending_commands();
-        let closed = app.selected_session_id == primary_id
-            && !app
-                .session_chrome
-                .iter()
-                .any(|item| item.session_id == sibling_id);
+        let closed = !app
+            .session_chrome
+            .iter()
+            .any(|item| item.session_id == sibling_id);
         if closed {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    // The roster echo may lag the close reply: the selection moves to the
+    // surviving sibling on the completion tick, so the commandline is back
+    // on a usable session even before the navigator drops the closed row.
+    assert_eq!(
+        app.selected_session_id, primary_id,
+        "the commandline must return to a usable session once the close lands"
+    );
     assert!(!app.exit.is_requested());
     assert_eq!(app.selected_session_id, primary_id);
     assert!(!app
