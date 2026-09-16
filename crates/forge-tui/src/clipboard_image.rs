@@ -17,6 +17,7 @@ const CLIPBOARD_NOT_AN_IMAGE: &str = "clipboard is not an image";
 
 /// Raised by the macOS reader when no image flavor is on the clipboard, so
 /// "there is no image" stays distinct from "reading it failed".
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const NO_IMAGE_MARKER: &str = "FORGE_CLIPBOARD_NO_IMAGE";
 
 /// PNG/JPEG/GIF/WebP bytes from the machine running Forge.
