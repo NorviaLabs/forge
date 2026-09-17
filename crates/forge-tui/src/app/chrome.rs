@@ -874,6 +874,16 @@ impl TuiApp {
         // Spinner frames advance with the event loop, not the wall clock:
         // pausing work pauses motion, and tests can step frames exactly.
         self.busy_state.tick();
+        // The session rows keep their own step. A background session's turn can
+        // be running while the workspace-visible one is idle, and a row that
+        // says "running" must move whether or not it owns the workspace.
+        if self
+            .session_chrome
+            .iter()
+            .any(SessionChromeItem::is_working)
+        {
+            self.session_row_step = self.session_row_step.wrapping_add(1);
+        }
     }
 
     fn refresh_progress_state(&mut self) {

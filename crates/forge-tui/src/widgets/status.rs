@@ -177,7 +177,10 @@ impl TurnLifecycle {
             Self::Completed => "✓",
             Self::Failed => "✗",
             Self::Cancelled => "■",
-            Self::Interrupted => "!",
+            // Not `!`: that is `Waiting`'s mark, and "blocked on you" and "no
+            // recoverable runtime" are the two the operator most needs apart.
+            // The empty set reads as what it is — the runtime is gone.
+            Self::Interrupted => "∅",
         }
     }
 }
@@ -1210,5 +1213,50 @@ mod tests {
         assert_eq!(durable.current_state_label(), "Cancelled");
         let durable_busy = status_model(TaskLifecycle::Cancelled, true, BusyPhase::Idle);
         assert_eq!(durable_busy.current_state_label(), "Cancelled");
+    }
+
+    /// Every lifecycle the status bar can show, for the marker tests.
+    const ALL_LIFECYCLES: [TurnLifecycle; 7] = [
+        TurnLifecycle::Ready,
+        TurnLifecycle::Working,
+        TurnLifecycle::Waiting,
+        TurnLifecycle::Completed,
+        TurnLifecycle::Failed,
+        TurnLifecycle::Cancelled,
+        TurnLifecycle::Interrupted,
+    ];
+
+    /// `Waiting` and `Interrupted` both rendered `!`, so "blocked on you" and
+    /// "no recoverable runtime" — the two states an operator most needs apart —
+    /// were the same glyph. No two may share one; `Ready` is the only lifecycle
+    /// allowed no marker, because its label stands on its own.
+    #[test]
+    fn no_two_lifecycles_share_a_symbol() {
+        let mut seen: Vec<(&'static str, TurnLifecycle)> = Vec::new();
+        for life in ALL_LIFECYCLES {
+            let symbol = life.symbol();
+            if symbol.is_empty() {
+                assert_eq!(life, TurnLifecycle::Ready, "{life:?} lost its marker");
+                continue;
+            }
+            if let Some((symbol, other)) = seen.iter().find(|(seen, _)| *seen == symbol) {
+                panic!("{life:?} and {other:?} both render {symbol:?}");
+            }
+            seen.push((symbol, life));
+        }
+        assert_eq!(seen.len(), 6, "one marker per lifecycle but Ready");
+    }
+
+    /// A marker is one column, so the state label starts in the same place
+    /// whatever the lifecycle.
+    #[test]
+    fn a_lifecycle_marker_is_at_most_one_column() {
+        for life in ALL_LIFECYCLES {
+            assert!(
+                Span::raw(life.symbol()).width() <= 1,
+                "{life:?} renders {:?}",
+                life.symbol()
+            );
+        }
     }
 }

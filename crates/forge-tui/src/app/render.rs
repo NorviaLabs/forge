@@ -318,11 +318,15 @@ impl TuiApp {
                 .iter()
                 .filter(|task| task.is_working())
                 .count();
+            // The collapsed column is one row wide, so the one thing worth
+            // keeping there is whether work is in flight — the same spinner
+            // frame the session rows step, on the same clock (`§482`).
+            let frame = crate::widgets::SessionRowState::spinner_frame(self.session_row_step);
             match (need, working) {
                 (0, 0) => None,
                 (n, 0) => Some(format!("⌄ {n} need")),
-                (0, w) => Some(format!("⌄ {w} working")),
-                (n, w) => Some(format!("⌄ {n} need · {w} working")),
+                (0, w) => Some(format!("⌄ {frame} {w} working")),
+                (n, w) => Some(format!("⌄ {n} need · {frame} {w} working")),
             }
         } else {
             None
@@ -442,24 +446,32 @@ impl TuiApp {
                             } else {
                                 task.label.clone()
                             };
-                            let state = task.secondary.clone().unwrap_or_else(|| "idle".into());
+                            let state_label =
+                                task.secondary.clone().unwrap_or_else(|| "idle".into());
                             let need = task.attention;
                             let working = task.is_working();
-                            let glyph = if need {
-                                '●'
+                            // Precedence: a turn stopped for the operator
+                            // outranks a live one, and both outrank the
+                            // lifecycle. Reading the marker from the flags
+                            // alone — as this did — renders every finished
+                            // session as idle, so a failed turn and a clean one
+                            // were the same glyph.
+                            let state = if need {
+                                crate::widgets::SessionRowState::Waiting
+                            } else if task.is_queued() {
+                                crate::widgets::SessionRowState::Queued
                             } else if working {
-                                '◐'
+                                crate::widgets::SessionRowState::Working
                             } else {
-                                '○'
+                                crate::widgets::SessionRowState::from_lifecycle(task.lifecycle)
                             };
                             let qualifier = if need {
                                 format!("needs you · {}", relative_age(task.updated_at))
                             } else {
-                                format!("{state} · {}", relative_age(task.updated_at))
+                                format!("{state_label} · {}", relative_age(task.updated_at))
                             };
                             crate::widgets::SessionRow {
-                                glyph,
-                                need,
+                                state,
                                 label,
                                 qualifier,
                                 selected: task.selected,
@@ -481,9 +493,14 @@ impl TuiApp {
                                 message.role == forge_types::MessageRole::Assistant
                                     && !message.content.trim().is_empty()
                             })?;
+                        // Wrap to the peek's own text column, so a line is
+                        // never handed to the widget already too wide for it.
                         Some(wrap_to_width(
                             last.content.trim(),
-                            list_area.width.saturating_sub(3) as usize,
+                            list_area
+                                .width
+                                .saturating_sub(crate::widgets::TEXT_COL as u16)
+                                as usize,
                             6,
                         ))
                     });
@@ -498,6 +515,7 @@ impl TuiApp {
                             focused: navigator_focused,
                             peek: peek_panel.as_ref(),
                             hover: self.hover_session,
+                            step: self.session_row_step,
                         },
                         list_area,
                     );

@@ -88,6 +88,7 @@ impl TuiApp {
                 session_id: startup_resume_session_id,
             },
             busy_state: BusyState::default(),
+            session_row_step: 0,
             status_state: StatusMessageState {
                 message: String::new(),
             },
@@ -305,6 +306,7 @@ impl TuiApp {
                 session_id: None,
             },
             busy_state: BusyState::default(),
+            session_row_step: 0,
             status_state: StatusMessageState {
                 message: String::new(),
             },
