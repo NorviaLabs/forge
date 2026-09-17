@@ -1014,7 +1014,7 @@ impl TuiApp {
                 .padding(ratatui::widgets::Padding::horizontal(
                     crate::design::PANE_PAD_X,
                 ))
-                .style(theme::panel());
+                .style(theme::canvas());
             let conversation_area = sidebar_block.inner(sidebar);
             self.conversation_area = Some(conversation_area);
             let bottom_padding = if self.session_view.is_awaiting_approval() {

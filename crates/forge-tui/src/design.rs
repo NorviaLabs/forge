@@ -38,12 +38,10 @@ pub const FRAME_INSET_X: u16 = 1;
 /// Internal pane padding, each side, in addition to the border column.
 pub const PANE_PAD_X: u16 = 1;
 /// Blank column between adjacent columns (Files | Workspace | Sidebar).
-pub const PANE_GAP_X: u16 = 2;
+pub const PANE_GAP_X: u16 = 1;
 /// Blank row between vertically stacked panes (left column ↔ bottom panel).
 pub const PANE_GAP_Y: u16 = 1;
-/// Blank row between the content band and the chrome rows (StatusBar /
-/// Footer), so the chrome reads as separate from the work surface.
-pub const CHROME_GAP_Y: u16 = 1;
+pub const CHROME_GAP_Y: u16 = 0;
 /// Blank row between the transcript and the composer.
 pub const COMPOSER_GAP_Y: u16 = 1;
 /// Leading inset for nested list rows (the explorer's tree).
@@ -105,9 +103,9 @@ mod tests {
     fn metrics_match_design_system() {
         assert_eq!(FRAME_INSET_X, 1);
         assert_eq!(PANE_PAD_X, 1);
-        assert_eq!(PANE_GAP_X, 2);
+        assert_eq!(PANE_GAP_X, 1);
         assert_eq!(PANE_GAP_Y, 1);
-        assert_eq!(CHROME_GAP_Y, 1);
+        assert_eq!(CHROME_GAP_Y, 0);
         assert_eq!(COMPOSER_GAP_Y, 1);
         assert_eq!(LIST_INSET_X, crate::design::TREE_INDENT_W);
         assert_eq!(TREE_TOP_GAP_Y, 1);

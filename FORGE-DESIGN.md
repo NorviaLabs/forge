@@ -394,18 +394,19 @@ Explorer-first collapse is deliberate: the composer (in the sidebar) outranks th
 
 ### 7.5 Cell spacing
 
-Use a compact cell-based scale, biased airy so panes never touch and text
-never sits flush against a border:
+Use a compact cell-based scale so the shell reads as one application while
+text keeps breathing room inside borders:
 
-- `0`: no gap; tightly related glyphs.
+- `0`: chrome gap (`CHROME_GAP_Y`); pane borders separate chrome from content.
 - `1`: standard inline gap, outer frame gutter (`FRAME_INSET_X`), interior
-  padding (`PANE_PAD_X`), vertical pane gap (`PANE_GAP_Y`), chrome gap
-  (`CHROME_GAP_Y`), and transcript ↔ composer gap (`COMPOSER_GAP_Y`).
-- `2`: gutter between adjacent columns (`PANE_GAP_X`).
+  padding (`PANE_PAD_X`), column gutter (`PANE_GAP_X`), vertical pane gap
+  (`PANE_GAP_Y`), and transcript ↔ composer gap (`COMPOSER_GAP_Y`).
 
-Concretely (`design.rs`): two blank columns separate Files, Workspace and the
-Sidebar; one blank row separates chrome from content and transcript from
-composer. Border plus `PANE_PAD_X` puts text two cells from the pane edge.
+Concretely (`design.rs`): one blank column separates Files, Workspace and the
+Sidebar; no blank row separates chrome from content. One blank row remains
+between transcript and composer. Border plus `PANE_PAD_X` puts text two cells
+from the pane edge. The transcript frame and its padding use the same canvas
+background as its content, avoiding a contrasting outer band.
 Composer, feedback, queue, and bottom-panel text share this origin
 (`TEXT_INSET`). Rounded frames use Ratatui border glyphs and semantic theme
 tokens; they do not emulate pixel shadows or change terminal typography.
