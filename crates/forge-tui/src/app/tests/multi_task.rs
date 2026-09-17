@@ -2415,6 +2415,137 @@ async fn x_archives_and_cleans_an_idle_managed_session() {
         .unwrap();
 }
 
+/// A clean archive must report the checkout removal, not the blocked-cleanup
+/// warning. A removed Session leaves the roster entirely — `snapshots` drops
+/// the row once its checkout is gone — so "still listed" is the signal that a
+/// checkout is on disk, never a `removed` row the roster does not carry.
+#[tokio::test]
+async fn a_clean_archive_reports_the_checkout_removed_not_uncommitted_work() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let sibling = create_promptless_session(&mut app).await;
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling.session_id)
+        .expect("sibling in list");
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling.session_id)
+        .expect("sibling still in list");
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        // The removal's roster echo drops the row; the tracked command's
+        // reply can land one tick later, so wait for both before reading the
+        // feedback the retirement follow-up sets.
+        let settled = app.pending_command_completions.is_empty()
+            && app
+                .supervisor
+                .as_ref()
+                .is_some_and(|supervisor| !supervisor.snapshots.contains_key(&sibling.session_id));
+        if settled || std::time::Instant::now() >= deadline {
+            assert!(settled, "the archived session's checkout should be gone");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(
+        app.feedback.text, "worktree removed · branch kept",
+        "a clean archive removed the checkout; the row must not claim uncommitted work"
+    );
+    assert_eq!(app.feedback.severity, FeedbackSeverity::Ok);
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// The other side of the same branch: a checkout holding real uncommitted work
+/// is kept, so the row stays in the roster as `retained` and the warning is
+/// the honest report.
+#[tokio::test]
+async fn a_blocked_cleanup_reports_the_kept_checkout() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let sibling = create_promptless_session(&mut app).await;
+    let workspace = app
+        .supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&sibling.session_id))
+        .map(|snapshot| snapshot.task.workspace.clone())
+        .expect("the sibling's worktree");
+    std::fs::write(workspace.join("uncommitted.txt"), "keep me").unwrap();
+
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling.session_id)
+        .expect("sibling in list");
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling.session_id)
+        .expect("sibling still in list");
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        let settled = app.pending_command_completions.is_empty()
+            && app
+                .supervisor
+                .as_ref()
+                .and_then(|supervisor| supervisor.snapshots.get(&sibling.session_id))
+                .is_some_and(|snapshot| {
+                    snapshot.task.lifecycle == forge_session::SessionLifecycle::Retained
+                });
+        if settled || std::time::Instant::now() >= deadline {
+            assert!(settled, "the blocked cleanup should settle as retained");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(app.feedback.severity, FeedbackSeverity::Warn);
+    assert_eq!(app.feedback.text, "worktree kept — it has uncommitted work");
+    assert!(
+        app.session_chrome
+            .iter()
+            .any(|item| item.session_id == sibling.session_id),
+        "a retained Session still owns its checkout, so the row stays listed"
+    );
+    assert!(workspace.join("uncommitted.txt").is_file());
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// Below the navigator width the session state collapses to a status chip.
 /// Regression for #643: `attention` was sticky, so a session that once stopped
 /// for input kept showing `● needs you` while its turn was actually running.
