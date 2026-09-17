@@ -689,14 +689,17 @@ impl TuiApp {
             CommandFollowUp::Retirement { session_id } => {
                 // The command result is not the whole story: a cleanup blocked by
                 // uncommitted work still returns success, because archiving
-                // succeeded and the checkout was deliberately kept. `removed` in
-                // the roster is the one signal that means the checkout is gone,
-                // so the parked view is only dropped when the row says so.
+                // succeeded and the checkout was deliberately kept. A removed
+                // Session leaves the roster entirely — `snapshots` drops the row
+                // once its checkout is gone — while a blocked cleanup keeps it
+                // there as `retained`. So it is the row's *presence*, not a
+                // `removed` lifecycle it never carries, that means the checkout
+                // is still on disk.
                 let removed = self
                     .supervisor
                     .as_ref()
                     .and_then(|supervisor| supervisor.snapshots.get(session_id))
-                    .is_some_and(|snapshot| {
+                    .is_none_or(|snapshot| {
                         snapshot.task.lifecycle == forge_session::SessionLifecycle::Removed
                     });
                 if removed {
