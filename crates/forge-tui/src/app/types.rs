@@ -89,6 +89,25 @@ pub(crate) fn session_needs_attention(
         )
 }
 
+/// The severity a session's out-of-band notice carries.
+///
+/// The lifecycle grammar decides it, so a turn can never arrive wearing the
+/// wrong marker: `[✓]` for a completed turn, `[!]` for a failure, `[?]` for one
+/// that stopped waiting on the operator. A cancelled turn is neutral rather
+/// than a success — the operator is the one who stopped it.
+pub(crate) fn session_notice_severity(
+    turn_state: forge_session::SupervisorTurnState,
+) -> crate::widgets::feedback::FeedbackSeverity {
+    use crate::widgets::feedback::FeedbackSeverity as Severity;
+    use forge_session::SupervisorTurnState;
+    match turn_state {
+        SupervisorTurnState::Completed => Severity::Ok,
+        SupervisorTurnState::Failed => Severity::Error,
+        SupervisorTurnState::Waiting | SupervisorTurnState::Interrupted => Severity::Warn,
+        _ => Severity::Info,
+    }
+}
+
 /// Everything the operator's view of one task carries with it across a switch.
 ///
 /// Saved and restored by *moving*, not cloning: several of these hold buffers
@@ -2186,5 +2205,44 @@ mod stream_reveal_tests {
         assert_eq!(stream.revealed_preview(), "");
         stream.preview.push_str("next step");
         assert_eq!(stream.revealed_preview(), "");
+    }
+}
+
+#[cfg(test)]
+mod session_notice_severity_tests {
+    use super::session_notice_severity;
+    use crate::widgets::feedback::FeedbackSeverity as Severity;
+    use forge_session::SupervisorTurnState as State;
+
+    /// Each terminal or input-seeking state gets the marker its meaning earns.
+    #[test]
+    fn the_turn_state_picks_the_marker() {
+        assert_eq!(session_notice_severity(State::Completed), Severity::Ok);
+        assert_eq!(session_notice_severity(State::Failed), Severity::Error);
+        assert_eq!(session_notice_severity(State::Waiting), Severity::Warn);
+        assert_eq!(session_notice_severity(State::Interrupted), Severity::Warn);
+        assert_eq!(session_notice_severity(State::Cancelled), Severity::Info);
+    }
+
+    /// A completed turn is the only one that may announce itself with `[✓]`.
+    /// The bug this replaced reported every state as `Ok`, so a failure read
+    /// `[✓] Session failed`.
+    #[test]
+    fn no_other_state_reports_success() {
+        for state in [
+            State::Idle,
+            State::Queued,
+            State::Running,
+            State::Waiting,
+            State::Failed,
+            State::Cancelled,
+            State::Interrupted,
+        ] {
+            assert_ne!(
+                session_notice_severity(state),
+                Severity::Ok,
+                "{state:?} must not announce itself as a success"
+            );
+        }
     }
 }

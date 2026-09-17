@@ -439,8 +439,8 @@ impl TuiApp {
                 }
                 forge_session::SupervisorEvent::Attention {
                     session_id,
+                    state,
                     message,
-                    ..
                 } => {
                     if session_id != self.selected_session_id {
                         if let Some(task) = self
@@ -454,7 +454,11 @@ impl TuiApp {
                         // while the operator was looking at another one. The
                         // feedback strip used to repeat the same words, in the
                         // conversation pane, for seven seconds instead of two.
-                        self.toast.push_overlay(FeedbackSeverity::Ok, message);
+                        //
+                        // The severity comes from the turn state, so a failed
+                        // turn is never announced with a success tick.
+                        self.toast
+                            .push_overlay(session_notice_severity(state), message);
                     }
                 }
                 forge_session::SupervisorEvent::Stream { session_id, event }
