@@ -1773,8 +1773,13 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .expect("link text present");
         assert_eq!(
             link.style.fg,
+            Some(theme::link_color()),
+            "link takes the link hue"
+        );
+        assert_ne!(
+            link.style.fg,
             Some(theme::text_primary_color()),
-            "link reads at primary weight"
+            "a link must not look like any other underlined run"
         );
         assert_ne!(link.style.fg, Some(theme::accent_color()));
         assert!(link.style.add_modifier.contains(Modifier::UNDERLINED));
@@ -1902,7 +1907,12 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         assert!(label.style.add_modifier.contains(Modifier::UNDERLINED));
         assert_eq!(
             label.style.fg,
-            Some(theme::text_primary_color()),
+            Some(theme::link_color()),
+            "a bare URL is the same link an explicit one is"
+        );
+        assert_ne!(
+            label.style.fg,
+            Some(theme::accent_color()),
             "a link label must not borrow the accent"
         );
     }

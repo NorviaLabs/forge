@@ -188,6 +188,13 @@ pub struct ThemePalette {
     /// Editorial emphasis inside model prose: `*emphasis*` takes this hue at
     /// italic weight. Prose-only, same scope as [`Self::md_strong`].
     pub md_emph: Rgb,
+    /// Hue of an actionable prose link. Links are neutral information rather
+    /// than an outcome, so they take a hue of their own instead of the accent
+    /// (`accent` answers "where am I" — a URL painted with it puts every URL
+    /// in the pane that owns the caret into focus) and instead of a status
+    /// hue. The underline still carries the affordance wherever colour cannot.
+    /// Falls back to `info` when a theme omits it.
+    pub link: Rgb,
     pub syntax: SyntaxPalette,
 }
 
@@ -288,6 +295,11 @@ struct ThemeFile {
     md_strong: Option<Rgb>,
     #[serde(default)]
     md_emph: Option<Rgb>,
+    /// Optional link hue; falls back to `info`, which §5.2 already casts as
+    /// neutral information — what a link is, and what a theme with no opinion
+    /// about links should render it in.
+    #[serde(default)]
+    link: Option<Rgb>,
     syntax: ThemeFileSyntax,
 }
 
@@ -347,6 +359,7 @@ impl From<ThemeFile> for ThemeDefinition {
                     .unwrap_or(blend(file.background, file.surface)),
                 md_strong: file.md_strong.unwrap_or(file.text_primary),
                 md_emph: file.md_emph.unwrap_or(file.text_primary),
+                link: file.link.unwrap_or(file.info),
                 syntax: SyntaxPalette {
                     comment: file.syntax.comment,
                     keyword: file.syntax.keyword,
@@ -462,6 +475,7 @@ default = "#E6EDF3"
         assert_eq!(p.structure, Rgb(0xA0, 0xA0, 0xA0));
         assert_eq!(p.md_strong, Rgb(0xFF, 0xA3, 0x1D));
         assert_eq!(p.md_emph, Rgb(0xC7, 0xD9, 0x6B));
+        assert_eq!(p.link, Rgb(0x4F, 0xC9, 0xDF));
         assert_eq!(p.cursor, p.accent);
         assert!(p.accent_status_collision().is_none());
 
@@ -531,12 +545,15 @@ default = "#E6EDF3"
     /// Theme drops written before the response-structure tokens existed keep
     /// parsing, and their fallbacks derive from the file's own tokens:
     /// `structure` from `info`, `scan_band` from `surface`, `zebra_row` from
-    /// a 50/50 background/surface blend.
+    /// a 50/50 background/surface blend. `link` rides with `structure` on
+    /// `info`: a theme with no opinion about links still gets the
+    /// neutral-information hue rather than plain primary text.
     #[test]
     fn response_structure_tokens_fall_back_for_older_theme_files() {
         let theme = parse_theme_toml(SAMPLE_THEME).unwrap();
         let p = &theme.palette;
         assert_eq!(p.structure, p.info);
+        assert_eq!(p.link, p.info);
         assert_eq!(p.scan_band, p.surface);
         assert_eq!(
             p.zebra_row,
@@ -594,6 +611,17 @@ default = "#E6EDF3"
             assert_ne!(p.structure, Rgb(0, 0, 0), "{} structure", theme.id);
             assert_ne!(p.scan_band, Rgb(0, 0, 0), "{} scan_band", theme.id);
             assert_ne!(p.zebra_row, Rgb(0, 0, 0), "{} zebra_row", theme.id);
+            assert_ne!(p.link, Rgb(0, 0, 0), "{} link", theme.id);
+            assert_ne!(
+                p.link, p.text_primary,
+                "{} link must be its own hue, not plain prose",
+                theme.id
+            );
+            assert_ne!(
+                p.link, p.accent,
+                "{} link must not be the focus hue",
+                theme.id
+            );
         }
     }
 
