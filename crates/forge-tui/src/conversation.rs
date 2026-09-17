@@ -986,17 +986,19 @@ impl ConversationRenderInternals for ConversationModel {
                     // bar outranks the answer below it. Carried to the pane's
                     // right edge so the block still reads as one seamless bar.
                     let ground = theme::user_message();
-                    for line in user_lines.into_iter() {
+                    for mut row in user_lines.into_iter() {
                         // No leading marker — just an indent matching
                         // assistant messages' own left padding.
                         let mut spans = vec![Span::styled(
                             " ".repeat(prefix_width),
                             theme::text().patch(ground),
                         )];
-                        spans.extend(line.spans.into_iter().map(|mut span| {
-                            span.style = span.style.patch(ground);
-                            span
-                        }));
+                        spans.extend(std::mem::take(&mut row.line.spans).into_iter().map(
+                            |mut span| {
+                                span.style = span.style.patch(ground);
+                                span
+                            },
+                        ));
                         let content_width = spans.iter().map(Span::width).sum::<usize>();
                         if content_width < width {
                             spans.push(Span::styled(
@@ -1004,7 +1006,14 @@ impl ConversationRenderInternals for ConversationModel {
                                 theme::text().patch(ground),
                             ));
                         }
-                        lines.push(Line::from(spans));
+                        // The indent is part of the row, so every column it
+                        // moves — the link's included — moves with it.
+                        for link in &mut row.links {
+                            link.columns =
+                                link.columns.start + prefix_width..link.columns.end + prefix_width;
+                        }
+                        row.line = Line::from(spans);
+                        lines.push(row);
                     }
                     if gap {
                         lines.push(Line::from(""));

@@ -734,6 +734,16 @@ separators.
   `javascript:`, an injected `BEL`) renders as plain text with no underline,
   because an affordance that cannot be acted on is worse than none. `accent`
   stays out of it: it means focus ("where am I"), not "this is clickable".
+- **A URL is a link whether or not it was written as markdown.** A bare
+  `http(s)://` URL in an answer, in tool output, or pasted into a prompt carries
+  a destination, because the reader shown a URL is the reader who may want to
+  open it, and asking them to retype it as `[label](url)` is not an affordance.
+  Detection only proposes: `links::autolink_matches` scans, and
+  `links::destination_for` still decides, so this widens what is recognized
+  without widening what may be emitted. Out of scope on purpose — a heading
+  uppercases its label (a destination there would point at text that no longer
+  matches it), and a table cell drops its link table on the way into the row
+  (an underline there would promise a click that cannot happen).
 - **The click belongs to the terminal, so it is never advertised.** Forge emits
   the sequence only for terminals known to render it, resolved once per process
   from `TERM_PROGRAM` with any multiplexer disqualifying (`tmux` before 3.4
