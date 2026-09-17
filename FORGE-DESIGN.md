@@ -199,6 +199,7 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `zebra_row` | Even-row tint zebra-striping a rendered table |
 | `md_strong` | Editorial emphasis: `**strong**` prose hue (orange in the built-ins) |
 | `md_emph` | Editorial emphasis: `*emphasis*` prose hue (greenish yellow in the built-ins) |
+| `link` | Actionable prose link hue (the `info` family in the built-ins) |
 | `syntax.*` | Code highlighting palette |
 
 Do not use shadows. Ratatui depth comes from border weight, contrast and placement.
@@ -287,7 +288,9 @@ Forge inherits the user's terminal font. Never bundle or require a font.
 - Use monospace throughout.
 - Forge may only use terminal attributes: bold, dim, underline, foreground and background.
 - Use bold sparingly: active labels, headings, consequences, status glyphs.
-- Use underline for links or explicit selected actions only.
+- Use underline for links or explicit selected actions only. An underline on
+  its own never says "link": a link carries the `link` hue, which is what
+  separates it from a focused footer chip underlined in `accent`.
 - Use dim only for genuinely secondary metadata and always test legibility.
 - Use italics for model-prose emphasis only, and never as the sole signal.
   Terminal italic support varies, so `md_emph` and the wording carry meaning
@@ -311,6 +314,7 @@ Hierarchy comes from weight, token step and placement — never from size, since
 | Primary content | `text_primary` — assistant response, source code |
 | Prose strong | `md_strong` + bold — key claims inside an answer |
 | Prose emphasis | `md_emph` + italic — qualifications inside an answer |
+| Prose link | `link` + underline — an actionable destination |
 | Supporting content | `text_secondary` — metadata, descriptions |
 | Utility content | `text_muted` — keys, timestamps, counts |
 
@@ -728,19 +732,26 @@ separators.
   display width preserved for Ratatui's buffer diff. Escape bytes must not make
   the diff skip adjacent text. Nothing in the visible text, and nothing in the
   copy path, ever contains an escape byte.
-- **The underline is a promise.** A link renders as `text_primary` plus
-  underline only when its destination may actually be emitted — `http`/`https`,
-  no control bytes, a real host. Every other scheme (`file:`, `mailto:`,
-  `javascript:`, an injected `BEL`) renders as plain text with no underline,
-  because an affordance that cannot be acted on is worse than none. `accent`
-  stays out of it: it means focus ("where am I"), not "this is clickable".
+- **The underline is a promise.** A link renders as `link` plus underline only
+  when its destination may actually be emitted — `http`/`https`, no control
+  bytes, a real host. Every other scheme (`file:`, `mailto:`, `javascript:`, an
+  injected `BEL`) renders as plain text with no underline, because an
+  affordance that cannot be acted on is worse than none. The hue is what tells
+  a link from every other underlined run — §6 keeps underline for links and
+  explicit selected actions, and the focused footer chips already underline in
+  `accent` — while the underline is what keeps the affordance when colour
+  cannot (§5.4). `accent` stays out of the label: it means focus ("where am
+  I"), not "this is clickable".
 - **A URL is a link whether or not it was written as markdown.** A bare
   `http(s)://` URL in an answer, in tool output, or pasted into a prompt carries
   a destination, because the reader shown a URL is the reader who may want to
   open it, and asking them to retype it as `[label](url)` is not an affordance.
   Detection only proposes: `links::autolink_matches` scans, and
   `links::destination_for` still decides, so this widens what is recognized
-  without widening what may be emitted. Out of scope on purpose — a heading
+  without widening what may be emitted. The workspace Editor tab's Markdown
+  preview is the same prose under the same rule: it renders through the
+  links-preserving renderer and marks its rows, so a link in a previewed file
+  is the link it would be in an answer. Out of scope on purpose — a heading
   uppercases its label (a destination there would point at text that no longer
   matches it), and a table cell drops its link table on the way into the row
   (an underline there would promise a click that cannot happen).

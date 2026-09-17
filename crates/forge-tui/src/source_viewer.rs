@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use crate::editor_session::EditorSession;
 use crate::file_explorer::safe_path;
+use crate::links::HyperlinkLine;
 use crate::theme;
 use crate::widgets::input::TEXT_INSET;
 
@@ -155,7 +156,12 @@ pub struct SourceViewer {
     highlighted_lines: Vec<Vec<Span<'static>>>,
     /// Cached rendered Markdown preview. Rebuilt when the pane width or the
     /// source revision changes; empty until the first preview render.
-    preview_lines: Vec<Line<'static>>,
+    ///
+    /// Each row carries the destinations its columns hide, exactly like a
+    /// transcript row: a preview that underlines a link has promised a
+    /// destination, so the destination has to survive layout and reach the
+    /// buffer's cells (`crates/forge-tui/src/links.rs`).
+    preview_lines: Vec<HyperlinkLine>,
     preview_width: usize,
     preview_revision: u64,
     /// In-file search state.
@@ -576,7 +582,12 @@ impl SourceViewer {
     }
 
     pub(crate) fn set_markdown_preview(&mut self, text: &str, width: usize, revision: u64) {
-        self.preview_lines = crate::markdown::render_markdown(text, width.max(1));
+        // The links-preserving render: identical geometry to
+        // `render_markdown`, with each row's destinations kept beside its
+        // columns. Without it a preview underlined a link and threw the
+        // destination away, so the underline promised a click that could not
+        // happen even on a terminal that renders `OSC 8`.
+        self.preview_lines = crate::markdown::render_markdown_links(text, width.max(1));
         self.preview_width = width;
         self.preview_revision = revision;
         let max_top = self.preview_lines.len().saturating_sub(1);
@@ -1026,6 +1037,19 @@ fn paint_vertical_scrollbar(
     if bar_y < body.y + body.height {
         let x = body.x + body.width - 1;
         buf[(x, bar_y)].set_symbol("█").set_style(theme::dim());
+    }
+}
+
+/// Paint one preview row, then attach the destinations its columns hide.
+///
+/// The marking happens after the row is painted, because an `OSC 8` sequence
+/// has no width: it wraps the cell symbols that are already in place, so the
+/// row's geometry is settled before any of it is emitted. Same order and the
+/// same gate as the transcript's `conversation::paint_row`.
+fn paint_preview_row(line: &HyperlinkLine, rect: Rect, buf: &mut Buffer, hyperlinks: bool) {
+    (&line.line).render(rect, buf);
+    if hyperlinks {
+        crate::links::mark_buffer_hyperlinks(buf, rect, &line.links);
     }
 }
 
@@ -1496,13 +1520,16 @@ impl SourceViewerWidget<'_> {
         let count = self.viewer.preview_lines.len();
         let start = self.viewer.preview_top.min(count.saturating_sub(1));
         let end = (start + visible_height).min(count);
+        // Resolved once per frame, exactly as the transcript resolves it: the
+        // environment cannot change under a running TUI, so this is a cached
+        // read rather than a probe.
+        let hyperlinks = crate::links::hyperlinks_enabled();
         for (row, line) in self.viewer.preview_lines[start..end].iter().enumerate() {
             let y = body.y + row as u16;
             if y >= body.y + body.height {
                 break;
             }
-            line.clone()
-                .render(Rect::new(body.x, y, body.width, 1), buf);
+            paint_preview_row(line, Rect::new(body.x, y, body.width, 1), buf, hyperlinks);
         }
 
         paint_vertical_scrollbar(buf, body, start, visible_height, total);
@@ -1664,6 +1691,22 @@ fn compose_source_header(header: &SourceHeader<'_>, width: usize) -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// The text of a rendered row as the screen shows it, with any `OSC 8`
+    /// sequence dropped: a destination is bytes the reader never sees.
+    fn visible_text(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find('\u{1b}') {
+            out.push_str(&rest[..start]);
+            match rest[start..].find('\u{7}') {
+                Some(end) => rest = &rest[start + end + 1..],
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
+    }
 
     fn render_viewer(viewer: &mut SourceViewer) -> String {
         let area = Rect::new(0, 0, 80, 16);
@@ -2740,6 +2783,96 @@ mod tests {
             "raw heading leaked through: {text}"
         );
         assert!(!text.contains("- one"), "raw bullet leaked through: {text}");
+    }
+
+    #[test]
+    fn markdown_preview_carries_link_destinations_to_the_buffer() {
+        let url = "https://example.com/docs";
+        let source = format!("Read [the docs]({url}) first.\n");
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("README.md");
+        fs::write(&path, &source).unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open_for_editor(root.path(), &path);
+        assert!(viewer.toggle_markdown_preview());
+
+        let mut editor = EditorSession::new(&source);
+        let area = Rect::new(0, 0, 60, 14);
+        let mut buf = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+
+        // The label still renders as prose.
+        let text = buffer_text(&buf, area);
+        assert!(
+            visible_text(&text).contains("Read the docs first."),
+            "preview lost the link label:\n{text}"
+        );
+
+        // The destination survived the render and covers the label's columns.
+        let (row, link) = viewer
+            .preview_lines
+            .iter()
+            .find_map(|row| row.links.first().map(|link| (row, link.clone())))
+            .expect("the preview's link kept its destination");
+        assert_eq!(link.destination, url);
+        let row_text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(&row_text[link.columns.clone()], "the docs");
+
+        // And it reaches the cells exactly when this terminal renders OSC 8.
+        if crate::links::hyperlinks_enabled() {
+            assert!(
+                text.contains(&crate::links::osc8(url, "t")),
+                "a preview link never reached the buffer:\n{text:?}"
+            );
+        } else {
+            assert!(
+                !text.contains('\u{1b}'),
+                "an escape byte was written for a terminal that cannot render it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preview_row_marks_its_link_columns_only_when_the_terminal_renders_them() {
+        let url = "https://example.com/docs";
+        let source = format!("Read [the docs]({url}) first.");
+        let mut lines = crate::markdown::render_markdown_links(&source, 60);
+        let row = lines
+            .iter_mut()
+            .find(|row| !row.links.is_empty())
+            .expect("the preview's link kept its destination");
+        let link = row.links[0].clone();
+        let area = Rect::new(0, 0, 60, 1);
+        let row_text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(&row_text[link.columns.clone()], "the docs");
+
+        let mut marked = Buffer::empty(area);
+        paint_preview_row(row, area, &mut marked, true);
+        assert_eq!(
+            marked[(link.columns.start as u16, 0)].symbol(),
+            crate::links::osc8(url, &row_text[link.columns.clone()][..1])
+        );
+
+        // A terminal that cannot render hyperlinks keeps today's rendering and
+        // receives no escape byte at all.
+        let mut plain = Buffer::empty(area);
+        paint_preview_row(row, area, &mut plain, false);
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                assert!(
+                    !plain[(x, y)].symbol().contains('\u{1b}'),
+                    "an escape byte was written for a terminal that cannot render it"
+                );
+            }
+        }
     }
 
     #[test]

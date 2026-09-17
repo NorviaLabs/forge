@@ -469,6 +469,16 @@ pub fn info_color() -> Color {
     active_palette().info
 }
 
+/// Hue of an actionable prose link.
+///
+/// Links are neutral information, not an outcome and not focus: `accent`
+/// answers "what will my next keystroke touch", so painting every URL with it
+/// makes prose look like chrome. This is a hue of its own, and the underline
+/// it travels with stays the affordance wherever colour cannot carry one.
+pub fn link_color() -> Color {
+    active_palette().link
+}
+
 pub fn accent_color() -> Color {
     active_palette().accent
 }
@@ -897,6 +907,8 @@ pub struct Palette {
     /// Editorial emphasis: `*emphasis*` hue inside model prose
     /// (see `ThemePalette::md_emph`).
     pub md_emph: Color,
+    /// Actionable prose link hue (see `ThemePalette::link`).
+    pub link: Color,
 }
 
 /// Palette for a specific theme id. Used by the theme picker preview so the
@@ -941,6 +953,7 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         zebra_row: to_color(src.zebra_row),
         md_strong: to_color(src.md_strong),
         md_emph: to_color(src.md_emph),
+        link: to_color(src.link),
     }
 }
 
@@ -1526,6 +1539,7 @@ mod tests {
         assert_aa("ok", p.ok, "canvas", p.canvas);
         assert_aa("danger", p.danger, "canvas", p.canvas);
         assert_aa("info", p.info, "canvas", p.canvas);
+        assert_aa("link", p.link, "canvas", p.canvas);
         assert_aa("tag", p.tag, "canvas", p.canvas);
 
         assert_aa("text", p.text, "panel", p.panel);
@@ -1534,6 +1548,7 @@ mod tests {
         assert_aa("ok", p.ok, "panel", p.panel);
         assert_aa("danger", p.danger, "panel", p.panel);
         assert_aa("info", p.info, "panel", p.panel);
+        assert_aa("link", p.link, "panel", p.panel);
         assert_aa("tag", p.tag, "panel", p.panel);
 
         assert_aa("text", p.text, "panel_alt", p.panel_alt);
@@ -1542,6 +1557,7 @@ mod tests {
         assert_aa("ok", p.ok, "panel_alt", p.panel_alt);
         assert_aa("danger", p.danger, "panel_alt", p.panel_alt);
         assert_aa("info", p.info, "panel_alt", p.panel_alt);
+        assert_aa("link", p.link, "panel_alt", p.panel_alt);
         assert_aa("tag", p.tag, "panel_alt", p.panel_alt);
 
         // dim is used for low-priority labels on raised surfaces.
@@ -1562,6 +1578,7 @@ mod tests {
         assert_aa("ok", p.ok, "canvas", p.canvas);
         assert_aa("danger", p.danger, "canvas", p.canvas);
         assert_aa("info", p.info, "canvas", p.canvas);
+        assert_aa("link", p.link, "canvas", p.canvas);
 
         assert_aa("text", p.text, "panel_alt", p.panel_alt);
         assert_aa("muted", p.muted, "panel_alt", p.panel_alt);
@@ -1570,6 +1587,7 @@ mod tests {
         // clears AA on Forge Light's brightest surface, unlike Forge Dark.
         assert_contrast("dim", p.dim, "panel_alt", p.panel_alt, 4.5);
         assert_aa("danger", p.danger, "panel_alt", p.panel_alt);
+        assert_aa("link", p.link, "panel_alt", p.panel_alt);
 
         assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
         assert_aa("tag on selection", p.tag, "selection", p.selection);

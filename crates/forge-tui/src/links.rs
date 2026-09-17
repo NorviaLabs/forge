@@ -92,13 +92,19 @@ pub(crate) fn destination_for(raw: &str) -> Option<String> {
 /// The style an actionable link label carries.
 ///
 /// `FORGE-DESIGN.md` §9: the underline is the promise that the destination may
-/// actually be emitted, and `accent` stays out of it because accent means
-/// focus ("where am I") rather than "this is clickable". The explicit-markdown
-/// path, the bare-URL path and the prompt path all take this one definition,
-/// so no change here can make them look like different kinds of thing.
+/// actually be emitted, and the label carries a hue of its own so a link is
+/// not just another underlined run. `accent` stays out of it because accent
+/// means focus ("where am I") rather than "this is clickable", and the footer
+/// already underlines its focused chips in that hue — a link in the same
+/// colour would read as chrome. `theme::link_color` is the neutral-information
+/// hue: in monochrome the underline still carries the affordance, so the
+/// colour is an addition to the promise rather than the promise itself. The
+/// explicit-markdown path, the bare-URL path and the prompt path all take this
+/// one definition, so no change here can make them look like different kinds
+/// of thing.
 pub(crate) fn link_label_style() -> Style {
     Style::default()
-        .fg(theme::text_primary_color())
+        .fg(theme::link_color())
         .add_modifier(Modifier::UNDERLINED)
 }
 
@@ -345,6 +351,26 @@ pub(crate) fn mark_buffer_hyperlinks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link has to be tellable apart from any other underlined run — the
+    /// footer's focused chips are underlined too, and in the accent. The hue
+    /// is the difference; the underline is what survives colour loss.
+    #[test]
+    fn a_link_is_not_just_an_underlined_run() {
+        let link = link_label_style();
+        assert!(link.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(link.fg, Some(theme::link_color()));
+        assert_ne!(
+            link.fg,
+            Some(theme::text_primary_color()),
+            "plain underlined body text must not read as a link"
+        );
+        assert_ne!(
+            link.fg,
+            Some(theme::accent_color()),
+            "focus owns the accent; a link is not focus"
+        );
+    }
 
     #[test]
     fn only_http_and_https_become_clickable() {

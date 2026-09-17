@@ -35,6 +35,10 @@ zebra_row = "#F0F0F0"
 # Editorial emphasis inside model prose (never chrome/status/code).
 md_strong = "#965300"
 md_emph = "#5F7300"
+# Links are neutral information (the `info` family), a step deeper than the
+# state teal so a URL reads at prose weight on this ground without competing
+# with the focused chrome, which owns the blue accent.
+link = "#00606E"
 
 [syntax]
 comment = "#545454"
