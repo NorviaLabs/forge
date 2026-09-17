@@ -11,7 +11,9 @@
 //! parser tolerates unclosed constructs: a fenced block that never closes
 //! still renders its body (no synthetic closing fence is emitted).
 
-use crate::links::{destination_for, HyperlinkLine, TerminalHyperlink};
+use crate::links::{
+    autolink_matches, destination_for, link_label_style, HyperlinkLine, TerminalHyperlink,
+};
 use crate::theme;
 use forge_syntax::highlight_to_lines;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -641,9 +643,7 @@ impl MdRenderer {
                 self.current_link = destination_for(&dest_url);
                 let linkable = self.current_link.is_some();
                 self.push_style(if linkable {
-                    Style::default()
-                        .fg(theme::text_primary_color())
-                        .add_modifier(Modifier::UNDERLINED)
+                    link_label_style()
                 } else {
                     Style::default().fg(theme::text_primary_color())
                 });
@@ -852,9 +852,45 @@ impl MdRenderer {
         style
     }
 
+    /// Add prose to the open paragraph, giving every bare URL in it a
+    /// destination.
+    ///
+    /// Three cases stay inert, each for its own reason. Inside an explicit
+    /// link the author has already named the destination, so a URL in the
+    /// label is just text. A heading uppercases its label for scanability
+    /// (§6), which would corrupt the scheme and leave the destination pointing
+    /// at text that no longer matches it. A table cell drops its link table on
+    /// the way into the row, so an underline there would promise a click that
+    /// cannot happen.
     fn push_span(&mut self, text: String) {
-        let link = self.current_link.clone();
-        self.push_inline(Span::styled(text, self.current_style()), link);
+        if let Some(link) = self.current_link.clone() {
+            self.push_inline(Span::styled(text, self.current_style()), Some(link));
+            return;
+        }
+        let matches = if self.heading_level.is_some() || self.table.is_some() {
+            Vec::new()
+        } else {
+            autolink_matches(&text)
+        };
+        if matches.is_empty() {
+            self.push_inline(Span::styled(text, self.current_style()), None);
+            return;
+        }
+        let mut cursor = 0usize;
+        for (range, destination) in matches {
+            if range.start > cursor {
+                let plain = text[cursor..range.start].to_string();
+                self.push_inline(Span::styled(plain, self.current_style()), None);
+            }
+            let label = text[range.clone()].to_string();
+            let style = self.current_style().patch(link_label_style());
+            self.push_inline(Span::styled(label, style), Some(destination));
+            cursor = range.end;
+        }
+        if cursor < text.len() {
+            let rest = text[cursor..].to_string();
+            self.push_inline(Span::styled(rest, self.current_style()), None);
+        }
     }
 
     /// Add one span to the open paragraph, carrying the link it belongs to (if
@@ -998,7 +1034,7 @@ fn paint_scan_band(lines: &mut [HyperlinkLine], width: usize) {
     }
 }
 
-fn display_width(s: &str) -> usize {
+pub(crate) fn display_width(s: &str) -> usize {
     Span::raw(s).width()
 }
 
@@ -1833,11 +1869,98 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         assert_eq!(&text[line.links[1].columns.clone()], "two");
     }
 
-    /// Plain text never invents a destination.
+    /// Prose with no URL in it never invents a destination.
     #[test]
     fn prose_without_links_carries_none() {
-        let rendered = render_markdown_links("just a sentence about https://example.com", 80);
+        let rendered = render_markdown_links("just a sentence about widgets", 80);
         assert!(rendered.iter().all(|line| line.links.is_empty()));
+    }
+
+    /// A URL written as plain text is a URL the reader may want to open, so it
+    /// carries a destination without being wrapped in markdown. The label is
+    /// the URL itself here, which is the case markdown cannot express and the
+    /// one a model writes most often.
+    #[test]
+    fn a_bare_url_in_prose_is_a_link() {
+        let url = "https://example.com/docs";
+        let rendered = render_markdown_links(&format!("see {url} for the API"), 80);
+        let line = rendered
+            .iter()
+            .find(|line| !line.links.is_empty())
+            .expect("the bare URL carries a destination");
+        assert_eq!(line.links.len(), 1);
+        assert_eq!(line.links[0].destination, url);
+        let text = row_text(line);
+        assert_eq!(&text[line.links[0].columns.clone()], url);
+        // The underline is the promise: a row that carries a destination must
+        // look exactly like an explicit markdown link, no more and no less.
+        let label = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == url)
+            .expect("label span");
+        assert!(label.style.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(
+            label.style.fg,
+            Some(theme::text_primary_color()),
+            "a link label must not borrow the accent"
+        );
+    }
+
+    /// Two bare URLs on one row stay separate, like two markdown links.
+    #[test]
+    fn two_bare_urls_on_one_row_stay_separate() {
+        let rendered = render_markdown_links(
+            "compare https://example.com/1 and https://example.com/2",
+            80,
+        );
+        let line = rendered
+            .iter()
+            .find(|line| line.links.len() == 2)
+            .expect("both URLs on one row");
+        assert_eq!(line.links[0].destination, "https://example.com/1");
+        assert_eq!(line.links[1].destination, "https://example.com/2");
+        let text = row_text(line);
+        assert_eq!(
+            &text[line.links[0].columns.clone()],
+            "https://example.com/1"
+        );
+        assert_eq!(
+            &text[line.links[1].columns.clone()],
+            "https://example.com/2"
+        );
+    }
+
+    /// A heading uppercases its label for scanability, so a destination there
+    /// would point at text that no longer matches it. Headings stay plain.
+    #[test]
+    fn a_url_in_a_heading_stays_plain() {
+        let rendered = render_markdown_links("## See https://example.com now", 80);
+        assert!(rendered.iter().all(|line| line.links.is_empty()));
+    }
+
+    /// A bare URL that wraps keeps its destination on both rows, and the
+    /// underlined columns across them still spell the whole URL — the same
+    /// column accounting `link_columns_follow_a_wrapped_label` pins for a
+    /// markdown label, which autolinking now reaches by another route.
+    #[test]
+    fn a_bare_url_keeps_its_destination_across_a_wrap() {
+        let url = "https://example.com/a/very/long/path/that/wraps";
+        let rendered = render_markdown_links(&format!("see {url} now"), 30);
+        let linked: Vec<&HyperlinkLine> = rendered
+            .iter()
+            .filter(|line| !line.links.is_empty())
+            .collect();
+        assert!(linked.len() >= 2, "the URL should span more than one row");
+        let mut joined = String::new();
+        for line in &linked {
+            let text = row_text(line);
+            for link in &line.links {
+                assert_eq!(link.destination, url);
+                joined.push_str(&text[link.columns.clone()]);
+            }
+        }
+        assert_eq!(joined, url);
     }
 
     /// Inline code carries file paths and identifiers — the tokens a reader

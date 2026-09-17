@@ -25,7 +25,10 @@ use std::ops::{Deref, DerefMut, Range};
 
 use ratatui::buffer::{Buffer, CellDiffOption, CellWidth};
 use ratatui::layout::{Position, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
+
+use crate::theme;
 
 /// Whether this process should emit hyperlinks at all.
 ///
@@ -84,6 +87,104 @@ pub(crate) fn destination_for(raw: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_string())
+}
+
+/// The style an actionable link label carries.
+///
+/// `FORGE-DESIGN.md` §9: the underline is the promise that the destination may
+/// actually be emitted, and `accent` stays out of it because accent means
+/// focus ("where am I") rather than "this is clickable". The explicit-markdown
+/// path, the bare-URL path and the prompt path all take this one definition,
+/// so no change here can make them look like different kinds of thing.
+pub(crate) fn link_label_style() -> Style {
+    Style::default()
+        .fg(theme::text_primary_color())
+        .add_modifier(Modifier::UNDERLINED)
+}
+
+/// Byte ranges of the bare `http`/`https` URLs in `text`, each with the
+/// destination it may become.
+///
+/// Markdown is not the only way a URL reaches prose. A model writes
+/// `https://example.com` on its own far more often than it writes
+/// `[example](https://example.com)`, and a person pastes a URL into a prompt
+/// with no markup at all. Both are text the reader may want to open, and
+/// neither had a destination before.
+///
+/// [`destination_for`] stays the single gate: a range is returned only once it
+/// has passed policy, so a caller attaches what it is handed without
+/// re-checking anything. The scan is conservative at both ends on purpose. A
+/// run may only begin at a boundary, so `notaurlhttps://x` is not carved up
+/// mid-word, and trailing sentence punctuation stays in the prose, so
+/// `see https://example.com.` links the host and not the full stop. A closing
+/// bracket is trimmed only when the run does not open one:
+/// `(https://example.com)` loses its parenthesis while
+/// `https://en.wikipedia.org/wiki/Foo_(bar)` keeps its own.
+pub(crate) fn autolink_matches(text: &str) -> Vec<(Range<usize>, String)> {
+    // A scheme is only recognized in lowercase, which is what keeps an
+    // uppercased heading label from being read as a destination whose text no
+    // longer matches it.
+    const SCHEMES: [&str; 2] = ["https://", "http://"];
+    let mut matches = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        let rest = &text[cursor..];
+        let Some(offset) = SCHEMES.iter().filter_map(|scheme| rest.find(*scheme)).min() else {
+            break;
+        };
+        let start = cursor + offset;
+        // A run belongs to the word it starts, not the one it interrupts.
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+        {
+            cursor = start + 1;
+            continue;
+        }
+        let candidate = trim_url_tail(&text[start..url_run_end(text, start)]);
+        match destination_for(candidate) {
+            Some(destination) => {
+                let end = start + candidate.len();
+                matches.push((start..end, destination));
+                cursor = end;
+            }
+            // Not a destination after all (`https://`, an injected byte): step
+            // one byte in and keep looking rather than skipping the rest of
+            // the run, which may hold a real URL.
+            None => cursor = start + 1,
+        }
+    }
+    matches
+}
+
+/// One past the last byte of the URL run beginning at `start`.
+fn url_run_end(text: &str, start: usize) -> usize {
+    text[start..]
+        .char_indices()
+        .find(|(_, c)| is_url_delimiter(*c))
+        .map_or(text.len(), |(offset, _)| start + offset)
+}
+
+/// Characters that end a URL run. Whitespace always does; the quotes, the
+/// backtick and the angle brackets are what wrap a URL in prose or in markup.
+fn is_url_delimiter(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`')
+}
+
+/// Drop the punctuation that belongs to the sentence rather than the URL.
+fn trim_url_tail(candidate: &str) -> &str {
+    let trimmed = candidate.trim_end_matches(|c: char| {
+        matches!(
+            c,
+            '.' | ',' | ';' | ':' | '!' | '?' | ']' | '}' | '\'' | '"'
+        )
+    });
+    let mut out = trimmed;
+    while out.ends_with(')') && out.matches(')').count() > out.matches('(').count() {
+        out = &out[..out.len() - 1];
+    }
+    out
 }
 
 /// Whether the surrounding terminal renders `OSC 8` at all.
@@ -296,6 +397,62 @@ mod tests {
             destination_for("https://user@example.com/x"),
             Some("https://user@example.com/x".to_string())
         );
+    }
+
+    #[test]
+    fn a_bare_url_in_prose_is_found() {
+        let text = "see https://example.com/docs for the API";
+        let matches = autolink_matches(text);
+        assert_eq!(matches.len(), 1, "{matches:?}");
+        assert_eq!(&text[matches[0].0.clone()], "https://example.com/docs");
+        assert_eq!(matches[0].1, "https://example.com/docs");
+    }
+
+    /// The full stop and the comma belong to the sentence, not the destination.
+    #[test]
+    fn a_bare_url_leaves_the_sentence_punctuation_behind() {
+        let text = "read (https://example.com/a), then https://example.com/b.";
+        let matches = autolink_matches(text);
+        let found: Vec<&str> = matches
+            .iter()
+            .map(|(range, _)| &text[range.clone()])
+            .collect();
+        assert_eq!(found, ["https://example.com/a", "https://example.com/b"]);
+    }
+
+    /// A URL that opens its own bracket keeps it; one merely wrapped in
+    /// parentheses does not take the closing one along.
+    #[test]
+    fn bracket_balance_decides_where_a_url_ends() {
+        let text = "https://en.wikipedia.org/wiki/Foo_(bar)";
+        let matches = autolink_matches(text);
+        assert_eq!(&text[matches[0].0.clone()], text);
+    }
+
+    /// A scheme is only a URL where a word starts, and only with a host.
+    #[test]
+    fn mid_word_and_hostless_schemes_are_not_destinations() {
+        assert!(autolink_matches("xhttps://example.com").is_empty());
+        assert!(autolink_matches("ahttps://example.com b").is_empty());
+        assert!(autolink_matches("https:// and http:// nothing").is_empty());
+    }
+
+    /// Quote marks wrap a URL without joining it.
+    #[test]
+    fn quotes_wrap_a_url_without_joining_it() {
+        let text = "see \"https://example.com\" now";
+        let matches = autolink_matches(text);
+        assert_eq!(&text[matches[0].0.clone()], "https://example.com");
+    }
+
+    /// Detection never widens policy: every range came through the same gate,
+    /// so a scheme the renderer refuses stays plain text here too.
+    #[test]
+    fn autolinking_is_gated_by_the_same_policy_as_markdown() {
+        assert!(autolink_matches("https://").is_empty());
+        assert!(autolink_matches("see file:///etc/passwd now").is_empty());
+        assert!(autolink_matches("mailto:someone@example.com").is_empty());
+        assert!(autolink_matches("javascript:alert(1)").is_empty());
     }
 
     #[test]
