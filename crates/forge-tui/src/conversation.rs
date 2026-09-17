@@ -6490,6 +6490,27 @@ mod verification_card_tests {
             cell.symbol(),
             crate::links::osc8(url, &text[hyperlink.columns.clone()][..1])
         );
+
+        let updates = Buffer::empty(area).diff(&buf);
+        for column in hyperlink.columns.clone() {
+            if text.as_bytes()[column] != b' ' {
+                assert!(
+                    updates
+                        .iter()
+                        .any(|(x, y, _)| { *x == column as u16 && *y == row as u16 }),
+                    "link column {column} must reach the backend"
+                );
+            }
+        }
+        let mut output = Vec::new();
+        let mut backend = ratatui::backend::CrosstermBackend::new(&mut output);
+        ratatui::backend::Backend::draw(&mut backend, updates.into_iter()).unwrap();
+        let mut terminal = vt100::Parser::new(area.height, area.width, 0);
+        terminal.process(&output);
+        assert!(terminal
+            .screen()
+            .contents()
+            .contains("Read the docs first."));
     }
 
     /// A terminal that cannot render hyperlinks gets today's rendering: the link
