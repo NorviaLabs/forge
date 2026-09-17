@@ -53,9 +53,7 @@ pub(super) async fn complete(
     if is_opencode_responses_model(model) || opencode_go_responses_model(model) {
         return complete_responses(client, req, route, tx).await;
     }
-    if opencode_go_messages_model(model) {
-        // OpenCode Go serves these models on the Anthropic Messages API; the
-        // OpenAI-compatible body would be rejected upstream.
+    if opencode_messages_model(model) {
         let endpoint = anthropic::messages_endpoint(&route.base_url);
         let api_key = route.api_key.clone().ok_or(ModelError::MissingApiKey)?;
         let auth = anthropic::MessagesAuth::Opencode {
@@ -233,8 +231,9 @@ fn opencode_go_model_id(model: &str) -> Option<&str> {
     matches!(prefix, "opencode-go" | "opencode").then_some(model_id)
 }
 
-fn opencode_go_messages_model(model: &str) -> bool {
-    opencode_go_model_id(model).is_some_and(|id| OPENCODE_GO_MESSAGES_MODELS.contains(&id))
+fn opencode_messages_model(model: &str) -> bool {
+    model == "opencode-zen/union-alpha"
+        || opencode_go_model_id(model).is_some_and(|id| OPENCODE_GO_MESSAGES_MODELS.contains(&id))
 }
 
 fn opencode_go_responses_model(model: &str) -> bool {
@@ -1138,48 +1137,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sends_union_alpha_to_opencode_go_messages() {
+    async fn sends_union_alpha_to_opencode_messages() {
         let sse = concat!(
             "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
             "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n"
         );
-        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
-        else {
-            eprintln!("skipping: this host denies binding a mock listener");
-            return;
-        };
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[
-            ("OPENCODE_API_BASE".into(), format!("{base_url}/v1")),
-            ("OPENCODE_API_KEY".into(), "opencode-secret".into()),
-        ]);
-        let mut request = request("opencode-go/union-alpha");
-        request.route_id = Some("opencode-go".into());
-        request.session_id = Some("session-union".into());
+        for (prefix, base_env, key_env, path) in [
+            (
+                "opencode-go",
+                "OPENCODE_API_BASE",
+                "OPENCODE_API_KEY",
+                "/zen/go/v1",
+            ),
+            (
+                "opencode-zen",
+                "OPENCODE_ZEN_API_BASE",
+                "OPENCODE_ZEN_API_KEY",
+                "/zen/v1",
+            ),
+        ] {
+            let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+            else {
+                eprintln!("skipping: this host denies binding a mock listener");
+                return;
+            };
+            let client = NativeModelClient::from_config(&Config::default()).unwrap();
+            client.apply_provider_env(&[
+                (base_env.into(), format!("{base_url}{path}")),
+                (key_env.into(), "opencode-secret".into()),
+            ]);
+            let mut request = request(&format!("{prefix}/union-alpha"));
+            request.route_id = Some(prefix.into());
+            request.session_id = Some("session-union".into());
 
-        let response = client.complete(request).await.unwrap();
-        assert_eq!(response.text, "hi");
-        assert_eq!(response.usage.unwrap().completion_tokens, 4);
+            let response = client.complete(request).await.unwrap();
+            assert_eq!(response.text, "hi");
+            assert_eq!(response.usage.unwrap().completion_tokens, 4);
 
-        let raw_request = request_rx.await.unwrap();
-        assert!(
-            raw_request.starts_with("POST /v1/messages HTTP/1.1"),
-            "{raw_request}"
-        );
-        assert!(
-            raw_request.contains("\"model\":\"union-alpha\""),
-            "{raw_request}"
-        );
-        assert!(!raw_request.contains("/chat/completions"));
-        let lower = raw_request.to_ascii_lowercase();
-        assert!(lower.contains("authorization: bearer opencode-secret"));
-        assert!(lower.contains("x-opencode-session: session-union"));
-        assert!(lower.contains(&format!("user-agent: forge/{}", env!("CARGO_PKG_VERSION"))));
-        assert!(
-            !lower.contains("x-api-key"),
-            "OpenCode auth must be Bearer, not x-api-key: {raw_request}"
-        );
+            let raw_request = request_rx.await.unwrap();
+            assert!(
+                raw_request.starts_with(&format!("POST {path}/messages HTTP/1.1")),
+                "{raw_request}"
+            );
+            assert!(
+                raw_request.contains("\"model\":\"union-alpha\""),
+                "{raw_request}"
+            );
+            assert!(!raw_request.contains("/chat/completions"));
+            assert!(raw_request.contains("\"max_tokens\":8192"));
+            let lower = raw_request.to_ascii_lowercase();
+            assert!(lower.contains("authorization: bearer opencode-secret"));
+            assert!(lower.contains("anthropic-version: 2023-06-01"));
+            assert!(lower.contains("x-opencode-session: session-union"));
+            assert!(lower.contains(&format!("user-agent: forge/{}", env!("CARGO_PKG_VERSION"))));
+            assert!(
+                !lower.contains("x-api-key"),
+                "OpenCode auth must be Bearer, not x-api-key: {raw_request}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1220,16 +1236,21 @@ mod tests {
 
     #[test]
     fn opencode_go_models_map_to_their_endpoint() {
-        assert!(opencode_go_messages_model("opencode-go/union-alpha"));
-        assert!(opencode_go_messages_model("opencode-go/minimax-m3"));
-        assert!(opencode_go_messages_model("opencode-go/qwen3.7-plus"));
+        assert!(opencode_messages_model("opencode-go/union-alpha"));
+        assert!(opencode_messages_model("opencode-go/minimax-m3"));
+        assert!(opencode_messages_model("opencode-go/qwen3.7-plus"));
         assert!(opencode_go_responses_model("opencode-go/grok-4.6"));
         assert!(opencode_go_responses_model("opencode-go/gpt-5.6-luna"));
         // Chat models and other providers' routes keep the default endpoint.
-        assert!(!opencode_go_messages_model("opencode-go/kimi-k3"));
+        assert!(!opencode_messages_model("opencode-go/kimi-k3"));
         assert!(!opencode_go_responses_model("opencode-go/kimi-k3"));
-        assert!(!opencode_go_messages_model("opencode-zen/union-alpha"));
-        assert!(!opencode_go_messages_model("openai/gpt-5"));
+        assert!(opencode_messages_model("opencode-zen/union-alpha"));
+        assert!(opencode_messages_model("opencode/union-alpha"));
+        assert!(!opencode_messages_model("opencode-zen/minimax-m3"));
+        assert!(!opencode_messages_model("opencode-zen/kimi-k3"));
+        assert!(!opencode_messages_model("openai/union-alpha"));
+        assert!(!opencode_messages_model("union-alpha"));
+        assert!(!opencode_messages_model("openai/gpt-5"));
     }
 
     #[tokio::test]
