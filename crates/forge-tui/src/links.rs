@@ -20,9 +20,10 @@
 //! (`conversation::ConversationRender`) is public, and the row type it returns
 //! has to be nameable by whatever calls it.
 
+use std::num::NonZeroU16;
 use std::ops::{Deref, DerefMut, Range};
 
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, CellDiffOption, CellWidth};
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 
@@ -231,7 +232,11 @@ pub(crate) fn mark_buffer_hyperlinks(
             if symbol.is_empty() || symbol == " " {
                 continue;
             }
-            cell.set_symbol(&osc8(&hyperlink.destination, &symbol));
+            let Some(width) = NonZeroU16::new(cell.cell_width()) else {
+                continue;
+            };
+            cell.set_symbol(&osc8(&hyperlink.destination, &symbol))
+                .set_diff_option(CellDiffOption::ForcedWidth(width));
         }
     }
 }
@@ -360,6 +365,52 @@ mod tests {
         // and nothing else.
         assert_eq!(buf.cell(Position::new(3, 0)).unwrap().symbol(), " ");
         assert_eq!(buf.cell(Position::new(8, 0)).unwrap().symbol(), "!");
+    }
+
+    #[test]
+    fn hyperlink_diffs_preserve_unicode_and_repaint_plain_text() {
+        use ratatui::backend::{Backend, CrosstermBackend};
+
+        let area = Rect::new(0, 0, 30, 2);
+        let mut previous = Buffer::empty(area);
+        let mut terminal = vt100::Parser::new(area.height, area.width, 0);
+        for (label, linked) in [
+            ("界e\u{301} docs", true),
+            ("界e\u{301} next", true),
+            ("plain", false),
+        ] {
+            let text = format!("see {label}!");
+            let mut next = Buffer::empty(area);
+            next.set_string(0, 0, &text, ratatui::style::Style::default());
+            next.set_string(0, 1, "next row", ratatui::style::Style::default());
+            if linked {
+                mark_buffer_hyperlinks(
+                    &mut next,
+                    area,
+                    &[TerminalHyperlink::new(
+                        4..4 + label.cell_width() as usize,
+                        "https://example.com",
+                    )],
+                );
+                assert_eq!(next[(4, 0)].cell_width(), 2);
+                assert_eq!(next[(6, 0)].cell_width(), 1);
+            }
+            let mut output = Vec::new();
+            CrosstermBackend::new(&mut output)
+                .draw(previous.diff(&next).into_iter())
+                .unwrap();
+            terminal.process(&output);
+            let contents = terminal
+                .screen()
+                .contents()
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(contents, format!("{text}\nnext row"));
+            assert!(next.diff(&next).is_empty());
+            previous = next;
+        }
     }
 
     #[test]

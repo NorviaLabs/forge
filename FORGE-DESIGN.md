@@ -724,8 +724,10 @@ separators.
   width measurement, so a destination written into a `Span` would be measured as
   columns and shift every wrapped row after it. Destinations therefore travel
   beside the rendered rows as column ranges and are attached to the buffer's
-  cells after layout (`crates/forge-tui/src/links.rs`); nothing in the visible
-  text, and nothing in the copy path, ever contains an escape byte.
+  cells after layout (`crates/forge-tui/src/links.rs`), with each cell's original
+  display width preserved for Ratatui's buffer diff. Escape bytes must not make
+  the diff skip adjacent text. Nothing in the visible text, and nothing in the
+  copy path, ever contains an escape byte.
 - **The underline is a promise.** A link renders as `text_primary` plus
   underline only when its destination may actually be emitted — `http`/`https`,
   no control bytes, a real host. Every other scheme (`file:`, `mailto:`,
