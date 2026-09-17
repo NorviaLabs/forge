@@ -1384,6 +1384,9 @@ async fn framed_transcript_and_composer_keep_focus_and_content_inside_chrome() {
         let text = app.conversation_area.expect("transcript drawn");
         let pane_x = text.x - crate::design::PANE_PAD_X - 1;
         assert_eq!(buf[(pane_x, text.y - 1)].symbol(), "╭");
+        for x in [pane_x, pane_x + 1, text.right(), text.right() + 1] {
+            assert_eq!(buf[(x, text.y)].bg, crate::theme::canvas().bg.unwrap());
+        }
         assert_eq!(buf[(pane_x, text.bottom())].symbol(), "╰");
         assert_eq!(buf[(composer.x, composer.y)].symbol(), "╭");
         assert_eq!(buf[(composer.x, composer.bottom() - 1)].symbol(), "╰");
