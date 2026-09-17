@@ -450,7 +450,11 @@ impl TuiApp {
                         {
                             task.attention = true;
                         }
-                        self.push_toast(message);
+                        // Toast only: the notice for a session that finished
+                        // while the operator was looking at another one. The
+                        // feedback strip used to repeat the same words, in the
+                        // conversation pane, for seven seconds instead of two.
+                        self.toast.push_overlay(FeedbackSeverity::Ok, message);
                     }
                 }
                 forge_session::SupervisorEvent::Stream { session_id, event }

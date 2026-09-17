@@ -1275,6 +1275,47 @@ async fn the_task_strip_help_advertises_the_binding_that_is_actually_wired() {
     );
 }
 
+/// A session finishing while another one is selected announces itself once.
+///
+/// `push_toast` writes the toast *and* the feedback strip, so one completion
+/// used to paint the same words twice: a two-second toast and a seven-second
+/// `[✓] Session completed` row inside the conversation pane.
+#[tokio::test]
+async fn a_finished_session_elsewhere_notifies_the_toast_only() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let (tx, rx) = tokio::sync::broadcast::channel(64);
+    app.supervisor.as_mut().unwrap().events = rx;
+
+    let elsewhere = uuid::Uuid::new_v4();
+    assert_ne!(elsewhere, app.selected_session_id);
+    // Clear whatever the fixture left behind, so the strip assertion below
+    // cannot pass on a stale message.
+    app.feedback = crate::widgets::FeedbackModel::default();
+
+    tx.send(forge_session::SupervisorEvent::Attention {
+        session_id: elsewhere,
+        state: forge_session::SupervisorTurnState::Completed,
+        message: "Session completed".into(),
+    })
+    .unwrap();
+    app.poll_supervisor_events();
+
+    assert!(
+        app.toast.has_toast(),
+        "a session finishing elsewhere must raise a toast"
+    );
+    assert!(
+        app.feedback.is_empty(),
+        "the same completion must not also write the feedback strip, got {:?}",
+        app.feedback.text
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// An app wired to a real supervisor rooted in the same repository, with
 /// trust redirected at a temporary store so granting it never touches the
 /// developer's own. The supervisor starts with no registered sessions, so

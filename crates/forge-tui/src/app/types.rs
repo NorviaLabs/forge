@@ -1529,6 +1529,13 @@ impl ToastState {
         self.stack.push(severity, text);
     }
 
+    /// Whether a toast is on screen. The only way to observe a push that
+    /// deliberately skipped the feedback strip.
+    #[cfg(test)]
+    pub(crate) fn has_toast(&self) -> bool {
+        self.stack.has_toast()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.current = None;
         self.stack.clear();
