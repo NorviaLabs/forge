@@ -985,7 +985,14 @@ async fn tui08_feedback_strip_visible_on_frame() {
         0,
     );
     assert_eq!(regions.feedback.height, 1);
-    assert!(regions.feedback.y < regions.input.y);
+    // The status line lives in the shell band above the footer now, below the
+    // conversation column — it used to sit inside the sidebar above the
+    // composer, shifting the transcript every time a message expired.
+    assert!(regions.feedback.y > regions.input.y);
+    assert_eq!(
+        regions.feedback.y + regions.feedback.height,
+        regions.footer.y
+    );
     assert!(
         text.contains("rate limited") || text.contains("429") || text.contains("Model error"),
         "frame missing feedback:\n{text}"
