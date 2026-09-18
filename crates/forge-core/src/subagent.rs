@@ -413,6 +413,9 @@ impl AgentSession {
             cancel.clone(),
             Some(target),
         );
+        self.tasks
+            .background
+            .set_auto_continue_on_completion(task_id, self.approve_all);
         self.journal
             .append_background_task_started_with_parent(
                 self.session_id,
@@ -538,6 +541,9 @@ impl AgentSession {
             cancel.clone(),
             Some(child_session_id),
         );
+        self.tasks
+            .background
+            .set_auto_continue_on_completion(task_id, self.approve_all);
         self.journal
             .append_background_task_started_with_parent(
                 self.session_id,

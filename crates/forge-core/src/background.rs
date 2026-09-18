@@ -110,6 +110,10 @@ pub struct BackgroundTaskHandle {
     /// automated merge-back — see `forge_storage::worktree`'s module docs).
     pub worktree_path: Option<PathBuf>,
     pub worktree_branch: Option<String>,
+    /// Whether completion should feed the next model step automatically.
+    /// Captured at launch so toggling approve-all mid-task cannot strand the
+    /// foreground objective.
+    pub auto_continue_on_completion: bool,
 }
 
 /// Control handles for a session's background work, shared with the session's
@@ -274,6 +278,7 @@ impl BackgroundTaskRegistry {
                 latest_message: Arc::new(Mutex::new(None)),
                 worktree_path: None,
                 worktree_branch: None,
+                auto_continue_on_completion: false,
             },
         );
         id
@@ -317,9 +322,16 @@ impl BackgroundTaskRegistry {
                 latest_message: Arc::new(Mutex::new(None)),
                 worktree_path: None,
                 worktree_branch: None,
+                auto_continue_on_completion: false,
             },
         );
         id
+    }
+
+    pub fn set_auto_continue_on_completion(&mut self, id: BackgroundTaskId, enabled: bool) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.auto_continue_on_completion = enabled;
+        }
     }
 
     /// Record where a subagent's worktree lives, for display (Tasks tab)
@@ -616,6 +628,9 @@ impl AgentSession {
             cancel.clone(),
             None,
         );
+        self.tasks
+            .background
+            .set_auto_continue_on_completion(id, self.approve_all);
         self.journal
             .append_background_task_started(self.session_id, id, "shell", &label, None)
             .await?;
@@ -881,7 +896,11 @@ impl AgentSession {
         id: BackgroundTaskId,
         outcome: Option<BackgroundTaskOutcome>,
     ) -> Result<(), LoopError> {
-        let deliver_to_queue = self.approve_all;
+        let deliver_to_queue = self
+            .tasks
+            .background
+            .get(id)
+            .is_some_and(|task| task.auto_continue_on_completion);
         let label = self
             .tasks
             .background
@@ -1069,6 +1088,22 @@ mod tests {
 
             wait_terminal(&mut s, id).await;
             // With no human in the loop, the result drives the next turn.
+            assert_eq!(s.queue().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn shell_completion_keeps_auto_continuation_when_approve_all_is_disabled() {
+            let dir = tempdir().unwrap();
+            let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
+            let id = s
+                .spawn_background_shell("echo bg-result".into(), "echo".into())
+                .await
+                .unwrap();
+
+            assert!(s.set_approve_all(false));
+            wait_terminal(&mut s, id).await;
             assert_eq!(s.queue().len(), 1);
         }
 
