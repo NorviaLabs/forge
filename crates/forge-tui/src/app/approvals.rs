@@ -537,7 +537,7 @@ impl TuiApp {
                     .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
             }
             ApprovalMenuKind::ApproveAll => {
-                if !forge_config::is_trusted(&self.session_view.workspace_root()) {
+                if !forge_config::is_trusted(self.session_view.workspace_root()) {
                     self.set_feedback(
                         FeedbackSeverity::Warn,
                         "trust this workspace before enabling session-wide command approval",
