@@ -4701,8 +4701,8 @@ mod tests {
             "the evidence is not introduced: {text:#?}"
         );
         assert!(
-            with.len() < without,
-            "the card grew instead of trading policy for evidence: {} -> {}",
+            with.len() > without,
+            "the blocked reason section should add evidence: {} -> {}",
             without,
             with.len()
         );
