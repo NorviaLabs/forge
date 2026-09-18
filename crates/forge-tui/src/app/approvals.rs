@@ -17,6 +17,7 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApprovalMenuKind {
     AllowOnce,
+    ApproveAll,
     AllowPattern,
     /// The same pattern, written to the personal permissions file so it
     /// outlives the session.
@@ -40,6 +41,7 @@ impl ApprovalMenuKind {
     pub(crate) fn shortcut(self) -> &'static str {
         match self {
             Self::AllowOnce => "y",
+            Self::ApproveAll => "t",
             Self::AllowPattern => "a",
             Self::AllowPatternAlways => "A",
             Self::Deny => "n",
@@ -50,6 +52,7 @@ impl ApprovalMenuKind {
     fn from_shortcut(c: char) -> Option<Self> {
         match c {
             'y' | 'Y' => Some(Self::AllowOnce),
+            't' | 'T' => Some(Self::ApproveAll),
             'a' => Some(Self::AllowPattern),
             'A' => Some(Self::AllowPatternAlways),
             'n' => Some(Self::Deny),
@@ -251,6 +254,7 @@ impl TuiApp {
             return vec![
                 ApprovalMenuKind::AllowPatternAlways,
                 ApprovalMenuKind::AllowPattern,
+                ApprovalMenuKind::ApproveAll,
                 ApprovalMenuKind::Deny,
                 ApprovalMenuKind::DenyWithNote,
             ];
@@ -258,12 +262,13 @@ impl TuiApp {
         if payload.sandbox_escalation {
             return vec![
                 ApprovalMenuKind::AllowOnce,
+                ApprovalMenuKind::ApproveAll,
                 ApprovalMenuKind::Deny,
                 ApprovalMenuKind::DenyWithNote,
             ];
         }
         let approval = self.approval_state_for_payload(payload);
-        let mut kinds = vec![ApprovalMenuKind::AllowOnce];
+        let mut kinds = vec![ApprovalMenuKind::AllowOnce, ApprovalMenuKind::ApproveAll];
         if approval.pattern_allow_eligible {
             kinds.push(ApprovalMenuKind::AllowPattern);
             kinds.push(ApprovalMenuKind::AllowPatternAlways);
@@ -292,14 +297,21 @@ impl TuiApp {
                         )),
                         key: Some(kind.shortcut().into()),
                     },
-                    ApprovalMenuKind::AllowPattern | ApprovalMenuKind::AllowOnce => {
+                    ApprovalMenuKind::AllowPattern
+                    | ApprovalMenuKind::AllowOnce
+                    | ApprovalMenuKind::ApproveAll => {
                         crate::conversation::ApprovalMenuRow {
-                            label: format!("Allow {pattern} this session"),
+                            label: if kind == ApprovalMenuKind::ApproveAll {
+                                "Trust all commands for this session".into()
+                            } else {
+                                format!("Allow {pattern} this session")
+                            },
                             detail: Some(pattern.clone()),
-                            help: Some(
-                                "The sandbox stays on. You will be asked again next session."
-                                    .into(),
-                            ),
+                            help: Some(if kind == ApprovalMenuKind::ApproveAll {
+                                "Approves future review prompts for this session. Policy denies remain enforced; filesystem and network access may be unconfined.".into()
+                            } else {
+                                "The sandbox stays on. You will be asked again next session.".into()
+                            }),
                             key: Some(kind.shortcut().into()),
                         }
                     }
@@ -330,7 +342,7 @@ impl TuiApp {
             .map(|kind| match kind {
                 ApprovalMenuKind::AllowOnce => crate::conversation::ApprovalMenuRow {
                     label: if sandbox_retry {
-                        "Approve command retry".into()
+                        "Approve command".into()
                     } else {
                         "Run once".into()
                     },
@@ -340,6 +352,12 @@ impl TuiApp {
                     } else {
                         "Runs now. You will be asked again.".into()
                     }),
+                    key: Some(kind.shortcut().into()),
+                },
+                ApprovalMenuKind::ApproveAll => crate::conversation::ApprovalMenuRow {
+                    label: "Trust all commands for this session".into(),
+                    detail: None,
+                    help: Some("Approves future review prompts for this session. Policy denies remain enforced; filesystem and network access may be unconfined.".into()),
                     key: Some(kind.shortcut().into()),
                 },
                 // The pattern goes in the label, not only in the elided detail
@@ -489,6 +507,11 @@ impl TuiApp {
                 self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Once)
                     .await
             }
+            ApprovalMenuKind::ApproveAll => {
+                self.set_approve_all(true);
+                self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Once)
+                    .await
+            }
             ApprovalMenuKind::AllowPattern => {
                 self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Session)
                     .await
@@ -510,6 +533,18 @@ impl TuiApp {
     fn queue_approval_line(&mut self, action: ApprovalMenuKind) {
         match action {
             ApprovalMenuKind::AllowOnce => {
+                self.pending_interaction
+                    .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
+            }
+            ApprovalMenuKind::ApproveAll => {
+                if !forge_config::is_trusted(&self.session_view.workspace_root()) {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "trust this workspace before enabling session-wide command approval",
+                    );
+                    return;
+                }
+                self.set_approve_all(true);
                 self.pending_interaction
                     .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
             }

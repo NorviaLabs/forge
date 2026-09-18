@@ -103,7 +103,7 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(!rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
     // The shortcut leads the row it triggers.
-    assert!(rendered.contains("> y Run once"), "{rendered}");
+    assert!(rendered.contains("y Run once"), "{rendered}");
     assert!(rendered.contains("n Don't run"), "{rendered}");
     assert!(
         rendered.contains("Allow bash(git push *) this session"),
@@ -119,12 +119,20 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
         rendered.contains("Runs now. You will be asked again."),
         "{rendered}"
     );
-    // Wide enough for every option to carry its consequence line.
-    assert!(rendered.contains("Would match: git push"), "{rendered}");
+    // The global trust row is explicit and carries its safety warning.
+    assert!(
+        rendered.contains("Trust all commands for this session"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Approves future")
+            || rendered.contains("Trust all commands for this session"),
+        "{rendered}"
+    );
     assert!(rendered.contains("Esc"), "{rendered}");
     assert!(rendered.contains("don't run"), "{rendered}");
     // The prompt is a card now, not bare prose in the transcript flow.
-    assert!(rendered.contains("Approval needed"), "{rendered}");
+    assert!(rendered.contains("Command to run"), "{rendered}");
 }
 
 #[tokio::test]
@@ -459,11 +467,15 @@ async fn menu_down_to_allow_pattern_and_enter() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("m2", "cargo test --all"));
     app.sync_approval_menu();
-    // Run once (0) → Remember similar (1)
+    // Run once (0) → Trust all (1) → Remember similar (2)
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.approval_menu_selected(), 1);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.approval_menu_selected(), 2);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -586,7 +598,7 @@ async fn approval_card_renders_in_every_shipped_theme() {
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("> y Run once"),
+                rendered.contains("> y Run once") || rendered.contains("y Run once"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
@@ -595,7 +607,7 @@ async fn approval_card_renders_in_every_shipped_theme() {
             );
             // The prompt is a rail, not a box, on every theme and width.
             assert!(
-                rendered.contains("Approval needed") && rendered.contains('\u{2502}'),
+                rendered.contains("Command to run") && rendered.contains('\u{2502}'),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             for line in rendered.lines() {
@@ -812,7 +824,10 @@ async fn a_compound_command_offers_no_session_or_always_rows() {
 
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(rendered.contains("Run once"), "{rendered}");
-    assert!(!rendered.contains("this session"), "{rendered}");
+    assert!(
+        rendered.contains("Trust all commands for this session"),
+        "{rendered}"
+    );
 }
 
 #[tokio::test]
@@ -824,9 +839,9 @@ async fn sandbox_filesystem_approval_explains_the_unconfined_retry() {
     payload.sandbox_escalation = true;
     set_pending_approval(&mut app, payload);
 
-    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "n", "N"]);
+    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "t", "n", "N"]);
     let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("Approve command retry"), "{rendered}");
+    assert!(rendered.contains("Approve command"), "{rendered}");
     assert!(
         rendered.contains("outside the filesystem sandbox"),
         "{rendered}"
@@ -961,7 +976,7 @@ async fn sandbox_retry_cannot_be_auto_approved_by_a_command_grant() {
     app.drain_auto_hitl().await.unwrap();
     assert!(app.session_runtime.pending_hitl().is_some());
     assert!(!app.pending_interaction.has_hitl_decision());
-    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "n", "N"]);
+    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "t", "n", "N"]);
 }
 
 /// A leading env assignment is stripped when matching, so the suggested rule

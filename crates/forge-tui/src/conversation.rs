@@ -2150,11 +2150,19 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         border.add_modifier(Modifier::BOLD),
     )]);
 
+    let section = |label: &'static str| {
+        vec![Span::styled(
+            label,
+            theme::accent_style().add_modifier(Modifier::BOLD),
+        )]
+    };
+
     let question = p
         .question
         .as_deref()
         .unwrap_or_else(|| approval_question(&p.tool));
     row(vec![]);
+    row(section("Approval summary"));
     for wrapped in wrap(question, inner) {
         row(vec![Span::styled(wrapped, theme::text())]);
     }
@@ -2162,6 +2170,11 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     // explanation below reads identically for every command in that category,
     // so the evidence for this one leads.
     if let Some(failure) = p.failure.as_deref().filter(|f| !f.is_empty()) {
+        row(vec![]);
+        row(vec![Span::styled(
+            "Sandbox blocked the command",
+            theme::warn().add_modifier(Modifier::BOLD),
+        )]);
         for (n, failure_line) in failure.lines().enumerate() {
             let lead = if n == 0 {
                 "The sandbox refused it: "
@@ -2220,6 +2233,7 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         }
     }
     row(vec![]);
+    row(section("Command to run"));
 
     let command_lines: Vec<&str> = p.command.lines().collect();
     if command_lines.is_empty() {
@@ -2238,6 +2252,8 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     // A working directory has no spaces to wrap on, so `wrap` returned it
     // whole and it ran straight out through the card's right border. Elide it
     // on separators instead, which also keeps the folder name.
+    row(vec![]);
+    row(section("Working directory"));
     let cwd_line = approval_location_line(
         &crate::path_display::elide_path(&p.cwd, inner.saturating_sub(3)),
         &p.env_delta,
@@ -2246,6 +2262,7 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         row(vec![Span::styled(wrapped, theme::muted())]);
     }
     row(vec![]);
+    row(section("What would you like to do?"));
 
     for (idx, opt) in p.options.iter().enumerate() {
         let selected = idx == p.selected;
