@@ -435,6 +435,7 @@ mod tests {
             latest_message: Arc::new(std::sync::Mutex::new(None)),
             worktree_path: None,
             worktree_branch: None,
+            auto_continue_on_completion: false,
         };
 
         let snapshot = BackgroundTaskSnapshot::capture(&handle);
@@ -463,6 +464,7 @@ mod tests {
             latest_message: Arc::new(std::sync::Mutex::new(Some("reading".into()))),
             worktree_path: None,
             worktree_branch: None,
+            auto_continue_on_completion: false,
         };
 
         let snapshot = BackgroundTaskSnapshot::capture(&handle);
