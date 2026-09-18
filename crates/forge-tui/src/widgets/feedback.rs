@@ -77,16 +77,14 @@ impl Widget for FeedbackBar<'_> {
             Span::styled(&self.model.text, style),
         ]);
         if area.height == 1 {
-            // Single-row strip: no border to inset from, so pad directly to
-            // the same text origin the bordered strips and the composer use
-            // (`TEXT_INSET`), keeping the sidebar's left edge consistent.
+            // Single-row status line: no border to inset from, so pad directly
+            // to the footer's text origin (`PANE_PAD_X`). This row sits in the
+            // shell band immediately above the footer and lines up with it, not
+            // with the conversation column it used to live in.
             Paragraph::new(text)
                 .style(theme::panel())
                 .wrap(Wrap { trim: true })
-                .block(
-                    Block::default()
-                        .padding(Padding::horizontal(crate::widgets::input::TEXT_INSET)),
-                )
+                .block(Block::default().padding(Padding::horizontal(crate::design::PANE_PAD_X)))
                 .render(area, buf);
             return;
         }
@@ -222,15 +220,16 @@ mod tests {
         assert!(rendered.contains("[?]") && rendered.contains("abcdef"));
     }
 
-    /// The strip has no border, so it pads directly to the sidebar's shared
-    /// text origin — the same column the conversation and composer start at.
+    /// The status line has no border, so it pads directly to the footer's text
+    /// origin — the shell band it shares, not the conversation column it used
+    /// to sit in.
     #[test]
-    fn single_row_strip_starts_at_the_shared_text_origin() {
+    fn single_row_strip_starts_at_the_footer_text_origin() {
         let model = FeedbackModel::error("boom");
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
         FeedbackBar { model: &model }.render(area, &mut buf);
-        let inset = crate::widgets::input::TEXT_INSET;
+        let inset = crate::design::PANE_PAD_X;
         assert_eq!(buf[(0, 0)].symbol(), " ");
         assert_eq!(buf[(inset, 0)].symbol(), "[");
     }

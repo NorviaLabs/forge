@@ -36,7 +36,10 @@ pub struct LayoutRegions {
     /// Contextual bottom panel, docked under `files`+`chat` only — never
     /// under `sidebar`. 0-height when closed or space is tight.
     pub bottom_panel: Rect,
-    /// Phase 10 / TUI-08 — 0-height when empty. Scoped to `sidebar`'s width.
+    /// Phase 10 / TUI-08 — 0-height when empty. A full-width chrome row
+    /// directly above the footer: the status line belongs to the shell, not
+    /// inside the conversation column, where it used to push the transcript
+    /// up and down by a row every time a message appeared and expired.
     pub feedback: Rect,
     /// Outbound message queue. 0-height when empty.
     /// Scoped to `sidebar`'s width.
@@ -246,7 +249,7 @@ fn split_areas_with_chrome_mode(
         show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
     let gap_bottom = if footer_h > 0 { CHROME_GAP_Y } else { 0 };
     let status_h = if area.height >= AIRY_MIN_ROWS { 3 } else { 1 };
-    let fixed_h = status_h + footer_h + CHROME_GAP_Y + gap_bottom;
+    let fixed_h = status_h + footer_h + fb + CHROME_GAP_Y + gap_bottom;
     let requested_panel_h = bottom_panel_h.min(32);
     let available_panel_h = content_area
         .height
@@ -255,8 +258,9 @@ fn split_areas_with_chrome_mode(
     let panel_h = requested_panel_h.min(available_panel_h);
 
     // Top-level vertical stack: status / approve-all warning / task strip /
-    // gutter / main / gutter / footer. `feedback`, `queue` and `input` do not
-    // live here — they're scoped to the sidebar's own width, split below.
+    // gutter / main / gutter / status line / footer. `queue`, `background`
+    // and `input` do not live here — they're scoped to the sidebar's own
+    // width, split below.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -265,7 +269,8 @@ fn split_areas_with_chrome_mode(
             Constraint::Length(show_task_strip as u16), // task strip
             Constraint::Length(CHROME_GAP_Y),           // gutter under chrome
             Constraint::Min(3),                         // main
-            Constraint::Length(gap_bottom),             // gutter above footer
+            Constraint::Length(gap_bottom),             // gutter above the shell band
+            Constraint::Length(fb),                     // status line
             Constraint::Length(footer_h),               // contextual hint
         ])
         .split(content_area);
@@ -273,7 +278,8 @@ fn split_areas_with_chrome_mode(
     let approve_all_warning = rows[1];
     let task_strip = rows[2];
     let main = rows[4];
-    let footer = rows[6];
+    let feedback = rows[6];
+    let footer = rows[7];
 
     // main row: [left column (files+chat+bottom_panel), gutter, sidebar]
     let (left_area, sidebar) = if show_sidebar && !expand_conversation {
@@ -351,8 +357,10 @@ fn split_areas_with_chrome_mode(
         (files, chat, sidebar)
     };
 
-    // sidebar: [transcript, feedback, queue, background, gutter, input].
-    let (sidebar, feedback, queue, background, input) = if let Some(sb) = sidebar {
+    // sidebar: [transcript, queue, background, gutter, input]. The status line
+    // used to be a row in here; it now sits in the shell band above the footer,
+    // so a status message no longer takes a row from the conversation.
+    let (sidebar, queue, background, input) = if let Some(sb) = sidebar {
         // The background strip yields before the transcript does. It is the
         // only strip here whose height the caller asks for rather than derives,
         // so it is the one that has to be clamped against the transcript's
@@ -360,14 +368,13 @@ fn split_areas_with_chrome_mode(
         // strip first and shrink the conversation instead.
         let bg_h = bg_h.min(
             sb.height
-                .saturating_sub(fb + qh + COMPOSER_GAP_Y + input_h)
+                .saturating_sub(qh + COMPOSER_GAP_Y + input_h)
                 .saturating_sub(TRANSCRIPT_MIN_ROWS),
         );
         let sidebar_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(TRANSCRIPT_MIN_ROWS),
-                Constraint::Length(fb),
                 Constraint::Length(qh),
                 Constraint::Length(bg_h),
                 Constraint::Length(COMPOSER_GAP_Y), // gutter above the composer
@@ -378,12 +385,11 @@ fn split_areas_with_chrome_mode(
             Some(sidebar_rows[0]),
             sidebar_rows[1],
             sidebar_rows[2],
-            sidebar_rows[3],
-            sidebar_rows[5],
+            sidebar_rows[4],
         )
     } else {
         let zero = Rect::new(main.x, main.y, 0, 0);
-        (None, zero, zero, zero, zero)
+        (None, zero, zero, zero)
     };
 
     LayoutRegions {
@@ -590,13 +596,47 @@ mod tests {
         assert_eq!(r.queue.height, 3);
     }
 
+    /// The status line is a shell row above the footer, not a row inside the
+    /// conversation column. It used to shift the transcript up and down by a
+    /// line every time a message appeared and then expired.
     #[test]
-    fn feedback_row_reserved_when_requested() {
+    fn status_line_reserved_above_the_footer() {
         let area = Rect::new(0, 0, 120, 30);
+
         let r = split_areas_ex(area, 1);
         assert_eq!(r.feedback.height, 1);
-        assert!(r.feedback.y + r.feedback.height <= r.queue.y || r.queue.height == 0);
-        assert!(r.feedback.y + r.feedback.height <= r.input.y);
+        // Full content width: it is no longer scoped to the sidebar.
+        assert_eq!(r.feedback.width, content_width(area));
+        // Everything the conversation column occupies ends above it.
+        let sidebar = r.sidebar.expect("sidebar at this width");
+        assert!(r.feedback.y >= sidebar.y + sidebar.height);
+
+        // With a footer reserved, the status line sits directly on top of it.
+        let with_footer = split_areas_with_chrome(area, 1, 3, false, 0, 0, 2, true, 0, 0);
+        assert_eq!(
+            with_footer.feedback.y + with_footer.feedback.height,
+            with_footer.footer.y
+        );
+        assert_eq!(
+            with_footer.footer.y + with_footer.footer.height,
+            area.height
+        );
+    }
+
+    /// A status line must never take a row away from the conversation. The
+    /// transcript is `Min`-constrained, so it absorbs whatever the shell band
+    /// costs — and this asserts the shell costs it nothing inside the sidebar.
+    #[test]
+    fn status_line_does_not_enter_the_sidebar_split() {
+        let area = Rect::new(0, 0, 120, 30);
+        let without = split_areas_ex(area, 0);
+        let with = split_areas_ex(area, 1);
+        let without_sidebar = without.sidebar.expect("sidebar");
+        let with_sidebar = with.sidebar.expect("sidebar");
+        // Only the composer's column positions are unchanged; the conversation
+        // height shrinks by the shell row, not by a row inside the sidebar.
+        assert_eq!(with_sidebar.y, without_sidebar.y);
+        assert_eq!(with.input.y, without.input.y - 1);
     }
 
     #[test]

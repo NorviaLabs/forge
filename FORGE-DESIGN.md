@@ -336,14 +336,15 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
 │ StatusBar (one row)                                       │
 │ Approve-all warning (one row, full width, when on)        │
 ├────────┬───────────────────────┬─────────────────────────┤
-│        │                       │ feedback strip (0–1)    │
 │        │                       │ conversation            │
 │ Files  │     Workspace         │ queue strip             │
 │ (opt.) │  (File / Diff /       │ background strip        │
 │        │   empty placeholder)  │ composer                │
+│        │                       │                         │
 ├────────┴───────────────────────┴─────────────────────────┤
 │ BottomPanel (interactive terminal, 0-height when closed)  │
 ├──────────────────────────────────────────────────────────┤
+│ Status line (0–1, full width, directly above the Footer)  │
 │ Footer (chips + contextual hints)                         │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -354,10 +355,10 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
    one column (`§7.7`). `Files` is the repository explorer with Git status
    markers and its own search row (`Search` is a separate Tab stop nested in the
    same bordered box). `Sessions` is the multi-session list.
-2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, feedback strip, and the composer. It never hides; the composer lives inside it. One rounded frame contains the transcript; a thin scrollbar sits inside its right padding when the transcript overflows. Messages do not get individual frames.
+2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, and the composer. It never hides; the composer lives inside it. One rounded frame contains the transcript; a thin scrollbar sits inside its right padding when the transcript overflows. Messages do not get individual frames.
 3. **Workspace** — the center pane. Its only views are `File` and `Diff` (`types.rs::WorkspaceView`); with nothing open it renders an empty-state placeholder. Conversation is deliberately *not* a workspace view.
 4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
-5. **StatusBar / Footer** — chrome rows described in §9.
+5. **StatusBar / Footer** — chrome rows described in §9. The status line (the feedback strip, `widgets/feedback.rs`) is one of them: full width, directly above the Footer, 0 rows when there is nothing to say. It is shell chrome, not part of the conversation column.
 
 ### 7.2 Spatial priority
 
@@ -407,9 +408,12 @@ Sidebar; no blank row separates chrome from content. One blank row remains
 between transcript and composer. Border plus `PANE_PAD_X` puts text two cells
 from the pane edge. The transcript frame and its padding use the same canvas
 background as its content, avoiding a contrasting outer band.
-Composer, feedback, queue, and bottom-panel text share this origin
-(`TEXT_INSET`). Rounded frames use Ratatui border glyphs and semantic theme
-tokens; they do not emulate pixel shadows or change terminal typography.
+Composer, queue, and bottom-panel text share this origin
+(`TEXT_INSET`). The status line and the Footer share `PANE_PAD_X` instead —
+they occupy one shell band at the bottom, below the conversation column, and
+line up with each other rather than with the panes above them. Rounded frames
+use Ratatui border glyphs and semantic theme tokens; they do not emulate pixel
+shadows or change terminal typography.
 
 Avoid double-padding a bordered block and its inner component.
 
@@ -873,14 +877,28 @@ Rules:
 
 - One interactive login shell per session; closing the panel never kills it.
 - Focused presentation: thick top rule + `> Terminal` + accent title — legible without colour (shape carries it too). The title keeps one cell before the rule.
-- The body shares the shared text origin (`TEXT_INSET`), like the composer and the feedback strip.
+- The body shares the shared text origin (`TEXT_INSET`), like the composer and the queue strip.
 - Busy phase, activity feed lines, shell label and a painted caret render inside the panel.
 - Standard control keys, arrows, Tab, paste and resize are forwarded to the shell.
 
-### 9.10 Transient toast overlay
+### 9.10 Status line and transient toast overlay
 
-- Success and error notices additionally surface as a positioned toast (`ratatui-toaster`, `widgets/toasts.rs`), bottom-right, auto-expiring after 2s. Notification only: never focusable, never blocking.
-- The feedback strip keeps its persistent latest-status role; the toast is the interruption, the strip is the record.
+**Status line** (`widgets/feedback.rs`) — one full-width row directly above the
+Footer, 0 rows when empty. It is shell chrome, never part of the conversation
+column: a message appearing or expiring cannot shift the transcript, which is
+what it used to do when it was the first row of the sidebar's stack. It holds
+the latest-status role for the whole shell — file saves, refusals like `No file
+open to save`, connection notices — and expires 7s after it was last written.
+It pads to `PANE_PAD_X`, the origin it shares with the Footer beneath it.
+
+**Transient toast** — success and error notices additionally surface as a
+positioned toast (`ratatui-toaster`, `widgets/toasts.rs`), bottom-right,
+auto-expiring after 2s. Notification only: never focusable, never blocking.
+
+The toast is the interruption, the status line is the record. A notice about a
+session that is *not* the one being watched goes to the toast alone
+(`SupervisorEvent::Attention`), so one turn completing never paints the same
+words on both surfaces at once.
 
 ### 9.11 Approve-all warning strip
 
@@ -991,7 +1009,7 @@ by `[tui] notify = auto | bell | osc9 | both | off`.
 - **Text is sanitized, not trusted.** Labels come from the model, and an
   embedded `ESC` or `BEL` would terminate the OSC 9 sequence early and leave
   the remainder to be read as terminal commands.
-- The in-app toast and feedback strip still fire while focused. The terminal
+- The in-app toast and status line still fire while focused. The terminal
   notification and the in-app notice answer different questions.
 
 ### 9.15 Quit-all confirm
