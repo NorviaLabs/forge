@@ -46,6 +46,93 @@ fn preview_kind(rel_path: &str) -> Option<TextPreviewKind> {
     })
 }
 
+fn preview_lines(kind: TextPreviewKind, lines: &[String]) -> Vec<Line<'static>> {
+    preview_segments(kind, lines)
+        .into_iter()
+        .map(|segments| {
+            Line::from(
+                segments
+                    .into_iter()
+                    .map(|(text, rgb, bold, italic)| {
+                        let mut style = theme::syntax_segment(rgb, None);
+                        if bold {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                        if italic {
+                            style = style.add_modifier(Modifier::ITALIC);
+                        }
+                        Span::styled(text, style)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn preview_language(kind: TextPreviewKind) -> Option<&'static str> {
+    match kind {
+        TextPreviewKind::Stylesheet => Some("css"),
+        TextPreviewKind::Html | TextPreviewKind::Xml | TextPreviewKind::Svg => Some("html"),
+        _ => None,
+    }
+}
+
+fn preview_segments(
+    kind: TextPreviewKind,
+    lines: &[String],
+) -> Vec<Vec<(String, (u8, u8, u8), bool, bool)>> {
+    let syntax_theme = theme::syntax_theme();
+    if let Some(language) = preview_language(kind) {
+        let source = lines.join("\n");
+        if let Ok(highlighted) = std::panic::catch_unwind(|| {
+            forge_syntax::highlight_to_lines(language, &source, &syntax_theme)
+        }) {
+            return highlighted.as_ref().clone();
+        }
+    }
+
+    let colors = |class: forge_syntax::HighlightClass| {
+        forge_syntax::HighlightStyle { class }.rgb(&syntax_theme)
+    };
+    lines
+        .iter()
+        .map(|line| {
+            let class = match kind {
+                TextPreviewKind::Diff if line.starts_with('+') && !line.starts_with("+++") => {
+                    forge_syntax::HighlightClass::String
+                }
+                TextPreviewKind::Diff if line.starts_with('-') && !line.starts_with("---") => {
+                    forge_syntax::HighlightClass::Comment
+                }
+                TextPreviewKind::Diff if line.starts_with("@@") => {
+                    forge_syntax::HighlightClass::Keyword
+                }
+                TextPreviewKind::Config if line.starts_with('#') || line.starts_with(';') => {
+                    forge_syntax::HighlightClass::Comment
+                }
+                TextPreviewKind::Mermaid
+                    if line.starts_with("flowchart")
+                        || line.starts_with("graph")
+                        || line.starts_with("sequenceDiagram")
+                        || line.starts_with("stateDiagram") =>
+                {
+                    forge_syntax::HighlightClass::Keyword
+                }
+                TextPreviewKind::Mermaid if line.contains("-->") || line.contains("->") => {
+                    forge_syntax::HighlightClass::Operator
+                }
+                _ => forge_syntax::HighlightClass::Default,
+            };
+            vec![(
+                line.clone(),
+                colors(class),
+                matches!(class, forge_syntax::HighlightClass::Keyword),
+                matches!(class, forge_syntax::HighlightClass::Comment),
+            )]
+        })
+        .collect()
+}
+
 fn build_text_preview(kind: Option<TextPreviewKind>, lines: &[&str]) -> Vec<String> {
     match kind {
         Some(TextPreviewKind::Html) => lines
@@ -67,19 +154,7 @@ fn build_text_preview(kind: Option<TextPreviewKind>, lines: &[&str]) -> Vec<Stri
             .collect(),
         Some(TextPreviewKind::Xml | TextPreviewKind::Svg) => lines
             .iter()
-            .map(|line| {
-                let mut output = String::with_capacity(line.len());
-                let mut in_tag = false;
-                for character in line.chars() {
-                    match character {
-                        '<' => in_tag = true,
-                        '>' => in_tag = false,
-                        _ if !in_tag => output.push(character),
-                        _ => {}
-                    }
-                }
-                output.trim().to_string()
-            })
+            .map(|line| line.trim().to_string())
             .filter(|line| !line.is_empty())
             .collect(),
         Some(TextPreviewKind::Stylesheet) => lines
@@ -1534,7 +1609,10 @@ impl SourceViewerWidget<'_> {
             _ => "PREVIEW",
         };
         let header = format!("{label} · i to edit");
-        Paragraph::new(self.viewer.text_preview_lines.join("\n"))
+        let lines = kind
+            .map(|kind| preview_lines(kind, &self.viewer.text_preview_lines))
+            .unwrap_or_default();
+        Paragraph::new(lines)
             .block(Block::default().title(header).borders(Borders::BOTTOM))
             .style(theme::code_block())
             .scroll((self.viewer.preview_top as u16, 0))
@@ -1905,7 +1983,7 @@ mod tests {
         assert_eq!(log, vec!["     1 │ ready"]);
         assert_eq!(
             build_text_preview(Some(TextPreviewKind::Xml), &["<root>Hello</root>"]),
-            vec!["Hello"]
+            vec!["<root>Hello</root>"]
         );
         assert_eq!(
             build_text_preview(
