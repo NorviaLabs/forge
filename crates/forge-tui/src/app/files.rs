@@ -273,12 +273,12 @@ impl TuiApp {
             editor.set_syntax_theme(crate::theme::syntax_theme());
         }
         self.focus_block(FocusBlock::Workspace);
-        // Markdown lands in the rendered preview: the issue is about reading
-        // these files, and `:preview` brings the source back for editing.
+        // Markdown lands in the rendered preview; `:edit` brings the source
+        // back for editing.
         self.source_viewer.markdown_preview =
             self.editor_session.is_some() && self.source_viewer.supports_markdown_preview();
         self.status_state.message = if self.source_viewer.markdown_preview {
-            "Markdown preview · :preview to edit".into()
+            "Markdown preview · :edit to edit".into()
         } else if self.editor_session.is_some() {
             "Editing file · NORMAL mode".into()
         } else {

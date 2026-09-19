@@ -55,7 +55,7 @@ impl TuiApp {
                         if self.source_viewer.supports_markdown_preview() {
                             let on = self.source_viewer.toggle_markdown_preview();
                             self.status_state.message = if on {
-                                "Markdown preview · :preview to edit".into()
+                                "Markdown preview · :edit to edit".into()
                             } else {
                                 "Editing source · :preview to render".into()
                             };
@@ -65,7 +65,12 @@ impl TuiApp {
                         }
                     }
                     command if command == "e" || command == "edit" => {
-                        if self
+                        if self.source_viewer.markdown_preview {
+                            self.source_viewer.markdown_preview = false;
+                            self.status_state.message =
+                                "Editing source · :preview to render".into();
+                            self.editor_message = Some(self.status_state.message.clone());
+                        } else if self
                             .editor_session
                             .as_ref()
                             .is_some_and(|editor| editor.is_dirty())

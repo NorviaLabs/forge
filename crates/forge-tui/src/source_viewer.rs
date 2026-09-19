@@ -1544,7 +1544,7 @@ impl SourceViewerWidget<'_> {
         } else if let Some(message) = self.editor_message {
             message.to_string()
         } else {
-            "PREVIEW · :preview to edit".to_string()
+            "PREVIEW · :edit to edit".to_string()
         };
         Paragraph::new(Line::from(vec![
             Span::styled(" ".repeat(TEXT_INSET as usize), status_style),

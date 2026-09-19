@@ -274,6 +274,11 @@ impl TuiApp {
 
     pub(super) fn tab_nav_command(&self, key: event::KeyEvent) -> Option<TabNavCommand> {
         // Plain Left is in-panel back. Right is unbound after Review removal.
+        // While the editor owns an insert/search interaction, Left belongs to
+        // the editor (for cursor movement), not workspace navigation.
+        if self.current_workspace_is_file() && self.editor_handles_escape() {
+            return None;
+        }
         let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
             && !key.modifiers.contains(KeyModifiers::ALT)
             && !key.modifiers.contains(KeyModifiers::SHIFT);
