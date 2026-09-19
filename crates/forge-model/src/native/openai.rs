@@ -40,6 +40,7 @@ struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments: String,
+    argument_completion: ArgumentCompletion,
     start_sent: bool,
 }
 
@@ -448,7 +449,11 @@ fn consume_event(
         maybe_emit_tool_call_start(index, call, tx);
         if let Some(arguments) = raw_call.pointer("/function/arguments") {
             let before = call.arguments.len();
-            accumulate_tool_arguments(&mut call.arguments, arguments);
+            accumulate_tool_arguments(
+                &mut call.arguments,
+                &mut call.argument_completion,
+                arguments,
+            );
             if let Some(tx) = tx {
                 let after = call.arguments.len();
                 if after > before {
@@ -497,25 +502,119 @@ fn maybe_emit_tool_call_start(
 /// so it starts a new snapshot instead (a proxy may emit `arguments: {}` as a
 /// parsed object before the real string deltas; gluing them yields
 /// `{}{"command":...}` and fails every tool-calling turn).
-fn accumulate_tool_arguments(acc: &mut String, fragment: &Value) {
+#[derive(Default)]
+struct ArgumentCompletion {
+    depth: usize,
+    in_string: bool,
+    escaped: bool,
+    started: bool,
+    compound: bool,
+    complete: bool,
+    invalid: bool,
+    number_out_of_range: bool,
+    exponent_seen: bool,
+    #[cfg(test)]
+    scanned: usize,
+    #[cfg(test)]
+    parsed_bytes: usize,
+}
+
+impl ArgumentCompletion {
+    fn extend(&mut self, fragment: &str, accumulated: &str) {
+        if self.invalid {
+            return;
+        }
+        let mut changed = false;
+        for byte in fragment.bytes() {
+            #[cfg(test)]
+            {
+                self.scanned += 1;
+            }
+            if self.in_string {
+                changed = true;
+                if self.escaped {
+                    self.escaped = false;
+                } else if byte == b'\\' {
+                    self.escaped = true;
+                } else if byte == b'"' {
+                    self.in_string = false;
+                }
+                continue;
+            }
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+            changed = true;
+            if !self.started {
+                self.started = true;
+                self.compound = matches!(byte, b'{' | b'[' | b'"');
+            }
+            if matches!(byte, b'e' | b'E') {
+                self.exponent_seen = true;
+            }
+            match byte {
+                b'"' => self.in_string = true,
+                b'{' | b'[' => self.depth += 1,
+                b'}' | b']' => self.depth = self.depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if !changed || !self.started || self.in_string || self.depth != 0 {
+            return;
+        }
+        if self.number_out_of_range && !self.exponent_seen {
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.parsed_bytes += accumulated.len();
+        }
+        match serde_json::from_str::<Value>(accumulated) {
+            Ok(_) => self.complete = true,
+            Err(error) => {
+                self.number_out_of_range = error.to_string().contains("number out of range");
+                self.invalid = self.compound
+                    || (self.number_out_of_range && self.exponent_seen)
+                    || (!error.is_eof() && !self.number_out_of_range);
+            }
+        }
+    }
+}
+
+fn accumulate_tool_arguments(
+    acc: &mut String,
+    completion: &mut ArgumentCompletion,
+    fragment: &Value,
+) {
     match fragment {
         Value::String(s) => {
-            if !s.trim().is_empty() && serde_json::from_str::<Value>(acc).is_ok() {
-                *acc = s.clone();
+            if !s.trim().is_empty() && completion.complete {
+                acc.clear();
+                *completion = ArgumentCompletion::default();
+            }
+            acc.push_str(s);
+            if completion.complete {
+                if !s
+                    .bytes()
+                    .all(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+                {
+                    completion.complete = false;
+                    completion.invalid = true;
+                }
             } else {
-                acc.push_str(s);
+                completion.extend(s, acc);
             }
         }
         Value::Object(_) | Value::Array(_) => {
-            // Non-delta providers may emit already-parsed argument objects.
             *acc = fragment.to_string();
+            *completion = ArgumentCompletion::default();
+            completion.extend(acc, acc);
         }
         Value::Null => {}
         other => {
-            // Numbers/bools as sole argument value are invalid for tools; keep as text for
-            // finalize to reject with a clear protocol error.
             if acc.is_empty() {
                 *acc = other.to_string();
+                completion.extend(acc, acc);
             }
         }
     }
@@ -800,10 +899,93 @@ mod tests {
     }
 
     #[test]
+    fn argument_completion_matches_reparsing_at_every_split() {
+        let documents = [
+            r#" {"nested":[{},[],{"text":"quotes: \" slash: \\ unicode: \uD834\uDD1E {} []"}],"n":-1.25e+12,"ok":true,"nil":null} "#,
+            r#""héllo\n\t\b\f\r\/\\\"""#,
+            "true",
+            "false",
+            "null",
+            "-12.5e-3",
+            "[1,2,{\"a\":[]}]",
+            "{]",
+            "{\"a\":tru}",
+            "\"\\uZZZZ\"",
+            "{}{}",
+            "1e",
+            "[",
+        ];
+        for document in documents {
+            let boundaries: Vec<_> = document
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain(std::iter::once(document.len()))
+                .collect();
+            for split in boundaries {
+                let mut acc = String::new();
+                let mut completion = ArgumentCompletion::default();
+                let mut reference = String::new();
+                for fragment in [&document[..split], &document[split..], " ", "\u{a0}", "{}"] {
+                    if !fragment.trim().is_empty()
+                        && serde_json::from_str::<Value>(&reference).is_ok()
+                    {
+                        reference.clear();
+                    }
+                    reference.push_str(fragment);
+                    accumulate_tool_arguments(&mut acc, &mut completion, &json!(fragment));
+                    assert_eq!(acc, reference, "document={document:?}, split={split}");
+                    assert_eq!(
+                        completion.complete,
+                        serde_json::from_str::<Value>(&reference).is_ok(),
+                        "buffer={reference:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn argument_completion_work_scales_linearly() {
+        for size in [1024, 4096, 16384] {
+            let document = json!({"text": "\\\"{}[]é".repeat(size)}).to_string();
+            let mut acc = String::new();
+            let mut completion = ArgumentCompletion::default();
+            for character in document.chars() {
+                accumulate_tool_arguments(&mut acc, &mut completion, &json!(character.to_string()));
+            }
+            assert_eq!(acc, document);
+            assert!(completion.complete);
+            assert_eq!(completion.scanned, document.len());
+            assert_eq!(completion.parsed_bytes, document.len());
+            let calls = BTreeMap::from([(
+                0,
+                ToolCallAccumulator {
+                    arguments: acc,
+                    argument_completion: completion,
+                    ..Default::default()
+                },
+            )]);
+            assert_eq!(
+                finalize_tool_calls(calls).unwrap()[0].arguments,
+                serde_json::from_str::<Value>(&document).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn full_argument_object_snapshot_replaces_instead_of_concat() {
         let mut acc = String::new();
-        accumulate_tool_arguments(&mut acc, &json!({"path": "a", "offset": 1}));
-        accumulate_tool_arguments(&mut acc, &json!({"path": "a", "offset": 1, "limit": 100}));
+        let mut completion = ArgumentCompletion::default();
+        accumulate_tool_arguments(
+            &mut acc,
+            &mut completion,
+            &json!({"path": "a", "offset": 1}),
+        );
+        accumulate_tool_arguments(
+            &mut acc,
+            &mut completion,
+            &json!({"path": "a", "offset": 1, "limit": 100}),
+        );
         let parsed: Value = serde_json::from_str(&acc).unwrap();
         assert_eq!(parsed["offset"], 1);
         assert_eq!(parsed["limit"], 100);
@@ -1025,9 +1207,10 @@ mod tests {
     fn string_snapshot_after_object_snapshot_replaces_instead_of_concat() {
         // Split deltas after the snapshot must still append to each other.
         let mut acc = String::new();
-        accumulate_tool_arguments(&mut acc, &json!({}));
-        accumulate_tool_arguments(&mut acc, &json!("{\"command\":\""));
-        accumulate_tool_arguments(&mut acc, &json!("ls\"}"));
+        let mut completion = ArgumentCompletion::default();
+        accumulate_tool_arguments(&mut acc, &mut completion, &json!({}));
+        accumulate_tool_arguments(&mut acc, &mut completion, &json!("{\"command\":\""));
+        accumulate_tool_arguments(&mut acc, &mut completion, &json!("ls\"}"));
         let parsed: Value = serde_json::from_str(&acc).unwrap();
         assert_eq!(parsed["command"], "ls");
     }
@@ -1289,6 +1472,7 @@ mod tests {
                 id: String::new(),
                 name: "bash".into(),
                 arguments: "not-json".into(),
+                argument_completion: ArgumentCompletion::default(),
                 start_sent: false,
             },
         )]);

@@ -4,6 +4,59 @@
 
 use super::prelude::*;
 
+#[tokio::test]
+async fn presentation_misses_reuse_projection_and_content_changes_match_full_projection() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    for index in 0..500 {
+        app.session_runtime
+            .messages
+            .push(Message::new(MessageRole::User, format!("question {index}")));
+        app.session_runtime
+            .messages
+            .push(Message::new(MessageRole::Assistant, "answer".repeat(100)));
+    }
+    draw_app(&mut app, 100, 30);
+    let cached = &mut app.render_cache.projection.as_mut().unwrap().model;
+    cached.items.reserve(10_000);
+    let allocation = cached.items.as_ptr();
+    let text_allocation = match &cached.items[1] {
+        crate::conversation::ChatItem::Assistant { text } => text.as_ptr(),
+        item => panic!("unexpected item: {item:?}"),
+    };
+    for width in [80, 120, 100] {
+        app.render_cache.conversation = None;
+        draw_app(&mut app, width, 30);
+        let cached = &app.render_cache.projection.as_ref().unwrap().model;
+        assert_eq!(allocation, cached.items.as_ptr());
+        assert!(
+            matches!(&cached.items[1], crate::conversation::ChatItem::Assistant { text } if text.as_ptr() == text_allocation)
+        );
+    }
+    for change in 0..4 {
+        match change {
+            0 => app
+                .session_runtime
+                .messages
+                .push(Message::new(MessageRole::Assistant, "appended")),
+            1 => app.session_runtime.messages.last_mut().unwrap().content = "replaced".into(),
+            2 => app.conversation_view.message_start = 4,
+            _ => app.session_runtime.messages.clear(),
+        }
+        draw_app(&mut app, 100, 30);
+        let cached = &app.render_cache.projection.as_ref().unwrap().model;
+        let messages = app.transcript_view.messages();
+        let start = app.conversation_view.message_start.min(messages.len());
+        let full = crate::conversation::ConversationModel::from_messages(
+            &messages[start..],
+            &[],
+            app.session_view.lifecycle,
+            cached.opts.clone(),
+        );
+        assert_eq!(cached.items, full.items);
+    }
+}
+
 fn numbered_lines(count: usize) -> String {
     (0..count)
         .map(|index| format!("line {index}"))
@@ -287,6 +340,8 @@ async fn same_length_message_changes_invalidate_transcript_cache() {
     let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
 
     assert!(!Arc::ptr_eq(&first, &second));
+    let projection = &app.render_cache.projection.as_ref().unwrap().model;
+    assert!(projection.items.iter().any(|item| matches!(item, crate::conversation::ChatItem::Assistant { text } if text == "new text")));
 }
 
 /// Busy-phase flips used to sit on the conversation render key, so every

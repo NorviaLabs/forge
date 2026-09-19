@@ -1169,6 +1169,8 @@ impl TuiApp {
                             // this session's completion records (DESIGN-005).
                             self.turn_summaries
                                 .retain(|record| record.key.session != session_id.to_string());
+                            self.turn_summaries_revision =
+                                self.turn_summaries_revision.wrapping_add(1);
                             // `resume_session` already restored the durable queue for
                             // the target session — do not clear it out from under
                             // that restoration.
@@ -1199,6 +1201,7 @@ impl TuiApp {
                     self.turn_summaries.retain(|record| {
                         record.key.session != self.selected_session_id.to_string()
                     });
+                    self.turn_summaries_revision = self.turn_summaries_revision.wrapping_add(1);
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_state.message.clear();

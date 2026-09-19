@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
 use forge_types::{
@@ -35,6 +36,7 @@ pub enum JournalError {
 pub struct Journal {
     pool: SqlitePool,
     db_path: PathBuf,
+    checkpoint_requests: Arc<OnceLock<tokio::sync::mpsc::Sender<SessionId>>>,
 }
 
 /// Return the most recently modified session journal in `dir`.
@@ -295,7 +297,11 @@ impl Journal {
             .max_connections(1)
             .connect_with(opts)
             .await?;
-        let j = Self { pool, db_path };
+        let j = Self {
+            pool,
+            db_path,
+            checkpoint_requests: Arc::default(),
+        };
         Box::pin(j.migrate()).await?;
         Ok(j)
     }
@@ -367,9 +373,50 @@ impl Journal {
         // successful journal append into a failed user operation if snapshot
         // maintenance cannot complete.
         if seq.is_multiple_of(REPLAY_CHECKPOINT_INTERVAL) {
-            let _ = Box::pin(self.write_replay_checkpoint(session_id)).await;
+            self.request_replay_checkpoint(session_id);
         }
         Ok(seq)
+    }
+
+    fn request_replay_checkpoint(&self, session_id: SessionId) {
+        let sender = self.checkpoint_requests.get_or_init(|| {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let db_path = self.db_path.clone();
+            let _ = std::thread::Builder::new()
+                .name("forge-checkpoint".into())
+                .spawn(move || {
+                    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    else {
+                        return;
+                    };
+                    runtime.block_on(async move {
+                        let opts = SqliteConnectOptions::new()
+                            .filename(&db_path)
+                            .journal_mode(SqliteJournalMode::Wal)
+                            .synchronous(SqliteSynchronous::Normal);
+                        let Ok(pool) = SqlitePoolOptions::new()
+                            .max_connections(1)
+                            .connect_with(opts)
+                            .await
+                        else {
+                            return;
+                        };
+                        let journal = Self {
+                            pool,
+                            db_path,
+                            checkpoint_requests: Arc::default(),
+                        };
+                        while let Some(session_id) = receiver.recv().await {
+                            let _ = journal.write_replay_checkpoint(session_id).await;
+                        }
+                        journal.pool.close().await;
+                    });
+                });
+            sender
+        });
+        let _ = sender.try_send(session_id);
     }
 
     pub async fn append_session_created(&self, session_id: SessionId) -> Result<u64, JournalError> {
@@ -1238,6 +1285,136 @@ mod tests {
     use forge_types::ToolCall;
     use tempfile::tempdir;
 
+    async fn wait_for_checkpoint(journal: &Journal, session_id: SessionId, seq: u64) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let stored: Option<i64> =
+                    sqlx::query_scalar("SELECT seq FROM replay_checkpoints WHERE session_id = ?")
+                        .bind(session_id.to_string())
+                        .fetch_optional(&journal.pool)
+                        .await
+                        .unwrap();
+                if stored.is_some_and(|stored| stored as u64 >= seq) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("checkpoint maintenance completes");
+    }
+
+    #[tokio::test]
+    async fn checkpoint_requests_are_bounded_and_do_not_block_append() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        journal.checkpoint_requests.set(sender).unwrap();
+        let clone = journal.clone();
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            for index in 0..1024 {
+                clone
+                    .append_user_message(sid, &format!("message {index}"))
+                    .await
+                    .unwrap();
+            }
+        })
+        .await
+        .expect("append completes even when maintenance never consumes requests");
+
+        assert_eq!(receiver.len(), 1);
+        assert_eq!(receiver.try_recv().unwrap(), sid);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(journal.last_seq().await.unwrap(), 1024);
+        let before = journal.replay(sid).await.unwrap();
+        assert_eq!(before.user_messages.len(), 1024);
+        journal.write_replay_checkpoint(sid).await.unwrap();
+        journal.append_user_message(sid, "tail").await.unwrap();
+        let after = journal.replay(sid).await.unwrap();
+        assert_eq!(&after.user_messages[..1024], &before.user_messages);
+        assert_eq!(after.user_messages[1024], "tail");
+        assert_eq!(after.last_seq, 1025);
+        assert_eq!(after.events.len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_worker_survives_caller_runtime_shutdown() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let journal = Journal::open(dir.path(), sid).await.unwrap();
+            for index in 0..256 {
+                journal
+                    .append_user_message(sid, &format!("message {index}"))
+                    .await
+                    .unwrap();
+            }
+        });
+        drop(runtime);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let journal = Journal::open(dir.path(), sid).await.unwrap();
+            wait_for_checkpoint(&journal, sid, 256).await;
+            let state = journal.replay(sid).await.unwrap();
+            assert_eq!(state.user_messages.len(), 256);
+            assert_eq!(state.last_seq, 256);
+            assert!(state.events.is_empty());
+        });
+    }
+
+    #[tokio::test]
+    async fn checkpoint_failure_does_not_fail_persisted_append() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        journal.checkpoint_requests.set(sender).unwrap();
+        for index in 0..256 {
+            assert_eq!(
+                journal.append_user_message(sid, "persisted").await.unwrap(),
+                index + 1
+            );
+        }
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.last_seq, 256);
+        assert_eq!(state.user_messages.len(), 256);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_write_preserves_newer_sequence() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_user_message(sid, "persisted").await.unwrap();
+        sqlx::query(
+            "INSERT INTO replay_checkpoints (session_id, seq, payload) VALUES (?, 1000, ?)",
+        )
+        .bind(sid.to_string())
+        .bind("newer checkpoint sentinel")
+        .execute(&journal.pool)
+        .await
+        .unwrap();
+        journal.write_replay_checkpoint(sid).await.unwrap();
+        let row = sqlx::query("SELECT seq, payload FROM replay_checkpoints WHERE session_id = ?")
+            .bind(sid.to_string())
+            .fetch_one(&journal.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>("seq"), 1000);
+        assert_eq!(row.get::<String, _>("payload"), "newer checkpoint sentinel");
+    }
+
     #[tokio::test]
     async fn record_before_result_and_replay() {
         let dir = tempdir().unwrap();
@@ -1458,6 +1635,7 @@ mod tests {
 
         // SessionCreated + 255 messages reaches the automatic checkpoint at
         // seq 256. The next event must replay on top of that snapshot.
+        wait_for_checkpoint(&journal, sid, 256).await;
         journal.append_user_message(sid, "tail").await.unwrap();
 
         let state = journal.replay(sid).await.unwrap();
@@ -1484,6 +1662,7 @@ mod tests {
                 .unwrap();
         }
 
+        wait_for_checkpoint(&journal, sid, 256).await;
         sqlx::query("UPDATE replay_checkpoints SET payload = ? WHERE session_id = ?")
             .bind("not json")
             .bind(sid.to_string())
@@ -1516,6 +1695,7 @@ mod tests {
             task.await.unwrap();
         }
 
+        wait_for_checkpoint(&journal, sid, 256).await;
         let state = journal.replay(sid).await.unwrap();
         assert_eq!(state.user_messages.len(), 257);
         let mut messages = state.user_messages;

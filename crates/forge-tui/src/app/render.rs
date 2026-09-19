@@ -643,12 +643,49 @@ impl TuiApp {
             .filter(|message| message.role == forge_types::MessageRole::User)
             .count() as u64;
         let session_id_string = self.session_view.session_id.to_string();
-        let turn_summaries: Vec<(u64, TurnSummaryPresentation)> = self
+        if self
+            .render_cache
             .turn_summaries
-            .iter()
-            .filter(|record| record.key.session == session_id_string)
-            .map(|record| (record.key.user_ordinal, record.summary.clone()))
-            .collect();
+            .as_ref()
+            .is_some_and(|cache| {
+                cache.session_id != self.session_view.session_id
+                    || cache.revision != self.turn_summaries_revision
+            })
+        {
+            self.render_cache.turn_summaries = None;
+        }
+        if self.render_cache.turn_summaries.is_none() {
+            let summaries: Vec<_> = self
+                .turn_summaries
+                .iter()
+                .filter(|record| record.key.session == session_id_string)
+                .map(|record| (record.key.user_ordinal, record.summary.clone()))
+                .collect();
+            let digest = summaries
+                .iter()
+                .map(|(ordinal, summary)| {
+                    (
+                        *ordinal,
+                        summary.secs.to_bits(),
+                        summary.chars,
+                        summary.tools,
+                        summary.output_tokens,
+                    )
+                })
+                .collect();
+            self.render_cache.turn_summaries = Some(TurnSummaryRenderCache {
+                session_id: self.session_view.session_id,
+                revision: self.turn_summaries_revision,
+                summaries,
+                digest,
+            });
+        }
+        let (turn_summaries, turn_summary_digest) = self
+            .render_cache
+            .turn_summaries
+            .as_ref()
+            .map(|cache| (cache.summaries.clone(), cache.digest.clone()))
+            .expect("turn summary cache populated");
         // Computed here, while the message slice is still borrowed: the home
         // splash is a landing page and stays at the top, but once someone has
         // actually said something the pane behaves like a conversation and
@@ -699,18 +736,7 @@ impl TuiApp {
             // DESIGN-005: per-turn summaries digest. Counting records is not
             // enough: a re-recorded turn leaves the count unchanged, so the
             // previous duration would stay on screen through the next one.
-            turn_summaries: turn_summaries
-                .iter()
-                .map(|(ordinal, summary)| {
-                    (
-                        *ordinal,
-                        summary.secs.to_bits(),
-                        summary.chars,
-                        summary.tools,
-                        summary.output_tokens,
-                    )
-                })
-                .collect(),
+            turn_summaries: turn_summary_digest,
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
             keep_from_end: window_keep_from_end,
@@ -772,24 +798,41 @@ impl TuiApp {
             .map(|cache| &cache.key)
             != Some(&key)
         {
-            let mut conv = ConversationModel::from_messages(
-                visible_messages,
-                visible_events,
+            let projection_key = (
+                self.session_view.session_id,
+                self.transcript_view.revision(),
+                message_start,
+                visible_messages.len(),
                 self.session_view.lifecycle,
-                ConversationViewOpts {
-                    busy: false,
-                    stream_wait: None,
-                    stream_thought_secs: None,
-                    // The cache is keyed by transcript content, not animation
-                    // state. Bake the plan marker bright so the cached lines are
-                    // stable across throbber ticks; the live turn line and the
-                    // streaming preview are the only parts that animate.
-                    pulse_dim: false,
-                    ..opts.clone()
-                },
-            )
-            .with_turn_summaries(turn_summaries, window_user_base)
-            .with_extra_banners(self.banner_state.items.iter().cloned());
+            );
+            let projection_opts = ConversationViewOpts {
+                busy: false,
+                stream_wait: None,
+                stream_thought_secs: None,
+                pulse_dim: false,
+                ..opts.clone()
+            };
+            let mut projection = self
+                .render_cache
+                .projection
+                .take()
+                .filter(|cached| cached.key == projection_key)
+                .unwrap_or_else(|| ConversationProjectionCache {
+                    key: projection_key,
+                    model: ConversationModel::from_messages(
+                        visible_messages,
+                        visible_events,
+                        self.session_view.lifecycle,
+                        projection_opts.clone(),
+                    ),
+                });
+            projection.model.opts = projection_opts;
+            let projected_len = projection.model.items.len();
+            let mut conv = projection
+                .model
+                .with_turn_summaries(turn_summaries, window_user_base)
+                .with_extra_banners(self.banner_state.items.iter().cloned());
+            let decorated_len = conv.items.len();
             if !slash_mode && !self.conversation_view.splash_dismissed {
                 conv = conv.with_home(
                     crate::widgets::status::shorten_home_path(&self.runtime.cwd),
@@ -799,9 +842,14 @@ impl TuiApp {
                     connected,
                 );
             }
+            let home_added = conv.items.len() - decorated_len;
+            let mut activity_index = None;
             if let Some(summary) = activity_summary {
                 conv =
                     conv.with_activity_summary(summary.label, summary.action_label, summary.kind);
+                activity_index = conv.items.iter().position(|item| {
+                    matches!(item, crate::conversation::ChatItem::ActivitySummary { .. })
+                });
             }
             self.sync_approval_menu();
             self.sync_question_menu();
@@ -819,6 +867,22 @@ impl TuiApp {
             let width = conversation_text_width(sidebar_width);
             let (lines, plan_dock, complete) =
                 conv.lines_and_plan_dock_with_completeness(width, cache_keep_from_end);
+            if let Some(index) = activity_index {
+                conv.items.remove(index);
+            }
+            if home_added > 0 {
+                if let Some(index) = conv
+                    .items
+                    .iter()
+                    .position(|item| matches!(item, crate::conversation::ChatItem::Home { .. }))
+                {
+                    conv.items.remove(index);
+                }
+            }
+            conv.items.truncate(projected_len);
+            conv.turn_summaries.clear();
+            projection.model = conv;
+            self.render_cache.projection = Some(projection);
             let mut cache_key = key;
             if complete {
                 cache_key.keep_from_end = usize::MAX;

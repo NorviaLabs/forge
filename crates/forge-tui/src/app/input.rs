@@ -359,6 +359,7 @@ impl TuiApp {
             activity: std::mem::take(&mut self.activity),
             banner_state: std::mem::take(&mut self.banner_state),
             turn_summaries: std::mem::take(&mut self.turn_summaries),
+            turn_summaries_revision: self.turn_summaries_revision,
             tool_detail: std::mem::take(&mut self.tool_detail),
             composer_chip_focus: self.composer_chip_focus.take(),
             approval_session: std::mem::take(&mut self.approval_session),
@@ -409,6 +410,7 @@ impl TuiApp {
         self.activity = state.activity;
         self.banner_state = state.banner_state;
         self.turn_summaries = state.turn_summaries;
+        self.turn_summaries_revision = state.turn_summaries_revision;
         self.tool_detail = state.tool_detail;
         self.composer_chip_focus = state.composer_chip_focus;
         self.approval_session = state.approval_session;

@@ -333,6 +333,7 @@ impl TuiApp {
         summary: TurnSummaryPresentation,
     ) {
         upsert_turn_summary(&mut self.turn_summaries, session_id, user_ordinal, summary);
+        self.turn_summaries_revision = self.turn_summaries_revision.wrapping_add(1);
     }
 
     /// How many times one model step may be re-issued after a transient

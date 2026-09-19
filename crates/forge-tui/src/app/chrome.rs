@@ -404,6 +404,8 @@ impl TuiApp {
                                         ordinal,
                                         summary,
                                     );
+                                    saved.turn_summaries_revision =
+                                        saved.turn_summaries_revision.wrapping_add(1);
                                 }
                             }
                             saved.busy_state.stop();

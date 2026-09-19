@@ -104,6 +104,7 @@ impl TuiApp {
                 items: startup_banners,
             },
             turn_summaries: Vec::new(),
+            turn_summaries_revision: 0,
             search_status: SearchStatusState { label: None },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState::default(),
@@ -174,7 +175,7 @@ impl TuiApp {
                 context_reset_snapshot: None,
                 splash_dismissed: false,
             },
-            render_cache: RenderCacheState { conversation: None },
+            render_cache: RenderCacheState::default(),
             repo_header_state: RepoHeaderState {
                 cache: repo_header,
                 refresh_rx: None,
@@ -322,6 +323,7 @@ impl TuiApp {
                 items: startup_banners,
             },
             turn_summaries: Vec::new(),
+            turn_summaries_revision: 0,
             search_status: SearchStatusState { label: None },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState::default(),
@@ -389,7 +391,7 @@ impl TuiApp {
                 context_reset_snapshot: None,
                 splash_dismissed: false,
             },
-            render_cache: RenderCacheState { conversation: None },
+            render_cache: RenderCacheState::default(),
             repo_header_state: RepoHeaderState {
                 cache: repo_header,
                 refresh_rx: None,
