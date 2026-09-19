@@ -803,13 +803,6 @@ pub trait ConversationRender {
         keep_from_end: usize,
         cache: &mut StreamMarkdownCache,
     ) -> Vec<HyperlinkLine>;
-    /// Shared body of the two above. Not called directly.
-    fn render_lines(
-        &self,
-        available_width: usize,
-        keep_from_end: usize,
-        stream_cache: Option<&mut StreamMarkdownCache>,
-    ) -> Vec<HyperlinkLine>;
     /// As [`Self::lines_for_width_from_end`], also reporting where the plan
     /// card sits so it can be docked once it scrolls away.
     fn lines_and_plan_dock(
@@ -857,16 +850,6 @@ impl ConversationRender for ConversationModel {
         let (lines, dock, _) =
             self.lines_and_plan_dock_with_completeness(available_width, keep_from_end);
         (lines, dock)
-    }
-
-    fn render_lines(
-        &self,
-        available_width: usize,
-        keep_from_end: usize,
-        stream_cache: Option<&mut StreamMarkdownCache>,
-    ) -> Vec<HyperlinkLine> {
-        self.render_lines_with_completeness(available_width, keep_from_end, stream_cache)
-            .0
     }
 }
 
