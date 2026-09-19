@@ -97,21 +97,7 @@ impl AgentSession {
             self.journal
                 .append_tool_intent(self.session_id, &call)
                 .await?;
-            self.journal
-                .append_tool_result(self.session_id, &call, &output)
-                .await?;
-            self.remember_tool_result(&call, &output);
-            self.messages.push(Message {
-                outcome: output.effective_outcome(),
-                role: MessageRole::Tool,
-                content: output.content,
-                tool_call_id: Some(payload.call_id),
-                name: Some(call.name),
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-                attachments: Vec::new(),
-            });
+            self.publish_tool_result(&call, &output).await?;
             // Stale evidence from the paused call must not leak into a later
             // completion decision within this same turn (see `apply_model_response`).
             self.turn
@@ -141,31 +127,7 @@ impl AgentSession {
         self.turn.reset_hitl_denials();
         // Re-authorize
         let call = self.approval_execution_call(&payload)?;
-        let class = self
-            .tools
-            .get(&call.name)
-            .map(|t| t.side_effect_class())
-            .unwrap_or(SideEffectClass::Meta);
-        if self.enable_gov {
-            let d = self.governance.authorize(&call, class);
-            // `PolicyDecision` is `#[non_exhaustive]`. Testing `== Deny` let every other
-            // verdict through, so an unrecognised one would execute. Decide explicitly:
-            // `Hitl` still proceeds because the operator already approved this call and
-            // re-requiring approval here would stall the turn; anything unrecognised is
-            // refused. Behaviour is unchanged for Allow, Hitl and Deny.
-            let refuse = !matches!(d, PolicyDecision::Allow | PolicyDecision::Hitl);
-            if refuse {
-                self.turn
-                    .evidence_mut()
-                    .0
-                    .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
-                self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
-                    .await?;
-                return Err(LoopError::Other(
-                    "policy denies tool after HITL approve".into(),
-                ));
-            }
-        }
+        self.ensure_approved_tool_allowed(&call).await?;
 
         self.clear_hitl_wait_and_resume().await?;
         let mut budget = ValidationBudget::with_default_max();
@@ -202,31 +164,7 @@ impl AgentSession {
             .await?;
         self.turn.reset_hitl_denials();
         let call = self.approval_execution_call(&payload)?;
-        let class = self
-            .tools
-            .get(&call.name)
-            .map(|t| t.side_effect_class())
-            .unwrap_or(SideEffectClass::Meta);
-        if self.enable_gov {
-            let d = self.governance.authorize(&call, class);
-            // `PolicyDecision` is `#[non_exhaustive]`. Testing `== Deny` let every other
-            // verdict through, so an unrecognised one would execute. Decide explicitly:
-            // `Hitl` still proceeds because the operator already approved this call and
-            // re-requiring approval here would stall the turn; anything unrecognised is
-            // refused. Behaviour is unchanged for Allow, Hitl and Deny.
-            let refuse = !matches!(d, PolicyDecision::Allow | PolicyDecision::Hitl);
-            if refuse {
-                self.turn
-                    .evidence_mut()
-                    .0
-                    .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
-                self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
-                    .await?;
-                return Err(LoopError::Other(
-                    "policy denies tool after HITL approve".into(),
-                ));
-            }
-        }
+        self.ensure_approved_tool_allowed(&call).await?;
         self.clear_hitl_wait_and_resume().await?;
         let mut budget = ValidationBudget::with_default_max();
         let sandbox_escalation = payload.sandbox_escalation;
@@ -246,5 +184,30 @@ impl AgentSession {
             .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
         self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
             .await
+    }
+
+    async fn ensure_approved_tool_allowed(&mut self, call: &ToolCall) -> Result<(), LoopError> {
+        if self.enable_gov {
+            let class = self
+                .tools
+                .get(&call.name)
+                .map(|tool| tool.side_effect_class())
+                .unwrap_or(SideEffectClass::Meta);
+            let decision = self.governance.authorize(call, class);
+            // HITL is allowed here because the operator already approved it;
+            // unknown policy decisions remain fail-closed.
+            if !matches!(decision, PolicyDecision::Allow | PolicyDecision::Hitl) {
+                self.turn
+                    .evidence_mut()
+                    .0
+                    .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+                self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
+                    .await?;
+                return Err(LoopError::Other(
+                    "policy denies tool after HITL approve".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
