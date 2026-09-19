@@ -848,6 +848,14 @@ impl TuiApp {
             }) {
                 return;
             }
+            if on && self.selected_pending_hitl().is_some() {
+                self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
+                    session_id: self.selected_session_id,
+                    decision: forge_types::HitlDecision::Approve,
+                    actor: "tui-approve-all".into(),
+                    feedback: None,
+                });
+            }
         } else {
             // The core session gates approve-all on workspace trust; the TUI is
             // the trust authority for a directly-owned session, and trust can
@@ -855,6 +863,10 @@ impl TuiApp {
             let trusted = forge_config::is_trusted(self.session_view.workspace_root());
             self.session_runtime.set_workspace_trusted(trusted);
             self.session_runtime.set_approve_all(on);
+            if on && self.selected_pending_hitl().is_some() {
+                self.pending_interaction
+                    .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
+            }
         }
         self.approve_all = on;
     }
