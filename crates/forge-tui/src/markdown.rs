@@ -973,6 +973,13 @@ impl MdRenderer {
             self.out.push(self.language_chip(&code.language).into());
         }
         let body = code.body.trim_end_matches('\n');
+        if code.fenced && matches!(code.language.as_str(), "mermaid" | "mmd") {
+            if let Some(lines) = crate::mermaid::render(body, self.width) {
+                self.out.extend(lines.into_iter().map(HyperlinkLine::from));
+                self.out.push(Line::from("").into());
+                return;
+            }
+        }
         if body.is_empty() {
             return;
         }

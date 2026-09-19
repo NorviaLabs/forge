@@ -19,6 +19,7 @@ mod launch;
 mod layout;
 pub mod links;
 mod markdown;
+mod mermaid;
 pub mod notify;
 mod overlays;
 mod path_display;
