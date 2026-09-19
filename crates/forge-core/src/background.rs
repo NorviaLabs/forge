@@ -908,6 +908,7 @@ impl AgentSession {
             .map(|t| t.label.clone())
             .unwrap_or_default();
 
+        let mut queue_completion = true;
         let (status, summary) = match outcome {
             Some(BackgroundTaskOutcome::Shell {
                 output,
@@ -935,6 +936,7 @@ impl AgentSession {
                 format!("Background task '{label}' was cancelled"),
             ),
             Some(BackgroundTaskOutcome::Subagent(outcome)) => {
+                queue_completion = matches!(outcome.status, BackgroundTaskStatus::Succeeded { .. });
                 let summary = format!("Subagent '{label}' finished: {}", outcome.summary);
                 self.journal
                     .append_subagent_finished(
@@ -968,7 +970,7 @@ impl AgentSession {
             .append_background_task_finished(self.session_id, id, status.tag(), &summary)
             .await?;
         self.tasks.background.set_status(id, status);
-        if deliver_to_queue {
+        if deliver_to_queue && queue_completion {
             self.enqueue_task(&summary).await?;
         }
         Ok(())
@@ -1008,10 +1010,12 @@ mod tests {
 
         use forge_model::MockModelClient;
         use forge_tools::ToolRegistry;
-        use forge_types::{ModelResponse, ToolCall};
+        use forge_types::{ModelResponse, SessionId, ToolCall};
         use tempfile::tempdir;
+        use tokio_util::sync::CancellationToken;
 
-        use crate::{AgentSession, LoopConfig};
+        use crate::background::BackgroundTaskOutcome;
+        use crate::{AgentSession, BackgroundTaskKind, BackgroundTaskStatus, LoopConfig};
 
         fn cfg(dir: &std::path::Path) -> LoopConfig {
             LoopConfig {
@@ -1118,6 +1122,39 @@ mod tests {
 
             let status = wait_terminal(&mut s, id).await;
             assert!(matches!(status, super::BackgroundTaskStatus::Failed { .. }));
+        }
+
+        #[tokio::test]
+        async fn failed_subagent_completion_is_not_queued_in_approve_all_mode() {
+            let dir = tempdir().unwrap();
+            let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
+            let id = s.tasks.background.spawn_slot(
+                BackgroundTaskKind::Subagent {
+                    role: "failing-agent".into(),
+                    prompt: "fail deliberately".into(),
+                },
+                "failing-agent",
+                s.active_task.task_id,
+                CancellationToken::new(),
+                Some(SessionId::new_v4()),
+            );
+            s.tasks.background.set_auto_continue_on_completion(id, true);
+            s.finish_background_task(
+                id,
+                Some(BackgroundTaskOutcome::Subagent(crate::SubagentOutcome {
+                    child_session_id: SessionId::new_v4(),
+                    status: BackgroundTaskStatus::Failed {
+                        error: "subagent failed".into(),
+                    },
+                    summary: "subagent failed".into(),
+                    token_usage: Default::default(),
+                })),
+            )
+            .await
+            .unwrap();
+            assert_eq!(s.queue().len(), 0);
         }
 
         #[tokio::test]
