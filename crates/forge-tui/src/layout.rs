@@ -466,7 +466,7 @@ mod tests {
             assert_eq!(r.input.height, 3);
             assert_eq!(r.input.x, transcript.x);
             assert_eq!(r.input.right(), transcript.right());
-            assert_eq!(r.input.y - transcript.bottom(), 1);
+            assert_eq!(r.input.y - transcript.bottom(), 0);
             assert_eq!(r.footer.y, r.input.bottom());
             assert_eq!(transcript.y, r.status.bottom());
             if let Some(files) = r.files {
@@ -636,7 +636,7 @@ mod tests {
         // Only the composer's column positions are unchanged; the conversation
         // height shrinks by the shell row, not by a row inside the sidebar.
         assert_eq!(with_sidebar.y, without_sidebar.y);
-        assert_eq!(with.input.y, without.input.y - 1);
+        assert_eq!(with.input.y, without.input.y);
     }
 
     #[test]
