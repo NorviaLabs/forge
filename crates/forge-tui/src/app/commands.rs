@@ -451,12 +451,15 @@ impl TuiApp {
 
     fn editor_handles_escape(&self) -> bool {
         self.editor_session.as_ref().map_or(
-            self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert,
+            self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert
+                || self.source_viewer.markdown_preview
+                || self.source_viewer.text_preview,
             |editor| {
                 matches!(
                     editor.mode(),
                     edtui::EditorMode::Insert | edtui::EditorMode::Search
-                )
+                ) || self.source_viewer.markdown_preview
+                    || self.source_viewer.text_preview
             },
         )
     }

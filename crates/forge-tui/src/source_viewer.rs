@@ -420,15 +420,28 @@ impl SourceViewer {
     }
 
     pub fn supports_text_preview(&self) -> bool {
-        matches!(self.status, ViewerStatus::Ok) && self.text_preview_kind.is_some()
+        matches!(self.status, ViewerStatus::Ok)
+            && matches!(self.text_preview_kind, Some(kind) if kind != TextPreviewKind::Markdown)
     }
 
-    pub fn toggle_text_preview(&mut self) -> bool {
-        if !self.supports_text_preview() {
+    pub fn enter_preview_mode(&mut self) -> bool {
+        if self.supports_markdown_preview() {
+            self.markdown_preview = true;
+            self.text_preview = false;
+        } else if self.supports_text_preview() {
+            self.markdown_preview = false;
+            self.text_preview = true;
+        } else {
             return false;
         }
-        self.text_preview = !self.text_preview;
-        self.text_preview
+        self.preview_top = 0;
+        self.preview_lines.clear();
+        true
+    }
+
+    pub fn leave_preview_mode(&mut self) {
+        self.markdown_preview = false;
+        self.text_preview = false;
     }
 
     /// Detect the language and build a cached highlighted representation of the
@@ -523,6 +536,7 @@ impl SourceViewer {
         let jump_open = self.jump.open;
         let jump_input = self.jump.input.clone();
         let was_markdown_preview = self.markdown_preview;
+        let was_text_preview = self.text_preview;
         let old_preview_top = self.preview_top;
 
         if highlight {
@@ -545,6 +559,9 @@ impl SourceViewer {
                 self.preview_top = old_preview_top;
                 // Invalidate the render so the reloaded text is reflected.
                 self.preview_lines.clear();
+            } else if was_text_preview && self.supports_text_preview() {
+                self.text_preview = true;
+                self.preview_top = old_preview_top;
             }
             let changed = self.modified != old_modified || self.size_bytes != old_size;
             if changed {
@@ -652,18 +669,6 @@ impl SourceViewer {
     /// Whether the open file can be shown as a rendered Markdown preview.
     pub fn supports_markdown_preview(&self) -> bool {
         matches!(self.status, ViewerStatus::Ok) && Self::is_markdown_path(&self.rel_path)
-    }
-
-    /// Toggle the rendered Markdown preview. Returns the new state; a no-op
-    /// returning `false` for files that are not Markdown.
-    pub fn toggle_markdown_preview(&mut self) -> bool {
-        if !self.supports_markdown_preview() {
-            return false;
-        }
-        self.markdown_preview = !self.markdown_preview;
-        // Render from the current buffer on the next frame.
-        self.preview_lines.clear();
-        self.markdown_preview
     }
 
     pub(crate) fn preview_cache_stale(&self, width: usize, revision: u64) -> bool {
@@ -1467,7 +1472,7 @@ impl SourceViewerWidget<'_> {
             Some(TextPreviewKind::Log) => "LOG",
             _ => "PREVIEW",
         };
-        let header = format!("{label} · :edit to edit");
+        let header = format!("{label} · i to edit");
         Paragraph::new(self.viewer.text_preview_lines.join("\n"))
             .block(Block::default().title(header).borders(Borders::BOTTOM))
             .style(theme::code_block())
@@ -1653,7 +1658,7 @@ impl SourceViewerWidget<'_> {
         } else if let Some(message) = self.editor_message {
             message.to_string()
         } else {
-            "PREVIEW · :edit to edit".to_string()
+            "PREVIEW · i to edit".to_string()
         };
         Paragraph::new(Line::from(vec![
             Span::styled(" ".repeat(TEXT_INSET as usize), status_style),
@@ -1819,6 +1824,29 @@ mod tests {
         assert_eq!(html, vec!["Hello"]);
         let log = build_text_preview(Some(TextPreviewKind::Log), &["ready"]);
         assert_eq!(log, vec!["     1 │ ready"]);
+    }
+
+    #[test]
+    fn text_preview_enters_for_supported_files_and_survives_refresh() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        fs::write(&path, "{\n  \"name\": \"before\"\n}\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open_for_editor(root.path(), &path);
+        assert!(viewer.supports_text_preview());
+        assert!(viewer.enter_preview_mode());
+        assert!(viewer.text_preview);
+        assert!(!viewer.markdown_preview);
+
+        fs::write(&path, "{\n  \"name\": \"after\"\n}\n").unwrap();
+        viewer.refresh_for_editor(root.path());
+
+        assert!(viewer.text_preview);
+        assert!(viewer
+            .text_preview_lines
+            .iter()
+            .any(|line| line.contains("after")));
     }
 
     /// The text of a rendered row as the screen shows it, with any `OSC 8`
@@ -2888,7 +2916,7 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open_for_editor(root.path(), &path);
         assert!(viewer.supports_markdown_preview());
-        assert!(viewer.toggle_markdown_preview());
+        assert!(viewer.enter_preview_mode());
         assert!(viewer.markdown_preview);
 
         let mut editor = EditorSession::new("# Title\n\n- one\n- two\n");
@@ -2924,7 +2952,7 @@ mod tests {
 
         let mut viewer = SourceViewer::new();
         viewer.open_for_editor(root.path(), &path);
-        assert!(viewer.toggle_markdown_preview());
+        assert!(viewer.enter_preview_mode());
 
         let mut editor = EditorSession::new(&source);
         let area = Rect::new(0, 0, 60, 14);
@@ -3005,7 +3033,7 @@ mod tests {
     }
 
     #[test]
-    fn non_markdown_file_rejects_preview_toggle() {
+    fn unsupported_file_rejects_preview_mode() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("notes.txt");
         fs::write(&path, "plain\n").unwrap();
@@ -3013,7 +3041,7 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open_for_editor(root.path(), &path);
         assert!(!viewer.supports_markdown_preview());
-        assert!(!viewer.toggle_markdown_preview());
+        assert!(!viewer.enter_preview_mode());
         assert!(!viewer.markdown_preview);
     }
 }

@@ -265,15 +265,17 @@ and terminal resize are forwarded to the shell. `Ctrl+Backtick`, `Esc`, or a
 submitted `exit` closes the panel without killing the shell, so reopening
 resumes the same session.
 
-When a text file is open, the workspace uses Vim-style editing. Files start in
-Normal mode; press `i` to insert, `Esc` to return to Normal mode, and `Alt+E`
-to hand the file to `$VISUAL`/`$EDITOR`. In Normal mode, `:` opens the editor
-command line. The beta command set includes `:w`, `:q`, `:q!`, `:wq`, `:x`,
-`:e [path]`, `:s/pattern/replacement/[g]`, and `:%s/pattern/replacement/[g]`.
-Saving is immediate. Forge asks whether to save, discard, or cancel before
-leaving or switching away from dirty buffers, and asks whether to reload or
-force-save when the file changed on disk. Binary and invalid-UTF-8 files stay
-explicitly read-only.
+When a text file is open, the workspace uses Vim-style editing. Markdown,
+structured text, HTML, and log files start in read-only preview; press `i` to
+edit. Other text files start in Normal mode; press `i` to insert. `Esc` leaves
+the current interaction, and `Alt+E` hands the file to `$VISUAL`/`$EDITOR`. In
+Normal mode, `:` opens the editor command line. The beta command set includes
+`:w`, `:q`, `:q!`, `:wq`, `:x`, `:preview`, `:edit`, `:e [path]`,
+`:s/pattern/replacement/[g]`, and `:%s/pattern/replacement/[g]`. Saving is
+immediate. Forge asks whether to save, discard, or cancel before leaving or
+switching away from dirty buffers, and asks whether to reload or force-save
+when the file changed on disk. Binary and invalid-UTF-8 files stay explicitly
+read-only.
 
 ## Configuration
 

@@ -52,30 +52,29 @@ impl TuiApp {
                         }
                     }
                     "preview" => {
-                        if self.source_viewer.supports_markdown_preview() {
-                            let on = self.source_viewer.toggle_markdown_preview();
-                            self.status_state.message = if on {
-                                "Markdown preview · :edit to edit".into()
-                            } else {
-                                "Editing source · :preview to render".into()
-                            };
-                            self.editor_message = Some(self.status_state.message.clone());
-                        } else if self.source_viewer.supports_text_preview() {
-                            let on = self.source_viewer.toggle_text_preview();
-                            self.status_state.message = if on {
-                                "File preview · :edit to edit".into()
-                            } else {
-                                "Editing source · :preview to render".into()
-                            };
+                        if self.source_viewer.enter_preview_mode() {
+                            self.status_state.message = "File preview · i to edit".into();
                             self.editor_message = Some(self.status_state.message.clone());
                         } else {
                             self.editor_message = Some("E: no preview available".to_string());
                         }
                     }
+                    "i" => {
+                        if self.editor_session.is_some() {
+                            self.source_viewer.leave_preview_mode();
+                            if let Some(editor) = self.editor_session.as_mut() {
+                                editor.handle_key(event::KeyEvent::new(
+                                    KeyCode::Char('i'),
+                                    KeyModifiers::NONE,
+                                ));
+                            }
+                        } else {
+                            self.set_feedback(FeedbackSeverity::Warn, "File is not editable");
+                        }
+                    }
                     command if command == "e" || command == "edit" => {
                         if self.source_viewer.markdown_preview || self.source_viewer.text_preview {
-                            self.source_viewer.markdown_preview = false;
-                            self.source_viewer.text_preview = false;
+                            self.source_viewer.leave_preview_mode();
                             self.status_state.message =
                                 "Editing source · :preview to render".into();
                             self.editor_message = Some(self.status_state.message.clone());
@@ -1316,12 +1315,27 @@ impl TuiApp {
         }
 
         if self.source_viewer.markdown_preview || self.source_viewer.text_preview {
+            if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+                self.source_viewer.leave_preview_mode();
+                return true;
+            }
             if key.code == KeyCode::Char(':') && key.modifiers.is_empty() {
                 self.editor_command = Some(String::new());
                 self.status_state.message = ":".into();
                 return true;
             }
-            return self.handle_markdown_preview_key(key);
+            if key.code == KeyCode::Char('i') && key.modifiers.is_empty() {
+                if self.editor_session.is_some() {
+                    self.source_viewer.leave_preview_mode();
+                    if let Some(editor) = self.editor_session.as_mut() {
+                        editor.handle_key(key);
+                    }
+                } else {
+                    self.set_feedback(FeedbackSeverity::Warn, "File is not editable");
+                }
+                return true;
+            }
+            return self.handle_preview_key(key);
         }
 
         if let Some(editor) = self.editor_session.as_mut() {
@@ -1412,9 +1426,9 @@ impl TuiApp {
         }
     }
 
-    /// Scroll the rendered Markdown preview. Every key is consumed: the
-    /// preview is read-only, so nothing may reach and mutate the buffer.
-    fn handle_markdown_preview_key(&mut self, key: event::KeyEvent) -> bool {
+    /// Scroll a rendered preview. Every key is consumed: the preview is
+    /// read-only, so nothing may reach and mutate the buffer.
+    fn handle_preview_key(&mut self, key: event::KeyEvent) -> bool {
         // The preview body is the pane minus the header and the mode row.
         // Sizing it a touch small keeps the last page reachable.
         let height = self.editor_viewport.height.saturating_sub(4).max(1) as usize;

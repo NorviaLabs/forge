@@ -722,14 +722,52 @@ async fn markdown_opens_in_preview_and_preview_is_read_only() {
     );
     let before = app.editor_session.as_ref().unwrap().text();
 
-    // Typing in preview must not touch the buffer or dirty it.
-    for ch in "ix".chars() {
-        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
-            .await
-            .unwrap();
-    }
+    // Ordinary preview navigation must not touch the buffer or dirty it.
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.editor_session.as_ref().unwrap().text(), before);
     assert!(!app.editor_session.as_ref().unwrap().is_dirty());
+
+    // `i` leaves preview and enters the embedded editor.
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.source_viewer.markdown_preview);
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Insert
+    );
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+}
+
+#[tokio::test]
+async fn structured_file_opens_in_preview_and_i_enters_edit() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("config.json");
+    fs::write(&path, "{\n  \"name\": \"forge\"\n}\n").unwrap();
+    app.open_file_in_editor(&path);
+
+    assert!(app.source_viewer.text_preview);
+    assert!(!app.source_viewer.markdown_preview);
+    let before = app.editor_session.as_ref().unwrap().text();
+
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), before);
+
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.source_viewer.text_preview);
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Insert
+    );
 }
 
 #[tokio::test]
