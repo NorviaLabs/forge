@@ -1682,6 +1682,11 @@ async fn execute_command(
                         .send(SupervisorEvent::Roster(snapshots(&state).await));
                     return Err(error);
                 }
+                if let Some(task_actor) = state.actors.read().await.get(&session_id).cloned() {
+                    let mut session = task_actor.session.lock().await;
+                    session.set_workspace_trusted(true);
+                    refresh_actor(&state, &task_actor, &session).await?;
+                }
                 if let Some(text) = completed.first_prompt {
                     state.control.enqueue_prompt(session_id, &text).await?;
                     state
