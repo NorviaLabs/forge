@@ -555,20 +555,25 @@ impl AgentSession {
             )
             .await?;
 
-        let worktree =
-            match forge_storage::create_worktree(&repo_root, &base_dir, task_id.0, &spec.role) {
-                Ok(wt) => wt,
-                Err(e) => {
-                    let _ = self.coordinator.update(
-                        child_session_id,
-                        AgentStatus::Failed,
-                        Some(e.to_string()),
-                    );
-                    return self
-                        .fail_subagent_spawn(task_id, format!("could not create worktree: {e}"))
-                        .await;
-                }
-            };
+        let worktree = match forge_storage::create_worktree(
+            &repo_root,
+            &base_dir,
+            self.session_id,
+            task_id.0,
+            &spec.role,
+        ) {
+            Ok(wt) => wt,
+            Err(e) => {
+                let _ = self.coordinator.update(
+                    child_session_id,
+                    AgentStatus::Failed,
+                    Some(e.to_string()),
+                );
+                return self
+                    .fail_subagent_spawn(task_id, format!("could not create worktree: {e}"))
+                    .await;
+            }
+        };
         // Only journaled once the worktree actually exists — `workspace` is
         // how a restart finds this same checkout again (see
         // `reconcile_orphaned_background_tasks`).
@@ -1443,7 +1448,10 @@ mod tests {
         assert!(branch.starts_with("forge/subagent/"));
         let worktree_path = task.worktree_path.clone().unwrap();
         assert!(
-            worktree_path.ends_with(format!("subagent-{}-explorer", id.0)),
+            worktree_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&format!("-{}-explorer", id.0))),
             "unexpected worktree path: {worktree_path:?}"
         );
 
