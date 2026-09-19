@@ -148,6 +148,7 @@ pub(crate) struct SessionViewState {
     pub(crate) activity: ActivityFeed,
     pub(crate) banner_state: BannerState,
     pub(crate) turn_summaries: Vec<TurnSummaryRecord>,
+    pub(crate) turn_summaries_revision: u64,
     pub(crate) tool_detail: ToolDetailState,
     pub(crate) composer_chip_focus: Option<usize>,
     pub(crate) approval_session: super::approvals::ApprovalSessionState,
@@ -210,6 +211,7 @@ impl Default for SessionViewState {
             activity: ActivityFeed::default(),
             banner_state: BannerState::default(),
             turn_summaries: Vec::new(),
+            turn_summaries_revision: 0,
             tool_detail: ToolDetailState::default(),
             composer_chip_focus: None,
             approval_session: super::approvals::ApprovalSessionState::default(),
@@ -1594,8 +1596,23 @@ pub(crate) struct TurnSummaryRecord {
     pub(crate) summary: TurnSummaryPresentation,
 }
 
+#[derive(Default)]
 pub(crate) struct RenderCacheState {
     pub(crate) conversation: Option<ConversationRenderCache>,
+    pub(crate) projection: Option<ConversationProjectionCache>,
+    pub(crate) turn_summaries: Option<TurnSummaryRenderCache>,
+}
+
+pub(crate) struct ConversationProjectionCache {
+    pub(crate) key: (uuid::Uuid, u64, usize, usize, forge_types::TaskLifecycle),
+    pub(crate) model: crate::conversation::ConversationModel,
+}
+
+pub(crate) struct TurnSummaryRenderCache {
+    pub(crate) session_id: uuid::Uuid,
+    pub(crate) revision: u64,
+    pub(crate) summaries: Vec<(u64, TurnSummaryPresentation)>,
+    pub(crate) digest: Vec<(u64, u64, usize, usize, Option<u64>)>,
 }
 
 pub(crate) struct BusyState {
@@ -1942,6 +1959,7 @@ pub struct TuiApp {
     /// `Finished`. Never persisted — resume rebuilds it, so restored turns
     /// carry no ephemeral timing.
     pub(crate) turn_summaries: Vec<TurnSummaryRecord>,
+    pub(crate) turn_summaries_revision: u64,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pub(crate) pending_turn: PendingTurnState,
     pub(crate) pending_interaction: PendingInteractionState,
