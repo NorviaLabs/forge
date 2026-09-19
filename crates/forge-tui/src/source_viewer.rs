@@ -17,16 +17,32 @@ use crate::theme;
 use crate::widgets::input::TEXT_INSET;
 
 fn preview_kind(rel_path: &str) -> Option<TextPreviewKind> {
-    let extension = Path::new(rel_path)
-        .extension()
+    let path = Path::new(rel_path);
+    let filename = path
+        .file_name()
         .and_then(|value| value.to_str())?
         .to_ascii_lowercase();
-    Some(match extension.as_str() {
-        "md" | "markdown" => TextPreviewKind::Markdown,
-        "json" | "yaml" | "yml" | "toml" | "csv" | "tsv" => TextPreviewKind::Structured,
-        "html" | "htm" => TextPreviewKind::Html,
-        "log" => TextPreviewKind::Log,
-        _ => return None,
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    Some(match filename.as_str() {
+        "dockerfile" => TextPreviewKind::Config,
+        _ if filename == ".env" || filename.starts_with(".env.") => TextPreviewKind::Config,
+        _ => match extension.as_str() {
+            "md" | "markdown" => TextPreviewKind::Markdown,
+            "json" | "yaml" | "yml" | "toml" | "csv" | "tsv" => TextPreviewKind::Structured,
+            "html" | "htm" => TextPreviewKind::Html,
+            "xml" => TextPreviewKind::Xml,
+            "svg" => TextPreviewKind::Svg,
+            "css" | "scss" | "less" => TextPreviewKind::Stylesheet,
+            "diff" | "patch" => TextPreviewKind::Diff,
+            "ini" => TextPreviewKind::Config,
+            "mmd" | "mermaid" => TextPreviewKind::Mermaid,
+            "log" => TextPreviewKind::Log,
+            _ => return None,
+        },
     })
 }
 
@@ -48,6 +64,39 @@ fn build_text_preview(kind: Option<TextPreviewKind>, lines: &[&str]) -> Vec<Stri
                 output.trim().to_string()
             })
             .filter(|line| !line.is_empty())
+            .collect(),
+        Some(TextPreviewKind::Xml | TextPreviewKind::Svg) => lines
+            .iter()
+            .map(|line| {
+                let mut output = String::with_capacity(line.len());
+                let mut in_tag = false;
+                for character in line.chars() {
+                    match character {
+                        '<' => in_tag = true,
+                        '>' => in_tag = false,
+                        _ if !in_tag => output.push(character),
+                        _ => {}
+                    }
+                }
+                output.trim().to_string()
+            })
+            .filter(|line| !line.is_empty())
+            .collect(),
+        Some(TextPreviewKind::Stylesheet) => lines
+            .iter()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect(),
+        Some(TextPreviewKind::Diff) => lines.iter().map(|line| (*line).to_string()).collect(),
+        Some(TextPreviewKind::Config) => lines
+            .iter()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect(),
+        Some(TextPreviewKind::Mermaid) => lines
+            .iter()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty() && !line.starts_with("%%"))
             .collect(),
         Some(TextPreviewKind::Log) => lines
             .iter()
@@ -91,6 +140,12 @@ pub enum TextPreviewKind {
     Markdown,
     Structured,
     Html,
+    Xml,
+    Svg,
+    Stylesheet,
+    Diff,
+    Config,
+    Mermaid,
     Log,
 }
 
@@ -1469,6 +1524,12 @@ impl SourceViewerWidget<'_> {
         let label = match kind {
             Some(TextPreviewKind::Structured) => "STRUCTURED",
             Some(TextPreviewKind::Html) => "HTML",
+            Some(TextPreviewKind::Xml) => "XML",
+            Some(TextPreviewKind::Svg) => "SVG",
+            Some(TextPreviewKind::Stylesheet) => "STYLESHEET",
+            Some(TextPreviewKind::Diff) => "DIFF",
+            Some(TextPreviewKind::Config) => "CONFIG",
+            Some(TextPreviewKind::Mermaid) => "MERMAID",
             Some(TextPreviewKind::Log) => "LOG",
             _ => "PREVIEW",
         };
@@ -1820,10 +1881,39 @@ mod tests {
         assert_eq!(preview_kind("server.log"), Some(TextPreviewKind::Log));
         assert_eq!(preview_kind("main.rs"), None);
 
+        for path in [
+            "doc.xml",
+            "icon.svg",
+            "site.css",
+            "site.scss",
+            "site.less",
+            "changes.diff",
+            "changes.patch",
+            "Dockerfile",
+            ".env",
+            ".env.local",
+            "settings.ini",
+            "flow.mermaid",
+            "flow.mmd",
+        ] {
+            assert!(preview_kind(path).is_some(), "expected preview for {path}");
+        }
+
         let html = build_text_preview(Some(TextPreviewKind::Html), &["<h1>Hello</h1>"]);
         assert_eq!(html, vec!["Hello"]);
         let log = build_text_preview(Some(TextPreviewKind::Log), &["ready"]);
         assert_eq!(log, vec!["     1 │ ready"]);
+        assert_eq!(
+            build_text_preview(Some(TextPreviewKind::Xml), &["<root>Hello</root>"]),
+            vec!["Hello"]
+        );
+        assert_eq!(
+            build_text_preview(
+                Some(TextPreviewKind::Mermaid),
+                &["%% note", " flowchart TD"]
+            ),
+            vec!["flowchart TD"]
+        );
     }
 
     #[test]
