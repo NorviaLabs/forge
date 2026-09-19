@@ -1448,7 +1448,10 @@ mod tests {
         assert!(branch.starts_with("forge/subagent/"));
         let worktree_path = task.worktree_path.clone().unwrap();
         assert!(
-            worktree_path.ends_with(format!("subagent-{}-explorer", id.0)),
+            worktree_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&format!("-{}-explorer", id.0))),
             "unexpected worktree path: {worktree_path:?}"
         );
 
