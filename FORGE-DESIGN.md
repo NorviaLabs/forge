@@ -848,7 +848,7 @@ the single plan surface.
 - The header row follows the shared pane-title grammar (`theme::pane_title`): `>` marker in brand bold when the Workspace block owns the keyboard, neutral otherwise — the same treatment as the diff header and the transcript frame.
 - The NORMAL / INSERT mode row shares the composer's text inset so both baselines align.
 - Search matches rank: active match, other matches, current line.
-- Markdown (`.md` / `.markdown`) opens in a read-only rendered `PREVIEW` mode; `:preview` toggles between the rendered document and the editable source, which keeps any unsaved buffer. Other files are unaffected.
+- Markdown, structured text, HTML, and log files open in a read-only rendered `PREVIEW` mode; `i` enters the editable source while `:preview` re-enters preview. `:edit` remains available for leaving preview or reloading the current file, and unsaved buffers stay intact.
 - Line numbers muted; active line number accented.
 - Horizontal scrolling must not detach markers from content.
 - Binary and invalid-UTF-8 files are explicitly read-only.
