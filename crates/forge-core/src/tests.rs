@@ -428,6 +428,43 @@ async fn orchestration_tools_return_results_without_aborting_the_turn() {
         .any(|event| event.kind == "agent_tool_error"));
 }
 
+#[tokio::test]
+async fn denied_hitl_tool_publishes_one_result_and_message() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FailedBashTool));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    with_shell_hitl(&mut session);
+    session.transition_to_new_task(TaskId(1)).await.unwrap();
+
+    let call = ToolCall {
+        id: "hitl-deny-once".into(),
+        name: "bash".into(),
+        arguments: json!({"command": "echo should-not-run"}),
+    };
+    let mut budget = ValidationBudget::default();
+    session.start_tool_call(&call, &mut budget).await.unwrap();
+    assert!(session.pending_hitl().is_some());
+
+    session
+        .resolve_hitl(HitlDecision::Deny, "test")
+        .await
+        .unwrap();
+
+    let results: Vec<_> = session
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::Tool)
+        .filter(|message| message.tool_call_id.as_deref() == Some(call.id.as_str()))
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].content.contains("HITL denied by test"));
+    assert!(session.pending_hitl().is_none());
+}
+
 struct SandboxDeniedTool;
 
 struct FailedBashTool;

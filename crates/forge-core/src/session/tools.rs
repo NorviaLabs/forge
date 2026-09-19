@@ -75,6 +75,53 @@ pub struct CompletedHitlExecution {
     execution: CompletedToolExecution,
 }
 
+impl AgentSession {
+    fn authorize_tool_call(&self, call: &ToolCall, class: SideEffectClass) -> PolicyDecision {
+        let mut decision = self.governance.authorize(call, class);
+        if self.approve_all && decision == PolicyDecision::Hitl {
+            decision = PolicyDecision::Allow;
+        }
+        self.governance.record_audit(AuditEvent {
+            session_id: self.session_id.to_string(),
+            principal: self.governance.principal.id.clone(),
+            tool: call.name.clone(),
+            args_redacted: self.governance.redact_args(&call.arguments),
+            decision,
+            policy_id: "default".into(),
+            result: format!("{decision:?}"),
+            duration_ms: 0,
+            trace_id: None,
+        });
+        decision
+    }
+
+    async fn record_denied_tool(
+        &mut self,
+        call: &ToolCall,
+        output: ToolOutput,
+    ) -> Result<(), LoopError> {
+        self.push_denied_evidence(call, &output.content);
+        self.journal
+            .append_tool_intent(self.session_id, call)
+            .await?;
+        self.publish_tool_result(call, &output).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn publish_tool_result(
+        &mut self,
+        call: &ToolCall,
+        output: &ToolOutput,
+    ) -> Result<(), LoopError> {
+        self.journal
+            .append_tool_result(self.session_id, call, output)
+            .await?;
+        self.remember_tool_result(call, output);
+        self.messages.push(Message::from_tool_output(call, output));
+        Ok(())
+    }
+}
+
 impl PendingHitlExecution {
     pub fn tool_name(&self) -> &str {
         &self.execution.call.name
@@ -830,31 +877,13 @@ impl AgentSession {
             .unwrap_or(SideEffectClass::Meta);
 
         if self.enable_gov {
-            let mut decision = self.governance.authorize(&call, class);
-            // Approve-all turns a human-review prompt into an automatic allow.
-            // It never overrides a Deny: an explicit policy refusal is not
-            // human review, and the deny path below must stay reachable.
-            if self.approve_all && decision == PolicyDecision::Hitl {
-                decision = PolicyDecision::Allow;
-            }
-            let redacted = self.governance.redact_args(&call.arguments);
-            self.governance.record_audit(AuditEvent {
-                session_id: self.session_id.to_string(),
-                principal: self.governance.principal.id.clone(),
-                tool: call.name.clone(),
-                args_redacted: redacted.clone(),
-                decision,
-                policy_id: "default".into(),
-                result: format!("{decision:?}"),
-                duration_ms: 0,
-                trace_id: None,
-            });
+            let decision = self.authorize_tool_call(&call, class);
             match decision {
                 PolicyDecision::Hitl => {
                     let payload = HitlPayload {
                         call_id: call.id.clone(),
                         tool: call.name.clone(),
-                        args_redacted: redacted,
+                        args_redacted: self.governance.redact_args(&call.arguments),
                         reason: "policy requires human approval".into(),
                         // Gated before the call ran, so there is no refusal to
                         // quote — this is the one prompt where the category
@@ -898,16 +927,7 @@ impl AgentSession {
                 // refused here, so neither can fall through to the execution below.
                 _ => {
                     let output = ToolOutput::denied(format!("denied by ACL: {}", call.name));
-                    self.push_denied_evidence(&call, &output.content);
-                    self.journal
-                        .append_tool_intent(self.session_id, &call)
-                        .await?;
-                    self.journal
-                        .append_tool_result(self.session_id, &call, &output)
-                        .await?;
-                    self.remember_tool_result(&call, &output);
-                    self.messages
-                        .push(Message::from_tool_output(&call, &output));
+                    self.record_denied_tool(&call, output).await?;
                     return Ok(ToolExecutionStart::Finished(None));
                 }
             }
@@ -919,31 +939,8 @@ impl AgentSession {
                 .await?;
         }
 
-        // `background_run` never reaches `ToolRegistry::call` — it's
-        // intercepted here and routed to `spawn_background_shell` instead,
-        // so starting it doesn't block this turn. See `background.rs`.
-        if call.name == "background_run" {
-            return Ok(ToolExecutionStart::Finished(
-                self.dispatch_background_run(&call).await?,
-            ));
-        }
-
-        if call.name == "ask_user_question" {
-            return self.dispatch_ask_user_question(&call).await;
-        }
-
-        if is_agent_tool(&call.name) {
-            if !validated {
-                self.tools
-                    .validate_call(&call.name, &call.arguments)
-                    .map_err(ToolError::Validation)?;
-            }
-            // Box the orchestration dispatch: it inlines `spawn_subagent`
-            // and the coordinator wait futures, which would otherwise bloat
-            // every tool-dispatch future past the test-thread stack limit.
-            return Ok(ToolExecutionStart::Finished(
-                Box::pin(self.dispatch_agent_tool_result(&call)).await?,
-            ));
+        if let Some(start) = self.dispatch_special_tool(&call, validated).await? {
+            return Ok(start);
         }
 
         Ok(ToolExecutionStart::Execute(Box::new(
@@ -963,6 +960,35 @@ impl AgentSession {
         )))
     }
 
+    async fn dispatch_special_tool(
+        &mut self,
+        call: &ToolCall,
+        validated: bool,
+    ) -> Result<Option<ToolExecutionStart>, LoopError> {
+        // `background_run` never reaches `ToolRegistry::call` — it is routed
+        // to its own background task instead.
+        if call.name == "background_run" {
+            return Ok(Some(ToolExecutionStart::Finished(
+                self.dispatch_background_run(call).await?,
+            )));
+        }
+        if call.name == "ask_user_question" {
+            return Ok(Some(self.dispatch_ask_user_question(call).await?));
+        }
+        if !is_agent_tool(&call.name) {
+            return Ok(None);
+        }
+        if !validated {
+            self.tools
+                .validate_call(&call.name, &call.arguments)
+                .map_err(ToolError::Validation)?;
+        }
+        // Box orchestration dispatch to keep the tool-dispatch future small.
+        Ok(Some(ToolExecutionStart::Finished(
+            Box::pin(self.dispatch_agent_tool_result(call)).await?,
+        )))
+    }
+
     async fn start_explicit_unconfined_retry_request(
         &mut self,
         request: &ToolCall,
@@ -979,12 +1005,7 @@ impl AgentSession {
             self.journal
                 .append_tool_intent(self.session_id, request)
                 .await?;
-            self.journal
-                .append_tool_result(self.session_id, request, &output)
-                .await?;
-            self.remember_tool_result(request, &output);
-            self.messages
-                .push(Message::from_tool_output(request, &output));
+            self.publish_tool_result(request, &output).await?;
             return Ok(ToolExecutionStart::Finished(None));
         };
 
@@ -1022,12 +1043,7 @@ impl AgentSession {
                 self.journal
                     .append_tool_intent(self.session_id, request)
                     .await?;
-                self.journal
-                    .append_tool_result(self.session_id, request, &output)
-                    .await?;
-                self.remember_tool_result(request, &output);
-                self.messages
-                    .push(Message::from_tool_output(request, &output));
+                self.publish_tool_result(request, &output).await?;
                 return Ok(ToolExecutionStart::Finished(None));
             }
         }
@@ -1177,11 +1193,7 @@ impl AgentSession {
             }
             _ => unreachable!(),
         };
-        self.journal
-            .append_tool_result(self.session_id, call, &output)
-            .await?;
-        self.remember_tool_result(call, &output);
-        self.messages.push(Message::from_tool_output(call, &output));
+        self.publish_tool_result(call, &output).await?;
         self.events.push(TurnEvent {
             kind: "agent_tool".into(),
             detail: serde_json::json!({
@@ -1201,11 +1213,7 @@ impl AgentSession {
             Ok(response) => Ok(response),
             Err(error) => {
                 let output = ToolOutput::failed_exit(error.to_string(), None);
-                self.journal
-                    .append_tool_result(self.session_id, call, &output)
-                    .await?;
-                self.remember_tool_result(call, &output);
-                self.messages.push(Message::from_tool_output(call, &output));
+                self.publish_tool_result(call, &output).await?;
                 self.events.push(TurnEvent {
                     kind: "agent_tool_error".into(),
                     detail: serde_json::json!({
@@ -1246,11 +1254,7 @@ impl AgentSession {
                         output.content = self.context.maybe_offload_tool_content(output.content)?;
                     }
                     self.freeze_tool_output(&mut output);
-                    self.journal
-                        .append_tool_result(self.session_id, &call, &output)
-                        .await?;
-                    self.remember_tool_result(&call, &output);
-                    self.messages.push(Message::from_tool_output(&call, &output));
+                    self.publish_tool_result(&call, &output).await?;
                     self.events.push(TurnEvent {
                         kind: "tool".into(),
                         detail: format!("{} -> {} chars", call.name, output.content.len()),
@@ -1303,11 +1307,7 @@ impl AgentSession {
                         exit_code: None,
                         attachments: Vec::new(),
                     };
-                    self.journal
-                        .append_tool_result(self.session_id, &call, &output)
-                        .await?;
-                    self.remember_tool_result(&call, &output);
-                    self.messages.push(Message::from_tool_output(&call, &output));
+                    self.publish_tool_result(&call, &output).await?;
                     if is_budget {
                         self.events.push(TurnEvent {
                             kind: "validation_exhausted".into(),
@@ -1444,10 +1444,7 @@ impl AgentSession {
                     output.content = self.context.maybe_offload_tool_content(output.content)?;
                 }
                 self.freeze_tool_output(&mut output);
-                self.journal
-                    .append_tool_result(self.session_id, &result_call, &output)
-                    .await?;
-                self.remember_tool_result(&result_call, &output);
+                self.publish_tool_result(&result_call, &output).await?;
                 if call.name == "update_plan" && !output.is_error {
                     // Stateless checklist broadcast — clients replace whatever they
                     // were showing with this payload. Mirrors codex PlanUpdate.
@@ -1456,8 +1453,6 @@ impl AgentSession {
                         detail: call.arguments.to_string(),
                     });
                 }
-                self.messages
-                    .push(Message::from_tool_output(&result_call, &output));
             }
             Err(e) => {
                 if unconfined {
