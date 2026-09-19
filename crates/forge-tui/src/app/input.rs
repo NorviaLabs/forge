@@ -1324,6 +1324,20 @@ impl TuiApp {
             return self.handle_markdown_preview_key(key);
         }
 
+        if let Some(editor) = self.editor_session.as_mut() {
+            if key.code == KeyCode::Char(':')
+                && key.modifiers.is_empty()
+                && editor.mode() == edtui::EditorMode::Normal
+            {
+                self.editor_command = Some(String::new());
+                self.status_state.message = ":".into();
+                return true;
+            }
+            let _ = editor.handle_key(key);
+            self.source_viewer.current_line = editor.cursor_row();
+            return true;
+        }
+
         let height = self.editor_viewport.height.saturating_sub(2) as usize;
         // Navigation shortcuts are plain keys so modified combinations can
         // continue to control contextual workspace and chrome commands.
