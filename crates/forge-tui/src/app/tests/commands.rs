@@ -29,6 +29,32 @@ async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
 }
 
 #[tokio::test]
+async fn confirming_approve_all_resumes_an_existing_pending_approval() {
+    let (_fake_home, _home_guard) = fake_home_guard();
+    let (dir, mut app) = focus_test_app().await;
+    forge_config::grant_trust(dir.path()).unwrap();
+    set_pending_hitl(
+        &mut app,
+        HitlPayload {
+            call_id: "approve-all-pending".into(),
+            tool: "bash".into(),
+            args_redacted: serde_json::json!({"command": "echo ok"}),
+            reason: "test approval".into(),
+            failure: None,
+            sandbox_escalation: false,
+            denied_host: None,
+        },
+    );
+
+    app.apply_overlay_action(crate::overlays::OverlayAction::ApproveAll)
+        .await
+        .unwrap();
+
+    assert!(app.approve_all);
+    assert!(app.pending_interaction.has_hitl_decision());
+}
+
+#[tokio::test]
 async fn edit_with_a_path_opens_the_file_without_the_explorer_visible() {
     let (dir, mut app) = focus_test_app().await;
     let src = dir.path().join("src");
