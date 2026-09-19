@@ -12,6 +12,19 @@ async fn focus_starts_on_composer_block() {
 }
 
 #[tokio::test]
+async fn tab_from_terminal_moves_to_sidebar() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.bottom_panel.open = true;
+    app.focus_block(FocusBlock::BottomPanel);
+
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+}
+
+#[tokio::test]
 async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
