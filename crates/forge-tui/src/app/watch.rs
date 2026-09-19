@@ -65,11 +65,6 @@ impl TuiApp {
         // Install any refresh the blocking worker finished since the last tick.
         self.workspace_files.explorer.poll_workspace_refresh();
         self.drain_inactive_file_watchers();
-        let files_are_active = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
-            && self.focus.mode() == FocusMode::Navigation;
-        if !files_are_active && self.file_watch.take_deferred_tree_refresh() {
-            self.note_workspace_changed();
-        }
         let Some(batch) = self.file_watch.take_ready_batch() else {
             return;
         };

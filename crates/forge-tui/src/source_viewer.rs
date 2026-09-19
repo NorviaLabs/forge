@@ -79,7 +79,9 @@ fn preview_language(kind: TextPreviewKind) -> Option<&'static str> {
 
 type PreviewSegment = (String, (u8, u8, u8), bool, bool);
 
-fn preview_segments(kind: TextPreviewKind, lines: &[String]) -> Vec<Vec<PreviewSegment>> {
+type PreviewLines = Vec<Vec<PreviewSegment>>;
+
+fn preview_segments(kind: TextPreviewKind, lines: &[String]) -> PreviewLines {
     let syntax_theme = theme::syntax_theme();
     if let Some(language) = preview_language(kind) {
         let source = lines.join("\n");

@@ -392,7 +392,6 @@ pub(crate) struct FileWatchState {
     pending_immediate: bool,
     pending_overflowed: bool,
     ready_at: Option<Instant>,
-    deferred_tree_refresh: bool,
 }
 
 impl FileWatchState {
@@ -412,7 +411,6 @@ impl FileWatchState {
             pending_immediate: false,
             pending_overflowed: false,
             ready_at: None,
-            deferred_tree_refresh: false,
         }
     }
 
@@ -487,14 +485,6 @@ impl FileWatchState {
             tree_changed,
             overflowed,
         })
-    }
-
-    pub(super) fn defer_tree_refresh(&mut self) {
-        self.deferred_tree_refresh = true;
-    }
-
-    pub(super) fn take_deferred_tree_refresh(&mut self) -> bool {
-        std::mem::take(&mut self.deferred_tree_refresh)
     }
 
     #[cfg(test)]
