@@ -387,6 +387,27 @@ impl SessionActor {
     fn finish_retirement(&self) {
         self.retiring.store(false, Ordering::Release);
     }
+
+    fn try_start_driver(&self) -> bool {
+        !self.driving.swap(true, Ordering::AcqRel)
+    }
+
+    fn request_continuation(&self) -> bool {
+        self.continue_pending.fetch_add(1, Ordering::AcqRel);
+        self.try_start_driver()
+    }
+
+    fn take_continuations(&self) -> bool {
+        self.continue_pending.swap(0, Ordering::AcqRel) > 0
+    }
+
+    fn has_pending_continuation(&self) -> bool {
+        self.continue_pending.load(Ordering::Acquire) > 0
+    }
+
+    fn release_driver(&self) {
+        self.driving.store(false, Ordering::Release);
+    }
 }
 
 struct SupervisorState {
@@ -2287,13 +2308,13 @@ async fn run_driver(
     session_id: SessionId,
 ) {
     loop {
-        while task_actor.continue_pending.swap(0, Ordering::AcqRel) > 0 {
+        while task_actor.take_continuations() {
             if let Err(error) = run_one(state.clone(), task_actor.clone(), None).await {
                 let _ = state.events.send(SupervisorEvent::Error {
                     session_id: Some(session_id),
                     message: error.to_string(),
                 });
-                task_actor.driving.store(false, Ordering::Release);
+                task_actor.release_driver();
                 return;
             }
         }
@@ -2302,24 +2323,24 @@ async fn run_driver(
                 session_id: Some(session_id),
                 message: error.to_string(),
             });
-            task_actor.driving.store(false, Ordering::Release);
+            task_actor.release_driver();
             return;
         }
-        task_actor.driving.store(false, Ordering::Release);
+        task_actor.release_driver();
         let lifecycle = task_actor.snapshot.read().await.session.lifecycle;
         let queued = state
             .control
             .queued_prompts(session_id)
             .await
             .unwrap_or_default();
-        let has_continue = task_actor.continue_pending.load(Ordering::Acquire) > 0;
+        let has_continue = task_actor.has_pending_continuation();
         if !has_continue
             && (matches!(lifecycle, TaskLifecycle::Waiting | TaskLifecycle::Cancelled)
                 || queued.is_empty())
         {
             return;
         }
-        if task_actor.driving.swap(true, Ordering::AcqRel) {
+        if !task_actor.try_start_driver() {
             return;
         }
     }
@@ -2333,7 +2354,7 @@ async fn start_prompt_driver(
     if task_actor.retiring.load(Ordering::Acquire) {
         return Err(RepositorySupervisorError::Retiring(session_id));
     }
-    if task_actor.driving.swap(true, Ordering::AcqRel) {
+    if !task_actor.try_start_driver() {
         return Ok(());
     }
     tokio::spawn(run_driver(state, task_actor, session_id));
@@ -2348,8 +2369,7 @@ async fn start_continue_driver(
     if task_actor.retiring.load(Ordering::Acquire) {
         return Err(RepositorySupervisorError::Retiring(session_id));
     }
-    task_actor.continue_pending.fetch_add(1, Ordering::AcqRel);
-    if task_actor.driving.swap(true, Ordering::AcqRel) {
+    if !task_actor.request_continuation() {
         return Ok(());
     }
     tokio::spawn(run_driver(state, task_actor, session_id));
