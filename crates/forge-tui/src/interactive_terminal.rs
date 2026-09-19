@@ -573,6 +573,35 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn copy_command_writes_the_destination_file() {
+        if !super::pty_allocation_available() {
+            eprintln!("skipping: this host denies PTY allocation");
+            return;
+        }
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("source.txt"), "copied\n").unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
+        terminal
+            .start_command("cp source.txt destination.txt")
+            .unwrap();
+        for _ in 0..100 {
+            terminal.poll();
+            if terminal.take_command_completion().is_some() {
+                assert_eq!(
+                    std::fs::read_to_string(dir.path().join("destination.txt")).unwrap(),
+                    "copied\n"
+                );
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "copy command did not complete: {:?}",
+            terminal.display_output()
+        );
+    }
+
+    #[test]
     fn terminal_emulator_preserves_line_endings_and_cursor_repaints() {
         let mut terminal = vt100::Parser::new(3, 20, 0);
         terminal.process(b"one\r two\x1b[31m!\x1b[0m\r\nthree\r\n");

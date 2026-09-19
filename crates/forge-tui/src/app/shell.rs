@@ -138,7 +138,24 @@ impl TuiApp {
         let mut active_changed = false;
         if let Some(terminal) = self.interactive_terminal.as_mut() {
             active_changed = terminal.poll();
-            if terminal.take_command_completion().is_some() {
+            if let Some(completion) = terminal.take_command_completion() {
+                match completion.exit_code {
+                    Some(0) => self.set_feedback(
+                        FeedbackSeverity::Ok,
+                        format!("terminal command completed: {}", completion.command),
+                    ),
+                    Some(code) => self.set_feedback(
+                        FeedbackSeverity::Error,
+                        format!(
+                            "terminal command failed (exit {code}): {}",
+                            completion.command
+                        ),
+                    ),
+                    None => self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("terminal command stopped: {}", completion.command),
+                    ),
+                }
                 active_changed = true;
             }
         }

@@ -2142,13 +2142,6 @@ impl TuiApp {
                 }
             }
             FocusMode::Navigation => {
-                if self.focus.block() == FocusBlock::BottomPanel
-                    && key.code == KeyCode::Tab
-                    && key.modifiers.is_empty()
-                    && self.handle_active_block_key(key).await?
-                {
-                    return Ok(());
-                }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
                     Box::pin(self.execute_semantic_command(SemanticCommand::CycleFocus {
                         forward: key.code != KeyCode::BackTab
