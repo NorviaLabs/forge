@@ -151,6 +151,8 @@ fn map_key(code: KeyCode, modifiers: KeyModifiers) -> Option<Key> {
         KeyCode::Enter => Some(Key::Enter),
         KeyCode::Up => Some(Key::Up),
         KeyCode::Down => Some(Key::Down),
+        KeyCode::Char('y') if modifiers.is_empty() => Some(Key::Char('y')),
+        KeyCode::Char('n') if modifiers.is_empty() => Some(Key::Char('n')),
         KeyCode::Char('j') if !modifiers.contains(KeyModifiers::CONTROL) => Some(Key::Down),
         KeyCode::Char('k') if !modifiers.contains(KeyModifiers::CONTROL) => Some(Key::Up),
         _ => None,
@@ -334,5 +336,18 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result, SetupResult::Completed);
+    }
+
+    #[test]
+    fn trust_shortcuts_are_mapped() {
+        assert_eq!(
+            map_key(KeyCode::Char('y'), KeyModifiers::NONE),
+            Some(Key::Char('y'))
+        );
+        assert_eq!(
+            map_key(KeyCode::Char('n'), KeyModifiers::NONE),
+            Some(Key::Char('n'))
+        );
+        assert_eq!(map_key(KeyCode::Char('y'), KeyModifiers::CONTROL), None);
     }
 }
