@@ -12,11 +12,11 @@ struct Node {
 
 fn edge_part(raw: &str) -> Option<(String, Option<String>)> {
     let trimmed = raw.trim();
-    let (without_label, label) = if trimmed.starts_with('|') {
-        let end = trimmed[1..].find('|')? + 1;
+    let (without_label, label) = if let Some(stripped) = trimmed.strip_prefix('|') {
+        let end = stripped.find('|')? + 1;
         (
             trimmed[end + 1..].trim().to_string(),
-            Some(trimmed[1..end].trim().to_string()),
+            Some(stripped[..end - 1].trim().to_string()),
         )
     } else {
         (trimmed.to_string(), None)
