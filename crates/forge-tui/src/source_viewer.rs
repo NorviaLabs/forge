@@ -1610,9 +1610,15 @@ impl SourceViewerWidget<'_> {
             _ => "PREVIEW",
         };
         let header = format!("{label} · i to edit");
-        let lines = kind
-            .map(|kind| preview_lines(kind, &self.viewer.text_preview_lines))
-            .unwrap_or_default();
+        let lines = if kind == Some(TextPreviewKind::Mermaid) {
+            let source = self.viewer.text_preview_lines.join("\n");
+            crate::mermaid::render(&source, area.width.saturating_sub(2) as usize).unwrap_or_else(
+                || preview_lines(TextPreviewKind::Mermaid, &self.viewer.text_preview_lines),
+            )
+        } else {
+            kind.map(|kind| preview_lines(kind, &self.viewer.text_preview_lines))
+                .unwrap_or_default()
+        };
         Paragraph::new(lines)
             .block(Block::default().title(header).borders(Borders::BOTTOM))
             .style(theme::code_block())
