@@ -359,18 +359,20 @@ fn same_path(left: &Path, right: &Path) -> bool {
 }
 
 /// Create a new worktree for a subagent, on a fresh branch off `repo_root`'s
-/// current `HEAD`, at `<base_dir>/subagent-<id>-<slug>`. `id` guarantees
-/// uniqueness even when two subagents share a label (e.g. two "test-fixer"
-/// runs); `label` is sanitized before use in either the path or branch name.
+/// current `HEAD`, at
+/// `<base_dir>/subagent-<session-id>-<id>-<slug>`. The parent session ID and
+/// task ID guarantee uniqueness even when two subagents share a label;
+/// `label` is sanitized before use in either the path or branch name.
 pub fn create_worktree(
     repo_root: &Path,
     base_dir: &Path,
+    session_id: Uuid,
     id: u64,
     label: &str,
 ) -> Result<SubagentWorktree, WorktreeError> {
     std::fs::create_dir_all(base_dir)?;
     let slug = sanitize_label(label);
-    let name = format!("subagent-{id}-{slug}");
+    let name = format!("subagent-{session_id}-{id}-{slug}");
     let branch = format!("forge/subagent/{name}");
     let path = base_dir.join(&name);
     let output = Command::new("git")
@@ -547,9 +549,11 @@ mod tests {
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let wt = create_worktree(repo.path(), base.path(), 1, "test-fixer").unwrap();
-        assert_eq!(wt.path, base.path().join("subagent-1-test-fixer"));
-        assert_eq!(wt.branch, "forge/subagent/subagent-1-test-fixer");
+        let session_id = Uuid::nil();
+        let wt = create_worktree(repo.path(), base.path(), session_id, 1, "test-fixer").unwrap();
+        let name = format!("subagent-{session_id}-1-test-fixer");
+        assert_eq!(wt.path, base.path().join(&name));
+        assert_eq!(wt.branch, format!("forge/subagent/{name}"));
         assert!(wt.path.join("f.txt").exists());
 
         let info = crate::detect_repo_info(&wt.path);
@@ -562,10 +566,14 @@ mod tests {
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let wt = create_worktree(repo.path(), base.path(), 1, "../../escape").unwrap();
+        let session_id = Uuid::nil();
+        let wt = create_worktree(repo.path(), base.path(), session_id, 1, "../../escape").unwrap();
         // Must stay confined under `base`, never escape via `../`.
         assert!(wt.path.starts_with(base.path()));
-        assert_eq!(wt.path, base.path().join("subagent-1-escape"));
+        assert_eq!(
+            wt.path,
+            base.path().join(format!("subagent-{session_id}-1-escape"))
+        );
     }
 
     #[test]
@@ -574,8 +582,9 @@ mod tests {
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let a = create_worktree(repo.path(), base.path(), 1, "test-fixer").unwrap();
-        let b = create_worktree(repo.path(), base.path(), 2, "test-fixer").unwrap();
+        let session_id = Uuid::nil();
+        let a = create_worktree(repo.path(), base.path(), session_id, 1, "test-fixer").unwrap();
+        let b = create_worktree(repo.path(), base.path(), session_id, 2, "test-fixer").unwrap();
         assert_ne!(a.path, b.path);
         assert_ne!(a.branch, b.branch);
     }
@@ -648,7 +657,7 @@ mod tests {
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let wt = create_worktree(repo.path(), base.path(), 1, "cleanup-me").unwrap();
+        let wt = create_worktree(repo.path(), base.path(), Uuid::nil(), 1, "cleanup-me").unwrap();
         assert!(wt.path.exists());
 
         remove_worktree(repo.path(), &wt.path).unwrap();
@@ -687,8 +696,9 @@ mod tests {
         init_repo(repo.path());
         let base = TempDir::new().unwrap();
 
-        let a = create_worktree(repo.path(), base.path(), 1, "alpha").unwrap();
-        let b = create_worktree(repo.path(), base.path(), 2, "beta").unwrap();
+        let session_id = Uuid::nil();
+        let a = create_worktree(repo.path(), base.path(), session_id, 1, "alpha").unwrap();
+        let b = create_worktree(repo.path(), base.path(), session_id, 2, "beta").unwrap();
 
         let listed = list_worktrees(repo.path()).unwrap();
         let canon = |p: &Path| p.canonicalize().unwrap();

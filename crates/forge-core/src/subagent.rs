@@ -555,20 +555,25 @@ impl AgentSession {
             )
             .await?;
 
-        let worktree =
-            match forge_storage::create_worktree(&repo_root, &base_dir, task_id.0, &spec.role) {
-                Ok(wt) => wt,
-                Err(e) => {
-                    let _ = self.coordinator.update(
-                        child_session_id,
-                        AgentStatus::Failed,
-                        Some(e.to_string()),
-                    );
-                    return self
-                        .fail_subagent_spawn(task_id, format!("could not create worktree: {e}"))
-                        .await;
-                }
-            };
+        let worktree = match forge_storage::create_worktree(
+            &repo_root,
+            &base_dir,
+            self.session_id,
+            task_id.0,
+            &spec.role,
+        ) {
+            Ok(wt) => wt,
+            Err(e) => {
+                let _ = self.coordinator.update(
+                    child_session_id,
+                    AgentStatus::Failed,
+                    Some(e.to_string()),
+                );
+                return self
+                    .fail_subagent_spawn(task_id, format!("could not create worktree: {e}"))
+                    .await;
+            }
+        };
         // Only journaled once the worktree actually exists — `workspace` is
         // how a restart finds this same checkout again (see
         // `reconcile_orphaned_background_tasks`).
