@@ -404,8 +404,8 @@ text keeps breathing room inside borders:
   (`PANE_GAP_Y`), and transcript ↔ composer gap (`COMPOSER_GAP_Y`).
 
 Concretely (`design.rs`): one blank column separates Files, Workspace and the
-Sidebar; no blank row separates chrome from content. One blank row remains
-between transcript and composer. Border plus `PANE_PAD_X` puts text two cells
+Sidebar; no blank row separates chrome from content. No blank row separates
+transcript and composer. Border plus `PANE_PAD_X` puts text two cells
 from the pane edge. The transcript frame and its padding use the same canvas
 background as its content, avoiding a contrasting outer band.
 Composer, queue, and bottom-panel text share this origin
