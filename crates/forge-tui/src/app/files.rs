@@ -781,8 +781,8 @@ impl TuiApp {
                 ..
             } => {
                 let label = match action {
-                    ExplorerNameAction::CreateFile => "Enter one file name:",
-                    ExplorerNameAction::CreateDirectory => "Enter one folder name:",
+                    ExplorerNameAction::CreateFile => "Enter a file name or relative path:",
+                    ExplorerNameAction::CreateDirectory => "Enter a folder name or relative path:",
                     ExplorerNameAction::Rename => "Enter the new name:",
                 };
                 lines.push(Line::styled(label, theme::text()));

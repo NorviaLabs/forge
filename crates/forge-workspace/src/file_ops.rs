@@ -42,7 +42,7 @@ pub struct FileOperationResult {
 pub enum FileOperationError {
     #[error("Name cannot be empty.")]
     EmptyName,
-    #[error("Name must be one file or folder name, not a path.")]
+    #[error("Name must be a relative file or folder path.")]
     PathName,
     #[error("Name `.` and `..` are not allowed.")]
     DotName,
@@ -97,9 +97,9 @@ impl WorkspaceFileOps {
     }
 
     pub fn plan_create(&self, parent: &Path, name: &str) -> Result<PathBuf, FileOperationError> {
-        let name = self.validate_name(name)?;
+        let name = validate_create_path(name)?;
         let parent = self.resolve_existing_directory(parent)?;
-        let dest = self.child_path(&parent, &name)?;
+        let dest = self.create_path(&parent, &name)?;
         if lexists(&dest) {
             return Err(FileOperationError::AlreadyExists);
         }
@@ -130,12 +130,13 @@ impl WorkspaceFileOps {
         parent: &Path,
         name: &str,
     ) -> Result<FileOperationResult, FileOperationError> {
-        let name = self.validate_name(name)?;
+        let name = validate_create_path(name)?;
         let parent = self.resolve_existing_directory(parent)?;
-        let dest = self.child_path(&parent, &name)?;
+        let dest = self.create_path(&parent, &name)?;
         if lexists(&dest) {
             return Err(FileOperationError::AlreadyExists);
         }
+        self.ensure_create_parent(&parent, &name)?;
         OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -154,12 +155,13 @@ impl WorkspaceFileOps {
         parent: &Path,
         name: &str,
     ) -> Result<FileOperationResult, FileOperationError> {
-        let name = self.validate_name(name)?;
+        let name = validate_create_path(name)?;
         let parent = self.resolve_existing_directory(parent)?;
-        let dest = self.child_path(&parent, &name)?;
+        let dest = self.create_path(&parent, &name)?;
         if lexists(&dest) {
             return Err(FileOperationError::AlreadyExists);
         }
+        self.ensure_create_parent(&parent, &name)?;
         fs::create_dir(&dest).map_err(map_io_error)?;
         Ok(FileOperationResult {
             kind: FileOperationKind::CreateDirectory,
@@ -167,6 +169,31 @@ impl WorkspaceFileOps {
             new_path: None,
             parent,
         })
+    }
+
+    fn create_path(&self, parent: &Path, name: &Path) -> Result<PathBuf, FileOperationError> {
+        self.ensure_inside(parent)?;
+        let child = parent.join(name);
+        self.ensure_inside(&child)?;
+        Ok(child)
+    }
+
+    fn ensure_create_parent(&self, parent: &Path, name: &Path) -> Result<(), FileOperationError> {
+        let mut current = parent.to_path_buf();
+        let components: Vec<_> = name.components().collect();
+        for component in &components[..components.len().saturating_sub(1)] {
+            current.push(component.as_os_str());
+            if lexists(&current) {
+                let resolved = current.canonicalize().map_err(map_io_error)?;
+                if !resolved.is_dir() {
+                    return Err(FileOperationError::MissingParent);
+                }
+                self.ensure_inside(&resolved)?;
+            } else {
+                fs::create_dir(&current).map_err(map_io_error)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn rename_entry(
@@ -330,6 +357,63 @@ impl WorkspaceFileOps {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod nested_creation_tests {
+    use super::*;
+
+    #[test]
+    fn creates_nested_paths_and_intermediate_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let ops = WorkspaceFileOps::new(root.path()).unwrap();
+        ops.create_file(root.path(), "src/new/module.rs").unwrap();
+        assert!(root.path().join("src/new/module.rs").is_file());
+        ops.create_directory(root.path(), "tests/fixtures").unwrap();
+        assert!(root.path().join("tests/fixtures").is_dir());
+    }
+
+    #[test]
+    fn nested_creation_rejects_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let ops = WorkspaceFileOps::new(root.path()).unwrap();
+        for name in ["../outside", "src/../outside", "/tmp/file"] {
+            assert_eq!(
+                ops.plan_create(root.path(), name).unwrap_err(),
+                if name.starts_with('/') {
+                    FileOperationError::PathName
+                } else {
+                    FileOperationError::DotName
+                }
+            );
+        }
+    }
+}
+
+fn validate_create_path(name: &str) -> Result<PathBuf, FileOperationError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(FileOperationError::EmptyName);
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        return Err(FileOperationError::PathName);
+    }
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => {
+                validate_entry_name(value.to_str().ok_or(FileOperationError::InvalidName)?)?;
+                components.push(value);
+            }
+            Component::CurDir | Component::ParentDir => return Err(FileOperationError::DotName),
+            Component::RootDir | Component::Prefix(_) => return Err(FileOperationError::PathName),
+        }
+    }
+    if components.is_empty() {
+        return Err(FileOperationError::EmptyName);
+    }
+    Ok(components.iter().collect())
 }
 
 fn validate_entry_name(name: &str) -> Result<OsString, FileOperationError> {
