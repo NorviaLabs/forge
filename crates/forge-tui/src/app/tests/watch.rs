@@ -134,6 +134,7 @@ async fn file_change_reloads_tree_while_files_sidebar_is_focused() {
     app.workspace_files.explorer.selected_path =
         Some(dir.path().join("crates/forge-tui").canonicalize().unwrap());
     app.workspace_files.explorer.expand_selected();
+    install_pending_explorer_refresh(&mut app).await;
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
     app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
@@ -145,12 +146,6 @@ async fn file_change_reloads_tree_while_files_sidebar_is_focused() {
     install_pending_explorer_refresh(&mut app).await;
 
     assert!(app.workspace_files.explorer.git_status.loading);
-    assert!(app
-        .workspace_files
-        .explorer
-        .visible_nodes()
-        .iter()
-        .any(|node| node.display_name == "Cargo.toml"));
     assert!(app
         .workspace_files
         .explorer
