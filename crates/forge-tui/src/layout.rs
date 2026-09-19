@@ -466,7 +466,7 @@ mod tests {
             assert_eq!(r.input.height, 3);
             assert_eq!(r.input.x, transcript.x);
             assert_eq!(r.input.right(), transcript.right());
-            assert_eq!(r.input.y - transcript.bottom(), 1);
+            assert_eq!(r.input.y - transcript.bottom(), 0);
             assert_eq!(r.footer.y, r.input.bottom());
             assert_eq!(transcript.y, r.status.bottom());
             if let Some(files) = r.files {
@@ -525,7 +525,7 @@ mod tests {
         // the composer no longer eats vertical space from this column — it
         // lives in the sidebar's own split instead.
         assert_eq!(r.chat, Rect::new(1, 3, 85, 37));
-        assert_eq!(r.sidebar, Some(Rect::new(87, 3, 32, 33)));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 3, 32, 34)));
         assert_eq!(r.footer.height, 0);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.bottom_panel.height, 0);
@@ -653,7 +653,7 @@ mod tests {
         let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0, true, 0);
         assert_eq!(r.files, Some(Rect::new(1, 3, 29, 37)));
         assert_eq!(r.chat, Rect::new(31, 3, 55, 37));
-        assert_eq!(r.sidebar, Some(Rect::new(87, 3, 32, 33)));
+        assert_eq!(r.sidebar, Some(Rect::new(87, 3, 32, 34)));
     }
 
     #[test]
@@ -680,7 +680,7 @@ mod tests {
         );
         assert_eq!(r.files, Some(Rect::new(1, 3, 29, 37)));
         assert_eq!(r.chat.width, 0);
-        assert_eq!(r.sidebar, Some(Rect::new(31, 3, 88, 33)));
+        assert_eq!(r.sidebar, Some(Rect::new(31, 3, 88, 34)));
         assert_eq!(r.input.width, 88);
     }
 

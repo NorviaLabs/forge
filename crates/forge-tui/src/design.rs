@@ -42,8 +42,8 @@ pub const PANE_GAP_X: u16 = 1;
 /// Blank row between vertically stacked panes (left column ↔ bottom panel).
 pub const PANE_GAP_Y: u16 = 1;
 pub const CHROME_GAP_Y: u16 = 0;
-/// Blank row between the transcript and the composer.
-pub const COMPOSER_GAP_Y: u16 = 1;
+/// Blank rows between the transcript and the composer.
+pub const COMPOSER_GAP_Y: u16 = 0;
 /// Leading inset for nested list rows (the explorer's tree).
 ///
 /// One extra indent step past [`PANE_PAD_X`], so the disclosure column clears
@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(PANE_GAP_X, 1);
         assert_eq!(PANE_GAP_Y, 1);
         assert_eq!(CHROME_GAP_Y, 0);
-        assert_eq!(COMPOSER_GAP_Y, 1);
+        assert_eq!(COMPOSER_GAP_Y, 0);
         assert_eq!(LIST_INSET_X, crate::design::TREE_INDENT_W);
         assert_eq!(TREE_TOP_GAP_Y, 1);
         assert_eq!(PANE_TITLE_H, 1);
