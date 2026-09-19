@@ -16,6 +16,59 @@ use crate::links::HyperlinkLine;
 use crate::theme;
 use crate::widgets::input::TEXT_INSET;
 
+fn preview_kind(rel_path: &str) -> Option<TextPreviewKind> {
+    let extension = Path::new(rel_path)
+        .extension()
+        .and_then(|value| value.to_str())?
+        .to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "md" | "markdown" => TextPreviewKind::Markdown,
+        "json" | "yaml" | "yml" | "toml" | "csv" | "tsv" => TextPreviewKind::Structured,
+        "html" | "htm" => TextPreviewKind::Html,
+        "log" => TextPreviewKind::Log,
+        _ => return None,
+    })
+}
+
+fn build_text_preview(kind: Option<TextPreviewKind>, lines: &[&str]) -> Vec<String> {
+    match kind {
+        Some(TextPreviewKind::Html) => lines
+            .iter()
+            .map(|line| {
+                let mut output = String::with_capacity(line.len());
+                let mut in_tag = false;
+                for character in line.chars() {
+                    match character {
+                        '<' => in_tag = true,
+                        '>' => in_tag = false,
+                        _ if !in_tag => output.push(character),
+                        _ => {}
+                    }
+                }
+                output.trim().to_string()
+            })
+            .filter(|line| !line.is_empty())
+            .collect(),
+        Some(TextPreviewKind::Log) => lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| format!("{:>6} │ {line}", index + 1))
+            .collect(),
+        Some(TextPreviewKind::Structured) => {
+            let mut output = Vec::new();
+            for line in lines {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let indent = line.len().saturating_sub(line.trim_start().len());
+                    output.push(format!("{}{}", "  ".repeat(indent / 2), trimmed));
+                }
+            }
+            output
+        }
+        _ => lines.iter().map(|line| (*line).to_string()).collect(),
+    }
+}
+
 /// How many bytes to inspect for binary detection.
 const BINARY_PROBE_BYTES: usize = 8_192;
 /// Tab stops are every N columns.
@@ -31,6 +84,14 @@ pub enum ViewerMode {
     #[default]
     Normal,
     Insert,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextPreviewKind {
+    Markdown,
+    Structured,
+    Html,
+    Log,
 }
 
 impl ViewerMode {
@@ -139,6 +200,9 @@ pub struct SourceViewer {
     /// Whether the active file is shown as a rendered Markdown preview.
     /// Only meaningful for `.md`/`.markdown` files opened in the editor.
     pub markdown_preview: bool,
+    pub text_preview: bool,
+    pub text_preview_kind: Option<TextPreviewKind>,
+    pub text_preview_lines: Vec<String>,
     /// First visible rendered Markdown line (0-based).
     pub preview_top: usize,
     /// Last modified time observed for change detection.
@@ -195,6 +259,9 @@ impl Default for SourceViewer {
             size_bytes: 0,
             preview: false,
             markdown_preview: false,
+            text_preview: false,
+            text_preview_kind: None,
+            text_preview_lines: Vec::new(),
             preview_top: 0,
             modified: None,
             identity: None,
@@ -258,6 +325,9 @@ impl SourceViewer {
         self.size_bytes = 0;
         self.preview = false;
         self.markdown_preview = false;
+        self.text_preview = false;
+        self.text_preview_kind = None;
+        self.text_preview_lines.clear();
         self.preview_top = 0;
         self.modified = None;
         self.notice = None;
@@ -337,7 +407,28 @@ impl SourceViewer {
             self.highlight_disabled = grammar.is_some() && text.len() > MAX_HIGHLIGHT_BYTES;
         }
         self.document_text = Some(text);
+        self.text_preview_kind = preview_kind(&self.rel_path);
+        self.text_preview_lines = build_text_preview(
+            self.text_preview_kind,
+            self.lines
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
         self.clamp_viewport();
+    }
+
+    pub fn supports_text_preview(&self) -> bool {
+        matches!(self.status, ViewerStatus::Ok) && self.text_preview_kind.is_some()
+    }
+
+    pub fn toggle_text_preview(&mut self) -> bool {
+        if !self.supports_text_preview() {
+            return false;
+        }
+        self.text_preview = !self.text_preview;
+        self.text_preview
     }
 
     /// Detect the language and build a cached highlighted representation of the
@@ -1231,6 +1322,8 @@ impl SourceViewerWidget<'_> {
         if self.editor.is_some() {
             if self.viewer.markdown_preview {
                 self.render_markdown_preview(area, buf);
+            } else if self.viewer.text_preview {
+                self.render_text_preview(area, buf);
             } else {
                 self.render_editor_content(area, buf);
             }
@@ -1364,6 +1457,22 @@ impl SourceViewerWidget<'_> {
         if input_open {
             self.render_input(rows[2], buf);
         }
+    }
+
+    fn render_text_preview(&mut self, area: Rect, buf: &mut Buffer) {
+        let kind = self.viewer.text_preview_kind;
+        let label = match kind {
+            Some(TextPreviewKind::Structured) => "STRUCTURED",
+            Some(TextPreviewKind::Html) => "HTML",
+            Some(TextPreviewKind::Log) => "LOG",
+            _ => "PREVIEW",
+        };
+        let header = format!("{label} · :edit to edit");
+        Paragraph::new(self.viewer.text_preview_lines.join("\n"))
+            .block(Block::default().title(header).borders(Borders::BOTTOM))
+            .style(theme::code_block())
+            .scroll((self.viewer.preview_top as u16, 0))
+            .render(area, buf);
     }
 
     fn render_editor_content(&mut self, area: Rect, buf: &mut Buffer) {
@@ -1691,6 +1800,26 @@ fn compose_source_header(header: &SourceHeader<'_>, width: usize) -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn portable_preview_kinds_cover_structured_html_and_logs() {
+        assert_eq!(
+            preview_kind("config.json"),
+            Some(TextPreviewKind::Structured)
+        );
+        assert_eq!(
+            preview_kind("config.YAML"),
+            Some(TextPreviewKind::Structured)
+        );
+        assert_eq!(preview_kind("index.html"), Some(TextPreviewKind::Html));
+        assert_eq!(preview_kind("server.log"), Some(TextPreviewKind::Log));
+        assert_eq!(preview_kind("main.rs"), None);
+
+        let html = build_text_preview(Some(TextPreviewKind::Html), &["<h1>Hello</h1>"]);
+        assert_eq!(html, vec!["Hello"]);
+        let log = build_text_preview(Some(TextPreviewKind::Log), &["ready"]);
+        assert_eq!(log, vec!["     1 │ ready"]);
+    }
 
     /// The text of a rendered row as the screen shows it, with any `OSC 8`
     /// sequence dropped: a destination is bytes the reader never sees.
