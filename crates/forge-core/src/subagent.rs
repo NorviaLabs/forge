@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_coordinator::AgentCommand;
 use crate::background::{BackgroundTaskKind, BackgroundTaskOutcome, BackgroundTaskStatus};
 use crate::persistence::SessionPersistence;
+use crate::task_runtime::SubagentRuntime;
 use crate::turn_state::TurnState;
 use crate::{
     assemble_system_prompt, ActiveTaskState, AgentSession, LoopError, SessionTokenUsage,
@@ -357,17 +358,18 @@ impl AgentSession {
         child: AgentSession,
     ) -> Result<(), LoopError> {
         let child_session_id = child.session_id;
-        let result_sink = Arc::new(std::sync::Mutex::new(None));
-        let latest_message = Arc::new(std::sync::Mutex::new(None));
+        let runtime = Arc::new(SubagentRuntime {
+            result_sink: Arc::new(std::sync::Mutex::new(None)),
+            latest_message: Arc::new(std::sync::Mutex::new(None)),
+        });
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
         self.tasks.retained_subagents.insert(
             child_session_id,
             crate::task_runtime::RetainedSubagent {
                 label: task.label.clone(),
                 workspace: child.workspace_root().to_path_buf(),
-                result_sink: result_sink.clone(),
+                runtime: runtime.clone(),
                 hitl_sender: hitl_tx,
-                latest_message: latest_message.clone(),
             },
         );
         spawn_subagent_actor(
@@ -375,9 +377,8 @@ impl AgentSession {
             None,
             false,
             child_session_id,
-            result_sink,
+            runtime,
             hitl_rx,
-            latest_message,
             self.coordinator.clone(),
         )
     }
@@ -399,9 +400,8 @@ impl AgentSession {
         }
         let label = retained.label.clone();
         let workspace = retained.workspace.clone();
-        let result_sink = retained.result_sink.clone();
+        let runtime = retained.runtime.clone();
         let hitl_sender = retained.hitl_sender.clone();
-        let latest_message = retained.latest_message.clone();
         let cancel = CancellationToken::new();
         let task_id = self.tasks.background.spawn_slot(
             BackgroundTaskKind::Subagent {
@@ -437,10 +437,10 @@ impl AgentSession {
             .background
             .set_worktree(task_id, workspace, branch);
         let (tx, rx) = std::sync::mpsc::channel();
-        *result_sink.lock().unwrap() = Some(tx);
+        *runtime.result_sink.lock().unwrap() = Some(tx);
         self.tasks
             .background
-            .set_latest_message_cell(task_id, latest_message);
+            .set_latest_message_cell(task_id, runtime.latest_message.clone());
         self.tasks
             .background
             .control()
@@ -616,7 +616,10 @@ impl AgentSession {
             .unwrap_or_default();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let result_sink = Arc::new(std::sync::Mutex::new(Some(tx)));
+        let runtime = Arc::new(SubagentRuntime {
+            result_sink: Arc::new(std::sync::Mutex::new(Some(tx))),
+            latest_message,
+        });
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
         self.tasks.background.control().track_hitl(task_id, hitl_tx);
         let prompt = spec.prompt.clone();
@@ -625,9 +628,8 @@ impl AgentSession {
             Some(prompt),
             false,
             child_session_id,
-            result_sink,
+            runtime,
             hitl_rx,
-            latest_message,
             self.coordinator.clone(),
         )?;
         self.tasks
@@ -681,9 +683,8 @@ fn spawn_subagent_actor(
     initial_prompt: Option<String>,
     resume_turn: bool,
     child_session_id: SessionId,
-    result_sink: Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
+    runtime: Arc<SubagentRuntime>,
     mut hitl_rx: tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
-    latest_message: Arc<std::sync::Mutex<Option<String>>>,
     coordinator: AgentCoordinator,
 ) -> Result<(), LoopError> {
     let (_, mut command_rx) = coordinator
@@ -703,9 +704,8 @@ fn spawn_subagent_actor(
                 child,
                 result,
                 child_session_id,
-                result_sink.clone(),
+                runtime.clone(),
                 &mut hitl_rx,
-                latest_message.clone(),
                 coordinator.clone(),
             )
             .await;
@@ -721,7 +721,7 @@ fn spawn_subagent_actor(
             }
             // Give the child a viewer for the length of this run, so the strip
             // can show what it is doing and not only what it finished.
-            let probe = ActivityProbe::start(latest_message.clone());
+            let probe = ActivityProbe::start(runtime.latest_message.clone());
             let result = child
                 .run_user_message_with_stream(&messages.join("\n\n"), Some(probe.sender()))
                 .await;
@@ -730,9 +730,8 @@ fn spawn_subagent_actor(
                 child,
                 result,
                 child_session_id,
-                result_sink.clone(),
+                runtime.clone(),
                 &mut hitl_rx,
-                latest_message.clone(),
                 coordinator.clone(),
             )
             .await;
@@ -833,8 +832,10 @@ impl ActivityProbe {
 
 impl Drop for ActivityProbe {
     fn drop(&mut self) {
-        // Never leave the thread waiting on a sender that will not be dropped.
         self.stop();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -842,9 +843,8 @@ async fn drive_subagent(
     mut child: AgentSession,
     mut result: Result<forge_types::ModelResponse, LoopError>,
     child_session_id: SessionId,
-    result_sink: Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
+    runtime: Arc<SubagentRuntime>,
     hitl_rx: &mut tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
-    latest_message: Arc<std::sync::Mutex<Option<String>>>,
     coordinator: AgentCoordinator,
 ) -> AgentSession {
     let cancel_token = child
@@ -854,7 +854,7 @@ async fn drive_subagent(
     let snapshot = |child: &AgentSession| {
         let text = last_assistant_text(&child.messages);
         if !text.is_empty() {
-            *latest_message.lock().unwrap() = Some(text);
+            *runtime.latest_message.lock().unwrap() = Some(text);
         }
     };
     snapshot(&child);
@@ -869,7 +869,7 @@ async fn drive_subagent(
             break;
         };
         let _ = coordinator.update(child_session_id, AgentStatus::Waiting, None);
-        if let Some(tx) = result_sink.lock().unwrap().clone() {
+        if let Some(tx) = runtime.result_sink.lock().unwrap().clone() {
             let _ = tx.send(BackgroundTaskOutcome::WaitingForApproval(payload));
         }
 
@@ -880,7 +880,7 @@ async fn drive_subagent(
                         result = Err(e);
                         break;
                     }
-                    let probe = ActivityProbe::start(latest_message.clone());
+                    let probe = ActivityProbe::start(runtime.latest_message.clone());
                     result = child.run_agent_turns(Some(probe.sender())).await;
                     probe.finish();
                     snapshot(&child);
@@ -961,7 +961,7 @@ async fn drive_subagent(
         coordinator_status,
         Some(outcome.summary.clone()),
     );
-    if let Some(tx) = result_sink.lock().unwrap().clone() {
+    if let Some(tx) = runtime.result_sink.lock().unwrap().clone() {
         let _ = tx.send(BackgroundTaskOutcome::Subagent(outcome));
     }
     child

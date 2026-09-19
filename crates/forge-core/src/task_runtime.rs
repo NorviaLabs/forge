@@ -26,8 +26,12 @@ pub(crate) struct TaskRuntime {
 pub(crate) struct RetainedSubagent {
     pub(crate) label: String,
     pub(crate) workspace: PathBuf,
-    pub(crate) result_sink: Arc<Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
+    pub(crate) runtime: Arc<SubagentRuntime>,
     pub(crate) hitl_sender: UnboundedSender<HitlDecision>,
+}
+
+pub(crate) struct SubagentRuntime {
+    pub(crate) result_sink: Arc<Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
     pub(crate) latest_message: Arc<Mutex<Option<String>>>,
 }
 
