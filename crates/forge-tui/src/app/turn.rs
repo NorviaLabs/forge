@@ -1059,10 +1059,17 @@ impl TuiApp {
                 // Automatic compaction is opportunistic. A failed checkpoint
                 // leaves the old context installed and the model turn remains
                 // valid, matching AgentSession's non-interactive path.
-                let _ = self
+                if self
                     .session_runtime
                     .finish_context_compaction(completed)
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "context compaction checkpoint failed; continuing with existing context",
+                    );
+                }
             }
             // Model controls remain live while a turn is running. The request
             // already in flight is immutable, so changes made during its
