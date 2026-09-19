@@ -122,7 +122,7 @@ async fn inspector_change_count_stays_stable_across_draws() {
 }
 
 #[tokio::test]
-async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
+async fn file_change_reloads_tree_while_files_sidebar_is_focused() {
     let (dir, mut app) = focus_test_app().await;
     fs::create_dir(dir.path().join("crates")).unwrap();
     fs::create_dir(dir.path().join("crates/forge-tui")).unwrap();
@@ -142,6 +142,7 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     app.file_watch
         .inject_change(app.session_runtime.workspace_root().join("changed.txt"));
     app.poll_file_changes();
+    install_pending_explorer_refresh(&mut app).await;
 
     assert!(app.workspace_files.explorer.git_status.loading);
     assert!(app
@@ -150,17 +151,6 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
         .visible_nodes()
         .iter()
         .any(|node| node.display_name == "Cargo.toml"));
-    assert!(!app
-        .workspace_files
-        .explorer
-        .visible_nodes()
-        .iter()
-        .any(|node| node.display_name == "added-while-focused.txt"));
-
-    app.focus_block(FocusBlock::Composer);
-    app.poll_file_changes();
-    install_pending_explorer_refresh(&mut app).await;
-
     assert!(app
         .workspace_files
         .explorer
