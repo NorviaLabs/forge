@@ -60,13 +60,22 @@ impl TuiApp {
                                 "Editing source · :preview to render".into()
                             };
                             self.editor_message = Some(self.status_state.message.clone());
+                        } else if self.source_viewer.supports_text_preview() {
+                            let on = self.source_viewer.toggle_text_preview();
+                            self.status_state.message = if on {
+                                "File preview · :edit to edit".into()
+                            } else {
+                                "Editing source · :preview to render".into()
+                            };
+                            self.editor_message = Some(self.status_state.message.clone());
                         } else {
-                            self.editor_message = Some("E: not a Markdown file".to_string());
+                            self.editor_message = Some("E: no preview available".to_string());
                         }
                     }
                     command if command == "e" || command == "edit" => {
-                        if self.source_viewer.markdown_preview {
+                        if self.source_viewer.markdown_preview || self.source_viewer.text_preview {
                             self.source_viewer.markdown_preview = false;
+                            self.source_viewer.text_preview = false;
                             self.status_state.message =
                                 "Editing source · :preview to render".into();
                             self.editor_message = Some(self.status_state.message.clone());
@@ -1306,10 +1315,7 @@ impl TuiApp {
             return false;
         }
 
-        if self.source_viewer.markdown_preview {
-            // Preview is read-only. `:` still opens the command line so
-            // `:preview` (and `:q`) stay reachable; every other key scrolls the
-            // rendered document instead of reaching the editor buffer.
+        if self.source_viewer.markdown_preview || self.source_viewer.text_preview {
             if key.code == KeyCode::Char(':') && key.modifiers.is_empty() {
                 self.editor_command = Some(String::new());
                 self.status_state.message = ":".into();
