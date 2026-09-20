@@ -1204,7 +1204,13 @@ impl TuiApp {
             } else {
                 let idx = self.slash_suggestions.selected.min(suggestions.len() - 1);
                 let cmd = suggestions[idx].cmd.clone();
-                if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
+                let can_implicitly_dispatch = crate::commands::parse_slash(&cmd)
+                    .and_then(Result::ok)
+                    .is_none_or(|command| command.allows_implicit_completion());
+                if cur == cmd.as_str()
+                    || cur.starts_with(&(cmd.clone() + " "))
+                    || !can_implicitly_dispatch
+                {
                     self.input.take()
                 } else {
                     self.input.set_text(cmd);
