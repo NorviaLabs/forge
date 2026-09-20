@@ -47,8 +47,11 @@ const TITLE_MAX_TOKENS: usize = 4;
 /// that follows them.
 const TITLE_MAX_WORDS: usize = 4;
 
-/// Derive the session label — and with it the `forge/<slug>` branch name —
-/// from the first user message.
+/// Derive a branch-safe slug from the first user message.
+///
+/// For a human-readable session label, use [`session_name_from_prompt`]. Both
+/// functions use the same meaningful opening; this one normalizes it to
+/// kebab-case for branch-oriented identifiers.
 ///
 /// Cuts at the first newline, or at the first `.`/`!`/`?` followed by
 /// whitespace or end-of-input (so a `.` inside `main.rs` or `v1.2.3` is not a
@@ -65,23 +68,20 @@ const TITLE_MAX_WORDS: usize = 4;
 /// `src-main-rs-breaks`. [`TITLE_MAX_CHARS`] is only an outer bound against
 /// long tokens. Falls back to `untitled-session` when nothing usable remains.
 ///
-/// The result is not display-only. On the first filesystem change,
-/// `forge-session` materializes a worktree branch named `forge/<label>` from
-/// this string, so the output must stay a valid git ref segment and
-/// `forge_storage::sanitize_label` must return it unchanged:
+/// The result is branch-oriented, not the displayed session name. A
+/// prompt-derived session label uses [`session_name_from_prompt`], while branch
+/// materialization slugifies that label back to this kebab-case shape. Keep
+/// this output valid as a git ref segment and compatible with
+/// `forge_storage::sanitize_label`:
 ///
 /// ```text
 /// sanitize_label(title_from_prompt(prompt)) == title_from_prompt(prompt)
 /// ```
 ///
-/// That equality holds for any name of at most 40 characters, which is every
-/// ordinary prompt. It does not hold for a name longer than that — a single
-/// over-long token reaching [`TITLE_MAX_CHARS`] is truncated by
-/// `sanitize_label` and the label then differs from the branch. Raise both caps
-/// together or not at all.
-///
-/// Titles and branch slugs are one value, never two: changing the shape of
-/// this output renames branches and breaks the invariant above.
+/// That equality holds for ordinary prompt-derived names within the storage
+/// slug length limit. An unusually long token can still be truncated by
+/// `sanitize_label`; if either cap changes, keep the branch-slug contract in
+/// sync.
 pub fn title_from_prompt(prompt: &str) -> String {
     let first_line = prompt.split('\n').next().unwrap_or("");
     let cut = sentence_end(first_line).unwrap_or(first_line.len());
@@ -97,8 +97,11 @@ pub fn title_from_prompt(prompt: &str) -> String {
     title
 }
 
-/// Derive the session label from the first prompt using natural spacing.
-/// The branch label remains the kebab-case [`title_from_prompt`] result.
+/// Derive the human-readable session label from the first prompt.
+///
+/// This uses the same meaningful opening as [`title_from_prompt`] but renders
+/// it with natural spaces. Branch names are slugged separately and remain
+/// kebab-case.
 pub fn session_name_from_prompt(prompt: &str) -> String {
     title_from_prompt(prompt).replace('-', " ")
 }
