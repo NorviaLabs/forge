@@ -316,70 +316,7 @@ impl AgentSession {
             //   as a failed turn is the false-failure bug: it erases a verified
             //   edit because an unrelated command was missing. Stay `Completed`
             //   and carry the unfinished steps in `incomplete` instead.
-            if decision.state == TaskLifecycle::Completed {
-                let required = expectation.required_operation_ids();
-                let is_required = |entry: &EvidenceEntry| {
-                    entry
-                        .operation_id
-                        .as_deref()
-                        .is_some_and(|id| required.contains(&id))
-                };
-                // A step "didn't finish" if the tool itself errored *or* the
-                // command it ran exited non-zero. `is_error` alone misses the
-                // common case: `bash` dispatches fine and the command inside it
-                // fails (a missing `pytest` exits 127 with `is_error` unset),
-                // which is exactly the step worth reporting.
-                let errored: Vec<&EvidenceEntry> = self
-                    .turn
-                    .evidence()
-                    .0
-                    .iter()
-                    .filter(|e| e.error.is_some() || e.exit_code.is_some_and(|code| code != 0))
-                    .collect();
-
-                if let Some(bad) = errored.iter().copied().find(|e| is_required(e)) {
-                    let tool = bad.tool_name.clone().unwrap_or_else(|| "a step".into());
-                    decision = CompletionDecision {
-                        state: TaskLifecycle::Failed,
-                        reason: CompletionReason::PartialFailure,
-                        evidence_summary: EvidenceSummary {
-                            succeeded: decision.evidence_summary.succeeded,
-                            failed: vec![tool.clone()],
-                            incomplete: Vec::new(),
-                            detail: format!(
-                                "{tool} did not finish successfully, so this turn is not complete."
-                            ),
-                        },
-                    };
-                } else if !errored.is_empty() {
-                    let mut incomplete: Vec<String> = Vec::new();
-                    for entry in errored {
-                        let tool = entry.tool_name.clone().unwrap_or_else(|| "a step".into());
-                        if !incomplete.contains(&tool) {
-                            incomplete.push(tool);
-                        }
-                    }
-                    let detail = format!(
-                        "{} {} didn't finish.",
-                        incomplete.join(", "),
-                        if incomplete.len() == 1 {
-                            "check"
-                        } else {
-                            "checks"
-                        }
-                    );
-                    decision = CompletionDecision {
-                        state: TaskLifecycle::Completed,
-                        reason: CompletionReason::CompletedWithIncompleteChecks,
-                        evidence_summary: EvidenceSummary {
-                            succeeded: decision.evidence_summary.succeeded,
-                            failed: decision.evidence_summary.failed,
-                            incomplete,
-                            detail,
-                        },
-                    };
-                }
-            }
+            decision = self.account_for_failed_checks(&expectation, decision);
             tracing::debug!(
                 expectation = ?expectation,
                 evidence_count = self.turn.evidence().0.len(),
@@ -387,55 +324,7 @@ impl AgentSession {
                 state = ?decision.state,
                 "turn completion decision"
             );
-            match decision.state {
-                TaskLifecycle::Completed => {
-                    // Unfinished ancillary steps travel as their own event so
-                    // the UI can report them next to a completed turn without
-                    // borrowing failure styling.
-                    if !decision.evidence_summary.incomplete.is_empty() {
-                        self.events.push(TurnEvent {
-                            kind: "turn_incomplete_checks".into(),
-                            detail: decision.evidence_summary.incomplete.join(", "),
-                        });
-                    }
-                    self.transition(
-                        TaskLifecycle::Completed,
-                        TransitionReason::Completion(decision.reason),
-                    )
-                    .await?;
-                }
-                TaskLifecycle::Failed => {
-                    self.finalize_turn_failure(
-                        &decision.evidence_summary.detail,
-                        decision.reason.as_category(),
-                    )
-                    .await?;
-                }
-                TaskLifecycle::Waiting | TaskLifecycle::Cancelled | TaskLifecycle::Interrupted => {
-                    // The evaluator can, in principle, observe evidence that maps
-                    // to one of these states (e.g. a `WaitingForUser`/`UserCancelled`
-                    // entry left over from earlier in the same turn) — but only the
-                    // runtime's own coordinators may actually author these
-                    // transitions (the HITL gate in `run_one_tool`, `mark_cancelled`).
-                    // A completion decision alone must never force or re-enter one of
-                    // them; this used to fall through to `finalize_turn_failure` and
-                    // wrongly mark the turn Failed.
-                    tracing::debug!(
-                        state = ?decision.state,
-                        reason = decision.reason.as_category(),
-                        "completion decision observed a non-authoritative state; lifecycle left unchanged"
-                    );
-                }
-                // `TaskLifecycle` is `#[non_exhaustive]`; an unrecognised decision
-                // state fails safe rather than silently completing.
-                _ => {
-                    self.finalize_turn_failure(
-                        &decision.evidence_summary.detail,
-                        decision.reason.as_category(),
-                    )
-                    .await?;
-                }
-            }
+            self.apply_completion_decision(&decision).await?;
             self.last_completion = Some(decision);
             return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(last)));
         }
@@ -448,6 +337,127 @@ impl AgentSession {
             budget: self.turn.take_validation_budget(),
         };
         self.next_tool_application(pending).await
+    }
+
+    fn account_for_failed_checks(
+        &self,
+        expectation: &TaskExpectation,
+        mut decision: CompletionDecision,
+    ) -> CompletionDecision {
+        if decision.state != TaskLifecycle::Completed {
+            return decision;
+        }
+
+        let required = expectation.required_operation_ids();
+        let is_required = |entry: &EvidenceEntry| {
+            entry
+                .operation_id
+                .as_deref()
+                .is_some_and(|id| required.contains(&id))
+        };
+        // A step "didn't finish" if the tool itself errored *or* the
+        // command it ran exited non-zero. `is_error` alone misses the common
+        // case where bash dispatches fine and its command exits non-zero.
+        let errored: Vec<&EvidenceEntry> = self
+            .turn
+            .evidence()
+            .0
+            .iter()
+            .filter(|entry| entry.error.is_some() || entry.exit_code.is_some_and(|code| code != 0))
+            .collect();
+
+        if let Some(bad) = errored.iter().copied().find(|entry| is_required(entry)) {
+            let tool = bad.tool_name.clone().unwrap_or_else(|| "a step".into());
+            decision = CompletionDecision {
+                state: TaskLifecycle::Failed,
+                reason: CompletionReason::PartialFailure,
+                evidence_summary: EvidenceSummary {
+                    succeeded: decision.evidence_summary.succeeded,
+                    failed: vec![tool.clone()],
+                    incomplete: Vec::new(),
+                    detail: format!(
+                        "{tool} did not finish successfully, so this turn is not complete."
+                    ),
+                },
+            };
+        } else if !errored.is_empty() {
+            let mut incomplete: Vec<String> = Vec::new();
+            for entry in errored {
+                let tool = entry.tool_name.clone().unwrap_or_else(|| "a step".into());
+                if !incomplete.contains(&tool) {
+                    incomplete.push(tool);
+                }
+            }
+            let detail = format!(
+                "{} {} didn't finish.",
+                incomplete.join(", "),
+                if incomplete.len() == 1 {
+                    "check"
+                } else {
+                    "checks"
+                }
+            );
+            decision = CompletionDecision {
+                state: TaskLifecycle::Completed,
+                reason: CompletionReason::CompletedWithIncompleteChecks,
+                evidence_summary: EvidenceSummary {
+                    succeeded: decision.evidence_summary.succeeded,
+                    failed: decision.evidence_summary.failed,
+                    incomplete,
+                    detail,
+                },
+            };
+        }
+        decision
+    }
+
+    async fn apply_completion_decision(
+        &mut self,
+        decision: &CompletionDecision,
+    ) -> Result<(), LoopError> {
+        match decision.state {
+            TaskLifecycle::Completed => {
+                // Unfinished ancillary steps travel as their own event so the
+                // UI can report them next to a completed turn without failure styling.
+                if !decision.evidence_summary.incomplete.is_empty() {
+                    self.events.push(TurnEvent {
+                        kind: "turn_incomplete_checks".into(),
+                        detail: decision.evidence_summary.incomplete.join(", "),
+                    });
+                }
+                self.transition(
+                    TaskLifecycle::Completed,
+                    TransitionReason::Completion(decision.reason),
+                )
+                .await?;
+            }
+            TaskLifecycle::Failed => {
+                self.finalize_turn_failure(
+                    &decision.evidence_summary.detail,
+                    decision.reason.as_category(),
+                )
+                .await?;
+            }
+            TaskLifecycle::Waiting | TaskLifecycle::Cancelled | TaskLifecycle::Interrupted => {
+                // Only runtime coordinators may author these transitions. A
+                // completion decision must never force or re-enter one of them.
+                tracing::debug!(
+                    state = ?decision.state,
+                    reason = decision.reason.as_category(),
+                    "completion decision observed a non-authoritative state; lifecycle left unchanged"
+                );
+            }
+            // `TaskLifecycle` is `#[non_exhaustive]`; fail safe rather than
+            // silently completing an unrecognised state.
+            _ => {
+                self.finalize_turn_failure(
+                    &decision.evidence_summary.detail,
+                    decision.reason.as_category(),
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     /// True when the open user turn already has tool or validation activity.
