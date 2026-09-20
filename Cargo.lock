@@ -1486,6 +1486,7 @@ dependencies = [
  "forge-transcript",
  "forge-types",
  "forge-workspace",
+ "libc",
  "notify 8.2.0",
  "pathdiff",
  "portable-pty",

@@ -13,13 +13,34 @@ pub(crate) struct TerminalEventSource {
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
+#[cfg(unix)]
+fn parent_process_id() -> u32 {
+    // SAFETY: `getppid` has no preconditions and only reads process state.
+    unsafe { libc::getppid() as u32 }
+}
+
+#[cfg(unix)]
+fn parent_process_changed(initial: u32) -> bool {
+    parent_process_id() != initial
+}
+
 impl TerminalEventSource {
     pub(super) fn spawn() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_stop = Arc::clone(&stop);
         let task = tokio::task::spawn_blocking(move || {
+            #[cfg(unix)]
+            let initial_parent = parent_process_id();
             while !reader_stop.load(std::sync::atomic::Ordering::Acquire) {
+                #[cfg(unix)]
+                if parent_process_changed(initial_parent) {
+                    let _ = tx.send(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "launching process exited",
+                    )));
+                    break;
+                }
                 match event::poll(Duration::from_millis(20)) {
                     Ok(true) => match event::read() {
                         Ok(event) => {
@@ -118,6 +139,13 @@ impl TerminalEventSource {
             let _ = task.await;
         }
     }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn parent_process_watchdog_accepts_the_current_parent() {
+    assert!(!parent_process_changed(parent_process_id()));
+    assert!(parent_process_changed(0));
 }
 
 impl Drop for TerminalEventSource {
