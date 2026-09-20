@@ -6,6 +6,26 @@
 use crate::*;
 
 impl AgentSession {
+    /// Snapshot the request-routing state as one value so callers cannot
+    /// accidentally persist or display only part of a selection.
+    pub fn model_selection(&self) -> crate::ModelExecutionSelection {
+        crate::ModelExecutionSelection {
+            model: self.active_model.clone(),
+            route_id: self.active_route_id.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
+            thinking_enabled: self.thinking_enabled,
+        }
+    }
+
+    /// Apply all execution-facing model state together.
+    pub fn set_model_selection(&mut self, selection: crate::ModelExecutionSelection) {
+        self.active_model = selection.model;
+        self.active_route_id = selection.route_id;
+        self.reasoning_effort = selection.reasoning_effort;
+        self.thinking_enabled = selection.thinking_enabled;
+        self.tool_ctx.active_model = self.active_model.clone();
+    }
+
     pub fn journal_dir(&self) -> &std::path::Path {
         self.journal.directory()
     }
@@ -249,8 +269,9 @@ impl AgentSession {
 
     /// Use this provider/model id on subsequent completions (e.g. after `/connect`).
     pub fn set_active_model(&mut self, model: impl Into<String>) {
-        self.active_model = model.into();
-        self.tool_ctx.active_model = self.active_model.clone();
+        let mut selection = self.model_selection();
+        selection.model = model.into();
+        self.set_model_selection(selection);
     }
 
     /// Fail-closed capability flag used to reject `view_image` at call time.
@@ -291,13 +312,17 @@ impl AgentSession {
     }
 
     pub fn set_active_route_id(&mut self, route_id: impl Into<String>) {
-        self.active_route_id = route_id.into();
+        let mut selection = self.model_selection();
+        selection.route_id = route_id.into();
+        self.set_model_selection(selection);
     }
 
     /// Wire-level reasoning-effort value to send on the next completion, or
     /// `None` to omit the field (model doesn't support it, or effort is Auto).
     pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
-        self.reasoning_effort = effort;
+        let mut selection = self.model_selection();
+        selection.reasoning_effort = effort;
+        self.set_model_selection(selection);
     }
 
     pub fn reasoning_effort(&self) -> Option<&str> {
@@ -305,7 +330,9 @@ impl AgentSession {
     }
 
     pub fn set_thinking_enabled(&mut self, enabled: bool) {
-        self.thinking_enabled = enabled;
+        let mut selection = self.model_selection();
+        selection.thinking_enabled = enabled;
+        self.set_model_selection(selection);
     }
 
     pub fn thinking_enabled(&self) -> bool {

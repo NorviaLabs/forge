@@ -76,6 +76,7 @@ impl AgentSession {
     /// Build the next model request from current transcript + tools.
     pub fn build_model_request(&self) -> ModelRequest {
         let tools = self.tools_for_model();
+        let selection = self.model_selection();
         // Requests share the transcript in the usual case. Image availability is
         // checked at request time, so only requests with missing attachments pay
         // the copy-on-write cost needed to add the model-visible fallback note.
@@ -83,12 +84,12 @@ impl AgentSession {
         ModelRequest {
             messages,
             tools,
-            model: self.active_model.clone(),
+            model: selection.model,
             workspace_root: self.tool_ctx.workspace_root.clone(),
-            route_id: (!self.active_route_id.is_empty()).then(|| self.active_route_id.clone()),
+            route_id: (!selection.route_id.is_empty()).then_some(selection.route_id),
             session_id: Some(self.session_id.to_string()),
-            reasoning_effort: self.reasoning_effort.clone(),
-            thinking_enabled: self.thinking_enabled,
+            reasoning_effort: selection.reasoning_effort,
+            thinking_enabled: selection.thinking_enabled,
             prompt_cache: true,
         }
     }

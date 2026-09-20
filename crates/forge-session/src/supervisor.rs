@@ -1870,18 +1870,21 @@ async fn execute_command(
         } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = try_session(&task_actor)?;
-            session.set_active_model(model_id);
-            session.set_active_route_id(route_id);
-            session.set_reasoning_effort(reasoning_effort);
+            let mut selection = session.model_selection();
+            selection.model = model_id;
+            selection.route_id = route_id;
+            selection.reasoning_effort = reasoning_effort;
+            session.set_model_selection(selection);
+            let selection = session.model_selection();
             // Persist the selection on the task row so a restart restores it
             // instead of dropping back to a blank model.
             state
                 .control
                 .set_session_model(
                     session_id,
-                    &session.active_model,
-                    &session.active_route_id,
-                    session.reasoning_effort(),
+                    &selection.model,
+                    &selection.route_id,
+                    selection.reasoning_effort.as_deref(),
                 )
                 .await?;
             refresh_actor(&state, &task_actor, &session).await?;

@@ -16,6 +16,7 @@ mod opencode_zen;
 mod preferences;
 mod profile;
 mod registry;
+mod route;
 mod selection;
 mod service;
 mod store;
@@ -29,11 +30,9 @@ mod xai;
 pub use anthropic::{anthropic_profile, PROFILE_ID as ANTHROPIC_PROFILE_ID};
 pub use auth::{AuthMode, OauthPending, OauthTokens};
 pub use catalog::{
-    credential_for_catalog, fetch_remote_models, group_routes, models_for_picker,
-    normalize_model_id, refresh_models_dev_registry, refresh_profile_catalog, route_model_id,
-    runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError, CatalogLimits,
-    CatalogSource, ModelCatalogCache, ModelPickerEntry, ModelRoute, DEFAULT_TTL_SECS,
-    MODELS_DEV_TTL_SECS,
+    credential_for_catalog, fetch_remote_models, models_for_picker, refresh_models_dev_registry,
+    refresh_profile_catalog, runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError,
+    CatalogLimits, CatalogSource, ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
 };
 pub use cost::provider_cost_report;
 pub use import::{
@@ -68,6 +67,10 @@ pub use profile::{
     ProviderTransport, SpecOrigin,
 };
 pub use registry::{builtin_registry, loaded_registry, ConnectRegistry};
+pub use route::{
+    group_routes, normalize_model_id, route_id_for_profile, route_model_id, ModelPickerEntry,
+    ModelRoute,
+};
 pub use selection::ModelSelection;
 pub use service::{
     format_connected, handle_connect_action, has_connected_profile, needs_tui_api_key_prompt,

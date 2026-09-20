@@ -1064,76 +1064,11 @@ pub fn models_for_picker(
     }
 
     for p in profiles {
-        let mut entries = Vec::new();
-        let live = matches!(
-            p.catalog_mode,
-            CatalogMode::Live | CatalogMode::LiveRegistry
-        );
-        if live && refresh_stale {
-            if let Ok(m) = refresh_profile_catalog(p, store, cache) {
-                entries.extend(m.into_iter().map(|id| (id, CatalogSource::Live)));
-            }
-        }
-        if live && entries.is_empty() && !(p.catalog_mode == CatalogMode::Live && refresh_stale) {
-            entries.extend(
-                cache
-                    .get_cached(&p.id)
-                    .into_iter()
-                    .map(|id| (id, CatalogSource::Cached)),
-            );
-        }
-        if p.transport == ProviderTransport::Codex {
-            // Keep a previously refreshed Forge cache useful, but supplement it
-            // with the official CLI's current account-scoped cache. This avoids
-            // waiting for the Forge cache TTL after a temporary empty endpoint
-            // response.
-            entries.extend(
-                map_prefix(
-                    &p.model_provider_prefix,
-                    codex_cli_cached_model_ids(),
-                    |id| !id.eq_ignore_ascii_case("codex-auto-review"),
-                )
-                .into_iter()
-                .map(|id| (id, CatalogSource::Cached)),
-            );
-        }
-        let include_registry_rows = match p.catalog_mode {
-            CatalogMode::Registry => true,
-            CatalogMode::LiveRegistry => {
-                !p.models_dev_providers.is_empty() && p.transport != ProviderTransport::Codex
-            }
-            CatalogMode::Live | CatalogMode::Static => false,
-        };
-        if include_registry_rows {
-            entries.extend(
-                cache
-                    .get_registry_cached(&p.id)
-                    .into_iter()
-                    .map(|id| (id, CatalogSource::Registry)),
-            );
-        }
-        if p.catalog_mode == CatalogMode::Static {
-            entries.extend(
-                p.default_models
-                    .iter()
-                    .cloned()
-                    .map(|id| (id, CatalogSource::Configured)),
-            );
-        } else if entries.is_empty() && p.catalog_mode != CatalogMode::Live {
-            entries.extend(
-                p.default_models
-                    .iter()
-                    .cloned()
-                    .map(|id| (id, CatalogSource::Default)),
-            );
-        }
-        // Dedup within this profile's own sourcing tiers (live/cached/registry/
-        // default can overlap on the same id), but never across profiles — two
-        // profiles offering the same model id are distinct, independently
-        // reachable routes, not duplicates. See `group_routes` for the
-        // route-aware view the picker renders.
-        let mut seen = std::collections::BTreeSet::new();
-        for (id, source) in entries {
+        let mut seen = BTreeSet::new();
+        for (id, source) in profile_picker_entries(p, store, cache, refresh_stale) {
+            // Dedup within one profile's sourcing tiers, but never across
+            // profiles: identical IDs on different profiles are distinct
+            // routes. See `group_routes` for the route-aware picker view.
             if seen.insert(id.clone()) {
                 out.push(CatalogEntry {
                     id,
@@ -1145,6 +1080,79 @@ pub fn models_for_picker(
     }
 
     out
+}
+
+fn profile_picker_entries(
+    profile: &ConnectProfile,
+    store: &CredentialStore,
+    cache: &ModelCatalogCache,
+    refresh_stale: bool,
+) -> Vec<(String, CatalogSource)> {
+    let mut entries = Vec::new();
+    let live = matches!(
+        profile.catalog_mode,
+        CatalogMode::Live | CatalogMode::LiveRegistry
+    );
+    if live && refresh_stale {
+        if let Ok(models) = refresh_profile_catalog(profile, store, cache) {
+            entries.extend(models.into_iter().map(|id| (id, CatalogSource::Live)));
+        }
+    }
+    if live && entries.is_empty() && !(profile.catalog_mode == CatalogMode::Live && refresh_stale) {
+        entries.extend(
+            cache
+                .get_cached(&profile.id)
+                .into_iter()
+                .map(|id| (id, CatalogSource::Cached)),
+        );
+    }
+    if profile.transport == ProviderTransport::Codex {
+        // Supplement the Forge cache with the official CLI cache so a
+        // temporary empty endpoint does not hide an account's models.
+        entries.extend(
+            map_prefix(
+                &profile.model_provider_prefix,
+                codex_cli_cached_model_ids(),
+                |id| !id.eq_ignore_ascii_case("codex-auto-review"),
+            )
+            .into_iter()
+            .map(|id| (id, CatalogSource::Cached)),
+        );
+    }
+    let include_registry_rows = match profile.catalog_mode {
+        CatalogMode::Registry => true,
+        CatalogMode::LiveRegistry => {
+            !profile.models_dev_providers.is_empty()
+                && profile.transport != ProviderTransport::Codex
+        }
+        CatalogMode::Live | CatalogMode::Static => false,
+    };
+    if include_registry_rows {
+        entries.extend(
+            cache
+                .get_registry_cached(&profile.id)
+                .into_iter()
+                .map(|id| (id, CatalogSource::Registry)),
+        );
+    }
+    if profile.catalog_mode == CatalogMode::Static {
+        entries.extend(
+            profile
+                .default_models
+                .iter()
+                .cloned()
+                .map(|id| (id, CatalogSource::Configured)),
+        );
+    } else if entries.is_empty() && profile.catalog_mode != CatalogMode::Live {
+        entries.extend(
+            profile
+                .default_models
+                .iter()
+                .cloned()
+                .map(|id| (id, CatalogSource::Default)),
+        );
+    }
+    entries
 }
 
 /// Return only account-backed rows suitable for normal model selection.
@@ -1165,98 +1173,12 @@ pub fn runnable_models_for_picker(
         .collect()
 }
 
-/// One user-facing model, grouped from every [`CatalogEntry`] route that offers it.
-///
-/// `models_for_picker` preserves every profile's route as a separate flat entry;
-/// this groups those routes by their bare model name so the picker can show one
-/// row per model with a route count, instead of one row per route.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelPickerEntry {
-    /// Bare model name shared by every route, e.g. `gpt-5.6` (no provider prefix).
-    pub model_id: String,
-    pub routes: Vec<ModelRoute>,
-}
-
-/// One way to reach a [`ModelPickerEntry`]'s model: a specific connect profile.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelRoute {
-    /// Bare model name (matches the owning `ModelPickerEntry::model_id`).
-    pub model_id: String,
-    pub profile_id: String,
-    /// The `provider/model` string sent downstream to select this route.
-    pub display_id: String,
-    pub source: CatalogSource,
-}
-
-/// The bare model name grouping key: the id's suffix after its last `/`, or the
-/// whole id when it has none.
-pub fn route_model_id(id: &str) -> &str {
-    id.rsplit('/').next().unwrap_or(id)
-}
-
-/// Group flat catalog routes by model, preserving every profile's route.
-///
-/// Grouping (not dropping) is the fix for the bug where two profiles offering
-/// the same model id used to leave only the first profile's route reachable.
-pub fn group_routes(entries: &[CatalogEntry]) -> Vec<ModelPickerEntry> {
-    let mut out: Vec<ModelPickerEntry> = Vec::new();
-    let mut index: BTreeMap<&str, usize> = BTreeMap::new();
-    for entry in entries {
-        let model_id = route_model_id(&entry.id);
-        let route = ModelRoute {
-            model_id: model_id.to_string(),
-            profile_id: entry.profile_id.clone(),
-            display_id: entry.id.clone(),
-            source: entry.source,
-        };
-        match index.get(model_id) {
-            Some(&i) => out[i].routes.push(route),
-            None => {
-                index.insert(model_id, out.len());
-                out.push(ModelPickerEntry {
-                    model_id: model_id.to_string(),
-                    routes: vec![route],
-                });
-            }
-        }
-    }
-    out
-}
-
-/// Normalize a `/model` argument into a provider/model string.
-///
-/// Accepts:
-/// - `openai/gpt-4.1-mini`
-/// - `openai` + `gpt-4.1-mini` → `openai/gpt-4.1-mini`
-/// - bare `gpt-4.1-mini` with optional default prefix
-pub fn normalize_model_id(
-    first: &str,
-    second: Option<&str>,
-    default_prefix: Option<&str>,
-) -> String {
-    let a = first.trim();
-    let b = second.map(str::trim).filter(|s| !s.is_empty());
-    if let Some(b) = b {
-        if a.contains('/') {
-            // `/model openai/gpt-4.1 extra` → keep first token only
-            a.to_string()
-        } else {
-            format!("{a}/{b}")
-        }
-    } else if a.contains('/') {
-        a.to_string()
-    } else if let Some(p) = default_prefix.filter(|s| !s.is_empty()) {
-        format!("{p}/{a}")
-    } else {
-        a.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::OauthTokens;
     use crate::openai::openai_profile;
+    use crate::{group_routes, normalize_model_id};
     use forge_test_support::mock_http;
     use tempfile::tempdir;
 
