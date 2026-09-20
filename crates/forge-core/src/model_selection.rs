@@ -21,3 +21,21 @@ impl Default for ModelExecutionSelection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ModelExecutionSelection;
+
+    #[test]
+    fn default_selection_is_safe_and_unset() {
+        assert_eq!(
+            ModelExecutionSelection::default(),
+            ModelExecutionSelection {
+                model: String::new(),
+                route_id: String::new(),
+                reasoning_effort: None,
+                thinking_enabled: true,
+            }
+        );
+    }
+}

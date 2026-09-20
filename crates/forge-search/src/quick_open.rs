@@ -400,4 +400,21 @@ mod tests {
         assert!(hits[0].path.ends_with("search.rs"));
         assert!(!hits[0].match_ranges.is_empty());
     }
+
+    #[test]
+    fn empty_and_unmatched_queries_return_no_score() {
+        assert!(score_quick_open("src/main.rs", " ").is_none());
+        assert!(score_quick_open("src/main.rs", "src/nope").is_none());
+        assert!(score_quick_open("src/main.rs", "one two").is_none());
+        assert!(rerank_quick_open_hits(Vec::new(), " ").is_empty());
+    }
+
+    #[test]
+    fn boundaries_and_multibyte_ranges_are_scored() {
+        let camel = score_quick_open("src/myFile.rs", "myf").unwrap();
+        assert!(camel.score > 0);
+        let separated = score_quick_open("src/my_file.rs", "file").unwrap();
+        assert!(separated.score > 0);
+        assert_eq!(indices_to_ranges(&[4], "src/ü.rs".as_bytes()), vec![(4, 6)]);
+    }
 }

@@ -350,4 +350,52 @@ mod tests {
         );
         assert_eq!(map_key(KeyCode::Char('y'), KeyModifiers::CONTROL), None);
     }
+
+    #[test]
+    fn setup_maps_navigation_and_rejects_modified_shortcuts() {
+        assert_eq!(map_key(KeyCode::Esc, KeyModifiers::NONE), Some(Key::Esc));
+        assert_eq!(
+            map_key(KeyCode::Enter, KeyModifiers::NONE),
+            Some(Key::Enter)
+        );
+        assert_eq!(map_key(KeyCode::Up, KeyModifiers::NONE), Some(Key::Up));
+        assert_eq!(map_key(KeyCode::Down, KeyModifiers::NONE), Some(Key::Down));
+        assert_eq!(
+            map_key(KeyCode::Char('j'), KeyModifiers::NONE),
+            Some(Key::Down)
+        );
+        assert_eq!(
+            map_key(KeyCode::Char('k'), KeyModifiers::NONE),
+            Some(Key::Up)
+        );
+        assert_eq!(map_key(KeyCode::Char('j'), KeyModifiers::CONTROL), None);
+        assert_eq!(map_key(KeyCode::Char('x'), KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn setup_draws_theme_and_trust_states() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        draw_setup(
+            area,
+            &mut buffer,
+            &Screen::Trust {
+                selected: 1,
+                error: Some("could not save".into()),
+            },
+            "/tmp/project",
+            true,
+        );
+        assert!(buffer.content().iter().any(|cell| cell.symbol() == "T"));
+
+        let overlay = Overlay::theme_open(DEFAULT_THEME_ID);
+        draw_setup(
+            area,
+            &mut buffer,
+            &Screen::Theme(Box::new(overlay)),
+            "/tmp/project",
+            false,
+        );
+        assert!(buffer.content().iter().any(|cell| cell.symbol() == "F"));
+    }
 }
