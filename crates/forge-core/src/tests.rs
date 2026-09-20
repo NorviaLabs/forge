@@ -1354,16 +1354,12 @@ impl forge_tools::Tool for GatedTool {
 #[test]
 fn system_prompt_uses_forge_policy() {
     let prompt = assemble_system_prompt("", &[], std::path::Path::new("/tmp/forge-test-scratch"));
-    assert!(prompt.starts_with("You are a coding agent running in the Forge"));
-    assert!(prompt.contains("Forge is an open source project led by NorviaLabs."));
+    assert!(prompt.starts_with("You are a coding agent running in Forge"));
     assert!(!prompt.contains("# Project Instructions"));
-    // Codex leftover: a leading "always use apply_patch" would override the
-    // File edits section that prefers `edit` for a focused change.
-    assert!(!prompt.contains("Use the `apply_patch` tool to edit files"));
-    assert!(prompt.contains("## File edits"));
-    assert!(prompt.contains("**`edit`**"));
-    assert!(prompt.contains("**`write_file`**"));
-    assert!(prompt.contains("**`apply_patch`** — Multi-hunk or multi-file diffs."));
+    assert!(prompt.contains("Treat available tool descriptors and schemas as authoritative"));
+    assert!(prompt.contains("Use `edit` for a focused replacement"));
+    assert!(prompt.contains("Never claim a command ran, a test passed, or a file changed"));
+    assert!(!prompt.contains("Forge is an open source project led by NorviaLabs."));
 }
 
 #[test]
@@ -1453,7 +1449,7 @@ fn system_prompt_appends_project_instructions() {
         &[],
         std::path::Path::new("/tmp/forge-test-scratch"),
     );
-    assert!(prompt.starts_with("You are a coding agent running in the Forge"));
+    assert!(prompt.starts_with("You are a coding agent running in Forge"));
     assert!(prompt.ends_with("AGENTS.md:\nRun cargo test"));
 }
 
@@ -1671,6 +1667,30 @@ async fn build_model_request_carries_reasoning_effort_when_set() {
     let request = s.build_model_request();
     assert_eq!(request.reasoning_effort, Some("high".to_string()));
     assert_eq!(request.session_id, Some(s.session_id.to_string()));
+}
+
+#[tokio::test]
+async fn model_selection_updates_request_fields_as_one_value() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+
+    session.set_model_selection(ModelExecutionSelection {
+        model: "provider/model-x".into(),
+        route_id: "route-x".into(),
+        reasoning_effort: Some("high".into()),
+        thinking_enabled: false,
+    });
+
+    assert_eq!(session.model_selection().model, "provider/model-x");
+    assert_eq!(session.model_selection().route_id, "route-x");
+    let request = session.build_model_request();
+    assert_eq!(request.model, "provider/model-x");
+    assert_eq!(request.route_id.as_deref(), Some("route-x"));
+    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert!(!request.thinking_enabled);
 }
 
 #[tokio::test]

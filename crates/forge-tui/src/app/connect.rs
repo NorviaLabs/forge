@@ -394,7 +394,7 @@ impl TuiApp {
             // wrong wire, and every call fails until the user re-picks the model
             // — which is the only other path that sets it. The route follows the
             // profile, not the model, so it is restored either way below.
-            let restored_route = route_id_for_profile(&profile.id);
+            let restored_route = forge_connect::route_id_for_profile(&profile.id);
             match self.selected_runtime() {
                 SelectedRuntime::Direct => {
                     if let Some(session) = self.session_runtime.as_mut() {
@@ -435,7 +435,7 @@ impl TuiApp {
                             .connect
                             .profile
                             .as_deref()
-                            .map(route_id_for_profile)
+                            .map(forge_connect::route_id_for_profile)
                             .unwrap_or_default(),
                         provider: "native".into(),
                         model: model.to_string(),
@@ -466,7 +466,7 @@ impl TuiApp {
                         self.connect.profile = Some(profile.id.clone());
                     } else {
                         self.apply_selection(&ModelSelection {
-                            route_id: route_id_for_profile(&profile.id),
+                            route_id: forge_connect::route_id_for_profile(&profile.id),
                             provider: "native".into(),
                             model,
                             profile_id: Some(profile.id.clone()),
@@ -675,7 +675,7 @@ impl TuiApp {
             Ok(Some((profile_id, model, effort))) => {
                 self.connect.auth_suspended = false;
                 self.apply_selection(&ModelSelection {
-                    route_id: route_id_for_profile(&profile_id),
+                    route_id: forge_connect::route_id_for_profile(&profile_id),
                     provider: "native".into(),
                     model: model.clone(),
                     profile_id: Some(profile_id.clone()),
@@ -864,7 +864,7 @@ impl TuiApp {
         };
         let effort = ReasoningEffort::default_for_model(&model);
         self.apply_selection(&ModelSelection {
-            route_id: route_id_for_profile(profile_id),
+            route_id: forge_connect::route_id_for_profile(profile_id),
             provider: "native".into(),
             model: model.clone(),
             profile_id: Some(profile_id.to_string()),
@@ -1300,7 +1300,7 @@ impl TuiApp {
         self.apply_selection(&ModelSelection {
             route_id: resolved_profile_id
                 .as_deref()
-                .map(route_id_for_profile)
+                .map(forge_connect::route_id_for_profile)
                 .unwrap_or_default(),
             provider: provider.to_string(),
             model: model.to_string(),
@@ -1520,13 +1520,6 @@ impl ConnectionModel {
         });
         cost
     }
-}
-
-pub(super) fn route_id_for_profile(profile_id: &str) -> String {
-    forge_connect::loaded_registry()
-        .get(profile_id)
-        .map(|spec| spec.route_id.clone())
-        .unwrap_or_else(|| profile_id.to_string())
 }
 
 impl TuiApp {

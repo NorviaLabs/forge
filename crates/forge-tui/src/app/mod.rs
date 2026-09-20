@@ -102,7 +102,11 @@ mod quit;
 mod render;
 mod selection;
 pub(crate) use selection::SelectedRuntime;
+mod session_state;
 mod shell;
+pub(crate) use session_state::{
+    session_needs_attention, session_notice_severity, SessionChromeItem,
+};
 mod turn;
 mod types;
 pub(crate) use types::*;

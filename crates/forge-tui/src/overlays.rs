@@ -1,6 +1,14 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
+pub use crate::command_palette::{default_palette_items, filter_palette, PaletteItem};
 use crate::design::MODAL_PAD_X;
+use crate::model_picker::{group_matches_input, group_model_items, promote_active_route};
+pub use crate::model_picker::{ModelGroup, ModelItem};
+pub(crate) use crate::overlay_layout::centered_capped_rect;
+pub(crate) use crate::overlay_layout::theme_dock_rect;
+pub use crate::overlay_layout::{
+    centered_content_rect, centered_rect, theme_preview_card, theme_preview_rect,
+};
 use crate::{effort::ReasoningEffort, theme, theme_registry};
 use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
@@ -13,125 +21,9 @@ use ratatui::widgets::{
 };
 use std::path::{Path, PathBuf};
 
-/// One row of the `/status` report.
-///
-/// `/status` used to be a flat list of `key=value` strings in snake_case with
-/// no grouping, alignment or units — a debug dump, on the screen people open
-/// when something feels wrong. Structuring the rows lets the renderer align a
-/// label column and give a value, a hint and a heading distinct styling.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StatusRow {
-    /// Heading that opens a group of fields.
-    Heading(String),
-    /// A labelled value, with an optional trailing hint — usually the command
-    /// that changes it.
-    Field {
-        label: String,
-        value: String,
-        note: Option<String>,
-    },
-    /// A long comma-separated list, wrapped under its own label.
-    Section { label: String, items: Vec<String> },
-    /// Vertical space between groups.
-    Gap,
-}
-
-impl StatusRow {
-    pub fn field(label: &str, value: impl Into<String>) -> Self {
-        Self::Field {
-            label: label.into(),
-            value: value.into(),
-            note: None,
-        }
-    }
-
-    pub fn field_with_note(label: &str, value: impl Into<String>, note: impl Into<String>) -> Self {
-        Self::Field {
-            label: label.into(),
-            value: value.into(),
-            note: Some(note.into()),
-        }
-    }
-}
-
-/// Width of the label column in the `/status` report. Values line up against
-/// it so the report scans as two columns rather than as a wall of text.
-const STATUS_LABEL_WIDTH: usize = 16;
-
-/// Lay the rows out with an aligned label column.
-pub fn status_report_lines(rows: &[StatusRow], width: usize) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for row in rows {
-        match row {
-            StatusRow::Gap => out.push(Line::from("")),
-            StatusRow::Heading(text) => out.push(Line::from(Span::styled(
-                text.to_uppercase(),
-                theme::metadata_style().add_modifier(Modifier::BOLD),
-            ))),
-            StatusRow::Field { label, value, note } => {
-                let pad = STATUS_LABEL_WIDTH
-                    .saturating_sub(label.chars().count())
-                    .max(1);
-                let mut spans = vec![
-                    Span::styled(label.clone(), theme::muted()),
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled(value.clone(), theme::text()),
-                ];
-                if let Some(note) = note {
-                    spans.push(Span::raw("   "));
-                    spans.push(Span::styled(note.clone(), theme::metadata_style()));
-                }
-                out.push(Line::from(spans));
-            }
-            StatusRow::Section { label, items } => {
-                out.push(Line::from(Span::styled(
-                    label.to_uppercase(),
-                    theme::metadata_style().add_modifier(Modifier::BOLD),
-                )));
-                // Wrap the list under a small indent rather than letting it run
-                // the full width — a comma list at full bleed reads as prose.
-                let indent = "  ";
-                let budget = width.saturating_sub(indent.len()).max(8);
-                let mut line = String::new();
-                for (i, item) in items.iter().enumerate() {
-                    let piece = if i + 1 == items.len() {
-                        item.clone()
-                    } else {
-                        format!("{item} · ")
-                    };
-                    if line.chars().count() + piece.chars().count() > budget && !line.is_empty() {
-                        out.push(Line::from(Span::styled(
-                            format!("{indent}{line}"),
-                            theme::text_secondary(),
-                        )));
-                        line = String::new();
-                    }
-                    line.push_str(&piece);
-                }
-                if !line.is_empty() {
-                    out.push(Line::from(Span::styled(
-                        format!("{indent}{line}"),
-                        theme::text_secondary(),
-                    )));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Group a count with thousands separators: `500000` reads as `500,000`.
-pub fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
+use crate::status_report::status_report_lines;
+pub use crate::status_report::thousands;
+pub use crate::status_report::StatusRow;
 
 #[derive(Debug, Clone)]
 pub enum Overlay {
@@ -573,98 +465,6 @@ pub struct ResumeSessionItem {
     pub title: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PaletteItem {
-    pub cmd: String,
-    pub desc: String,
-    pub is_skill: bool,
-}
-
-impl PaletteItem {
-    pub fn display_cmd(&self) -> String {
-        if self.is_skill {
-            format!("/skill:{}", self.cmd.trim_start_matches('/'))
-        } else {
-            self.cmd.clone()
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelItem {
-    pub provider: String,
-    pub model: String,
-    /// Optional connect profile that sourced this row (catalog).
-    pub profile_id: Option<String>,
-    /// Whether this is account-verified or public registry metadata.
-    pub source: forge_connect::CatalogSource,
-    /// Pre-resolved "Vendor" or "Vendor · Route" display string for
-    /// `profile_id`, e.g. "OpenAI" or "OpenAI · ChatGPT sign-in". Empty when
-    /// unresolvable. Computed once when items are built (see
-    /// `TuiApp::model_picker_items`, which has registry access) rather than
-    /// per keystroke, and matched against by the model search alongside the
-    /// bare model id.
-    pub route_label: String,
-}
-
-/// One user-facing model in the picker, grouped from every [`ModelItem`] route
-/// that offers it (by bare model name) so a model with several provider routes
-/// renders as a single row instead of one row per route.
-#[derive(Debug, Clone)]
-pub struct ModelGroup {
-    /// Bare model name shared by every route, e.g. `gpt-5.6` (no provider prefix).
-    pub model_id: String,
-    pub routes: Vec<ModelItem>,
-}
-
-/// Group picker rows by their bare model name, preserving every route.
-fn group_model_items(items: Vec<ModelItem>) -> Vec<ModelGroup> {
-    let mut out: Vec<ModelGroup> = Vec::new();
-    let mut index: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for item in items {
-        let model_id = forge_connect::route_model_id(&item.model).to_string();
-        match index.get(&model_id) {
-            Some(&i) => out[i].routes.push(item),
-            None => {
-                index.insert(model_id.clone(), out.len());
-                out.push(ModelGroup {
-                    model_id,
-                    routes: vec![item],
-                });
-            }
-        }
-    }
-    out
-}
-
-/// Within each group, move the route belonging to the active profile to the
-/// front.
-///
-/// The picker resets the selection to row 0 on every keystroke, so typing a
-/// model name that several providers offer selects whichever route happened to
-/// sort first — pressing Enter then silently moves the session to a different
-/// provider and account than the one it was already on. Ordering the active
-/// route first makes row 0 the "stay where I am" choice, so the highlight and
-/// the Enter action agree and the fast path is no longer a trap. Every route
-/// stays present and individually selectable.
-fn promote_active_route(groups: &mut [ModelGroup], active_profile_id: Option<&str>) {
-    let Some(active) = active_profile_id else {
-        return;
-    };
-    for group in groups {
-        if group.routes.len() < 2 {
-            continue;
-        }
-        if let Some(pos) = group
-            .routes
-            .iter()
-            .position(|route| route.profile_id.as_deref() == Some(active))
-        {
-            group.routes[..=pos].rotate_right(1);
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalExecutionMode {
     Direct,
@@ -768,122 +568,6 @@ impl ApprovalOverlayState {
             pattern_allow_eligible,
         }
     }
-}
-
-pub fn default_palette_items() -> Vec<PaletteItem> {
-    // Keep in sync with `commands::parse_slash`.
-    vec![
-        PaletteItem {
-            cmd: "/help".into(),
-            desc: "Show help and keyboard shortcuts".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/connect".into(),
-            desc: "Connect provider (xAI, OpenCode Go/Zen, OpenAI, Anthropic, Ollama)".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/model".into(),
-            desc: "Switch model for future turns".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/theme".into(),
-            desc: "Switch presentation theme".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/status".into(),
-            desc: "Show session status and diagnostics".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/context".into(),
-            desc: "Show the token budget broken down by category".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/plan".into(),
-            desc: "Inspect the latest execution plan".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/effort".into(),
-            desc: "Set model effort".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/thinking".into(),
-            desc: "Toggle model thinking".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/approve-all".into(),
-            desc: "Toggle approve-all for this session (disables sandbox; asks first)".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/compact".into(),
-            desc: "Continue in a fresh context".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/resume".into(),
-            desc: "Restore a previous session".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/continue".into(),
-            desc: "Resume the most recent previous session".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/new".into(),
-            desc: "Start a new session".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/fork".into(),
-            desc: "Start a new session from this conversation".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/sessions".into(),
-            desc: "Switch, create, attach, and manage repository sessions".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/terminal".into(),
-            desc: "Open the terminal panel (Ctrl+`)".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/clear".into(),
-            desc: "Clear the TUI screen".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/edit".into(),
-            desc: "Open a workspace file in the embedded editor".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/context-file".into(),
-            desc: "Attach the active file to the next message".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/disconnect".into(),
-            desc: "Log out and clear credentials".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/quit".into(),
-            desc: "Close the current session; on the primary session, quit Forge".into(),
-            is_skill: false,
-        },
-    ]
 }
 
 /// Build picker rows from live or cached catalog entries.
@@ -1451,47 +1135,6 @@ impl Overlay {
             _ => {}
         }
     }
-}
-
-fn model_matches_input(model_input: &str, item: &ModelItem) -> bool {
-    let needle = model_input.trim().to_ascii_lowercase();
-    needle.is_empty()
-        || item.model.to_ascii_lowercase().contains(&needle)
-        || item.route_label.to_ascii_lowercase().contains(&needle)
-}
-
-fn group_matches_input(model_input: &str, group: &ModelGroup) -> bool {
-    let needle = model_input.trim().to_ascii_lowercase();
-    needle.is_empty()
-        || group.model_id.to_ascii_lowercase().contains(&needle)
-        || group
-            .routes
-            .iter()
-            .any(|m| model_matches_input(model_input, m))
-}
-
-pub fn filter_palette(filter: &str) -> Vec<PaletteItem> {
-    let f = filter.trim().trim_start_matches('/').to_ascii_lowercase();
-    let mut items = default_palette_items()
-        .into_iter()
-        .filter(|i| {
-            if f.is_empty() {
-                return true;
-            }
-            i.cmd.to_ascii_lowercase().contains(&f) || i.desc.to_ascii_lowercase().contains(&f)
-        })
-        .collect::<Vec<_>>();
-    items.sort_by_key(|item| {
-        let command = item.cmd.trim_start_matches('/').to_ascii_lowercase();
-        if command.starts_with(&f) {
-            0
-        } else if command.contains(&f) {
-            1
-        } else {
-            2
-        }
-    });
-    items
 }
 
 /// Result of handling a key inside an overlay.
@@ -2403,48 +2046,6 @@ pub enum Key {
     Other,
 }
 
-pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup[1])[1]
-}
-
-/// Centred panel that remains usable on small terminals without becoming a
-/// nearly full-width dashboard on large ones.
-/// Centre a modal sized to what it actually holds.
-///
-/// `centered_capped_rect` always takes `max_height`, so a picker offering six
-/// models drew a twenty-eight-row box with fifteen blank rows in it. `content`
-/// is the height the body wants; the result is that, clamped to `max_height`
-/// and to the space available.
-pub fn centered_content_rect(area: Rect, max_width: u16, content: u16, max_height: u16) -> Rect {
-    centered_capped_rect(area, max_width, content.min(max_height).max(3))
-}
-
-fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
-    let width = area.width.saturating_sub(4).min(max_width).max(1);
-    let height = area.height.saturating_sub(4).min(max_height).max(1);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    )
-}
-
 /// Blank a modal rect before painting block content.
 ///
 /// `Clear` resets prior glyphs so table/list widgets that skip cells cannot
@@ -2515,77 +2116,6 @@ fn picker_scrollbar(
         &mut state,
     );
     content
-}
-
-/// Bottom band used when `OverlayWidget` paints the theme picker into a full
-/// frame (tests / fallback). Prefer the layout `input` region from `draw`.
-/// Card in the lower-right of `area`. Use this when the host is already the
-/// pane above the theme list (the conversation column), not the full frame.
-pub fn theme_preview_card(area: Rect) -> Rect {
-    if area.width < 24 || area.height < 8 {
-        return Rect::new(area.x, area.y, 0, 0);
-    }
-    // Keep a left gutter so a conversation line is still readable.
-    let reserved = 28.min(area.width.saturating_sub(24));
-    let width = area
-        .width
-        .saturating_sub(reserved)
-        .clamp(24, 58)
-        .min(area.width);
-    // One row and one column of clearance. Flush against the pane's corner the
-    // card's border landed on the pane's own border row, printing two corners
-    // side by side (`┘└`) — it read as a redraw artifact rather than a card.
-    let gap = 1;
-    let height = area.height.saturating_sub(gap).min(16);
-    Rect {
-        x: area
-            .x
-            .saturating_add(area.width.saturating_sub(width + gap)),
-        y: area
-            .y
-            .saturating_add(area.height.saturating_sub(height + gap)),
-        width,
-        height,
-    }
-}
-
-/// Snippet card above the theme dock, right-aligned so the list stays readable.
-pub fn theme_preview_rect(area: Rect) -> Rect {
-    if area.width < 24 || area.height < 8 {
-        return Rect::new(area.x, area.y, 0, 0);
-    }
-    let dock = theme_dock_rect(area);
-    let gap = 1;
-    let available = dock.y.saturating_sub(area.y).saturating_sub(gap);
-    let height = available.clamp(8, 16);
-    let max_w = area.width.saturating_sub(2);
-    let width = (area.width.saturating_mul(58) / 100).max(24).min(max_w);
-    let x = area
-        .x
-        .saturating_add(area.width.saturating_sub(width).saturating_sub(1));
-    let y = dock
-        .y
-        .saturating_sub(height)
-        .saturating_sub(gap)
-        .max(area.y);
-    Rect {
-        x,
-        y,
-        width,
-        height: height.min(dock.y.saturating_sub(y)).min(area.height),
-    }
-}
-
-fn theme_dock_rect(area: Rect) -> Rect {
-    let height = crate::layout::THEME_DOCK_H
-        .min(area.height.saturating_sub(1))
-        .max(3);
-    Rect::new(
-        area.x,
-        area.y + area.height.saturating_sub(height),
-        area.width,
-        height,
-    )
 }
 
 /// Render the live-preview theme dock into `area` (composer slot or bottom band).

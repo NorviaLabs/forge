@@ -4,6 +4,7 @@ mod agent_coordinator;
 mod background;
 mod completion;
 mod lifecycle;
+mod model_selection;
 mod permission;
 mod persistence;
 mod queue;
@@ -40,6 +41,7 @@ pub use forge_context::compaction::{
     CompactionTrigger, ProtectedFact, ProtectedFactKind, SessionContextState,
 };
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
+pub use model_selection::ModelExecutionSelection;
 pub use permission::{egress_policy_for_workspace, EgressRuntime};
 pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::{
