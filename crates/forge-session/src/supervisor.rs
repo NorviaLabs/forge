@@ -1169,6 +1169,35 @@ fn try_session(
         .map_err(|_| RepositorySupervisorError::Contention)
 }
 
+fn finish_actor_retirement(task_actor: Option<&Arc<SessionActor>>) {
+    if let Some(task_actor) = task_actor {
+        task_actor.finish_retirement();
+    }
+}
+
+async fn publish_removed_session(
+    state: &SupervisorState,
+    session_id: SessionId,
+    selection_error: &str,
+) {
+    state.actors.write().await.remove(&session_id);
+    let _ = state
+        .events
+        .send(SupervisorEvent::Roster(snapshots(state).await));
+    if state.control.selected().await.ok() != Some(Some(session_id)) {
+        return;
+    }
+    let fallback = state.actors.read().await.keys().next().copied();
+    if let Err(error) = state.control.set_selected(fallback).await {
+        let _ = state.events.send(SupervisorEvent::Error {
+            session_id: Some(session_id),
+            message: format!("{selection_error}: {error}"),
+        });
+    } else {
+        let _ = state.events.send(SupervisorEvent::Selected(fallback));
+    }
+}
+
 async fn execute_command(
     state: Arc<SupervisorState>,
     command: SupervisorCommand,
@@ -1475,22 +1504,13 @@ async fn execute_command(
                 // actor still needs the normal resource drain before it is
                 // discarded.
                 let task_actor = wait_for_actor_retirement(&state, session_id, true).await?;
-                state.actors.write().await.remove(&session_id);
                 drop(task_actor);
-                let _ = state
-                    .events
-                    .send(SupervisorEvent::Roster(snapshots(&state).await));
-                if state.control.selected().await.ok() == Some(Some(session_id)) {
-                    let fallback = state.actors.read().await.keys().next().copied();
-                    if let Err(error) = state.control.set_selected(fallback).await {
-                        let _ = state.events.send(SupervisorEvent::Error {
-                            session_id: Some(session_id),
-                            message: format!("removed Session could not update selection: {error}"),
-                        });
-                    } else {
-                        let _ = state.events.send(SupervisorEvent::Selected(fallback));
-                    }
-                }
+                publish_removed_session(
+                    &state,
+                    session_id,
+                    "removed Session could not update selection",
+                )
+                .await;
                 return Ok(());
             }
             if task.ownership != WorktreeOwnership::Managed {
@@ -1529,9 +1549,7 @@ async fn execute_command(
             let storage = match RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace) {
                 Ok(storage) => storage,
                 Err(error) => {
-                    if let Some(task_actor) = &task_actor {
-                        task_actor.finish_retirement();
-                    }
+                    finish_actor_retirement(task_actor.as_ref());
                     return Err(error.into());
                 }
             };
@@ -1541,9 +1559,7 @@ async fn execute_command(
                 {
                     Ok(worktrees) => worktrees,
                     Err(error) => {
-                        if let Some(task_actor) = &task_actor {
-                            task_actor.finish_retirement();
-                        }
+                        finish_actor_retirement(task_actor.as_ref());
                         return Err(error.into());
                     }
                 };
@@ -1565,9 +1581,7 @@ async fn execute_command(
                         Ok(true) => blocked_paths.push(task.workspace.clone()),
                         Ok(false) => {}
                         Err(error) => {
-                            if let Some(task_actor) = &task_actor {
-                                task_actor.finish_retirement();
-                            }
+                            finish_actor_retirement(task_actor.as_ref());
                             return Err(error.into());
                         }
                     }
@@ -1587,9 +1601,7 @@ async fn execute_command(
                         Ok(true) => blocked_paths.push(child.path.clone()),
                         Ok(false) => {}
                         Err(error) => {
-                            if let Some(task_actor) = &task_actor {
-                                task_actor.finish_retirement();
-                            }
+                            finish_actor_retirement(task_actor.as_ref());
                             return Err(error.into());
                         }
                     }
@@ -1665,9 +1677,7 @@ async fn execute_command(
                 // removal can be retried.
                 if let forge_storage::WorktreeError::Dirty(_) = &error {
                     if let Err(error) = state.control.mark_retained(session_id).await {
-                        if let Some(task_actor) = &task_actor {
-                            task_actor.finish_retirement();
-                        }
+                        finish_actor_retirement(task_actor.as_ref());
                         return Err(error.into());
                     }
                     publish_actor(&state, session_id).await?;
@@ -1678,41 +1688,24 @@ async fn execute_command(
                     // uncommitted work and retry, so the actor has to come out
                     // of retirement: a retiring actor refuses every later
                     // command, including that retry.
-                    if let Some(task_actor) = &task_actor {
-                        task_actor.finish_retirement();
-                    }
+                    finish_actor_retirement(task_actor.as_ref());
                     drop(task_actor);
                     return Ok(());
                 }
-                if let Some(task_actor) = &task_actor {
-                    task_actor.finish_retirement();
-                }
+                finish_actor_retirement(task_actor.as_ref());
                 return Err(error.into());
             }
             if let Err(error) = state.control.mark_worktree_removed(session_id).await {
-                if let Some(task_actor) = &task_actor {
-                    task_actor.finish_retirement();
-                }
+                finish_actor_retirement(task_actor.as_ref());
                 return Err(error.into());
             }
-            state.actors.write().await.remove(&session_id);
             drop(task_actor);
-            let _ = state
-                .events
-                .send(SupervisorEvent::Roster(snapshots(&state).await));
-            if state.control.selected().await.ok() == Some(Some(session_id)) {
-                let fallback = state.actors.read().await.keys().next().copied();
-                if let Err(error) = state.control.set_selected(fallback).await {
-                    let _ = state.events.send(SupervisorEvent::Error {
-                        session_id: Some(session_id),
-                        message: format!(
-                            "worktree removed but selection could not be updated: {error}"
-                        ),
-                    });
-                } else {
-                    let _ = state.events.send(SupervisorEvent::Selected(fallback));
-                }
-            }
+            publish_removed_session(
+                &state,
+                session_id,
+                "worktree removed but selection could not be updated",
+            )
+            .await;
         }
         SupervisorCommand::FinalizeCreation { operation_id } => {
             let completed = state.control.complete_creation(operation_id).await?;
