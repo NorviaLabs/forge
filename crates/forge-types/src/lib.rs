@@ -97,6 +97,12 @@ pub fn title_from_prompt(prompt: &str) -> String {
     title
 }
 
+/// Derive the session label from the first prompt using natural spacing.
+/// The branch label remains the kebab-case [`title_from_prompt`] result.
+pub fn session_name_from_prompt(prompt: &str) -> String {
+    title_from_prompt(prompt).replace('-', " ")
+}
+
 /// Byte index of the first sentence terminator followed by whitespace or the
 /// end of the input. A `.` inside `main.rs` or `v1.2.3` is not a boundary.
 fn sentence_end(text: &str) -> Option<usize> {
@@ -1169,6 +1175,14 @@ mod tests {
         assert!(!title.ends_with('-'), "{title:?}");
         assert!(!title.contains("--"), "{title:?}");
         assert!(title.chars().count() <= 40, "{title:?}");
+    }
+
+    #[test]
+    fn session_name_from_prompt_uses_natural_spacing() {
+        assert_eq!(
+            session_name_from_prompt("Fix the login bug. Then run tests"),
+            "fix login bug"
+        );
     }
 
     #[test]
