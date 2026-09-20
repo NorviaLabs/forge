@@ -1237,10 +1237,6 @@ impl TuiApp {
                 Ok(SlashCommand::Connect) => {
                     self.handle_connect(ConnectAction::Open);
                 }
-                Ok(SlashCommand::Refresh) => {
-                    self.note_workspace_changed();
-                    self.status_state.message = "Refreshing git status...".into();
-                }
                 Ok(SlashCommand::Edit { path }) => match path {
                     Some(path) => match self.resolve_workspace_path(path.trim()) {
                         Ok(resolved) if resolved.is_file() => {
@@ -1302,9 +1298,6 @@ impl TuiApp {
                     // opposite of the request. `open_bottom_panel` also focuses
                     // it, which is the point of asking for it.
                     self.open_bottom_panel();
-                }
-                Ok(SlashCommand::Diff { source }) => {
-                    self.open_diff_view(source);
                 }
                 Err(e) => {
                     let msg = e.to_string();
@@ -2004,42 +1997,6 @@ mod tests {
             !app.exit.is_requested(),
             "Esc must never quit the app, unlike a second Ctrl+C"
         );
-    }
-
-    #[tokio::test]
-    async fn typed_exact_command_beats_selected_suggestion() {
-        use crate::diff_view::DiffSource;
-        let (_d, mut app) = app().await;
-        app.input.set_text("/diff");
-        let count = app.slash_suggestions().len();
-        assert!(count > 1, "/diff should match /diff and /diff turn");
-        // Highlight the *other* entry: the typed exact command must win over
-        // a fuzzy description match (e.g. a skill whose blurb contains the
-        // typed word). Regression: `/refresh` once fired `skill:market-scan`.
-        app.slash_suggestions.selected = count - 1;
-        assert_ne!(app.slash_suggestions()[count - 1].cmd, "/diff");
-        app.submit_composer_message().await.unwrap();
-        assert_eq!(app.diff_view.source, DiffSource::WorkingTree);
-    }
-
-    #[tokio::test]
-    async fn unknown_prefix_still_completes_to_suggestion() {
-        let (_d, mut app) = app().await;
-        app.input.set_text("/dif");
-        assert!(!app.slash_suggestions().is_empty());
-        app.submit_composer_message().await.unwrap();
-        assert!(
-            app.diff_view_is_open(),
-            "unknown /dif should complete to the /diff suggestion"
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_command_refreshes_git_status() {
-        let (_d, mut app) = app().await;
-        app.input.set_text("/refresh");
-        app.submit_composer_message().await.unwrap();
-        assert_eq!(app.status_state.message, "Refreshing git status...");
     }
 
     #[tokio::test]

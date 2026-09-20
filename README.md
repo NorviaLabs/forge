@@ -191,7 +191,6 @@ Useful in-app commands:
 /clear         Clear the visible transcript
 /compact       Compact the active context
 /disconnect    Remove a saved provider connection
-/refresh       Refresh the file explorer's Git state
 /edit          Open the active file in your editor
 /context-file  Attach the active file to the next message
 /terminal      Open the terminal panel

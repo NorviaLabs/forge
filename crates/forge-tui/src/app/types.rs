@@ -249,6 +249,8 @@ pub(crate) enum WorkspaceView {
     File(PathBuf),
     /// `/diff` — change review. Holds no state itself; the pane reads
     /// `TuiApp::diff_view` so a status refresh can update it in place.
+    // Retained as the workspace diff seam for the Git workflow redesign.
+    #[allow(dead_code)]
     Diff,
 }
 

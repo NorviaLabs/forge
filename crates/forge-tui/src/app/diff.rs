@@ -15,6 +15,8 @@ use crate::overlays::StatusRow;
 impl TuiApp {
     /// Enter `/diff`. Focuses the workspace pane and filters the explorer to
     /// the changed files, remembering nothing else so `Esc` can put both back.
+    // Retained as the seam for the Git workflow redesign.
+    #[allow(dead_code)]
     pub(super) fn open_diff_view(&mut self, source: DiffSource) {
         self.diff_view = crate::diff_view::DiffView::new(source);
         if !self.workspace_is_git_repository() {
@@ -56,6 +58,8 @@ impl TuiApp {
         )
     }
 
+    // Retained with the diff-view seam for the Git workflow redesign.
+    #[allow(dead_code)]
     fn workspace_is_git_repository(&self) -> bool {
         self.session_view.workspace_root().join(".git").exists()
     }
