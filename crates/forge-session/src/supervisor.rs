@@ -302,6 +302,7 @@ impl SupervisorHandle {
 }
 
 struct SessionActor {
+    session_id: SessionId,
     session: Mutex<AgentSession>,
     snapshot: RwLock<SessionRuntimeSnapshot>,
     driving: AtomicBool,
@@ -318,6 +319,7 @@ struct SessionActor {
     /// background work, reachable without the session lock so a running
     /// foreground turn cannot make them wait.
     background_control: Arc<forge_core::BackgroundControl>,
+    tools: Arc<forge_tools::ToolRegistry>,
 }
 
 /// Whether `workspace` is trusted, using the injected store when present and
@@ -343,8 +345,10 @@ impl SessionActor {
     ) -> Self {
         // The trust gate is enforced in the core session, not only the TUI.
         session.set_workspace_trusted(workspace_trusted);
+        let session_id = session.session_id;
         let model = session.model_client();
         let background_control = session.background_control();
+        let tools = session.tool_registry();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
@@ -354,6 +358,7 @@ impl SessionActor {
             interrupted_prompts,
         };
         Self {
+            session_id,
             session: Mutex::new(session),
             snapshot: RwLock::new(snapshot),
             driving: AtomicBool::new(false),
@@ -362,20 +367,27 @@ impl SessionActor {
             running_cancel: StdMutex::new(None),
             model,
             background_control,
+            tools,
         }
     }
 
-    fn request_cancel(&self) -> bool {
-        let guard = self
-            .running_cancel
-            .lock()
-            .expect("turn cancel lock poisoned");
-        if let Some(token) = guard.as_ref() {
-            token.cancel();
-            true
-        } else {
-            false
+    async fn request_cancel(&self) -> bool {
+        let cancelled = {
+            let guard = self
+                .running_cancel
+                .lock()
+                .expect("turn cancel lock poisoned");
+            if let Some(token) = guard.as_ref() {
+                token.cancel();
+                true
+            } else {
+                false
+            }
+        };
+        if cancelled {
+            self.tools.cancel_session(self.session_id).await;
         }
+        cancelled
     }
 
     fn begin_retirement(&self) -> bool {
@@ -1021,8 +1033,10 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                 next = receiver.recv(), if !stops_everything => {
                     if let Some(next) = next {
                         if let SupervisorCommand::StopTurn { session_id } = next.command {
-                            let cancelled = actor(&state, session_id).await
-                                .is_ok_and(|actor| actor.request_cancel());
+                            let cancelled = match actor(&state, session_id).await {
+                                Ok(actor) => actor.request_cancel().await,
+                                Err(_) => false,
+                            };
                             if cancelled {
                                 let _ = next.reply.send(Ok(()));
                             } else {
@@ -1031,7 +1045,7 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                         } else {
                             if stops_every_session(&next.command) {
                                 for actor in state.actors.read().await.values() {
-                                    actor.request_cancel();
+                                    actor.request_cancel().await;
                                 }
                             }
                             deferred.push_back(next);
@@ -1052,7 +1066,7 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                         Some(next) => {
                             if stops_every_session(&next.command) {
                                 for actor in state.actors.read().await.values() {
-                                    actor.request_cancel();
+                                    actor.request_cancel().await;
                                 }
                                 deferred.push_front(next);
                             } else {
@@ -1807,7 +1821,7 @@ async fn execute_command(
         }
         SupervisorCommand::StopTurn { session_id } => {
             let actor = actor(&state, session_id).await?;
-            if !actor.request_cancel() {
+            if !actor.request_cancel().await {
                 let mut session = try_session(&actor)?;
                 session.mark_cancelled().await?;
                 state
@@ -2695,12 +2709,12 @@ async fn retire_actor_resources(
     if !task_actor.begin_retirement() {
         return Err(RepositorySupervisorError::Retiring(session_id));
     }
-    task_actor.request_cancel();
+    task_actor.request_cancel().await;
 
     let retirement = async {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while task_actor.driving.load(Ordering::Acquire) {
-                task_actor.request_cancel();
+                task_actor.request_cancel().await;
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })

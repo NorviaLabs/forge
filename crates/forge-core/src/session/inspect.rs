@@ -211,6 +211,10 @@ impl AgentSession {
         self.model.clone()
     }
 
+    pub fn tool_registry(&self) -> Arc<ToolRegistry> {
+        self.tools.clone()
+    }
+
     /// Shared control handles for this session's background work. The owner
     /// (the repository supervisor) keeps a clone so cancellation and subagent
     /// approvals stay reachable while a running turn holds the session lock.
