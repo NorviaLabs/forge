@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::builtins::{schema_for, set_process_group, ProcessGroupGuard};
 use crate::registry::ToolContext;
@@ -75,6 +76,7 @@ fn default_stdin_yield() -> u64 {
 
 struct Session {
     owner: Option<forge_types::SessionId>,
+    cancellation: CancellationToken,
     command: String,
     shell: String,
     confined: bool,
@@ -169,6 +171,7 @@ fn session_finished(result: &Result<ToolOutput, ToolError>) -> bool {
 struct ExecSessionStore {
     next_id: AtomicU64,
     sessions: Mutex<HashMap<u64, Arc<Mutex<Session>>>>,
+    cancellations: Mutex<HashMap<u64, (Option<forge_types::SessionId>, CancellationToken)>>,
 }
 
 impl ExecSessionStore {
@@ -177,6 +180,16 @@ impl ExecSessionStore {
     }
 
     async fn shutdown(&self) {
+        let cancellations: Vec<_> = self
+            .cancellations
+            .lock()
+            .await
+            .values()
+            .map(|(_, token)| token.clone())
+            .collect();
+        for token in cancellations {
+            token.cancel();
+        }
         let sessions: Vec<_> = {
             let mut sessions = self.sessions.lock().await;
             std::mem::take(&mut *sessions).into_values().collect()
@@ -185,6 +198,36 @@ impl ExecSessionStore {
             let mut session = session.lock().await;
             terminate_process(&mut session).await;
             session.running = false;
+        }
+    }
+
+    async fn cancel_owner(&self, owner: forge_types::SessionId) {
+        let owned: Vec<_> = self
+            .cancellations
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, (session_owner, _))| *session_owner == Some(owner))
+            .map(|(id, (_, token))| (*id, token.clone()))
+            .collect();
+        for (_, token) in &owned {
+            token.cancel();
+        }
+        let sessions: Vec<_> = {
+            let mut sessions = self.sessions.lock().await;
+            owned
+                .iter()
+                .filter_map(|(id, _)| sessions.remove(id))
+                .collect()
+        };
+        for session in sessions {
+            let mut session = session.lock().await;
+            terminate_process(&mut session).await;
+            session.running = false;
+        }
+        let mut cancellations = self.cancellations.lock().await;
+        for (id, _) in owned {
+            cancellations.remove(&id);
         }
     }
 }
@@ -236,6 +279,9 @@ async fn collect(
     let mut stdout_buffer = [0_u8; 4096];
     let mut stderr_buffer = [0_u8; 4096];
     loop {
+        if session.cancellation.is_cancelled() {
+            return Err(ToolError::Execution("cancelled".into()));
+        }
         if let Some((success, exit_code)) = try_wait(session)? {
             session.running = false;
             let exit = format!("\n[process exited with code {}]", exit_code.unwrap_or(-1));
@@ -628,8 +674,10 @@ async fn start(
             pgid,
         )
     };
+    let cancellation = CancellationToken::new();
     let session = Session {
         owner: ctx.session_id,
+        cancellation: cancellation.clone(),
         command: args.cmd.clone(),
         shell: shell.to_string(),
         confined,
@@ -651,6 +699,11 @@ async fn start(
     let id = sessions.next_id();
     let session = Arc::new(Mutex::new(session));
     sessions.sessions.lock().await.insert(id, session.clone());
+    sessions
+        .cancellations
+        .lock()
+        .await
+        .insert(id, (ctx.session_id, cancellation.clone()));
     let mut session = session.lock().await;
     let result = collect(
         id,
@@ -661,6 +714,7 @@ async fn start(
     .await;
     if session_finished(&result) {
         sessions.sessions.lock().await.remove(&id);
+        sessions.cancellations.lock().await.remove(&id);
     }
     // The store now owns the group; only an explicit terminate/shutdown may
     // kill a retained session.
@@ -712,6 +766,10 @@ impl Tool for ExecCommandTool {
 
     async fn shutdown(&self) {
         self.sessions.shutdown().await;
+    }
+
+    async fn cancel_session(&self, session_id: forge_types::SessionId) {
+        self.sessions.cancel_owner(session_id).await;
     }
 }
 
@@ -767,6 +825,10 @@ impl Tool for WriteStdinTool {
 
     async fn shutdown(&self) {
         self.sessions.shutdown().await;
+    }
+
+    async fn cancel_session(&self, session_id: forge_types::SessionId) {
+        self.sessions.cancel_owner(session_id).await;
     }
 }
 
@@ -1158,6 +1220,33 @@ mod tests {
         assert!(
             !marker.exists(),
             "cancelled exec session tree still executed its side effect"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_a_session_kills_a_retained_exec_command_tree() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let owner = forge_types::SessionId::new_v4();
+        let ctx = ToolContext::new(dir.path().to_path_buf())
+            .with_session_id(owner)
+            .with_unconfined_shell();
+        let (exec_command, _) = unified_exec_tools();
+        let command = format!("true; sh -c 'sleep 2; printf done > {}'", marker.display());
+
+        let output = exec_command
+            .call(&ctx, json!({"cmd": command, "yield_time_ms": 100}))
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(body["running"], true);
+
+        exec_command.cancel_session(owner).await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(
+            !marker.exists(),
+            "cancelled exec tree still ran its side effect"
         );
     }
 }

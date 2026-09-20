@@ -114,6 +114,10 @@ pub trait Tool: Send + Sync {
     /// all of its child processes before its worktree is removed.
     async fn shutdown(&self) {}
 
+    /// Stop session-owned work that may outlive one tool call when its turn is
+    /// cancelled. Stateless tools keep the no-op default.
+    async fn cancel_session(&self, _session_id: forge_types::SessionId) {}
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: self.name().to_string(),

@@ -438,6 +438,13 @@ impl ToolRegistry {
         }
     }
 
+    pub async fn cancel_session(&self, session_id: forge_types::SessionId) {
+        let tools: Vec<_> = self.tools.values().cloned().collect();
+        for tool in tools {
+            tool.cancel_session(session_id).await;
+        }
+    }
+
     /// Validate without executing or consuming retry budget.
     pub fn validate_call(&self, name: &str, args: &Value) -> Result<(), ToolValidationError> {
         let name = canonical_tool_name(name);
