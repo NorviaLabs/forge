@@ -2047,6 +2047,21 @@ async fn enter_on_status_suggestion_runs_immediately() {
 }
 
 #[tokio::test]
+async fn unknown_short_command_does_not_dispatch_disconnect() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("/d");
+    assert!(app
+        .slash_suggestions()
+        .iter()
+        .any(|item| item.cmd == "/disconnect"));
+
+    app.submit_composer_message().await.unwrap();
+
+    assert!(app.overlay.is_none());
+    assert_eq!(app.feedback.text, "unknown command `/d`");
+}
+
+#[tokio::test]
 async fn attaching_clipboard_bytes_uses_application_storage_outside_a_repository() {
     let (_fake_home, _home_guard) = fake_home_guard();
     let (_dir, mut app) = focus_test_app().await;

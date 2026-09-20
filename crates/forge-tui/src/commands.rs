@@ -73,6 +73,13 @@ pub enum SlashCommand {
 }
 
 impl SlashCommand {
+    /// Unknown slash input must not implicitly dispatch destructive commands.
+    /// Those commands remain available through their exact names and the
+    /// palette, but a fuzzy fallback should never clear user state.
+    pub fn allows_implicit_completion(&self) -> bool {
+        !matches!(self, Self::Disconnect { .. })
+    }
+
     /// Commands that can run while a foreground model/tool turn owns the
     /// session. Model settings are safe to change because they are read when
     /// the next model step is built; lifecycle, provider, or terminal-
