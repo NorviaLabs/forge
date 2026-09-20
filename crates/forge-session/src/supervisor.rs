@@ -514,6 +514,13 @@ pub struct RepositoryBootstrap {
 }
 
 impl RepositoryBootstrap {
+    pub async fn session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<RepositorySession, RepositorySessionError> {
+        self.control.session(session_id).await
+    }
+
     /// Acquire the repository-group lease and open the control database.
     /// Fails before any session exists if another Forge already owns it.
     pub async fn acquire(cfg: &Config) -> Result<Self, RepositorySupervisorError> {
@@ -598,6 +605,7 @@ impl RepositorySupervisor {
         } = bootstrap;
         let worktrees = forge_storage::list_worktree_records(&main_worktree)?;
         control.reconcile_worktrees(&worktrees).await?;
+        control.set_selected(Some(primary_session_id)).await?;
 
         if control.session(primary_session_id).await.is_err() {
             let workspace = cfg.workspace_root().to_path_buf();
@@ -934,6 +942,12 @@ impl RepositorySupervisor {
         let actor = self.state.actors.read().await.get(&session_id).cloned()?;
         let snapshot = actor.snapshot.read().await.clone();
         Some(snapshot)
+    }
+
+    pub async fn selected_session_id(
+        &self,
+    ) -> Result<Option<SessionId>, RepositorySupervisorError> {
+        Ok(self.state.control.selected().await?)
     }
 
     pub fn lease_owner(&self) -> &crate::LeaseOwner {

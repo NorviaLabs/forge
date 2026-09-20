@@ -143,6 +143,15 @@ async fn resolve_target(
     }
 }
 
+fn config_for_workspace(cfg: &Config, workspace: &std::path::Path) -> Config {
+    let mut bound = cfg.clone();
+    bound.resolved_workspace = workspace.to_path_buf();
+    bound.workspace_root = Some(workspace.display().to_string());
+    let (journal_dir, _) = resolve_journal_dir(&bound);
+    bound.journal.path = journal_dir.display().to_string();
+    bound
+}
+
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Some(Command::Bench(args)) => run_bench(args).await,
@@ -343,7 +352,28 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     } else {
         (SessionTarget::New, None)
     };
-    let opened = open_session(&cfg, target).await?;
+    let mut open_target = target;
+    let mut fork_from = None;
+    let session_cfg = if let Some(bootstrap) = bootstrap.as_ref() {
+        match target {
+            SessionTarget::Resume(session_id) => {
+                let record = bootstrap.session(session_id).await?;
+                config_for_workspace(&cfg, &record.workspace)
+            }
+            SessionTarget::Fork(session_id) => {
+                let record = bootstrap.session(session_id).await?;
+                fork_from = Some(session_id);
+                open_target = SessionTarget::Resume(session_id);
+                config_for_workspace(&cfg, &record.workspace)
+            }
+            SessionTarget::New => cfg.clone(),
+        }
+    } else {
+        cfg.clone()
+    };
+    let opened = open_session(&session_cfg, open_target).await?;
+    let opened_session_id = opened.session.session_id;
+    let runtime_cwd = opened.session.workspace_root().to_path_buf();
     startup_notices.extend(opened.notices);
     if let Some(notice) = create_notice {
         startup_notices.push(notice);
@@ -381,7 +411,7 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
             .as_ref()
             .map(|_| "native".to_string())
             .unwrap_or_default(),
-        cwd,
+        cwd: runtime_cwd,
         version: env!("CARGO_PKG_VERSION").into(),
         startup_notices,
         file_icons: cfg.tui.file_icons,
@@ -394,8 +424,22 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     let summary = match bootstrap {
         Some(bootstrap) => {
-            let session_id = opened.session.session_id;
             let (supervisor, handle) = bootstrap.open_with_primary(&cfg, opened.session).await?;
+            if let Some(source_session_id) = fork_from {
+                handle
+                    .command(forge_session::SupervisorCommand::ForkSession {
+                        session_id: source_session_id,
+                    })
+                    .await?;
+            }
+            let session_id = if fork_from.is_some() {
+                supervisor
+                    .selected_session_id()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("forked session was not selected"))?
+            } else {
+                opened_session_id
+            };
             let initial = supervisor
                 .snapshot(session_id)
                 .await
