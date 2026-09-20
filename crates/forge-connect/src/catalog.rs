@@ -608,44 +608,11 @@ pub fn fetch_remote_models(
     let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
 
     match profile.id.as_str() {
-        "openai_codex" => {
-            let token = api_key.ok_or_else(|| {
-                CatalogError::CredentialRequired("OpenAI Codex login required for catalog".into())
-            })?;
-            let account_id = crate::openai_codex::account_id_from_token(token)
-                .map_err(|e| CatalogError::CredentialRequired(e.to_string()))?;
-            let url = format!(
-                "{}/codex/models?client_version={}",
-                if base.is_empty() {
-                    crate::openai_codex::DEFAULT_BASE_URL
-                } else {
-                    base
-                },
-                env!("CARGO_PKG_VERSION")
-            );
-            let raw = http_get_json_ids(
-                &url,
-                &[
-                    ("Authorization", &format!("Bearer {token}")),
-                    ("chatgpt-account-id", &account_id),
-                    ("User-Agent", &ua),
-                ],
-            );
-            let raw = match raw {
-                Ok(models) if !models.is_empty() => models,
-                // Codex's endpoint can temporarily return an empty response for a
-                // non-Codex client version. Its own account-scoped cache remains a
-                // useful, conservative fallback when the CLI is installed.
-                Ok(_) | Err(_) => codex_cli_cached_model_ids(),
-            };
-            Ok(map_prefix(prefix, raw, |id| {
-                !id.eq_ignore_ascii_case("codex-auto-review")
-            }))
-        }
+        "openai_codex" => fetch_codex_remote_models(base, prefix, &ua, api_key),
         "openai" => {
-            let key = api_key.ok_or_else(|| {
-                CatalogError::CredentialRequired("OpenAI API key required for catalog".into())
-            })?;
+            let key = api_key.ok_or(CatalogError::CredentialRequired(
+                "OpenAI API key required for catalog".into(),
+            ))?;
             let url = format!(
                 "{}/models",
                 if base.is_empty() {
@@ -663,69 +630,12 @@ pub fn fetch_remote_models(
             )?;
             Ok(map_prefix(prefix, raw, filter_openai_chat_ish))
         }
-        "anthropic" => {
-            let key = api_key.ok_or_else(|| {
-                CatalogError::CredentialRequired("Anthropic API key required for catalog".into())
-            })?;
-            let b = if base.is_empty() {
-                "https://api.anthropic.com"
-            } else {
-                base
-            };
-            // Anthropic list endpoints may paginate; ask for a large page size when supported.
-            // If the API rejects query params, fall back to the plain endpoint.
-            let url_big = format!("{b}/v1/models?limit=1000");
-            let url_plain = format!("{b}/v1/models");
-            let raw = match http_get_json_ids(
-                &url_big,
-                &[
-                    ("x-api-key", key),
-                    ("anthropic-version", "2023-06-01"),
-                    ("User-Agent", &ua),
-                ],
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    // Retry without query params on strict servers. This used to
-                    // match on "HTTP 400" inside the rendered message; the status
-                    // is now structural.
-                    if e.status() == Some(400) {
-                        http_get_json_ids(
-                            &url_plain,
-                            &[
-                                ("x-api-key", key),
-                                ("anthropic-version", "2023-06-01"),
-                                ("User-Agent", &ua),
-                            ],
-                        )?
-                    } else {
-                        return Err(e);
-                    }
-                }
-            };
-            Ok(map_prefix(prefix, raw, |_| true))
-        }
-        "ollama" => {
-            let b = if base.is_empty() {
-                "http://localhost:11434"
-            } else {
-                base
-            };
-            // Native tags API
-            let tags_url = format!("{b}/api/tags");
-            match http_get_ollama_names(&tags_url, &ua) {
-                Ok(names) if !names.is_empty() => Ok(map_prefix(prefix, names, |_| true)),
-                _ => {
-                    let url = format!("{b}/v1/models");
-                    let raw = http_get_json_ids(&url, &[("User-Agent", &ua)])?;
-                    Ok(map_prefix(prefix, raw, |_| true))
-                }
-            }
-        }
+        "anthropic" => fetch_anthropic_remote_models(base, prefix, &ua, api_key),
+        "ollama" => fetch_ollama_remote_models(base, prefix, &ua),
         "opencode_go" => {
-            let key = api_key.ok_or_else(|| {
-                CatalogError::CredentialRequired("OpenCode Go API key required for catalog".into())
-            })?;
+            let key = api_key.ok_or(CatalogError::CredentialRequired(
+                "OpenCode Go API key required for catalog".into(),
+            ))?;
             let b = if base.is_empty() {
                 crate::opencode_go::DEFAULT_BASE_URL
             } else {
@@ -743,9 +653,9 @@ pub fn fetch_remote_models(
             Ok(map_prefix("opencode-go", raw, |_| true))
         }
         "opencode_zen" => {
-            let key = api_key.ok_or_else(|| {
-                CatalogError::CredentialRequired("OpenCode Zen API key required for catalog".into())
-            })?;
+            let key = api_key.ok_or(CatalogError::CredentialRequired(
+                "OpenCode Zen API key required for catalog".into(),
+            ))?;
             let b = if base.is_empty() {
                 crate::opencode_zen::DEFAULT_BASE_URL
             } else {
@@ -762,9 +672,9 @@ pub fn fetch_remote_models(
             Ok(map_prefix("opencode-zen", raw, |_| true))
         }
         "xai" => {
-            let key = api_key.ok_or_else(|| {
-                CatalogError::CredentialRequired("xAI OAuth token required for catalog".into())
-            })?;
+            let key = api_key.ok_or(CatalogError::CredentialRequired(
+                "xAI OAuth token required for catalog".into(),
+            ))?;
             let b = if base.is_empty() {
                 "https://api.x.ai/v1"
             } else {
@@ -781,6 +691,107 @@ pub fn fetch_remote_models(
             Ok(map_prefix(prefix, raw, |_| true))
         }
         other => Err(CatalogError::UnsupportedProfile(other.to_string())),
+    }
+}
+
+fn fetch_codex_remote_models(
+    base: &str,
+    prefix: &str,
+    user_agent: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, CatalogError> {
+    let token = api_key.ok_or(CatalogError::CredentialRequired(
+        "OpenAI Codex login required for catalog".into(),
+    ))?;
+    let account_id = crate::openai_codex::account_id_from_token(token)
+        .map_err(|error| CatalogError::CredentialRequired(error.to_string()))?;
+    let base = if base.is_empty() {
+        crate::openai_codex::DEFAULT_BASE_URL
+    } else {
+        base
+    };
+    let url = format!(
+        "{base}/codex/models?client_version={}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let raw = http_get_json_ids(
+        &url,
+        &[
+            ("Authorization", &format!("Bearer {token}")),
+            ("chatgpt-account-id", &account_id),
+            ("User-Agent", user_agent),
+        ],
+    );
+    let raw = match raw {
+        Ok(models) if !models.is_empty() => models,
+        // Codex's endpoint can temporarily return an empty response for a
+        // non-Codex client version. Its account-scoped cache remains a useful
+        // conservative fallback when the CLI is installed.
+        Ok(_) | Err(_) => codex_cli_cached_model_ids(),
+    };
+    Ok(map_prefix(prefix, raw, |id| {
+        !id.eq_ignore_ascii_case("codex-auto-review")
+    }))
+}
+
+fn fetch_anthropic_remote_models(
+    base: &str,
+    prefix: &str,
+    user_agent: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, CatalogError> {
+    let key = api_key.ok_or(CatalogError::CredentialRequired(
+        "Anthropic API key required for catalog".into(),
+    ))?;
+    let base = if base.is_empty() {
+        "https://api.anthropic.com"
+    } else {
+        base
+    };
+    // Ask for a large page when supported, then retry the plain endpoint on
+    // strict servers that reject query parameters.
+    let url_big = format!("{base}/v1/models?limit=1000");
+    let url_plain = format!("{base}/v1/models");
+    let raw = match http_get_json_ids(
+        &url_big,
+        &[
+            ("x-api-key", key),
+            ("anthropic-version", "2023-06-01"),
+            ("User-Agent", user_agent),
+        ],
+    ) {
+        Ok(models) => models,
+        Err(error) if error.status() == Some(400) => http_get_json_ids(
+            &url_plain,
+            &[
+                ("x-api-key", key),
+                ("anthropic-version", "2023-06-01"),
+                ("User-Agent", user_agent),
+            ],
+        )?,
+        Err(error) => return Err(error),
+    };
+    Ok(map_prefix(prefix, raw, |_| true))
+}
+
+fn fetch_ollama_remote_models(
+    base: &str,
+    prefix: &str,
+    user_agent: &str,
+) -> Result<Vec<String>, CatalogError> {
+    let base = if base.is_empty() {
+        "http://localhost:11434"
+    } else {
+        base
+    };
+    let tags_url = format!("{base}/api/tags");
+    match http_get_ollama_names(&tags_url, user_agent) {
+        Ok(names) if !names.is_empty() => Ok(map_prefix(prefix, names, |_| true)),
+        _ => {
+            let url = format!("{base}/v1/models");
+            let raw = http_get_json_ids(&url, &[("User-Agent", user_agent)])?;
+            Ok(map_prefix(prefix, raw, |_| true))
+        }
     }
 }
 
