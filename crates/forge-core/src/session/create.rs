@@ -48,6 +48,8 @@ impl AgentSession {
                 "session `{session_id}` was not found"
             )));
         }
+        let background_tasks = state.background_tasks.clone();
+        let subagent_workspaces = state.subagent_workspaces.clone();
         let mut context = ContextEngine::new(self.context.workspace.clone(), session_id);
         context.config = self.context.config.clone();
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
@@ -110,8 +112,20 @@ impl AgentSession {
         self.canonical_user_messages = user_messages;
         self.restore_context_state(context_state.as_ref());
         self.reconcile_incomplete_intents(&incomplete).await?;
+        self.restore_background_children(&background_tasks, &subagent_workspaces)
+            .await?;
+        // Stale Working without a live executor is Interrupted, not eternal Working.
+        self.mark_interrupted_if_stale().await?;
+        Ok(report)
+    }
+
+    async fn restore_background_children(
+        &mut self,
+        background_tasks: &[forge_durable::RestoredBackgroundTask],
+        subagent_workspaces: &std::collections::HashMap<u64, std::path::PathBuf>,
+    ) -> Result<(), LoopError> {
         let mut restored_children = HashSet::new();
-        for task in state.background_tasks.iter().rev() {
+        for task in background_tasks.iter().rev() {
             let Some(child_session_id) = task.child_session_id else {
                 continue;
             };
@@ -128,7 +142,7 @@ impl AgentSession {
                 _ => continue,
             };
             let _ = self.coordinator.restore_child(
-                task.parent_session_id.unwrap_or(session_id),
+                task.parent_session_id.unwrap_or(self.session_id),
                 child_session_id,
                 task.label.clone(),
                 status,
@@ -136,8 +150,7 @@ impl AgentSession {
             );
         }
         restored_children.clear();
-        for task in state
-            .background_tasks
+        for task in background_tasks
             .iter()
             .rev()
             .filter(|task| task.finished && task.kind == "subagent")
@@ -148,14 +161,12 @@ impl AgentSession {
             if !restored_children.insert(child_session_id) {
                 continue;
             }
-            if let Some(workspace) = state.subagent_workspaces.get(&task.id.0) {
+            if let Some(workspace) = subagent_workspaces.get(&task.id.0) {
                 self.restore_finished_subagent_task(task, workspace.clone())
                     .await?;
             }
         }
-        // Stale Working without a live executor is Interrupted, not eternal Working.
-        self.mark_interrupted_if_stale().await?;
-        Ok(report)
+        Ok(())
     }
 
     pub async fn create(
@@ -257,6 +268,8 @@ impl AgentSession {
                 "session `{session_id}` was not found"
             )));
         }
+        let background_tasks = state.background_tasks.clone();
+        let subagent_workspaces = state.subagent_workspaces.clone();
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut messages = state.messages.clone();
@@ -345,50 +358,9 @@ impl AgentSession {
                 &state.subagent_workspaces,
             )
             .await?;
-        let mut restored_children = HashSet::new();
-        for task in state.background_tasks.iter().rev() {
-            let Some(child_session_id) = task.child_session_id else {
-                continue;
-            };
-            if !restored_children.insert(child_session_id) {
-                continue;
-            }
-            if !task.finished {
-                continue;
-            }
-            let status = match task.status.as_str() {
-                "succeeded" => AgentStatus::Completed,
-                "failed" => AgentStatus::Failed,
-                "cancelled" => AgentStatus::Cancelled,
-                _ => continue,
-            };
-            let _ = session.coordinator.restore_child(
-                task.parent_session_id.unwrap_or(session_id),
-                child_session_id,
-                task.label.clone(),
-                status,
-                task.summary.clone(),
-            );
-        }
-        restored_children.clear();
-        for task in state
-            .background_tasks
-            .iter()
-            .rev()
-            .filter(|task| task.finished && task.kind == "subagent")
-        {
-            let Some(child_session_id) = task.child_session_id else {
-                continue;
-            };
-            if !restored_children.insert(child_session_id) {
-                continue;
-            }
-            if let Some(workspace) = state.subagent_workspaces.get(&task.id.0) {
-                session
-                    .restore_finished_subagent_task(task, workspace.clone())
-                    .await?;
-            }
-        }
+        session
+            .restore_background_children(&background_tasks, &subagent_workspaces)
+            .await?;
         // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
         session.mark_interrupted_if_stale().await?;
         Ok(session)
