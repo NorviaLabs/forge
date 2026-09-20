@@ -851,19 +851,67 @@ async fn drive_subagent(
         .cancel_token
         .clone()
         .expect("subagent sessions always carry a cancel_token (set in create_child/resume_child)");
-    let snapshot = |child: &AgentSession| {
-        let text = last_assistant_text(&child.messages);
-        if !text.is_empty() {
-            *runtime.latest_message.lock().unwrap() = Some(text);
-        }
-    };
-    snapshot(&child);
+    snapshot_subagent(&child, &runtime);
+    resume_subagent_after_hitl(
+        &mut child,
+        &mut result,
+        child_session_id,
+        &runtime,
+        hitl_rx,
+        &coordinator,
+        &cancel_token,
+    )
+    .await;
 
-    // A subagent can hit any number of HITL gates across its turns. Each
-    // time, park here (not consuming the tokio task's slot wastefully —
-    // `recv`/`cancelled` both suspend) until the parent supplies a decision
-    // via `resolve_subagent_hitl`, then resume the same turn loop
-    // `run_agent_turns` would have continued.
+    // Any lifecycle that isn't already terminal here means the loop above
+    // exited without a natural Completed/Failed outcome (cancelled — via
+    // token or a dropped decision channel — while Working or Waiting).
+    // Reconcile explicitly rather than reporting a stale in-progress status.
+    if matches!(
+        child.active_task.lifecycle,
+        TaskLifecycle::Working | TaskLifecycle::Waiting
+    ) {
+        let _ = child.mark_cancelled().await;
+    }
+    snapshot_subagent(&child, &runtime);
+
+    let status = subagent_background_status(&child, &result);
+    let summary = match &status {
+        BackgroundTaskStatus::Succeeded { summary } => summary.clone(),
+        BackgroundTaskStatus::Failed { error } => error.clone(),
+        _ => "cancelled".to_string(),
+    };
+    publish_subagent_outcome(
+        SubagentOutcome {
+            child_session_id,
+            status,
+            summary,
+            token_usage: child.token_usage.clone(),
+        },
+        &runtime,
+        &coordinator,
+    );
+    child
+}
+
+fn snapshot_subagent(child: &AgentSession, runtime: &SubagentRuntime) {
+    let text = last_assistant_text(&child.messages);
+    if !text.is_empty() {
+        *runtime.latest_message.lock().unwrap() = Some(text);
+    }
+}
+
+/// Resume every approval gate until the child reaches a terminal state or the
+/// parent disappears. Waiting on either channel suspends the task.
+async fn resume_subagent_after_hitl(
+    child: &mut AgentSession,
+    result: &mut Result<forge_types::ModelResponse, LoopError>,
+    child_session_id: SessionId,
+    runtime: &SubagentRuntime,
+    hitl_rx: &mut tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
+    coordinator: &AgentCoordinator,
+    cancel_token: &CancellationToken,
+) {
     while child.active_task.lifecycle == TaskLifecycle::Waiting {
         let Some(payload) = child.pending_hitl().cloned() else {
             break;
@@ -876,39 +924,32 @@ async fn drive_subagent(
         tokio::select! {
             decision = hitl_rx.recv() => match decision {
                 Some(decision) => {
-                    if let Err(e) = child.resolve_hitl(decision, "subagent-approval").await {
-                        result = Err(e);
+                    if let Err(error) = child.resolve_hitl(decision, "subagent-approval").await {
+                        *result = Err(error);
                         break;
                     }
                     let probe = ActivityProbe::start(runtime.latest_message.clone());
-                    result = child.run_agent_turns(Some(probe.sender())).await;
+                    *result = child.run_agent_turns(Some(probe.sender())).await;
                     probe.finish();
-                    snapshot(&child);
+                    snapshot_subagent(child, runtime);
                     if child.active_task.lifecycle == TaskLifecycle::Working {
                         let _ = coordinator.update(child_session_id, AgentStatus::Running, None);
                     }
                 }
-                // Sender dropped (parent session gone) — fall through to the
-                // reconciliation below, which cancels any non-terminal lifecycle.
+                // Sender dropped (parent session gone) — the caller reconciles
+                // any remaining in-progress lifecycle to Cancelled.
                 None => break,
             },
             _ = cancel_token.cancelled() => break,
         }
     }
+}
 
-    // Any lifecycle that isn't already terminal here means the loop above
-    // exited without a natural Completed/Failed outcome (cancelled — via
-    // token or a dropped decision channel — while Working or Waiting).
-    // Reconcile explicitly rather than reporting a stale in-progress status.
-    if matches!(
-        child.active_task.lifecycle,
-        TaskLifecycle::Working | TaskLifecycle::Waiting
-    ) {
-        let _ = child.mark_cancelled().await;
-    }
-    snapshot(&child);
-
-    let status = match child.active_task.lifecycle {
+fn subagent_background_status(
+    child: &AgentSession,
+    result: &Result<forge_types::ModelResponse, LoopError>,
+) -> BackgroundTaskStatus {
+    match child.active_task.lifecycle {
         TaskLifecycle::Completed => BackgroundTaskStatus::Succeeded {
             summary: last_assistant_text(&child.messages),
         },
@@ -936,18 +977,14 @@ async fn drive_subagent(
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "subagent ended without a terminal status".into()),
         },
-    };
-    let summary = match &status {
-        BackgroundTaskStatus::Succeeded { summary } => summary.clone(),
-        BackgroundTaskStatus::Failed { error } => error.clone(),
-        _ => "cancelled".to_string(),
-    };
-    let outcome = SubagentOutcome {
-        child_session_id,
-        status,
-        summary,
-        token_usage: child.token_usage.clone(),
-    };
+    }
+}
+
+fn publish_subagent_outcome(
+    outcome: SubagentOutcome,
+    runtime: &SubagentRuntime,
+    coordinator: &AgentCoordinator,
+) {
     let coordinator_status = match &outcome.status {
         BackgroundTaskStatus::Succeeded { .. } => AgentStatus::Completed,
         BackgroundTaskStatus::Failed { .. } => AgentStatus::Failed,
@@ -957,14 +994,13 @@ async fn drive_subagent(
         | BackgroundTaskStatus::WaitingForApproval { .. } => AgentStatus::Failed,
     };
     let _ = coordinator.update(
-        child_session_id,
+        outcome.child_session_id,
         coordinator_status,
         Some(outcome.summary.clone()),
     );
     if let Some(tx) = runtime.result_sink.lock().unwrap().clone() {
         let _ = tx.send(BackgroundTaskOutcome::Subagent(outcome));
     }
-    child
 }
 
 fn last_assistant_text(messages: &[Message]) -> String {
