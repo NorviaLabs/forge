@@ -43,6 +43,11 @@ impl AgentSession {
 
         let journal = Journal::open(self.journal.directory(), session_id).await?;
         let state = journal.replay(session_id).await?;
+        if state.last_seq == 0 {
+            return Err(LoopError::Other(format!(
+                "session `{session_id}` was not found"
+            )));
+        }
         let mut context = ContextEngine::new(self.context.workspace.clone(), session_id);
         context.config = self.context.config.clone();
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
@@ -247,6 +252,11 @@ impl AgentSession {
         tools.install_default_builtins(&loop_cfg.web_search, &loop_cfg.workspace);
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         let state = journal.replay(session_id).await?;
+        if state.last_seq == 0 {
+            return Err(LoopError::Other(format!(
+                "session `{session_id}` was not found"
+            )));
+        }
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut messages = state.messages.clone();

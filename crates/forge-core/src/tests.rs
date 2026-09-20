@@ -2494,6 +2494,28 @@ async fn fork_creates_a_new_session_with_context_and_leaves_source_unchanged() {
 }
 
 #[tokio::test]
+async fn resuming_unknown_session_fails_instead_of_creating_empty_state() {
+    let dir = tempdir().unwrap();
+    let missing = SessionId::new_v4();
+    let result = AgentSession::resume(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+        missing,
+    )
+    .await;
+    let error = match result {
+        Ok(_) => panic!("unknown session unexpectedly resumed"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        format!("session `{missing}` was not found")
+    );
+}
+
+#[tokio::test]
 async fn resume_restores_conversation_context_and_usage() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("f.txt"), "data").unwrap();
