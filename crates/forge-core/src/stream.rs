@@ -139,6 +139,13 @@ fn drain_ready_stream_events(
     observe_stream_events(session, events, forward, acc);
 }
 
+async fn wait_for_optional_cancel(token: Option<tokio_util::sync::CancellationToken>) {
+    let Some(token) = token else {
+        return std::future::pending::<()>().await;
+    };
+    token.cancelled().await;
+}
+
 impl AgentSession {
     /// Prepare, complete, and drain stream events for one model step.
     pub async fn run_model_step_with_stream(
@@ -198,13 +205,7 @@ impl AgentSession {
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
                 }
-                _ = async {
-                    if let Some(token) = cancel_token.clone() {
-                        token.cancelled().await;
-                    } else {
-                        std::future::pending::<()>().await;
-                    }
-                } => {
+                _ = wait_for_optional_cancel(cancel_token.clone()) => {
                     handle.abort();
                     return Err(LoopError::Cancelled);
                 }
@@ -227,22 +228,37 @@ impl AgentSession {
         // still preserved; cancellation only stops the drain from waiting
         // forever on a source that will never end. Returning drops `rx`, which
         // unblocks the relay's `blocking_send`/`recv` so its thread exits.
+        self.drain_stream_after_response(
+            &mut rx,
+            forward.as_ref(),
+            &mut acc,
+            cancel_token,
+            &turn_cancel_token,
+        )
+        .await?;
+        relay
+            .await
+            .map_err(|error| LoopError::Other(format!("stream relay join: {error}")))?;
+        Ok(merge_streamed_response(response, &acc))
+    }
+
+    async fn drain_stream_after_response(
+        &mut self,
+        rx: &mut tokio::sync::mpsc::Receiver<ModelStreamEvent>,
+        forward: Option<&StreamEventTx>,
+        acc: &mut ModelStepAccumulator,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
+        turn_cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), LoopError> {
         loop {
             tokio::select! {
                 event = rx.recv() => {
-                    if let Some(event) = event {
-                        drain_ready_stream_events(&mut rx, event, self, forward.as_ref(), &mut acc);
-                    } else {
+                    let Some(event) = event else {
                         break;
-                    }
+                    };
+                    drain_ready_stream_events(rx, event, self, forward, acc);
                 }
-                _ = async {
-                    if let Some(token) = cancel_token.clone() {
-                        token.cancelled().await;
-                    } else {
-                        std::future::pending::<()>().await;
-                    }
-                } => {
+                _ = wait_for_optional_cancel(cancel_token.clone()) => {
                     return Err(LoopError::Cancelled);
                 }
                 _ = turn_cancel_token.cancelled() => {
@@ -250,10 +266,7 @@ impl AgentSession {
                 }
             }
         }
-        relay
-            .await
-            .map_err(|error| LoopError::Other(format!("stream relay join: {error}")))?;
-        Ok(merge_streamed_response(response, &acc))
+        Ok(())
     }
 }
 
