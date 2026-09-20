@@ -551,77 +551,85 @@ impl<'a> ConnectService<'a> {
         profile_id: &str,
     ) -> Result<Vec<(String, String)>, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
-        let mut out = Vec::new();
         match &profile.auth_mode {
-            AuthMode::Oauth { .. } => {
-                // Prefer a fresh token (silent refresh across sessions).
-                let tok = match self.ensure_oauth_fresh(&profile.id) {
-                    Ok(t) => t,
-                    Err(_) => self.store.get_oauth(&profile.id)?,
-                };
-                if let Some(tok) = tok {
-                    let at = tok.access_token.trim();
-                    // Never export fixture tokens to the live worker — they only exist for unit tests.
-                    if at.is_empty() || at.starts_with("fixture-") || at == "fixture-access-token" {
-                        // skip — operator must complete real OAuth
-                    } else if profile.id == crate::openai_codex::PROFILE_ID {
-                        let account_id = crate::openai_codex::account_id_from_token(at)?;
-                        out.push((crate::openai_codex::ACCESS_TOKEN_ENV.into(), at.to_string()));
-                        out.push((crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id));
-                    } else {
-                        // Native xAI transport uses the OAuth token as Bearer auth.
-                        out.push(("XAI_API_KEY".into(), at.to_string()));
-                    }
-                }
-            }
-            AuthMode::ApiKey { .. } => {
-                if let Some((key, _)) = resolve_key(&profile.api_key_env, &profile.id, self.store)?
-                {
-                    if let Some(primary) = profile.api_key_env.first() {
-                        out.push((primary.clone(), key.clone()));
-                    }
-                    // Also export secondary env names so either documented var works.
-                    for name in profile.api_key_env.iter().skip(1) {
-                        out.push((name.clone(), key.clone()));
-                    }
-                    // Provider-specific base URLs for native HTTP routes.
-                    if let Some(base) =
-                        profile
-                            .default_base_url
-                            .clone()
-                            .or_else(|| match profile.id.as_str() {
-                                id if id == crate::opencode_go::PROFILE_ID => {
-                                    Some(crate::opencode_go::DEFAULT_BASE_URL.into())
-                                }
-                                id if id == crate::opencode_zen::PROFILE_ID => {
-                                    Some(crate::opencode_zen::DEFAULT_BASE_URL.into())
-                                }
-                                id if id == crate::ollama::PROFILE_ID => {
-                                    Some(crate::ollama::DEFAULT_BASE_URL.into())
-                                }
-                                _ => None,
-                            })
-                    {
-                        let env_name = match profile.id.as_str() {
-                            id if id == crate::opencode_go::PROFILE_ID => {
-                                crate::opencode_go::API_BASE_ENV.to_string()
-                            }
-                            id if id == crate::opencode_zen::PROFILE_ID => {
-                                crate::opencode_zen::API_BASE_ENV.to_string()
-                            }
-                            id if id == crate::ollama::PROFILE_ID => {
-                                crate::ollama::API_BASE_ENV.to_string()
-                            }
-                            id if id == crate::openai::PROFILE_ID => "OPENAI_API_BASE".into(),
-                            id if id == crate::anthropic::PROFILE_ID => "ANTHROPIC_API_BASE".into(),
-                            other => format!("{}_API_BASE", other.to_ascii_uppercase()),
-                        };
-                        out.push((env_name, base));
-                    }
-                }
-            }
+            AuthMode::Oauth { .. } => self.oauth_provider_env(&profile),
+            AuthMode::ApiKey { .. } => self.api_key_provider_env(&profile),
+        }
+    }
+
+    fn oauth_provider_env(
+        &self,
+        profile: &ConnectProfile,
+    ) -> Result<Vec<(String, String)>, ConnectError> {
+        // Prefer a fresh token (silent refresh across sessions).
+        let token = match self.ensure_oauth_fresh(&profile.id) {
+            Ok(token) => token,
+            Err(_) => self.store.get_oauth(&profile.id)?,
+        };
+        let Some(token) = token else {
+            return Ok(Vec::new());
+        };
+        let access_token = token.access_token.trim();
+        // Never export fixture tokens to the live worker — they only exist for unit tests.
+        if access_token.is_empty()
+            || access_token.starts_with("fixture-")
+            || access_token == "fixture-access-token"
+        {
+            return Ok(Vec::new());
+        }
+        if profile.id == crate::openai_codex::PROFILE_ID {
+            let account_id = crate::openai_codex::account_id_from_token(access_token)?;
+            return Ok(vec![
+                (
+                    crate::openai_codex::ACCESS_TOKEN_ENV.into(),
+                    access_token.to_string(),
+                ),
+                (crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id),
+            ]);
+        }
+        // Native xAI transport uses the OAuth token as Bearer auth.
+        Ok(vec![("XAI_API_KEY".into(), access_token.to_string())])
+    }
+
+    fn api_key_provider_env(
+        &self,
+        profile: &ConnectProfile,
+    ) -> Result<Vec<(String, String)>, ConnectError> {
+        let Some((key, _)) = resolve_key(&profile.api_key_env, &profile.id, self.store)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = profile
+            .api_key_env
+            .iter()
+            .map(|name| (name.clone(), key.clone()))
+            .collect::<Vec<_>>();
+        if let Some(base) = provider_base_url(profile) {
+            out.push((provider_base_env(&profile.id), base));
         }
         Ok(out)
+    }
+}
+
+fn provider_base_url(profile: &ConnectProfile) -> Option<String> {
+    profile
+        .default_base_url
+        .clone()
+        .or_else(|| match profile.id.as_str() {
+            crate::opencode_go::PROFILE_ID => Some(crate::opencode_go::DEFAULT_BASE_URL.into()),
+            crate::opencode_zen::PROFILE_ID => Some(crate::opencode_zen::DEFAULT_BASE_URL.into()),
+            crate::ollama::PROFILE_ID => Some(crate::ollama::DEFAULT_BASE_URL.into()),
+            _ => None,
+        })
+}
+
+fn provider_base_env(profile_id: &str) -> String {
+    match profile_id {
+        crate::opencode_go::PROFILE_ID => crate::opencode_go::API_BASE_ENV.into(),
+        crate::opencode_zen::PROFILE_ID => crate::opencode_zen::API_BASE_ENV.into(),
+        crate::ollama::PROFILE_ID => crate::ollama::API_BASE_ENV.into(),
+        crate::openai::PROFILE_ID => "OPENAI_API_BASE".into(),
+        crate::anthropic::PROFILE_ID => "ANTHROPIC_API_BASE".into(),
+        other => format!("{}_API_BASE", other.to_ascii_uppercase()),
     }
 }
 
