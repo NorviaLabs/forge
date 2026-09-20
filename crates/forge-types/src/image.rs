@@ -287,4 +287,62 @@ mod tests {
         }
         assert!(sniff_allowed_image(&bytes));
     }
+
+    #[test]
+    fn image_ref_defaults_and_dimensions_round_trip() {
+        let image = ImageRef::new("shot.png", "image/png", 42).with_dimensions(Some(3), Some(4));
+        assert_eq!(image.path, "shot.png");
+        assert_eq!(image.mime, "image/png");
+        assert_eq!(image.byte_len, 42);
+        assert_eq!(image.width, Some(3));
+        assert_eq!(image.height, Some(4));
+        assert_eq!(image.detail, "high");
+    }
+
+    #[test]
+    fn webp_variants_report_dimensions_and_unknown_chunks() {
+        let mut vp8x = vec![0; 30];
+        vp8x[0..4].copy_from_slice(b"RIFF");
+        vp8x[8..12].copy_from_slice(b"WEBP");
+        vp8x[12..16].copy_from_slice(b"VP8X");
+        vp8x[24..27].copy_from_slice(&[2, 0, 0]);
+        vp8x[27..30].copy_from_slice(&[3, 0, 0]);
+        assert_eq!(inspect_image(&vp8x).unwrap().width, Some(3));
+        assert_eq!(inspect_image(&vp8x).unwrap().height, Some(4));
+
+        let mut vp8 = vec![0; 30];
+        vp8[0..4].copy_from_slice(b"RIFF");
+        vp8[8..12].copy_from_slice(b"WEBP");
+        vp8[12..16].copy_from_slice(b"VP8 ");
+        vp8[23..26].copy_from_slice(&[0x9D, 0x01, 0x2A]);
+        vp8[26..28].copy_from_slice(&5u16.to_le_bytes());
+        vp8[28..30].copy_from_slice(&6u16.to_le_bytes());
+        assert_eq!(inspect_image(&vp8).unwrap().width, Some(5));
+
+        let mut vp8l = vec![0; 25];
+        vp8l[0..4].copy_from_slice(b"RIFF");
+        vp8l[8..12].copy_from_slice(b"WEBP");
+        vp8l[12..16].copy_from_slice(b"VP8L");
+        vp8l[21..25].copy_from_slice(&((7u32) | (8u32 << 14)).to_le_bytes());
+        assert_eq!(inspect_image(&vp8l).unwrap().height, Some(9));
+
+        let mut unknown = vp8x;
+        unknown[12..16].copy_from_slice(b"????");
+        assert_eq!(inspect_image(&unknown).unwrap().width, None);
+        assert!(sniff_allowed_image(&unknown));
+    }
+
+    #[test]
+    fn malformed_headers_are_safe() {
+        assert_eq!(
+            inspect_image(b"\x89PNG"),
+            Err(ImageInspectError::Unsupported)
+        );
+        assert_eq!(
+            inspect_image(&[0xFF, 0xD8, 0xFF]),
+            Err(ImageInspectError::Unsupported)
+        );
+        assert_eq!(inspect_image(b"GIF"), Err(ImageInspectError::Unsupported));
+        assert!(!sniff_allowed_image(b"RIFFxxxxWEBP"));
+    }
 }

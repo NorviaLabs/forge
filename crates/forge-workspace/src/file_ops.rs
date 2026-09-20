@@ -675,4 +675,81 @@ mod tests {
             FileOperationError::OutsideWorkspace
         );
     }
+
+    #[test]
+    fn plans_nested_creation_and_rename_without_mutating() {
+        let root = tempfile::tempdir().unwrap();
+        let ops = WorkspaceFileOps::new(root.path()).unwrap();
+        let planned = ops.plan_create(root.path(), "src/new.rs").unwrap();
+        assert_eq!(
+            planned,
+            root.path().canonicalize().unwrap().join("src/new.rs")
+        );
+        assert!(!planned.exists());
+
+        fs::write(root.path().join("old.txt"), "data").unwrap();
+        let renamed = ops
+            .plan_rename(&root.path().join("old.txt"), "new.txt")
+            .unwrap();
+        assert_eq!(renamed, root.path().canonicalize().unwrap().join("new.txt"));
+        assert!(root.path().join("old.txt").exists());
+    }
+
+    #[test]
+    fn reports_entry_kinds_and_directory_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let ops = WorkspaceFileOps::new(root.path()).unwrap();
+        fs::create_dir(root.path().join("empty")).unwrap();
+        fs::write(root.path().join("file"), "x").unwrap();
+        assert_eq!(
+            ops.entry_kind(&root.path().join("empty")).unwrap(),
+            EntryKind::Directory
+        );
+        assert_eq!(
+            ops.entry_kind(&root.path().join("file")).unwrap(),
+            EntryKind::File
+        );
+        assert!(!ops
+            .is_non_empty_directory(&root.path().join("empty"))
+            .unwrap());
+        fs::write(root.path().join("empty/child"), "x").unwrap();
+        assert!(ops
+            .is_non_empty_directory(&root.path().join("empty"))
+            .unwrap());
+        assert!(!ops
+            .is_non_empty_directory(&root.path().join("file"))
+            .unwrap());
+    }
+
+    #[test]
+    fn permanent_delete_handles_files_and_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let ops = WorkspaceFileOps::new(root.path()).unwrap();
+        let file = root.path().join("file");
+        let dir = root.path().join("dir");
+        fs::write(&file, "x").unwrap();
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("child"), "x").unwrap();
+        ops.delete_entry(&file, DeleteMode::Permanent).unwrap();
+        ops.delete_entry(&dir, DeleteMode::Permanent).unwrap();
+        assert!(!file.exists());
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn actionable_errors_keep_operator_guidance() {
+        assert!(FileOperationError::PermissionDenied
+            .actionable()
+            .contains("Check file or folder permissions"));
+        assert!(FileOperationError::ReadOnly
+            .actionable()
+            .contains("read-only"));
+        assert!(FileOperationError::TrashUnavailable("missing".into())
+            .actionable()
+            .contains("permanent delete"));
+        assert_eq!(
+            FileOperationError::MissingSource.actionable(),
+            "Selected entry no longer exists."
+        );
+    }
 }

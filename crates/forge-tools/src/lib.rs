@@ -132,3 +132,39 @@ pub trait Tool: Send + Sync {
     /// before the first call. Default is a no-op.
     fn warm_workspace(&self, _root: &std::path::Path) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ToolError;
+    use forge_types::{ExecutionOutcome, ToolValidationError};
+
+    #[test]
+    fn tool_errors_map_to_their_recorded_outcomes() {
+        let validation = ToolError::Validation(ToolValidationError {
+            tool: "read_file".into(),
+            path: "path".into(),
+            message: "required".into(),
+            schema_hint: None,
+        });
+        assert_eq!(
+            validation.as_outcome(),
+            ExecutionOutcome::Failed { exit_code: None }
+        );
+
+        for error in [
+            ToolError::Unknown("missing".into()),
+            ToolError::Execution("failed".into()),
+            ToolError::SandboxDenied {
+                content: "denied".into(),
+                reason: "policy".into(),
+                denied_host: Some("example.test".into()),
+            },
+            ToolError::Io(std::io::Error::other("broken")),
+        ] {
+            assert!(matches!(
+                error.as_outcome(),
+                ExecutionOutcome::SpawnFailed { .. }
+            ));
+        }
+    }
+}

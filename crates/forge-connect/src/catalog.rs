@@ -1207,6 +1207,14 @@ mod tests {
             normalize_model_id("llama3.2", None, Some("ollama")),
             "ollama/llama3.2"
         );
+        assert_eq!(
+            normalize_model_id("  model  ", Some(" "), Some("")),
+            "model"
+        );
+        assert_eq!(
+            normalize_model_id("openai/gpt-4.1", Some("ignored"), Some("other")),
+            "openai/gpt-4.1"
+        );
     }
 
     #[test]
