@@ -864,11 +864,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             is_skill: false,
         },
         PaletteItem {
-            cmd: "/refresh".into(),
-            desc: "Refresh the file explorer's Git state".into(),
-            is_skill: false,
-        },
-        PaletteItem {
             cmd: "/edit".into(),
             desc: "Open a workspace file in the embedded editor".into(),
             is_skill: false,
@@ -876,17 +871,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/context-file".into(),
             desc: "Attach the active file to the next message".into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/diff".into(),
-            desc: "Review changed files in the workspace pane (/diff turn for the last turn)"
-                .into(),
-            is_skill: false,
-        },
-        PaletteItem {
-            cmd: "/diff turn".into(),
-            desc: "Review files changed by the last turn".into(),
             is_skill: false,
         },
         PaletteItem {

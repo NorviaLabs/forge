@@ -532,19 +532,6 @@ async fn printable_globals_remain_available_to_type_to_compose() {
 }
 
 #[tokio::test]
-async fn global_palette_selection_uses_semantic_dispatch() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.execute_semantic_command(SemanticCommand::DispatchSlash {
-        origin: SlashCommandOrigin::GlobalPalette,
-        line: "/refresh".into(),
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(app.status_state.message, "Refreshing git status...");
-}
-
-#[tokio::test]
 async fn registered_printable_editor_commands_do_not_enter_composer() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");

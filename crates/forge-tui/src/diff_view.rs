@@ -158,6 +158,8 @@ pub enum DiffStatus {
     Ready,
     /// Git answered, and there is genuinely nothing to show.
     NoChanges,
+    // Retained for the workspace diff seam during the Git workflow redesign.
+    #[allow(dead_code)]
     NotARepo,
     Failed(String),
 }

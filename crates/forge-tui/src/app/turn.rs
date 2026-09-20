@@ -302,9 +302,6 @@ impl TuiApp {
                 output_tokens,
             },
         );
-        if !self.last_turn_diff_entries().is_empty() {
-            self.status_state.message = "Turn complete · /diff turn to review changes".into();
-        }
     }
 
     /// The same closing line for an actor-owned (supervised) session.
