@@ -473,15 +473,8 @@ pub(crate) fn restored_queue_items(
 
 /// A short, human-readable hint for a resumable session — its first user
 /// message — so a `/resume` list can show more than a raw UUID and
-/// timestamp. Delegates to [`forge_types::title_from_prompt`] so a row never
-/// disagrees with the session label the navigator shows, or with the
-/// `forge/<slug>` branch the session would materialize. Cheap: opens and
-/// replays only the one session's journal, independent of any live
-/// `AgentSession` (no tools/model/governance needed). Returns `None` on any
-/// read/replay error or an empty journal — callers should fall back to
-/// showing just the id/timestamp in that case, never fail the whole listing
-/// over one unreadable session. A blank first message is `None` too, not
-/// `title_from_prompt`'s `untitled-session` placeholder.
+/// timestamp. Uses the natural phrase derived from the first prompt, while
+/// session branches continue to use the separate slug form.
 pub async fn session_title_hint(
     journal_dir: &Path,
     session_id: forge_types::SessionId,
@@ -492,7 +485,7 @@ pub async fn session_title_hint(
     if first.trim().is_empty() {
         return None;
     }
-    Some(forge_types::title_from_prompt(&first))
+    Some(forge_types::session_name_from_prompt(&first))
 }
 
 /// The replayed conversation of a session this process does not own.
@@ -534,7 +527,7 @@ mod tests {
 
         assert_eq!(
             session_title_hint(&journal_dir, sid).await.as_deref(),
-            Some("fix-login-bug")
+            Some("fix login bug")
         );
     }
 
