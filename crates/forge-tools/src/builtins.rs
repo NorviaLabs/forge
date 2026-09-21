@@ -642,6 +642,10 @@ impl Tool for BashTool {
         "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
 Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
+Do not background commands with `&`, `nohup`, or `disown`: use `background_run` \
+for long-running work, or `exec_command` followed by `write_stdin` when you \
+need to poll an interactive session. Never use `ps` or `pgrep` to find a \
+Forge-managed command. \
 A host(...) grant projects HTTPS identity for that host into the confined \
 spawn (SSH git remotes become HTTPS; git-dir writes stay limited to git \
 itself, never to git hooks)."
@@ -691,7 +695,7 @@ impl Tool for BackgroundRunTool {
         "background_run"
     }
     fn description(&self) -> &str {
-        "Run a shell command in the background (e.g. compile, test, index) without blocking this turn. Reports back when finished."
+        "Run a shell command in the background (e.g. compile, test, index) without blocking this turn. Forge tracks and reports the result when finished; do not use `ps` or `pgrep` to poll it."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BackgroundRunArgs>()
@@ -2283,6 +2287,16 @@ itself, never to git hooks)."
         assert!(tools.iter().any(|t| t.name() == "list_agents"));
         assert!(tools.iter().any(|t| t.name() == "interrupt_agent"));
         assert!(tools.iter().any(|t| t.name() == "ls"));
+    }
+
+    #[test]
+    fn shell_tools_direct_long_running_work_to_managed_sessions() {
+        let bash = BashTool.description();
+        let background = BackgroundRunTool.description();
+        assert!(bash.contains("background_run"));
+        assert!(bash.contains("write_stdin"));
+        assert!(bash.contains("Never use `ps` or `pgrep`"));
+        assert!(background.contains("Forge tracks"));
     }
 
     #[test]
