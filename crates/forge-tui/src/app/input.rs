@@ -3014,4 +3014,29 @@ mod tests {
         app.source_viewer.start_jump();
         assert!(app.handle_jump_key(press(KeyCode::Esc)));
     }
+
+    #[tokio::test]
+    async fn task_strip_guards_handle_empty_and_non_session_navigation() {
+        let (_dir, mut app) = app().await;
+        assert!(!app
+            .handle_task_strip_key(press(KeyCode::Down))
+            .await
+            .unwrap());
+
+        app.navigator_tab = crate::widgets::NavigatorTab::Files;
+        assert!(!app
+            .handle_task_strip_key(press(KeyCode::Enter))
+            .await
+            .unwrap());
+
+        app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+        assert!(app
+            .handle_task_strip_key(press(KeyCode::Char('n')))
+            .await
+            .unwrap());
+        assert!(app
+            .status_state
+            .message
+            .contains("Sessions are unavailable"));
+    }
 }
