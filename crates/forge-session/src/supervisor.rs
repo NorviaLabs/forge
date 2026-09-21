@@ -4241,6 +4241,49 @@ mod tests {
             .await
             .unwrap();
         handle.command(SupervisorCommand::Refresh).await.unwrap();
+        assert!(handle
+            .command(SupervisorCommand::SetApproveAll {
+                session_id: id_a,
+                on: true,
+            })
+            .await
+            .is_err());
+        assert!(handle
+            .command(SupervisorCommand::ResolveApproval {
+                session_id: id_a,
+                decision: HitlDecision::Deny,
+                actor: "test".into(),
+                feedback: None,
+            })
+            .await
+            .is_err());
+        assert!(handle
+            .command(SupervisorCommand::ResolveQuestion {
+                session_id: id_a,
+                answers: None,
+                actor: "test".into(),
+            })
+            .await
+            .is_err());
+        handle
+            .command(SupervisorCommand::SubmitPromptWithAttachments {
+                session_id: id_b,
+                text: "attached prompt".into(),
+                attachments: Vec::new(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: id_a,
+                text: "plain prompt".into(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::StopTurn { session_id: id_a })
+            .await
+            .unwrap();
 
         assert!(handle
             .command(SupervisorCommand::CancelBackgroundTask {
