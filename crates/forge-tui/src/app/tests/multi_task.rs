@@ -2715,7 +2715,7 @@ async fn a_finished_session_keeps_the_outcome_its_marker_reports() {
         rendered
             .lines()
             .filter(|line| line.contains("Fix login redirect"))
-            .last()
+            .next_back()
             .expect("session row")
             .to_string()
     };
@@ -2766,7 +2766,7 @@ async fn a_running_session_row_turns_its_spinner() {
         let line = rendered
             .lines()
             .filter(|line| line.contains("Fix login redirect"))
-            .last()
+            .next_back()
             .expect("session row");
         let label = line.find("Fix login redirect").expect("label");
         line[..label].chars().rev().nth(1).expect("marker cell")
