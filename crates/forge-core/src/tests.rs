@@ -1358,6 +1358,7 @@ fn system_prompt_uses_forge_policy() {
     assert!(!prompt.contains("# Project Instructions"));
     assert!(prompt.contains("Treat available tool descriptors and schemas as authoritative"));
     assert!(prompt.contains("Use `edit` for a focused replacement"));
+    assert!(prompt.contains("use `$TMPDIR`"));
     assert!(prompt.contains("Never claim a command ran, a test passed, or a file changed"));
     assert!(!prompt.contains("Forge is an open source project led by NorviaLabs."));
 }
