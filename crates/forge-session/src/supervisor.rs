@@ -6116,4 +6116,46 @@ mod tests {
         assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
+
+    #[test]
+    fn command_classification_and_path_helpers_cover_operator_boundaries() {
+        let id = SessionId::nil();
+        let detached = [
+            SupervisorCommand::CreateSession {
+                label: "x".into(),
+                first_prompt: None,
+            },
+            SupervisorCommand::AttachWorktree {
+                workspace: PathBuf::from("."),
+                label: "x".into(),
+                branch: "x".into(),
+            },
+            SupervisorCommand::RemoveManagedWorktree { session_id: id },
+            SupervisorCommand::CompactContext { session_id: id },
+            SupervisorCommand::CloseSession { session_id: id },
+            SupervisorCommand::CloseAllSessions,
+        ];
+        for command in detached {
+            assert!(runs_outside_command_loop(&command));
+        }
+        assert!(stops_every_session(&SupervisorCommand::Shutdown));
+        assert!(stops_every_session(&SupervisorCommand::CloseAllSessions));
+        assert!(!stops_every_session(&SupervisorCommand::Refresh));
+        assert_eq!(
+            command_session_id(&SupervisorCommand::CompactContext { session_id: id }),
+            Some(id)
+        );
+        assert_eq!(command_session_id(&SupervisorCommand::Refresh), None);
+
+        let temp = TempDir::new().unwrap();
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        assert!(same_path(temp.path(), &nested.join("..")));
+        assert!(!same_path(temp.path(), &nested));
+
+        let trust_store = temp.path().join("trust.json");
+        assert!(!workspace_is_trusted(Some(&trust_store), temp.path()));
+        forge_config::grant_trust_at(&trust_store, temp.path()).unwrap();
+        assert!(workspace_is_trusted(Some(&trust_store), &nested));
+    }
 }
