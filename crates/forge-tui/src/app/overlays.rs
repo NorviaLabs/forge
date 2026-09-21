@@ -561,6 +561,7 @@ fn parse_repository_session_id(value: &str) -> Option<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlays::{SessionConfirmKind, SessionInputMode};
 
     #[tokio::test]
     async fn help_text_covers_every_focus_block_and_renders() {
@@ -576,5 +577,87 @@ mod tests {
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         app.render_help_overlay(area, &mut buffer);
         assert!(buffer.content().iter().any(|cell| cell.symbol() == "H"));
+    }
+
+    #[tokio::test]
+    async fn overlay_actions_cover_local_state_and_safe_rejection_paths() {
+        let (dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let file = dir.path().join("overlay.txt");
+        std::fs::write(&file, "overlay\n").unwrap();
+
+        for action in [
+            OverlayAction::None,
+            OverlayAction::Toast("warning".into()),
+            OverlayAction::OpenSessionInput(SessionInputMode::New),
+            OverlayAction::OpenSessionRename {
+                session_id: "session".into(),
+                label: "label".into(),
+            },
+            OverlayAction::OpenSessionConfirm {
+                kind: SessionConfirmKind::Cleanup,
+                session_id: "session".into(),
+                label: "label".into(),
+                detail: "detail".into(),
+            },
+            OverlayAction::ModelNotInCatalog("missing/model".into()),
+            OverlayAction::SelectEffort(crate::effort::ReasoningEffort::Low),
+            OverlayAction::PreviewTheme(forge_config::DEFAULT_THEME_ID.into()),
+            OverlayAction::FilePick {
+                path: "overlay.txt".into(),
+                is_dir: false,
+            },
+            OverlayAction::FilePick {
+                path: ".".into(),
+                is_dir: true,
+            },
+        ] {
+            app.apply_overlay_action(action).await.unwrap();
+        }
+        assert!(app.overlay.is_some());
+        assert_eq!(
+            app.reasoning_effort.value,
+            crate::effort::ReasoningEffort::Low
+        );
+
+        for action in [
+            OverlayAction::RenameSession {
+                session_id: "not-a-uuid".into(),
+                label: "renamed".into(),
+            },
+            OverlayAction::ArchiveSession {
+                session_id: "not-a-uuid".into(),
+            },
+            OverlayAction::CleanupSessionWorktree {
+                session_id: "not-a-uuid".into(),
+            },
+        ] {
+            app.apply_overlay_action(action).await.unwrap();
+        }
+
+        app.apply_overlay_action(OverlayAction::Close)
+            .await
+            .unwrap();
+        assert!(app.overlay.is_none());
+
+        app.overlay = Some(Overlay::connect_api_key("openai", "OpenAI", None, None));
+        app.dismiss_overlay();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+
+        app.connect.oauth_pending = Some(forge_connect::OauthPending::start_stub(
+            "xai",
+            "https://example.test",
+        ));
+        app.overlay = Some(Overlay::connect_oauth("xai", "xAI", "check"));
+        app.dismiss_overlay();
+        assert!(app.connect.oauth_pending.is_none());
+
+        app.overlay = Some(Overlay::Theme {
+            selected: 0,
+            current: "forge-light".into(),
+            items: vec![("forge-light".into(), "Forge Light".into())],
+        });
+        app.set_theme_active(forge_config::DEFAULT_THEME_ID);
+        app.dismiss_overlay();
+        assert!(app.overlay.is_none());
     }
 }
