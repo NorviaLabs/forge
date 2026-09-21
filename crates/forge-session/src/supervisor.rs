@@ -4148,6 +4148,119 @@ mod tests {
         (temp, supervisor, handle, id_a, id_b)
     }
 
+    #[tokio::test]
+    async fn command_surface_updates_idle_sessions_and_rejects_stale_background_requests() {
+        let (_temp, supervisor, handle, id_a, id_b) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+
+        handle
+            .command(SupervisorCommand::SetModel {
+                session_id: id_a,
+                model_id: "mock-updated".into(),
+                route_id: "native-updated".into(),
+                reasoning_effort: Some("high".into()),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SetThinking {
+                session_id: id_a,
+                enabled: true,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SetCapabilities {
+                session_id: id_a,
+                image_input_supported: true,
+                context_window: Some((32_000, Some(2_000))),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SetApproveAll {
+                session_id: id_a,
+                on: false,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::GrantEgressHost {
+                session_id: id_a,
+                pattern: "example.com".into(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::AllowSessionPattern {
+                session_id: id_a,
+                call: ToolCall {
+                    id: "call-1".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "printf ok"}),
+                },
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ClearSessionApprovals { session_id: id_a })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::CancelQueuedPrompt {
+                session_id: id_a,
+                one_based: 1,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::PollSession { session_id: id_a })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SelectSession {
+                session_id: Some(id_b),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ResumeSession {
+                current_session_id: id_a,
+                session_id: id_b,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ApplyProviderEnv {
+                pairs: vec![("FORGE_TEST_PROVIDER".into(), "1".into())],
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ClearProviderEnv)
+            .await
+            .unwrap();
+        handle.command(SupervisorCommand::Refresh).await.unwrap();
+
+        assert!(handle
+            .command(SupervisorCommand::CancelBackgroundTask {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+            })
+            .await
+            .is_err());
+        assert!(handle
+            .command(SupervisorCommand::ResolveBackgroundApproval {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+                decision: HitlDecision::Deny,
+            })
+            .await
+            .is_err());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+        assert_eq!(supervisor.snapshots().await.len(), 2);
+    }
+
     /// Quit-all is one command for the whole roster rather than one per
     /// session, so a session that never sees the sweep would simply survive
     /// the exit.
