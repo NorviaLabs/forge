@@ -595,4 +595,79 @@ mod tests {
     fn plain_mode_auto_detects_regex_literal() {
         assert_eq!(grep_mode("/foo.*/", GrepQueryMode::Plain), GrepMode::Regex);
     }
+
+    #[test]
+    fn query_helpers_cover_scope_modes_and_bounded_formatting() {
+        let path_query = scoped_grep_query("needle", Some("./src/"), Some("*.rs"));
+        assert!(path_query
+            .constraints
+            .iter()
+            .any(|constraint| matches!(constraint, Constraint::PathSegment("src"))));
+        assert!(path_query
+            .constraints
+            .iter()
+            .any(|constraint| matches!(constraint, Constraint::Extension("rs"))));
+
+        let file_query = scoped_grep_query("needle", Some("README.md"), Some("*.{md,txt}"));
+        assert!(file_query
+            .constraints
+            .iter()
+            .any(|constraint| matches!(constraint, Constraint::FilePath("README.md"))));
+        assert!(file_query
+            .constraints
+            .iter()
+            .any(|constraint| matches!(constraint, Constraint::Glob("*.{md,txt}"))));
+
+        assert_eq!(
+            grep_mode("plain", GrepQueryMode::Plain),
+            GrepMode::PlainText
+        );
+        assert_eq!(grep_mode("plain", GrepQueryMode::Regex), GrepMode::Regex);
+        assert_eq!(grep_mode("plain", GrepQueryMode::Fuzzy), GrepMode::Fuzzy);
+        assert_eq!(parse_regex_literal("/abc/"), Some("abc"));
+        assert_eq!(parse_regex_literal("abc"), None);
+        assert_eq!(truncate_chars("short", 10), "short");
+        assert_eq!(truncate_chars("abcdef", 4), "abc…");
+        assert_eq!(format_grep_context(&[], &[]), None);
+        assert_eq!(
+            format_grep_context(&["before".into()], &["after".into()]),
+            Some("before\nafter".into())
+        );
+    }
+
+    #[test]
+    fn zero_result_and_file_change_paths_are_noops() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            index.find_files("anything", 0, None).unwrap().total_files,
+            0
+        );
+        assert_eq!(
+            index
+                .grep("anything", None, GrepQueryMode::Plain, 0)
+                .unwrap()
+                .total_matched,
+            0
+        );
+        assert_eq!(
+            index
+                .find_files_quick_open(" ", 0, None)
+                .unwrap()
+                .hits
+                .len(),
+            0
+        );
+        let path = dir.path().join("new.txt");
+        std::fs::write(&path, "new").unwrap();
+        index.note_file_changed(&path).unwrap();
+        index.note_file_opened(&path).unwrap();
+    }
 }
