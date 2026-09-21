@@ -5906,4 +5906,75 @@ mod verification_tests {
         );
         assert_eq!(summary, "$ echo hi · exited");
     }
+
+    #[test]
+    fn process_payload_and_validation_outcome_edges_are_total() {
+        let (state, summary, _, detail) = classify_tool_content(
+            "write_stdin",
+            r#"{"output":"waiting","session_id":9,"running":true}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(state, ToolCardState::Running);
+        assert_eq!(summary, "session #9 · running");
+        assert_eq!(detail, "waiting");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","command":"echo hi","session_id":3,"running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "$ echo hi · session #3 · exited");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","session_id":3,"running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "session #3 · exited");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "exited");
+
+        let (_, summary, _, detail) =
+            classify_tool_content("bash", "api_key=secret\nsecond line", None, &ok());
+        assert_eq!(summary, "1 output line");
+        assert_eq!(detail, "[redacted tool output]");
+
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Success),
+            "Tests passed"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Failed { exit_code: None }),
+            "Tests failed"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::SpawnFailed {
+                reason: "missing".into()
+            }),
+            "Tests failed · command not found"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Denied {
+                reason: "policy".into()
+            }),
+            "Validation skipped · denied"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Cancelled),
+            "Validation cancelled"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::TimedOut),
+            "Validation timed out"
+        );
+    }
 }
