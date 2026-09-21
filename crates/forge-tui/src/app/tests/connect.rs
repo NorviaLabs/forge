@@ -954,6 +954,33 @@ async fn blocks_chat_when_not_connected() {
 }
 
 #[tokio::test]
+async fn startup_requires_provider_model_setup_when_credentials_have_no_model() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: String::new(),
+            provider: String::new(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let store_dir = tempfile::TempDir::new().unwrap();
+    app.connect.store = CredentialStore::new(store_dir.path().join("credentials.toml"));
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-startup")
+        .unwrap();
+    app.connect.profile = Some("openai".into());
+
+    assert!(app.needs_provider_model_setup());
+}
+
+#[tokio::test]
 async fn bare_model_command_opens_on_models_column() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

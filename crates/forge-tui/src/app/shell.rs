@@ -1073,6 +1073,86 @@ pub async fn run_tui_supervised(
     run_tui_app_inner(app, launch).await
 }
 
+fn draw_provider_model_setup(app: &mut TuiApp, frame: &mut ratatui::Frame) {
+    let area = frame.area();
+    app.overlay_rows.borrow_mut().clear();
+    crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
+    if let Some(overlay) = app.overlay.as_ref() {
+        frame.render_widget(
+            OverlayWidget {
+                overlay,
+                row_sink: Some(&app.overlay_rows),
+                hover_row: app.hover_overlay,
+            },
+            area,
+        );
+    } else {
+        let card = crate::overlays::centered_content_rect(area, 64, 5, area.height);
+        frame.render_widget(
+            Paragraph::new("Applying provider/model selection...")
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(crate::theme::border())
+                        .style(crate::theme::panel())
+                        .title(crate::theme::modal_title(" Setup ")),
+                ),
+            card,
+        );
+    }
+}
+
+async fn run_startup_preflight(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut TuiApp,
+) -> Result<(), TuiError> {
+    let mut applying_selection = false;
+    loop {
+        if app.exit.is_requested() {
+            return Ok(());
+        }
+        tick_application(app).await?;
+        if app.overlay.is_none() {
+            if applying_selection {
+                if !app.needs_provider_model_setup() && app.pending_command_completions.is_empty() {
+                    app.onboarding_connect = false;
+                    return Ok(());
+                }
+                if !app.pending_command_completions.is_empty() {
+                    terminal.draw(|frame| draw_provider_model_setup(app, frame))?;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    continue;
+                }
+                applying_selection = false;
+            }
+            if !app.needs_provider_model_setup() {
+                app.onboarding_connect = false;
+                return Ok(());
+            }
+            app.onboarding_connect = true;
+            app.open_connect_picker();
+        }
+
+        terminal.draw(|frame| draw_provider_model_setup(app, frame))?;
+        if !event::poll(Duration::from_millis(200))? {
+            continue;
+        }
+        let model_picker_open = matches!(
+            app.overlay.as_ref(),
+            Some(Overlay::ConnectModel {
+                focus: ConnectModelColumn::Models,
+                ..
+            })
+        );
+        let input = event::read()?;
+        dispatch_terminal_event(app, input, Some(terminal)).await?;
+        if model_picker_open && app.overlay.is_none() {
+            applying_selection = true;
+        }
+    }
+}
+
 async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSummary, TuiError> {
     enable_raw_mode()?;
     // Ensure the terminal is restored on panic, returned errors and normal exit.
@@ -1099,18 +1179,22 @@ async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSum
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Repository mode installs its supervisor state in `new_supervised`; the
-    // direct launcher deliberately has no runtime-ownership escape hatch.
-    app.terminal_events = Some(TerminalEventSource::spawn());
-    app.onboarding_connect = launch.onboarding_connect;
+    // Keep normal workspace chrome off-screen until provider/model setup is
+    // complete. Resume selection remains first when one was requested.
+    if launch.onboarding_connect || app.overlay.is_some() || app.needs_provider_model_setup() {
+        run_startup_preflight(&mut terminal, &mut app).await?;
+    }
     if launch.ready_placeholder {
         app.input.hint = crate::app::types::COMPOSER_OPENER.into();
     }
-    if app.overlay.is_none() && launch.onboarding_connect && !app.is_provider_connected() {
-        app.open_connect_picker();
-        app.set_feedback(FeedbackSeverity::Info, "Connect a provider · Esc quits");
-    }
-    let result = run_loop(&mut terminal, &mut app).await;
+    let result = if app.exit.is_requested() {
+        Ok(())
+    } else {
+        // Repository mode installs its supervisor state in `new_supervised`; the
+        // direct launcher deliberately has no runtime-ownership escape hatch.
+        app.terminal_events = Some(TerminalEventSource::spawn());
+        run_loop(&mut terminal, &mut app).await
+    };
 
     app.persist_selection();
 

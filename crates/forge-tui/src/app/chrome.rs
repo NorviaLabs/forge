@@ -622,6 +622,9 @@ impl TuiApp {
         if let Some(details) = snapshot.details.as_ref() {
             self.runtime.model_label = details.active_model.clone();
             self.thinking_enabled = details.thinking_enabled;
+            if let Some(profile) = self.connect.registry.get_by_route(&details.active_route_id) {
+                self.connect.profile = Some(profile.id.clone());
+            }
         }
         self.approve_all = snapshot.session.approve_all;
         for item in &mut self.session_chrome {

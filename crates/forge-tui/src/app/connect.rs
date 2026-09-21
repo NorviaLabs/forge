@@ -98,6 +98,12 @@ impl TuiApp {
         }
     }
 
+    /// Startup needs both live credentials and a model selection before the
+    /// normal composer is usable.
+    pub(super) fn needs_provider_model_setup(&self) -> bool {
+        !self.is_provider_connected() || self.selected_model_label().trim().is_empty()
+    }
+
     /// The render path's answer to "is the provider connected".
     ///
     /// Only the credential lookup is cached — the mock and no-profile checks
