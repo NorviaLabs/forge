@@ -1620,6 +1620,43 @@ async fn connection_state_cache_handles_mock_missing_and_live_profiles() {
 }
 
 #[tokio::test]
+async fn connection_labels_and_stale_profile_guards_cover_fallbacks() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+
+    assert_eq!(app.vendor_route_labels("does-not-exist"), (None, None));
+    let (vendor, route) = app.vendor_route_labels("openai");
+    assert_eq!(vendor.as_deref(), Some("OpenAI"));
+    assert_eq!(route.as_deref(), Some("API"));
+
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt-4.1-mini".into();
+    app.connect.profile = Some("openai".into());
+    app.connect.auth_suspended = true;
+    app.refresh_connection_ui();
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+
+    app.connect.auth_suspended = false;
+    app.refresh_connection_ui();
+    assert!(app.connect.profile.is_none());
+
+    app.runtime.provider = "mock".into();
+    app.runtime.model_label = "mock".into();
+    app.connect.profile = None;
+    app.input.hint = "Not connected · run /connect".into();
+    app.banner_state.items.push(ChatItem::Banner {
+        kind: BannerKind::Warn,
+        text: "Not connected to provider".into(),
+    });
+    app.refresh_connection_ui();
+    assert!(!app.input.not_connected);
+    assert!(app.input.hint.is_empty());
+    assert!(app.banner_state.items.is_empty());
+}
+
+#[tokio::test]
 async fn connection_chrome_switches_between_disconnected_and_mock_states() {
     let (_dir, mut app) = focus_test_app().await;
     app.runtime.provider = "native".into();
