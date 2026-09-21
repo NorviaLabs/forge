@@ -996,3 +996,47 @@ async fn an_env_prefixed_command_offers_the_normalized_pattern() {
         "{rendered}"
     );
 }
+
+#[tokio::test]
+async fn approval_menu_guards_shortcuts_and_denial_note_lifecycle() {
+    let (_dir, mut app) = focus_test_app().await;
+    assert!(app.approval_menu_rows().is_empty());
+    assert!(!app
+        .handle_approval_menu_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap());
+
+    let payload = bash_hitl_payload("guarded", "cargo test --workspace");
+    set_pending_approval(&mut app, payload.clone());
+    app.session_view.pending_hitl = Some(payload.clone());
+    app.focus_block(FocusBlock::Composer);
+    assert!(!app
+        .handle_approval_menu_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap());
+    app.focus_block(FocusBlock::Approval);
+    assert!(app
+        .handle_approval_menu_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert!(
+        app.handle_approval_menu_key(press(KeyCode::Char('z'), KeyModifiers::NONE))
+            .await
+            .unwrap()
+            == false
+    );
+    assert!(!app
+        .handle_approval_menu_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap());
+
+    assert!(app
+        .handle_approval_menu_key(press(KeyCode::Char('N'), KeyModifiers::NONE))
+        .await
+        .unwrap());
+
+    assert!(app.approval_denial_note_pending());
+    app.session_view.pending_hitl = None;
+    assert!(!app.approval_denial_note_pending());
+    assert!(app.approval_identity_for_payload(&payload).is_some());
+}
