@@ -681,6 +681,12 @@ impl RepositorySupervisor {
         let mut sessions = Vec::new();
         if let Some(primary) = primary {
             let primary_record = control.session(primary_session_id).await?;
+            // The primary is opened by the CLI before adoption, so unlike
+            // secondary sessions it does not pass through the restore path
+            // below. Reapply the persisted selection before exposing it to
+            // the supervisor.
+            let mut primary = primary;
+            restore_task_model(&mut primary, &primary_record);
             sessions.push((primary_record, primary));
         }
 
