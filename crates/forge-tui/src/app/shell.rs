@@ -882,6 +882,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_lifecycle_helpers_cover_empty_and_shutdown_states() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        assert!(!app.poll_interactive_terminals());
+        assert!(!app.any_interactive_terminal_running());
+        app.resize_interactive_terminal(80, 24);
+        drain_events::<ratatui::backend::TestBackend>(&mut app, None)
+            .await
+            .unwrap();
+
+        let source = TerminalEventSource::spawn();
+        source.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn foreground_frame_can_tick_and_paint_without_terminal_input() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
