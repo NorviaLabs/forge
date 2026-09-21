@@ -5812,4 +5812,98 @@ mod verification_tests {
         );
         assert_eq!(counts_from("nothing happened"), None);
     }
+
+    #[test]
+    fn tool_summary_shapes_cover_file_search_and_process_variants() {
+        let call = |name: &str, arguments: serde_json::Value| ToolCall {
+            id: name.into(),
+            name: name.into(),
+            arguments,
+        };
+
+        let (_, summary, _, _) = classify_tool_content(
+            "read_file",
+            "one\ntwo",
+            Some(&call("read_file", serde_json::json!({"path": "a.rs"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "a.rs · 2 lines");
+
+        let (_, summary, _, _) = classify_tool_content("read_file", "", None, &ok());
+        assert_eq!(summary, "0 lines");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "view_image",
+            "image no longer available",
+            Some(&call(
+                "view_image",
+                serde_json::json!({"path": "missing.png"}),
+            )),
+            &ok(),
+        );
+        assert_eq!(summary, "missing.png · missing");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "view_image",
+            "image loaded · 12 KB",
+            Some(&call("view_image", serde_json::json!({"path": "bad.png"}))),
+            &failed(1),
+        );
+        assert_eq!(summary, "bad.png · failed");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "git",
+            "",
+            Some(&call("git", serde_json::json!({"subcommand": "status"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "git status");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "glob",
+            "no files found",
+            Some(&call("glob", serde_json::json!({"pattern": "**/*.rs"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "**/*.rs · no matches");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "grep",
+            "no matches found",
+            Some(&call("grep", serde_json::json!({"pattern": "needle"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "needle · no matches");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "web_search",
+            "1. **first**\n2. **second**",
+            Some(&call("web_search", serde_json::json!({"query": "forge"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "forge · 2 results");
+
+        let (_, summary, _, _) = classify_tool_content("web_search", "no results", None, &ok());
+        assert_eq!(summary, "no results");
+
+        let (_, summary, _, _) = classify_tool_content("edit", "updated a.rs", None, &ok());
+        assert_eq!(summary, "wrote · updated a.rs");
+
+        let (_, summary, _, detail) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"partial","command":"cargo test","session_id":7,"running":true}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "$ cargo test · session #7 · running");
+        assert_eq!(detail, "partial");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","command":"echo hi","running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "$ echo hi · exited");
+    }
 }
