@@ -189,6 +189,34 @@ async fn file_editor_conflicts_and_workspace_path_boundaries_are_safe() {
 }
 
 #[tokio::test]
+async fn explorer_guards_handle_missing_selection_and_non_file_targets() {
+    let (dir, mut app) = focus_test_app().await;
+    let file = dir.path().join("entry.txt");
+    fs::write(&file, "entry\n").unwrap();
+
+    app.save_active_editor();
+    assert!(app.feedback.text.contains("No file open"));
+    app.reload_active_editor_from_disk();
+    app.complete_pending_editor_switch(false);
+
+    app.open_file_explorer(Some("entry.txt"), None);
+    assert!(app.overlay.is_some());
+    app.open_file_viewer(".");
+    assert!(app.status_state.message.contains("File explorer"));
+
+    app.workspace_files.visible = true;
+    app.focus_block(FocusBlock::Files);
+    app.open_explorer_name_dialog(ExplorerNameAction::CreateFile);
+    assert!(matches!(
+        app.explorer_dialog.current(),
+        Some(ExplorerDialog::Name { .. })
+    ));
+    app.workspace_files.explorer.selected_path = None;
+    app.open_explorer_delete_dialog();
+    assert!(app.feedback.text.contains("No file or folder selected"));
+}
+
+#[tokio::test]
 async fn explorer_search_accepts_shortcut_initials_without_opening_dialogs() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
