@@ -5,6 +5,185 @@
 use super::prelude::*;
 
 #[tokio::test]
+async fn explorer_dialog_rendering_covers_all_file_modal_variants() {
+    let (dir, app) = focus_test_app().await;
+    let root = dir.path().canonicalize().unwrap();
+    let file = root.join("src.rs");
+    let child = root.join("src").join("lib.rs");
+    let summary = QuitAllSummary {
+        sessions: 3,
+        in_flight: 2,
+        queued_prompts: 1,
+        pending_requests: 1,
+        dirty_sessions: vec!["editor".into()],
+    };
+    let dialogs = vec![
+        ExplorerDialog::Name {
+            action: ExplorerNameAction::CreateFile,
+            parent: root.clone(),
+            source: None,
+            input: "src.rs".into(),
+            error: Some("bad name".into()),
+        },
+        ExplorerDialog::Name {
+            action: ExplorerNameAction::CreateDirectory,
+            parent: root.clone(),
+            source: None,
+            input: "src".into(),
+            error: None,
+        },
+        ExplorerDialog::Name {
+            action: ExplorerNameAction::Rename,
+            parent: root.clone(),
+            source: Some(file.clone()),
+            input: "renamed.rs".into(),
+            error: None,
+        },
+        ExplorerDialog::ConfirmCreate {
+            action: ExplorerNameAction::CreateFile,
+            parent: root.clone(),
+            name: "src.rs".into(),
+            path: file.clone(),
+        },
+        ExplorerDialog::ConfirmCreate {
+            action: ExplorerNameAction::CreateDirectory,
+            parent: root.clone(),
+            name: "src".into(),
+            path: root.join("src"),
+        },
+        ExplorerDialog::ConfirmRename {
+            source: file.clone(),
+            path: root.join("renamed.rs"),
+            name: "renamed.rs".into(),
+        },
+        ExplorerDialog::ConfirmDelete {
+            source: root.join("src"),
+            name: "src".into(),
+            kind: forge_workspace::file_ops::EntryKind::Directory,
+            non_empty: true,
+            permanent: false,
+            error: None,
+        },
+        ExplorerDialog::ConfirmDelete {
+            source: file.clone(),
+            name: "src.rs".into(),
+            kind: forge_workspace::file_ops::EntryKind::File,
+            non_empty: false,
+            permanent: false,
+            error: Some("Trash is unavailable".into()),
+        },
+        ExplorerDialog::ConfirmDelete {
+            source: file.clone(),
+            name: "src.rs".into(),
+            kind: forge_workspace::file_ops::EntryKind::File,
+            non_empty: false,
+            permanent: true,
+            error: None,
+        },
+        ExplorerDialog::DirtyExit,
+        ExplorerDialog::DirtySwitch { path: child.clone() },
+        ExplorerDialog::SaveConflict,
+        ExplorerDialog::QuitAll {
+            summary: QuitAllSummary {
+                sessions: 2,
+                ..Default::default()
+            },
+            choice: QuitAllChoice::Cancel,
+        },
+        ExplorerDialog::QuitAll {
+            summary,
+            choice: QuitAllChoice::QuitAll,
+        },
+    ];
+
+    let mut rendered = String::new();
+    for dialog in &dialogs {
+        let area = ratatui::layout::Rect::new(0, 0, 100, 40);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        app.render_explorer_dialog(dialog, area, &mut buffer);
+        for row in 0..area.height {
+            for column in 0..area.width {
+                rendered.push_str(buffer[(column, row)].symbol());
+            }
+        }
+    }
+
+    for expected in [
+        "New File",
+        "New Folder",
+        "Rename",
+        "Confirm Create",
+        "Confirm Rename",
+        "Permanent Delete",
+        "Unsaved Changes",
+        "File Changed on Disk",
+        "Quit All Sessions",
+        "bad name",
+        "2 sessions with a turn running",
+        "unsaved changes in editor",
+    ] {
+        assert!(rendered.contains(expected), "missing {expected:?}");
+    }
+}
+
+#[tokio::test]
+async fn file_editor_save_reload_and_attachment_paths_are_reconciled() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("notes.rs");
+    fs::write(&path, "one\ntwo\n").unwrap();
+    let path = path.canonicalize().unwrap();
+
+    app.show_file_in_editor(&path);
+    assert!(app.editor_session.is_some());
+    app.editor_session.as_mut().unwrap().replace_text("changed\n");
+    app.save_active_editor();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "changed\n");
+    assert!(app.feedback.text.contains("saved"));
+
+    fs::write(&path, "from disk\n").unwrap();
+    app.reload_active_editor_from_disk();
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), "from disk\n");
+    assert!(app.feedback.text.contains("reloaded file from disk"));
+
+    let workspace_path = app.session_view.workspace_root().join("notes.rs");
+    app.source_viewer.path = Some(workspace_path);
+    app.source_viewer.status = crate::source_viewer::ViewerStatus::Ok;
+    app.toggle_file_attachment();
+    assert_eq!(app.attachment.file().unwrap().rel_path, "notes.rs");
+    app.toggle_file_attachment();
+    assert!(app.attachment.file().is_none());
+
+    app.open_file_viewer("notes.rs");
+    assert!(app.overlay.is_some());
+    app.open_file_viewer("missing.rs");
+    assert!(app.overlay.is_some());
+    assert!(app.status_state.message.contains("File explorer"));
+}
+
+#[tokio::test]
+async fn file_editor_conflicts_and_workspace_path_boundaries_are_safe() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("notes.rs");
+    fs::write(&path, "original\n").unwrap();
+    let path = path.canonicalize().unwrap();
+    app.show_file_in_editor(&path);
+    app.editor_session.as_mut().unwrap().replace_text("local\n");
+    fs::write(&path, "external\n").unwrap();
+    app.save_active_editor();
+    assert!(matches!(
+        app.explorer_dialog.current(),
+        Some(ExplorerDialog::SaveConflict)
+    ));
+    app.save_active_editor_with_force(true);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "local\n");
+
+    assert!(app.resolve_workspace_path("notes.rs").is_ok());
+    assert!(app.resolve_workspace_path("../outside.rs").is_err());
+    app.open_file_explorer(Some("notes.rs"), Some("shown error".into()));
+    assert!(app.overlay.is_some());
+}
+
+#[tokio::test]
 async fn explorer_search_accepts_shortcut_initials_without_opening_dialogs() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;

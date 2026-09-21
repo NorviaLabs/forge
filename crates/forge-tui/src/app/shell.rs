@@ -707,6 +707,66 @@ mod tests {
         sender_task.await.unwrap();
         assert_eq!(event, Event::Paste("first line\nsecond line\n".into()));
     }
+
+    #[tokio::test]
+    async fn terminal_event_source_preserves_ready_and_pending_order() {
+        let mut source = TerminalEventSource::from_events([key(KeyCode::Char('a'))]);
+        source.pending.push_back(Ok(key(KeyCode::Char('b'))));
+        source.release_ready(std::collections::VecDeque::from([
+            key(KeyCode::Char('c')),
+            key(KeyCode::Char('d')),
+        ]));
+
+        assert!(matches!(source.pop_ready(), Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c')));
+        assert!(matches!(source.pop_queued(), Some((Ok(Event::Key(key)), true)) if key.code == KeyCode::Char('d')));
+        assert!(matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('b')));
+        assert!(matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('a')));
+        source.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_keeps_non_key_events_and_errors_in_order() {
+        let resize = Event::Resize(80, 24);
+        let mut source = TerminalEventSource::from_events([resize.clone()]);
+        assert!(matches!(
+            coalesce_source_paste(&mut source, None).await,
+            Some(Ok(Event::Resize(80, 24)))
+        ));
+
+        let mut source = TerminalEventSource::from_events([]);
+        source.rx.close();
+        let result = coalesce_source_paste(&mut source, None).await;
+        assert!(matches!(result, Some(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe));
+
+        let mut source = TerminalEventSource::from_events([key(KeyCode::Char('x'))]);
+        source.push_front_raw(Err(io::Error::new(io::ErrorKind::Other, "reader")));
+        let result = coalesce_source_paste(&mut source, None).await;
+        assert!(matches!(result, Some(Err(error)) if error.kind() == io::ErrorKind::Other));
+        assert!(matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('x')));
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_classifies_modified_and_initial_events() {
+        let modified = Event::Key(event::KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        ));
+        let mut source = TerminalEventSource::from_events([modified.clone()]);
+        assert!(matches!(
+            coalesce_source_paste(&mut source, None).await,
+            Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c')
+        ));
+        assert!(matches!(
+            coalesce_source_paste(&mut source, Some(modified)).await,
+            Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c')
+        ));
+
+        let mut queued = std::collections::VecDeque::from([
+            key(KeyCode::Char('a')),
+            key(KeyCode::Enter),
+        ]);
+        assert!(matches!(coalesce_unbracketed_paste(&mut queued), Some(Event::Key(key)) if key.code == KeyCode::Char('a')));
+    }
 }
 
 /// Advance every non-blocking service owned by the TUI application.
