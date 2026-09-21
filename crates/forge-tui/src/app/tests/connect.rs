@@ -541,6 +541,12 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
         .preferences
         .set_last_selection("xai", "opencode-go/deepseek-v4.1-flash")
         .unwrap();
+    // `TuiApp::new` restores the developer's real credential store before the
+    // test swaps in its isolated stores. Reset the runtime seed so the second
+    // restore exercises the saved-selection path instead of preserving that
+    // ambient model as an explicit command-line choice.
+    app.runtime.model_label = "mock".into();
+    app.session_runtime.active_model = "mock".into();
 
     let restored = app.restore_saved_auth();
 
