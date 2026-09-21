@@ -398,4 +398,14 @@ mod tests {
         );
         assert!(buffer.content().iter().any(|cell| cell.symbol() == "F"));
     }
+
+    #[test]
+    fn setup_draw_helpers_cover_fallback_and_selection_states() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        draw_theme_setup(area, &mut buffer, &Overlay::Help);
+        draw_trust_setup(area, &mut buffer, "/tmp/project", false, 0, None);
+        assert_eq!(choice_line(true, "yes").width(), 5);
+        assert_eq!(choice_line(false, "no").width(), 4);
+    }
 }
