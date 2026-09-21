@@ -747,7 +747,7 @@ mod tests {
         assert!(matches!(result, Some(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe));
 
         let mut source = TerminalEventSource::from_events([key(KeyCode::Char('x'))]);
-        source.push_front_raw(Err(io::Error::new(io::ErrorKind::Other, "reader")));
+        source.push_front_raw(Err(io::Error::other("reader")));
         let result = coalesce_source_paste(&mut source, None).await;
         assert!(matches!(result, Some(Err(error)) if error.kind() == io::ErrorKind::Other));
         assert!(

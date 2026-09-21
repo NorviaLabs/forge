@@ -613,6 +613,7 @@ async fn external_editor_does_not_override_dirty_embedded_buffer() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn external_editor_runs_configured_command_and_refreshes_the_view() {
     let env_lock = crate::app::tests::helpers::lock_test_env();
     let old_visual = std::env::var_os("VISUAL");

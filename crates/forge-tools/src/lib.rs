@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(descriptor.name, "test");
         assert_eq!(descriptor.description, "test tool");
         assert!(descriptor.input_schema.is_object());
-        assert!(descriptor.idempotent == false);
+        assert!(!descriptor.idempotent);
         assert!(ReadOnlyTool.parallel_safe());
         ReadOnlyTool.warm_workspace(std::path::Path::new("."));
     }

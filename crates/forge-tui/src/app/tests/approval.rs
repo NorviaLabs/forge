@@ -1019,12 +1019,10 @@ async fn approval_menu_guards_shortcuts_and_denial_note_lifecycle() {
         .handle_approval_menu_key(press(KeyCode::Up, KeyModifiers::NONE))
         .await
         .unwrap());
-    assert!(
-        app.handle_approval_menu_key(press(KeyCode::Char('z'), KeyModifiers::NONE))
-            .await
-            .unwrap()
-            == false
-    );
+    assert!(!app
+        .handle_approval_menu_key(press(KeyCode::Char('z'), KeyModifiers::NONE))
+        .await
+        .unwrap());
     assert!(!app
         .handle_approval_menu_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await

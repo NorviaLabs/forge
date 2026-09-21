@@ -6528,9 +6528,11 @@ mod tests {
     #[tokio::test]
     async fn session_actor_state_guards_cover_cancel_retire_and_continuation_edges() {
         let dir = TempDir::new().unwrap();
-        let mut cfg = Config::default();
-        cfg.resolved_workspace = dir.path().to_path_buf();
-        cfg.workspace_root = Some(dir.path().display().to_string());
+        let mut cfg = Config {
+            resolved_workspace: dir.path().to_path_buf(),
+            workspace_root: Some(dir.path().display().to_string()),
+            ..Default::default()
+        };
         cfg.journal.path = dir.path().join("journal").display().to_string();
         let session = scripted_session(&cfg, "ok").await;
         let id = session.session_id;
