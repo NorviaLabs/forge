@@ -5148,6 +5148,88 @@ mod helper_coverage_tests {
             "kept kept \\confidence{unfinished"
         );
         assert_eq!(wrap("one two three", 5), vec!["one", "two", "three"]);
+
+        assert_eq!(
+            counts_from("2 passed; 1 failed; 0 skipped"),
+            Some("2 passed · 1 failed".into())
+        );
+        assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m"), "red");
+        assert_eq!(
+            failure_evidence(&["ok", "FAILED", "detail"], "summary".into()),
+            vec!["FAILED", "detail", "summary"]
+        );
+        assert_eq!(
+            subcommand_line(Some("cargo test"), "cargo test · 2 tests"),
+            vec!["cargo test · 2 tests"]
+        );
+        assert_eq!(
+            subcommand_line(Some("write_file"), "changed"),
+            vec!["write_file"]
+        );
+        assert_eq!(subcommand_line(None, "changed"), Vec::<String>::new());
+
+        let (query, attachment) =
+            strip_attached_context("Active file: src/main.rs\nCursor line: 7\n\n\nfix this");
+        assert_eq!(query, "fix this");
+        assert_eq!(attachment.as_deref(), Some("Attached: src/main.rs:7"));
+        assert_eq!(strip_attached_context("plain"), ("plain".into(), None));
+        assert_eq!(change_rationale(None), "");
+        assert_eq!(
+            change_rationale(Some("**heading**\nfirst reason\nsecond reason")),
+            "first reason second reason"
+        );
+
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new";
+        assert!(looks_like_diff(diff));
+        assert!(looks_like_code_change("apply_patch", diff));
+        assert_eq!(extract_path_hint("write_file", diff), "a.rs");
+        assert_eq!(split_diff_sections("write_file", diff).len(), 1);
+        assert_eq!(diff_preview_lines(diff, 3).len(), 3);
+        assert_eq!(visible_result_count("fff: header\none\n\ntwo"), 2);
+        assert_eq!(visible_result_count(r#"{"hits":[1,2,3]}"#), 3);
+        assert_eq!(result_count_label(1, "item", "items"), "1 item");
+        assert_eq!(result_count_label(2, "item", "items"), "2 items");
+
+        assert_eq!(
+            routine_tool_category("read_file", "", None),
+            Some(ActivityCategory::Exploring)
+        );
+        assert_eq!(
+            routine_tool_category("write_file", "", None),
+            Some(ActivityCategory::Implementing)
+        );
+        assert_eq!(
+            routine_tool_category("bash", "cargo test", None),
+            Some(ActivityCategory::Validating)
+        );
+        assert_eq!(
+            routine_tool_category("exec_command", "$ cargo check · session #1", None),
+            Some(ActivityCategory::Validating)
+        );
+        assert_eq!(
+            routine_tool_category("git", "git status", None),
+            Some(ActivityCategory::Exploring)
+        );
+        assert_eq!(routine_tool_category("git", "push", None), None);
+        assert!(is_validation_command("cargo fmt --check"));
+        assert!(!is_validation_command("cargo build"));
+        assert_eq!(
+            running_activity_summary(ActivityCategory::Reviewing, "review"),
+            "Inspecting results"
+        );
+        assert_eq!(join_counts(&[(0, "item", "items")]), "activity completed");
+        assert_eq!(
+            join_counts(&[(1, "file", "files"), (2, "test", "tests")]),
+            "1 file · 2 tests"
+        );
+        assert_eq!(validation_outcome_summary(&success), "Tests passed");
+        assert_eq!(
+            validation_outcome_summary(&failure),
+            "Tests failed · exit code 1"
+        );
+        assert_eq!(outcome_label(&success, 0), "completed");
+        assert_eq!(outcome_label(&success, 2), "2 output lines");
+        assert_eq!(outcome_label(&ExecutionOutcome::Cancelled, 1), "cancelled");
     }
 }
 
