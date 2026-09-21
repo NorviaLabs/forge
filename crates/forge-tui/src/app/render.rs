@@ -116,6 +116,7 @@ impl TuiApp {
         }
         let area = frame.area();
         self.last_frame_width = area.width;
+        self.pane_resize.frame_area = area;
         if is_too_small(area) {
             self.focus.reset_to_workspace();
             self.workspace_files.explorer.focused = false;
@@ -198,59 +199,45 @@ impl TuiApp {
         } else {
             strip_live.height()
         };
-        let regions = if expand_conversation && task_mode {
-            split_areas_with_expanded_conversation(
-                area,
-                fb_h,
-                input_h,
-                self.workspace_files.visible || task_mode,
-                queue_h,
-                panel_h,
-                hint_h,
-                true,
-                background_h,
-                approve_all_warning_h,
+        let regions = split_areas_with_preferences(
+            area,
+            fb_h,
+            input_h,
+            self.workspace_files.visible || task_mode,
+            queue_h,
+            panel_h,
+            hint_h,
+            true,
+            background_h,
+            approve_all_warning_h,
+            expand_conversation,
+            task_mode,
+            self.pane_resize.preferences,
+        );
+        self.pane_resize.files_separator = regions
+            .files
+            .map(|files| ratatui::layout::Rect::new(files.right(), files.y, 1, files.height));
+        self.pane_resize.conversation_separator = (!expand_conversation)
+            .then_some(regions.sidebar)
+            .flatten()
+            .map(|sidebar| {
+                ratatui::layout::Rect::new(
+                    sidebar.x.saturating_sub(1),
+                    sidebar.y,
+                    1,
+                    sidebar
+                        .height
+                        .max(regions.input.bottom().saturating_sub(sidebar.y)),
+                )
+            });
+        self.pane_resize.bottom_separator = (regions.bottom_panel.height > 0).then(|| {
+            ratatui::layout::Rect::new(
+                regions.bottom_panel.x,
+                regions.bottom_panel.y.saturating_sub(1),
+                regions.bottom_panel.width,
+                1,
             )
-        } else if task_mode {
-            split_areas_with_chrome(
-                area,
-                fb_h,
-                input_h,
-                self.workspace_files.visible || task_mode,
-                queue_h,
-                panel_h,
-                hint_h,
-                true,
-                background_h,
-                approve_all_warning_h,
-            )
-        } else if expand_conversation {
-            split_areas_with_expanded_conversation(
-                area,
-                fb_h,
-                input_h,
-                self.workspace_files.visible,
-                queue_h,
-                panel_h,
-                hint_h,
-                true,
-                background_h,
-                approve_all_warning_h,
-            )
-        } else {
-            split_areas_with_chrome(
-                area,
-                fb_h,
-                input_h,
-                self.workspace_files.visible,
-                queue_h,
-                panel_h,
-                hint_h,
-                true,
-                background_h,
-                approve_all_warning_h,
-            )
-        };
+        });
         // Remember the rendered editor rect so mouse events (which arrive
         // between frames) can be hit-tested against it for selection.
         self.editor_area = if self.current_workspace_is_file() {

@@ -56,7 +56,7 @@ use crate::file_explorer::{FileExplorer, FileExplorerWidget};
 use crate::history::{HistoryStore, InputHistory};
 use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
-use crate::layout::{split_areas_with_chrome, split_areas_with_expanded_conversation};
+use crate::layout::split_areas_with_preferences;
 use crate::overlays::{
     centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalOverlayState,
     ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction,
@@ -100,6 +100,7 @@ mod quit;
 /// for a type across several modules of the same crate, so this is a file split
 /// only — `TuiApp`'s fields and every signature are unchanged.
 mod render;
+mod resize;
 mod selection;
 pub(crate) use selection::SelectedRuntime;
 mod session_state;

@@ -1299,6 +1299,8 @@ impl TuiApp {
                     // it, which is the point of asking for it.
                     self.open_bottom_panel();
                 }
+                Ok(SlashCommand::Resize) => self.begin_resize_mode(),
+                Ok(SlashCommand::ResizeReset) => self.reset_pane_layout(),
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());

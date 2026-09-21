@@ -11,6 +11,7 @@ use crate::design::{
     AIRY_MIN_ROWS, CHROME_GAP_Y, COMPOSER_GAP_Y, FILES_VISIBLE_FRAME_W, FRAME_INSET_X, PANE_GAP_X,
     PANE_GAP_Y,
 };
+use forge_config::PaneLayoutPreferences;
 /// Composer text rows (visual lines), capped for normal chat. The band adds
 /// top and bottom border rows on top of this.
 pub const MAX_COMPOSER_INPUT_H: u16 = 10;
@@ -171,7 +172,7 @@ pub fn split_areas_with_chrome(
     background_h: u16,
     warning_h: u16,
 ) -> LayoutRegions {
-    split_areas_with_chrome_mode(
+    split_areas_with_preferences(
         area,
         feedback_h,
         input_h,
@@ -184,6 +185,7 @@ pub fn split_areas_with_chrome(
         warning_h,
         false,
         false,
+        PaneLayoutPreferences::default(),
     )
 }
 
@@ -201,7 +203,7 @@ pub fn split_areas_with_expanded_conversation(
     background_h: u16,
     warning_h: u16,
 ) -> LayoutRegions {
-    split_areas_with_chrome_mode(
+    split_areas_with_preferences(
         area,
         feedback_h,
         input_h,
@@ -214,11 +216,12 @@ pub fn split_areas_with_expanded_conversation(
         warning_h,
         true,
         false,
+        PaneLayoutPreferences::default(),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn split_areas_with_chrome_mode(
+pub fn split_areas_with_preferences(
     area: Rect,
     feedback_h: u16,
     input_h: u16,
@@ -231,6 +234,7 @@ fn split_areas_with_chrome_mode(
     warning_h: u16,
     expand_conversation: bool,
     show_task_strip: bool,
+    preferences: PaneLayoutPreferences,
 ) -> LayoutRegions {
     let content_width = content_width(area);
     let content_area = Rect {
@@ -244,18 +248,46 @@ fn split_areas_with_chrome_mode(
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
     let footer_h = footer_h.min(2);
-    let sidebar_width = sidebar_width(content_area.width);
+    let default_sidebar_width = sidebar_width(content_area.width);
+    let sidebar_max = if show_files && area.width >= FILES_WIDTH_THRESHOLD {
+        content_area
+            .width
+            .saturating_sub(28 + PANE_GAP_X + 44 + PANE_GAP_X)
+    } else {
+        content_area
+            .width
+            .saturating_sub(SIDEBAR_MIN_CONTENT_WIDTH + PANE_GAP_X)
+    };
+    let sidebar_width = preferences
+        .conversation_width_ratio
+        .map(|ratio| (f64::from(content_area.width) * ratio).round() as u16)
+        .unwrap_or(default_sidebar_width)
+        .clamp(32, sidebar_max.max(32));
     let show_sidebar =
         show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
     let gap_bottom = if footer_h > 0 { CHROME_GAP_Y } else { 0 };
     let status_h = if area.height >= AIRY_MIN_ROWS { 3 } else { 1 };
     let fixed_h = status_h + footer_h + fb + CHROME_GAP_Y + gap_bottom;
-    let requested_panel_h = bottom_panel_h.min(32);
+    let requested_panel_h = if bottom_panel_h > 0 {
+        preferences
+            .bottom_panel_height_ratio
+            .map(|ratio| (f64::from(content_area.height) * ratio).round() as u16)
+            .unwrap_or(bottom_panel_h)
+            .min(32)
+    } else {
+        0
+    };
     let available_panel_h = content_area
         .height
         .saturating_sub(fixed_h)
         .saturating_sub(3);
-    let panel_h = requested_panel_h.min(available_panel_h);
+    let panel_h = if requested_panel_h > 0 {
+        requested_panel_h
+            .clamp(3, available_panel_h.max(3))
+            .min(available_panel_h)
+    } else {
+        0
+    };
 
     // Top-level vertical stack: status / approve-all warning / task strip /
     // gutter / main / gutter / status line / footer. `queue`, `background`
@@ -319,7 +351,12 @@ fn split_areas_with_chrome_mode(
 
     let show_files =
         show_files && area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + PANE_GAP_X + 44;
-    let file_width = (content_area.width / 4).clamp(28, 37);
+    let default_file_width = (content_area.width / 4).clamp(28, 37);
+    let file_width = preferences
+        .files_width_ratio
+        .map(|ratio| (f64::from(content_area.width) * ratio).round() as u16)
+        .unwrap_or(default_file_width)
+        .clamp(28, top.width.saturating_sub(44 + PANE_GAP_X).max(28));
     let (files, chat) = if show_files {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -594,6 +631,59 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_full(area, 0, 3, 3);
         assert_eq!(r.queue.height, 3);
+    }
+
+    #[test]
+    fn pane_preferences_resize_and_clamp_existing_boundaries() {
+        let area = Rect::new(0, 0, 160, 50);
+        let preferences = PaneLayoutPreferences {
+            files_width_ratio: Some(0.3),
+            conversation_width_ratio: Some(0.4),
+            bottom_panel_height_ratio: Some(0.4),
+        };
+        let regions = split_areas_with_preferences(
+            area,
+            0,
+            3,
+            true,
+            0,
+            16,
+            0,
+            true,
+            0,
+            0,
+            false,
+            false,
+            preferences,
+        );
+
+        assert_eq!(regions.files.unwrap().width, 47);
+        assert_eq!(regions.sidebar.unwrap().width, 63);
+        assert_eq!(regions.bottom_panel.height, 20);
+
+        let clamped = split_areas_with_preferences(
+            area,
+            0,
+            3,
+            true,
+            0,
+            16,
+            0,
+            true,
+            0,
+            0,
+            false,
+            false,
+            PaneLayoutPreferences {
+                files_width_ratio: Some(0.99),
+                conversation_width_ratio: Some(0.99),
+                bottom_panel_height_ratio: Some(0.99),
+            },
+        );
+        assert!(clamped.files.unwrap().width >= 28);
+        assert!(clamped.chat.width >= 44);
+        assert!(clamped.sidebar.unwrap().width >= 32);
+        assert!(clamped.bottom_panel.height <= 32);
     }
 
     /// The status line is a shell row above the footer, not a row inside the

@@ -26,6 +26,44 @@ pub(crate) struct ChildSessionView {
     pub(crate) parent_hint: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResizeBoundary {
+    Files,
+    Conversation,
+    BottomPanel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ResizeInteraction {
+    pub(crate) boundary: Option<ResizeBoundary>,
+    pub(crate) initial: forge_config::PaneLayoutPreferences,
+    pub(crate) drag_start: Option<(u16, u16)>,
+}
+
+pub(crate) struct PaneResizeState {
+    pub(crate) preferences: forge_config::PaneLayoutPreferences,
+    pub(crate) store: forge_config::PaneLayoutStore,
+    pub(crate) interaction: Option<ResizeInteraction>,
+    pub(crate) files_separator: Option<ratatui::layout::Rect>,
+    pub(crate) conversation_separator: Option<ratatui::layout::Rect>,
+    pub(crate) bottom_separator: Option<ratatui::layout::Rect>,
+    pub(crate) frame_area: ratatui::layout::Rect,
+}
+
+impl PaneResizeState {
+    pub(crate) fn new(store: forge_config::PaneLayoutStore) -> Self {
+        Self {
+            preferences: store.load(),
+            store,
+            interaction: None,
+            files_separator: None,
+            conversation_separator: None,
+            bottom_separator: None,
+            frame_area: ratatui::layout::Rect::default(),
+        }
+    }
+}
+
 /// Everything the operator's view of one task carries with it across a switch.
 ///
 /// Saved and restored by *moving*, not cloning: several of these hold buffers
@@ -2011,6 +2049,7 @@ pub struct TuiApp {
     /// next render, so commands that depend on whether a pane can physically
     /// fit (e.g. the explorer toggle) need last frame's width to answer.
     pub(crate) last_frame_width: u16,
+    pub(crate) pane_resize: PaneResizeState,
     /// Physical area occupied by the current source-viewer image.
     pub(crate) kitty_image_area: Option<ratatui::layout::Rect>,
 }

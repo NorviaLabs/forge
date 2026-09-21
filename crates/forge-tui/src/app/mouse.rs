@@ -49,16 +49,26 @@ impl TuiApp {
                 self.dispatch_mouse_scroll(1, event.modifiers.contains(KeyModifiers::SHIFT));
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                if !self.pointer_blocked() && self.start_mouse_resize(event.column, event.row) {
+                    return Ok(());
+                }
                 self.mouse_click(event.column, event.row).await?;
                 self.mouse_start_selection(event.column, event.row);
             }
             MouseEventKind::Drag(_) => {
+                if self.drag_mouse_resize(event.column, event.row) {
+                    return Ok(());
+                }
                 self.mouse_update_selection(event.column, event.row);
             }
             MouseEventKind::Moved => {
                 self.mouse_hover(event.column, event.row);
             }
-            MouseEventKind::Up(MouseButton::Left) => self.mouse_finish_selection(),
+            MouseEventKind::Up(MouseButton::Left) => {
+                if !self.finish_mouse_resize() {
+                    self.mouse_finish_selection();
+                }
+            }
             MouseEventKind::Down(MouseButton::Right) => {
                 self.mouse_open_context_menu(event.column, event.row);
             }

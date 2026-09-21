@@ -45,6 +45,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             "Switch, create, attach, and manage repository sessions",
         ),
         ("/terminal", "Open the terminal panel (Ctrl+`)"),
+        ("/resize", "Resize workspace panes"),
         ("/clear", "Clear the TUI screen"),
         ("/edit", "Open a workspace file in the embedded editor"),
         (

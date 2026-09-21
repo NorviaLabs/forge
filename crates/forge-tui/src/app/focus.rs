@@ -269,6 +269,9 @@ impl TuiApp {
     }
 
     pub(super) fn contextual_hint(&self) -> Option<String> {
+        if self.pane_resize.interaction.is_some() {
+            return Some("←↑↓→ resize · Enter save · Esc cancel".into());
+        }
         if self.explorer_dialog.is_open() {
             return Some("Enter confirm · Esc cancel".into());
         }
