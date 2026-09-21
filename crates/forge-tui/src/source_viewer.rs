@@ -80,6 +80,7 @@ fn preview_language(kind: TextPreviewKind) -> Option<&'static str> {
 type PreviewSegment = (String, (u8, u8, u8), bool, bool);
 
 type PreviewLines = Vec<Vec<PreviewSegment>>;
+type ImagePreview = (u32, u32, Vec<[u8; 3]>, Vec<u8>);
 
 fn preview_segments(kind: TextPreviewKind, lines: &[String]) -> PreviewLines {
     let syntax_theme = theme::syntax_theme();
@@ -327,7 +328,7 @@ pub struct SourceViewer {
     pub status: ViewerStatus,
     /// Decoded raster for filesystem image previews. The first frame is used
     /// for animated formats; terminal cells cannot represent animation.
-    image_preview: Option<(u32, u32, Vec<[u8; 3]>, Vec<u8>)>,
+    image_preview: Option<ImagePreview>,
     /// Raw size on disk when the file was loaded.
     pub size_bytes: u64,
     /// Whether the current view is a limited preview.
