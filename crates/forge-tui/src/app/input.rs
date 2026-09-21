@@ -2413,6 +2413,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_key_bytes_cover_alt_navigation_and_unmapped_keys() {
+        assert_eq!(
+            terminal_key_bytes(press_with(KeyCode::Char('x'), KeyModifiers::ALT)),
+            Some(vec![0x1b, b'x'])
+        );
+        for (code, expected) in [
+            (KeyCode::Down, b"\x1b[B".to_vec()),
+            (KeyCode::Right, b"\x1b[C".to_vec()),
+            (KeyCode::Home, b"\x1b[H".to_vec()),
+            (KeyCode::End, b"\x1b[F".to_vec()),
+            (KeyCode::Delete, b"\x1b[3~".to_vec()),
+            (KeyCode::PageUp, b"\x1b[5~".to_vec()),
+            (KeyCode::PageDown, b"\x1b[6~".to_vec()),
+            (KeyCode::Tab, b"\t".to_vec()),
+        ] {
+            assert_eq!(terminal_key_bytes(press(code)), Some(expected));
+        }
+        assert_eq!(terminal_key_bytes(press(KeyCode::Esc)), None);
+        assert_eq!(terminal_key_bytes(press(KeyCode::F(1))), None);
+    }
+
+    #[test]
+    fn editor_substitute_parser_accepts_ranges_and_rejects_malformed_commands() {
+        assert_eq!(
+            parse_editor_substitute("s/foo/bar/"),
+            Some((false, "foo".into(), "bar".into(), false))
+        );
+        assert_eq!(
+            parse_editor_substitute("%s|old|new|g"),
+            Some((true, "old".into(), "new".into(), true))
+        );
+        assert_eq!(
+            parse_editor_substitute("s/foo/bar/gg"),
+            Some((false, "foo".into(), "bar".into(), false))
+        );
+        for command in ["", "x/foo/bar/", "s", "s/foo", "s/foo/bar", "s/foo/bar/x"] {
+            assert_eq!(parse_editor_substitute(command), None, "{command:?}");
+        }
+    }
+
+    #[test]
+    fn overlay_key_mapping_preserves_navigation_and_character_keys() {
+        let cases = [
+            (KeyCode::Esc, OverlayKey::Esc),
+            (KeyCode::Enter, OverlayKey::Enter),
+            (KeyCode::Tab, OverlayKey::Tab),
+            (KeyCode::BackTab, OverlayKey::BackTab),
+            (KeyCode::Up, OverlayKey::Up),
+            (KeyCode::Down, OverlayKey::Down),
+            (KeyCode::Left, OverlayKey::Left),
+            (KeyCode::Right, OverlayKey::Right),
+            (KeyCode::Backspace, OverlayKey::Backspace),
+            (KeyCode::Char('q'), OverlayKey::Char('q')),
+            (KeyCode::F(1), OverlayKey::Other),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(map_key(press(code)), expected);
+        }
+    }
+
     #[tokio::test]
     async fn f3_is_reserved_for_sessions_and_never_encoded_for_the_pty() {
         let (_dir, app) = app().await;
@@ -2852,5 +2913,130 @@ mod tests {
 
         assert!(app.interactive_terminal.is_none());
         assert_eq!(app.history.entries(), &["!printf hi".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn editor_command_routes_cover_edit_substitute_and_failure_paths() {
+        let (dir, mut app) = app().await;
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "foo foo\n").unwrap();
+        app.source_viewer.open(dir.path(), &path);
+        app.editor_session = Some(crate::editor_session::EditorSession::new("foo foo\n"));
+
+        assert!(!app
+            .handle_editor_command_key(press(KeyCode::Char('x')))
+            .await
+            .unwrap());
+
+        app.editor_command = Some("s/foo/bar/g".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(app.editor_session.as_ref().unwrap().text(), "bar bar\n");
+        assert_eq!(app.editor_message.as_deref(), Some("2 substitutions"));
+
+        app.editor_command = Some("s/foo".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.editor_message.as_deref(),
+            Some("E488: Trailing characters")
+        );
+
+        app.editor_command = Some("edit missing.txt".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.editor_message.as_deref(),
+            Some("E32: No file or directory")
+        );
+
+        app.editor_command = Some("not-a-command".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.editor_message.as_deref(),
+            Some("E492: Not an editor command: not-a-command")
+        );
+
+        app.editor_command = Some("abc".into());
+        app.handle_editor_command_key(press(KeyCode::Backspace))
+            .await
+            .unwrap();
+        assert_eq!(app.editor_command.as_deref(), Some("ab"));
+        app.handle_editor_command_key(press(KeyCode::Esc))
+            .await
+            .unwrap();
+        assert!(app.editor_command.is_none());
+    }
+
+    #[tokio::test]
+    async fn preview_search_and_jump_handlers_consume_all_navigation_keys() {
+        let (dir, mut app) = app().await;
+        let path = dir.path().join("preview.txt");
+        std::fs::write(&path, "one\ntwo\none\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.source_viewer.text_preview = true;
+        app.editor_viewport = EditorViewportState { height: 8 };
+
+        for key in [
+            press(KeyCode::Up),
+            press(KeyCode::Char('k')),
+            press(KeyCode::Down),
+            press(KeyCode::Char('j')),
+            press(KeyCode::PageUp),
+            press(KeyCode::PageDown),
+            press(KeyCode::Home),
+            press(KeyCode::Char('g')),
+            press(KeyCode::End),
+            press(KeyCode::Char('G')),
+            press_with(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            press(KeyCode::Char('x')),
+        ] {
+            assert!(app.handle_preview_key(key));
+        }
+
+        app.source_viewer.start_search();
+        assert!(app.handle_search_key(press(KeyCode::Char('o'))));
+        assert!(app.handle_search_key(press(KeyCode::Enter)));
+        assert!(app.handle_search_key(press_with(KeyCode::Enter, KeyModifiers::SHIFT)));
+        assert!(app.handle_search_key(press(KeyCode::Backspace)));
+        assert!(app.handle_search_key(press(KeyCode::Esc)));
+
+        app.source_viewer.start_jump();
+        assert!(app.handle_jump_key(press(KeyCode::Char('2'))));
+        assert!(app.handle_jump_key(press(KeyCode::Backspace)));
+        assert!(app.handle_jump_key(press(KeyCode::Char('3'))));
+        assert!(app.handle_jump_key(press(KeyCode::Enter)));
+        app.source_viewer.start_jump();
+        assert!(app.handle_jump_key(press(KeyCode::Esc)));
+    }
+
+    #[tokio::test]
+    async fn task_strip_guards_handle_empty_and_non_session_navigation() {
+        let (_dir, mut app) = app().await;
+        assert!(!app
+            .handle_task_strip_key(press(KeyCode::Down))
+            .await
+            .unwrap());
+
+        app.navigator_tab = crate::widgets::NavigatorTab::Files;
+        assert!(!app
+            .handle_task_strip_key(press(KeyCode::Enter))
+            .await
+            .unwrap());
+
+        app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+        assert!(app
+            .handle_task_strip_key(press(KeyCode::Char('n')))
+            .await
+            .unwrap());
+        assert!(app
+            .status_state
+            .message
+            .contains("Sessions are unavailable"));
     }
 }

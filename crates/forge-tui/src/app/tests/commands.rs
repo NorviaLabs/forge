@@ -632,6 +632,38 @@ async fn a_failed_compact_says_the_context_is_unchanged_rather_than_claiming_suc
 }
 
 #[tokio::test]
+async fn compact_request_guards_busy_pending_and_waiting_states() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(session, test_runtime_config());
+
+    app.queue_context_reset();
+    assert!(app.pending_interaction.context_reset_pending());
+    assert!(app.busy_state.is_active());
+
+    app.queue_context_reset();
+    assert!(app.feedback.text.contains("busy"));
+
+    app.pending_interaction.clear();
+    app.busy_state.stop();
+    app.pending_turn.queue("queued".into(), Vec::new());
+    app.queue_context_reset();
+    assert!(app.feedback.text.contains("busy"));
+
+    app.pending_turn.clear();
+    app.pending_interaction.clear();
+    app.pending_interaction.request_hitl_decision(
+        forge_types::HitlDecision::Deny,
+        crate::app::types::ApprovalGrant::Once,
+    );
+    app.queue_context_reset();
+    assert!(app.feedback.text.contains("busy"));
+
+    app.pending_interaction.clear();
+    app.busy_state.stop();
+    app.drain_pending_context_reset(None).await.unwrap();
+}
+
+#[tokio::test]
 async fn enter_while_busy_enqueues_user_message() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;
@@ -2204,4 +2236,50 @@ async fn approve_all_warning_strip_renders_only_while_on() {
         !text.contains("SANDBOX OFF"),
         "warning must clear when approve-all is off:\n{text}"
     );
+}
+
+#[tokio::test]
+async fn benign_semantic_commands_cover_navigation_and_editor_dispatch() {
+    let (_dir, mut app) = focus_test_app().await;
+    let commands = [
+        SemanticCommand::GoHome,
+        SemanticCommand::GoBack,
+        SemanticCommand::PushView(WorkspaceView::Diff),
+        SemanticCommand::ReplaceView(WorkspaceView::Diff),
+        SemanticCommand::ToggleFiles,
+        SemanticCommand::ReturnToLatest,
+        SemanticCommand::PageConversation(true),
+        SemanticCommand::PageConversation(false),
+        SemanticCommand::CloseOverlay,
+        SemanticCommand::FocusComposer,
+        SemanticCommand::FocusPane(FocusBlock::Sidebar),
+        SemanticCommand::InsertComposerNewline,
+        SemanticCommand::OpenInlineSearch,
+        SemanticCommand::OpenSlashCommands,
+        SemanticCommand::OpenHelp,
+        SemanticCommand::CycleFocus { forward: true },
+        SemanticCommand::CycleFocus { forward: false },
+        SemanticCommand::ToggleBottomPanel,
+        SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
+        SemanticCommand::OpenBottomPanel,
+        SemanticCommand::RefreshFiles,
+        SemanticCommand::RefreshEditor,
+        SemanticCommand::BeginCreateFile,
+        SemanticCommand::BeginCreateDirectory,
+        SemanticCommand::BeginRename,
+        SemanticCommand::RequestDelete,
+        SemanticCommand::StartSourceSearch,
+        SemanticCommand::StartJumpToLine,
+        SemanticCommand::OpenExternalEditor,
+        SemanticCommand::ToggleToolDetails,
+        SemanticCommand::MoveQueueSelection(1),
+        SemanticCommand::MoveTasksSelection(1),
+        SemanticCommand::OpenSessionSwitcher,
+        SemanticCommand::StepReasoningEffort(true),
+    ];
+    for command in commands {
+        app.execute_semantic_command(command).await.unwrap();
+    }
+    assert!(app.external_editor.requested);
+    assert!(app.overlay.is_some());
 }

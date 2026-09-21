@@ -541,6 +541,12 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
         .preferences
         .set_last_selection("xai", "opencode-go/deepseek-v4.1-flash")
         .unwrap();
+    // `TuiApp::new` restores the developer's real credential store before the
+    // test swaps in its isolated stores. Reset the runtime seed so the second
+    // restore exercises the saved-selection path instead of preserving that
+    // ambient model as an explicit command-line choice.
+    app.runtime.model_label = "mock".into();
+    app.session_runtime.active_model = "mock".into();
 
     let restored = app.restore_saved_auth();
 
@@ -1584,4 +1590,132 @@ async fn status_chrome_falls_back_without_a_session_identity() {
     assert_eq!(chrome.provider, "mock");
     assert!(chrome.connect_profile.is_none());
     assert!(chrome.vendor_label.is_none());
+}
+
+#[tokio::test]
+async fn connection_state_cache_handles_mock_missing_and_live_profiles() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+
+    app.runtime.provider = "mock".into();
+    app.runtime.model_label = "mock".into();
+    assert!(app.connected_cached());
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt-4.1-mini".into();
+    app.connect.profile = None;
+    assert!(!app.connected_cached());
+    assert!(!app.provider_connected_cached());
+
+    app.connect.profile = Some("openai".into());
+    assert!(!app.connected_cached());
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-cache-key")
+        .unwrap();
+    app.invalidate_connected();
+    assert!(app.connected_cached());
+    assert!(app.provider_connected_cached());
+}
+
+#[tokio::test]
+async fn connection_labels_and_stale_profile_guards_cover_fallbacks() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+
+    assert_eq!(app.vendor_route_labels("does-not-exist"), (None, None));
+    let (vendor, route) = app.vendor_route_labels("openai");
+    assert_eq!(vendor.as_deref(), Some("OpenAI"));
+    assert_eq!(route.as_deref(), Some("API"));
+
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt-4.1-mini".into();
+    app.connect.profile = Some("openai".into());
+    app.connect.auth_suspended = true;
+    app.refresh_connection_ui();
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+
+    app.connect.auth_suspended = false;
+    app.refresh_connection_ui();
+    assert!(app.connect.profile.is_none());
+
+    app.runtime.provider = "mock".into();
+    app.runtime.model_label = "mock".into();
+    app.connect.profile = None;
+    app.input.hint = "Not connected · run /connect".into();
+    app.banner_state.items.push(ChatItem::Banner {
+        kind: BannerKind::Warn,
+        text: "Not connected to provider".into(),
+    });
+    app.refresh_connection_ui();
+    assert!(!app.input.not_connected);
+    assert!(app.input.hint.is_empty());
+    assert!(app.banner_state.items.is_empty());
+}
+
+#[tokio::test]
+async fn connection_chrome_switches_between_disconnected_and_mock_states() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt-4.1-mini".into();
+    app.connect.profile = None;
+    app.refresh_connection_ui();
+    assert!(app.input.not_connected);
+    assert!(app.input.hint.contains("/connect"));
+
+    app.runtime.provider = "mock".into();
+    app.runtime.model_label = "mock".into();
+    app.refresh_connection_ui();
+    assert!(!app.input.not_connected);
+    assert!(app.input.hint.is_empty() || !app.input.hint.contains("Not connected"));
+}
+
+#[tokio::test]
+async fn disconnecting_an_empty_profile_reports_that_nothing_was_stored() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt-4.1-mini".into();
+    app.connect.profile = Some("openai".into());
+
+    let message = app.disconnect_auth(Some("openai")).unwrap();
+    assert_eq!(message, "no stored credentials for `openai`");
+    assert!(app.connect.auth_suspended);
+    assert!(app.connect.profile.is_none());
+}
+
+#[tokio::test]
+async fn quick_switch_without_history_is_safe_and_informative() {
+    let pref_dir = tempfile::tempdir().unwrap();
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.preferences = PreferenceStore::new(pref_dir.path().join("preferences.toml"));
+    app.quick_switch_model();
+    assert_eq!(app.status_state.message, "no previous model to switch to");
+}
+
+#[tokio::test]
+async fn model_capability_and_effort_fallback_paths_keep_session_state_in_sync() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.model_label = "mock".into();
+    app.session_runtime.set_active_model("mock");
+    app.reasoning_effort.value = ReasoningEffort::High;
+    assert!(!app.resolve_effort_for_model("mock"));
+    app.sync_effort_to_session();
+    assert_eq!(app.session_runtime.reasoning_effort(), None);
+
+    app.apply_selection(&ModelSelection {
+        provider: String::new(),
+        model: "openai/gpt-4.1-mini".into(),
+        route_id: "openai-api".into(),
+        profile_id: Some("openai".into()),
+        effort: "high".into(),
+    });
+    assert_eq!(app.runtime.provider, "native");
+    assert_eq!(app.session_runtime.active_model, "openai/gpt-4.1-mini");
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
 }

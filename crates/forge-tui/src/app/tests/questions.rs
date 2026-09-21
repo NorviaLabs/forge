@@ -246,3 +246,135 @@ async fn multi_select_composes_with_free_text_other() {
     assert_eq!(selected.len(), 1, "{content}");
     assert!(selected.iter().any(|v| v == "Lint"), "{content}");
 }
+
+#[tokio::test]
+async fn question_navigation_wraps_and_dismissal_resolves_without_an_answer() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_question_focused(&mut app, multi_question());
+
+    // Invalid keys are owned by the question menu, while horizontal movement
+    // remains a no-op for a single-question payload.
+    assert!(!app
+        .handle_question_menu_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert!(app
+        .handle_question_menu_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap());
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.question_menu_indexes().1, 0);
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.pending_interaction.has_question_submit());
+    app.drain_pending_question(None).await.unwrap();
+    assert_eq!(app.status_state.message, "Questions skipped");
+    assert!(app.session_runtime.pending_question().is_none());
+}
+
+#[tokio::test]
+async fn question_selection_key_and_other_option_are_stable_before_submission() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_question_focused(&mut app, db_question());
+    let presentation = app.question_presentation().unwrap();
+    assert_eq!(presentation.question_count, 1);
+    assert_eq!(presentation.options.last().unwrap().label, "Other");
+    assert_eq!(app.question_selection_key(), (Vec::new(), None));
+
+    assert!(app
+        .handle_question_menu_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert_eq!(app.question_menu_indexes(), (0, 1));
+    assert!(app
+        .handle_question_menu_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert!(app.pending_interaction.has_question_submit());
+}
+
+#[tokio::test]
+async fn question_menu_guards_and_multi_question_navigation_are_total() {
+    let (_dir, mut app) = focus_test_app().await;
+    assert!(!app
+        .handle_question_menu_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap());
+
+    let mut payload = db_question();
+    payload.questions.push(AskUserQuestionItem {
+        id: "shell".into(),
+        question: "Which shell?".into(),
+        header: "Shell".into(),
+        options: vec![AskUserQuestionOption {
+            label: "Bash".into(),
+            description: "Portable".into(),
+        }],
+        multi_select: false,
+    });
+    set_pending_question_focused(&mut app, payload);
+
+    app.focus_block(FocusBlock::Composer);
+    assert!(!app
+        .handle_question_menu_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap());
+    app.focus_block(FocusBlock::Approval);
+    assert!(app
+        .handle_question_menu_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert_eq!(app.question_menu_indexes(), (1, 0));
+    assert!(app
+        .handle_question_menu_key(press(KeyCode::Char('l'), KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert_eq!(app.question_menu_indexes(), (0, 0));
+    assert!(app
+        .handle_question_menu_key(press(KeyCode::Char('1'), KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert!(app
+        .handle_question_menu_key(press(KeyCode::Char('9'), KeyModifiers::NONE))
+        .await
+        .unwrap());
+    assert!(!app
+        .handle_question_menu_key(press(KeyCode::Down, KeyModifiers::SHIFT))
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn clarification_text_handles_empty_and_advances_between_questions() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.apply_clarification_text("ignored");
+    let mut payload = db_question();
+    payload.questions.push(AskUserQuestionItem {
+        id: "shell".into(),
+        question: "Which shell?".into(),
+        header: "Shell".into(),
+        options: vec![AskUserQuestionOption {
+            label: "Bash".into(),
+            description: String::new(),
+        }],
+        multi_select: false,
+    });
+    set_pending_question_focused(&mut app, payload);
+    app.apply_clarification_text("   ");
+    app.apply_clarification_text("MySQL");
+    assert_eq!(app.question_menu_indexes().0, 1);
+    app.apply_clarification_text("Fish");
+    assert!(app.pending_interaction.has_question_submit());
+    app.sync_question_menu();
+    app.pending_interaction.clear();
+    app.session_runtime
+        .resolve_question(None, "test")
+        .await
+        .unwrap();
+    app.sync_question_menu();
+    assert_eq!(app.question_menu_indexes(), (0, 0));
+}

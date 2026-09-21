@@ -707,6 +707,208 @@ mod tests {
         sender_task.await.unwrap();
         assert_eq!(event, Event::Paste("first line\nsecond line\n".into()));
     }
+
+    #[tokio::test]
+    async fn terminal_event_source_preserves_ready_and_pending_order() {
+        let mut source = TerminalEventSource::from_events([key(KeyCode::Char('a'))]);
+        source.pending.push_back(Ok(key(KeyCode::Char('b'))));
+        source.release_ready(std::collections::VecDeque::from([
+            key(KeyCode::Char('c')),
+            key(KeyCode::Char('d')),
+        ]));
+
+        assert!(
+            matches!(source.pop_ready(), Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c'))
+        );
+        assert!(
+            matches!(source.pop_queued(), Some((Ok(Event::Key(key)), true)) if key.code == KeyCode::Char('d'))
+        );
+        assert!(
+            matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('b'))
+        );
+        assert!(
+            matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('a'))
+        );
+        source.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_keeps_non_key_events_and_errors_in_order() {
+        let resize = Event::Resize(80, 24);
+        let mut source = TerminalEventSource::from_events([resize.clone()]);
+        assert!(matches!(
+            coalesce_source_paste(&mut source, None).await,
+            Some(Ok(Event::Resize(80, 24)))
+        ));
+
+        let mut source = TerminalEventSource::from_events([]);
+        source.rx.close();
+        let result = coalesce_source_paste(&mut source, None).await;
+        assert!(matches!(result, Some(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe));
+
+        let mut source = TerminalEventSource::from_events([key(KeyCode::Char('x'))]);
+        source.push_front_raw(Err(io::Error::other("reader")));
+        let result = coalesce_source_paste(&mut source, None).await;
+        assert!(matches!(result, Some(Err(error)) if error.kind() == io::ErrorKind::Other));
+        assert!(
+            matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('x'))
+        );
+    }
+
+    #[tokio::test]
+    async fn production_event_buffer_classifies_modified_and_initial_events() {
+        let modified = Event::Key(event::KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        ));
+        let mut source = TerminalEventSource::from_events([modified.clone()]);
+        assert!(matches!(
+            coalesce_source_paste(&mut source, None).await,
+            Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c')
+        ));
+        assert!(matches!(
+            coalesce_source_paste(&mut source, Some(modified)).await,
+            Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c')
+        ));
+
+        let mut queued =
+            std::collections::VecDeque::from([key(KeyCode::Char('a')), key(KeyCode::Enter)]);
+        assert!(
+            matches!(coalesce_unbracketed_paste(&mut queued), Some(Event::Key(key)) if key.code == KeyCode::Char('a'))
+        );
+    }
+
+    #[tokio::test]
+    async fn application_tick_and_foreground_wakes_service_idle_state() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        assert!(!tick_application(&mut app).await.unwrap());
+
+        let mut ticker = tokio::time::interval(Duration::from_millis(1));
+        app.test_events.push_back(key(KeyCode::Char('x')));
+        assert!(matches!(
+            next_foreground_wake(&mut app, &mut ticker).await.unwrap(),
+            ForegroundWake::Input(Event::Key(key)) if key.code == KeyCode::Char('x')
+        ));
+        assert!(matches!(
+            next_foreground_wake(&mut app, &mut ticker).await.unwrap(),
+            ForegroundWake::Tick
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_dispatch_handles_resize_focus_and_paste_events() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        dispatch_terminal_event(&mut app, Event::Resize(80, 24), Some(&mut terminal))
+            .await
+            .unwrap();
+        dispatch_terminal_event(
+            &mut app,
+            Event::FocusGained,
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+        dispatch_terminal_event(
+            &mut app,
+            Event::FocusLost,
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+        dispatch_terminal_event(
+            &mut app,
+            Event::Paste("pasted text".into()),
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.input.text, "pasted text");
+    }
+
+    #[tokio::test]
+    async fn event_source_and_test_drain_cover_queue_boundaries() {
+        let mut source = TerminalEventSource::from_events([]);
+        assert!(source.pop_ready().is_none());
+        assert!(source.pop_queued().is_none());
+        assert!(source.try_recv_raw().is_err());
+        source.shutdown().await;
+
+        let mut ordinary =
+            std::collections::VecDeque::from([key(KeyCode::Char('a')), key(KeyCode::Enter)]);
+        assert!(matches!(
+            coalesce_unbracketed_paste(&mut ordinary),
+            Some(Event::Key(key)) if key.code == KeyCode::Char('a')
+        ));
+
+        let mut shifted = std::collections::VecDeque::from([
+            Event::Key(event::KeyEvent::new(
+                KeyCode::Char('A'),
+                KeyModifiers::SHIFT,
+            )),
+            key(KeyCode::Enter),
+            key(KeyCode::Enter),
+        ]);
+        assert!(matches!(
+            coalesce_unbracketed_paste(&mut shifted),
+            Some(Event::Paste(text)) if text == "A\n\n"
+        ));
+
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.test_events.push_back(Event::Paste("xy".into()));
+        drain_events::<ratatui::backend::TestBackend>(&mut app, None)
+            .await
+            .unwrap();
+        assert_eq!(app.input.text, "xy");
+    }
+
+    #[tokio::test]
+    async fn foreground_render_paths_work_without_a_terminal() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        paint_foreground_frame::<ratatui::backend::TestBackend>(&mut app, None, false)
+            .await
+            .unwrap();
+        render_foreground_wake::<ratatui::backend::TestBackend>(
+            &mut app,
+            None,
+            ForegroundWake::Input(key(KeyCode::Char('z'))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.input.text, "z");
+    }
+
+    #[tokio::test]
+    async fn terminal_lifecycle_helpers_cover_empty_and_shutdown_states() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        assert!(!app.poll_interactive_terminals());
+        assert!(!app.any_interactive_terminal_running());
+        app.resize_interactive_terminal(80, 24);
+        drain_events::<ratatui::backend::TestBackend>(&mut app, None)
+            .await
+            .unwrap();
+
+        let source = TerminalEventSource::spawn();
+        source.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreground_frame_can_tick_and_paint_without_terminal_input() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        paint_foreground_frame(&mut app, Some(&mut terminal), false)
+            .await
+            .unwrap();
+        render_foreground_wake(&mut app, Some(&mut terminal), ForegroundWake::Tick)
+            .await
+            .unwrap();
+    }
 }
 
 /// Advance every non-blocking service owned by the TUI application.

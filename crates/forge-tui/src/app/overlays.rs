@@ -561,6 +561,7 @@ fn parse_repository_session_id(value: &str) -> Option<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlays::{SessionConfirmKind, SessionInputMode};
 
     #[tokio::test]
     async fn help_text_covers_every_focus_block_and_renders() {
@@ -576,5 +577,179 @@ mod tests {
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         app.render_help_overlay(area, &mut buffer);
         assert!(buffer.content().iter().any(|cell| cell.symbol() == "H"));
+    }
+
+    #[tokio::test]
+    async fn overlay_actions_cover_local_state_and_safe_rejection_paths() {
+        let (dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let file = dir.path().join("overlay.txt");
+        std::fs::write(&file, "overlay\n").unwrap();
+
+        for action in [
+            OverlayAction::None,
+            OverlayAction::Toast("warning".into()),
+            OverlayAction::OpenSessionInput(SessionInputMode::New),
+            OverlayAction::OpenSessionRename {
+                session_id: "session".into(),
+                label: "label".into(),
+            },
+            OverlayAction::OpenSessionConfirm {
+                kind: SessionConfirmKind::Cleanup,
+                session_id: "session".into(),
+                label: "label".into(),
+                detail: "detail".into(),
+            },
+            OverlayAction::ModelNotInCatalog("missing/model".into()),
+            OverlayAction::SelectEffort(crate::effort::ReasoningEffort::Low),
+            OverlayAction::PreviewTheme(forge_config::DEFAULT_THEME_ID.into()),
+            OverlayAction::FilePick {
+                path: "overlay.txt".into(),
+                is_dir: false,
+            },
+            OverlayAction::FilePick {
+                path: ".".into(),
+                is_dir: true,
+            },
+        ] {
+            app.apply_overlay_action(action).await.unwrap();
+        }
+        assert!(app.overlay.is_some());
+        assert_eq!(
+            app.reasoning_effort.value,
+            crate::effort::ReasoningEffort::Low
+        );
+
+        for action in [
+            OverlayAction::RenameSession {
+                session_id: "not-a-uuid".into(),
+                label: "renamed".into(),
+            },
+            OverlayAction::ArchiveSession {
+                session_id: "not-a-uuid".into(),
+            },
+            OverlayAction::CleanupSessionWorktree {
+                session_id: "not-a-uuid".into(),
+            },
+        ] {
+            app.apply_overlay_action(action).await.unwrap();
+        }
+
+        app.apply_overlay_action(OverlayAction::Close)
+            .await
+            .unwrap();
+        assert!(app.overlay.is_none());
+
+        app.overlay = Some(Overlay::connect_api_key("openai", "OpenAI", None, None));
+        app.dismiss_overlay();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+
+        app.connect.oauth_pending = Some(forge_connect::OauthPending::start_stub(
+            "xai",
+            "https://example.test",
+        ));
+        app.overlay = Some(Overlay::connect_oauth("xai", "xAI", "check"));
+        app.dismiss_overlay();
+        assert!(app.connect.oauth_pending.is_none());
+
+        app.overlay = Some(Overlay::Theme {
+            selected: 0,
+            current: "forge-light".into(),
+            items: vec![("forge-light".into(), "Forge Light".into())],
+        });
+        app.set_theme_active(forge_config::DEFAULT_THEME_ID);
+        app.dismiss_overlay();
+        assert!(app.overlay.is_none());
+    }
+
+    #[tokio::test]
+    async fn overlay_actions_cover_selection_and_creation_fallbacks_without_supervisor() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+
+        app.apply_overlay_action(OverlayAction::SelectModel {
+            provider: "native".into(),
+            model: "openai/gpt-4.1-mini".into(),
+            profile_id: Some("openai".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
+
+        app.apply_overlay_action(OverlayAction::SwitchToRoute {
+            profile_id: "openai".into(),
+        })
+        .await
+        .unwrap();
+        assert!(app.overlay.is_some());
+
+        app.apply_overlay_action(OverlayAction::ApproveAll)
+            .await
+            .unwrap();
+        assert!(app.approve_all);
+
+        app.apply_overlay_action(OverlayAction::CreateSession {
+            label: "new".into(),
+            first_prompt: None,
+        })
+        .await
+        .unwrap();
+        app.apply_overlay_action(OverlayAction::AttachSession {
+            workspace: ".".into(),
+            label: "attached".into(),
+            branch: "branch".into(),
+        })
+        .await
+        .unwrap();
+        app.apply_overlay_action(OverlayAction::FinalizeSessionCreation { operation_id: 1 })
+            .await
+            .unwrap();
+        assert!(app.overlay.is_none());
+
+        app.overlay = Some(Overlay::welcome());
+        app.apply_overlay_action(OverlayAction::CancelSessionCreation { operation_id: 2 })
+            .await
+            .unwrap();
+        assert!(app.overlay.is_none());
+    }
+
+    #[tokio::test]
+    async fn overlay_actions_cover_navigation_and_local_theme_paths() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+
+        app.apply_overlay_action(OverlayAction::SelectSession("not-a-uuid".into()))
+            .await
+            .unwrap();
+        app.apply_overlay_action(OverlayAction::SelectSession(
+            uuid::Uuid::new_v4().to_string(),
+        ))
+        .await
+        .unwrap();
+
+        app.apply_overlay_action(OverlayAction::BeginOnboarding)
+            .await
+            .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+
+        app.apply_overlay_action(OverlayAction::SelectTheme(
+            forge_config::DEFAULT_THEME_ID.into(),
+        ))
+        .await
+        .unwrap();
+        assert!(app.overlay.is_none());
+
+        app.apply_overlay_action(OverlayAction::RunCommand("/status".into()))
+            .await
+            .unwrap();
+        assert!(!app.startup_resume.picker);
+
+        app.toggle_bottom_panel();
+        assert!(app.bottom_panel.open);
+        app.toggle_bottom_panel();
+        assert!(!app.bottom_panel.open);
+
+        app.apply_overlay_action(OverlayAction::Close)
+            .await
+            .unwrap();
+        assert_eq!(parse_repository_session_id("not-a-uuid"), None);
+        assert!(parse_repository_session_id(&uuid::Uuid::new_v4().to_string()).is_some());
     }
 }

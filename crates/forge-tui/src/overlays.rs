@@ -5234,6 +5234,76 @@ mod tests {
             "This executes a database query."
         );
     }
+
+    #[test]
+    fn overlay_widget_renders_session_and_trust_variants() {
+        let switcher = Overlay::SessionSwitcher {
+            selected: 0,
+            filter: "".into(),
+            items: vec![SessionSwitcherItem {
+                session_id: "session-1".into(),
+                label: "Fix login".into(),
+                branch: "fix/login".into(),
+                workspace: "/tmp/forge-login".into(),
+                state: "Working".into(),
+                attention: true,
+                group: SessionSwitcherGroup::Working,
+                managed: true,
+                cleanup: SessionSwitcherCleanup::ArchiveAndClean,
+            }],
+        };
+        let switcher_text = render_text(&switcher);
+        assert!(switcher_text.contains("Fix login"), "{switcher_text}");
+        assert!(switcher_text.contains("fix/login"), "{switcher_text}");
+
+        for overlay in [
+            Overlay::SessionRename {
+                session_id: "session-1".into(),
+                label: "new label".into(),
+                error: Some("label is invalid".into()),
+            },
+            Overlay::SessionConfirm {
+                kind: SessionConfirmKind::Archive,
+                session_id: "session-1".into(),
+                label: "Fix login".into(),
+                detail: "This removes the managed checkout".into(),
+            },
+            Overlay::SessionInput {
+                mode: SessionInputMode::New,
+                field: 1,
+                label: "new task".into(),
+                branch: String::new(),
+                workspace: String::new(),
+                first_prompt: "run tests".into(),
+                error: Some("input error".into()),
+            },
+            Overlay::SessionInput {
+                mode: SessionInputMode::Attach,
+                field: 2,
+                label: "attached".into(),
+                branch: "feature".into(),
+                workspace: "/workspace".into(),
+                first_prompt: String::new(),
+                error: None,
+            },
+            Overlay::TrustSession {
+                operation_id: 7,
+                label: "Trust workspace".into(),
+                workspace: "/workspace".into(),
+            },
+            Overlay::Theme {
+                selected: 0,
+                current: "forge-dark".into(),
+                items: vec![("forge-dark".into(), "Forge Dark".into())],
+            },
+        ] {
+            let text = render_text(&overlay);
+            assert!(
+                !text.trim().is_empty(),
+                "overlay rendered no text: {overlay:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

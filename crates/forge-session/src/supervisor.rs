@@ -3114,7 +3114,7 @@ mod tests {
                     id: format!("{label}-background"),
                     name: "background_run".into(),
                     arguments: json!({
-                        "command": "sleep 30",
+                        "command": "sleep 5",
                         "label": format!("{label} background")
                     }),
                 }],
@@ -4146,6 +4146,237 @@ mod tests {
         .await
         .unwrap();
         (temp, supervisor, handle, id_a, id_b)
+    }
+
+    #[tokio::test]
+    async fn command_surface_updates_idle_sessions_and_rejects_stale_background_requests() {
+        let (_temp, supervisor, handle, id_a, id_b) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+
+        handle
+            .command(SupervisorCommand::SetModel {
+                session_id: id_a,
+                model_id: "mock-updated".into(),
+                route_id: "native-updated".into(),
+                reasoning_effort: Some("high".into()),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SetThinking {
+                session_id: id_a,
+                enabled: true,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SetCapabilities {
+                session_id: id_a,
+                image_input_supported: true,
+                context_window: Some((32_000, Some(2_000))),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SetApproveAll {
+                session_id: id_a,
+                on: false,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::GrantEgressHost {
+                session_id: id_a,
+                pattern: "example.com".into(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::AllowSessionPattern {
+                session_id: id_a,
+                call: ToolCall {
+                    id: "call-1".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "printf ok"}),
+                },
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ClearSessionApprovals { session_id: id_a })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::CancelQueuedPrompt {
+                session_id: id_a,
+                one_based: 1,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::PollSession { session_id: id_a })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SelectSession {
+                session_id: Some(id_b),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ResumeSession {
+                current_session_id: id_a,
+                session_id: id_b,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ApplyProviderEnv {
+                pairs: vec![("FORGE_TEST_PROVIDER".into(), "1".into())],
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::ClearProviderEnv)
+            .await
+            .unwrap();
+        handle.command(SupervisorCommand::Refresh).await.unwrap();
+        assert!(handle
+            .command(SupervisorCommand::SetApproveAll {
+                session_id: id_a,
+                on: true,
+            })
+            .await
+            .is_err());
+        assert!(handle
+            .command(SupervisorCommand::ResolveApproval {
+                session_id: id_a,
+                decision: HitlDecision::Deny,
+                actor: "test".into(),
+                feedback: None,
+            })
+            .await
+            .is_err());
+        assert!(handle
+            .command(SupervisorCommand::ResolveQuestion {
+                session_id: id_a,
+                answers: None,
+                actor: "test".into(),
+            })
+            .await
+            .is_err());
+        handle
+            .command(SupervisorCommand::SubmitPromptWithAttachments {
+                session_id: id_b,
+                text: "attached prompt".into(),
+                attachments: Vec::new(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: id_a,
+                text: "plain prompt".into(),
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::StopTurn { session_id: id_a })
+            .await
+            .unwrap();
+
+        assert!(handle
+            .command(SupervisorCommand::CancelBackgroundTask {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+            })
+            .await
+            .is_err());
+        assert!(handle
+            .command(SupervisorCommand::ResolveBackgroundApproval {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+                decision: HitlDecision::Deny,
+            })
+            .await
+            .is_err());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+        assert_eq!(supervisor.snapshots().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unknown_session_commands_fail_without_touching_the_roster() {
+        let (_temp, supervisor, handle, _id_a, _id_b) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        let unknown = SessionId::new_v4();
+
+        for command in [
+            SupervisorCommand::RenameSession {
+                session_id: unknown,
+                label: "missing".into(),
+            },
+            SupervisorCommand::PinSession {
+                session_id: unknown,
+                slot: Some(2),
+                swap: false,
+            },
+            SupervisorCommand::SetThinking {
+                session_id: unknown,
+                enabled: true,
+            },
+            SupervisorCommand::SetCapabilities {
+                session_id: unknown,
+                image_input_supported: true,
+                context_window: None,
+            },
+            SupervisorCommand::PollSession {
+                session_id: unknown,
+            },
+            SupervisorCommand::CancelQueuedPrompt {
+                session_id: unknown,
+                one_based: 1,
+            },
+            SupervisorCommand::GrantEgressHost {
+                session_id: unknown,
+                pattern: "example.com".into(),
+            },
+            SupervisorCommand::ClearSessionApprovals {
+                session_id: unknown,
+            },
+            SupervisorCommand::StopTurn {
+                session_id: unknown,
+            },
+        ] {
+            assert!(handle.command(command).await.is_err());
+        }
+
+        assert_eq!(supervisor.snapshots().await.len(), 2);
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervisor_handle_reports_closed_channels_for_all_submission_modes() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, _control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+        assert!(matches!(
+            handle.submit(SupervisorCommand::Refresh),
+            Err(RepositorySupervisorError::Closed)
+        ));
+        assert!(matches!(
+            handle.try_command(SupervisorCommand::Refresh),
+            Err(RepositorySupervisorError::Closed)
+        ));
+        assert!(matches!(
+            handle.command(SupervisorCommand::Refresh).await,
+            Err(RepositorySupervisorError::Closed)
+        ));
     }
 
     /// Quit-all is one command for the whole roster rather than one per
@@ -5649,7 +5880,7 @@ mod tests {
         let session_id = opened.session.session_id;
         opened
             .session
-            .spawn_background_shell("sleep 30".into(), "retire me".into())
+            .spawn_background_shell("sleep 5".into(), "retire me".into())
             .await
             .unwrap();
         let mut task = task_for(session_id, "retire", &worktree.path);
@@ -5689,7 +5920,15 @@ mod tests {
         .await
         .unwrap();
 
-        let started = supervisor.snapshot(session_id).await.unwrap();
+        let started = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.details.as_ref().is_some_and(|details| {
+                details
+                    .background
+                    .iter()
+                    .any(|task| matches!(task.status, forge_core::BackgroundTaskStatus::Running))
+            })
+        })
+        .await;
         assert!(started.details.as_ref().is_some_and(|details| {
             details
                 .background
@@ -5738,7 +5977,7 @@ mod tests {
             .session;
         let session_id = session.session_id;
         let background_id = session
-            .spawn_background_shell("sleep 30".into(), "shutdown me".into())
+            .spawn_background_shell("sleep 5".into(), "shutdown me".into())
             .await
             .unwrap();
         let task = task_for(session_id, "shutdown", &workspace);
@@ -5765,6 +6004,15 @@ mod tests {
                 .await
                 .unwrap();
 
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.details.as_ref().is_some_and(|details| {
+                details
+                    .background
+                    .iter()
+                    .any(|task| matches!(task.status, forge_core::BackgroundTaskStatus::Running))
+            })
+        })
+        .await;
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
 
         let snapshot = supervisor.snapshot(session_id).await.unwrap();
@@ -6115,5 +6363,203 @@ mod tests {
         assert_eq!(details.active_route_id, "native-v2");
         assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[test]
+    fn command_classification_and_path_helpers_cover_operator_boundaries() {
+        let id = SessionId::nil();
+        let detached = [
+            SupervisorCommand::CreateSession {
+                label: "x".into(),
+                first_prompt: None,
+            },
+            SupervisorCommand::AttachWorktree {
+                workspace: PathBuf::from("."),
+                label: "x".into(),
+                branch: "x".into(),
+            },
+            SupervisorCommand::RemoveManagedWorktree { session_id: id },
+            SupervisorCommand::CompactContext { session_id: id },
+            SupervisorCommand::CloseSession { session_id: id },
+            SupervisorCommand::CloseAllSessions,
+        ];
+        for command in detached {
+            assert!(runs_outside_command_loop(&command));
+        }
+        assert!(stops_every_session(&SupervisorCommand::Shutdown));
+        assert!(stops_every_session(&SupervisorCommand::CloseAllSessions));
+        assert!(!stops_every_session(&SupervisorCommand::Refresh));
+        assert_eq!(
+            command_session_id(&SupervisorCommand::CompactContext { session_id: id }),
+            Some(id)
+        );
+        assert_eq!(command_session_id(&SupervisorCommand::Refresh), None);
+
+        let temp = TempDir::new().unwrap();
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        assert!(same_path(temp.path(), &nested.join("..")));
+        assert!(!same_path(temp.path(), &nested));
+
+        let trust_store = temp.path().join("trust.json");
+        assert!(!workspace_is_trusted(Some(&trust_store), temp.path()));
+        forge_config::grant_trust_at(&trust_store, temp.path()).unwrap();
+        assert!(workspace_is_trusted(Some(&trust_store), &nested));
+    }
+
+    #[test]
+    fn command_classification_rejects_every_inline_command() {
+        let id = SessionId::nil();
+        let inline = [
+            SupervisorCommand::ArchiveSession { session_id: id },
+            SupervisorCommand::RenameSession {
+                session_id: id,
+                label: "renamed".into(),
+            },
+            SupervisorCommand::PinSession {
+                session_id: id,
+                slot: Some(1),
+                swap: false,
+            },
+            SupervisorCommand::FinalizeCreation { operation_id: 1 },
+            SupervisorCommand::CancelCreation { operation_id: 1 },
+            SupervisorCommand::TrustWorkspace {
+                workspace: PathBuf::from("."),
+            },
+            SupervisorCommand::SubmitPrompt {
+                session_id: id,
+                text: "prompt".into(),
+            },
+            SupervisorCommand::SubmitPromptWithAttachments {
+                session_id: id,
+                text: "prompt".into(),
+                attachments: Vec::new(),
+            },
+            SupervisorCommand::ContinueTurn { session_id: id },
+            SupervisorCommand::ForkSession { session_id: id },
+            SupervisorCommand::ResumeSession {
+                current_session_id: id,
+                session_id: id,
+            },
+            SupervisorCommand::StopTurn { session_id: id },
+            SupervisorCommand::ResolveApproval {
+                session_id: id,
+                decision: HitlDecision::Deny,
+                actor: "test".into(),
+                feedback: None,
+            },
+            SupervisorCommand::ResolveQuestion {
+                session_id: id,
+                answers: None,
+                actor: "test".into(),
+            },
+            SupervisorCommand::SelectSession {
+                session_id: Some(id),
+            },
+            SupervisorCommand::SetModel {
+                session_id: id,
+                model_id: "mock".into(),
+                route_id: "native".into(),
+                reasoning_effort: None,
+            },
+            SupervisorCommand::SetThinking {
+                session_id: id,
+                enabled: true,
+            },
+            SupervisorCommand::SetApproveAll {
+                session_id: id,
+                on: false,
+            },
+            SupervisorCommand::SetCapabilities {
+                session_id: id,
+                image_input_supported: false,
+                context_window: None,
+            },
+            SupervisorCommand::CancelQueuedPrompt {
+                session_id: id,
+                one_based: 1,
+            },
+            SupervisorCommand::PollSession { session_id: id },
+            SupervisorCommand::CancelBackgroundTask {
+                session_id: id,
+                task_id: BackgroundTaskId(1),
+            },
+            SupervisorCommand::ResolveBackgroundApproval {
+                session_id: id,
+                task_id: BackgroundTaskId(1),
+                decision: HitlDecision::Deny,
+            },
+            SupervisorCommand::GrantEgressHost {
+                session_id: id,
+                pattern: "example.com".into(),
+            },
+            SupervisorCommand::AllowSessionPattern {
+                session_id: id,
+                call: ToolCall {
+                    id: "call".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "true"}),
+                },
+            },
+            SupervisorCommand::ClearSessionApprovals { session_id: id },
+            SupervisorCommand::ApplyProviderEnv {
+                pairs: vec![("TEST_KEY".into(), "value".into())],
+            },
+            SupervisorCommand::ClearProviderEnv,
+            SupervisorCommand::Refresh,
+        ];
+        assert!(inline.iter().all(|command| {
+            !runs_outside_command_loop(command) && !stops_every_session(command)
+        }));
+        assert!(
+            command_session_id(&SupervisorCommand::RemoveManagedWorktree { session_id: id })
+                == Some(id)
+        );
+        assert!(
+            command_session_id(&SupervisorCommand::CloseSession { session_id: id }) == Some(id)
+        );
+        assert!(command_session_id(&SupervisorCommand::SubmitPrompt {
+            session_id: id,
+            text: "x".into(),
+        })
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn session_actor_state_guards_cover_cancel_retire_and_continuation_edges() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = Config {
+            resolved_workspace: dir.path().to_path_buf(),
+            workspace_root: Some(dir.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = dir.path().join("journal").display().to_string();
+        let session = scripted_session(&cfg, "ok").await;
+        let id = session.session_id;
+        let actor = SessionActor::new(
+            task_for(id, "actor", dir.path()),
+            session,
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+
+        assert!(!actor.request_cancel().await);
+        assert!(actor.begin_retirement());
+        assert!(!actor.begin_retirement());
+        actor.finish_retirement();
+        assert!(actor.begin_retirement());
+        actor.finish_retirement();
+
+        assert!(actor.try_start_driver());
+        assert!(!actor.try_start_driver());
+        assert!(!actor.request_continuation());
+        assert!(actor.has_pending_continuation());
+        assert!(actor.take_continuations());
+        assert!(!actor.take_continuations());
+        actor.release_driver();
+        assert!(actor.request_continuation());
+        assert!(actor.take_continuations());
+        actor.release_driver();
     }
 }

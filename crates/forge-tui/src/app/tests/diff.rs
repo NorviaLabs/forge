@@ -179,6 +179,57 @@ async fn diff_outside_a_git_repository_explains_and_stays_closed_to_git() {
 }
 
 #[tokio::test]
+async fn diff_keymap_handles_every_owned_navigation_command_without_a_selection() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_diff_view(DiffSource::WorkingTree);
+
+    for key in [
+        KeyCode::Char('j'),
+        KeyCode::Char('k'),
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::PageDown,
+        KeyCode::PageUp,
+        KeyCode::Char('g'),
+        KeyCode::Char('G'),
+        KeyCode::Char(']'),
+        KeyCode::Char('['),
+        KeyCode::Char('n'),
+        KeyCode::Char('p'),
+        KeyCode::Char('d'),
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Char('m'),
+        KeyCode::Char('v'),
+        KeyCode::Char('s'),
+        KeyCode::Char('u'),
+        KeyCode::Char('o'),
+        KeyCode::Char('?'),
+    ] {
+        assert!(app.handle_diff_key(event::KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    assert!(app.overlay.is_some());
+    assert!(!app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(
+        KeyCode::Char('d'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(app.handle_diff_key(event::KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )));
+
+    app.overlay = None;
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)));
+    assert!(!app.diff_view_is_open());
+}
+
+#[tokio::test]
 async fn enter_in_the_patch_pane_does_not_leave_review() {
     // Enter means "show this file's patch" in the explorer half of this mode.
     // It must not also mean "leave review and open the editor" in the patch

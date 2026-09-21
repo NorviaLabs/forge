@@ -2750,6 +2750,100 @@ async fn resume_reconciles_non_idempotent_incomplete_intent() {
 }
 
 #[tokio::test]
+async fn resume_reexecutes_an_idempotent_incomplete_intent() {
+    use forge_durable::{new_session_id, Journal};
+
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("resume.txt"), "replayed\n").unwrap();
+    let journal_dir = dir.path().join("j");
+    let sid = new_session_id();
+    let journal = Journal::open(&journal_dir, sid).await.unwrap();
+    journal.append_session_created(sid).await.unwrap();
+    journal.append_user_message(sid, "read").await.unwrap();
+    let call = ToolCall {
+        id: "read-1".into(),
+        name: "read_file".into(),
+        arguments: json!({"path": "resume.txt"}),
+    };
+    journal
+        .append_model_response(
+            sid,
+            serde_json::to_value(&ModelResponse {
+                text: String::new(),
+                tool_calls: vec![call.clone()],
+                usage: None,
+                thinking: None,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    journal.append_tool_intent(sid, &call).await.unwrap();
+
+    let resumed = AgentSession::resume(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+        sid,
+    )
+    .await
+    .unwrap();
+    let tool = resumed
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("read-1"))
+        .expect("idempotent intent should produce a tool result");
+    assert!(tool.content.contains("replayed"));
+    assert!(resumed.journaled_tool_results.contains_key("read-1"));
+}
+
+#[tokio::test]
+async fn resume_records_validation_failure_for_an_invalid_idempotent_intent() {
+    use forge_durable::{new_session_id, Journal};
+
+    let dir = tempdir().unwrap();
+    let journal_dir = dir.path().join("j");
+    let sid = new_session_id();
+    let journal = Journal::open(&journal_dir, sid).await.unwrap();
+    journal.append_session_created(sid).await.unwrap();
+    journal.append_user_message(sid, "read").await.unwrap();
+    let call = ToolCall {
+        id: "invalid-read".into(),
+        name: "read_file".into(),
+        arguments: json!({"path": "missing.txt", "offset": "not-an-integer"}),
+    };
+    journal
+        .append_model_response(
+            sid,
+            serde_json::to_value(&ModelResponse {
+                text: String::new(),
+                tool_calls: vec![call.clone()],
+                usage: None,
+                thinking: None,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    journal.append_tool_intent(sid, &call).await.unwrap();
+
+    let resumed = AgentSession::resume(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+        sid,
+    )
+    .await
+    .unwrap();
+    let tool = resumed
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("invalid-read"))
+        .expect("validation failure should become a tool message");
+    assert!(tool.content.contains("offset"));
+}
+
+#[tokio::test]
 async fn resume_session_report_includes_composer_lines_in_order() {
     use forge_durable::{new_session_id, Journal};
 

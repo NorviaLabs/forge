@@ -5039,6 +5039,201 @@ mod tests {
 }
 
 #[cfg(test)]
+mod helper_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn public_helpers_cover_labels_verdicts_and_text_edges() {
+        for (name, expected) in [
+            ("spawn_agent", "Spawn Agent"),
+            ("send_message", "Send Message"),
+            ("followup_task", "Followup Task"),
+            ("wait_agent", "Wait Agent"),
+            ("list_agents", "List Agents"),
+            ("interrupt_agent", "Interrupt Agent"),
+            ("ask_user_question", "Question"),
+            ("request_unconfined_retry", "Retry"),
+            ("load_skill", "Skill"),
+            ("background_run", "Task"),
+            ("view_image", "View Image"),
+            ("ls", "List Files"),
+            ("read_file", "Read"),
+            ("grep", "Search"),
+            ("exec", "Shell"),
+            ("git", "Git"),
+            ("write_file", "Edit"),
+            ("cargo_test", "Check"),
+            ("web_fetch", "Web"),
+            ("update_plan", "Plan"),
+            ("mcp_custom", "mcp_custom"),
+        ] {
+            assert_eq!(tool_kind_label(name), expected, "label for {name}");
+        }
+        for invocation in [
+            "cargo test --lib",
+            "$ cargo clippy -- -D warnings && cargo fmt",
+            "pytest -q",
+            "python3 -m unittest tests",
+            "go test ./...",
+            "npm run test",
+            "npx eslint src",
+            "mypy src",
+        ] {
+            assert!(is_verification_command(invocation), "{invocation}");
+        }
+        for invocation in ["cargo build", "git status", "echo test", ""] {
+            assert!(!is_verification_command(invocation), "{invocation}");
+        }
+
+        let success = ExecutionOutcome::Success;
+        let failure = ExecutionOutcome::Failed { exit_code: Some(1) };
+        let (Verdict::Passed { headline }, evidence) = parse_verdict(
+            "running 2 tests\ntest result: ok. 2 passed; 0 failed; 0 ignored",
+            &success,
+        ) else {
+            panic!("rust success was not parsed");
+        };
+        assert_eq!(headline, "2 passed · 0 failed");
+        assert_eq!(evidence.len(), 1);
+        let (Verdict::Failed { headline }, evidence) = parse_verdict(
+            "test foo ... FAILED\nfailures:\nassertion failed\ntest result: FAILED. 0 passed; 1 failed",
+            &failure,
+        ) else {
+            panic!("rust failure was not parsed");
+        };
+        assert!(headline.contains("1 failed"));
+        assert!(!evidence.is_empty());
+
+        let (Verdict::Passed { headline }, _) = parse_verdict("Ran 3 tests\nOK", &success) else {
+            panic!("unittest success was not parsed");
+        };
+        assert_eq!(headline, "3 passed");
+        let (Verdict::Failed { headline }, _) =
+            parse_verdict("Ran 3 tests\nFAILED (failures=1)", &failure)
+        else {
+            panic!("unittest failure was not parsed");
+        };
+        assert!(headline.contains("3 run"));
+
+        let (Verdict::Passed { headline }, _) =
+            parse_verdict("===== 4 passed in 0.4s =====", &success)
+        else {
+            panic!("pytest success was not parsed");
+        };
+        assert_eq!(headline, "4 passed");
+        let (Verdict::Passed { headline }, _) =
+            parse_verdict("Finished `test` profile [unoptimized]\n", &success)
+        else {
+            panic!("finished success was not parsed");
+        };
+        assert_eq!(headline, "clean");
+        let (Verdict::Unparsed { exit_code, lines }, evidence) =
+            parse_verdict("nothing conclusive\n", &success)
+        else {
+            panic!("unparsed success was not preserved");
+        };
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(lines, 1);
+        assert_eq!(evidence, vec!["nothing conclusive"]);
+
+        assert_eq!(format_elapsed_tenths(-1.0), "0.0s");
+        assert_eq!(format_elapsed_tenths(4.99), "4.9s");
+        assert_eq!(format_elapsed_tenths(5.9), "5s");
+        assert_eq!(
+            sanitize_final_answer_text("before \\confidence{0.8} after"),
+            "before  after"
+        );
+        assert_eq!(
+            sanitize_final_answer_text("kept \\confidence{unfinished"),
+            "kept kept \\confidence{unfinished"
+        );
+        assert_eq!(wrap("one two three", 5), vec!["one", "two", "three"]);
+
+        assert_eq!(
+            counts_from("2 passed; 1 failed; 0 skipped"),
+            Some("2 passed · 1 failed".into())
+        );
+        assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m"), "red");
+        assert_eq!(
+            failure_evidence(&["ok", "FAILED", "detail"], "summary".into()),
+            vec!["FAILED", "detail", "summary"]
+        );
+        assert_eq!(
+            subcommand_line(Some("cargo test"), "cargo test · 2 tests"),
+            vec!["cargo test · 2 tests"]
+        );
+        assert_eq!(
+            subcommand_line(Some("write_file"), "changed"),
+            vec!["write_file"]
+        );
+        assert_eq!(subcommand_line(None, "changed"), Vec::<String>::new());
+
+        let (query, attachment) =
+            strip_attached_context("Active file: src/main.rs\nCursor line: 7\n\n\nfix this");
+        assert_eq!(query, "fix this");
+        assert_eq!(attachment.as_deref(), Some("Attached: src/main.rs:7"));
+        assert_eq!(strip_attached_context("plain"), ("plain".into(), None));
+        assert_eq!(change_rationale(None), "");
+        assert_eq!(
+            change_rationale(Some("**heading**\nfirst reason\nsecond reason")),
+            "first reason second reason"
+        );
+
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new";
+        assert!(looks_like_diff(diff));
+        assert!(looks_like_code_change("apply_patch", diff));
+        assert_eq!(extract_path_hint("write_file", diff), "a.rs");
+        assert_eq!(split_diff_sections("write_file", diff).len(), 1);
+        assert_eq!(diff_preview_lines(diff, 3).len(), 3);
+        assert_eq!(visible_result_count("fff: header\none\n\ntwo"), 2);
+        assert_eq!(visible_result_count(r#"{"hits":[1,2,3]}"#), 3);
+        assert_eq!(result_count_label(1, "item", "items"), "1 item");
+        assert_eq!(result_count_label(2, "item", "items"), "2 items");
+
+        assert_eq!(
+            routine_tool_category("read_file", "", None),
+            Some(ActivityCategory::Exploring)
+        );
+        assert_eq!(
+            routine_tool_category("write_file", "", None),
+            Some(ActivityCategory::Implementing)
+        );
+        assert_eq!(
+            routine_tool_category("bash", "cargo test", None),
+            Some(ActivityCategory::Validating)
+        );
+        assert_eq!(
+            routine_tool_category("exec_command", "$ cargo check · session #1", None),
+            Some(ActivityCategory::Validating)
+        );
+        assert_eq!(
+            routine_tool_category("git", "git status", None),
+            Some(ActivityCategory::Exploring)
+        );
+        assert_eq!(routine_tool_category("git", "push", None), None);
+        assert!(is_validation_command("cargo fmt --check"));
+        assert!(!is_validation_command("cargo build"));
+        assert_eq!(
+            running_activity_summary(ActivityCategory::Reviewing, "review"),
+            "Inspecting results"
+        );
+        assert_eq!(join_counts(&[(0, "item", "items")]), "activity completed");
+        assert_eq!(
+            join_counts(&[(1, "file", "files"), (2, "test", "tests")]),
+            "1 file · 2 tests"
+        );
+        assert_eq!(validation_outcome_summary(&success), "Tests passed");
+        assert_eq!(
+            validation_outcome_summary(&failure),
+            "Tests failed · exit code 1"
+        );
+        assert_eq!(outcome_label(&success, 0), "completed");
+        assert_eq!(outcome_label(&success, 2), "2 output lines");
+        assert_eq!(outcome_label(&ExecutionOutcome::Cancelled, 1), "cancelled");
+    }
+}
+
+#[cfg(test)]
 mod spent_reasoning_tests {
 
     /// The live line counts characters because no provider reports usage
@@ -5537,5 +5732,308 @@ mod verification_tests {
             matches!(grouped[0], ChatItem::VerificationCard { .. }),
             "the card must stand alone, like a diff does"
         );
+    }
+
+    #[test]
+    fn failed_runner_shapes_preserve_their_evidence_and_outcome() {
+        let (verdict, evidence) =
+            parse_verdict("Ran 4 tests in 0.01s\n\nFAILED (failures=1)", &failed(1));
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "4 run · FAILED (failures=1)".into()
+            }
+        );
+        assert_eq!(
+            evidence,
+            vec!["FAILED (failures=1)", "Ran 4 tests in 0.01s"]
+        );
+
+        let (verdict, evidence) =
+            parse_verdict("===== 2 failed, 3 passed in 0.4s =====", &failed(1));
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "2 failed · 3 passed".into()
+            }
+        );
+        assert_eq!(
+            evidence,
+            vec![
+                "===== 2 failed, 3 passed in 0.4s =====",
+                "2 failed, 3 passed in 0.4s"
+            ]
+        );
+
+        let (verdict, evidence) = parse_verdict(
+            "warning: one\n   Finished `dev` profile target(s) in 1s",
+            &failed(101),
+        );
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "1 warning".into()
+            }
+        );
+        assert!(evidence.iter().any(|line| line.contains("Finished")));
+    }
+
+    #[test]
+    fn failed_or_empty_output_never_invents_a_result() {
+        let (verdict, evidence) = parse_verdict("", &failed(2));
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "exit 2".into()
+            }
+        );
+        assert!(evidence.is_empty());
+
+        let (verdict, evidence) = parse_verdict(
+            "still running",
+            &ExecutionOutcome::Denied {
+                reason: "blocked".into(),
+            },
+        );
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "did not succeed".into()
+            }
+        );
+        assert_eq!(evidence, vec!["still running"]);
+    }
+
+    #[test]
+    fn count_parser_ignores_zero_noise_but_keeps_real_counts() {
+        assert_eq!(
+            counts_from("10 passed; 0 failed; 0 ignored; 2 skipped"),
+            Some("10 passed · 0 failed · 2 skipped".into())
+        );
+        assert_eq!(counts_from("nothing happened"), None);
+    }
+
+    #[test]
+    fn tool_summary_shapes_cover_file_search_and_process_variants() {
+        let call = |name: &str, arguments: serde_json::Value| ToolCall {
+            id: name.into(),
+            name: name.into(),
+            arguments,
+        };
+
+        let (_, summary, _, _) = classify_tool_content(
+            "read_file",
+            "one\ntwo",
+            Some(&call("read_file", serde_json::json!({"path": "a.rs"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "a.rs · 2 lines");
+
+        let (_, summary, _, _) = classify_tool_content("read_file", "", None, &ok());
+        assert_eq!(summary, "0 lines");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "view_image",
+            "image no longer available",
+            Some(&call(
+                "view_image",
+                serde_json::json!({"path": "missing.png"}),
+            )),
+            &ok(),
+        );
+        assert_eq!(summary, "missing.png · missing");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "view_image",
+            "image loaded · 12 KB",
+            Some(&call("view_image", serde_json::json!({"path": "bad.png"}))),
+            &failed(1),
+        );
+        assert_eq!(summary, "bad.png · failed");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "git",
+            "",
+            Some(&call("git", serde_json::json!({"subcommand": "status"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "git status");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "glob",
+            "no files found",
+            Some(&call("glob", serde_json::json!({"pattern": "**/*.rs"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "**/*.rs · no matches");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "grep",
+            "no matches found",
+            Some(&call("grep", serde_json::json!({"pattern": "needle"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "needle · no matches");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "web_search",
+            "1. **first**\n2. **second**",
+            Some(&call("web_search", serde_json::json!({"query": "forge"}))),
+            &ok(),
+        );
+        assert_eq!(summary, "forge · 2 results");
+
+        let (_, summary, _, _) = classify_tool_content("web_search", "no results", None, &ok());
+        assert_eq!(summary, "no results");
+
+        let (_, summary, _, _) = classify_tool_content("edit", "updated a.rs", None, &ok());
+        assert_eq!(summary, "wrote · updated a.rs");
+
+        let (_, summary, _, detail) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"partial","command":"cargo test","session_id":7,"running":true}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "$ cargo test · session #7 · running");
+        assert_eq!(detail, "partial");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","command":"echo hi","running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "$ echo hi · exited");
+    }
+
+    #[test]
+    fn process_payload_and_validation_outcome_edges_are_total() {
+        let (state, summary, _, detail) = classify_tool_content(
+            "write_stdin",
+            r#"{"output":"waiting","session_id":9,"running":true}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(state, ToolCardState::Running);
+        assert_eq!(summary, "session #9 · running");
+        assert_eq!(detail, "waiting");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","command":"echo hi","session_id":3,"running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "$ echo hi · session #3 · exited");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","session_id":3,"running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "session #3 · exited");
+
+        let (_, summary, _, _) = classify_tool_content(
+            "exec_command",
+            r#"{"output":"done","running":false}"#,
+            None,
+            &ok(),
+        );
+        assert_eq!(summary, "exited");
+
+        let (_, summary, _, detail) =
+            classify_tool_content("bash", "api_key=secret\nsecond line", None, &ok());
+        assert_eq!(summary, "1 output line");
+        assert_eq!(detail, "[redacted tool output]");
+
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Success),
+            "Tests passed"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Failed { exit_code: None }),
+            "Tests failed"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::SpawnFailed {
+                reason: "missing".into()
+            }),
+            "Tests failed · command not found"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Denied {
+                reason: "policy".into()
+            }),
+            "Validation skipped · denied"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::Cancelled),
+            "Validation cancelled"
+        );
+        assert_eq!(
+            validation_outcome_summary(&ExecutionOutcome::TimedOut),
+            "Validation timed out"
+        );
+    }
+
+    #[test]
+    fn transcript_formatting_helpers_cover_context_diff_and_count_edges() {
+        assert_eq!(
+            strip_attached_context("Active file: src/lib.rs\nCursor line: 12\n\n\nexplain this"),
+            (
+                "explain this".into(),
+                Some("Attached: src/lib.rs:12".into())
+            )
+        );
+        assert_eq!(
+            strip_attached_context("Active file: src/lib.rs\nnot separated"),
+            ("Active file: src/lib.rs\nnot separated".into(), None)
+        );
+
+        assert_eq!(change_rationale(None), "");
+        assert_eq!(
+            change_rationale(Some(
+                "**heading**\n  inspect the parser  \nfix the edge case"
+            )),
+            "inspect the parser fix the edge case"
+        );
+
+        let diff = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new";
+        assert!(looks_like_diff(diff));
+        assert!(looks_like_code_change("apply_patch", diff));
+        assert!(!looks_like_code_change("bash", diff));
+        assert_eq!(extract_path_hint("edit", diff), "src/lib.rs");
+        assert_eq!(
+            split_diff_sections(
+                "edit",
+                &format!("{diff}\n\ndiff --git a/b.rs b/b.rs\n+++ b/b.rs")
+            )
+            .len(),
+            2
+        );
+        assert_eq!(
+            diff_preview_lines(diff, 3),
+            vec![
+                "diff --git a/src/lib.rs b/src/lib.rs",
+                "--- a/src/lib.rs",
+                "+++ b/src/lib.rs"
+            ]
+        );
+
+        assert_eq!(
+            subcommand_line(Some("git status"), "git status · 2 lines"),
+            vec!["git status · 2 lines"]
+        );
+        assert_eq!(
+            subcommand_line(Some("src/lib.rs"), "updated"),
+            vec!["src/lib.rs"]
+        );
+        assert!(subcommand_line(None, "updated").is_empty());
+        assert_eq!(visible_result_count(r#"{"hits":[1,2,3]}"#), 3);
+        assert_eq!(visible_result_count("fff: header\nfirst\n\nsecond"), 2);
+        assert_eq!(result_count_label(1, "match", "matches"), "1 match");
+        assert_eq!(result_count_label(2, "match", "matches"), "2 matches");
     }
 }

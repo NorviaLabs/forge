@@ -135,8 +135,42 @@ pub trait Tool: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolError;
-    use forge_types::{ExecutionOutcome, ToolValidationError};
+    use super::{Tool, ToolError};
+    use forge_types::{ExecutionOutcome, SideEffectClass, ToolValidationError};
+    use serde_json::json;
+
+    struct ReadOnlyTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ReadOnlyTool {
+        fn name(&self) -> &str {
+            "test"
+        }
+
+        fn description(&self) -> &str {
+            "test tool"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+
+        fn side_effect_class(&self) -> SideEffectClass {
+            SideEffectClass::Read
+        }
+
+        fn parallel_safe(&self) -> bool {
+            true
+        }
+
+        async fn call(
+            &self,
+            _ctx: &super::ToolContext,
+            _args: serde_json::Value,
+        ) -> Result<forge_types::ToolOutput, ToolError> {
+            unreachable!()
+        }
+    }
 
     #[test]
     fn tool_errors_map_to_their_recorded_outcomes() {
@@ -166,5 +200,16 @@ mod tests {
                 ExecutionOutcome::SpawnFailed { .. }
             ));
         }
+    }
+
+    #[test]
+    fn default_tool_contract_builds_a_descriptor() {
+        let descriptor = ReadOnlyTool.descriptor();
+        assert_eq!(descriptor.name, "test");
+        assert_eq!(descriptor.description, "test tool");
+        assert!(descriptor.input_schema.is_object());
+        assert!(!descriptor.idempotent);
+        assert!(ReadOnlyTool.parallel_safe());
+        ReadOnlyTool.warm_workspace(std::path::Path::new("."));
     }
 }

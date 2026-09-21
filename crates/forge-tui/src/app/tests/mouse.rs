@@ -172,6 +172,41 @@ async fn wheel_over_overlay_is_a_noop() {
     assert_eq!(app.conversation_view.scroll, 0);
 }
 
+#[tokio::test]
+async fn mouse_context_menu_is_pointer_owned_and_handles_keyboard_actions() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    app.conversation_rows = vec!["│ hello".into()];
+
+    app.handle_mouse(event::MouseEvent {
+        kind: event::MouseEventKind::Down(event::MouseButton::Right),
+        column: 4,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    assert!(app.context_menu.is_some());
+
+    app.handle_context_menu_key(event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_context_menu_key(event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_context_menu_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.context_menu.is_none());
+    assert!(app.feedback.text.contains("Nothing selected"));
+
+    app.overlay = Some(Overlay::Help);
+    app.handle_mouse(event::MouseEvent {
+        kind: event::MouseEventKind::Down(event::MouseButton::Right),
+        column: 4,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    assert!(app.context_menu.is_none());
+    app.overlay = None;
+}
+
 fn left_release(column: u16, row: u16) -> event::MouseEvent {
     event::MouseEvent {
         kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),

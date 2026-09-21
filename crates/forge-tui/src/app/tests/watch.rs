@@ -228,6 +228,62 @@ fn forge_runtime_paths_are_ignored_by_file_watcher_filter() {
     )));
 }
 
+#[tokio::test]
+async fn recent_mutating_tool_requests_workspace_refresh() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_files.explorer.load_root();
+    app.transcript_view = forge_session::TranscriptSnapshot::from_messages(
+        vec![forge_types::Message {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![forge_types::ToolCall {
+                id: "write".into(),
+                name: "write_file".into(),
+                arguments: serde_json::json!({}),
+            }],
+            outcome: Default::default(),
+            attachments: Vec::new(),
+        }],
+        1,
+    );
+
+    app.maybe_note_workspace_changed_from_recent_tools();
+
+    assert!(app.workspace_files.explorer.workspace_refresh_pending());
+}
+
+#[tokio::test]
+async fn recent_non_mutating_tool_does_not_request_workspace_refresh() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_files.explorer.load_root();
+    app.transcript_view = forge_session::TranscriptSnapshot::from_messages(
+        vec![forge_types::Message {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![forge_types::ToolCall {
+                id: "read".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({}),
+            }],
+            outcome: Default::default(),
+            attachments: Vec::new(),
+        }],
+        1,
+    );
+
+    app.maybe_note_workspace_changed_from_recent_tools();
+
+    assert!(!app.workspace_files.explorer.workspace_refresh_pending());
+}
+
 /// Poll the terminal-thread side of the explorer until a background workspace
 /// refresh has been installed (or dropped), then return.
 async fn install_pending_explorer_refresh(app: &mut TuiApp) {

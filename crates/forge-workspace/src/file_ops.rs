@@ -752,4 +752,101 @@ mod tests {
             "Selected entry no longer exists."
         );
     }
+
+    #[test]
+    fn planning_and_creation_report_path_and_parent_guards() {
+        let root = tempfile::tempdir().unwrap();
+        let ops = WorkspaceFileOps::new(root.path()).unwrap();
+
+        assert_eq!(
+            ops.plan_create(&root.path().join("missing"), "file.txt")
+                .unwrap_err(),
+            FileOperationError::MissingParent
+        );
+        assert_eq!(
+            ops.create_file(root.path(), " ").unwrap_err(),
+            FileOperationError::EmptyName
+        );
+        assert_eq!(
+            ops.create_directory(root.path(), "nested/../dir")
+                .unwrap_err(),
+            FileOperationError::DotName
+        );
+
+        fs::write(root.path().join("not-a-directory"), "x").unwrap();
+        assert_eq!(
+            ops.create_file(root.path(), "not-a-directory/child.txt")
+                .unwrap_err(),
+            FileOperationError::MissingParent
+        );
+        assert_eq!(
+            ops.plan_rename(&root.path().join("missing.txt"), "new.txt")
+                .unwrap_err(),
+            FileOperationError::MissingSource
+        );
+    }
+
+    #[test]
+    fn rename_and_delete_report_collisions_and_missing_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let ops = WorkspaceFileOps::new(root.path()).unwrap();
+        let source = root.path().join("source.txt");
+        let destination = root.path().join("destination.txt");
+        fs::write(&source, "source").unwrap();
+        fs::write(&destination, "destination").unwrap();
+
+        assert_eq!(
+            ops.plan_rename(&source, "destination.txt").unwrap_err(),
+            FileOperationError::AlreadyExists
+        );
+        assert_eq!(
+            ops.rename_entry(&source, "destination.txt").unwrap_err(),
+            FileOperationError::AlreadyExists
+        );
+        assert_eq!(
+            ops.delete_entry(&root.path().join("gone.txt"), DeleteMode::Permanent)
+                .unwrap_err(),
+            FileOperationError::MissingSource
+        );
+        assert_eq!(
+            ops.entry_kind(&root.path().join("gone.txt")).unwrap_err(),
+            FileOperationError::MissingSource
+        );
+        assert_eq!(
+            ops.is_non_empty_directory(&root.path().join("gone.txt"))
+                .unwrap_err(),
+            FileOperationError::MissingSource
+        );
+    }
+
+    #[test]
+    fn private_path_helpers_cover_collisions_and_error_mapping() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("entry");
+        fs::write(&existing, "x").unwrap();
+
+        let first = unique_trash_path(root.path(), OsStr::new("entry"));
+        assert_ne!(first, existing);
+        assert!(!first.exists());
+        assert_eq!(
+            map_io_error(io::Error::from(io::ErrorKind::PermissionDenied)),
+            FileOperationError::PermissionDenied
+        );
+        assert_eq!(
+            map_io_error(io::Error::from(io::ErrorKind::ReadOnlyFilesystem)),
+            FileOperationError::ReadOnly
+        );
+        assert_eq!(
+            map_io_error(io::Error::from(io::ErrorKind::Other)),
+            FileOperationError::Io("other error".into())
+        );
+        assert_eq!(
+            validate_create_path("src/../file").unwrap_err(),
+            FileOperationError::DotName
+        );
+        assert_eq!(
+            validate_create_path("/").unwrap_err(),
+            FileOperationError::PathName
+        );
+    }
 }
