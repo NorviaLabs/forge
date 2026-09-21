@@ -660,4 +660,54 @@ mod tests {
         app.dismiss_overlay();
         assert!(app.overlay.is_none());
     }
+
+    #[tokio::test]
+    async fn overlay_actions_cover_selection_and_creation_fallbacks_without_supervisor() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+
+        app.apply_overlay_action(OverlayAction::SelectModel {
+            provider: "native".into(),
+            model: "openai/gpt-4.1-mini".into(),
+            profile_id: Some("openai".into()),
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
+
+        app.apply_overlay_action(OverlayAction::SwitchToRoute {
+            profile_id: "openai".into(),
+        })
+        .await
+        .unwrap();
+        assert!(app.overlay.is_some());
+
+        app.apply_overlay_action(OverlayAction::ApproveAll)
+            .await
+            .unwrap();
+        assert!(app.approve_all);
+
+        app.apply_overlay_action(OverlayAction::CreateSession {
+            label: "new".into(),
+            first_prompt: None,
+        })
+        .await
+        .unwrap();
+        app.apply_overlay_action(OverlayAction::AttachSession {
+            workspace: ".".into(),
+            label: "attached".into(),
+            branch: "branch".into(),
+        })
+        .await
+        .unwrap();
+        app.apply_overlay_action(OverlayAction::FinalizeSessionCreation { operation_id: 1 })
+            .await
+            .unwrap();
+        assert!(app.overlay.is_none());
+
+        app.overlay = Some(Overlay::welcome());
+        app.apply_overlay_action(OverlayAction::CancelSessionCreation { operation_id: 2 })
+            .await
+            .unwrap();
+        assert!(app.overlay.is_none());
+    }
 }
