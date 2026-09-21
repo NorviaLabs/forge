@@ -690,4 +690,94 @@ mod tests {
             .unwrap();
         assert!(!result.timed_out);
     }
+
+    #[tokio::test]
+    async fn followup_and_restore_cover_actor_and_visibility_errors() {
+        let (root, child, other) = ids();
+        assert_eq!(AgentStatus::Running.as_str(), "running");
+        assert_eq!(AgentStatus::Waiting.as_str(), "waiting");
+        assert_eq!(AgentStatus::Completed.as_str(), "completed");
+        assert_eq!(AgentStatus::Failed.as_str(), "failed");
+        assert_eq!(AgentStatus::Cancelled.as_str(), "cancelled");
+        assert!(AgentStatus::Cancelled.is_terminal());
+        assert!(!AgentStatus::Waiting.is_terminal());
+
+        let coordinator = AgentCoordinator::new(root);
+        coordinator
+            .restore_child(
+                root,
+                child,
+                "restored".into(),
+                AgentStatus::Completed,
+                Some("done".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            coordinator
+                .descendant(root, child)
+                .unwrap()
+                .summary
+                .as_deref(),
+            Some("done")
+        );
+        assert_eq!(
+            coordinator
+                .descendants(root, Some(&child.to_string()[..8]))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(matches!(
+            coordinator.descendants(other, None),
+            Err(AgentCoordinatorError::NotFound(_))
+        ));
+        assert!(matches!(
+            coordinator.send_message(child, root, "bad".into()),
+            Err(AgentCoordinatorError::NotDescendant { .. })
+        ));
+
+        assert!(matches!(
+            coordinator.followup(root, child, "wake".into()),
+            Err(AgentCoordinatorError::NoActor(_))
+        ));
+        let (sender, mut receiver) = coordinator.actor_channel(child).unwrap();
+        let cancel = coordinator.followup(root, child, "wake".into()).unwrap();
+        assert!(!cancel.is_cancelled());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(AgentCommand::Wake { .. })
+        ));
+        assert_eq!(coordinator.take_mailbox(child).unwrap(), vec!["wake"]);
+
+        drop(sender);
+        coordinator
+            .update(child, AgentStatus::Completed, None)
+            .unwrap();
+        let (_sender, receiver) = coordinator.actor_channel(child).unwrap();
+        drop(receiver);
+        assert!(matches!(
+            coordinator.followup(root, child, "closed".into()),
+            Err(AgentCoordinatorError::ChannelClosed)
+        ));
+        assert!(matches!(
+            coordinator.cancellation_token(other),
+            Err(AgentCoordinatorError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn configuration_converts_to_and_from_forge_config() {
+        let cfg = AgentCoordinatorConfig {
+            max_depth: 4,
+            min_wait: Duration::from_millis(3),
+            default_wait: Duration::from_millis(9),
+            max_wait: Duration::from_millis(12),
+        };
+        let wire: forge_config::AgentConfig = cfg.into();
+        assert_eq!(wire.max_depth, 4);
+        assert_eq!(wire.min_wait_ms, 3);
+        let roundtrip = AgentCoordinatorConfig::from(&wire);
+        assert_eq!(roundtrip.max_wait, Duration::from_millis(12));
+        assert_eq!(roundtrip.default_wait, Duration::from_millis(9));
+    }
 }
