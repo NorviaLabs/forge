@@ -995,3 +995,52 @@ impl Drop for TuiApp {
         }
     }
 }
+
+#[cfg(test)]
+mod pure_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn approval_shortcuts_and_remember_subjects_are_stable() {
+        let choices = [
+            (ApprovalMenuKind::AllowOnce, "y", 'Y'),
+            (ApprovalMenuKind::ApproveAll, "t", 'T'),
+            (ApprovalMenuKind::AllowPattern, "a", 'a'),
+            (ApprovalMenuKind::AllowPatternAlways, "A", 'A'),
+            (ApprovalMenuKind::Deny, "n", 'n'),
+            (ApprovalMenuKind::DenyWithNote, "N", 'N'),
+        ];
+        for (kind, shortcut, input) in choices {
+            assert_eq!(kind.shortcut(), shortcut);
+            assert_eq!(ApprovalMenuKind::from_shortcut(input), Some(kind));
+        }
+        assert_eq!(ApprovalMenuKind::from_shortcut('?'), None);
+
+        let shell = forge_types::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "cargo test --locked"}),
+        };
+        assert_eq!(readable_remember_subject(&shell), "cargo test …");
+        let git = forge_types::ToolCall {
+            name: "git".into(),
+            arguments: json!({"subcommand": "status"}),
+            ..shell.clone()
+        };
+        assert_eq!(readable_remember_subject(&git), "git status …");
+        let file = forge_types::ToolCall {
+            name: "read_file".into(),
+            arguments: json!({"path": "src/lib.rs"}),
+            ..shell.clone()
+        };
+        assert_eq!(readable_remember_subject(&file), "files under src/");
+        let bare = forge_types::ToolCall {
+            name: "list_files".into(),
+            arguments: json!({}),
+            ..shell
+        };
+        assert_eq!(readable_remember_subject(&bare), "similar list_files calls");
+        assert!(remember_help(&bare, "allow list_files").contains("allow list_files"));
+    }
+}
