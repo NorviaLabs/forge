@@ -710,4 +710,46 @@ mod tests {
             .unwrap();
         assert!(app.overlay.is_none());
     }
+
+    #[tokio::test]
+    async fn overlay_actions_cover_navigation_and_local_theme_paths() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+
+        app.apply_overlay_action(OverlayAction::SelectSession("not-a-uuid".into()))
+            .await
+            .unwrap();
+        app.apply_overlay_action(OverlayAction::SelectSession(
+            uuid::Uuid::new_v4().to_string(),
+        ))
+        .await
+        .unwrap();
+
+        app.apply_overlay_action(OverlayAction::BeginOnboarding)
+            .await
+            .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+
+        app.apply_overlay_action(OverlayAction::SelectTheme(
+            forge_config::DEFAULT_THEME_ID.into(),
+        ))
+        .await
+        .unwrap();
+        assert!(app.overlay.is_none());
+
+        app.apply_overlay_action(OverlayAction::RunCommand("/status".into()))
+            .await
+            .unwrap();
+        assert!(!app.startup_resume.picker);
+
+        app.toggle_bottom_panel();
+        assert!(app.bottom_panel.open);
+        app.toggle_bottom_panel();
+        assert!(!app.bottom_panel.open);
+
+        app.apply_overlay_action(OverlayAction::Close)
+            .await
+            .unwrap();
+        assert_eq!(parse_repository_session_id("not-a-uuid"), None);
+        assert!(parse_repository_session_id(&uuid::Uuid::new_v4().to_string()).is_some());
+    }
 }
