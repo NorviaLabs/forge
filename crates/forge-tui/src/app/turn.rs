@@ -1439,6 +1439,126 @@ mod responsiveness_tests {
     struct BlockingTool;
     struct BlockingModel;
 
+    #[test]
+    fn background_task_labels_outcomes_and_summary_upserts_are_stable() {
+        use forge_core::BackgroundTaskStatus;
+        use forge_session::BackgroundTaskSnapshot;
+
+        let base = || BackgroundTaskSnapshot {
+            id: forge_types::BackgroundTaskId(4),
+            label: String::new(),
+            kind: forge_core::BackgroundTaskKind::Shell {
+                command: "cargo test".into(),
+            },
+            status: BackgroundTaskStatus::Running,
+            child_session_id: None,
+            latest_message: None,
+            worktree_path: None,
+            worktree_branch: None,
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+        };
+        let mut task = base();
+        assert_eq!(background_task_name("  ", task.id), "task #4");
+        assert_eq!(background_task_name("tests", task.id), "tests");
+        assert_eq!(background_task_result_text(&task), None);
+        assert_eq!(terminal_outcome(&task.status), "stopped");
+
+        task.status = BackgroundTaskStatus::Succeeded {
+            summary: "all green".into(),
+        };
+        assert_eq!(
+            background_task_result_text(&task).as_deref(),
+            Some("all green")
+        );
+        assert_eq!(terminal_outcome(&task.status), "finished");
+        task.status = BackgroundTaskStatus::Failed {
+            error: "broken".into(),
+        };
+        assert_eq!(
+            background_task_result_text(&task).as_deref(),
+            Some("broken")
+        );
+        assert_eq!(terminal_outcome(&task.status), "failed");
+        task.status = BackgroundTaskStatus::Cancelled;
+        assert_eq!(terminal_outcome(&task.status), "was cancelled");
+
+        let summary = forge_transcript::TurnSummaryPresentation {
+            secs: 1.0,
+            chars: 2,
+            tools: 3,
+            output_tokens: Some(4),
+        };
+        let mut records = Vec::new();
+        upsert_turn_summary(&mut records, "s".into(), 0, summary.clone());
+        upsert_turn_summary(
+            &mut records,
+            "s".into(),
+            0,
+            forge_transcript::TurnSummaryPresentation {
+                secs: 2.0,
+                ..summary.clone()
+            },
+        );
+        upsert_turn_summary(&mut records, "s".into(), 1, summary);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].summary.secs, 2.0);
+    }
+
+    #[tokio::test]
+    async fn stream_events_update_live_turn_chrome_and_report_errors() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let mut accumulator = forge_core::ModelStepAccumulator::default();
+        app.thinking_enabled = false;
+        assert!(app
+            .handle_stream_event(
+                &forge_types::ModelStreamEvent::ThinkingDelta {
+                    text: "hidden".into(),
+                },
+                &mut accumulator,
+            )
+            .is_none());
+        assert!(app.stream.thinking.is_empty());
+
+        app.thinking_enabled = true;
+        app.timing.started = Some(Instant::now());
+        app.handle_stream_event(
+            &forge_types::ModelStreamEvent::ThinkingDelta {
+                text: "reasoning".into(),
+            },
+            &mut accumulator,
+        );
+        app.handle_stream_event(
+            &forge_types::ModelStreamEvent::TextDelta {
+                text: "answer".into(),
+            },
+            &mut accumulator,
+        );
+        app.handle_stream_event(
+            &forge_types::ModelStreamEvent::ToolCallStart {
+                id: "call-1".into(),
+                name: "read_file".into(),
+            },
+            &mut accumulator,
+        );
+        assert_eq!(app.stream.preview, "answer");
+        assert_eq!(app.stream.thinking, "reasoning");
+        assert_eq!(app.timing.tools, 1);
+        assert!(matches!(
+            app.busy_state.phase(),
+            BusyPhase::Tool { name } if name == "read_file"
+        ));
+        assert_eq!(
+            app.handle_stream_event(
+                &forge_types::ModelStreamEvent::Error {
+                    message: "provider down".into(),
+                },
+                &mut accumulator,
+            ),
+            Some("provider down".into())
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn queued_key_burst_is_not_rate_limited_by_the_animation_tick() {
         crate::app::tests::helpers::isolate_global_skills();
