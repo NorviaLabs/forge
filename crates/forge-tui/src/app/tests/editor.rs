@@ -613,6 +613,39 @@ async fn external_editor_does_not_override_dirty_embedded_buffer() {
 }
 
 #[tokio::test]
+async fn external_editor_runs_configured_command_and_refreshes_the_view() {
+    let env_lock = crate::app::tests::helpers::lock_test_env();
+    let old_visual = std::env::var_os("VISUAL");
+    let old_editor = std::env::var_os("EDITOR");
+    std::env::set_var("VISUAL", "true");
+    std::env::remove_var("EDITOR");
+
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("external-success.txt");
+    fs::write(&path, "before\n").unwrap();
+    app.open_file_in_editor(&path);
+    app.external_editor.requested = true;
+    app.drain_pending_external_editor(None).await.unwrap();
+
+    assert!(!app.external_editor.requested);
+    assert!(app
+        .banner_state
+        .items
+        .iter()
+        .any(|item| matches!(item, ChatItem::Banner { text, .. } if text.contains("Returned from external editor"))));
+
+    match old_visual {
+        Some(value) => std::env::set_var("VISUAL", value),
+        None => std::env::remove_var("VISUAL"),
+    }
+    match old_editor {
+        Some(value) => std::env::set_var("EDITOR", value),
+        None => std::env::remove_var("EDITOR"),
+    }
+    drop(env_lock);
+}
+
+#[tokio::test]
 async fn source_viewer_mode_defaults_to_normal() {
     let (_dir, app) = focus_test_app().await;
     assert_eq!(
