@@ -2413,6 +2413,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_key_bytes_cover_alt_navigation_and_unmapped_keys() {
+        assert_eq!(
+            terminal_key_bytes(press_with(KeyCode::Char('x'), KeyModifiers::ALT)),
+            Some(vec![0x1b, b'x'])
+        );
+        for (code, expected) in [
+            (KeyCode::Down, b"\x1b[B".to_vec()),
+            (KeyCode::Right, b"\x1b[C".to_vec()),
+            (KeyCode::Home, b"\x1b[H".to_vec()),
+            (KeyCode::End, b"\x1b[F".to_vec()),
+            (KeyCode::Delete, b"\x1b[3~".to_vec()),
+            (KeyCode::PageUp, b"\x1b[5~".to_vec()),
+            (KeyCode::PageDown, b"\x1b[6~".to_vec()),
+            (KeyCode::Tab, b"\t".to_vec()),
+        ] {
+            assert_eq!(terminal_key_bytes(press(code)), Some(expected));
+        }
+        assert_eq!(terminal_key_bytes(press(KeyCode::Esc)), None);
+        assert_eq!(terminal_key_bytes(press(KeyCode::F(1))), None);
+    }
+
+    #[test]
+    fn editor_substitute_parser_accepts_ranges_and_rejects_malformed_commands() {
+        assert_eq!(
+            parse_editor_substitute("s/foo/bar/"),
+            Some((false, "foo".into(), "bar".into(), false))
+        );
+        assert_eq!(
+            parse_editor_substitute("%s|old|new|g"),
+            Some((true, "old".into(), "new".into(), true))
+        );
+        assert_eq!(
+            parse_editor_substitute("s/foo/bar/gg"),
+            Some((false, "foo".into(), "bar".into(), false))
+        );
+        for command in ["", "x/foo/bar/", "s", "s/foo", "s/foo/bar", "s/foo/bar/x"] {
+            assert_eq!(parse_editor_substitute(command), None, "{command:?}");
+        }
+    }
+
+    #[test]
+    fn overlay_key_mapping_preserves_navigation_and_character_keys() {
+        let cases = [
+            (KeyCode::Esc, OverlayKey::Esc),
+            (KeyCode::Enter, OverlayKey::Enter),
+            (KeyCode::Tab, OverlayKey::Tab),
+            (KeyCode::BackTab, OverlayKey::BackTab),
+            (KeyCode::Up, OverlayKey::Up),
+            (KeyCode::Down, OverlayKey::Down),
+            (KeyCode::Left, OverlayKey::Left),
+            (KeyCode::Right, OverlayKey::Right),
+            (KeyCode::Backspace, OverlayKey::Backspace),
+            (KeyCode::Char('q'), OverlayKey::Char('q')),
+            (KeyCode::F(1), OverlayKey::Other),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(map_key(press(code)), expected);
+        }
+    }
+
     #[tokio::test]
     async fn f3_is_reserved_for_sessions_and_never_encoded_for_the_pty() {
         let (_dir, app) = app().await;
