@@ -327,7 +327,7 @@ pub struct SourceViewer {
     pub status: ViewerStatus,
     /// Decoded raster for filesystem image previews. The first frame is used
     /// for animated formats; terminal cells cannot represent animation.
-    image_preview: Option<(u32, u32, Vec<[u8; 3]>)>,
+    image_preview: Option<(u32, u32, Vec<[u8; 3]>, Vec<u8>)>,
     /// Raw size on disk when the file was loaded.
     pub size_bytes: u64,
     /// Whether the current view is a limited preview.
@@ -418,6 +418,16 @@ impl Default for SourceViewer {
 impl SourceViewer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn image_bytes(&self) -> Option<&[u8]> {
+        self.image_preview
+            .as_ref()
+            .map(|(_, _, _, bytes)| bytes.as_slice())
+    }
+
+    pub(crate) fn is_image(&self) -> bool {
+        matches!(self.status, ViewerStatus::Image)
     }
 
     /// Check whether the on-disk file differs from the expected version.
@@ -520,9 +530,10 @@ impl SourceViewer {
             if let Ok(decoded) = image::load_from_memory(&bytes) {
                 let rgb = decoded.to_rgb8();
                 let pixels = rgb.pixels().map(|p| [p[0], p[1], p[2]]).collect();
-                self.image_preview = Some((rgb.width(), rgb.height(), pixels));
+                let byte_len = bytes.len() as u64;
+                self.image_preview = Some((rgb.width(), rgb.height(), pixels, bytes));
                 self.status = ViewerStatus::Image;
-                self.size_bytes = bytes.len() as u64;
+                self.size_bytes = byte_len;
                 self.notice = Some(format!("{} · {}×{}", meta.mime, rgb.width(), rgb.height()));
                 return;
             }
@@ -1449,7 +1460,7 @@ impl Widget for SourceViewerWidget<'_> {
 
 impl SourceViewerWidget<'_> {
     fn render_image(&self, area: Rect, buf: &mut Buffer) {
-        let Some((width, height, pixels)) = self.viewer.image_preview.as_ref() else {
+        let Some((width, height, pixels, _)) = self.viewer.image_preview.as_ref() else {
             return;
         };
         self.render_header(
@@ -1481,10 +1492,31 @@ impl SourceViewerWidget<'_> {
             }
             let bottom = (top + 1).min(out_h - 1);
             for col in 0..out_w {
+                let x0 = col as u32 * *width / out_w as u32;
+                let x1 = (((col as u32 + 1) * *width) / out_w as u32)
+                    .max(x0 + 1)
+                    .min(*width);
                 let sample = |y: u16| {
-                    let x = (col as u32 * *width / out_w as u32).min(*width - 1);
-                    let yy = (y as u32 * *height / out_h as u32).min(*height - 1);
-                    pixels[(yy * *width + x) as usize]
+                    let y0 = y as u32 * *height / out_h as u32;
+                    let y1 = (((y as u32 + 1) * *height) / out_h as u32)
+                        .max(y0 + 1)
+                        .min(*height);
+                    let mut sum = [0u32; 3];
+                    let mut count = 0;
+                    for yy in y0..y1 {
+                        for xx in x0..x1 {
+                            let pixel = pixels[(yy * *width + xx) as usize];
+                            sum[0] += pixel[0] as u32;
+                            sum[1] += pixel[1] as u32;
+                            sum[2] += pixel[2] as u32;
+                            count += 1;
+                        }
+                    }
+                    [
+                        (sum[0] / count) as u8,
+                        (sum[1] / count) as u8,
+                        (sum[2] / count) as u8,
+                    ]
                 };
                 let a = sample(top);
                 let b = sample(bottom);

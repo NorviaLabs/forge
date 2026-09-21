@@ -99,6 +99,7 @@ impl TuiApp {
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
+        self.kitty_image_area = None;
         // One read of the active session per frame. Sibling sessions are
         // immutable supervisor snapshots; selecting one must not be undone by
         // the primary-session refresh that happens on every draw.
@@ -1153,6 +1154,13 @@ impl TuiApp {
                 }
                 Some(WorkspaceView::File(_)) => {
                     self.editor_viewport.height = chat_area.height;
+                    if self.source_viewer.is_image() {
+                        self.kitty_image_area = Some(ratatui::layout::Rect {
+                            y: chat_area.y.saturating_add(1),
+                            height: chat_area.height.saturating_sub(1),
+                            ..chat_area
+                        });
+                    }
                     frame.render_widget(
                         SourceViewerWidget {
                             viewer: &mut self.source_viewer,

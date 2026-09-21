@@ -2011,6 +2011,8 @@ pub struct TuiApp {
     /// next render, so commands that depend on whether a pane can physically
     /// fit (e.g. the explorer toggle) need last frame's width to answer.
     pub(crate) last_frame_width: u16,
+    /// Physical area occupied by the current source-viewer image.
+    pub(crate) kitty_image_area: Option<ratatui::layout::Rect>,
 }
 
 #[derive(Debug, Clone, Default)]
