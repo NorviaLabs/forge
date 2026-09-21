@@ -5733,4 +5733,83 @@ mod verification_tests {
             "the card must stand alone, like a diff does"
         );
     }
+
+    #[test]
+    fn failed_runner_shapes_preserve_their_evidence_and_outcome() {
+        let (verdict, evidence) =
+            parse_verdict("Ran 4 tests in 0.01s\n\nFAILED (failures=1)", &failed(1));
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "4 run · FAILED (failures=1)".into()
+            }
+        );
+        assert_eq!(
+            evidence,
+            vec!["FAILED (failures=1)", "Ran 4 tests in 0.01s"]
+        );
+
+        let (verdict, evidence) =
+            parse_verdict("===== 2 failed, 3 passed in 0.4s =====", &failed(1));
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "2 failed · 3 passed".into()
+            }
+        );
+        assert_eq!(
+            evidence,
+            vec![
+                "===== 2 failed, 3 passed in 0.4s =====",
+                "2 failed, 3 passed in 0.4s"
+            ]
+        );
+
+        let (verdict, evidence) = parse_verdict(
+            "warning: one\n   Finished `dev` profile target(s) in 1s",
+            &failed(101),
+        );
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "1 warning".into()
+            }
+        );
+        assert!(evidence.iter().any(|line| line.contains("Finished")));
+    }
+
+    #[test]
+    fn failed_or_empty_output_never_invents_a_result() {
+        let (verdict, evidence) = parse_verdict("", &failed(2));
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "exit 2".into()
+            }
+        );
+        assert!(evidence.is_empty());
+
+        let (verdict, evidence) = parse_verdict(
+            "still running",
+            &ExecutionOutcome::Denied {
+                reason: "blocked".into(),
+            },
+        );
+        assert_eq!(
+            verdict,
+            Verdict::Failed {
+                headline: "did not succeed".into()
+            }
+        );
+        assert_eq!(evidence, vec!["still running"]);
+    }
+
+    #[test]
+    fn count_parser_ignores_zero_noise_but_keeps_real_counts() {
+        assert_eq!(
+            counts_from("10 passed; 0 failed; 0 ignored; 2 skipped"),
+            Some("10 passed · 0 failed · 2 skipped".into())
+        );
+        assert_eq!(counts_from("nothing happened"), None);
+    }
 }
