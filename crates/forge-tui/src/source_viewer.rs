@@ -517,17 +517,14 @@ impl SourceViewer {
         };
 
         if let Ok(meta) = forge_types::inspect_image(&bytes) {
-            match image::load_from_memory(&bytes) {
-                Ok(decoded) => {
-                    let rgb = decoded.to_rgb8();
-                    let pixels = rgb.pixels().map(|p| [p[0], p[1], p[2]]).collect();
-                    self.image_preview = Some((rgb.width(), rgb.height(), pixels));
-                    self.status = ViewerStatus::Image;
-                    self.size_bytes = bytes.len() as u64;
-                    self.notice = Some(format!("{} · {}×{}", meta.mime, rgb.width(), rgb.height()));
-                    return;
-                }
-                Err(_) => {}
+            if let Ok(decoded) = image::load_from_memory(&bytes) {
+                let rgb = decoded.to_rgb8();
+                let pixels = rgb.pixels().map(|p| [p[0], p[1], p[2]]).collect();
+                self.image_preview = Some((rgb.width(), rgb.height(), pixels));
+                self.status = ViewerStatus::Image;
+                self.size_bytes = bytes.len() as u64;
+                self.notice = Some(format!("{} · {}×{}", meta.mime, rgb.width(), rgb.height()));
+                return;
             }
         }
         if is_binary(&bytes) {
