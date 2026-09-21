@@ -3114,7 +3114,7 @@ mod tests {
                     id: format!("{label}-background"),
                     name: "background_run".into(),
                     arguments: json!({
-                        "command": "sleep 30",
+                        "command": "sleep 5",
                         "label": format!("{label} background")
                     }),
                 }],
@@ -5880,7 +5880,7 @@ mod tests {
         let session_id = opened.session.session_id;
         opened
             .session
-            .spawn_background_shell("sleep 30".into(), "retire me".into())
+            .spawn_background_shell("sleep 5".into(), "retire me".into())
             .await
             .unwrap();
         let mut task = task_for(session_id, "retire", &worktree.path);
@@ -5920,7 +5920,15 @@ mod tests {
         .await
         .unwrap();
 
-        let started = supervisor.snapshot(session_id).await.unwrap();
+        let started = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.details.as_ref().is_some_and(|details| {
+                details
+                    .background
+                    .iter()
+                    .any(|task| matches!(task.status, forge_core::BackgroundTaskStatus::Running))
+            })
+        })
+        .await;
         assert!(started.details.as_ref().is_some_and(|details| {
             details
                 .background
@@ -5969,7 +5977,7 @@ mod tests {
             .session;
         let session_id = session.session_id;
         let background_id = session
-            .spawn_background_shell("sleep 30".into(), "shutdown me".into())
+            .spawn_background_shell("sleep 5".into(), "shutdown me".into())
             .await
             .unwrap();
         let task = task_for(session_id, "shutdown", &workspace);
@@ -5996,6 +6004,15 @@ mod tests {
                 .await
                 .unwrap();
 
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.details.as_ref().is_some_and(|details| {
+                details
+                    .background
+                    .iter()
+                    .any(|task| matches!(task.status, forge_core::BackgroundTaskStatus::Running))
+            })
+        })
+        .await;
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
 
         let snapshot = supervisor.snapshot(session_id).await.unwrap();
