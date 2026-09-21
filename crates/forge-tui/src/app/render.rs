@@ -1395,11 +1395,17 @@ impl TuiApp {
             .value
             .display_label(&model_label)
             .to_string();
-        let llm_label = format!(
-            "{}/{}",
-            vendor_label.as_deref().unwrap_or("model"),
-            footer_short_model_id(&model_label)
-        );
+        // Disconnect and first-run states intentionally have no model. Do not
+        // render that empty selection as the fake provider/model id `model/`.
+        let llm_label = if model_label.trim().is_empty() {
+            vendor_label.unwrap_or_else(|| "No model".into())
+        } else {
+            format!(
+                "{}/{}",
+                vendor_label.as_deref().unwrap_or("model"),
+                footer_short_model_id(&model_label)
+            )
+        };
         // Only three focusable footer controls now (which-LLM, effort, mode).
         if let Some(idx) = self.composer_chip_focus {
             self.composer_chip_focus = Some(idx.min(1));

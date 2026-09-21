@@ -386,7 +386,7 @@ impl TuiApp {
                         .as_deref()
                         .map(forge_connect::route_id_for_profile)
                         .unwrap_or_default();
-                    self.submit_session_command_tracked(
+                    let queued = self.submit_session_command_tracked(
                         forge_session::SupervisorCommand::SetModel {
                             session_id,
                             model_id: model.clone(),
@@ -398,6 +398,13 @@ impl TuiApp {
                             self.selected_session_label()
                         )),
                     );
+                    if queued {
+                        self.connect.auth_suspended = false;
+                        self.connect.profile = profile_id.clone();
+                        if let Some(profile_id) = profile_id.as_deref() {
+                            self.apply_connect_credentials(profile_id);
+                        }
+                    }
                     // The actor can be mid-turn; the pending label is replaced
                     // by the toast only once the change actually applies.
                     self.set_feedback(

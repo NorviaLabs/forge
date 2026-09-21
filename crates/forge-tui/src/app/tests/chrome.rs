@@ -665,6 +665,50 @@ async fn tui09_chrome_includes_model_on_frame() {
 }
 
 #[tokio::test]
+async fn empty_model_does_not_render_as_a_provider_model_id() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (_home, _env) = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: String::new(),
+            provider: String::new(),
+            cwd: PathBuf::from("."),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
+        tempfile::TempDir::new()
+            .unwrap()
+            .path()
+            .join("empty-creds.toml"),
+    );
+
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|frame| app.draw(frame)).unwrap();
+    let text = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(
+        text.contains("No model"),
+        "missing empty-model label: {text}"
+    );
+    assert!(!text.contains("model/"), "fake model id rendered: {text}");
+}
+
+#[tokio::test]
 async fn tui09_narrow_frame_still_shows_model_or_ctx() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
