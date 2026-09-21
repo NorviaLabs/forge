@@ -1559,6 +1559,51 @@ mod responsiveness_tests {
         );
     }
 
+    #[tokio::test]
+    async fn turn_timer_interruption_and_retry_guards_cover_edge_states() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.timing.started = Some(Instant::now());
+        app.stream.thinking = "thinking".into();
+        app.close_thinking_timer();
+        assert!(app.timing.thought_secs.is_some());
+        let before = app.timing.thought_secs;
+        app.close_thinking_timer();
+        assert_eq!(app.timing.thought_secs, before);
+
+        app.stream.preview = "partial answer".into();
+        app.timing.thought_secs = Some(0.25);
+        app.record_interrupted_stream("cancelled by user");
+        assert!(app
+            .session_runtime
+            .messages
+            .iter()
+            .any(|message| message.content.contains("[Interrupted: cancelled by user]")));
+        assert!(app.feedback.text.contains("Retry or Continue"));
+
+        let retryable = ModelError::Transport("connection reset".into());
+        app.stream.preview.clear();
+        app.stream.thinking.clear();
+        assert!(app.can_retry_model_call(&retryable, 0));
+        assert!(!app.can_retry_model_call(&retryable, 2));
+        app.stream.preview = "already visible".into();
+        assert!(!app.can_retry_model_call(&retryable, 0));
+    }
+
+    #[tokio::test]
+    async fn queue_lifecycle_reports_empty_and_busy_guards_without_mutating_draft() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.runtime.provider = "mock".into();
+        app.runtime.model_label = "mock".into();
+        app.dequeue_and_send_next().await;
+        assert_eq!(app.feedback.text, "queue empty");
+
+        app.input.set_text("keep this draft");
+        app.busy_state.start(BusyPhase::Model);
+        app.dequeue_and_send_next().await;
+        assert!(app.feedback.text.contains("still processing"));
+        assert_eq!(app.input.text, "keep this draft");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn queued_key_burst_is_not_rate_limited_by_the_animation_tick() {
         crate::app::tests::helpers::isolate_global_skills();
