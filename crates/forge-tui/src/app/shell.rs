@@ -1243,6 +1243,11 @@ async fn run_loop(
             || app.any_interactive_terminal_running();
         if frame_dirty || is_animating || last_idle_draw.elapsed() >= IDLE_REDRAW_INTERVAL {
             terminal.draw(|f| app.draw(f))?;
+            if let (Some(area), Some(bytes)) =
+                (app.kitty_image_area, app.source_viewer.image_bytes())
+            {
+                crate::terminal::render_kitty_image(&mut std::io::stdout(), bytes, area);
+            }
             frame_dirty = false;
             last_idle_draw = std::time::Instant::now();
         }

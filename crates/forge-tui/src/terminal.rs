@@ -1,7 +1,7 @@
 //! Terminal lifecycle guard — ensures raw mode, alternate screen, cursor and
 //! keyboard flags are restored on normal shutdown, returned errors and panics.
 
-use std::io::stdout;
+use std::io::{stdout, Write};
 use std::panic;
 use std::sync::Arc;
 
@@ -11,6 +11,62 @@ use crossterm::event::{
 };
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
+
+/// Render an image with Kitty's graphics protocol when the terminal advertises
+/// support. The normal ratatui cell rendering remains underneath as fallback.
+pub fn render_kitty_image<W: Write>(writer: &mut W, bytes: &[u8], area: ratatui::layout::Rect) {
+    if !kitty_graphics_supported() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let encoded = base64(bytes);
+    let _ = write!(writer, "\x1b[{};{}H", area.y + 1, area.x + 1);
+    for (index, chunk) in encoded.as_bytes().chunks(4096).enumerate() {
+        let more = usize::from(index + 1 < encoded.len().div_ceil(4096));
+        let _ = write!(
+            writer,
+            "\x1b_Ga=T,f=100,t=d,c={},r={},m={};",
+            area.width, area.height, more
+        );
+        let _ = writer.write_all(chunk);
+        let _ = write!(writer, "\x1b\\");
+    }
+    let _ = write!(
+        writer,
+        "\x1b_Ga=p,i=1,c={},r={},m=0\x1b\\",
+        area.width, area.height
+    );
+    let _ = writer.flush();
+}
+
+fn kitty_graphics_supported() -> bool {
+    std::env::var_os("KITTY_WINDOW_ID").is_some()
+        || std::env::var("TERM_PROGRAM").is_ok_and(|program| {
+            matches!(program.to_ascii_lowercase().as_str(), "ghostty" | "wezterm")
+        })
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        output.push(TABLE[((value >> 18) & 63) as usize] as char);
+        output.push(TABLE[((value >> 12) & 63) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            TABLE[((value >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(value & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
 
 /// Best-effort terminal restoration. Safe to call multiple times and from
 /// panicking contexts; individual failures are ignored so that one broken
