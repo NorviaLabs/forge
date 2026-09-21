@@ -717,10 +717,18 @@ mod tests {
             key(KeyCode::Char('d')),
         ]));
 
-        assert!(matches!(source.pop_ready(), Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c')));
-        assert!(matches!(source.pop_queued(), Some((Ok(Event::Key(key)), true)) if key.code == KeyCode::Char('d')));
-        assert!(matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('b')));
-        assert!(matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('a')));
+        assert!(
+            matches!(source.pop_ready(), Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c'))
+        );
+        assert!(
+            matches!(source.pop_queued(), Some((Ok(Event::Key(key)), true)) if key.code == KeyCode::Char('d'))
+        );
+        assert!(
+            matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('b'))
+        );
+        assert!(
+            matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('a'))
+        );
         source.shutdown().await;
     }
 
@@ -742,7 +750,9 @@ mod tests {
         source.push_front_raw(Err(io::Error::new(io::ErrorKind::Other, "reader")));
         let result = coalesce_source_paste(&mut source, None).await;
         assert!(matches!(result, Some(Err(error)) if error.kind() == io::ErrorKind::Other));
-        assert!(matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('x')));
+        assert!(
+            matches!(source.recv_raw().await, Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('x'))
+        );
     }
 
     #[tokio::test]
@@ -761,11 +771,11 @@ mod tests {
             Some(Ok(Event::Key(key))) if key.code == KeyCode::Char('c')
         ));
 
-        let mut queued = std::collections::VecDeque::from([
-            key(KeyCode::Char('a')),
-            key(KeyCode::Enter),
-        ]);
-        assert!(matches!(coalesce_unbracketed_paste(&mut queued), Some(Event::Key(key)) if key.code == KeyCode::Char('a')));
+        let mut queued =
+            std::collections::VecDeque::from([key(KeyCode::Char('a')), key(KeyCode::Enter)]);
+        assert!(
+            matches!(coalesce_unbracketed_paste(&mut queued), Some(Event::Key(key)) if key.code == KeyCode::Char('a'))
+        );
     }
 }
 

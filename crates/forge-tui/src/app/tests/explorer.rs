@@ -81,7 +81,9 @@ async fn explorer_dialog_rendering_covers_all_file_modal_variants() {
             error: None,
         },
         ExplorerDialog::DirtyExit,
-        ExplorerDialog::DirtySwitch { path: child.clone() },
+        ExplorerDialog::DirtySwitch {
+            path: child.clone(),
+        },
         ExplorerDialog::SaveConflict,
         ExplorerDialog::QuitAll {
             summary: QuitAllSummary {
@@ -135,7 +137,10 @@ async fn file_editor_save_reload_and_attachment_paths_are_reconciled() {
 
     app.show_file_in_editor(&path);
     assert!(app.editor_session.is_some());
-    app.editor_session.as_mut().unwrap().replace_text("changed\n");
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .replace_text("changed\n");
     app.save_active_editor();
     assert_eq!(fs::read_to_string(&path).unwrap(), "changed\n");
     assert!(app.feedback.text.contains("saved"));

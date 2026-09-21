@@ -209,10 +209,7 @@ async fn diff_keymap_handles_every_owned_navigation_command_without_a_selection(
         assert!(app.handle_diff_key(event::KeyEvent::new(key, KeyModifiers::NONE)));
     }
     assert!(app.overlay.is_some());
-    assert!(!app.handle_diff_key(event::KeyEvent::new(
-        KeyCode::Char('x'),
-        KeyModifiers::NONE,
-    )));
+    assert!(!app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE,)));
     assert!(app.handle_diff_key(event::KeyEvent::new(
         KeyCode::Char('d'),
         KeyModifiers::CONTROL,
@@ -223,30 +220,12 @@ async fn diff_keymap_handles_every_owned_navigation_command_without_a_selection(
     )));
 
     app.overlay = None;
-    assert!(app.handle_diff_key(event::KeyEvent::new(
-        KeyCode::Char('/'),
-        KeyModifiers::NONE,
-    )));
-    assert!(app.handle_diff_key(event::KeyEvent::new(
-        KeyCode::Char('q'),
-        KeyModifiers::NONE,
-    )));
-    assert!(app.handle_diff_key(event::KeyEvent::new(
-        KeyCode::Backspace,
-        KeyModifiers::NONE,
-    )));
-    assert!(app.handle_diff_key(event::KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-    assert!(app.handle_diff_key(event::KeyEvent::new(
-        KeyCode::Esc,
-        KeyModifiers::NONE,
-    )));
-    assert!(app.handle_diff_key(event::KeyEvent::new(
-        KeyCode::Esc,
-        KeyModifiers::NONE,
-    )));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)));
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE,)));
     assert!(!app.diff_view_is_open());
 }
 
