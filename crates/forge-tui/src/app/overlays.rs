@@ -561,6 +561,7 @@ fn parse_repository_session_id(value: &str) -> Option<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlays::{SessionConfirmKind, SessionInputMode};
 
     #[tokio::test]
     async fn help_text_covers_every_focus_block_and_renders() {
@@ -576,5 +577,49 @@ mod tests {
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         app.render_help_overlay(area, &mut buffer);
         assert!(buffer.content().iter().any(|cell| cell.symbol() == "H"));
+    }
+
+    #[tokio::test]
+    async fn simple_overlay_actions_update_local_state() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.apply_overlay_action(OverlayAction::None).await.unwrap();
+        app.apply_overlay_action(OverlayAction::Toast("notice".into()))
+            .await
+            .unwrap();
+        app.apply_overlay_action(OverlayAction::OpenSessionInput(SessionInputMode::New))
+            .await
+            .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::SessionInput { .. })));
+        app.apply_overlay_action(OverlayAction::OpenSessionRename {
+            session_id: "id".into(),
+            label: "label".into(),
+        })
+        .await
+        .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::SessionRename { .. })));
+        app.apply_overlay_action(OverlayAction::OpenSessionConfirm {
+            kind: SessionConfirmKind::ApproveAll,
+            session_id: "id".into(),
+            label: "label".into(),
+            detail: "detail".into(),
+        })
+        .await
+        .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::SessionConfirm { .. })));
+        app.apply_overlay_action(OverlayAction::ModelNotInCatalog("missing".into()))
+            .await
+            .unwrap();
+        app.apply_overlay_action(OverlayAction::SelectEffort(ReasoningEffort::Low))
+            .await
+            .unwrap();
+        app.apply_overlay_action(OverlayAction::PreviewTheme(
+            forge_config::DEFAULT_THEME_ID.into(),
+        ))
+        .await
+        .unwrap();
+        app.apply_overlay_action(OverlayAction::Close)
+            .await
+            .unwrap();
+        assert!(app.overlay.is_none());
     }
 }
