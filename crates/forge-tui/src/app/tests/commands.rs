@@ -632,6 +632,38 @@ async fn a_failed_compact_says_the_context_is_unchanged_rather_than_claiming_suc
 }
 
 #[tokio::test]
+async fn compact_request_guards_busy_pending_and_waiting_states() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(session, test_runtime_config());
+
+    app.queue_context_reset();
+    assert!(app.pending_interaction.context_reset_pending());
+    assert!(app.busy_state.is_active());
+
+    app.queue_context_reset();
+    assert!(app.feedback.text.contains("busy"));
+
+    app.pending_interaction.clear();
+    app.busy_state.stop();
+    app.pending_turn.queue("queued".into(), Vec::new());
+    app.queue_context_reset();
+    assert!(app.feedback.text.contains("busy"));
+
+    app.pending_turn.clear();
+    app.pending_interaction.clear();
+    app.pending_interaction.request_hitl_decision(
+        forge_types::HitlDecision::Deny,
+        crate::app::types::ApprovalGrant::Once,
+    );
+    app.queue_context_reset();
+    assert!(app.feedback.text.contains("busy"));
+
+    app.pending_interaction.clear();
+    app.busy_state.stop();
+    app.drain_pending_context_reset(None).await.unwrap();
+}
+
+#[tokio::test]
 async fn enter_while_busy_enqueues_user_message() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;
