@@ -2972,4 +2972,46 @@ mod tests {
             .unwrap();
         assert!(app.editor_command.is_none());
     }
+
+    #[tokio::test]
+    async fn preview_search_and_jump_handlers_consume_all_navigation_keys() {
+        let (dir, mut app) = app().await;
+        let path = dir.path().join("preview.txt");
+        std::fs::write(&path, "one\ntwo\none\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.source_viewer.text_preview = true;
+        app.editor_viewport = EditorViewportState { height: 8 };
+
+        for key in [
+            press(KeyCode::Up),
+            press(KeyCode::Char('k')),
+            press(KeyCode::Down),
+            press(KeyCode::Char('j')),
+            press(KeyCode::PageUp),
+            press(KeyCode::PageDown),
+            press(KeyCode::Home),
+            press(KeyCode::Char('g')),
+            press(KeyCode::End),
+            press(KeyCode::Char('G')),
+            press_with(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            press(KeyCode::Char('x')),
+        ] {
+            assert!(app.handle_preview_key(key));
+        }
+
+        app.source_viewer.start_search();
+        assert!(app.handle_search_key(press(KeyCode::Char('o'))));
+        assert!(app.handle_search_key(press(KeyCode::Enter)));
+        assert!(app.handle_search_key(press_with(KeyCode::Enter, KeyModifiers::SHIFT)));
+        assert!(app.handle_search_key(press(KeyCode::Backspace)));
+        assert!(app.handle_search_key(press(KeyCode::Esc)));
+
+        app.source_viewer.start_jump();
+        assert!(app.handle_jump_key(press(KeyCode::Char('2'))));
+        assert!(app.handle_jump_key(press(KeyCode::Backspace)));
+        assert!(app.handle_jump_key(press(KeyCode::Char('3'))));
+        assert!(app.handle_jump_key(press(KeyCode::Enter)));
+        app.source_viewer.start_jump();
+        assert!(app.handle_jump_key(press(KeyCode::Esc)));
+    }
 }
