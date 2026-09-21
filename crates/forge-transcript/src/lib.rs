@@ -5977,4 +5977,63 @@ mod verification_tests {
             "Validation timed out"
         );
     }
+
+    #[test]
+    fn transcript_formatting_helpers_cover_context_diff_and_count_edges() {
+        assert_eq!(
+            strip_attached_context("Active file: src/lib.rs\nCursor line: 12\n\n\nexplain this"),
+            (
+                "explain this".into(),
+                Some("Attached: src/lib.rs:12".into())
+            )
+        );
+        assert_eq!(
+            strip_attached_context("Active file: src/lib.rs\nnot separated"),
+            ("Active file: src/lib.rs\nnot separated".into(), None)
+        );
+
+        assert_eq!(change_rationale(None), "");
+        assert_eq!(
+            change_rationale(Some(
+                "**heading**\n  inspect the parser  \nfix the edge case"
+            )),
+            "inspect the parser fix the edge case"
+        );
+
+        let diff = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new";
+        assert!(looks_like_diff(diff));
+        assert!(looks_like_code_change("apply_patch", diff));
+        assert!(!looks_like_code_change("bash", diff));
+        assert_eq!(extract_path_hint("edit", diff), "src/lib.rs");
+        assert_eq!(
+            split_diff_sections(
+                "edit",
+                &format!("{diff}\n\ndiff --git a/b.rs b/b.rs\n+++ b/b.rs")
+            )
+            .len(),
+            2
+        );
+        assert_eq!(
+            diff_preview_lines(diff, 3),
+            vec![
+                "diff --git a/src/lib.rs b/src/lib.rs",
+                "--- a/src/lib.rs",
+                "+++ b/src/lib.rs"
+            ]
+        );
+
+        assert_eq!(
+            subcommand_line(Some("git status"), "git status · 2 lines"),
+            vec!["git status · 2 lines"]
+        );
+        assert_eq!(
+            subcommand_line(Some("src/lib.rs"), "updated"),
+            vec!["src/lib.rs"]
+        );
+        assert!(subcommand_line(None, "updated").is_empty());
+        assert_eq!(visible_result_count(r#"{"hits":[1,2,3]}"#), 3);
+        assert_eq!(visible_result_count("fff: header\nfirst\n\nsecond"), 2);
+        assert_eq!(result_count_label(1, "match", "matches"), "1 match");
+        assert_eq!(result_count_label(2, "match", "matches"), "2 matches");
+    }
 }
