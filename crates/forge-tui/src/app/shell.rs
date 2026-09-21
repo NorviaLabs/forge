@@ -830,6 +830,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_source_and_test_drain_cover_queue_boundaries() {
+        let mut source = TerminalEventSource::from_events([]);
+        assert!(source.pop_ready().is_none());
+        assert!(source.pop_queued().is_none());
+        assert!(source.try_recv_raw().is_err());
+        source.shutdown().await;
+
+        let mut ordinary =
+            std::collections::VecDeque::from([key(KeyCode::Char('a')), key(KeyCode::Enter)]);
+        assert!(matches!(
+            coalesce_unbracketed_paste(&mut ordinary),
+            Some(Event::Key(key)) if key.code == KeyCode::Char('a')
+        ));
+
+        let mut shifted = std::collections::VecDeque::from([
+            Event::Key(event::KeyEvent::new(
+                KeyCode::Char('A'),
+                KeyModifiers::SHIFT,
+            )),
+            key(KeyCode::Enter),
+            key(KeyCode::Enter),
+        ]);
+        assert!(matches!(
+            coalesce_unbracketed_paste(&mut shifted),
+            Some(Event::Paste(text)) if text == "A\n\n"
+        ));
+
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.test_events.push_back(Event::Paste("xy".into()));
+        drain_events::<ratatui::backend::TestBackend>(&mut app, None)
+            .await
+            .unwrap();
+        assert_eq!(app.input.text, "xy");
+    }
+
+    #[tokio::test]
+    async fn foreground_render_paths_work_without_a_terminal() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        paint_foreground_frame::<ratatui::backend::TestBackend>(&mut app, None, false)
+            .await
+            .unwrap();
+        render_foreground_wake::<ratatui::backend::TestBackend>(
+            &mut app,
+            None,
+            ForegroundWake::Input(key(KeyCode::Char('z'))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.input.text, "z");
+    }
+
+    #[tokio::test]
     async fn foreground_frame_can_tick_and_paint_without_terminal_input() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
