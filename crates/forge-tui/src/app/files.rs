@@ -27,7 +27,11 @@ impl TuiApp {
             return;
         };
         if !force {
-            let baseline = editor.accepted_serialized_text();
+            let baseline = self
+                .source_viewer
+                .document_text
+                .as_deref()
+                .unwrap_or_default();
             match self
                 .source_viewer
                 .disk_conflicts_with(&path, baseline.as_bytes())
