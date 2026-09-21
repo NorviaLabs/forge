@@ -6158,4 +6158,122 @@ mod tests {
         forge_config::grant_trust_at(&trust_store, temp.path()).unwrap();
         assert!(workspace_is_trusted(Some(&trust_store), &nested));
     }
+
+    #[test]
+    fn command_classification_rejects_every_inline_command() {
+        let id = SessionId::nil();
+        let inline = [
+            SupervisorCommand::ArchiveSession { session_id: id },
+            SupervisorCommand::RenameSession {
+                session_id: id,
+                label: "renamed".into(),
+            },
+            SupervisorCommand::PinSession {
+                session_id: id,
+                slot: Some(1),
+                swap: false,
+            },
+            SupervisorCommand::FinalizeCreation { operation_id: 1 },
+            SupervisorCommand::CancelCreation { operation_id: 1 },
+            SupervisorCommand::TrustWorkspace {
+                workspace: PathBuf::from("."),
+            },
+            SupervisorCommand::SubmitPrompt {
+                session_id: id,
+                text: "prompt".into(),
+            },
+            SupervisorCommand::SubmitPromptWithAttachments {
+                session_id: id,
+                text: "prompt".into(),
+                attachments: Vec::new(),
+            },
+            SupervisorCommand::ContinueTurn { session_id: id },
+            SupervisorCommand::ForkSession { session_id: id },
+            SupervisorCommand::ResumeSession {
+                current_session_id: id,
+                session_id: id,
+            },
+            SupervisorCommand::StopTurn { session_id: id },
+            SupervisorCommand::ResolveApproval {
+                session_id: id,
+                decision: HitlDecision::Deny,
+                actor: "test".into(),
+                feedback: None,
+            },
+            SupervisorCommand::ResolveQuestion {
+                session_id: id,
+                answers: None,
+                actor: "test".into(),
+            },
+            SupervisorCommand::SelectSession {
+                session_id: Some(id),
+            },
+            SupervisorCommand::SetModel {
+                session_id: id,
+                model_id: "mock".into(),
+                route_id: "native".into(),
+                reasoning_effort: None,
+            },
+            SupervisorCommand::SetThinking {
+                session_id: id,
+                enabled: true,
+            },
+            SupervisorCommand::SetApproveAll {
+                session_id: id,
+                on: false,
+            },
+            SupervisorCommand::SetCapabilities {
+                session_id: id,
+                image_input_supported: false,
+                context_window: None,
+            },
+            SupervisorCommand::CancelQueuedPrompt {
+                session_id: id,
+                one_based: 1,
+            },
+            SupervisorCommand::PollSession { session_id: id },
+            SupervisorCommand::CancelBackgroundTask {
+                session_id: id,
+                task_id: BackgroundTaskId(1),
+            },
+            SupervisorCommand::ResolveBackgroundApproval {
+                session_id: id,
+                task_id: BackgroundTaskId(1),
+                decision: HitlDecision::Deny,
+            },
+            SupervisorCommand::GrantEgressHost {
+                session_id: id,
+                pattern: "example.com".into(),
+            },
+            SupervisorCommand::AllowSessionPattern {
+                session_id: id,
+                call: ToolCall {
+                    id: "call".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "true"}),
+                },
+            },
+            SupervisorCommand::ClearSessionApprovals { session_id: id },
+            SupervisorCommand::ApplyProviderEnv {
+                pairs: vec![("TEST_KEY".into(), "value".into())],
+            },
+            SupervisorCommand::ClearProviderEnv,
+            SupervisorCommand::Refresh,
+        ];
+        assert!(inline.iter().all(|command| {
+            !runs_outside_command_loop(command) && !stops_every_session(command)
+        }));
+        assert!(
+            command_session_id(&SupervisorCommand::RemoveManagedWorktree { session_id: id })
+                == Some(id)
+        );
+        assert!(
+            command_session_id(&SupervisorCommand::CloseSession { session_id: id }) == Some(id)
+        );
+        assert!(command_session_id(&SupervisorCommand::SubmitPrompt {
+            session_id: id,
+            text: "x".into(),
+        })
+        .is_none());
+    }
 }
