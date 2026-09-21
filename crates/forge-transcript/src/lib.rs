@@ -5039,6 +5039,119 @@ mod tests {
 }
 
 #[cfg(test)]
+mod helper_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn public_helpers_cover_labels_verdicts_and_text_edges() {
+        for (name, expected) in [
+            ("spawn_agent", "Spawn Agent"),
+            ("send_message", "Send Message"),
+            ("followup_task", "Followup Task"),
+            ("wait_agent", "Wait Agent"),
+            ("list_agents", "List Agents"),
+            ("interrupt_agent", "Interrupt Agent"),
+            ("ask_user_question", "Question"),
+            ("request_unconfined_retry", "Retry"),
+            ("load_skill", "Skill"),
+            ("background_run", "Task"),
+            ("view_image", "View Image"),
+            ("ls", "List Files"),
+            ("read_file", "Read"),
+            ("grep", "Search"),
+            ("exec", "Shell"),
+            ("git", "Git"),
+            ("write_file", "Edit"),
+            ("cargo_test", "Check"),
+            ("web_fetch", "Web"),
+            ("update_plan", "Plan"),
+            ("mcp_custom", "mcp_custom"),
+        ] {
+            assert_eq!(tool_kind_label(name), expected, "label for {name}");
+        }
+        for invocation in [
+            "cargo test --lib",
+            "$ cargo clippy -- -D warnings && cargo fmt",
+            "pytest -q",
+            "python3 -m unittest tests",
+            "go test ./...",
+            "npm run test",
+            "npx eslint src",
+            "mypy src",
+        ] {
+            assert!(is_verification_command(invocation), "{invocation}");
+        }
+        for invocation in ["cargo build", "git status", "echo test", ""] {
+            assert!(!is_verification_command(invocation), "{invocation}");
+        }
+
+        let success = ExecutionOutcome::Success;
+        let failure = ExecutionOutcome::Failed { exit_code: Some(1) };
+        let (Verdict::Passed { headline }, evidence) = parse_verdict(
+            "running 2 tests\ntest result: ok. 2 passed; 0 failed; 0 ignored",
+            &success,
+        ) else {
+            panic!("rust success was not parsed");
+        };
+        assert_eq!(headline, "2 passed · 0 failed");
+        assert_eq!(evidence.len(), 1);
+        let (Verdict::Failed { headline }, evidence) = parse_verdict(
+            "test foo ... FAILED\nfailures:\nassertion failed\ntest result: FAILED. 0 passed; 1 failed",
+            &failure,
+        ) else {
+            panic!("rust failure was not parsed");
+        };
+        assert!(headline.contains("1 failed"));
+        assert!(!evidence.is_empty());
+
+        let (Verdict::Passed { headline }, _) = parse_verdict("Ran 3 tests\nOK", &success) else {
+            panic!("unittest success was not parsed");
+        };
+        assert_eq!(headline, "3 passed");
+        let (Verdict::Failed { headline }, _) =
+            parse_verdict("Ran 3 tests\nFAILED (failures=1)", &failure)
+        else {
+            panic!("unittest failure was not parsed");
+        };
+        assert!(headline.contains("3 run"));
+
+        let (Verdict::Passed { headline }, _) =
+            parse_verdict("===== 4 passed in 0.4s =====", &success)
+        else {
+            panic!("pytest success was not parsed");
+        };
+        assert_eq!(headline, "4 passed");
+        let (Verdict::Passed { headline }, _) =
+            parse_verdict("Finished `test` profile [unoptimized]\n", &success)
+        else {
+            panic!("finished success was not parsed");
+        };
+        assert_eq!(headline, "clean");
+        let (Verdict::Unparsed { exit_code, lines }, evidence) =
+            parse_verdict("nothing conclusive\n", &success)
+        else {
+            panic!("unparsed success was not preserved");
+        };
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(lines, 1);
+        assert_eq!(evidence, vec!["nothing conclusive"]);
+
+        assert_eq!(format_elapsed_tenths(-1.0), "0.0s");
+        assert_eq!(format_elapsed_tenths(4.99), "4.9s");
+        assert_eq!(format_elapsed_tenths(5.9), "5s");
+        assert_eq!(
+            sanitize_final_answer_text("before \\confidence{0.8} after"),
+            "before  after"
+        );
+        assert_eq!(
+            sanitize_final_answer_text("kept \\confidence{unfinished"),
+            "kept kept \\confidence{unfinished"
+        );
+        assert_eq!(wrap("one two three", 5), vec!["one", "two", "three"]);
+    }
+}
+
+#[cfg(test)]
 mod spent_reasoning_tests {
 
     /// The live line counts characters because no provider reports usage
