@@ -2914,4 +2914,62 @@ mod tests {
         assert!(app.interactive_terminal.is_none());
         assert_eq!(app.history.entries(), &["!printf hi".to_string()]);
     }
+
+    #[tokio::test]
+    async fn editor_command_routes_cover_edit_substitute_and_failure_paths() {
+        let (dir, mut app) = app().await;
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "foo foo\n").unwrap();
+        app.source_viewer.open(dir.path(), &path);
+        app.editor_session = Some(crate::editor_session::EditorSession::new("foo foo\n"));
+
+        assert!(!app
+            .handle_editor_command_key(press(KeyCode::Char('x')))
+            .await
+            .unwrap());
+
+        app.editor_command = Some("s/foo/bar/g".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(app.editor_session.as_ref().unwrap().text(), "bar bar\n");
+        assert_eq!(app.editor_message.as_deref(), Some("2 substitutions"));
+
+        app.editor_command = Some("s/foo".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.editor_message.as_deref(),
+            Some("E488: Trailing characters")
+        );
+
+        app.editor_command = Some("edit missing.txt".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.editor_message.as_deref(),
+            Some("E32: No file or directory")
+        );
+
+        app.editor_command = Some("not-a-command".into());
+        app.handle_editor_command_key(press(KeyCode::Enter))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.editor_message.as_deref(),
+            Some("E492: Not an editor command: not-a-command")
+        );
+
+        app.editor_command = Some("abc".into());
+        app.handle_editor_command_key(press(KeyCode::Backspace))
+            .await
+            .unwrap();
+        assert_eq!(app.editor_command.as_deref(), Some("ab"));
+        app.handle_editor_command_key(press(KeyCode::Esc))
+            .await
+            .unwrap();
+        assert!(app.editor_command.is_none());
+    }
 }
