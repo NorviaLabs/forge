@@ -2714,8 +2714,7 @@ async fn a_finished_session_keeps_the_outcome_its_marker_reports() {
     let row_of = |rendered: &str| {
         rendered
             .lines()
-            .filter(|line| line.contains("Fix login redirect"))
-            .next_back()
+            .rfind(|line| line.contains("Fix login redirect"))
             .expect("session row")
             .to_string()
     };
@@ -2765,8 +2764,7 @@ async fn a_running_session_row_turns_its_spinner() {
     let glyph_of = |rendered: &str| {
         let line = rendered
             .lines()
-            .filter(|line| line.contains("Fix login redirect"))
-            .next_back()
+            .rfind(|line| line.contains("Fix login redirect"))
             .expect("session row");
         let label = line.find("Fix login redirect").expect("label");
         line[..label].chars().rev().nth(1).expect("marker cell")
