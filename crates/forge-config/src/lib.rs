@@ -1,5 +1,6 @@
 //! Configuration: TOML + env overrides.
 
+mod pane_layout;
 mod permissions;
 mod theme;
 mod trust;
@@ -18,6 +19,7 @@ use thiserror::Error;
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub use pane_layout::{PaneLayoutPreferences, PaneLayoutStore};
 pub use permissions::{
     append_user_allow_rule, load_permissions, parse_permissions_toml, user_permissions_path,
     workspace_permissions_path, PermissionsFile,

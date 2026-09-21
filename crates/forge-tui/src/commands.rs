@@ -70,6 +70,9 @@ pub enum SlashCommand {
     /// overlay — without a palette entry the terminal is unreachable for
     /// anyone who hasn't memorised it.
     Terminal,
+    /// Enter pane resize mode, or restore the responsive defaults.
+    Resize,
+    ResizeReset,
 }
 
 impl SlashCommand {
@@ -208,6 +211,11 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             }
         }
         "terminal" | "term" | "shell" => Ok(SlashCommand::Terminal),
+        "resize" => match parts.next() {
+            None => Ok(SlashCommand::Resize),
+            Some("reset") if parts.next().is_none() => Ok(SlashCommand::ResizeReset),
+            Some(_) => Err(CommandError::Usage("/resize [reset]".into())),
+        },
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -215,6 +223,22 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_enters_mode_or_resets_the_layout() {
+        assert_eq!(
+            parse_slash("/resize").unwrap().unwrap(),
+            SlashCommand::Resize
+        );
+        assert_eq!(
+            parse_slash("/resize reset").unwrap().unwrap(),
+            SlashCommand::ResizeReset
+        );
+        assert_eq!(
+            parse_slash("/resize sideways").unwrap().unwrap_err(),
+            CommandError::Usage("/resize [reset]".into())
+        );
+    }
 
     #[test]
     fn parses_continue_and_fork_commands() {

@@ -2023,6 +2023,10 @@ impl TuiApp {
         // keypress also continues with its ordinary action.
         self.editor_message = None;
 
+        if self.handle_resize_key(key) {
+            return Ok(());
+        }
+
         // A child view is a mode, so leaving it is checked before anything else
         // can claim the key — from whatever block happens to hold focus. An
         // overlay still wins, because it is a mode on top of this one.

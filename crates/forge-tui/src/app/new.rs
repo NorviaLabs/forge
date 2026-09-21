@@ -218,6 +218,7 @@ impl TuiApp {
             // 0 until the first draw: "unknown", which the explorer toggle
             // treats as "don't refuse" rather than guessing a width.
             last_frame_width: 0,
+            pane_resize: PaneResizeState::new(pane_layout_store_for_workspace(&repo_header_cwd)),
             kitty_image_area: None,
         };
         app.init_file_watcher();
@@ -397,7 +398,7 @@ impl TuiApp {
                 cache: repo_header,
                 refresh_rx: None,
                 refreshed_at: Instant::now(),
-                cwd: repo_header_cwd,
+                cwd: repo_header_cwd.clone(),
             },
             progress_state: ProgressState::default(),
             interactive_terminal: None,
@@ -433,6 +434,7 @@ impl TuiApp {
                 warmed: false,
             },
             last_frame_width: 0,
+            pane_resize: PaneResizeState::new(pane_layout_store_for_workspace(&repo_header_cwd)),
             kitty_image_area: None,
         };
         app.init_file_watcher();
@@ -445,6 +447,18 @@ impl TuiApp {
             );
         }
         app.restore_saved_auth().apply_connection_chrome()
+    }
+}
+
+fn pane_layout_store_for_workspace(workspace: &std::path::Path) -> forge_config::PaneLayoutStore {
+    #[cfg(test)]
+    {
+        forge_config::PaneLayoutStore::new(workspace.join(".forge-test-pane-layout.toml"))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = workspace;
+        forge_config::PaneLayoutStore::user_default()
     }
 }
 

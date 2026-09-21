@@ -194,6 +194,7 @@ Useful in-app commands:
 /edit          Open the active file in your editor
 /context-file  Attach the active file to the next message
 /terminal      Open the terminal panel
+/resize        Resize panes with arrow keys (`/resize reset` restores defaults)
 /theme         Change the presentation theme
 /status        Session status and diagnostics
 /effort        Set model effort

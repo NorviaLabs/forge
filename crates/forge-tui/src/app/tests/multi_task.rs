@@ -2714,7 +2714,7 @@ async fn a_finished_session_keeps_the_outcome_its_marker_reports() {
     let row_of = |rendered: &str| {
         rendered
             .lines()
-            .find(|line| line.contains("Fix login redirect"))
+            .rfind(|line| line.contains("Fix login redirect"))
             .expect("session row")
             .to_string()
     };
@@ -2764,7 +2764,7 @@ async fn a_running_session_row_turns_its_spinner() {
     let glyph_of = |rendered: &str| {
         let line = rendered
             .lines()
-            .find(|line| line.contains("Fix login redirect"))
+            .rfind(|line| line.contains("Fix login redirect"))
             .expect("session row");
         let label = line.find("Fix login redirect").expect("label");
         line[..label].chars().rev().nth(1).expect("marker cell")
@@ -2777,7 +2777,7 @@ async fn a_running_session_row_turns_its_spinner() {
             crate::widgets::turn_line::SPINNER_FRAMES
                 .iter()
                 .any(|frame| frame.starts_with(glyph)),
-            "{glyph:?} is not a frame the running marker speaks"
+            "{glyph:?} is not a frame the running marker speaks (first={first:?}, second={second:?})"
         );
     }
     assert_ne!(first, second, "the running row is frozen");
