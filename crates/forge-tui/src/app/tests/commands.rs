@@ -2205,3 +2205,49 @@ async fn approve_all_warning_strip_renders_only_while_on() {
         "warning must clear when approve-all is off:\n{text}"
     );
 }
+
+#[tokio::test]
+async fn benign_semantic_commands_cover_navigation_and_editor_dispatch() {
+    let (_dir, mut app) = focus_test_app().await;
+    let commands = [
+        SemanticCommand::GoHome,
+        SemanticCommand::GoBack,
+        SemanticCommand::PushView(WorkspaceView::Diff),
+        SemanticCommand::ReplaceView(WorkspaceView::Diff),
+        SemanticCommand::ToggleFiles,
+        SemanticCommand::ReturnToLatest,
+        SemanticCommand::PageConversation(true),
+        SemanticCommand::PageConversation(false),
+        SemanticCommand::CloseOverlay,
+        SemanticCommand::FocusComposer,
+        SemanticCommand::FocusPane(FocusBlock::Sidebar),
+        SemanticCommand::InsertComposerNewline,
+        SemanticCommand::OpenInlineSearch,
+        SemanticCommand::OpenSlashCommands,
+        SemanticCommand::OpenHelp,
+        SemanticCommand::CycleFocus { forward: true },
+        SemanticCommand::CycleFocus { forward: false },
+        SemanticCommand::ToggleBottomPanel,
+        SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
+        SemanticCommand::OpenBottomPanel,
+        SemanticCommand::RefreshFiles,
+        SemanticCommand::RefreshEditor,
+        SemanticCommand::BeginCreateFile,
+        SemanticCommand::BeginCreateDirectory,
+        SemanticCommand::BeginRename,
+        SemanticCommand::RequestDelete,
+        SemanticCommand::StartSourceSearch,
+        SemanticCommand::StartJumpToLine,
+        SemanticCommand::OpenExternalEditor,
+        SemanticCommand::ToggleToolDetails,
+        SemanticCommand::MoveQueueSelection(1),
+        SemanticCommand::MoveTasksSelection(1),
+        SemanticCommand::OpenSessionSwitcher,
+        SemanticCommand::StepReasoningEffort(true),
+    ];
+    for command in commands {
+        app.execute_semantic_command(command).await.unwrap();
+    }
+    assert!(app.external_editor.requested);
+    assert!(app.overlay.is_some());
+}
