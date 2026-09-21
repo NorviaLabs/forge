@@ -4304,6 +4304,81 @@ mod tests {
         assert_eq!(supervisor.snapshots().await.len(), 2);
     }
 
+    #[tokio::test]
+    async fn unknown_session_commands_fail_without_touching_the_roster() {
+        let (_temp, supervisor, handle, _id_a, _id_b) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        let unknown = SessionId::new_v4();
+
+        for command in [
+            SupervisorCommand::RenameSession {
+                session_id: unknown,
+                label: "missing".into(),
+            },
+            SupervisorCommand::PinSession {
+                session_id: unknown,
+                slot: Some(2),
+                swap: false,
+            },
+            SupervisorCommand::SetThinking {
+                session_id: unknown,
+                enabled: true,
+            },
+            SupervisorCommand::SetCapabilities {
+                session_id: unknown,
+                image_input_supported: true,
+                context_window: None,
+            },
+            SupervisorCommand::PollSession {
+                session_id: unknown,
+            },
+            SupervisorCommand::CancelQueuedPrompt {
+                session_id: unknown,
+                one_based: 1,
+            },
+            SupervisorCommand::GrantEgressHost {
+                session_id: unknown,
+                pattern: "example.com".into(),
+            },
+            SupervisorCommand::ClearSessionApprovals {
+                session_id: unknown,
+            },
+            SupervisorCommand::StopTurn {
+                session_id: unknown,
+            },
+        ] {
+            assert!(handle.command(command).await.is_err());
+        }
+
+        assert_eq!(supervisor.snapshots().await.len(), 2);
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervisor_handle_reports_closed_channels_for_all_submission_modes() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, _control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+        assert!(matches!(
+            handle.submit(SupervisorCommand::Refresh),
+            Err(RepositorySupervisorError::Closed)
+        ));
+        assert!(matches!(
+            handle.try_command(SupervisorCommand::Refresh),
+            Err(RepositorySupervisorError::Closed)
+        ));
+        assert!(matches!(
+            handle.command(SupervisorCommand::Refresh).await,
+            Err(RepositorySupervisorError::Closed)
+        ));
+    }
+
     /// Quit-all is one command for the whole roster rather than one per
     /// session, so a session that never sees the sweep would simply survive
     /// the exit.
