@@ -6276,4 +6276,40 @@ mod tests {
         })
         .is_none());
     }
+
+    #[tokio::test]
+    async fn session_actor_state_guards_cover_cancel_retire_and_continuation_edges() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = Config::default();
+        cfg.resolved_workspace = dir.path().to_path_buf();
+        cfg.workspace_root = Some(dir.path().display().to_string());
+        cfg.journal.path = dir.path().join("journal").display().to_string();
+        let session = scripted_session(&cfg, "ok").await;
+        let id = session.session_id;
+        let actor = SessionActor::new(
+            task_for(id, "actor", dir.path()),
+            session,
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+
+        assert!(!actor.request_cancel().await);
+        assert!(actor.begin_retirement());
+        assert!(!actor.begin_retirement());
+        actor.finish_retirement();
+        assert!(actor.begin_retirement());
+        actor.finish_retirement();
+
+        assert!(actor.try_start_driver());
+        assert!(!actor.try_start_driver());
+        assert!(!actor.request_continuation());
+        assert!(actor.has_pending_continuation());
+        assert!(actor.take_continuations());
+        assert!(!actor.take_continuations());
+        actor.release_driver();
+        assert!(actor.request_continuation());
+        assert!(actor.take_continuations());
+        actor.release_driver();
+    }
 }
