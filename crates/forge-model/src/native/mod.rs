@@ -392,4 +392,88 @@ mod tests {
             "vendor/model"
         );
     }
+
+    #[test]
+    fn native_request_and_credential_fallbacks_are_deterministic() {
+        let mut cfg = Config::default();
+        cfg.model.model = "configured-model".into();
+        cfg.model.base_url = Some("https://configured.test".into());
+        cfg.model.api_key = Some("configured-key".into());
+        let client = NativeModelClient::from_config(&cfg).unwrap();
+
+        let blank = ModelRequest {
+            messages: Default::default(),
+            tools: Vec::new(),
+            model: "  ".into(),
+            workspace_root: PathBuf::new(),
+            route_id: None,
+            session_id: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
+            prompt_cache: false,
+        };
+        assert_eq!(client.model_for(&blank).unwrap(), "configured-model");
+        assert_eq!(
+            client.credential(&["MISSING_KEY"]).as_deref(),
+            Some("configured-key")
+        );
+        assert_eq!(
+            client.resolved_base_url(&["MISSING_URL"], "https://default.test"),
+            "https://configured.test"
+        );
+
+        let mut empty = cfg;
+        empty.model.model.clear();
+        empty.model.api_key = None;
+        empty.model.base_url = None;
+        let empty_client = NativeModelClient::from_config(&empty).unwrap();
+        assert!(matches!(
+            empty_client.model_for(&blank),
+            Err(ModelError::Other(_))
+        ));
+        assert_eq!(
+            empty_client.resolved_base_url(&["MISSING_URL"], "https://default.test"),
+            "https://default.test"
+        );
+
+        client.apply_provider_env(&[("OPENAI_API_KEY".into(), "override".into())]);
+        assert_eq!(
+            client.credential(&["OPENAI_API_KEY"]).as_deref(),
+            Some("override")
+        );
+        client.clear_provider_env();
+        assert_eq!(
+            client.credential(&["OPENAI_API_KEY"]).as_deref(),
+            Some("configured-key")
+        );
+    }
+
+    #[test]
+    fn native_transport_keys_follow_route_kind() {
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        let request = |route_id: Option<&str>| ModelRequest {
+            route_id: route_id.map(str::to_owned),
+            messages: Default::default(),
+            tools: Vec::new(),
+            model: "model".into(),
+            workspace_root: PathBuf::new(),
+            session_id: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
+            prompt_cache: false,
+        };
+        assert_eq!(
+            client.prompt_transport_key(&request(Some("anthropic-api"))),
+            "anthropic"
+        );
+        assert_eq!(
+            client.prompt_transport_key(&request(Some("openai-chatgpt"))),
+            "codex"
+        );
+        assert_eq!(
+            client.prompt_transport_key(&request(Some("openai-api"))),
+            "openai_compat"
+        );
+        assert_eq!(client.prompt_transport_key(&request(None)), "openai_compat");
+    }
 }
