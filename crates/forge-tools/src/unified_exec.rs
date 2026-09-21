@@ -747,7 +747,7 @@ impl Tool for ExecCommandTool {
         "exec_command"
     }
     fn description(&self) -> &str {
-        "Start a sandboxed shell command with pipe or PTY output, retaining a session for polling or input"
+        "Start a sandboxed shell command with pipe or PTY output, retaining a session for polling or input. Use the returned session_id with write_stdin to poll; do not use ps or pgrep."
     }
     fn input_schema(&self) -> Value {
         schema_for::<ExecCommandArgs>()
@@ -779,7 +779,7 @@ impl Tool for WriteStdinTool {
         "write_stdin"
     }
     fn description(&self) -> &str {
-        "Send input to or poll an interactive shell session"
+        "Send input to or poll an interactive shell session. Use this to poll exec_command sessions instead of ps or pgrep."
     }
     fn input_schema(&self) -> Value {
         schema_for::<WriteStdinArgs>()
