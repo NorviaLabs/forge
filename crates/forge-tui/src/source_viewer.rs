@@ -543,7 +543,6 @@ impl SourceViewer {
                 self.lines.clear();
                 return;
             }
-            ViewerStatus::Image => self.render_image(inner, buf),
         };
         self.lines = split_lines(&text);
         self.status = ViewerStatus::Ok;
@@ -1445,6 +1444,7 @@ impl Widget for SourceViewerWidget<'_> {
             ViewerStatus::Error(ref err) => {
                 self.render_message(inner, buf, "Unable to open file", err);
             }
+            ViewerStatus::Image => self.render_image(inner, buf),
             ViewerStatus::Ok => self.render_content(inner, buf),
         }
     }
