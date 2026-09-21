@@ -777,6 +777,72 @@ mod tests {
             matches!(coalesce_unbracketed_paste(&mut queued), Some(Event::Key(key)) if key.code == KeyCode::Char('a'))
         );
     }
+
+    #[tokio::test]
+    async fn application_tick_and_foreground_wakes_service_idle_state() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        assert!(!tick_application(&mut app).await.unwrap());
+
+        let mut ticker = tokio::time::interval(Duration::from_millis(1));
+        app.test_events.push_back(key(KeyCode::Char('x')));
+        assert!(matches!(
+            next_foreground_wake(&mut app, &mut ticker).await.unwrap(),
+            ForegroundWake::Input(Event::Key(key)) if key.code == KeyCode::Char('x')
+        ));
+        assert!(matches!(
+            next_foreground_wake(&mut app, &mut ticker).await.unwrap(),
+            ForegroundWake::Tick
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_dispatch_handles_resize_focus_and_paste_events() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        dispatch_terminal_event(&mut app, Event::Resize(80, 24), Some(&mut terminal))
+            .await
+            .unwrap();
+        dispatch_terminal_event(
+            &mut app,
+            Event::FocusGained,
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+        dispatch_terminal_event(
+            &mut app,
+            Event::FocusLost,
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+        dispatch_terminal_event(
+            &mut app,
+            Event::Paste("pasted text".into()),
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.input.text, "pasted text");
+    }
+
+    #[tokio::test]
+    async fn foreground_frame_can_tick_and_paint_without_terminal_input() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        paint_foreground_frame(&mut app, Some(&mut terminal), false)
+            .await
+            .unwrap();
+        render_foreground_wake(&mut app, Some(&mut terminal), ForegroundWake::Tick)
+            .await
+            .unwrap();
+    }
 }
 
 /// Advance every non-blocking service owned by the TUI application.
