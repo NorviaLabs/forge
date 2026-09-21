@@ -1996,15 +1996,9 @@ mod tests {
     fn bash_describes_itself() {
         let t = BashTool;
         assert_eq!(t.name(), "bash");
-        assert_eq!(
-            t.description(),
-            "Run a shell command in the workspace directory. \
-Do not use this for listing, file search, content search, file reads, or git. \
-Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
-A host(...) grant projects HTTPS identity for that host into the confined \
-spawn (SSH git remotes become HTTPS; git-dir writes stay limited to git \
-itself, never to git hooks)."
-        );
+        assert!(t.description().contains("background_run"));
+        assert!(t.description().contains("write_stdin"));
+        assert!(t.description().contains("Never use `ps` or `pgrep`"));
         assert_eq!(t.side_effect_class(), SideEffectClass::Exec);
     }
 

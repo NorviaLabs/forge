@@ -438,10 +438,8 @@ impl EgressInvocation {
         };
         let mut proxy = EgressProxy::start_with_shared(shared.for_invocation()).await?;
         let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
-        let socket_path = std::env::temp_dir().join(format!(
-            "forge-egress-{}-{sequence}.sock",
-            std::process::id()
-        ));
+        let socket_path =
+            std::path::Path::new("/tmp").join(format!("f{}-{sequence}.sock", std::process::id()));
         proxy.serve_on_unix_socket_inner(&socket_path).await?;
         let grant = crate::sandbox::EgressGrant {
             proxy_port: proxy.addr().port(),
