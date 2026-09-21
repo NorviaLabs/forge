@@ -240,6 +240,7 @@ pub enum ViewerStatus {
     Loading,
     Ok,
     Binary,
+    Image,
     InvalidUtf8,
     NotFound,
     Error(String),
@@ -324,6 +325,9 @@ pub struct SourceViewer {
     /// Fallback-viewer mode tag. Editable text files use [`EditorSession`].
     pub mode: ViewerMode,
     pub status: ViewerStatus,
+    /// Decoded raster for filesystem image previews. The first frame is used
+    /// for animated formats; terminal cells cannot represent animation.
+    image_preview: Option<(u32, u32, Vec<[u8; 3]>)>,
     /// Raw size on disk when the file was loaded.
     pub size_bytes: u64,
     /// Whether the current view is a limited preview.
@@ -387,6 +391,7 @@ impl Default for SourceViewer {
             focused: true,
             mode: ViewerMode::Normal,
             status: ViewerStatus::Empty,
+            image_preview: None,
             size_bytes: 0,
             preview: false,
             markdown_preview: false,
@@ -449,6 +454,7 @@ impl SourceViewer {
         self.h_scroll = 0;
         self.mode = ViewerMode::Normal;
         self.status = ViewerStatus::Loading;
+        self.image_preview = None;
         self.size_bytes = 0;
         self.preview = false;
         self.markdown_preview = false;
@@ -510,6 +516,20 @@ impl SourceViewer {
             }
         };
 
+        if let Ok(meta) = forge_types::inspect_image(&bytes) {
+            match image::load_from_memory(&bytes) {
+                Ok(decoded) => {
+                    let rgb = decoded.to_rgb8();
+                    let pixels = rgb.pixels().map(|p| [p[0], p[1], p[2]]).collect();
+                    self.image_preview = Some((rgb.width(), rgb.height(), pixels));
+                    self.status = ViewerStatus::Image;
+                    self.size_bytes = bytes.len() as u64;
+                    self.notice = Some(format!("{} · {}×{}", meta.mime, rgb.width(), rgb.height()));
+                    return;
+                }
+                Err(_) => {}
+            }
+        }
         if is_binary(&bytes) {
             self.status = ViewerStatus::Binary;
             self.lines.clear();
@@ -523,6 +543,7 @@ impl SourceViewer {
                 self.lines.clear();
                 return;
             }
+            ViewerStatus::Image => self.render_image(inner, buf),
         };
         self.lines = split_lines(&text);
         self.status = ViewerStatus::Ok;
@@ -1430,6 +1451,54 @@ impl Widget for SourceViewerWidget<'_> {
 }
 
 impl SourceViewerWidget<'_> {
+    fn render_image(&self, area: Rect, buf: &mut Buffer) {
+        let Some((width, height, pixels)) = self.viewer.image_preview.as_ref() else {
+            return;
+        };
+        self.render_header(
+            area,
+            buf,
+            &format!("IMAGE  {}  {}×{}", self.viewer.rel_path, width, height),
+        );
+        let body = Rect {
+            y: area.y.saturating_add(1),
+            height: area.height.saturating_sub(1),
+            ..area
+        };
+        if body.width == 0 || body.height == 0 {
+            return;
+        }
+        let scale = ((*width as f32 / body.width as f32)
+            .max(*height as f32 / (body.height as f32 * 2.0)))
+        .max(1.0);
+        let out_w = ((*width as f32 / scale).round() as u16)
+            .max(1)
+            .min(body.width);
+        let out_h = ((*height as f32 / scale).round() as u16)
+            .max(1)
+            .min(body.height * 2);
+        for row in 0..body.height {
+            let top = row * 2;
+            if top >= out_h {
+                break;
+            }
+            let bottom = (top + 1).min(out_h - 1);
+            for col in 0..out_w {
+                let sample = |y: u16| {
+                    let x = (col as u32 * *width / out_w as u32).min(*width - 1);
+                    let yy = (y as u32 * *height / out_h as u32).min(*height - 1);
+                    pixels[(yy * *width + x) as usize]
+                };
+                let a = sample(top);
+                let b = sample(bottom);
+                if let Some(cell) = buf.cell_mut((body.x + col, body.y + row)) {
+                    cell.set_char('▀');
+                    cell.set_fg(ratatui::style::Color::Rgb(a[0], a[1], a[2]));
+                    cell.set_bg(ratatui::style::Color::Rgb(b[0], b[1], b[2]));
+                }
+            }
+        }
+    }
     /// Header row in the shared pane-title grammar (`>` when this pane owns
     /// the keyboard, two-space neutral otherwise) so File, editor and Preview
     /// headers can never disagree about focus.
