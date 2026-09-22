@@ -543,9 +543,22 @@ impl TuiApp {
     }
 
     fn mouse_update_selection(&mut self, col: u16, row: u16) {
-        if self.selection.is_dragging() {
-            self.selection.update(Cell { row, col });
+        if !self.selection.is_dragging() {
+            return;
         }
+        if self.selection.pane == Some(CopyPane::Conversation) {
+            if let Some(area) = self.conversation_area {
+                let before = self.conversation_view.scroll;
+                if row <= area.y {
+                    self.scroll_conversation_up(WHEEL_NOTCH as u16);
+                } else if row >= area.bottom().saturating_sub(1) {
+                    self.scroll_conversation_down(WHEEL_NOTCH as u16);
+                }
+                let delta = self.conversation_view.scroll as i32 - before as i32;
+                self.selection.shift_rows(delta);
+            }
+        }
+        self.selection.update(Cell { row, col });
     }
 
     fn mouse_finish_selection(&mut self) {
@@ -588,12 +601,7 @@ impl TuiApp {
                 None => String::new(),
             },
             Some(CopyPane::Conversation) => match self.conversation_area {
-                Some(area) => selection::visible_rows_selection_text(
-                    &self.conversation_rows,
-                    area,
-                    &self.selection,
-                    true,
-                ),
+                Some(area) => self.conversation_selection_text(area),
                 None => String::new(),
             },
             Some(CopyPane::Terminal) => match self.terminal_area {
@@ -625,6 +633,31 @@ impl TuiApp {
                 format!("Copy failed: {error}"),
             ),
         }
+    }
+
+    fn conversation_selection_text(&self, area: Rect) -> String {
+        let Some(cache) = self.render_cache.conversation.as_ref() else {
+            return selection::visible_rows_selection_text(
+                &self.conversation_rows,
+                area,
+                &self.selection,
+                true,
+            );
+        };
+        let rows = cache
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let max_scroll = rows.len().saturating_sub(area.height as usize);
+        let top =
+            max_scroll.saturating_sub((self.conversation_view.scroll as usize).min(max_scroll));
+        selection::rows_selection_text(&rows, top, area, &self.selection, true)
     }
 
     fn mouse_open_context_menu(&mut self, col: u16, row: u16) {

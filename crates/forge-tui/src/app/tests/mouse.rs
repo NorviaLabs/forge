@@ -13,6 +13,30 @@ fn wheel_up() -> event::MouseEvent {
     }
 }
 
+#[tokio::test]
+async fn dragging_to_conversation_top_scrolls_and_extends_selection() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_area = Some(ratatui::layout::Rect::new(0, 5, 80, 10));
+    app.conversation_rows = (0..10).map(|i| format!("row {i}")).collect();
+    app.conversation_view.follow = true;
+
+    app.handle_mouse(left_click(4, 12)).await.unwrap();
+    app.handle_mouse(event::MouseEvent {
+        kind: event::MouseEventKind::Drag(event::MouseButton::Left),
+        column: 0,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(app.conversation_view.scroll, 3);
+    assert!(!app.conversation_view.follow);
+    let rect = app.selection.rect().unwrap();
+    assert_eq!(rect.row_start, 5);
+    assert_eq!(rect.row_end, 15);
+}
+
 fn wheel_down() -> event::MouseEvent {
     event::MouseEvent {
         kind: crossterm::event::MouseEventKind::ScrollDown,
@@ -159,6 +183,22 @@ async fn wheel_over_terminal_is_a_noop() {
 
     assert_eq!(app.conversation_view.scroll, 0);
     assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+}
+
+#[tokio::test]
+async fn terminal_text_area_is_mouse_selectable() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.bottom_panel.open = true;
+    draw_app(&mut app, 120, 40);
+    let area = app.terminal_area.expect("terminal text area was drawn");
+
+    app.handle_mouse(left_click(area.x, area.y)).await.unwrap();
+
+    assert_eq!(
+        app.selection.pane,
+        Some(crate::selection::CopyPane::Terminal)
+    );
+    assert!(app.selection.is_active());
 }
 
 #[tokio::test]
