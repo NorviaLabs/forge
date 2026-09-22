@@ -686,6 +686,10 @@ impl TuiApp {
         // A provider can emit the same failure more than once while a turn is
         // unwinding. The toast stack replaces the current notice, keeping one
         // transient notification visible.
+        if self.feedback.severity == FeedbackSeverity::Error && self.feedback.text == msg {
+            self.busy_state.set_phase(BusyPhase::Idle);
+            return;
+        }
         self.toast
             .push_overlay(FeedbackSeverity::Error, msg.clone());
         // Keep the compatibility models populated for status consumers and
