@@ -5318,7 +5318,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|task| task.label == "rewrite lexer")
+            .find(|task| task.label == "Rewrite the lexer")
             .expect("prompt-derived label");
         assert!(forge_config::is_trusted_at(&trust_store, &task.workspace));
         wait_for_task_state(&handle, task.session_id, |snapshot| {
@@ -5489,7 +5489,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|task| task.label == "rewrite lexer")
+            .find(|task| task.label == "Rewrite the lexer")
             .expect("prompt-derived label");
         assert!(task.branch.is_empty(), "branch: {:?}", task.branch);
         assert!(task.base_sha.is_some(), "detached base sha missing");
@@ -5667,7 +5667,7 @@ mod tests {
 
         let task = control.session(session_id).await.unwrap();
         assert_eq!(
-            task.label, "Fix the login bug and",
+            task.label, "Fix the login bug",
             "label came from the prompt"
         );
         assert_eq!(
