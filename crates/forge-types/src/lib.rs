@@ -99,11 +99,35 @@ pub fn title_from_prompt(prompt: &str) -> String {
 
 /// Derive the human-readable session label from the first prompt.
 ///
-/// This uses the same meaningful opening as [`title_from_prompt`] but renders
-/// it with natural spaces. Branch names are slugged separately and remain
-/// kebab-case.
+/// Unlike the branch title, this keeps the words that make the request sound
+/// like a sentence (including articles and prepositions), while dropping only
+/// leading conversational filler. The result is capped to the same short
+/// opening and starts with a capital letter for a natural list label.
 pub fn session_name_from_prompt(prompt: &str) -> String {
-    title_from_prompt(prompt).replace('-', " ")
+    let first_line = prompt.split('\n').next().unwrap_or("");
+    let cut = sentence_end(first_line).unwrap_or(first_line.len());
+    let head = trim_trailing(first_line[..cut].trim());
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let start = words
+        .iter()
+        .position(|word| !is_filler_word(word))
+        .unwrap_or(0);
+    let selected = words
+        .iter()
+        .skip(start)
+        .take(TITLE_MAX_WORDS)
+        .copied()
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return "Untitled session".to_string();
+    }
+
+    let mut name = selected.join(" ");
+    name = trim_trailing(&name).to_string();
+    if let Some(first) = name.get(0..1) {
+        name.replace_range(0..1, &first.to_ascii_uppercase());
+    }
+    name
 }
 
 /// Byte index of the first sentence terminator followed by whitespace or the
@@ -1184,7 +1208,7 @@ mod tests {
     fn session_name_from_prompt_uses_natural_spacing() {
         assert_eq!(
             session_name_from_prompt("Fix the login bug. Then run tests"),
-            "fix login bug"
+            "Fix the login bug"
         );
     }
 

@@ -5667,7 +5667,7 @@ mod tests {
 
         let task = control.session(session_id).await.unwrap();
         assert_eq!(
-            task.label, "fix login bug run",
+            task.label, "Fix the login bug and",
             "label came from the prompt"
         );
         assert_eq!(
