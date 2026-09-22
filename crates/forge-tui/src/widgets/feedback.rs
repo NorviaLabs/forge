@@ -1,11 +1,17 @@
 //! Feedback strip (Phase 10 / TUI-08) — always-visible latest status/error.
 
+#[cfg(test)]
 use crate::status_glyph::{status_indicator_now, Status};
+#[cfg(test)]
 use crate::theme;
+#[cfg(test)]
 use ratatui::buffer::Buffer;
+#[cfg(test)]
 use ratatui::layout::Rect;
+#[cfg(test)]
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
+#[cfg(test)]
+use ratatui::widgets::{Block, Padding, Paragraph, Widget, Wrap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FeedbackSeverity {
@@ -14,6 +20,35 @@ pub enum FeedbackSeverity {
     Warn,
     Error,
     Ok,
+}
+
+#[cfg(test)]
+pub struct FeedbackBar<'a> {
+    pub model: &'a FeedbackModel,
+}
+
+#[cfg(test)]
+impl Widget for FeedbackBar<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height == 0 || area.width == 0 || self.model.is_empty() {
+            return;
+        }
+        let (icon, style) = match self.model.severity {
+            FeedbackSeverity::Info => (status_indicator_now(Status::Info), theme::info()),
+            FeedbackSeverity::Warn => (status_indicator_now(Status::Warning), theme::warn()),
+            FeedbackSeverity::Error => (status_indicator_now(Status::Error), theme::danger()),
+            FeedbackSeverity::Ok => (status_indicator_now(Status::Success), theme::ok()),
+        };
+        Paragraph::new(Line::from(vec![
+            icon,
+            Span::raw(" "),
+            Span::styled(&self.model.text, style),
+        ]))
+        .style(theme::panel())
+        .wrap(Wrap { trim: true })
+        .block(Block::default().padding(Padding::horizontal(crate::design::PANE_PAD_X)))
+        .render(area, buf);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -53,52 +88,6 @@ impl FeedbackModel {
             text: text.into(),
             severity: FeedbackSeverity::Ok,
         }
-    }
-}
-
-pub struct FeedbackBar<'a> {
-    pub model: &'a FeedbackModel,
-}
-
-impl Widget for FeedbackBar<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 || self.model.is_empty() {
-            return;
-        }
-        let (icon, style) = match self.model.severity {
-            FeedbackSeverity::Info => (status_indicator_now(Status::Info), theme::info()),
-            FeedbackSeverity::Warn => (status_indicator_now(Status::Warning), theme::warn()),
-            FeedbackSeverity::Error => (status_indicator_now(Status::Error), theme::danger()),
-            FeedbackSeverity::Ok => (status_indicator_now(Status::Success), theme::ok()),
-        };
-        let text = Line::from(vec![
-            icon,
-            Span::raw(" "),
-            Span::styled(&self.model.text, style),
-        ]);
-        if area.height == 1 {
-            // Single-row status line: no border to inset from, so pad directly
-            // to the footer's text origin (`PANE_PAD_X`). This row sits in the
-            // shell band immediately above the footer and lines up with it, not
-            // with the conversation column it used to live in.
-            Paragraph::new(text)
-                .style(theme::panel())
-                .wrap(Wrap { trim: true })
-                .block(Block::default().padding(Padding::horizontal(crate::design::PANE_PAD_X)))
-                .render(area, buf);
-            return;
-        }
-        Paragraph::new(text)
-            .style(theme::panel())
-            .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(style)
-                    .style(theme::panel())
-                    .padding(Padding::horizontal(crate::design::PANE_PAD_X)),
-            )
-            .render(area, buf);
     }
 }
 

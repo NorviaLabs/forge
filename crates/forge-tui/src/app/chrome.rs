@@ -643,12 +643,10 @@ impl TuiApp {
         self.push_toast_with(FeedbackSeverity::Ok, text);
     }
 
-    /// Toast with an explicit severity. `push_toast` hardcodes `Ok`, which
-    /// would render a warning as a success notice and, because it also writes
-    /// the feedback strip, would overwrite the severity the caller set there.
+    /// Toast with an explicit severity. Transient notifications deliberately
+    /// have one in-app destination: the top-right toast overlay.
     pub(super) fn push_toast_with(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
-        let text = self.toast.show(severity, text);
-        self.set_feedback(severity, text);
+        self.toast.show(severity, text);
     }
 
     pub(super) fn tick_toast(&mut self) {
@@ -658,6 +656,7 @@ impl TuiApp {
     /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
     pub fn set_feedback(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
         let text = text.into();
+        self.toast.show(severity, text.clone());
         self.status_state.message = text.clone();
         self.feedback = FeedbackModel { text, severity };
         self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
@@ -680,41 +679,15 @@ impl TuiApp {
         }
     }
 
-    /// Operator errors remain visible in chat, feedback, and activity.
+    /// Operator errors remain visible in the transient toast and activity.
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
 
         // A provider can emit the same failure more than once while a turn is
-        // unwinding (for example, a stream error followed by a task error).
-        // Keep the current error visible, but do not add another toast,
-        // banner, or activity row for an identical message. This keeps the
-        // three presentation surfaces from becoming a duplicate error stack.
-        if self.feedback.severity == FeedbackSeverity::Error && self.feedback.text == msg {
-            self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
-            self.busy_state.set_phase(BusyPhase::Idle);
-            return;
-        }
-
-        self.set_feedback(FeedbackSeverity::Error, msg.clone());
-        // Errors also surface as an overlay toast: the strip persists but
-        // sits far from the reader's eyes, while the toast interrupts calmly
-        // at the corner for two seconds.
+        // unwinding. The toast stack replaces the current notice, keeping one
+        // transient notification visible.
         self.toast
             .push_overlay(FeedbackSeverity::Error, msg.clone());
-        // Replace prior error banners — don't accumulate red clutter in the chat.
-        self.banner_state.items.retain(|b| {
-            !matches!(
-                b,
-                ChatItem::Banner {
-                    kind: BannerKind::Error,
-                    ..
-                }
-            )
-        });
-        self.banner_state.items.push(ChatItem::Banner {
-            text: msg.clone(),
-            kind: BannerKind::Error,
-        });
         self.activity
             .push(ActivityKind::Error, FeedbackSeverity::Error, msg);
         self.busy_state.set_phase(BusyPhase::Idle);
