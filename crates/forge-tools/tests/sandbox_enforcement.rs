@@ -744,6 +744,10 @@ async fn a_denied_command_explains_which_boundary_stopped_it() {
     };
     assert!(content.contains("blocked by the sandbox"), "{content}");
     assert!(reason.contains("confined to the workspace"), "{reason}");
+    assert!(
+        reason.contains(target.to_str().unwrap()),
+        "the denied resource should be identified: {reason}"
+    );
 }
 
 /// And an ordinary failure must not be dressed up as a sandbox problem.

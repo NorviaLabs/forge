@@ -87,7 +87,7 @@ pub fn denial_for_confined_command(
         crate::sandbox::explain_denial(content, workspace_root)
     };
     let (reason, denied_host) = if let Some(explanation) = explanation {
-        (explanation.to_string(), denied_host)
+        (explanation, denied_host)
     } else {
         let host = denied_host?;
         (HOST_DENIED_EXPLANATION.to_string(), Some(host))
@@ -115,7 +115,7 @@ fn explain_shell_denial(
     stderr: &str,
     expected_shell: &str,
     workspace_root: &std::path::Path,
-) -> Option<&'static str> {
+) -> Option<String> {
     let expected_shell = std::path::Path::new(expected_shell)
         .file_name()
         .and_then(|name| name.to_str())?;

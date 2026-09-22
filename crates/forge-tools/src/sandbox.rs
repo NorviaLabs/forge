@@ -2165,6 +2165,8 @@ mod bubblewrap_tests {
     }
 }
 
+const FILESYSTEM: &[&str] = &["Operation not permitted", "Read-only file system"];
+
 /// Why a confined command failed, when the sandbox is the reason.
 ///
 /// A denial does not announce itself. The filesystem boundary surfaces as
@@ -2180,14 +2182,16 @@ mod bubblewrap_tests {
 ///
 /// Returns `None` when nothing in the output looks like a denial — an ordinary
 /// compile error or test failure must not be dressed up as a sandbox problem.
-pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static str> {
+/// Filesystem explanations include a resource or access type only when the
+/// diagnostic names it clearly; ambiguous errors keep the generic boundary
+/// explanation.
+pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<String> {
     const NETWORK: &[&str] = &[
         "Could not resolve host",
         "Temporary failure in name resolution",
         "Network is unreachable",
         "nodename nor servname provided",
     ];
-    const FILESYSTEM: &[&str] = &["Operation not permitted", "Read-only file system"];
     const CREDENTIAL: &[&str] = &[
         "The token in default is invalid",
         "Requires authentication (HTTP 401)",
@@ -2196,14 +2200,16 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
     if output.contains(crate::egress::SANDBOX_DENIED_REASON) {
         return Some(
             "blocked by the sandbox: the destination host is not allowed by the personal \
-             host(...) network permissions.",
+             host(...) network permissions."
+                .into(),
         );
     }
     if NETWORK.iter().any(|sig| output.contains(sig)) {
         return Some(
             "blocked by the sandbox: network access is denied. This is not a DNS or \
              connectivity problem — the command ran confined. Fetching dependencies \
-             needs a network-enabled run.",
+             needs a network-enabled run."
+                .into(),
         );
     }
 
@@ -2213,15 +2219,19 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
     }) {
         return Some(
             "blocked while sandboxed: macOS Launch Services refused the application handoff \
-             with permission error -54. Request approval to retry outside the sandbox.",
+             with permission error -54. Request approval to retry outside the sandbox."
+                .into(),
         );
     }
 
-    if FILESYSTEM.iter().any(|sig| output.contains(sig)) {
-        return Some(FILESYSTEM_EXPLANATION);
+    if let Some(line) = output
+        .lines()
+        .find(|line| FILESYSTEM.iter().any(|sig| line.contains(sig)))
+    {
+        return Some(filesystem_explanation(line));
     }
     if CREDENTIAL.iter().any(|sig| output.contains(sig)) {
-        return Some(CREDENTIAL_EXPLANATION);
+        return Some(CREDENTIAL_EXPLANATION.into());
     }
 
     // Linux reports a blocked write as a missing path, not as a permission
@@ -2237,20 +2247,90 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<&'static st
     // boundary. A missing file inside the workspace is an ordinary mistake and
     // is left alone.
     const MISSING: &[&str] = &["No such file or directory", "Directory nonexistent"];
-    if MISSING.iter().any(|sig| output.contains(sig))
-        && mentions_path_outside(output, workspace_root)
-    {
-        return Some(FILESYSTEM_EXPLANATION);
+    if let Some(line) = output.lines().find(|line| {
+        MISSING.iter().any(|sig| line.contains(sig)) && mentions_path_outside(line, workspace_root)
+    }) {
+        return Some(filesystem_explanation(line));
     }
     None
 }
 
-const FILESYSTEM_EXPLANATION: &str =
-    "blocked by the sandbox: filesystem access is confined to the workspace \
-     and the session temp directory, and .git/.forge are read-only inside the \
-     workspace. On Linux a path outside the boundary does not exist inside \
-     the sandbox, so it reports as missing rather than forbidden; on macOS it \
-     reports as denied. This is not a file-permission problem on disk.";
+fn filesystem_explanation(line: &str) -> String {
+    let resource = denied_resource(line);
+    let access = filesystem_access(line);
+    let missing =
+        line.contains("No such file or directory") || line.contains("Directory nonexistent");
+
+    let mut explanation = String::from("blocked by the sandbox: ");
+    match (access, resource.as_deref()) {
+        (Some(access), Some(resource)) => {
+            explanation.push_str(&format!("attempted {access} access to `{resource}`; "));
+        }
+        (Some(access), None) => {
+            explanation.push_str(&format!("attempted {access} access; "));
+        }
+        (None, Some(resource)) => {
+            explanation.push_str(&format!("attempted filesystem access to `{resource}`; "));
+        }
+        (None, None) => {}
+    }
+    explanation.push_str(
+        "filesystem access is confined to the workspace and the session temp directory, \
+         and .git/.forge are read-only inside the workspace. ",
+    );
+    if missing {
+        explanation.push_str(
+            "On Linux a path outside the boundary does not exist inside the sandbox, so it \
+             reports as missing rather than forbidden; on macOS it reports as denied. ",
+        );
+    }
+    explanation.push_str("This is not a file-permission problem on disk.");
+    explanation
+}
+
+/// Extract an absolute path only when the diagnostic names one explicitly.
+/// Relative shell operands are deliberately left out: guessing their base
+/// would make a denial explanation less trustworthy than the original error.
+fn denied_resource(line: &str) -> Option<String> {
+    let marker = FILESYSTEM
+        .iter()
+        .chain(["No such file or directory", "Directory nonexistent"].iter())
+        .find_map(|marker| line.find(marker))?;
+    let candidates = line[..marker]
+        .split_whitespace()
+        .chain(line[marker..].split_whitespace());
+    candidates
+        .filter_map(|token| {
+            let token = token
+                .trim_matches(|character| matches!(character, '\'' | '"' | '`' | ',' | ';'))
+                .trim_end_matches(':');
+            token.starts_with('/').then(|| token.to_string())
+        })
+        .next_back()
+}
+
+/// Infer access type only from wording that identifies the operation. A
+/// generic `Operation not permitted` line gets no guessed read/write label.
+fn filesystem_access(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("cannot create")
+        || lower.contains("read-only file system")
+        || ["mkdir:", "touch:", "rm:", "mv:", "cp:", "ln:", "chmod:"]
+            .iter()
+            .any(|command| lower.contains(command))
+    {
+        return Some("write");
+    }
+    if lower.contains("cannot execute") || lower.contains("exec:") {
+        return Some("execute");
+    }
+    [
+        "cat:", "head:", "tail:", "grep:", "rg:", "sed:", "stat:", "ls:",
+    ]
+    .iter()
+    .any(|command| lower.contains(command))
+    .then_some("read")
+}
 
 const CREDENTIAL_EXPLANATION: &str =
     "blocked by the sandbox: credentials live in the host secret store, \
@@ -2350,6 +2430,46 @@ mod denial_tests {
         let out = "/bin/sh: /tmp/escape.txt: Operation not permitted";
         let explained = explain_denial(out, ws().path()).expect("must be recognised");
         assert!(explained.contains("confined to the workspace"));
+        assert!(explained.contains("`/tmp/escape.txt`"));
+    }
+
+    #[test]
+    fn a_blocked_read_names_the_resource_and_access_type() {
+        let out = "cat: /tmp/secret.txt: Operation not permitted";
+        let explained = explain_denial(out, ws().path()).expect("must be recognised");
+        assert!(explained.contains("attempted read access"), "{explained}");
+        assert!(explained.contains("`/tmp/secret.txt`"), "{explained}");
+    }
+
+    #[test]
+    fn a_blocked_write_names_the_resource_and_access_type() {
+        let out = "sh: 1: cannot create /tmp/escape.txt: Operation not permitted";
+        let explained = explain_denial(out, ws().path()).expect("must be recognised");
+        assert!(explained.contains("attempted write access"), "{explained}");
+        assert!(explained.contains("`/tmp/escape.txt`"), "{explained}");
+    }
+
+    #[test]
+    fn a_blocked_execute_names_the_resource_and_access_type() {
+        let out = "sh: exec: /tmp/tool: Operation not permitted";
+        let explained = explain_denial(out, ws().path()).expect("must be recognised");
+        assert!(
+            explained.contains("attempted execute access"),
+            "{explained}"
+        );
+        assert!(explained.contains("`/tmp/tool`"), "{explained}");
+    }
+
+    #[test]
+    fn an_ambiguous_filesystem_denial_does_not_guess_access_type() {
+        let explained = explain_denial("Operation not permitted", ws().path())
+            .expect("the raw denial should retain a generic explanation");
+        assert!(!explained.contains("attempted read access"), "{explained}");
+        assert!(!explained.contains("attempted write access"), "{explained}");
+        assert!(
+            !explained.contains("attempted execute access"),
+            "{explained}"
+        );
     }
 
     /// Linux reports a blocked write as a *missing* file, because the path
