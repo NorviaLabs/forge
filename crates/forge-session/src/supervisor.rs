@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use forge_config::Config;
-use forge_core::{AgentSession, LoopError};
+use forge_core::{AgentSession, IsolatedTask, LoopError};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{RepositoryRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_types::{
@@ -404,6 +404,11 @@ impl SessionActor {
         !self.driving.swap(true, Ordering::AcqRel)
     }
 
+    fn try_claim_driver(&self) -> Option<SessionDriverClaim<'_>> {
+        self.try_start_driver()
+            .then_some(SessionDriverClaim { actor: self })
+    }
+
     fn request_continuation(&self) -> bool {
         self.continue_pending.fetch_add(1, Ordering::AcqRel);
         self.try_start_driver()
@@ -419,6 +424,16 @@ impl SessionActor {
 
     fn release_driver(&self) {
         self.driving.store(false, Ordering::Release);
+    }
+}
+
+struct SessionDriverClaim<'a> {
+    actor: &'a SessionActor,
+}
+
+impl Drop for SessionDriverClaim<'_> {
+    fn drop(&mut self) {
+        self.actor.release_driver();
     }
 }
 
@@ -1117,6 +1132,12 @@ fn runs_outside_command_loop(command: &SupervisorCommand) -> bool {
             | SupervisorCommand::CompactContext { .. }
             | SupervisorCommand::CloseSession { .. }
             | SupervisorCommand::CloseAllSessions
+    ) || matches!(
+        command,
+        SupervisorCommand::ResolveApproval {
+            decision: HitlDecision::Approve,
+            ..
+        }
     )
 }
 
@@ -1134,7 +1155,8 @@ fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
     match command {
         SupervisorCommand::RemoveManagedWorktree { session_id }
         | SupervisorCommand::CompactContext { session_id }
-        | SupervisorCommand::CloseSession { session_id } => Some(*session_id),
+        | SupervisorCommand::CloseSession { session_id }
+        | SupervisorCommand::ResolveApproval { session_id, .. } => Some(*session_id),
         _ => None,
     }
 }
@@ -1837,13 +1859,74 @@ async fn execute_command(
             feedback,
         } => {
             let task_actor = actor(&state, session_id).await?;
+            let approval_driver = if matches!(decision, HitlDecision::Approve) {
+                Some(
+                    task_actor
+                        .try_claim_driver()
+                        .ok_or(RepositorySupervisorError::Contention)?,
+                )
+            } else {
+                None
+            };
             let mut session = try_session(&task_actor)?;
-            session
-                .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
-                .await?;
+            if matches!(decision, HitlDecision::Approve) {
+                let pending = session.prepare_approved_hitl(&decision_actor).await?;
+                state
+                    .control
+                    .set_turn_state(session_id, SupervisorTurnState::Running)
+                    .await?;
+                refresh_actor(&state, &task_actor, &session).await?;
+
+                if let Some(pending) = pending {
+                    let cancel = session.begin_turn_cancellation_scope();
+                    *task_actor
+                        .running_cancel
+                        .lock()
+                        .expect("turn cancel lock poisoned") = Some(cancel.clone());
+                    let execution = IsolatedTask::spawn(pending.execute());
+                    let completed = tokio::select! {
+                        joined = execution.join() => joined
+                            .map_err(|error| LoopError::Other(format!("tool task join: {error}")))
+                            .and_then(|completed| completed.ok_or(LoopError::Cancelled)),
+                        _ = cancel.cancelled() => Err(LoopError::Cancelled),
+                    };
+                    *task_actor
+                        .running_cancel
+                        .lock()
+                        .expect("turn cancel lock poisoned") = None;
+                    match completed {
+                        Ok(completed) => session.finish_hitl_execution(completed).await?,
+                        Err(LoopError::Cancelled) => {
+                            session.mark_cancelled().await?;
+                            state
+                                .control
+                                .set_turn_state(session_id, SupervisorTurnState::Cancelled)
+                                .await?;
+                            refresh_actor(&state, &task_actor, &session).await?;
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            } else {
+                session
+                    .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
+                    .await?;
+            }
             refresh_actor(&state, &task_actor, &session).await?;
             drop(session);
-            start_continue_driver(state, session_id).await?;
+            if let Some(claim) = approval_driver {
+                // Queue the continuation before releasing the approval's driver
+                // claim. If another driver wins the release race, it observes
+                // this pending continuation and drains it first.
+                let _ = task_actor.request_continuation();
+                drop(claim);
+                if task_actor.try_start_driver() {
+                    tokio::spawn(run_driver(state, task_actor.clone(), session_id));
+                }
+            } else {
+                start_continue_driver(state, session_id).await?;
+            }
         }
         SupervisorCommand::ResolveQuestion {
             session_id,
@@ -2948,6 +3031,52 @@ mod tests {
         }
     }
 
+    struct GatedApprovalTool {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl Tool for GatedApprovalTool {
+        fn name(&self) -> &str {
+            "gated_approval"
+        }
+
+        fn description(&self) -> &str {
+            "Wait for the test to release an approved call"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+
+        fn side_effect_class(&self) -> forge_types::SideEffectClass {
+            forge_types::SideEffectClass::Exec
+        }
+
+        fn call<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            _ctx: &'life1 ToolContext,
+            _args: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ToolOutput, ToolError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
+                Ok(ToolOutput::success("approved tool finished"))
+            })
+        }
+    }
+
     struct CredentialTrackingModel {
         clear_count: Arc<AtomicUsize>,
     }
@@ -3079,6 +3208,40 @@ mod tests {
         AgentSession::create(loop_cfg, model, ToolRegistry::new())
             .await
             .unwrap()
+    }
+
+    async fn gated_approval_session(
+        cfg: &Config,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    ) -> AgentSession {
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "gated-approval".into(),
+                    name: "gated_approval".into(),
+                    arguments: json!({}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response("approval complete"),
+        ]));
+        let loop_cfg = LoopConfig {
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(GatedApprovalTool { started, release }));
+        let mut session = AgentSession::create(loop_cfg, model, tools).await.unwrap();
+        session.set_governance(
+            forge_governance::Governance::default().require_hitl_for_tool("gated_approval"),
+        );
+        session
     }
 
     fn approval_then_question_script(label: &str) -> Vec<ModelResponse> {
@@ -3255,6 +3418,103 @@ mod tests {
             snapshot.queued_prompts,
             vec![(queued_id, "run after review".into())]
         );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervised_approval_publishes_before_the_approved_tool_finishes() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let session = gated_approval_session(&cfg, started.clone(), release.clone()).await;
+        let session_id = session.session_id;
+        let task = task_for(session_id, "approval", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "run gated approval".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_some()
+        })
+        .await;
+
+        let mut completion = handle
+            .submit(SupervisorCommand::ResolveApproval {
+                session_id,
+                decision: HitlDecision::Approve,
+                actor: "test".into(),
+                feedback: None,
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .expect("approved tool starts");
+
+        let running = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_none()
+                && snapshot.task.turn_state == SupervisorTurnState::Running
+        })
+        .await;
+        assert!(
+            !running
+                .transcript
+                .messages()
+                .iter()
+                .any(|message| message.content == "approved tool finished"),
+            "the cleared approval must publish before tool completion"
+        );
+        assert!(
+            completion.try_recv().is_err(),
+            "the approved tool should still be running"
+        );
+
+        release.notify_one();
+        completion.await.unwrap().unwrap();
+        let done = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert!(done
+            .transcript
+            .messages()
+            .iter()
+            .any(|message| message.content.contains("approval complete")));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
@@ -6388,6 +6648,12 @@ mod tests {
             SupervisorCommand::CompactContext { session_id: id },
             SupervisorCommand::CloseSession { session_id: id },
             SupervisorCommand::CloseAllSessions,
+            SupervisorCommand::ResolveApproval {
+                session_id: id,
+                decision: HitlDecision::Approve,
+                actor: "test".into(),
+                feedback: None,
+            },
         ];
         for command in detached {
             assert!(runs_outside_command_loop(&command));
@@ -6397,6 +6663,15 @@ mod tests {
         assert!(!stops_every_session(&SupervisorCommand::Refresh));
         assert_eq!(
             command_session_id(&SupervisorCommand::CompactContext { session_id: id }),
+            Some(id)
+        );
+        assert_eq!(
+            command_session_id(&SupervisorCommand::ResolveApproval {
+                session_id: id,
+                decision: HitlDecision::Approve,
+                actor: "test".into(),
+                feedback: None,
+            }),
             Some(id)
         );
         assert_eq!(command_session_id(&SupervisorCommand::Refresh), None);
