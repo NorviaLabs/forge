@@ -1370,7 +1370,6 @@ impl TuiApp {
             self.render_inline_search(frame, regions.input);
         }
 
-        // Phase 10 / TUI-08 — always-visible feedback strip
         if !self.feedback.is_empty() && regions.feedback.height > 0 {
             frame.render_widget(
                 FeedbackBar {

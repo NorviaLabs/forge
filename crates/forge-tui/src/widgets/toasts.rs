@@ -79,7 +79,7 @@ impl ToastStack {
         self.engine.show_toast(
             ToastBuilder::new(Cow::Owned(text))
                 .toast_type(toast_type_for(severity))
-                .position(ToastPosition::BottomRight)
+                .position(ToastPosition::TopRight)
                 .constraint(ToastConstraint::Auto),
         );
         self.shown_at = Some(Instant::now());
