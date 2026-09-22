@@ -21,6 +21,10 @@ fn codex_responses_url(client: &NativeModelClient) -> String {
     )
 }
 
+fn codex_session_id<'a>(req: &'a ModelRequest, request_id: &'a str) -> &'a str {
+    req.session_id.as_deref().unwrap_or(request_id)
+}
+
 pub(super) async fn complete(
     client: &NativeModelClient,
     req: ModelRequest,
@@ -50,6 +54,10 @@ pub(super) async fn complete(
     // different cache shards and sharply lowers the observed hit rate.
     let body = request_body(client, &req, model, &aliases);
     let request_id = Uuid::new_v4().to_string();
+    // Cache routing on the Codex backend is conversation-scoped. Keep that
+    // identity stable across every model step; only the client request id is
+    // unique per HTTP request. Non-session callers retain the old fallback.
+    let session_id = codex_session_id(&req, &request_id);
     let response = client
         .http
         .post(codex_responses_url(client))
@@ -58,7 +66,7 @@ pub(super) async fn complete(
         .header("originator", "forge")
         .header("OpenAI-Beta", "responses=experimental")
         .header("accept", "text/event-stream")
-        .header("session-id", &request_id)
+        .header("session-id", session_id)
         .header("x-client-request-id", &request_id)
         .header("User-Agent", "forge")
         .json(&body)
@@ -497,6 +505,22 @@ mod tests {
             thinking_enabled: true,
             prompt_cache: true,
         }
+    }
+
+    #[test]
+    fn codex_session_header_is_stable_across_requests() {
+        let mut request = request_with_tool("read_file");
+        request.session_id = Some("session-123".into());
+
+        assert_eq!(codex_session_id(&request, "request-1"), "session-123");
+        assert_eq!(codex_session_id(&request, "request-2"), "session-123");
+    }
+
+    #[test]
+    fn codex_session_header_falls_back_for_non_session_callers() {
+        let request = request_with_tool("read_file");
+
+        assert_eq!(codex_session_id(&request, "request-1"), "request-1");
     }
 
     #[test]
