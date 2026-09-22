@@ -60,6 +60,7 @@ pub fn temp_env(policy: &SandboxPolicy) -> Vec<(&'static str, &Path)> {
 
 /// Environment additions shared by pipe and PTY shell spawns.
 pub fn shell_env(policy: &SandboxPolicy) -> Vec<(String, OsString)> {
+    #[allow(unused_mut)]
     let mut env = temp_env(policy)
         .into_iter()
         .map(|(name, value)| (name.to_string(), value.as_os_str().to_os_string()))
