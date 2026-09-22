@@ -1211,9 +1211,15 @@ impl TuiApp {
         let interactive_terminal = self.interactive_terminal.as_ref();
         if regions.bottom_panel.height > 1 && self.bottom_panel.open {
             let terminal_area = ratatui::layout::Rect {
-                x: regions.bottom_panel.x,
+                x: regions
+                    .bottom_panel
+                    .x
+                    .saturating_add(crate::widgets::input::TEXT_INSET),
                 y: regions.bottom_panel.y.saturating_add(1),
-                width: regions.bottom_panel.width,
+                width: regions
+                    .bottom_panel
+                    .width
+                    .saturating_sub(crate::widgets::input::TEXT_INSET.saturating_mul(2)),
                 height: regions.bottom_panel.height.saturating_sub(1),
             };
             self.terminal_area = Some(terminal_area);

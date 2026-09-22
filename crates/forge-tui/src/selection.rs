@@ -80,6 +80,21 @@ impl MouseSelection {
         self.current = Some(cell);
     }
 
+    /// Keep selected text anchored to its logical rows while its pane scrolls.
+    pub(crate) fn shift_rows(&mut self, delta: i32) {
+        let shift = |cell: &mut Option<Cell>| {
+            if let Some(cell) = cell {
+                cell.row = if delta >= 0 {
+                    cell.row.saturating_add(delta as u16)
+                } else {
+                    cell.row.saturating_sub(delta.unsigned_abs() as u16)
+                };
+            }
+        };
+        shift(&mut self.anchor);
+        shift(&mut self.current);
+    }
+
     /// Finalise a drag with the text extracted from the pane. The
     /// selection stays `active` (highlighted, copyable) but is no longer
     /// `dragging` — further pointer movement won't change it.
@@ -286,14 +301,20 @@ pub(crate) fn visible_rows_selection_text(
         let Some(raw) = rows.get((row - area.y) as usize) else {
             continue;
         };
-        let line = if strip_prefix {
+        let (line, prefix_width) = if strip_prefix {
             strip_conversation_prefix(raw)
         } else {
-            raw.clone()
+            (raw.clone(), 0)
         };
         let chars: Vec<char> = line.chars().collect();
-        let start = rect.start_col.saturating_sub(area.x) as usize;
-        let end = rect.end_col.saturating_sub(area.x) as usize;
+        let start = rect
+            .start_col
+            .saturating_sub(area.x)
+            .saturating_sub(prefix_width) as usize;
+        let end = rect
+            .end_col
+            .saturating_sub(area.x)
+            .saturating_sub(prefix_width) as usize;
         let selected = if row == rect.row_start && row == rect.row_end {
             chars
                 .get(start.min(chars.len())..=end.min(chars.len().saturating_sub(1)))
@@ -320,11 +341,63 @@ pub(crate) fn visible_rows_selection_text(
     output.join("\n")
 }
 
-fn strip_conversation_prefix(line: &str) -> String {
-    line.strip_prefix("│ ")
-        .or_else(|| line.strip_prefix("│"))
-        .unwrap_or(line)
-        .to_string()
+/// Extract from a complete logical row set whose viewport begins at `top`.
+/// Endpoints may sit outside the pane after drag-to-edge autoscrolling.
+pub(crate) fn rows_selection_text(
+    rows: &[String],
+    top: usize,
+    area: Rect,
+    sel: &MouseSelection,
+    strip_prefix: bool,
+) -> String {
+    let Some(rect) = sel.rect() else {
+        return String::new();
+    };
+    let mut selected_rows = Vec::new();
+    for screen_row in rect.row_start..=rect.row_end {
+        let index = top as i64 + screen_row as i64 - area.y as i64;
+        if index >= 0 {
+            if let Some(row) = rows.get(index as usize) {
+                selected_rows.push(row.clone());
+            }
+        }
+    }
+    if selected_rows.is_empty() {
+        return String::new();
+    }
+    let translated = MouseSelection {
+        anchor: Some(Cell {
+            row: area.y,
+            col: rect.start_col,
+        }),
+        current: Some(Cell {
+            row: area.y.saturating_add(selected_rows.len() as u16 - 1),
+            col: rect.end_col,
+        }),
+        pane: sel.pane,
+        active: true,
+        dragging: false,
+        text: String::new(),
+    };
+    visible_rows_selection_text(
+        &selected_rows,
+        Rect {
+            height: selected_rows.len() as u16,
+            ..area
+        },
+        &translated,
+        strip_prefix,
+    )
+}
+
+fn strip_conversation_prefix(line: &str) -> (String, u16) {
+    if let Some(line) = line.strip_prefix("│ ") {
+        (line.to_string(), 2)
+    } else if let Some(line) = line.strip_prefix("│") {
+        (line.to_string(), 1)
+    } else {
+        (line.to_string(), 0)
+    }
 }
 
 /// Is a screen cell inside a rectangle?
@@ -338,6 +411,34 @@ pub(crate) fn cell_inside(area: Rect, col: u16, row: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_columns_are_measured_after_the_rail() {
+        let rows = vec!["│ hello world".to_string()];
+        let area = Rect::new(4, 2, 20, 1);
+        let mut selection = MouseSelection::default();
+        selection.start_in(CopyPane::Conversation, Cell { row: 2, col: 12 });
+        selection.update(Cell { row: 2, col: 16 });
+
+        assert_eq!(
+            visible_rows_selection_text(&rows, area, &selection, true),
+            "world"
+        );
+    }
+
+    #[test]
+    fn complete_rows_can_copy_beyond_the_visible_viewport() {
+        let rows = (0..10).map(|i| format!("row {i}")).collect::<Vec<_>>();
+        let area = Rect::new(0, 5, 20, 3);
+        let mut selection = MouseSelection::default();
+        selection.start_in(CopyPane::Conversation, Cell { row: 9, col: 4 });
+        selection.update(Cell { row: 5, col: 0 });
+
+        assert_eq!(
+            rows_selection_text(&rows, 2, area, &selection, false),
+            "row 2\nrow 3\nrow 4\nrow 5\nrow 6"
+        );
+    }
 
     fn sel(a: Cell, c: Cell) -> MouseSelection {
         let mut s = MouseSelection::default();
