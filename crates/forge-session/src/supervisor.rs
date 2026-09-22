@@ -5671,7 +5671,7 @@ mod tests {
             "label came from the prompt"
         );
         assert_eq!(
-            task.branch, "forge/fix-login-bug-run",
+            task.branch, "forge/Fix-the-login-bug",
             "the turn that named the session also named its branch"
         );
         // The slug still comes from the label through the one naming path, so
@@ -5681,7 +5681,7 @@ mod tests {
             format!("forge/{}", forge_storage::session_branch_slug(&task.label)),
             "the branch slug must be derived from the session label"
         );
-        assert!(forge_storage::branch_exists(repo.path(), "forge/fix-login-bug-run").unwrap());
+        assert!(forge_storage::branch_exists(repo.path(), "forge/Fix-the-login-bug").unwrap());
         assert!(task.workspace.join("new.txt").exists());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
