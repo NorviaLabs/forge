@@ -688,6 +688,23 @@ impl TuiApp {
         // transient notification visible.
         self.toast
             .push_overlay(FeedbackSeverity::Error, msg.clone());
+        // Keep the compatibility models populated for status consumers and
+        // activity history; these are no longer painted as duplicate notices.
+        self.feedback = FeedbackModel::error(msg.clone());
+        self.status_state.message = msg.clone();
+        self.banner_state.items.retain(|b| {
+            !matches!(
+                b,
+                ChatItem::Banner {
+                    kind: BannerKind::Error,
+                    ..
+                }
+            )
+        });
+        self.banner_state.items.push(ChatItem::Banner {
+            text: msg.clone(),
+            kind: BannerKind::Error,
+        });
         self.activity
             .push(ActivityKind::Error, FeedbackSeverity::Error, msg);
         self.busy_state.set_phase(BusyPhase::Idle);
