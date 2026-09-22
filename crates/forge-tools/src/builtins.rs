@@ -519,7 +519,7 @@ async fn run_shell_command_inner(
             shell.env(name, value);
         }
     }
-    for (name, value) in crate::sandbox::temp_env(&policy) {
+    for (name, value) in crate::sandbox::shell_env(&policy) {
         shell.env(name, value);
     }
 

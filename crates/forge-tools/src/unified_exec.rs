@@ -452,7 +452,7 @@ fn configure_pipe_environment(
     for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
         command.env_remove(name);
     }
-    for (name, value) in crate::sandbox::temp_env(policy) {
+    for (name, value) in crate::sandbox::shell_env(policy) {
         command.env(name, value);
     }
     if confined {
@@ -484,7 +484,7 @@ fn configure_pty_environment(
     for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
         command.env_remove(name);
     }
-    for (name, value) in crate::sandbox::temp_env(policy) {
+    for (name, value) in crate::sandbox::shell_env(policy) {
         command.env(name, value);
     }
     if confined {
@@ -985,6 +985,45 @@ mod tests {
             serde_json::from_str::<Value>(&finished.content).unwrap()["running"],
             false
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn bare_mktemp_uses_the_session_scratch_directory_in_a_pty() {
+        if crate::sandbox::availability().is_err() {
+            return;
+        }
+        let workspace = tempdir().unwrap();
+        let scratch = crate::SessionTempDir::create("mktemp-pty-test").unwrap();
+        let ctx =
+            ToolContext::new(workspace.path().to_path_buf()).with_session_tmp(scratch.clone());
+        let (exec_command, _) = unified_exec_tools();
+
+        let output = exec_command
+            .call(
+                &ctx,
+                json!({
+                    "cmd": "path=$(mktemp); printf 'MKTEMP=%s\\n' \"$path\"; test -f \"$path\"",
+                    "tty": true,
+                    "yield_time_ms": 1_000
+                }),
+            )
+            .await
+            .expect("bare mktemp should stay inside the session scratch directory");
+        let body: Value = serde_json::from_str(&output.content).unwrap();
+        let output = body["output"].as_str().unwrap_or_default();
+        let path = output
+            .split_once("MKTEMP=")
+            .and_then(|(_, path)| path.lines().next())
+            .map(|path| path.trim_end_matches('\r'))
+            .unwrap_or_else(|| panic!("PTY output should include the mktemp path: {output:?}"));
+        let scratch_path = scratch.path().to_string_lossy();
+
+        assert!(
+            path.starts_with(scratch_path.as_ref()),
+            "mktemp returned a path outside session scratch: {path}"
+        );
+        assert!(std::path::Path::new(path).is_file());
     }
 
     #[tokio::test]

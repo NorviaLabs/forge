@@ -35,7 +35,7 @@
 //!   when a host grant created it.
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 /// Why a host cannot confine a process.
@@ -56,6 +56,50 @@ pub fn temp_env(policy: &SandboxPolicy) -> Vec<(&'static str, &Path)> {
         Some(path) => vec![("TMPDIR", path), ("TMP", path), ("TEMP", path)],
         None => Vec::new(),
     }
+}
+
+/// Environment additions shared by pipe and PTY shell spawns.
+pub fn shell_env(policy: &SandboxPolicy) -> Vec<(String, OsString)> {
+    let mut env = temp_env(policy)
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.as_os_str().to_os_string()))
+        .collect::<Vec<_>>();
+
+    #[cfg(target_os = "macos")]
+    if let Some(session_tmp) = policy.session_tmp.as_deref() {
+        if let Some(bin_dir) = ensure_mktemp_wrapper(session_tmp) {
+            let mut path = vec![bin_dir];
+            if let Some(existing) = env::var_os("PATH") {
+                path.extend(env::split_paths(&existing));
+            }
+            if let Ok(path) = env::join_paths(path) {
+                env.push(("PATH".into(), path));
+            }
+        }
+    }
+
+    env
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_mktemp_wrapper(session_tmp: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // macOS mktemp ignores TMPDIR when no template is supplied. Keep the
+    // compatibility helper inside the already-granted scratch directory so
+    // this does not turn the host temp tree into a writable root.
+    let bin_dir = session_tmp.join(".forge-bin");
+    std::fs::create_dir_all(&bin_dir).ok()?;
+    let wrapper = bin_dir.join("mktemp");
+    if !wrapper.exists() {
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\nif [ \"$#\" -eq 0 ]; then\n    exec /usr/bin/mktemp \"$TMPDIR/tmp.XXXXXXXXXX\"\nfi\nexec /usr/bin/mktemp \"$@\"\n",
+        )
+        .ok()?;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).ok()?;
+    }
+    wrapper.is_file().then_some(bin_dir)
 }
 
 /// The small, read-only part of a user's toolchain that a shell command may
