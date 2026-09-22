@@ -136,10 +136,10 @@ impl TuiApp {
             return;
         }
         crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
-        // Transient feedback is consolidated into the top-right toast overlay;
-        // retain the model for lifecycle/tests, but do not reserve a duplicate
-        // full-width strip in the layout.
-        let fb_h = 0;
+        // The feedback model remains part of the shell geometry for layout
+        // compatibility, but its message is no longer painted here: the
+        // temporary top-right toast is the sole transient notification.
+        let fb_h = u16::from(!self.feedback.is_empty());
         // DESIGN-004: an open modal owns the keyboard, so background panes
         // suppress their focus markers/borders while it is open. Closing it
         // restores the previous valid owner via `restore_focus_after_closing`.

@@ -646,7 +646,7 @@ impl TuiApp {
     /// Toast with an explicit severity. Transient notifications deliberately
     /// have one in-app destination: the top-right toast overlay.
     pub(super) fn push_toast_with(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
-        self.toast.show(severity, text);
+        self.set_feedback(severity, text);
     }
 
     pub(super) fn tick_toast(&mut self) {
