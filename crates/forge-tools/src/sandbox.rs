@@ -171,32 +171,6 @@ fn add_rustup_shims(access: &mut HostRuntimeAccess, cargo_bin: &Path) {
     }
 }
 
-fn rustup_cargo_bin(path: &Path) -> Option<PathBuf> {
-    let cargo_bin = path.parent()?;
-    let rustup_target = cargo_bin.join("rustup").canonicalize().ok()?;
-    if path.canonicalize().ok()? != rustup_target {
-        return None;
-    }
-    let has_rustup_shim = std::fs::read_dir(cargo_bin).ok()?.flatten().any(|entry| {
-        std::fs::symlink_metadata(entry.path())
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-            && entry
-                .path()
-                .canonicalize()
-                .is_ok_and(|target| target == rustup_target)
-    });
-    has_rustup_shim.then(|| cargo_bin.to_path_buf())
-}
-
-fn inferred_rustup_home(cargo_bin: &Path) -> Option<PathBuf> {
-    let cargo_home = cargo_bin.parent()?;
-    if cargo_home.file_name() == Some(OsStr::new(".cargo")) {
-        cargo_home.parent().map(|home| home.join(".rustup"))
-    } else {
-        None
-    }
-}
-
 fn find_executable(name: &str, workspace_root: Option<&Path>) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
     find_executable_in_path(name, path.as_os_str(), workspace_root)
@@ -271,25 +245,16 @@ fn discover_command_executables(command: &str, workspace_root: &Path) -> Vec<Pat
 }
 
 fn discover_host_runtime_access(command: &str, workspace_root: &Path) -> HostRuntimeAccess {
+    let mut access = HostRuntimeAccess::default();
     let home = env::var_os("HOME").map(PathBuf::from);
     let cargo_home = configured_home("CARGO_HOME", home.clone().map(|path| path.join(".cargo")));
-    let configured_rustup_home =
-        configured_home("RUSTUP_HOME", home.map(|path| path.join(".rustup")));
+    let rustup_home = configured_home("RUSTUP_HOME", home.map(|path| path.join(".rustup")));
 
     // Resolve only the executable at the start of each shell command segment.
     // This keeps a user-writable PATH directory from becoming a general
     // read/exec allowlist while supporting any installed CLI, not just the
     // commands used by the regression tests.
     let command_paths = discover_command_executables(command, workspace_root);
-    discover_host_runtime_access_from_paths(command_paths, cargo_home, configured_rustup_home)
-}
-
-fn discover_host_runtime_access_from_paths(
-    command_paths: Vec<PathBuf>,
-    cargo_home: Option<PathBuf>,
-    configured_rustup_home: Option<PathBuf>,
-) -> HostRuntimeAccess {
-    let mut access = HostRuntimeAccess::default();
     for path in &command_paths {
         add_existing_executable(&mut access, path.clone());
     }
@@ -299,30 +264,11 @@ fn discover_host_runtime_access_from_paths(
     // original command named only cargo. Select the shims by their common
     // Rustup target rather than by a fixed command-name list; unrelated files
     // in the same directory remain outside the profile.
-    // An isolated HOME hides the default `~/.rustup` path. When the selected
-    // executable is a Rustup shim, recover the host state from the standard
-    // Cargo layout while keeping that state read-only. Unrelated executables
-    // in the same directory do not receive this exception.
-    let rustup_bins = command_paths
-        .iter()
-        .filter_map(|path| rustup_cargo_bin(path))
-        .collect::<Vec<_>>();
-    let rustup_home = configured_rustup_home
-        .filter(|path| path.exists())
-        .or_else(|| {
-            rustup_bins
-                .iter()
-                .filter_map(|path| inferred_rustup_home(path))
-                .find(|path| path.exists())
-        });
-    let cargo_bins = cargo_home
-        .as_deref()
-        .map(|home| home.join("bin"))
-        .into_iter()
-        .chain(rustup_bins)
-        .collect::<Vec<_>>();
+    let cargo_bin = cargo_home.as_deref().map(|home| home.join("bin"));
     let uses_rustup = command_paths.iter().any(|path| {
-        cargo_bins.iter().any(|bin| path_is_under(path, bin))
+        cargo_bin
+            .as_deref()
+            .is_some_and(|bin| path_is_under(path, bin))
             || rustup_home
                 .as_deref()
                 .is_some_and(|home| path_is_under(path, home))
@@ -330,7 +276,7 @@ fn discover_host_runtime_access_from_paths(
     if uses_rustup {
         if let Some(rustup_home) = rustup_home.filter(|home| home.exists()) {
             add_existing_path(&mut access.read_paths, rustup_home.clone());
-            for cargo_bin in &cargo_bins {
+            if let Some(cargo_bin) = cargo_bin.as_deref() {
                 add_rustup_shims(&mut access, cargo_bin);
             }
             access.rustup_home = Some(rustup_home);
@@ -1520,76 +1466,6 @@ mod tests {
         assert!(
             !read_rule.contains(&format!("(subpath \"{}\")", toolchain.path().display())),
             "the user's home/toolchain parent must not be allowed wholesale"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn isolated_home_reuses_host_rustup_state_from_selected_cargo_shims() {
-        let ws = workspace();
-        let host_home = workspace();
-        let isolated_home = workspace();
-        let cargo_bin = host_home.path().join(".cargo/bin");
-        let rustup_home = host_home.path().join(".rustup");
-        std::fs::create_dir_all(&cargo_bin).unwrap();
-        std::fs::create_dir_all(&rustup_home).unwrap();
-        std::fs::write(cargo_bin.join("rustup"), b"rustup").unwrap();
-        std::os::unix::fs::symlink("rustup", cargo_bin.join("cargo")).unwrap();
-        std::os::unix::fs::symlink("rustup", cargo_bin.join("rustc")).unwrap();
-
-        let cargo = cargo_bin.join("cargo");
-        let access = discover_host_runtime_access_from_paths(
-            vec![cargo.clone()],
-            Some(isolated_home.path().join(".cargo")),
-            Some(isolated_home.path().join(".rustup")),
-        );
-
-        assert_eq!(access.rustup_home, Some(rustup_home.clone()));
-        assert!(
-            access.read_paths.iter().any(|path| path == &rustup_home),
-            "the host Rustup state must be readable"
-        );
-        assert!(
-            access
-                .executable_paths
-                .iter()
-                .any(|path| path == &cargo_bin.join("rustc")),
-            "Cargo's Rustup rustc shim must be executable"
-        );
-
-        let mut policy = SandboxPolicy::for_workspace(ws.path())
-            .with_session_tmp(isolated_home.path().join("session-tmp"));
-        policy.rustup_home = access.rustup_home;
-        let env = policy.toolchain_env();
-        let expected_rustup_home = rustup_home.to_string_lossy().into_owned();
-        let expected_cargo_home = isolated_home
-            .path()
-            .join("session-tmp/cargo-home")
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(
-            env.iter()
-                .find(|(name, _)| name == "RUSTUP_HOME")
-                .map(|(_, value)| value),
-            Some(&expected_rustup_home)
-        );
-        assert_eq!(
-            env.iter()
-                .find(|(name, _)| name == "CARGO_HOME")
-                .map(|(_, value)| value),
-            Some(&expected_cargo_home)
-        );
-
-        let unrelated = cargo_bin.join("unrelated");
-        std::fs::write(&unrelated, b"unrelated").unwrap();
-        let unrelated_access = discover_host_runtime_access_from_paths(
-            vec![unrelated],
-            Some(isolated_home.path().join(".cargo")),
-            Some(isolated_home.path().join(".rustup")),
-        );
-        assert_eq!(
-            unrelated_access.rustup_home, None,
-            "unrelated Cargo-bin executables must not expose Rustup state"
         );
     }
 
