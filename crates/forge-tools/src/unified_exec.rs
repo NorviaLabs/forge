@@ -35,7 +35,7 @@ pub struct ExecCommandArgs {
 }
 
 fn sandbox_denial(
-    confined: bool,
+    command: &str,
     success: bool,
     content: &str,
     stderr: &str,
@@ -43,10 +43,8 @@ fn sandbox_denial(
     workspace_root: &std::path::Path,
     denied_host: Option<String>,
 ) -> Option<ToolError> {
-    if !confined {
-        return None;
-    }
     crate::egress::denial_for_confined_command(
+        command,
         content,
         stderr,
         success,
@@ -291,16 +289,18 @@ async fn collect(
                 .egress_invocation
                 .as_ref()
                 .and_then(crate::egress::EgressInvocation::take_denied_host);
-            if let Some(error) = sandbox_denial(
-                session.confined,
-                success,
-                &session.output,
-                &session.stderr_output,
-                &session.shell,
-                &session.workspace_root,
-                denied_host,
-            ) {
-                return Err(error);
+            if session.confined {
+                if let Some(error) = sandbox_denial(
+                    &session.command,
+                    success,
+                    &session.output,
+                    &session.stderr_output,
+                    &session.shell,
+                    &session.workspace_root,
+                    denied_host,
+                ) {
+                    return Err(error);
+                }
             }
             let body = output_for(session_id, session, max_tokens);
             return Ok(ToolOutput {
@@ -842,18 +842,18 @@ mod tests {
     fn failed_confined_network_command_is_a_sandbox_denial() {
         let dir = tempdir().unwrap();
         let output = "curl: (6) Could not resolve host: api.github.com";
-        let error = sandbox_denial(true, false, output, "", "sh", dir.path(), None)
-            .expect("a confined network failure must be escalated");
+        let error = sandbox_denial(
+            "curl https://api.github.com",
+            false,
+            output,
+            "",
+            "sh",
+            dir.path(),
+            None,
+        )
+        .expect("a confined network failure must be escalated");
 
         assert!(matches!(error, ToolError::SandboxDenied { .. }));
-    }
-
-    #[test]
-    fn unconfined_network_failure_is_not_a_sandbox_denial() {
-        let dir = tempdir().unwrap();
-        let output = "curl: (6) Could not resolve host: api.github.com";
-
-        assert!(sandbox_denial(false, false, output, "", "sh", dir.path(), None).is_none());
     }
 
     #[test]
@@ -862,7 +862,15 @@ mod tests {
         let output = "sh: /outside/file: Operation not permitted";
 
         assert!(matches!(
-            sandbox_denial(true, true, output, output, "sh", dir.path(), None),
+            sandbox_denial(
+                "printf test > /outside/file",
+                true,
+                output,
+                output,
+                "sh",
+                dir.path(),
+                None,
+            ),
             Some(ToolError::SandboxDenied { .. })
         ));
     }
@@ -872,7 +880,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let output = "Operation not permitted";
 
-        assert!(sandbox_denial(true, true, output, "", "sh", dir.path(), None).is_none());
+        assert!(
+            sandbox_denial("echo ordinary", true, output, "", "sh", dir.path(), None,).is_none()
+        );
     }
 
     #[test]
@@ -880,7 +890,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let output = "git: error: couldn't create cache file '/tmp/x': Operation not permitted";
 
-        assert!(sandbox_denial(true, true, output, output, "sh", dir.path(), None).is_none());
+        assert!(
+            sandbox_denial("cargo test", true, output, output, "sh", dir.path(), None,).is_none()
+        );
     }
 
     #[tokio::test]
@@ -989,7 +1001,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn bare_mktemp_uses_the_session_scratch_directory_in_a_pty() {
+    async fn mktemp_forms_use_the_session_scratch_directory_in_a_pty() {
         if crate::sandbox::availability().is_err() {
             return;
         }
@@ -1003,7 +1015,7 @@ mod tests {
             .call(
                 &ctx,
                 json!({
-                    "cmd": "path=$(mktemp); printf 'MKTEMP=%s\\n' \"$path\"; test -f \"$path\"",
+                    "cmd": "path=$(mktemp); directory=$(mktemp -d); printf 'MKTEMP=%s\\nMKDIR=%s\\n' \"$path\" \"$directory\"; test -f \"$path\" && test -d \"$directory\"",
                     "tty": true,
                     "yield_time_ms": 1_000
                 }),
@@ -1024,6 +1036,18 @@ mod tests {
             "mktemp returned a path outside session scratch: {path}"
         );
         assert!(std::path::Path::new(path).is_file());
+        let directory = output
+            .split_once("MKDIR=")
+            .and_then(|(_, path)| path.lines().next())
+            .map(|path| path.trim_end_matches('\r'))
+            .unwrap_or_else(|| {
+                panic!("PTY output should include the mktemp directory: {output:?}")
+            });
+        assert!(
+            directory.starts_with(scratch_path.as_ref()),
+            "mktemp -d returned a path outside session scratch: {directory}"
+        );
+        assert!(std::path::Path::new(directory).is_dir());
     }
 
     #[tokio::test]

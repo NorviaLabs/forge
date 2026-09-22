@@ -74,6 +74,7 @@ pub const HOST_DENIED_EXPLANATION: &str =
 /// A host is never inferred from a URL alone — that would turn a real 403 from
 /// an already-allowed host into a grant prompt.
 pub fn denial_for_confined_command(
+    command: &str,
     content: &str,
     stderr: &str,
     command_succeeded: bool,
@@ -82,9 +83,19 @@ pub fn denial_for_confined_command(
     denied_host: Option<String>,
 ) -> Option<crate::ToolError> {
     let explanation = if command_succeeded {
-        explain_shell_denial(stderr, shell, workspace_root)
+        // PTY sessions merge stderr into `content`; pipe sessions retain a
+        // separate stderr buffer. Inspect both so a shell redirection cannot
+        // hide a sandbox denial merely because the command exits zero.
+        explain_shell_denial(content, shell, workspace_root)
+            .or_else(|| explain_shell_denial(stderr, shell, workspace_root))
+            .or_else(|| explain_requested_child_denial(command, content, workspace_root))
+            .or_else(|| explain_requested_child_denial(command, stderr, workspace_root))
     } else {
+        // Some runtimes (notably Python and Node) report permission errors on
+        // stderr while stdout remains empty. The sandbox boundary is the
+        // same regardless of which stream carried the diagnostic.
         crate::sandbox::explain_denial(content, workspace_root)
+            .or_else(|| crate::sandbox::explain_denial(stderr, workspace_root))
     };
     let (reason, denied_host) = if let Some(explanation) = explanation {
         (explanation, denied_host)
@@ -103,6 +114,25 @@ pub fn denial_for_confined_command(
         content: reported,
         reason,
         denied_host,
+    })
+}
+
+/// A nested runtime can report a denied operation without the outer shell's
+/// prefix (for example Python's `PermissionError`). On a successful aggregate
+/// shell status, correlate only an absolute resource that the requested
+/// command names explicitly. This catches `... || true` without turning an
+/// implicit compiler warning, such as macOS's xcrun cache warning, into HITL.
+fn explain_requested_child_denial(
+    command: &str,
+    output: &str,
+    workspace_root: &std::path::Path,
+) -> Option<String> {
+    output.lines().find_map(|line| {
+        let resource = crate::sandbox::denied_resource(line)?;
+        command
+            .contains(&resource)
+            .then(|| crate::sandbox::explain_denial(line, workspace_root))
+            .flatten()
     })
 }
 
@@ -1062,6 +1092,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let output = "HTTP 403: unexpected status from the remote API";
         let error = denial_for_confined_command(
+            "curl https://example.com",
             output,
             output,
             false,
@@ -1090,6 +1121,7 @@ mod tests {
             "Operation not permitted: https://google.com",
         ] {
             let error = denial_for_confined_command(
+                "open https://google.com",
                 output, output, false, "bash", dir.path(), None,
             ).expect("expected sandbox failure");
             let crate::ToolError::SandboxDenied { denied_host, .. } = error else {
@@ -1104,6 +1136,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(
             denial_for_confined_command(
+                "curl https://example.com",
                 "HTTP 403: unexpected status from the remote API\nhttps://example.com/v1",
                 "HTTP 403: unexpected status from the remote API\nhttps://example.com/v1",
                 false,
@@ -1114,6 +1147,69 @@ mod tests {
             .is_none(),
             "a URL in a real HTTP 403 must not invent a host grant"
         );
+    }
+
+    #[test]
+    fn a_shell_denial_in_merged_pty_output_is_reported_after_zero_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = denial_for_confined_command(
+            "printf test > /tmp/escape.txt",
+            "sh: 1: cannot create /tmp/escape.txt: Operation not permitted",
+            "",
+            true,
+            "sh",
+            dir.path(),
+            None,
+        )
+        .expect("a merged PTY shell denial must remain observable");
+        assert!(matches!(error, crate::ToolError::SandboxDenied { .. }));
+    }
+
+    #[test]
+    fn a_runtime_denial_on_stderr_is_reported_when_stdout_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = denial_for_confined_command(
+            "python3 -c 'open(\"/tmp/escape.txt\").read()' || true",
+            "",
+            "PermissionError: [Errno 1] Operation not permitted: '/tmp/escape.txt'",
+            false,
+            "sh",
+            dir.path(),
+            None,
+        )
+        .expect("runtime filesystem denials must be classified from stderr");
+        assert!(matches!(error, crate::ToolError::SandboxDenied { .. }));
+    }
+
+    #[test]
+    fn an_explicit_child_denial_is_reported_after_zero_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = denial_for_confined_command(
+            "python3 -c 'open(\"/tmp/escape.txt\").read()' || true",
+            "Traceback (most recent call last):\nPermissionError: [Errno 1] Operation not permitted: '/tmp/escape.txt'",
+            "",
+            true,
+            "sh",
+            dir.path(),
+            None,
+        )
+        .expect("an explicitly requested child denial must remain observable");
+        assert!(matches!(error, crate::ToolError::SandboxDenied { .. }));
+    }
+
+    #[test]
+    fn an_implicit_child_cache_warning_does_not_trigger_hitl() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(denial_for_confined_command(
+            "cargo test",
+            "warning: xcrun: error: couldn't create cache file '/var/folders/x/xcrun_db-abc' (errno=Operation not permitted)",
+            "",
+            true,
+            "sh",
+            dir.path(),
+            None,
+        )
+        .is_none());
     }
 
     #[tokio::test]

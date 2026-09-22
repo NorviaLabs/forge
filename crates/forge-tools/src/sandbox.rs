@@ -94,7 +94,7 @@ fn ensure_mktemp_wrapper(session_tmp: &Path) -> Option<PathBuf> {
     if !wrapper.exists() {
         std::fs::write(
             &wrapper,
-            "#!/bin/sh\nif [ \"$#\" -eq 0 ]; then\n    exec /usr/bin/mktemp \"$TMPDIR/tmp.XXXXXXXXXX\"\nfi\nexec /usr/bin/mktemp \"$@\"\n",
+            "#!/bin/sh\nif [ \"$#\" -eq 0 ]; then\n    exec /usr/bin/mktemp \"$TMPDIR/tmp.XXXXXXXXXX\"\nfi\nif [ \"$#\" -eq 1 ] && [ \"$1\" = \"-d\" ]; then\n    exec /usr/bin/mktemp -d \"$TMPDIR/tmp.XXXXXXXXXX\"\nfi\nexec /usr/bin/mktemp \"$@\"\n",
         )
         .ok()?;
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).ok()?;
@@ -767,6 +767,24 @@ fn sbpl_literal(path: &Path) -> Option<String> {
     Some(out)
 }
 
+#[cfg(target_os = "macos")]
+fn xcrun_cache_regex() -> Option<String> {
+    let temp_dir = std::env::temp_dir().canonicalize().ok()?;
+    let raw = temp_dir.to_str()?;
+    let mut pattern = String::from("^");
+    for ch in raw.chars() {
+        if matches!(
+            ch,
+            '\\' | '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+        ) {
+            pattern.push('\\');
+        }
+        pattern.push(ch);
+    }
+    pattern.push_str(r"/xcrun_db(-[A-Za-z0-9]+)?$");
+    sbpl_literal(Path::new(&pattern))
+}
+
 /// Build the Seatbelt profile for `policy`.
 ///
 /// `deny default` first, so anything this function forgets to mention is
@@ -881,6 +899,15 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
          (allow file-read-metadata (literal \"/dev\"))\n",
     );
 
+    #[cfg(target_os = "macos")]
+    if policy.session_tmp.is_some() {
+        if let Some(pattern) = xcrun_cache_regex() {
+            profile.push_str(&format!(
+                "(allow file-read* file-test-existence (regex #\"{pattern}\"))\n"
+            ));
+        }
+    }
+
     // Some runtimes canonicalize their output and cache paths before opening
     // them. Allow metadata on the parent chain needed to walk to each scoped
     // root, without allowing file contents in any additional directory.
@@ -965,6 +992,16 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         profile.push_str(&format!(" (subpath \"{path}\")"));
     }
     profile.push_str(")\n");
+
+    #[cfg(target_os = "macos")]
+    if policy.session_tmp.is_some() {
+        if let Some(pattern) = xcrun_cache_regex() {
+            // macOS developer tools create a small lookup cache in the host temp
+            // root, ignoring TMPDIR. Permit only that generated namespace; the
+            // rest of the shared temp tree remains outside the write boundary.
+            profile.push_str(&format!("(allow file-write* (regex #\"{pattern}\"))\n"));
+        }
+    }
 
     // Carved back out *after* the allow, because in SBPL the last matching
     // rule wins. Ordering here is load-bearing: swap these two blocks and
@@ -1423,6 +1460,27 @@ mod tests {
         let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
         assert!(profile.starts_with("(version 1)\n(deny default)"));
         assert!(profile.contains("(deny network*)"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn profile_allows_only_the_xcrun_cache_namespace() {
+        let ws = workspace();
+        let scratch = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_session_tmp(scratch.path());
+        let profile = seatbelt_profile(&policy).unwrap();
+        let pattern = xcrun_cache_regex().unwrap();
+        let read_rule = format!("(allow file-read* file-test-existence (regex #\"{pattern}\"))");
+        let write_rule = format!("(allow file-write* (regex #\"{pattern}\"))");
+
+        assert!(profile.contains(&read_rule));
+        assert!(profile.contains(&write_rule));
+        let shared_temp = std::env::temp_dir().canonicalize().unwrap();
+        assert!(!primary_file_write_rule(&profile)
+            .contains(&format!("(subpath \"{}\")", shared_temp.display())));
+
+        let plain = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
+        assert!(!plain.contains(&write_rule));
     }
 
     #[test]
@@ -2124,7 +2182,8 @@ pub fn explain_denial(output: &str, workspace_root: &Path) -> Option<String> {
     // is left alone.
     const MISSING: &[&str] = &["No such file or directory", "Directory nonexistent"];
     if let Some(line) = output.lines().find(|line| {
-        MISSING.iter().any(|sig| line.contains(sig)) && mentions_path_outside(line, workspace_root)
+        MISSING.iter().any(|sig| line.contains(sig))
+            && missing_path_is_sandbox_boundary(line, workspace_root)
     }) {
         return Some(filesystem_explanation(line));
     }
@@ -2167,7 +2226,7 @@ fn filesystem_explanation(line: &str) -> String {
 /// Extract an absolute path only when the diagnostic names one explicitly.
 /// Relative shell operands are deliberately left out: guessing their base
 /// would make a denial explanation less trustworthy than the original error.
-fn denied_resource(line: &str) -> Option<String> {
+pub(crate) fn denied_resource(line: &str) -> Option<String> {
     let marker = FILESYSTEM
         .iter()
         .chain(["No such file or directory", "Directory nonexistent"].iter())
@@ -2208,6 +2267,50 @@ fn filesystem_access(line: &str) -> Option<&'static str> {
     .then_some("read")
 }
 
+/// A missing file under a system-readable root is an ordinary platform or
+/// installation difference, not evidence that the sandbox hid it. This keeps
+/// macOS-only probes such as `/etc/os-release` from becoming approval prompts,
+/// while preserving the Linux ENOENT signal for masked user paths and `/tmp`.
+fn missing_path_is_sandbox_boundary(line: &str, workspace_root: &Path) -> bool {
+    let Some(resource) = denied_resource(line) else {
+        return mentions_path_outside(line, workspace_root);
+    };
+    if !path_is_outside(&resource, workspace_root) {
+        return false;
+    }
+    if filesystem_access(line) == Some("read") && is_system_read_root(Path::new(&resource)) {
+        return false;
+    }
+    true
+}
+
+fn path_is_outside(resource: &str, workspace_root: &Path) -> bool {
+    let root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    !Path::new(resource).starts_with(root)
+}
+
+fn is_system_read_root(path: &Path) -> bool {
+    [
+        "/System",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/Library/Apple",
+        "/Library/Developer",
+        "/Library/Keychains",
+        "/Library/Preferences",
+        "/private/etc",
+        "/etc",
+        "/opt/homebrew",
+        "/private/var/db/timezone",
+        "/private/var/db/DarwinDirectory/local/recordStore.data",
+    ]
+    .iter()
+    .any(|root| path.starts_with(root))
+}
+
 const CREDENTIAL_EXPLANATION: &str =
     "blocked by the sandbox: credentials live in the host secret store, \
      which confined processes cannot read. This is not an invalid token — \
@@ -2238,6 +2341,7 @@ mod denial_tests {
         let workspace = ws();
         let diagnostic = "_LSOpenURLsWithCompletionHandler() failed with error -54 for the URL https://example.com.\r\n";
         assert!(crate::egress::denial_for_confined_command(
+            "open https://example.com",
             diagnostic,
             diagnostic,
             false,
@@ -2247,6 +2351,7 @@ mod denial_tests {
         )
         .is_some());
         assert!(crate::egress::denial_for_confined_command(
+            "open https://example.com",
             diagnostic,
             diagnostic,
             true,
@@ -2398,6 +2503,15 @@ mod denial_tests {
         assert!(
             explain_denial(&out, ws.path()).is_none(),
             "an ordinary missing file must not be called a denial"
+        );
+    }
+
+    #[test]
+    fn a_missing_system_file_is_not_called_a_sandbox_denial() {
+        let ws = ws();
+        assert!(
+            explain_denial("cat: /etc/os-release: No such file or directory", ws.path()).is_none(),
+            "a platform-specific system file may simply be absent"
         );
     }
 

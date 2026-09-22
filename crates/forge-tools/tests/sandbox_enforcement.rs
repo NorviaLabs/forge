@@ -529,6 +529,11 @@ async fn installed_cargo_can_use_the_session_toolchain_surface() {
         .await
         .unwrap_or_else(|error| panic!("{command} must start in the sandbox: {error}"));
         assert!(!out.is_error, "{command} failed in the sandbox: {out:?}");
+        #[cfg(target_os = "macos")]
+        assert!(
+            !out.content.contains("xcrun_db"),
+            "{command} should not emit denied xcrun cache warnings: {out:?}"
+        );
     }
 
     let command = format!("cargo add --path {} --offline", dependency.display());

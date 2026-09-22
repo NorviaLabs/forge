@@ -561,6 +561,7 @@ async fn run_shell_command_inner(
             .as_ref()
             .and_then(crate::egress::EgressInvocation::take_denied_host);
         if let Some(error) = crate::egress::denial_for_confined_command(
+            command,
             &content,
             err.as_ref(),
             status.success(),
