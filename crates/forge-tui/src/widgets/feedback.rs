@@ -1,16 +1,10 @@
 //! Feedback strip (Phase 10 / TUI-08) — always-visible latest status/error.
 
-#[cfg(test)]
 use crate::status_glyph::{status_indicator_now, Status};
-#[cfg(test)]
 use crate::theme;
-#[cfg(test)]
 use ratatui::buffer::Buffer;
-#[cfg(test)]
 use ratatui::layout::Rect;
-#[cfg(test)]
 use ratatui::text::{Line, Span};
-#[cfg(test)]
 use ratatui::widgets::{Block, Padding, Paragraph, Widget, Wrap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -22,12 +16,10 @@ pub enum FeedbackSeverity {
     Ok,
 }
 
-#[cfg(test)]
 pub struct FeedbackBar<'a> {
     pub model: &'a FeedbackModel,
 }
 
-#[cfg(test)]
 impl Widget for FeedbackBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 || self.model.is_empty() {

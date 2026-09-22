@@ -646,7 +646,7 @@ impl TuiApp {
     /// Toast with an explicit severity. Transient notifications deliberately
     /// have one in-app destination: the top-right toast overlay.
     pub(super) fn push_toast_with(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
-        self.set_feedback(severity, text);
+        self.toast.show(severity, text);
     }
 
     pub(super) fn tick_toast(&mut self) {
@@ -656,7 +656,6 @@ impl TuiApp {
     /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
     pub fn set_feedback(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
         let text = text.into();
-        self.toast.show(severity, text.clone());
         self.status_state.message = text.clone();
         self.feedback = FeedbackModel { text, severity };
         self.feedback_until = Some(Instant::now() + Duration::from_secs(7));

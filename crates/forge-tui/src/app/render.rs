@@ -136,9 +136,6 @@ impl TuiApp {
             return;
         }
         crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
-        // The feedback model remains part of the shell geometry for layout
-        // compatibility, but its message is no longer painted here: the
-        // temporary top-right toast is the sole transient notification.
         let fb_h = u16::from(!self.feedback.is_empty());
         // DESIGN-004: an open modal owns the keyboard, so background panes
         // suppress their focus markers/borders while it is open. Closing it
@@ -1371,6 +1368,15 @@ impl TuiApp {
         // the slash suggestions use above the composer.
         if self.overlay.is_none() && self.inline_search.is_some() {
             self.render_inline_search(frame, regions.input);
+        }
+
+        if !self.feedback.is_empty() && regions.feedback.height > 0 {
+            frame.render_widget(
+                FeedbackBar {
+                    model: &self.feedback,
+                },
+                regions.feedback,
+            );
         }
 
         let attachment_label = {
