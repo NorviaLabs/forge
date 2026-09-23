@@ -198,7 +198,9 @@ Useful in-app commands:
 /theme         Change the presentation theme
 /status        Session status and diagnostics
 /git           Review, stage, commit, branch and merge in the center pane
-               (`s`/`u` stage, `c` commit, `<`/`>` pull/push, `b` branches, `M` merge, `a` abort merge)
+               (`s`/`u` stage, `d` cycles working tree/staged/last turn, `c` commit,
+               `<`/`>` pull/push, `f` fetch, `b` branches (`x` delete, `r` rename),
+               `M` merge, `a` abort merge)
 /effort        Set model effort
 /thinking      Toggle model thinking generation
 /help          Open help

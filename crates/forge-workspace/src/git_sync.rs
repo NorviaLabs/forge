@@ -30,6 +30,21 @@ pub enum SyncOperation {
     Create {
         branch: String,
     },
+    /// Fetch the configured upstream's remote. Moves the remote-tracking refs,
+    /// so a finished fetch leaves the cached ahead/behind stale — the caller
+    /// refreshes the branch, exactly as it does after a pull or a push.
+    Fetch,
+    /// Delete a local branch. `force` is the difference between Git refusing to
+    /// lose commits that are not merged yet and losing them.
+    DeleteBranch {
+        branch: String,
+        force: bool,
+    },
+    /// Rename a local branch in place.
+    RenameBranch {
+        from: String,
+        to: String,
+    },
     /// Give up on the merge in progress and restore the pre-merge tree.
     AbortMerge,
 }
@@ -42,6 +57,9 @@ impl SyncOperation {
             Self::Merge { .. } => "merge",
             Self::Switch { .. } => "switch",
             Self::Create { .. } => "create",
+            Self::Fetch => "fetch",
+            Self::DeleteBranch { .. } => "delete branch",
+            Self::RenameBranch { .. } => "rename branch",
             Self::AbortMerge => "abort merge",
         }
     }
@@ -54,6 +72,9 @@ impl SyncOperation {
             Self::Merge { .. } => "Merging",
             Self::Switch { .. } => "Switching",
             Self::Create { .. } => "Creating",
+            Self::Fetch => "Fetching",
+            Self::DeleteBranch { .. } => "Deleting",
+            Self::RenameBranch { .. } => "Renaming",
             Self::AbortMerge => "Aborting merge",
         }
     }
@@ -65,6 +86,9 @@ impl SyncOperation {
             Self::Merge { .. } => "Merged",
             Self::Switch { .. } => "Switched",
             Self::Create { .. } => "Created",
+            Self::Fetch => "Fetched",
+            Self::DeleteBranch { .. } => "Deleted",
+            Self::RenameBranch { .. } => "Renamed",
             Self::AbortMerge => "Aborted merge",
         }
     }
@@ -76,6 +100,9 @@ impl SyncOperation {
             Self::Merge { branch } => git.merge(branch),
             Self::Switch { branch } => git.switch_branch(branch),
             Self::Create { branch } => git.create_branch(branch),
+            Self::Fetch => git.fetch(),
+            Self::DeleteBranch { branch, force } => git.delete_branch(branch, *force),
+            Self::RenameBranch { from, to } => git.rename_branch(from, to),
             Self::AbortMerge => git.abort_merge(),
         }
         .map_err(|error| error.to_string())
@@ -215,9 +242,11 @@ impl GitSyncCache {
             ));
         }
         match &operation {
-            // A remote is what these two need, and reading the branch is how
-            // this cache knows one exists.
-            SyncOperation::Pull | SyncOperation::Push => {
+            // A remote is what these need, and reading the branch is how this
+            // cache knows one exists. `fetch` is in here rather than with the
+            // branch verbs because the remote it reaches comes from the same
+            // upstream a push and a pull use.
+            SyncOperation::Pull | SyncOperation::Push | SyncOperation::Fetch => {
                 if self.error.is_some() {
                     return Err("the branch could not be read, so its upstream is unknown".into());
                 }
@@ -252,6 +281,18 @@ impl GitSyncCache {
                 // better than git's own wording.
                 if matches!(operation, SyncOperation::Switch { .. }) && self.merge_in_progress() {
                     return Err("a merge is in progress — finish or abort it first".into());
+                }
+            }
+            // Both act on the branch list the same read publishes, so an
+            // unreadable repository is the only refusal they can make before
+            // spawning. Deleting the branch `HEAD` is on is the service's own
+            // refusal, made before it runs the verb — duplicating it here would
+            // only be a second place to keep true.
+            SyncOperation::DeleteBranch { .. } | SyncOperation::RenameBranch { .. } => {
+                if self.error.is_some() {
+                    return Err(
+                        "the branch could not be read, so there is no branch list to act on".into(),
+                    );
                 }
             }
         }
@@ -349,6 +390,38 @@ mod tests {
         }
     }
 
+    /// A commit pushed to `remote` from a clone of it, so a fetch in the
+    /// repository under test has something real to bring back.
+    fn push_to_remote(remote: &Path, contents: &str) {
+        let other = TempDir::new().unwrap();
+        git(
+            other.path(),
+            &["clone", "-q", "-b", "main", remote.to_str().unwrap(), "."],
+        );
+        git(
+            other.path(),
+            &["config", "user.email", "forge@example.test"],
+        );
+        git(other.path(), &["config", "user.name", "Forge Test"]);
+        std::fs::write(other.path().join("a"), contents).unwrap();
+        git(other.path(), &["commit", "-qam", contents]);
+        git(other.path(), &["push", "-q", "origin", "HEAD:main"]);
+    }
+
+    /// A ref's commit, for asserting that an operation moved it.
+    fn read_ref(root: &Path, refname: &str) -> String {
+        let output = Command::new("git")
+            .args(["-C", root.to_str().unwrap(), "rev-parse", refname])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "rev-parse {refname}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
     #[test]
     fn branch_read_reports_upstream_and_rejects_an_operation_without_one() {
         let (dir, _remote) = repo_with_remote();
@@ -368,6 +441,15 @@ mod tests {
         assert!(lonely.upstream().is_none());
         let refused = lonely.start_operation(bare.path().to_path_buf(), SyncOperation::Push);
         assert!(refused.is_err(), "a push with no upstream must be refused");
+        assert!(lonely.running.is_none(), "and must not mark itself running");
+
+        // A fetch names a remote the same way, so it is refused on the same
+        // read rather than left to fail on the network.
+        let refused = lonely.start_operation(bare.path().to_path_buf(), SyncOperation::Fetch);
+        assert_eq!(
+            refused.unwrap_err(),
+            "no upstream for this branch — fetch has nowhere to go"
+        );
         assert!(lonely.running.is_none(), "and must not mark itself running");
     }
 
@@ -412,6 +494,144 @@ mod tests {
 
         // The outcome is delivered exactly once.
         assert!(cache.poll_operation().is_none());
+    }
+
+    #[test]
+    fn fetch_runs_off_the_calling_thread_and_moves_the_tracking_ref() {
+        let (dir, remote) = repo_with_remote();
+        let mut cache = GitSyncCache::default();
+        settle_branch(&mut cache, dir.path());
+        push_to_remote(remote.path(), "remote\n");
+        let tracking_before = read_ref(dir.path(), "refs/remotes/origin/main");
+        let head_before = read_ref(dir.path(), "HEAD");
+
+        cache
+            .start_operation(dir.path().to_path_buf(), SyncOperation::Fetch)
+            .unwrap();
+        assert_eq!(cache.running, Some(SyncOperation::Fetch));
+
+        let outcome = loop_with(&mut cache);
+        assert_eq!(outcome.operation, SyncOperation::Fetch);
+        outcome.result.as_ref().unwrap();
+        assert!(cache.running.is_none());
+        assert_ne!(
+            read_ref(dir.path(), "refs/remotes/origin/main"),
+            tracking_before,
+            "the fetch must have moved the remote-tracking ref"
+        );
+        // A fetch brings refs back, not work: what `HEAD` names is untouched.
+        assert_eq!(read_ref(dir.path(), "HEAD"), head_before);
+
+        // The outcome is delivered exactly once, like every operation.
+        assert!(cache.poll_operation().is_none());
+    }
+
+    /// A finished fetch moves the remote-tracking refs, so the cached
+    /// ahead/behind is stale the moment it lands. `poll_operation` deliberately
+    /// does not refresh — the caller owns the one refresh after every operation
+    /// — and this pins that down rather than leaving it to be assumed.
+    #[test]
+    fn a_finished_fetch_leaves_the_cached_branch_stale_for_the_caller_to_refresh() {
+        let (dir, remote) = repo_with_remote();
+        let mut cache = GitSyncCache::default();
+        settle_branch(&mut cache, dir.path());
+        assert_eq!(cache.branch.as_ref().unwrap().behind, 0);
+
+        // A commit this branch has not seen, so `origin/main` is ahead of it.
+        push_to_remote(remote.path(), "remote\n");
+
+        cache
+            .start_operation(dir.path().to_path_buf(), SyncOperation::Fetch)
+            .unwrap();
+        loop_with(&mut cache).result.unwrap();
+        assert_eq!(
+            cache.branch.as_ref().unwrap().behind,
+            0,
+            "the cache must not refresh itself behind the caller's back"
+        );
+
+        // The caller's refresh is what turns the moved ref into a count.
+        settle_branch(&mut cache, dir.path());
+        assert_eq!(cache.branch.as_ref().unwrap().behind, 1);
+    }
+
+    #[test]
+    fn delete_and_rename_operations_run_off_the_calling_thread() {
+        let (dir, _remote) = repo_with_remote();
+        git(dir.path(), &["branch", "doomed"]);
+        let mut cache = GitSyncCache::default();
+        settle_branch(&mut cache, dir.path());
+        assert_eq!(
+            cache.branches,
+            vec!["doomed".to_string(), "main".to_string()]
+        );
+
+        let delete = SyncOperation::DeleteBranch {
+            branch: "doomed".into(),
+            force: false,
+        };
+        cache
+            .start_operation(dir.path().to_path_buf(), delete.clone())
+            .unwrap();
+        assert_eq!(cache.running.as_ref(), Some(&delete));
+        let outcome = loop_with(&mut cache);
+        assert_eq!(outcome.operation, delete);
+        outcome.result.unwrap();
+        assert!(cache.running.is_none());
+        settle_branch(&mut cache, dir.path());
+        assert_eq!(cache.branches, vec!["main".to_string()]);
+
+        // Renaming the branch `HEAD` is on moves it; the cache only learns
+        // that on its next read.
+        let rename = SyncOperation::RenameBranch {
+            from: "main".into(),
+            to: "trunk".into(),
+        };
+        cache
+            .start_operation(dir.path().to_path_buf(), rename.clone())
+            .unwrap();
+        assert_eq!(cache.running.as_ref(), Some(&rename));
+        let outcome = loop_with(&mut cache);
+        assert_eq!(outcome.operation, rename);
+        outcome.result.unwrap();
+        assert!(cache.running.is_none());
+        settle_branch(&mut cache, dir.path());
+        assert_eq!(
+            cache.branch.as_ref().unwrap().branch.as_deref(),
+            Some("trunk")
+        );
+        assert_eq!(cache.branches, vec!["trunk".to_string()]);
+    }
+
+    /// Deleting the branch `HEAD` is on is the service's refusal, so it is
+    /// reported by the operation rather than turned away here — and it costs
+    /// nothing, because the service refuses before it spawns the verb.
+    #[test]
+    fn deleting_the_current_branch_is_reported_by_the_operation() {
+        let (dir, _remote) = repo_with_remote();
+        let mut cache = GitSyncCache::default();
+        settle_branch(&mut cache, dir.path());
+
+        let delete = SyncOperation::DeleteBranch {
+            branch: "main".into(),
+            force: true,
+        };
+        cache
+            .start_operation(dir.path().to_path_buf(), delete.clone())
+            .unwrap();
+        assert_eq!(
+            cache.running.as_ref(),
+            Some(&delete),
+            "the cache must not duplicate the service's refusal"
+        );
+        let error = loop_with(&mut cache).result.unwrap_err();
+        assert!(error.contains("HEAD is on it"), "{error}");
+
+        settle_branch(&mut cache, dir.path());
+        assert_eq!(
+            cache.branch.as_ref().unwrap().branch.as_deref(),
+            Some("main")
+        );
     }
 
     #[test]
@@ -464,6 +684,30 @@ mod tests {
                 SyncOperation::AbortMerge.finished()
             ),
             ("abort merge", "Aborting merge", "Aborted merge")
+        );
+        assert_eq!(
+            (
+                SyncOperation::Fetch.label(),
+                SyncOperation::Fetch.active(),
+                SyncOperation::Fetch.finished()
+            ),
+            ("fetch", "Fetching", "Fetched")
+        );
+        let delete = SyncOperation::DeleteBranch {
+            branch: "side".into(),
+            force: false,
+        };
+        assert_eq!(
+            (delete.label(), delete.active(), delete.finished()),
+            ("delete branch", "Deleting", "Deleted")
+        );
+        let rename = SyncOperation::RenameBranch {
+            from: "side".into(),
+            to: "renamed".into(),
+        };
+        assert_eq!(
+            (rename.label(), rename.active(), rename.finished()),
+            ("rename branch", "Renaming", "Renamed")
         );
     }
 
@@ -587,6 +831,26 @@ mod tests {
                 dir.path().to_path_buf(),
                 SyncOperation::Create {
                     branch: "new".into()
+                }
+            )
+            .is_err());
+        // The delete and rename verbs act on that same branch list, so an
+        // unreadable repository refuses them too.
+        assert!(cache
+            .start_operation(
+                dir.path().to_path_buf(),
+                SyncOperation::DeleteBranch {
+                    branch: "doomed".into(),
+                    force: true
+                }
+            )
+            .is_err());
+        assert!(cache
+            .start_operation(
+                dir.path().to_path_buf(),
+                SyncOperation::RenameBranch {
+                    from: "one".into(),
+                    to: "two".into()
                 }
             )
             .is_err());

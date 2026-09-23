@@ -880,6 +880,16 @@ Rules:
 - Reviewed files carry the `✓` tick; counts stay ASCII even in narrow panes.
 - Stale diff state must be explicit; binary/untracked/conflicted states must be truthful.
 - `/diff` holds no content state itself — the pane reads live diff state so refreshes update in place.
+- Three sources, cycled by `d` in the order the questions are asked: the
+  **working tree** (everything against `HEAD`, the default and the only one the
+  header does not name), the **index** (`git diff --cached` — exactly what a
+  commit would take, which is the only way to review a partial stage), and the
+  **last turn** (the transcript's own cards, not `git`, so it stays honest when
+  the tree has moved on). The staged list is the same status snapshot filtered
+  to paths with a staged side, and each entry's unstaged half is cleared before
+  its marker is read: the marker comes from the more severe of the two sides, so
+  leaving the working-tree side in place would label a file in the index list
+  with a change that is not in it.
 - The hint row's right-aligned tag carries the branch before the layout: the
   branch name with only the non-zero `↓behind ↑ahead`, or the `pull`/`push` in
   flight (`Pushing origin/main…`). A running operation outranks the branch, and
@@ -889,6 +899,15 @@ Rules:
   when the state is merely unknown. An in-progress merge outranks the plain
   branch name (`merging · 2 unresolved`): it is the state that decides the next
   key.
+- Branch deletion and branch rename live in the picker, not on the view's key
+  row: both act on *a* branch, and the picker is where a branch is chosen. `x`
+  deletes behind a confirmation and `r` renames in one prefilled field, and both
+  are inert in merge mode, where the list is answering "merge what?" rather than
+  "which branch?". Deletion has **no force path in the UI**: `-d` refuses a
+  branch whose commits are not merged anywhere, and that refusal is the feature —
+  escalating to `-D` from a TUI is how commits get lost by accident. Rename is
+  allowed on the branch `HEAD` is on; deletion is not. The asymmetry is
+  deliberate: rename destroys nothing.
 - A merge in progress also earns a full-width banner above the file list, in the
   warning severity colour rather than the focus accent — it is a state to act
   on, not the pane that owns the keyboard. One row, elided when narrow, and it

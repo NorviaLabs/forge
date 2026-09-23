@@ -390,6 +390,293 @@ async fn the_picker_creates_a_named_branch_and_switches_between_branches() {
     assert!(app.git_sync.branches.contains(&"main".to_string()));
 }
 
+/// The staged source answers a different question from the working tree, and
+/// the sharpest proof is a file that is staged AND then changed again: the two
+/// sources must show different patches for it.
+#[tokio::test]
+async fn the_staged_source_shows_only_the_index_and_the_index_patch() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("staged.txt", "base\n"), ("loose.txt", "base\n")],
+        &[],
+    );
+    let root = dir.path();
+
+    // Stage one file, then change it AGAIN without staging. The index holds
+    // "staged", the working tree holds "later".
+    std::fs::write(root.join("staged.txt"), "staged\n").unwrap();
+    git_run(root, &["add", "staged.txt"]);
+    std::fs::write(root.join("staged.txt"), "later\n").unwrap();
+    // And a second file that is only ever changed in the working tree.
+    std::fs::write(root.join("loose.txt"), "loose\n").unwrap();
+
+    app.open_git_view();
+    settle_git(&mut app);
+    let working: Vec<String> = app
+        .diff_view
+        .entries
+        .iter()
+        .map(|entry| entry.path.display().to_string())
+        .collect();
+    assert_eq!(
+        working,
+        vec!["loose.txt", "staged.txt"],
+        "both differ from HEAD"
+    );
+
+    // Switch to the index.
+    app.diff_view.source = DiffSource::Staged;
+    app.refresh_diff_entries();
+    let staged: Vec<String> = app
+        .diff_view
+        .entries
+        .iter()
+        .map(|entry| entry.path.display().to_string())
+        .collect();
+    assert_eq!(
+        staged,
+        vec!["staged.txt"],
+        "a file with nothing staged is not in the staged list"
+    );
+
+    // And the patch is the index's content, not the working tree's.
+    settle_patch(&mut app);
+    let patch = match &app.diff_view.patch {
+        PatchState::Ready(patch) => patch,
+        other => panic!("the staged patch should be ready, got {other:?}"),
+    };
+    let text = patch.lines.join("\n");
+    assert!(
+        text.contains("+staged"),
+        "the staged hunk must be the index's: {text}"
+    );
+    assert!(
+        !text.contains("+later"),
+        "the unstaged edit must not leak into the staged view: {text}"
+    );
+}
+
+/// Committing from the staged view is the point of the view, and staging is
+/// still meaningful there — unstaging moves a file out of the list.
+#[tokio::test]
+async fn the_staged_source_still_commits_and_unstages() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "base\n")], &[("a.txt", "next\n")]);
+    app.open_git_view();
+    settle_git(&mut app);
+    app.diff_view.select_path(std::path::Path::new("a.txt"));
+    app.stage_selected_diff_file(true);
+    settle_git(&mut app);
+
+    app.diff_view.source = DiffSource::Staged;
+    app.refresh_diff_entries();
+    settle_git(&mut app);
+    assert_eq!(app.staged_change_count(), 1);
+
+    // `c` opens the commit prompt from here rather than refusing.
+    app.open_git_commit();
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitCommit { .. })),
+        "the staged view is where committing belongs"
+    );
+    app.overlay = None;
+
+    // `u` unstages, and the file leaves the staged list with it.
+    app.diff_view.select_path(std::path::Path::new("a.txt"));
+    app.stage_selected_diff_file(false);
+    settle_git(&mut app);
+    app.refresh_diff_entries();
+    assert_eq!(app.staged_change_count(), 0);
+    assert!(
+        app.diff_view.entries.is_empty(),
+        "nothing staged, nothing listed: {:?}",
+        app.diff_view.entries
+    );
+}
+
+/// `f` fetches without merging. The point of having both `f` and `<` is that
+/// the operator can look at what is incoming before taking it, so this asserts
+/// the remote-tracking ref moves while HEAD and the working tree do not.
+#[tokio::test]
+async fn fetch_moves_the_tracking_ref_and_leaves_the_tree_alone() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "one\n")], &[]);
+    let root = dir.path();
+    let branch = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .trim()
+        .to_string();
+
+    // A bare remote with one extra commit on it that this clone has not seen.
+    let remote = tempfile::TempDir::new().unwrap();
+    git_run(remote.path(), &["init", "-q", "--bare"]);
+    git_run(
+        root,
+        &["remote", "add", "origin", &remote.path().to_string_lossy()],
+    );
+    git_run(root, &["push", "-q", "-u", "origin", &branch]);
+
+    // The bare remote's HEAD still points at `master`, so the clone needs the
+    // branch named explicitly or it checks nothing out.
+    let other = tempfile::TempDir::new().unwrap();
+    git_run(
+        other.path(),
+        &[
+            "clone",
+            "-q",
+            "-b",
+            &branch,
+            &remote.path().to_string_lossy(),
+            ".",
+        ],
+    );
+    // A clone inherits no identity, so the commit below needs one.
+    git_run(other.path(), &["config", "user.email", "test@example.com"]);
+    git_run(other.path(), &["config", "user.name", "Test"]);
+    std::fs::write(other.path().join("tracked.txt"), "theirs\n").unwrap();
+    git_run(other.path(), &["commit", "-qam", "theirs"]);
+    git_run(other.path(), &["push", "-q", "origin", &branch]);
+
+    let head_before = git_stdout(root, &["rev-parse", "HEAD"]);
+    app.open_git_view();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+    settle_sync(&mut app);
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    assert_eq!(app.feedback.severity, FeedbackSeverity::Info);
+    assert!(
+        app.feedback.text.starts_with("Fetched"),
+        "{}",
+        app.feedback.text
+    );
+
+    // The tracking ref moved...
+    assert_eq!(
+        git_stdout(
+            root,
+            &["rev-parse", &format!("refs/remotes/origin/{branch}")]
+        ),
+        git_stdout(other.path(), &["rev-parse", "HEAD"]),
+        "the remote-tracking ref caught up with the remote"
+    );
+    // ...and nothing else did.
+    assert_eq!(
+        git_stdout(root, &["rev-parse", "HEAD"]),
+        head_before,
+        "a fetch must not move HEAD"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "one\n",
+        "and must not touch the working tree"
+    );
+    // Which is what `behind` is for: there is now something to take.
+    assert_eq!(
+        app.git_sync.branch.as_ref().map(|branch| branch.behind),
+        Some(1),
+        "and the refresh sees the incoming commit"
+    );
+}
+
+/// `x` deletes a branch, behind a confirmation, and refuses the branch HEAD is
+/// on before the confirmation even appears.
+#[tokio::test]
+async fn deleting_a_branch_confirms_first_and_refuses_head() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "one\n")], &[]);
+    let root = dir.path();
+    git_run(root, &["branch", "doomed"]);
+    git_run(root, &["branch", "kept"]);
+    app.open_git_view();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    // `x` on the branch HEAD is on refuses, and never reaches git.
+    let head = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .trim()
+        .to_string();
+    app.delete_git_branch(&head);
+    assert!(app.overlay.is_none(), "no confirmation for a refusal");
+    assert!(
+        app.feedback.text.contains("HEAD is on it"),
+        "{}",
+        app.feedback.text
+    );
+
+    // `x` on another branch asks first, and does NOT delete on the way.
+    app.delete_git_branch("doomed");
+    let Some(Overlay::GitDeleteBranch { name, detail }) = app.overlay.as_ref() else {
+        panic!("`x` asks first");
+    };
+    assert_eq!(name, "doomed");
+    assert!(
+        detail.contains("will not force it"),
+        "the confirmation must not imply a force path: {detail}"
+    );
+    assert!(
+        git_stdout(root, &["branch", "--list", "doomed"]).contains("doomed"),
+        "asking must not delete"
+    );
+
+    // Confirming deletes it, and only it.
+    app.delete_git_branch("doomed");
+    settle_sync(&mut app);
+    settle_git(&mut app);
+    assert!(app.overlay.is_none());
+    assert_eq!(app.feedback.text, "Deleted doomed");
+    assert!(
+        git_stdout(root, &["branch", "--list", "doomed"])
+            .trim()
+            .is_empty(),
+        "the branch is gone"
+    );
+    assert!(git_stdout(root, &["branch", "--list", "kept"]).contains("kept"));
+}
+
+/// `r` renames a branch, and an empty name is refused without starting work.
+#[tokio::test]
+async fn renaming_a_branch_asks_for_a_name_and_refuses_an_empty_one() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "one\n")], &[]);
+    let root = dir.path();
+    git_run(root, &["branch", "before"]);
+    app.open_git_view();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    app.open_git_rename("before");
+    let Some(Overlay::GitRenameBranch { from, name, .. }) = app.overlay.as_ref() else {
+        panic!("`r` opens the rename prompt");
+    };
+    assert_eq!(from, "before");
+    assert_eq!(name, "before", "prefilled with the current name");
+
+    // An empty name is refused in place, with the prompt left open.
+    app.rename_git_branch("before", "   ");
+    assert!(app.git_sync.running.is_none(), "nothing was started");
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::GitRenameBranch { ref error, .. }) if error.is_some()
+    ));
+
+    app.rename_git_branch("before", "after");
+    settle_sync(&mut app);
+    settle_git(&mut app);
+    assert_eq!(app.feedback.text, "Renamed before → after");
+    assert!(
+        git_stdout(root, &["branch", "--list", "before"])
+            .trim()
+            .is_empty(),
+        "the old name is gone"
+    );
+    assert!(git_stdout(root, &["branch", "--list", "after"]).contains("after"));
+    assert!(app.git_sync.branches.contains(&"after".to_string()));
+}
+
 fn git_run(dir: &std::path::Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -690,12 +977,22 @@ async fn d_toggles_the_source_and_resets_the_patch() {
         .await
         .unwrap();
 
-    assert_eq!(app.diff_view.source, DiffSource::LastTurn);
+    assert_eq!(app.diff_view.source, DiffSource::Staged);
     assert_eq!(app.diff_view.patch, PatchState::Loading);
     assert!(
         app.diff_view.loaded_for.is_none(),
         "no stale patch survives"
     );
+
+    // And it keeps going rather than stopping at the second source.
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.diff_view.source, DiffSource::LastTurn);
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.diff_view.source, DiffSource::WorkingTree);
 }
 
 #[tokio::test]

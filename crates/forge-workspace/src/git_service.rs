@@ -247,6 +247,152 @@ mod tests {
         assert!(service.switch_branch("missing").is_err());
     }
 
+    #[test]
+    fn delete_branch_removes_a_merged_branch() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let main = service.current_branch().unwrap().unwrap();
+        // At `HEAD`, so deleting it loses nothing — the case `-d` exists for.
+        git(dir.path(), &["branch", "merged"]);
+        service.delete_branch("merged", false).unwrap();
+        assert_eq!(service.branches().unwrap(), vec![main]);
+    }
+
+    #[test]
+    fn delete_branch_refuses_an_unmerged_branch_until_force_says_otherwise() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let main = service.current_branch().unwrap().unwrap();
+        git(dir.path(), &["switch", "-qc", "side"]);
+        fs::write(dir.path().join("a"), "side\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "side"]);
+        git(dir.path(), &["switch", "-q", &main]);
+
+        // `force = false` is Git's own refusal to lose the commits only this
+        // branch holds. It is the caller's flag, not something inferred from
+        // how merged the branch looks.
+        let refused = service.delete_branch("side", false).unwrap_err();
+        assert!(
+            refused.to_string().contains("not fully merged"),
+            "{refused}"
+        );
+        assert!(service.branches().unwrap().contains(&"side".to_string()));
+
+        service.delete_branch("side", true).unwrap();
+        assert!(!service.branches().unwrap().contains(&"side".to_string()));
+    }
+
+    #[test]
+    fn delete_branch_refuses_the_branch_head_is_on() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let current = service.current_branch().unwrap().unwrap();
+        // `force = true`: had this reached `git branch -D`, the message would
+        // be Git's ("cannot delete branch … used by worktree"), and the branch
+        // would be Git's decision rather than this guard's.
+        let refused = service.delete_branch(&current, true).unwrap_err();
+        assert!(refused.to_string().contains("HEAD is on it"), "{refused}");
+        assert_eq!(
+            service.current_branch().unwrap().as_deref(),
+            Some(&*current)
+        );
+        assert_eq!(service.branches().unwrap(), vec![current]);
+    }
+
+    #[test]
+    fn rename_branch_moves_the_name_and_leaves_the_old_one_gone() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let main = service.current_branch().unwrap().unwrap();
+        git(dir.path(), &["branch", "topic"]);
+        let head = git(dir.path(), &["rev-parse", "refs/heads/topic"]);
+        service.rename_branch("topic", "renamed").unwrap();
+        // The new ref carries the commits; `branches()` reads `refs/heads`
+        // itself, so the old name being absent is the ref being gone.
+        let mut expected = vec!["renamed".to_string(), main.clone()];
+        expected.sort();
+        assert_eq!(service.branches().unwrap(), expected);
+        assert_eq!(git(dir.path(), &["rev-parse", "refs/heads/renamed"]), head);
+
+        // Renaming the branch `HEAD` is on carries `HEAD` with it.
+        service.rename_branch(&main, "trunk").unwrap();
+        assert_eq!(service.current_branch().unwrap().as_deref(), Some("trunk"));
+        assert_eq!(
+            service.branches().unwrap(),
+            vec!["renamed".to_string(), "trunk".to_string()]
+        );
+    }
+
+    #[test]
+    fn rename_branch_refuses_the_same_name_and_a_branch_that_is_not_there() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let current = service.current_branch().unwrap().unwrap();
+        let refused = service.rename_branch(&current, &current).unwrap_err();
+        assert!(refused.to_string().contains("itself"), "{refused}");
+        assert!(matches!(
+            service.rename_branch("missing", "other"),
+            Err(GitServiceError::InvalidBranch(_))
+        ));
+        assert_eq!(
+            service.current_branch().unwrap().as_deref(),
+            Some(&*current)
+        );
+    }
+
+    #[test]
+    fn delete_and_rename_refuse_bad_names_and_non_branches_before_spawning() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let main = service.current_branch().unwrap().unwrap();
+        git(dir.path(), &["branch", "kept"]);
+        // A remote-tracking ref is not a local branch, however legal its name.
+        git(
+            dir.path(),
+            &["update-ref", "refs/remotes/origin/remote", "HEAD"],
+        );
+
+        for name in [
+            "--force",
+            "-D",
+            "-m",
+            "",
+            "origin/remote",
+            "HEAD~1",
+            "feat..x",
+        ] {
+            assert!(
+                matches!(
+                    service.delete_branch(name, true),
+                    Err(GitServiceError::InvalidBranch(_))
+                ),
+                "{name:?} must be refused as a branch to delete"
+            );
+            assert!(
+                matches!(
+                    service.rename_branch(name, "kept-2"),
+                    Err(GitServiceError::InvalidBranch(_))
+                ),
+                "{name:?} must be refused as a branch to rename"
+            );
+        }
+        // The destination goes through the same guard as the source.
+        for to in ["--force", "-m", "", "feat x", "feat/"] {
+            assert!(
+                matches!(
+                    service.rename_branch("kept", to),
+                    Err(GitServiceError::InvalidBranch(_))
+                ),
+                "{to:?} must be refused as a rename target"
+            );
+        }
+        assert_eq!(
+            service.branches().unwrap(),
+            vec!["kept".to_string(), main.clone()]
+        );
+        assert_eq!(service.current_branch().unwrap().as_deref(), Some(&*main));
+    }
+
     /// The guard is pure, so it can be pinned down case by case without a
     /// repository — and nothing it refuses can reach a subprocess, because it
     /// runs before the only call that spawns one.
@@ -383,6 +529,57 @@ mod tests {
             fs::read_to_string(dir.path().join("a")).unwrap(),
             "pulled\n"
         );
+    }
+
+    #[test]
+    fn fetch_moves_the_upstream_remotes_tracking_ref_and_nothing_else() {
+        let dir = repo();
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "--bare", "-q"]);
+        let remote_path = remote.path().to_str().unwrap();
+        git(dir.path(), &["remote", "add", "origin", remote_path]);
+        let service = LocalGit::new(dir.path()).unwrap();
+        let branch = service.branch_status().unwrap().branch.unwrap();
+        git(dir.path(), &["push", "-q", "-u", "origin", &branch]);
+        let tracking = format!("refs/remotes/origin/{branch}");
+        let before = git(dir.path(), &["rev-parse", &tracking]);
+
+        // A commit this repository has not seen, pushed to the remote from a
+        // clone — so the fetch has something real to bring back.
+        let other = TempDir::new().unwrap();
+        git(
+            other.path(),
+            &["clone", "-q", "-b", &branch, remote_path, "."],
+        );
+        git(
+            other.path(),
+            &["config", "user.email", "forge@example.test"],
+        );
+        git(other.path(), &["config", "user.name", "Forge Test"]);
+        fs::write(other.path().join("a"), "fetched\n").unwrap();
+        git(other.path(), &["commit", "-qam", "fetched"]);
+        git(other.path(), &["push", "-q"]);
+        let remote_head = git(
+            remote.path(),
+            &["rev-parse", &format!("refs/heads/{branch}")],
+        );
+
+        service.fetch().unwrap();
+        assert_ne!(before, remote_head, "the remote must really have moved");
+        assert_eq!(git(dir.path(), &["rev-parse", &tracking]), remote_head);
+        // A fetch is not a pull: `HEAD` and the working tree stay where they
+        // were, which is the whole reason the remote-tracking ref is what moved.
+        assert_eq!(git(dir.path(), &["rev-parse", "HEAD"]), before);
+        assert_eq!(fs::read_to_string(dir.path().join("a")).unwrap(), "base\n");
+    }
+
+    #[test]
+    fn fetch_refuses_a_branch_with_no_upstream() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        assert_eq!(service.branch_status().unwrap().upstream, None);
+        // Nothing to name, so nothing is spawned.
+        assert!(matches!(service.fetch(), Err(GitServiceError::NoUpstream)));
     }
 }
 
@@ -618,6 +815,57 @@ impl LocalGit {
         self.run("switch", &["switch", "--", name])
     }
 
+    /// Delete a local branch.
+    ///
+    /// `force` is the whole difference between Git refusing to lose commits
+    /// that are not merged yet and losing them, so it is always an explicit
+    /// argument: nothing here infers it from how merged the branch looks.
+    /// Deleting the branch `HEAD` is on is refused before anything is spawned.
+    pub fn delete_branch(&self, name: &str, force: bool) -> Result<String, GitServiceError> {
+        valid_branch_name(name)?;
+        if self.current_branch()?.as_deref() == Some(name) {
+            return Err(GitServiceError::Git {
+                operation: "branch",
+                message: format!("cannot delete {name}: HEAD is on it"),
+            });
+        }
+        self.local_branch(name)?;
+        self.run("branch", &["branch", if force { "-D" } else { "-d" }, name])
+    }
+
+    /// Rename a local branch, keeping its commits where they are. Renaming the
+    /// branch `HEAD` is on moves `HEAD` with it, which is Git's own doing.
+    pub fn rename_branch(&self, from: &str, to: &str) -> Result<String, GitServiceError> {
+        valid_branch_name(from)?;
+        valid_branch_name(to)?;
+        if from == to {
+            return Err(GitServiceError::Git {
+                operation: "branch",
+                message: format!("cannot rename {from} to itself"),
+            });
+        }
+        self.local_branch(from)?;
+        self.run("branch", &["branch", "-m", from, to])
+    }
+
+    /// Resolve `name` to a local branch through `refs/heads/`, refusing
+    /// anything that is not one before any branch verb can spawn: a
+    /// remote-tracking ref and a revision expression are equally not a local
+    /// branch, and neither may be interpreted as one.
+    fn local_branch(&self, name: &str) -> Result<(), GitServiceError> {
+        let refname = format!("refs/heads/{name}");
+        if self
+            .run(
+                "branch lookup",
+                &["show-ref", "--verify", "--quiet", &refname],
+            )
+            .is_err()
+        {
+            return Err(GitServiceError::InvalidBranch(name.to_owned()));
+        }
+        Ok(())
+    }
+
     /// Abandon an in-progress merge, restoring the pre-merge working tree.
     /// Git itself refuses this when there is nothing to abort.
     pub fn abort_merge(&self) -> Result<String, GitServiceError> {
@@ -692,30 +940,47 @@ impl LocalGit {
         self.run("push", &["push"])
     }
 
-    fn upstream(&self) -> Result<(), GitServiceError> {
-        if self.branch_status()?.upstream.is_none() {
-            Err(GitServiceError::NoUpstream)
-        } else {
-            Ok(())
+    /// Fetch the one remote the configured upstream lives on.
+    ///
+    /// Naming the remote is deliberate: bare `git fetch` reaches every remote
+    /// the repository knows about, including ones the operator never mentioned.
+    /// The remote is derived from the upstream (`origin/main` → `origin`) rather
+    /// than taken as an argument, so there is nothing here for a caller to aim.
+    /// The remote-tracking refs move, which makes any cached ahead/behind stale
+    /// the moment this returns.
+    pub fn fetch(&self) -> Result<String, GitServiceError> {
+        let upstream = self.upstream()?;
+        // An upstream with no remote part names a local branch; `fetch` will
+        // say so in its own words.
+        let remote = upstream
+            .split_once('/')
+            .map_or(upstream.as_str(), |(remote, _)| remote);
+        // One argv element, but a remote whose name begins with `-` would still
+        // be read as an option, so it is refused before anything is spawned —
+        // the same guard a branch name gets.
+        if remote.is_empty() || remote.starts_with('-') {
+            return Err(GitServiceError::Git {
+                operation: "fetch",
+                message: format!("upstream {upstream} names no usable remote"),
+            });
         }
+        self.run("fetch", &["fetch", "--no-tags", remote])
+    }
+
+    /// The configured upstream ref (`origin/main`), or [`GitServiceError::NoUpstream`]
+    /// when the current branch has none.
+    fn upstream(&self) -> Result<String, GitServiceError> {
+        self.branch_status()?
+            .upstream
+            .ok_or(GitServiceError::NoUpstream)
     }
 
     /// Merge only an existing local branch; never interpret a user string as
     /// an option, remote, or arbitrary revision expression.
     pub fn merge(&self, branch: &str) -> Result<String, GitServiceError> {
-        if branch.is_empty() || branch.starts_with('-') || branch.contains('\0') {
-            return Err(GitServiceError::InvalidBranch(branch.into()));
-        }
+        valid_branch_name(branch)?;
+        self.local_branch(branch)?;
         let refname = format!("refs/heads/{branch}");
-        if self
-            .run(
-                "branch lookup",
-                &["show-ref", "--verify", "--quiet", &refname],
-            )
-            .is_err()
-        {
-            return Err(GitServiceError::InvalidBranch(branch.into()));
-        }
         self.run("merge", &["merge", "--no-edit", "--", &refname])
     }
 }

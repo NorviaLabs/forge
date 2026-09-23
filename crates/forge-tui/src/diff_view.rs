@@ -30,6 +30,9 @@ pub enum DiffSource {
     /// staged hunks and untracked files.
     #[default]
     WorkingTree,
+    /// Only what the index holds — `git diff --cached`. This is what a commit
+    /// would take, which is the only way to review a partial stage.
+    Staged,
     /// Only what the most recent assistant turn wrote, taken from the
     /// transcript's own diff cards rather than from `git`.
     LastTurn,
@@ -39,14 +42,19 @@ impl DiffSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::WorkingTree => "working tree",
+            Self::Staged => "staged",
             Self::LastTurn => "last turn",
         }
     }
 
     /// The other source, for the `d` toggle.
+    /// The next source in the `d` cycle. The order is the one the questions
+    /// are asked in: what have I changed, what have I staged, what did the
+    /// agent just do.
     pub fn toggled(self) -> Self {
         match self {
-            Self::WorkingTree => Self::LastTurn,
+            Self::WorkingTree => Self::Staged,
+            Self::Staged => Self::LastTurn,
             Self::LastTurn => Self::WorkingTree,
         }
     }
@@ -531,7 +539,9 @@ impl DiffView {
         // on the bottom row instead.
         let source = match self.source {
             DiffSource::WorkingTree => String::new(),
-            DiffSource::LastTurn => format!(" · {source}"),
+            // Both of the others are unusual enough to name: the working tree
+            // is the default, so it is the one that says nothing.
+            DiffSource::Staged | DiffSource::LastTurn => format!(" · {source}"),
         };
         format!("DIFF · {path}{counts} · {position}{source}")
     }
@@ -675,6 +685,31 @@ fn parse_hunk_new_start(line: &str) -> Option<usize> {
     let plus = rest.split('+').nth(1)?;
     let digits: String = plus.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+/// The changed-file list for a source.
+///
+/// The staged source narrows to what the index holds, and clears the unstaged
+/// half of each entry before building the row: a marker is read from the more
+/// severe of the two sides, so leaving the working-tree side in place would
+/// label a file in the staged list with a change that is not in it.
+pub fn entries_for_source(files: &[ChangedFile], source: DiffSource) -> Vec<DiffEntry> {
+    match source {
+        DiffSource::Staged => {
+            let staged: Vec<ChangedFile> = files
+                .iter()
+                .filter_map(|file| {
+                    file.staged.map(|kind| ChangedFile {
+                        path: file.path.clone(),
+                        staged: Some(kind),
+                        unstaged: None,
+                    })
+                })
+                .collect();
+            entries_from_changed_files(&staged)
+        }
+        DiffSource::WorkingTree | DiffSource::LastTurn => entries_from_changed_files(files),
+    }
 }
 
 /// Build the changed-file list from a git status snapshot.
@@ -876,7 +911,10 @@ impl Widget for DiffViewWidget<'_> {
             DiffStatus::NoChanges => {
                 let hint = match self.view.source {
                     DiffSource::WorkingTree => {
-                        "Nothing differs from HEAD.\nPress d to see the last turn's edits."
+                        "Nothing differs from HEAD.\nPress d to see what is staged."
+                    }
+                    DiffSource::Staged => {
+                        "Nothing is staged.\nPress s on a file, then d to review it here."
                     }
                     DiffSource::LastTurn => {
                         "The last turn did not edit any files.\nPress d to see the working tree."
@@ -884,6 +922,7 @@ impl Widget for DiffViewWidget<'_> {
                 };
                 let heading = match self.view.source {
                     DiffSource::WorkingTree => "No changes in the working tree",
+                    DiffSource::Staged => "Nothing staged",
                     DiffSource::LastTurn => "No changes in the last turn",
                 };
                 render_message(body, buf, heading, hint);
@@ -1290,10 +1329,14 @@ mod tests {
     }
 
     #[test]
-    fn source_toggle_round_trips() {
-        assert_eq!(DiffSource::WorkingTree.toggled(), DiffSource::LastTurn);
+    fn source_toggle_round_trips_through_all_three() {
+        // The cycle is the order the questions are asked in, and it returns to
+        // where it started rather than stranding a source.
+        assert_eq!(DiffSource::WorkingTree.toggled(), DiffSource::Staged);
+        assert_eq!(DiffSource::Staged.toggled(), DiffSource::LastTurn);
         assert_eq!(DiffSource::LastTurn.toggled(), DiffSource::WorkingTree);
         assert_eq!(DiffSource::WorkingTree.label(), "working tree");
+        assert_eq!(DiffSource::Staged.label(), "staged");
     }
 
     #[test]
