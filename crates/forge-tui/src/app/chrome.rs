@@ -42,7 +42,7 @@ impl TuiApp {
     /// The confirmation is the last thing that happens here; the work itself
     /// runs from the confirm overlay's action.
     pub(crate) async fn request_session_cleanup(&mut self, session_id: uuid::Uuid) {
-        let Some((ownership, lifecycle, label, branch, workspace, worktree_path)) = self
+        let Some((ownership, lifecycle, label, branch, workspace)) = self
             .supervisor
             .as_ref()
             .and_then(|supervisor| supervisor.snapshots.get(&session_id))
@@ -53,7 +53,6 @@ impl TuiApp {
                     snapshot.task.label.clone(),
                     snapshot.task.branch.clone(),
                     snapshot.task.workspace.display().to_string(),
-                    snapshot.task.workspace.clone(),
                 )
             })
         else {
@@ -91,34 +90,15 @@ impl TuiApp {
         } else {
             crate::overlays::SessionConfirmKind::Archive
         };
-        let dirty = match forge_storage::worktree_is_dirty(&worktree_path) {
-            Ok(dirty) => dirty,
-            Err(error) => {
-                self.set_feedback(
-                    FeedbackSeverity::Error,
-                    format!("could not inspect worktree: {error}"),
-                );
-                return;
-            }
-        };
-        if kind == crate::overlays::SessionConfirmKind::Archive && dirty {
-            self.overlay = Some(Overlay::SessionConfirm {
-                kind: crate::overlays::SessionConfirmKind::ArchiveDirty,
-                session_id: session_id.to_string(),
-                label,
-                detail: "This worktree contains staged, unstaged, or untracked changes. Confirming permanently deletes all worktree contents, including ignored files. The branch and commits are kept.".into(),
-            });
-            return;
-        }
         let detail = if kind == crate::overlays::SessionConfirmKind::Cleanup {
             format!(
                 "Removes the worktree at\n{workspace}\nThe branch `{branch}` is kept. \
-                 Uncommitted work blocks removal."
+                 Uncommitted work needs a second confirmation."
             )
         } else {
             format!(
                 "Archiving is final — `{label}` cannot be reopened.\nIts branch `{branch}` is \
-                 kept; a clean worktree is removed.\nUncommitted work blocks removal."
+                 kept; a clean worktree is removed.\nUncommitted work needs a second confirmation."
             )
         };
         self.overlay = Some(Overlay::SessionConfirm {
