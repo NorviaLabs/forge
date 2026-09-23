@@ -42,7 +42,7 @@ impl TuiApp {
     /// The confirmation is the last thing that happens here; the work itself
     /// runs from the confirm overlay's action.
     pub(crate) async fn request_session_cleanup(&mut self, session_id: uuid::Uuid) {
-        let Some((ownership, lifecycle, label, branch, workspace)) = self
+        let Some((ownership, lifecycle, label, branch, workspace, worktree_path)) = self
             .supervisor
             .as_ref()
             .and_then(|supervisor| supervisor.snapshots.get(&session_id))
@@ -53,6 +53,7 @@ impl TuiApp {
                     snapshot.task.label.clone(),
                     snapshot.task.branch.clone(),
                     snapshot.task.workspace.display().to_string(),
+                    snapshot.task.workspace.clone(),
                 )
             })
         else {
@@ -90,6 +91,25 @@ impl TuiApp {
         } else {
             crate::overlays::SessionConfirmKind::Archive
         };
+        let dirty = match forge_storage::worktree_is_dirty(&worktree_path) {
+            Ok(dirty) => dirty,
+            Err(error) => {
+                self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("could not inspect worktree: {error}"),
+                );
+                return;
+            }
+        };
+        if kind == crate::overlays::SessionConfirmKind::Archive && dirty {
+            self.overlay = Some(Overlay::SessionConfirm {
+                kind: crate::overlays::SessionConfirmKind::ArchiveDirty,
+                session_id: session_id.to_string(),
+                label,
+                detail: "This worktree contains staged, unstaged, or untracked changes. Confirming permanently deletes all worktree contents, including ignored files. The branch and commits are kept.".into(),
+            });
+            return;
+        }
         let detail = if kind == crate::overlays::SessionConfirmKind::Cleanup {
             format!(
                 "Removes the worktree at\n{workspace}\nThe branch `{branch}` is kept. \
@@ -150,11 +170,22 @@ impl TuiApp {
     /// them and strand a checkout. The removal tolerates arriving before its
     /// archive lands.
     pub(crate) fn submit_archive_and_cleanup(&mut self, session_id: uuid::Uuid) {
+        self.submit_archive_and_cleanup_with_policy(session_id, false);
+    }
+
+    pub(crate) fn submit_archive_and_cleanup_with_policy(
+        &mut self,
+        session_id: uuid::Uuid,
+        discard_dirty: bool,
+    ) {
         self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
             session_id,
         });
         self.submit_session_command_tracked(
-            forge_session::SupervisorCommand::RemoveManagedWorktree { session_id },
+            forge_session::SupervisorCommand::RemoveManagedWorktree {
+                session_id,
+                discard_dirty,
+            },
             super::types::CommandFollowUp::Retirement { session_id },
         );
     }

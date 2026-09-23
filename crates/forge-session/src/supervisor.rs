@@ -94,6 +94,7 @@ pub enum SupervisorCommand {
     },
     RemoveManagedWorktree {
         session_id: SessionId,
+        discard_dirty: bool,
     },
     FinalizeCreation {
         operation_id: u64,
@@ -1153,7 +1154,7 @@ fn stops_every_session(command: &SupervisorCommand) -> bool {
 
 fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
     match command {
-        SupervisorCommand::RemoveManagedWorktree { session_id }
+        SupervisorCommand::RemoveManagedWorktree { session_id, .. }
         | SupervisorCommand::CompactContext { session_id }
         | SupervisorCommand::CloseSession { session_id }
         | SupervisorCommand::ResolveApproval { session_id, .. } => Some(*session_id),
@@ -1523,7 +1524,10 @@ async fn execute_command(
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
-        SupervisorCommand::RemoveManagedWorktree { session_id } => {
+        SupervisorCommand::RemoveManagedWorktree {
+            session_id,
+            discard_dirty,
+        } => {
             let task = state.control.session(session_id).await?;
             if task.lifecycle == SessionLifecycle::Removed {
                 // A process may have been restarted after the durable state
@@ -1606,7 +1610,11 @@ async fn execute_command(
                 let own_is_registered = registered(&task.workspace);
                 if own_is_registered && task.workspace.exists() {
                     match forge_storage::worktree_is_dirty(&task.workspace) {
-                        Ok(true) => blocked_paths.push(task.workspace.clone()),
+                        Ok(true) => {
+                            if !discard_dirty {
+                                blocked_paths.push(task.workspace.clone());
+                            }
+                        }
                         Ok(false) => {}
                         Err(error) => {
                             finish_actor_retirement(task_actor.as_ref());
@@ -1626,7 +1634,11 @@ async fn execute_command(
                         continue;
                     }
                     match forge_storage::worktree_is_dirty(&child.path) {
-                        Ok(true) => blocked_paths.push(child.path.clone()),
+                        Ok(true) => {
+                            if !discard_dirty {
+                                blocked_paths.push(child.path.clone());
+                            }
+                        }
                         Ok(false) => {}
                         Err(error) => {
                             finish_actor_retirement(task_actor.as_ref());
@@ -1645,20 +1657,28 @@ async fn execute_command(
                     if !child.path.exists() {
                         continue;
                     }
-                    let removed = match child.branch.as_deref() {
-                        Some(branch) => forge_storage::remove_clean_worktree_if_branch(
+                    let remove = |branch: Option<&str>| match (discard_dirty, branch) {
+                        (true, _) => forge_storage::remove_dirty_worktree(
+                            storage.main_worktree(),
+                            &child.path,
+                        ),
+                        (false, Some(branch)) => forge_storage::remove_clean_worktree_if_branch(
                             storage.main_worktree(),
                             &child.path,
                             branch,
                         ),
+                        (false, None) => forge_storage::remove_clean_worktree(
+                            storage.main_worktree(),
+                            &child.path,
+                        ),
+                    };
+                    let removed = match child.branch.as_deref() {
+                        Some(branch) => remove(Some(branch)),
                         // A child whose branch was never recorded can still be
                         // removed, but only when Git agrees it is clean; the
                         // preflight above already refused anything with
                         // uncommitted work.
-                        None => forge_storage::remove_clean_worktree(
-                            storage.main_worktree(),
-                            &child.path,
-                        ),
+                        None => remove(None),
                     };
                     if let Err(error) = removed {
                         result = Err(error);
@@ -1669,7 +1689,12 @@ async fn execute_command(
                     if !task.workspace.exists() {
                         return Ok(());
                     }
-                    if task.branch.is_empty() {
+                    if discard_dirty {
+                        forge_storage::remove_dirty_worktree(
+                            storage.main_worktree(),
+                            &task.workspace,
+                        )
+                    } else if task.branch.is_empty() {
                         // Branchless managed session: verify it is still the
                         // detached worktree this session owns, not one rebound
                         // to a newer session.
@@ -3348,6 +3373,53 @@ mod tests {
             }
         }
         panic!("timed out waiting for supervisor state");
+    }
+
+    #[tokio::test]
+    async fn confirmed_dirty_cleanup_removes_checkout_and_keeps_branch() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "discard-dirty".into(),
+                first_prompt: None,
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "discard-dirty")
+            .unwrap();
+        std::fs::write(task.workspace.join("dirty.txt"), "uncommitted").unwrap();
+        let head = forge_storage::worktree_head(&task.workspace).unwrap();
+        handle
+            .command(SupervisorCommand::ArchiveSession {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id: task.session_id,
+                discard_dirty: true,
+            })
+            .await
+            .unwrap();
+        assert!(!task.workspace.exists());
+        assert_eq!(forge_storage::worktree_head(repo.path()).unwrap(), head);
+        assert_eq!(
+            control.session(task.session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Removed
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]
@@ -6095,6 +6167,7 @@ mod tests {
         handle
             .command(SupervisorCommand::RemoveManagedWorktree {
                 session_id: task.session_id,
+                discard_dirty: false,
             })
             .await
             .unwrap();
@@ -6206,7 +6279,10 @@ mod tests {
             .await
             .unwrap();
         handle
-            .command(SupervisorCommand::RemoveManagedWorktree { session_id })
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id,
+                discard_dirty: false,
+            })
             .await
             .unwrap();
 
@@ -6218,7 +6294,10 @@ mod tests {
         assert!(supervisor.snapshot(session_id).await.is_none());
         // Cleanup is idempotent after the durable Removed transition.
         handle
-            .command(SupervisorCommand::RemoveManagedWorktree { session_id })
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id,
+                discard_dirty: false,
+            })
             .await
             .unwrap();
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
@@ -6329,6 +6408,7 @@ mod tests {
         handle
             .command(SupervisorCommand::RemoveManagedWorktree {
                 session_id: task.session_id,
+                discard_dirty: false,
             })
             .await
             .unwrap();
@@ -6644,7 +6724,10 @@ mod tests {
                 label: "x".into(),
                 branch: "x".into(),
             },
-            SupervisorCommand::RemoveManagedWorktree { session_id: id },
+            SupervisorCommand::RemoveManagedWorktree {
+                session_id: id,
+                discard_dirty: false,
+            },
             SupervisorCommand::CompactContext { session_id: id },
             SupervisorCommand::CloseSession { session_id: id },
             SupervisorCommand::CloseAllSessions,
@@ -6793,8 +6876,10 @@ mod tests {
             !runs_outside_command_loop(command) && !stops_every_session(command)
         }));
         assert!(
-            command_session_id(&SupervisorCommand::RemoveManagedWorktree { session_id: id })
-                == Some(id)
+            command_session_id(&SupervisorCommand::RemoveManagedWorktree {
+                session_id: id,
+                discard_dirty: false,
+            }) == Some(id)
         );
         assert!(
             command_session_id(&SupervisorCommand::CloseSession { session_id: id }) == Some(id)

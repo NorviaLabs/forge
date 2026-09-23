@@ -104,6 +104,11 @@ pub enum Overlay {
         label: String,
         detail: String,
     },
+    SessionConfirmDirty {
+        session_id: String,
+        label: String,
+        detail: String,
+    },
     SessionInput {
         mode: SessionInputMode,
         field: usize,
@@ -222,6 +227,8 @@ pub struct SessionSwitcherItem {
 pub enum SessionConfirmKind {
     /// Final: an archived session cannot be reopened.
     Archive,
+    /// Explicit second confirmation to discard dirty worktree contents.
+    ArchiveDirty,
     /// Removes a clean managed worktree; the branch is kept.
     Cleanup,
     /// Enables approve-all: confirms that the sandbox goes off for the
@@ -1171,6 +1178,11 @@ pub enum OverlayAction {
     },
     CleanupSessionWorktree {
         session_id: String,
+        discard_dirty: bool,
+    },
+    ArchiveAndCleanupSession {
+        session_id: String,
+        discard_dirty: bool,
     },
     FinalizeSessionCreation {
         operation_id: u64,
@@ -1256,6 +1268,21 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 OverlayAction::Close
             }
         }
+        Key::Esc if matches!(overlay, Overlay::SessionConfirmDirty { .. }) => {
+            if let Overlay::SessionConfirmDirty {
+                session_id, label, ..
+            } = overlay
+            {
+                OverlayAction::OpenSessionConfirm {
+                    kind: SessionConfirmKind::Archive,
+                    session_id: session_id.clone(),
+                    label: label.clone(),
+                    detail: "Archiving is final; the branch and commits are kept. The clean worktree is removed.".into(),
+                }
+            } else {
+                OverlayAction::Close
+            }
+        }
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
@@ -1293,7 +1320,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         label: item.label.clone(),
                         detail: format!(
                             "Archiving is final — `{}` cannot be reopened.\nIts branch `{}` is kept; \
-                             a clean worktree is removed.\nUncommitted work blocks removal.",
+                             clean worktrees are removed. Dirty worktrees require a second confirmation.",
                             item.label, item.branch
                         ),
                     },
@@ -1528,6 +1555,16 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Enter if matches!(overlay, Overlay::SessionConfirmDirty { .. }) => {
+            if let Overlay::SessionConfirmDirty { session_id, .. } = overlay {
+                OverlayAction::ArchiveAndCleanupSession {
+                    session_id: session_id.clone(),
+                    discard_dirty: true,
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
@@ -1715,14 +1752,26 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 }
             }
+            Overlay::SessionConfirmDirty { .. } => OverlayAction::None,
             Overlay::SessionConfirm {
                 kind, session_id, ..
             } => match kind {
-                SessionConfirmKind::Archive => OverlayAction::ArchiveSession {
-                    session_id: session_id.clone(),
-                },
+                SessionConfirmKind::Archive | SessionConfirmKind::ArchiveDirty => {
+                    if *kind == SessionConfirmKind::ArchiveDirty {
+                        OverlayAction::ArchiveAndCleanupSession {
+                            session_id: session_id.clone(),
+                            discard_dirty: true,
+                        }
+                    } else {
+                        OverlayAction::ArchiveAndCleanupSession {
+                            session_id: session_id.clone(),
+                            discard_dirty: false,
+                        }
+                    }
+                }
                 SessionConfirmKind::Cleanup => OverlayAction::CleanupSessionWorktree {
                     session_id: session_id.clone(),
+                    discard_dirty: false,
                 },
                 SessionConfirmKind::ApproveAll => OverlayAction::ApproveAll,
             },
@@ -2281,6 +2330,15 @@ impl Widget for OverlayWidget<'_> {
                         .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title("Help")),
                 )
+                .render(r, buf);
+            }
+            Overlay::SessionConfirmDirty { label, detail, .. } => {
+                let r = centered_rect(68, 36, area);
+                clear_modal(r, buf);
+                Paragraph::new(format!(
+                    "Permanently remove the dirty worktree for `{label}`?\n\n{detail}\n\nEnter permanently delete · Esc back"
+                ))
+                .block(Block::default().borders(Borders::ALL).border_style(theme::error_callout()).style(theme::panel()).padding(Padding::horizontal(MODAL_PAD_X)).title(theme::modal_title("Discard changes and archive")))
                 .render(r, buf);
             }
             Overlay::StatusReport { title, rows } => {
@@ -2979,6 +3037,10 @@ impl Widget for OverlayWidget<'_> {
                 clear_modal(r, buf);
                 let (title, question) = match kind {
                     SessionConfirmKind::Archive => ("Archive session", "Archive"),
+                    SessionConfirmKind::ArchiveDirty => (
+                        "Discard changes and archive",
+                        "Permanently remove the dirty worktree for",
+                    ),
                     SessionConfirmKind::Cleanup => ("Remove worktree", "Remove the worktree for"),
                     SessionConfirmKind::ApproveAll => {
                         ("Enable approve-all", "Enable approve-all for")

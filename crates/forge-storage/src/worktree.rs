@@ -247,6 +247,11 @@ pub fn remove_clean_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(
     remove_clean_worktree_inner(repo_root, worktree_path, ExpectedBinding::Any)
 }
 
+/// Remove a worktree, discarding uncommitted and untracked files but keeping its branch.
+pub fn remove_dirty_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), WorktreeError> {
+    remove_worktree(repo_root, worktree_path)
+}
+
 /// Remove a clean worktree only if Git still has the expected branch checked
 /// out at that path. The caller uses this for durable task cleanup: an old
 /// archived task must never remove a newer worktree that has been rebound to

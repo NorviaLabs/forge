@@ -178,7 +178,14 @@ impl TuiApp {
         match action {
             OverlayAction::None => {}
             OverlayAction::Close => {
-                self.dismiss_overlay();
+                if let Some(Overlay::SessionConfirmDirty {
+                    session_id, label, ..
+                }) = self.overlay.take()
+                {
+                    self.overlay = Some(Overlay::SessionConfirm { kind: crate::overlays::SessionConfirmKind::Archive, session_id, label, detail: "Archiving is final; the branch and commits are kept. The clean worktree is removed.".into() });
+                } else {
+                    self.dismiss_overlay();
+                }
             }
             OverlayAction::SelectSession(id) => {
                 let Ok(session_id) = id.parse::<uuid::Uuid>() else {
@@ -248,34 +255,53 @@ impl TuiApp {
                     return Ok(());
                 };
                 self.overlay = None;
-                // The operator confirmed, so this is where the view is parked —
-                // not before the confirmation, which a cancel must leave alone.
                 if !self.begin_session_view_retirement(session_id) {
                     return Ok(());
                 }
-                let state = self
-                    .supervisor
-                    .as_ref()
-                    .and_then(|supervisor| supervisor.snapshots.get(&session_id))
-                    .map(|snapshot| snapshot.task.turn_state);
-                if matches!(
-                    state,
-                    Some(
-                        forge_session::SupervisorTurnState::Queued
-                            | forge_session::SupervisorTurnState::Running
-                            | forge_session::SupervisorTurnState::Waiting
-                    )
-                ) {
-                    // Stop first, then archive and clean up once the turn
-                    // settles, so the removal never races the archive.
-                    self.submit_session_command(forge_session::SupervisorCommand::StopTurn {
-                        session_id,
-                    });
-                    self.navigator_done_pending.insert(session_id);
-                    self.set_feedback(FeedbackSeverity::Info, "stopping to archive…");
+                self.submit_archive_and_cleanup(session_id);
+            }
+            OverlayAction::ArchiveAndCleanupSession {
+                session_id,
+                discard_dirty,
+            } => {
+                let Some(session_id) = parse_repository_session_id(&session_id) else {
+                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
+                    return Ok(());
+                };
+                if !discard_dirty {
+                    let workspace = self
+                        .supervisor
+                        .as_ref()
+                        .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+                        .map(|snapshot| snapshot.task.workspace.clone());
+                    let dirty = match workspace.as_deref().map(forge_storage::worktree_is_dirty) {
+                        Some(Ok(dirty)) => dirty,
+                        Some(Err(error)) => {
+                            self.set_feedback(
+                                FeedbackSeverity::Error,
+                                format!("could not inspect worktree: {error}"),
+                            );
+                            return Ok(());
+                        }
+                        None => false,
+                    };
+                    if dirty {
+                        if let Some(Overlay::SessionConfirm { label, .. }) = self.overlay.as_ref() {
+                            let label = label.clone();
+                            self.overlay = Some(Overlay::SessionConfirmDirty {
+                                session_id: session_id.to_string(),
+                                label,
+                                detail: "This worktree contains staged, unstaged, or untracked changes. Confirming permanently deletes all worktree contents, including ignored files. The branch and commits are kept.".into(),
+                            });
+                        }
+                        return Ok(());
+                    }
+                }
+                self.overlay = None;
+                if !self.begin_session_view_retirement(session_id) {
                     return Ok(());
                 }
-                self.submit_archive_and_cleanup(session_id);
+                self.submit_archive_and_cleanup_with_policy(session_id, discard_dirty);
             }
             OverlayAction::ApproveAll => {
                 self.overlay = None;
@@ -287,7 +313,10 @@ impl TuiApp {
                     );
                 }
             }
-            OverlayAction::CleanupSessionWorktree { session_id } => {
+            OverlayAction::CleanupSessionWorktree {
+                session_id,
+                discard_dirty,
+            } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
@@ -296,7 +325,10 @@ impl TuiApp {
                     return Ok(());
                 }
                 let queued = self.submit_session_command_tracked(
-                    forge_session::SupervisorCommand::RemoveManagedWorktree { session_id },
+                    forge_session::SupervisorCommand::RemoveManagedWorktree {
+                        session_id,
+                        discard_dirty,
+                    },
                     CommandFollowUp::Retirement { session_id },
                 );
                 if !queued {
@@ -636,6 +668,7 @@ mod tests {
             },
             OverlayAction::CleanupSessionWorktree {
                 session_id: "not-a-uuid".into(),
+                discard_dirty: false,
             },
         ] {
             app.apply_overlay_action(action).await.unwrap();
