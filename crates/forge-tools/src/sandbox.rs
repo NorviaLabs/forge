@@ -503,13 +503,15 @@ pub struct SandboxPolicy {
 impl SandboxPolicy {
     /// The default policy for an agent-spawned process in `workspace_root`.
     pub fn for_workspace(workspace_root: impl AsRef<Path>) -> Self {
+        let workspace_root = workspace_root.as_ref().to_path_buf();
+        let linked_git_dirs = linked_worktree_git_dirs(&workspace_root);
         Self {
-            workspace_root: workspace_root.as_ref().to_path_buf(),
+            workspace_root,
             session_tmp: None,
             egress_proxy_port: None,
             egress_socket: None,
             git_writable: false,
-            linked_git_dirs: Vec::new(),
+            linked_git_dirs,
             toolchain_read_paths: Vec::new(),
             toolchain_executable_paths: Vec::new(),
             rustup_home: None,
@@ -555,13 +557,11 @@ impl SandboxPolicy {
     /// Permit writes under `.git` for this spawn only. `.git/hooks` stays
     /// read-only regardless — see [`Self::readonly_subpaths_of`].
     ///
-    /// When the workspace is a linked worktree, its git metadata lives outside
-    /// the sandbox root; this also reaches the resolved gitdir and common dir
-    /// so a confined `git status`/`log`/`branch` can read (and git-only
-    /// commands write) the object database. Their hooks stay read-only.
+    /// Linked-worktree metadata is mounted read-only in the default policy so
+    /// repository-aware clients can resolve the checkout; this opts into
+    /// writes for Git mutation commands while preserving the hooks carve-out.
     pub fn with_git_writable(mut self) -> Self {
         self.git_writable = true;
-        self.linked_git_dirs = linked_worktree_git_dirs(&self.workspace_root);
         self
     }
 
@@ -927,7 +927,12 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
                 .iter()
                 .map(|path| path.as_path()),
         )
-        .chain(policy.linked_git_dirs.iter().map(|path| path.as_path()))
+        .chain(
+            (!policy.git_writable)
+                .then_some(policy.linked_git_dirs.iter().map(|path| path.as_path()))
+                .into_iter()
+                .flatten(),
+        )
     {
         let mut parent = path.parent();
         while let Some(path) = parent {
@@ -988,9 +993,13 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         let tmp = sbpl_literal(&tmp.canonicalize().ok()?)?;
         profile.push_str(&format!(" (subpath \"{tmp}\")"));
     }
-    for path in &policy.linked_git_dirs {
-        let path = sbpl_literal(path)?;
-        profile.push_str(&format!(" (subpath \"{path}\")"));
+    // Linked-worktree metadata is always readable for repository discovery,
+    // but only writable for commands that explicitly opt into Git writes.
+    if policy.git_writable {
+        for path in &policy.linked_git_dirs {
+            let path = sbpl_literal(path)?;
+            profile.push_str(&format!(" (subpath \"{path}\")"));
+        }
     }
     profile.push_str(")\n");
 
@@ -1209,13 +1218,17 @@ fn bubblewrap_invocation(
         args.extend(["--bind".into(), tmp.clone(), tmp]);
     }
 
-    // A linked worktree's git metadata lives outside the workspace root; a git
-    // spawn needs read+write of it (objects, refs, index) even though the
-    // worktree itself is confined to the workspace. Bound writable like the
-    // workspace, then the hooks carved back to read-only below.
+    // A linked worktree's git metadata lives outside the workspace root.
+    // It is mounted read-only for repository discovery; git mutation spawns
+    // opt into writable mounts, with hooks carved back to read-only below.
     for dir in &policy.linked_git_dirs {
         let dir = dir.to_str()?.to_string();
-        args.extend(["--bind".into(), dir.clone(), dir]);
+        let bind = if policy.git_writable {
+            "--bind"
+        } else {
+            "--ro-bind"
+        };
+        args.extend([bind.into(), dir.clone(), dir]);
     }
 
     // The one route out, when egress is granted at all. Bound after the mask
@@ -1357,10 +1370,10 @@ mod tests {
     }
 
     /// A linked worktree — the shape a managed session lives in — keeps its
-    /// object database in a gitdir outside the workspace root. Only a git
-    /// spawn (which opts into writable `.git`) may reach it.
+    /// object database in a gitdir outside the workspace root. Repository
+    /// metadata is readable by default; only a Git spawn may write it.
     #[test]
-    fn linked_worktree_metadata_is_reached_by_git_spawns_only() {
+    fn linked_worktree_metadata_is_readable_by_default_and_writable_for_git_spawns() {
         let repo = workspace();
         let gitdir = repo.path().join(".git/worktrees/session-1");
         std::fs::create_dir_all(&gitdir).unwrap();
@@ -1374,8 +1387,10 @@ mod tests {
 
         let plain = SandboxPolicy::for_workspace(ws.path());
         assert!(
-            plain.linked_git_dirs.is_empty(),
-            "a non-git spawn must not reach the outside gitdir"
+            plain
+                .linked_git_dirs
+                .contains(&gitdir.canonicalize().unwrap()),
+            "repository discovery should read the linked worktree gitdir"
         );
 
         let policy = plain.clone().with_git_writable();
@@ -1391,11 +1406,18 @@ mod tests {
             "the shared common dir must be reached: {:?}",
             policy.linked_git_dirs
         );
+        let read_only = seatbelt_profile(&plain).unwrap();
+        let read_rule = primary_file_read_rule(&read_only);
+        let write_rule = primary_file_write_rule(&read_only);
+        for dir in [&gitdir, &common] {
+            let dir = dir.to_str().unwrap();
+            assert!(read_rule.contains(&format!("(subpath \"{dir}\")")));
+            assert!(!write_rule.contains(&format!("(subpath \"{dir}\")")));
+        }
     }
 
-    /// A normal repository keeps `.git` inside the workspace, so nothing extra
-    /// is granted — this is what keeps the profile from widening for the
-    /// common case.
+    /// A normal repository keeps `.git` inside the workspace, so metadata
+    /// outside the workspace is not added to its sandbox.
     #[test]
     fn a_normal_repository_adds_no_linked_git_dirs() {
         let ws = workspace();
