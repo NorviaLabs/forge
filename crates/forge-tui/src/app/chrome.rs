@@ -802,7 +802,6 @@ impl TuiApp {
             resource: self.workspace_resource_label(),
             activity: None,
             progress_description: self.header_progress_description(),
-            failure_category: self.header_failure_category(session_view, transcript),
             waiting_detail: self.header_waiting_detail(session_view),
             incomplete_checks: self.header_incomplete_checks(session_view, transcript),
         }
@@ -810,9 +809,8 @@ impl TuiApp {
 
     /// Steps that didn't finish on a turn that nonetheless completed.
     ///
-    /// Deliberately narrow: only for `Completed`. A turn that actually failed
-    /// reports through [`Self::header_failure_category`] instead, so this can
-    /// never be used to soften a genuine failure into a footnote.
+    /// Deliberately narrow: only for `Completed`; actual failed turns show the
+    /// lifecycle state without a failure detail, avoiding misleading claims.
     fn header_incomplete_checks(
         &self,
         session_view: &SessionSnapshot,
@@ -935,49 +933,6 @@ impl TuiApp {
         }
         if self.busy_state.is_active() && matches!(self.busy_state.phase(), BusyPhase::Connect) {
             return Some("Your input required".into());
-        }
-        None
-    }
-
-    /// Structured failure category for the header. Prefers the in-memory
-    /// `turn_failed`/`validation_exhausted` event (present for every failure
-    /// in the live process — `finalize_turn_failure` always pushes one).
-    ///
-    /// `TurnEvent`s are not journaled, so they're gone after `/resume`; the
-    /// content-marker fallback below is the only signal that currently
-    /// survives a resume. Removing it is tracked as a follow-up for the
-    /// persistence phase (extending the durable status event to carry the
-    /// failure category), not dropped silently.
-    fn header_failure_category(
-        &self,
-        session_view: &SessionSnapshot,
-        transcript: &TranscriptSnapshot,
-    ) -> Option<String> {
-        if session_view.lifecycle != forge_types::TaskLifecycle::Failed {
-            return None;
-        }
-        // Prefer the latest structured turn_failed event category.
-        for event in transcript.events().iter().rev() {
-            if event.kind == "turn_failed" || event.kind == "validation_exhausted" {
-                let detail = event.detail.as_str();
-                let category = detail.split(':').next().unwrap_or(detail).trim();
-                return Some(failure_category_label(category));
-            }
-        }
-        for message in transcript.messages().iter().rev() {
-            if message.role != MessageRole::Assistant {
-                continue;
-            }
-            if let Some(rest) = message.content.strip_prefix(forge_core::TURN_FAILED_MARKER) {
-                let summary = rest.trim();
-                if summary.contains("repeated invalid tool") {
-                    return Some("Tool retries exhausted".into());
-                }
-                if summary.contains("couldn't complete this turn") {
-                    return Some("Turn incomplete".into());
-                }
-                return None;
-            }
         }
         None
     }
@@ -1382,30 +1337,6 @@ pub async fn resume_session_items(
     }
     Ok(items)
 }
-pub(crate) fn failure_category_label(category: &str) -> String {
-    match category {
-        "validation_exhausted" => "Tool retries exhausted".into(),
-        "no_final_answer" => "Turn incomplete".into(),
-        other => {
-            // Keep only short snake_case categories; never raw payloads.
-            let cleaned = other.replace('_', " ");
-            if cleaned.chars().count() <= 28
-                && cleaned
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == ' ')
-            {
-                let mut chars = cleaned.chars();
-                match chars.next() {
-                    Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
-                    None => "Failed".into(),
-                }
-            } else {
-                "Failed".into()
-            }
-        }
-    }
-}
-
 pub(crate) fn format_exit_token_usage(api: &forge_core::SessionTokenUsage) -> String {
     format!(
         "Token usage: total={} input={} (+ {} cached) output={} (reasoning {})",

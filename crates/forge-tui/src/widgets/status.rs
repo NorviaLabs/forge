@@ -245,8 +245,6 @@ pub struct StatusModel {
     pub activity: Option<String>,
     /// Typed progress description for Working (from structured busy phase / progress).
     pub progress_description: Option<String>,
-    /// Safe concise failure category for Failed header detail (never raw errors).
-    pub failure_category: Option<String>,
     /// Waiting reason detail when blocked on the operator.
     pub waiting_detail: Option<String>,
     /// Steps that didn't finish on an otherwise `Completed` turn (e.g. a
@@ -358,12 +356,7 @@ impl StatusModel {
                         None
                     }
                 }),
-            TurnLifecycle::Failed => self
-                .failure_category
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string()),
+            TurnLifecycle::Failed => None,
             TurnLifecycle::Completed => self
                 .incomplete_checks
                 .as_deref()
@@ -634,7 +627,6 @@ mod tests {
             resource: None,
             activity: None,
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         }
@@ -666,7 +658,6 @@ mod tests {
             resource: None,
             activity: None,
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         };
@@ -699,7 +690,6 @@ mod tests {
             resource: None,
             activity: None,
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         };
@@ -734,7 +724,6 @@ mod tests {
             resource: None,
             activity: None,
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         };
@@ -780,7 +769,6 @@ mod tests {
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes".into()),
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         };
@@ -830,7 +818,6 @@ mod tests {
             resource: None,
             activity: None,
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         };
@@ -863,7 +850,6 @@ mod tests {
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes".into()),
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         };
@@ -906,7 +892,6 @@ mod tests {
             resource: None,
             activity: Some("2 changes".into()),
             progress_description: None,
-            failure_category: None,
             incomplete_checks: None,
             waiting_detail: None,
         };
@@ -1118,12 +1103,10 @@ mod tests {
             status_model(TaskLifecycle::Interrupted, false, BusyPhase::Idle).turn_lifecycle(),
             TurnLifecycle::Interrupted
         );
-        let mut failed = status_model(TaskLifecycle::Failed, false, BusyPhase::Idle);
-        failed.failure_category = Some("Tool retries exhausted".into());
+        let failed = status_model(TaskLifecycle::Failed, false, BusyPhase::Idle);
         let label = failed.status_label().0;
         assert!(label.contains("Failed"), "{label}");
-        assert!(label.contains("Tool retries exhausted"), "{label}");
-        assert!(!label.contains("validation"), "{label}");
+        assert!(!label.contains("incomplete"), "{label}");
     }
 
     #[test]

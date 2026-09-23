@@ -262,7 +262,6 @@ fn status_model_from_app_fields() {
         resource: None,
         activity: None,
         progress_description: None,
-        failure_category: None,
         waiting_detail: None,
         incomplete_checks: None,
     };
