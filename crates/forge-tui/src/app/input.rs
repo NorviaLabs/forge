@@ -360,6 +360,7 @@ impl TuiApp {
             interactive_terminal: self.interactive_terminal.take(),
             explorer_dialog: std::mem::take(&mut self.explorer_dialog),
             diff_explorer_was_visible: self.diff_explorer_was_visible.take(),
+            git_sync: std::mem::take(&mut self.git_sync),
             pending_editor_path: self.pending_editor_path.take(),
             pending_editor_home: std::mem::take(&mut self.pending_editor_home),
             external_editor: std::mem::replace(
@@ -410,6 +411,7 @@ impl TuiApp {
         self.interactive_terminal = state.interactive_terminal;
         self.explorer_dialog = state.explorer_dialog;
         self.diff_explorer_was_visible = state.diff_explorer_was_visible;
+        self.git_sync = state.git_sync;
         self.pending_editor_path = state.pending_editor_path;
         self.pending_editor_home = state.pending_editor_home;
         self.external_editor = state.external_editor;
@@ -2072,8 +2074,9 @@ impl TuiApp {
             }
         }
 
-        // Ctrl+1 / Ctrl+2 switch the left navigator's tab (FORGE-DESIGN §7.7).
-        // Reserved before overlays/editor so the navigator is always reachable.
+        // Ctrl+1 / Ctrl+2 / Ctrl+3 switch the left navigator's tab
+        // (FORGE-DESIGN §7.7). Reserved before overlays/editor so the navigator
+        // is always reachable.
         if self.supervisor.is_some() && key.modifiers.contains(event::KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('1') => {
@@ -2081,12 +2084,24 @@ impl TuiApp {
                     self.navigator_tab_explicit = true;
                     self.focus.set_navigation(FocusBlock::TaskStrip);
                     self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Sessions);
+                    self.apply_navigator_git_tab(false);
                     return Ok(());
                 }
                 KeyCode::Char('2') => {
                     self.navigator_tab = crate::widgets::NavigatorTab::Files;
                     self.navigator_tab_explicit = true;
                     self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Files);
+                    self.apply_navigator_git_tab(false);
+                    return Ok(());
+                }
+                // Only where the tab exists: a workspace that is not a
+                // repository keeps the chord inert rather than switching to a
+                // tab the row does not draw.
+                KeyCode::Char('3') if self.navigator_git_available() => {
+                    self.navigator_tab = crate::widgets::NavigatorTab::Git;
+                    self.navigator_tab_explicit = true;
+                    self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Git);
+                    self.apply_navigator_git_tab(true);
                     return Ok(());
                 }
                 _ => {}

@@ -84,6 +84,15 @@ impl TuiApp {
         self.supervisor.is_some() && self.workspace_files.visible
     }
 
+    /// Whether the navigator's `Git` tab exists. Repository mode plus a Git
+    /// worktree at the session's workspace root — `.git` is a directory in a
+    /// plain checkout and a file in a linked worktree, and both are a
+    /// repository. A bare `stat` on the session's own root, never a subprocess,
+    /// so this is safe to ask on the render path.
+    pub(crate) fn navigator_git_available(&self) -> bool {
+        self.navigator_tab_row_available() && self.workspace_is_git_repository()
+    }
+
     /// Move the keyboard onto the navigator's tab row (`↑` at the top of either
     /// tab's list). The pane keeps `focus.block()`, so `Tab` still cycles from
     /// it, but it paints as unfocused while the row is up.
@@ -113,6 +122,7 @@ impl TuiApp {
     /// follows the tab, so the pane under the row is always the one on screen and
     /// the row never hides an invisible key owner.
     pub(super) fn select_navigator_tab_from_row(&mut self, tab: crate::widgets::NavigatorTab) {
+        let row_was_focused = self.navigator_tab_row_focused;
         self.navigator_tab = tab;
         self.navigator_tab_explicit = true;
         self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
@@ -121,11 +131,27 @@ impl TuiApp {
         let pane = match tab {
             crate::widgets::NavigatorTab::Sessions => FocusBlock::TaskStrip,
             crate::widgets::NavigatorTab::Files => FocusBlock::Search,
+            // The Git tab's column is the explorer filtered to the changed
+            // files; its patch renders in the Workspace pane, so the keyboard
+            // stays on the column that lists them.
+            crate::widgets::NavigatorTab::Git => FocusBlock::Search,
         };
+        // Before the keyboard is handed to the pane: entering the Git tab opens
+        // the review pane, and that would otherwise take the row's keyboard
+        // away from it a keystroke after the row moved there.
+        self.apply_navigator_git_tab(tab == crate::widgets::NavigatorTab::Git);
         // Moving the keyboard to the new tab's pane is deliberate, so the row
         // travels with it instead of being dropped as a block change.
         self.navigator_tab_row_block = pane;
         self.focus_block(pane);
+        // Opening the review pane moves the keyboard to the Workspace, and
+        // `normalize_focus` latches the row's focus off on any block change. A
+        // row that had the keyboard keeps it, so the operator can keep stepping
+        // along it after reaching `Git`.
+        if row_was_focused {
+            self.navigator_tab_row_focused = true;
+        }
+        self.normalize_focus();
     }
 
     /// Whether the row renders its `+` cell. The navigator column is laid out
@@ -163,14 +189,25 @@ impl TuiApp {
     /// when the row does not render it.
     pub(super) fn move_navigator_row_stop(&mut self, forward: bool) {
         use crate::widgets::{NavigatorRowStop, NavigatorTab};
-        let stops: &[NavigatorRowStop] = if self.navigator_row_has_new_session() {
-            &[
+        let git = self.navigator_git_available();
+        let stops: &[NavigatorRowStop] = match (self.navigator_row_has_new_session(), git) {
+            (true, true) => &[
                 NavigatorRowStop::Sessions,
                 NavigatorRowStop::NewSession,
                 NavigatorRowStop::Files,
-            ]
-        } else {
-            &[NavigatorRowStop::Sessions, NavigatorRowStop::Files]
+                NavigatorRowStop::Git,
+            ],
+            (true, false) => &[
+                NavigatorRowStop::Sessions,
+                NavigatorRowStop::NewSession,
+                NavigatorRowStop::Files,
+            ],
+            (false, true) => &[
+                NavigatorRowStop::Sessions,
+                NavigatorRowStop::Files,
+                NavigatorRowStop::Git,
+            ],
+            (false, false) => &[NavigatorRowStop::Sessions, NavigatorRowStop::Files],
         };
         let current = stops
             .iter()
@@ -186,6 +223,7 @@ impl TuiApp {
                 self.select_navigator_tab_from_row(NavigatorTab::Sessions)
             }
             NavigatorRowStop::Files => self.select_navigator_tab_from_row(NavigatorTab::Files),
+            NavigatorRowStop::Git => self.select_navigator_tab_from_row(NavigatorTab::Git),
             NavigatorRowStop::NewSession => self.select_navigator_row_new_session(),
         }
     }

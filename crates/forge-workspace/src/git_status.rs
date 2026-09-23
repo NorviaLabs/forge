@@ -59,6 +59,9 @@ pub enum DiffKind {
     Unstaged,
     /// `git diff HEAD`, with untracked files as a synthetic add diff.
     CombinedVsHead,
+    /// `git diff --cached` — the index against `HEAD`. What a commit would
+    /// actually contain, which is the only way to review a partial stage.
+    Staged,
 }
 
 impl GitStatusKind {
@@ -272,6 +275,14 @@ impl GitStatusCache {
         self.request_diff(root, path, DiffKind::CombinedVsHead);
     }
 
+    /// Request the index-vs-`HEAD` diff for `path`.
+    ///
+    /// This is what the review pane shows for the staged source: exactly the
+    /// hunks a `commit` would take, with nothing from the working tree.
+    pub fn request_staged_diff(&mut self, root: PathBuf, path: PathBuf) {
+        self.request_diff(root, path, DiffKind::Staged);
+    }
+
     fn request_diff(&mut self, root: PathBuf, path: PathBuf, kind: DiffKind) {
         let key = (self.revision, kind, path.clone());
         if self.diff_cache.contains_key(&key) {
@@ -295,6 +306,7 @@ impl GitStatusCache {
                 DiffKind::CombinedVsHead => {
                     crate::git_review::combined_diff_text(&root, &path).map(|(text, _)| text)
                 }
+                DiffKind::Staged => crate::git_review::staged_diff_text(&root, &path),
             };
             let _ = tx.send(result);
         });
@@ -344,6 +356,11 @@ impl GitStatusCache {
 
     /// Return a completed combined-vs-`HEAD` diff for the current status
     /// revision, if available.
+    /// The cached index-vs-`HEAD` diff for `path`, if one has landed.
+    pub fn get_staged_diff(&self, path: &Path) -> Option<Result<String, String>> {
+        self.get_diff(path, DiffKind::Staged)
+    }
+
     pub fn get_combined_diff(&self, path: &Path) -> Option<Result<String, String>> {
         self.get_diff(path, DiffKind::CombinedVsHead)
     }
@@ -404,7 +421,7 @@ fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, PathStatus>, String> 
     parse_null_terminated(&output.stdout)
 }
 
-fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, PathStatus>, String> {
+pub(crate) fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, PathStatus>, String> {
     let mut map = HashMap::new();
     let text = String::from_utf8_lossy(data);
     let parts: Vec<&str> = text.split('\0').collect();

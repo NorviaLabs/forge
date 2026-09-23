@@ -2087,6 +2087,46 @@ async fn the_drawn_tab_row_carries_the_plus_cell() {
         .unwrap();
 }
 
+/// The `Git` tab exists only where the column is drawn and the workspace is a
+/// repository, and reaching it opens the working-tree review: the changed files
+/// in the navigator column, the patch in the Workspace pane (`FORGE-DESIGN
+/// §7.7`).
+#[tokio::test]
+async fn the_git_tab_reviews_the_working_tree_and_only_exists_in_a_repository() {
+    use crate::widgets::NavigatorTab;
+    let (dir, mut app, handle) = app_with_supervisor().await;
+    std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+    draw_app(&mut app, 140, 40);
+    assert!(app.navigator_git_available(), "the fixture is a repository");
+
+    // `Ctrl+1` / `Ctrl+2` stay reserved for the two tabs that always exist.
+    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
+    assert!(app.diff_view_is_open(), "the tab opens the review pane");
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Workspace,
+        "so `s`/`u` reach the patch without another trip through `Tab`"
+    );
+
+    // Hiding the column takes the tab with it, and the chord goes inert rather
+    // than switching to a tab the row no longer draws.
+    app.workspace_files.visible = false;
+    assert!(!app.navigator_git_available());
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_ne!(app.effective_navigator_tab(), NavigatorTab::Git);
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// The row's stops run `Sessions · + · Files` left to right: `←`/`→` walk them,
 /// stop at each end, and `Enter` on the `+` cell creates a session — the same
 /// prompt-less create the Sessions list's `n` runs (`FORGE-DESIGN §7.7`).
@@ -2104,11 +2144,29 @@ async fn the_tab_rows_plus_cell_creates_a_session() {
     // `↑` lands on the tab on screen, never on the `+` cell.
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
 
-    // The right end of the row does not wrap back to the `+` cell.
+    // The right end of the row is the last stop it draws. In a repository that
+    // is the `Git` tab; the row still does not wrap back to the `+` cell.
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Git);
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
+
+    // And it halts there rather than wrapping to `Sessions`.
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Git);
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
+    assert_eq!(
+        app.effective_navigator_tab(),
+        NavigatorTab::Files,
+        "stepping back off `Git` closes the review pane with it"
+    );
 
     app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
@@ -2501,6 +2559,10 @@ async fn a_clean_archive_reports_the_checkout_removed_not_uncommitted_work() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    // Dirty worktrees require a second, explicit discard confirmation.
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -2533,11 +2595,9 @@ async fn a_clean_archive_reports_the_checkout_removed_not_uncommitted_work() {
         .unwrap();
 }
 
-/// The other side of the same branch: a checkout holding real uncommitted work
-/// is kept, so the row stays in the roster as `retained` and the warning is
-/// the honest report.
+/// Dirty archive requires a second confirmation, then removes the checkout.
 #[tokio::test]
-async fn a_blocked_cleanup_reports_the_kept_checkout() {
+async fn confirmed_dirty_archive_removes_the_worktree() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let sibling = create_promptless_session(&mut app).await;
     let workspace = app
@@ -2568,6 +2628,16 @@ async fn a_blocked_cleanup_reports_the_kept_checkout() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(crate::overlays::Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::ArchiveDirty,
+            ..
+        })
+    ));
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -2577,24 +2647,84 @@ async fn a_blocked_cleanup_reports_the_kept_checkout() {
             && app
                 .supervisor
                 .as_ref()
-                .and_then(|supervisor| supervisor.snapshots.get(&sibling.session_id))
-                .is_some_and(|snapshot| {
-                    snapshot.task.lifecycle == forge_session::SessionLifecycle::Retained
-                });
+                .is_some_and(|supervisor| !supervisor.snapshots.contains_key(&sibling.session_id));
         if settled || std::time::Instant::now() >= deadline {
-            assert!(settled, "the blocked cleanup should settle as retained");
+            assert!(
+                settled,
+                "confirmed dirty cleanup should remove the session checkout"
+            );
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    assert_eq!(app.feedback.severity, FeedbackSeverity::Warn);
-    assert_eq!(app.feedback.text, "worktree kept — it has uncommitted work");
+    assert_eq!(app.feedback.severity, FeedbackSeverity::Ok);
+    assert_eq!(app.feedback.text, "worktree removed · branch kept");
+    assert!(!app
+        .session_chrome
+        .iter()
+        .any(|item| item.session_id == sibling.session_id));
+    assert!(!workspace.exists());
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// Declining the discard confirmation must not archive the session: the row
+/// stays live and the dirty checkout stays on disk.
+#[tokio::test]
+async fn declining_the_discard_confirmation_leaves_the_session_alone() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let sibling = create_promptless_session(&mut app).await;
+    let workspace = app
+        .supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&sibling.session_id))
+        .map(|snapshot| snapshot.task.workspace.clone())
+        .expect("the sibling's worktree");
+    std::fs::write(workspace.join("uncommitted.txt"), "keep me").unwrap();
+
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling.session_id)
+        .expect("sibling in list");
+    app.focus_block(FocusBlock::TaskStrip);
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    // Confirm, then decline the destructive second step, then leave.
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    for _ in 0..20 {
+        app.poll_supervisor_events();
+        app.poll_pending_commands();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
     assert!(
-        app.session_chrome
-            .iter()
-            .any(|item| item.session_id == sibling.session_id),
-        "a retained Session still owns its checkout, so the row stays listed"
+        app.overlay.is_none(),
+        "declining must close the confirmation"
+    );
+    assert!(app.pending_command_completions.is_empty());
+    let snapshot = app
+        .supervisor
+        .as_ref()
+        .and_then(|supervisor| supervisor.snapshots.get(&sibling.session_id))
+        .expect("a declined archive leaves the session in the roster");
+    assert_eq!(
+        snapshot.task.lifecycle,
+        forge_session::SessionLifecycle::Active
     );
     assert!(workspace.join("uncommitted.txt").is_file());
 

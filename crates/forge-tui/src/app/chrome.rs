@@ -27,6 +27,14 @@ impl TuiApp {
     /// `Sessions` when more than one session exists and `Files` otherwise.
     pub(crate) fn effective_navigator_tab(&self) -> crate::widgets::NavigatorTab {
         if self.navigator_tab_explicit {
+            // An explicit `Git` only stands while the tab exists: leaving the
+            // repository (or hiding the column) must not leave the row with no
+            // tab drawn as active.
+            if self.navigator_tab == crate::widgets::NavigatorTab::Git
+                && !self.navigator_git_available()
+            {
+                return crate::widgets::NavigatorTab::Files;
+            }
             self.navigator_tab
         } else if self.session_chrome.len() > 1 {
             crate::widgets::NavigatorTab::Sessions
@@ -93,12 +101,12 @@ impl TuiApp {
         let detail = if kind == crate::overlays::SessionConfirmKind::Cleanup {
             format!(
                 "Removes the worktree at\n{workspace}\nThe branch `{branch}` is kept. \
-                 Uncommitted work blocks removal."
+                 Uncommitted work needs a second confirmation."
             )
         } else {
             format!(
                 "Archiving is final — `{label}` cannot be reopened.\nIts branch `{branch}` is \
-                 kept; a clean worktree is removed.\nUncommitted work blocks removal."
+                 kept; a clean worktree is removed.\nUncommitted work needs a second confirmation."
             )
         };
         self.overlay = Some(Overlay::SessionConfirm {
@@ -150,11 +158,22 @@ impl TuiApp {
     /// them and strand a checkout. The removal tolerates arriving before its
     /// archive lands.
     pub(crate) fn submit_archive_and_cleanup(&mut self, session_id: uuid::Uuid) {
+        self.submit_archive_and_cleanup_with_policy(session_id, false);
+    }
+
+    pub(crate) fn submit_archive_and_cleanup_with_policy(
+        &mut self,
+        session_id: uuid::Uuid,
+        discard_dirty: bool,
+    ) {
         self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
             session_id,
         });
         self.submit_session_command_tracked(
-            forge_session::SupervisorCommand::RemoveManagedWorktree { session_id },
+            forge_session::SupervisorCommand::RemoveManagedWorktree {
+                session_id,
+                discard_dirty,
+            },
             super::types::CommandFollowUp::Retirement { session_id },
         );
     }
@@ -855,6 +874,9 @@ impl TuiApp {
             self.render_cache.conversation = None;
         }
         let _ = self.workspace_files.explorer.poll_git();
+        // Branch state and any in-flight pull/push. Off the render path for
+        // the same reason as the status poll above.
+        self.poll_git_sync();
         // Ordered after `poll_git` so a completed status or patch request is
         // visible to `/diff` on the same tick it lands.
         self.pump_diff_view();

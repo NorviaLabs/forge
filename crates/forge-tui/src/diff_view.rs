@@ -30,6 +30,9 @@ pub enum DiffSource {
     /// staged hunks and untracked files.
     #[default]
     WorkingTree,
+    /// Only what the index holds — `git diff --cached`. This is what a commit
+    /// would take, which is the only way to review a partial stage.
+    Staged,
     /// Only what the most recent assistant turn wrote, taken from the
     /// transcript's own diff cards rather than from `git`.
     LastTurn,
@@ -39,14 +42,19 @@ impl DiffSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::WorkingTree => "working tree",
+            Self::Staged => "staged",
             Self::LastTurn => "last turn",
         }
     }
 
     /// The other source, for the `d` toggle.
+    /// The next source in the `d` cycle. The order is the one the questions
+    /// are asked in: what have I changed, what have I staged, what did the
+    /// agent just do.
     pub fn toggled(self) -> Self {
         match self {
-            Self::WorkingTree => Self::LastTurn,
+            Self::WorkingTree => Self::Staged,
+            Self::Staged => Self::LastTurn,
             Self::LastTurn => Self::WorkingTree,
         }
     }
@@ -531,7 +539,9 @@ impl DiffView {
         // on the bottom row instead.
         let source = match self.source {
             DiffSource::WorkingTree => String::new(),
-            DiffSource::LastTurn => format!(" · {source}"),
+            // Both of the others are unusual enough to name: the working tree
+            // is the default, so it is the one that says nothing.
+            DiffSource::Staged | DiffSource::LastTurn => format!(" · {source}"),
         };
         format!("DIFF · {path}{counts} · {position}{source}")
     }
@@ -677,6 +687,31 @@ fn parse_hunk_new_start(line: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+/// The changed-file list for a source.
+///
+/// The staged source narrows to what the index holds, and clears the unstaged
+/// half of each entry before building the row: a marker is read from the more
+/// severe of the two sides, so leaving the working-tree side in place would
+/// label a file in the staged list with a change that is not in it.
+pub fn entries_for_source(files: &[ChangedFile], source: DiffSource) -> Vec<DiffEntry> {
+    match source {
+        DiffSource::Staged => {
+            let staged: Vec<ChangedFile> = files
+                .iter()
+                .filter_map(|file| {
+                    file.staged.map(|kind| ChangedFile {
+                        path: file.path.clone(),
+                        staged: Some(kind),
+                        unstaged: None,
+                    })
+                })
+                .collect();
+            entries_from_changed_files(&staged)
+        }
+        DiffSource::WorkingTree | DiffSource::LastTurn => entries_from_changed_files(files),
+    }
+}
+
 /// Build the changed-file list from a git status snapshot.
 ///
 /// Ignored paths are dropped: the explorer currently lists `__pycache__` and
@@ -713,6 +748,20 @@ pub fn entries_from_changed_files(files: &[ChangedFile]) -> Vec<DiffEntry> {
 pub struct DiffViewWidget<'a> {
     pub view: &'a mut DiffView,
     pub focused: bool,
+    /// Right-aligned tag for the hint row: the branch with its ahead/behind, or
+    /// the `pull`/`push` in flight. Preformatted by the caller because the
+    /// widget has no business knowing about a sync cache — it only has to draw
+    /// a string.
+    ///
+    /// The hint row is where this lives because the pane title already carries
+    /// the selected file and its counts, and this pane is about 50 columns wide
+    /// in practice: anything appended to the title is invisible.
+    pub sync: Option<String>,
+    /// Full-width banner above the file list while a merge is in progress, or
+    /// `None`. Preformatted by the caller for the same reason as `sync`, and
+    /// rendered in the warning severity colour rather than the focus accent:
+    /// this is a state to act on, not the pane that owns the keyboard.
+    pub merge: Option<String>,
 }
 
 impl Widget for DiffViewWidget<'_> {
@@ -769,13 +818,21 @@ impl Widget for DiffViewWidget<'_> {
                 ));
                 Paragraph::new(Line::from(spans)).render(hints, buf);
             } else {
-                // A right-aligned tag for the layout, so the header does not
-                // have to carry state it has no room for.
-                let tag = match self.view.effective_layout(inner.width) {
+                // A right-aligned tag for the layout and the branch, so the
+                // header does not have to carry state it has no room for. The
+                // branch leads: whether the remote has moved is the thing that
+                // decides the next action, and the layout is a display
+                // preference.
+                let layout = match self.view.effective_layout(inner.width) {
                     PatchLayout::Split => "split",
                     PatchLayout::Unified => "",
                 };
-                let budget = inner.width as usize - tag.len().min(inner.width as usize);
+                let tag = match (&self.sync, layout.is_empty()) {
+                    (Some(sync), true) => sync.clone(),
+                    (Some(sync), false) => format!("{sync} · {layout}"),
+                    (None, _) => layout.to_string(),
+                };
+                let budget = inner.width as usize - tag.chars().count().min(inner.width as usize);
                 Paragraph::new(Line::from(crate::hints::hint_spans(
                     crate::hints::DIFF,
                     budget,
@@ -806,6 +863,34 @@ impl Widget for DiffViewWidget<'_> {
         if body.height == 0 {
             return;
         }
+
+        // A merge in progress is the state that decides the next key, so it
+        // earns a row of its own above the list. It yields to the patch on a
+        // short pane for the same reason the hint row does: one line of the
+        // change is worth more than a line of state when there is only room for
+        // one of them.
+        let body = if let (Some(banner), true) = (self.merge.as_deref(), body.height > 2) {
+            let banner_area = Rect { height: 1, ..body };
+            let mut text: String = banner.chars().take(body.width as usize).collect();
+            if banner.chars().count() > body.width as usize && body.width > 1 {
+                text = banner
+                    .chars()
+                    .take(body.width as usize - 1)
+                    .collect::<String>()
+                    + "…";
+            }
+            Paragraph::new(Line::from(Span::styled(text, theme::warn()))).render(banner_area, buf);
+            Rect {
+                y: body.y.saturating_add(1),
+                height: body.height.saturating_sub(1),
+                ..body
+            }
+        } else {
+            body
+        };
+        if body.height == 0 {
+            return;
+        }
         self.view.viewport_height = body.height as usize;
         self.view.viewport_width = body.width;
 
@@ -826,7 +911,10 @@ impl Widget for DiffViewWidget<'_> {
             DiffStatus::NoChanges => {
                 let hint = match self.view.source {
                     DiffSource::WorkingTree => {
-                        "Nothing differs from HEAD.\nPress d to see the last turn's edits."
+                        "Nothing differs from HEAD.\nPress d to see what is staged."
+                    }
+                    DiffSource::Staged => {
+                        "Nothing is staged.\nPress s on a file, then d to review it here."
                     }
                     DiffSource::LastTurn => {
                         "The last turn did not edit any files.\nPress d to see the working tree."
@@ -834,6 +922,7 @@ impl Widget for DiffViewWidget<'_> {
                 };
                 let heading = match self.view.source {
                     DiffSource::WorkingTree => "No changes in the working tree",
+                    DiffSource::Staged => "Nothing staged",
                     DiffSource::LastTurn => "No changes in the last turn",
                 };
                 render_message(body, buf, heading, hint);
@@ -1240,10 +1329,14 @@ mod tests {
     }
 
     #[test]
-    fn source_toggle_round_trips() {
-        assert_eq!(DiffSource::WorkingTree.toggled(), DiffSource::LastTurn);
+    fn source_toggle_round_trips_through_all_three() {
+        // The cycle is the order the questions are asked in, and it returns to
+        // where it started rather than stranding a source.
+        assert_eq!(DiffSource::WorkingTree.toggled(), DiffSource::Staged);
+        assert_eq!(DiffSource::Staged.toggled(), DiffSource::LastTurn);
         assert_eq!(DiffSource::LastTurn.toggled(), DiffSource::WorkingTree);
         assert_eq!(DiffSource::WorkingTree.label(), "working tree");
+        assert_eq!(DiffSource::Staged.label(), "staged");
     }
 
     #[test]
@@ -1335,12 +1428,110 @@ mod widget_tests {
         view
     }
 
+    #[test]
+    fn the_sync_tag_shares_the_hint_row_with_the_keys_and_the_layout() {
+        let mut view = view_with_patch();
+        let plain = render_with_sync(&mut view, 80, 8, Some("main ↓2 ↑1".into()));
+        assert!(plain.contains("main ↓2 ↑1"), "{plain}");
+        // The branch must not cost the row the keymap it also carries.
+        assert!(plain.contains("hunk"), "{plain}");
+        assert!(plain.contains("file"), "{plain}");
+
+        // The branch leads and the layout note follows it: whether the remote
+        // has moved decides the next action, the layout does not.
+        let mut split = view_with_patch();
+        split.layout = PatchLayout::Split;
+        let rows = render_with_sync(&mut split, 100, 8, Some("main".into()));
+        assert!(rows.contains("main · split"), "{rows}");
+
+        // With nothing to say about a branch the row is exactly as it was.
+        let mut bare = view_with_patch();
+        bare.layout = PatchLayout::Split;
+        let rows = render_with_sync(&mut bare, 100, 8, None);
+        assert!(rows.contains("split"), "{rows}");
+        assert!(!rows.contains(" · split"), "no dangling separator: {rows}");
+    }
+
+    #[test]
+    fn the_merge_banner_takes_a_row_only_when_the_pane_can_spare_one() {
+        let banner = "MERGE IN PROGRESS · 2 unresolved · o opens, s marks resolved, a aborts";
+
+        // Present when a merge is in progress, and it does not cost the pane
+        // its hint row.
+        let mut view = view_with_patch();
+        let text = render_full(&mut view, 90, 10, None, Some(banner.to_string()));
+        assert!(text.contains("MERGE IN PROGRESS"), "{text}");
+        assert!(text.contains("hunk"), "the keymap row survives: {text}");
+
+        // Absent with no merge, and no stray blank row where it would have been.
+        let mut view = view_with_patch();
+        let quiet = render_full(&mut view, 90, 10, None, None);
+        assert!(!quiet.contains("MERGE"), "{quiet}");
+
+        // A pane too short to hold both keeps the patch line: one line of the
+        // change is worth more than one line of state.
+        let mut view = view_with_patch();
+        let short = render_full(&mut view, 90, 4, None, Some(banner.to_string()));
+        assert!(
+            !short.contains("MERGE IN PROGRESS"),
+            "a short pane drops the banner rather than the patch: {short}"
+        );
+    }
+
+    #[test]
+    fn the_merge_banner_is_elided_rather_than_wrapped_into_the_patch() {
+        let long = "MERGE IN PROGRESS · 12 unresolved · o opens the file, s stages the saved resolution as resolved, a aborts the whole thing";
+        let mut view = view_with_patch();
+        let text = render_full(&mut view, 40, 10, None, Some(long.to_string()));
+        let rows: Vec<&str> = text.lines().filter(|line| line.contains("MERGE")).collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the banner is one row, never wrapped: {text}"
+        );
+        assert!(
+            rows[0]
+                .trim_end()
+                .trim_end_matches('│')
+                .trim_end()
+                .ends_with('…'),
+            "a banner too long for the pane is elided: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[0].chars().count() <= 40,
+            "and it stays inside the pane: {:?}",
+            rows[0]
+        );
+    }
+
     fn render(view: &mut DiffView, width: u16, height: u16) -> String {
+        render_with_sync(view, width, height, None)
+    }
+
+    fn render_with_sync(
+        view: &mut DiffView,
+        width: u16,
+        height: u16,
+        sync: Option<String>,
+    ) -> String {
+        render_full(view, width, height, sync, None)
+    }
+
+    fn render_full(
+        view: &mut DiffView,
+        width: u16,
+        height: u16,
+        sync: Option<String>,
+        merge: Option<String>,
+    ) -> String {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         DiffViewWidget {
             view,
             focused: true,
+            sync,
+            merge,
         }
         .render(area, &mut buf);
         (0..height)

@@ -119,6 +119,44 @@ pub enum Overlay {
         current: String,
         items: Vec<(String, String)>,
     },
+    /// The commit message prompt. One text field, like `SessionRename`, because
+    /// a commit message is one line of intent — the staged diff it describes is
+    /// already on screen behind it.
+    GitCommit {
+        message: String,
+        error: Option<String>,
+    },
+    /// Pick a branch to switch to, or to merge in. One list with a filter,
+    /// because the two verbs differ only in what `Enter` does with the choice.
+    GitBranch {
+        selected: usize,
+        filter: String,
+        items: Vec<String>,
+        /// HEAD's branch, annotated in the list; `None` when detached.
+        current: Option<String>,
+        /// `false` switches, `true` merges the chosen branch into the current
+        /// one.
+        merge: bool,
+        error: Option<String>,
+    },
+    /// Confirmation before abandoning a merge. Destructive, so it is never the
+    /// first thing a key press does (`FORGE-DESIGN §8`).
+    GitAbortMerge {
+        detail: String,
+    },
+    /// Confirmation before deleting a branch. Also destructive: the commits on
+    /// it go with it.
+    GitDeleteBranch {
+        name: String,
+        detail: String,
+    },
+    /// Rename a branch. One field, prefilled with the current name, like
+    /// `GitCommit` — the branch being renamed is named in the title.
+    GitRenameBranch {
+        from: String,
+        name: String,
+        error: Option<String>,
+    },
     FileExplorer {
         cwd: String,
         selected: usize,
@@ -222,11 +260,22 @@ pub struct SessionSwitcherItem {
 pub enum SessionConfirmKind {
     /// Final: an archived session cannot be reopened.
     Archive,
+    /// Explicit second confirmation to discard dirty worktree contents.
+    ArchiveDirty,
     /// Removes a clean managed worktree; the branch is kept.
     Cleanup,
+    /// Explicit second confirmation to discard dirty worktree contents.
+    CleanupDirty,
     /// Enables approve-all: confirms that the sandbox goes off for the
     /// session before the first auto-approval can happen.
     ApproveAll,
+}
+
+impl SessionConfirmKind {
+    /// Whether this confirmation authorizes deleting uncommitted work.
+    pub fn discards_dirty(self) -> bool {
+        matches!(self, Self::ArchiveDirty | Self::CleanupDirty)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -594,6 +643,87 @@ fn effort_options(model: &str) -> Vec<ReasoningEffort> {
 impl Overlay {
     pub fn welcome() -> Self {
         Self::Help
+    }
+
+    /// Indices of the branch names matching `filter`, case-insensitively. An
+    /// empty filter matches everything, so the picker opens on the whole list.
+    ///
+    /// One source of truth for the keyboard and the renderer: what is
+    /// highlighted and what `Enter` acts on can then never disagree.
+    fn branch_matches(items: &[String], filter: &str) -> Vec<usize> {
+        let filter = filter.trim().to_ascii_lowercase();
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| filter.is_empty() || name.to_ascii_lowercase().contains(&filter))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// What `Enter` does on the branch picker.
+    ///
+    /// A filter that matches no existing branch is a *create* while switching —
+    /// that is how a new branch is named, and it saves a second dialog. A
+    /// filter that matches something takes the selection instead, so narrowing
+    /// the list and pressing `Enter` can never invent a branch from a prefix.
+    /// Merging has no create reading at all: a branch that does not exist
+    /// cannot be merged.
+    ///
+    /// The one case this cannot express is a new branch whose name is a
+    /// substring of an existing one (`feat` while `feature/x` exists): the
+    /// filter matches, so `Enter` switches. That is the rarer direction by a
+    /// wide margin, and guessing the other way would make every narrowed list
+    /// ambiguous.
+    fn branch_enter(items: &[String], filter: &str, selected: usize, merge: bool) -> OverlayAction {
+        let typed = filter.trim();
+        let matches = Self::branch_matches(items, filter);
+        if !merge && !typed.is_empty() && matches.is_empty() {
+            return OverlayAction::GitCreateBranch {
+                name: typed.to_string(),
+            };
+        }
+        let chosen = matches
+            .get(selected.min(matches.len().saturating_sub(1)))
+            .map(|index| items[*index].clone());
+        match (chosen, merge) {
+            (Some(name), true) => OverlayAction::GitMergeBranch { name },
+            (Some(name), false) => OverlayAction::GitSwitchBranch { name },
+            (None, _) => OverlayAction::None,
+        }
+    }
+
+    /// The branch rows to paint: a window around the selection rather than a
+    /// page that scrolls the current branch out of sight.
+    fn branch_rows(
+        items: &[String],
+        matches: &[usize],
+        selected: usize,
+        current: Option<&str>,
+        budget: usize,
+    ) -> Vec<String> {
+        if matches.is_empty() || budget == 0 {
+            return Vec::new();
+        }
+        let selected = selected.min(matches.len() - 1);
+        let first = selected
+            .saturating_sub(budget / 2)
+            .min(matches.len().saturating_sub(budget.min(matches.len())));
+        matches
+            .iter()
+            .skip(first)
+            .take(budget)
+            .enumerate()
+            .map(|(offset, index)| {
+                let name = &items[*index];
+                let cursor = if first + offset == selected { ">" } else { " " };
+                let marker = if current.is_some_and(|current| current == name) {
+                    " current"
+                } else {
+                    ""
+                };
+                format!("{cursor} {name}{marker}")
+            })
+            .collect()
     }
 
     fn session_switcher_indices(items: &[SessionSwitcherItem], filter: &str) -> Vec<usize> {
@@ -1116,6 +1246,21 @@ impl Overlay {
                 let n = items.len() as i32;
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
+            Self::GitBranch {
+                selected,
+                filter,
+                items,
+                ..
+            } => {
+                // Steps through the FILTERED rows, so `↓` never lands on a
+                // branch the filter has hidden.
+                let matches = Overlay::branch_matches(items, filter);
+                if matches.is_empty() {
+                    return;
+                }
+                let current = (*selected).min(matches.len() - 1);
+                *selected = (current as i32 + delta).rem_euclid(matches.len() as i32) as usize;
+            }
             Self::FileExplorer {
                 selected, items, ..
             } => {
@@ -1149,6 +1294,38 @@ pub enum OverlayAction {
     },
     /// Explain, without leaving the overlay, why a key did nothing here.
     Toast(String),
+    /// Commit the staged changes with this message.
+    CommitGit {
+        message: String,
+    },
+    /// Switch to an existing local branch.
+    GitSwitchBranch {
+        name: String,
+    },
+    /// Create a local branch from the typed name and switch to it.
+    GitCreateBranch {
+        name: String,
+    },
+    /// Merge an existing local branch into the current one.
+    GitMergeBranch {
+        name: String,
+    },
+    /// The operator confirmed the abort; abandon the in-progress merge.
+    GitAbortMerge,
+    /// Delete the named branch. Carries the confirmation on the first press
+    /// and the deletion on the second, so the two can never diverge.
+    GitDeleteBranch {
+        name: String,
+    },
+    /// Open the rename prompt for the named branch.
+    OpenGitRename {
+        from: String,
+    },
+    /// Rename `from` to the typed name.
+    GitRenameBranch {
+        from: String,
+        to: String,
+    },
     OpenSessionInput(SessionInputMode),
     OpenSessionRename {
         session_id: String,
@@ -1166,11 +1343,13 @@ pub enum OverlayAction {
         session_id: String,
         label: String,
     },
-    ArchiveSession {
-        session_id: String,
-    },
     CleanupSessionWorktree {
         session_id: String,
+        discard_dirty: bool,
+    },
+    ArchiveAndCleanupSession {
+        session_id: String,
+        discard_dirty: bool,
     },
     FinalizeSessionCreation {
         operation_id: u64,
@@ -1256,6 +1435,36 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 OverlayAction::Close
             }
         }
+        // Esc from a destructive second confirmation steps back to the plain
+        // confirmation it escalated from, so declining never discards work and
+        // never leaves the operator without a way back.
+        Key::Esc
+            if matches!(
+                overlay,
+                Overlay::SessionConfirm { kind, .. } if kind.discards_dirty()
+            ) =>
+        {
+            if let Overlay::SessionConfirm {
+                kind,
+                session_id,
+                label,
+                detail,
+            } = overlay
+            {
+                let back = match kind {
+                    SessionConfirmKind::CleanupDirty => SessionConfirmKind::Cleanup,
+                    _ => SessionConfirmKind::Archive,
+                };
+                OverlayAction::OpenSessionConfirm {
+                    kind: back,
+                    session_id: session_id.clone(),
+                    label: label.clone(),
+                    detail: detail.clone(),
+                }
+            } else {
+                OverlayAction::Close
+            }
+        }
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
@@ -1293,7 +1502,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         label: item.label.clone(),
                         detail: format!(
                             "Archiving is final — `{}` cannot be reopened.\nIts branch `{}` is kept; \
-                             a clean worktree is removed.\nUncommitted work blocks removal.",
+                             clean worktrees are removed. Dirty worktrees require a second confirmation.",
                             item.label, item.branch
                         ),
                     },
@@ -1418,6 +1627,145 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        // `x` and `r` act on the highlighted branch. They are deliberately
+        // inert in merge mode, where the list is answering "merge what?" and a
+        // delete or rename would be answering a question nobody asked.
+        Key::Char('x') if matches!(overlay, Overlay::GitBranch { merge: false, .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                ..
+            } = overlay
+            {
+                let matches = Overlay::branch_matches(items, filter);
+                match matches.get((*selected).min(matches.len().saturating_sub(1))) {
+                    Some(index) => OverlayAction::GitDeleteBranch {
+                        name: items[*index].clone(),
+                    },
+                    None => OverlayAction::None,
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
+        Key::Char('r') if matches!(overlay, Overlay::GitBranch { merge: false, .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                ..
+            } = overlay
+            {
+                let matches = Overlay::branch_matches(items, filter);
+                match matches.get((*selected).min(matches.len().saturating_sub(1))) {
+                    Some(index) => OverlayAction::OpenGitRename {
+                        from: items[*index].clone(),
+                    },
+                    None => OverlayAction::None,
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GitBranch { .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                error,
+                ..
+            } = overlay
+            {
+                if !c.is_control() {
+                    filter.push(c);
+                    *selected = 0;
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::GitBranch { .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                error,
+                ..
+            } = overlay
+            {
+                // A branch name has no spaces, so a pasted one is taken whole
+                // rather than split by the picker's own filter syntax.
+                filter.extend(
+                    data.chars()
+                        .filter(|c| !c.is_control() && !c.is_whitespace()),
+                );
+                *selected = 0;
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GitBranch { .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                error,
+                ..
+            } = overlay
+            {
+                filter.pop();
+                *selected = 0;
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GitRenameBranch { .. }) => {
+            if let Overlay::GitRenameBranch { name, error, .. } = overlay {
+                if !c.is_control() && c != '\n' {
+                    name.push(c);
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(data) if matches!(overlay, Overlay::GitRenameBranch { .. }) => {
+            if let Overlay::GitRenameBranch { name, error, .. } = overlay {
+                name.extend(data.chars().filter(|c| !c.is_control()));
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GitRenameBranch { .. }) => {
+            if let Overlay::GitRenameBranch { name, error, .. } = overlay {
+                name.pop();
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GitCommit { .. }) => {
+            if let Overlay::GitCommit { message, error } = overlay {
+                if !c.is_control() && c != '\n' {
+                    message.push(c);
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::GitCommit { .. }) => {
+            if let Overlay::GitCommit { message, error } = overlay {
+                // A commit subject is one line: `split_whitespace` flattens a
+                // pasted multi-line body rather than silently cutting it at the
+                // first line break.
+                message.push_str(&data.split_whitespace().collect::<Vec<_>>().join(" "));
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GitCommit { .. }) => {
+            if let Overlay::GitCommit { message, error } = overlay {
+                message.pop();
+                *error = None;
+            }
+            OverlayAction::None
+        }
         Key::Paste(ref data) if matches!(overlay, Overlay::SessionRename { .. }) => {
             if let Overlay::SessionRename { label, error, .. } = overlay {
                 label.extend(data.chars().filter(|c| !c.is_control()));
@@ -1527,6 +1875,35 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 *field = (*field + count - 1) % count;
             }
             OverlayAction::None
+        }
+        Key::Enter if matches!(overlay, Overlay::SessionConfirm { .. }) => {
+            if let Overlay::SessionConfirm {
+                kind, session_id, ..
+            } = overlay
+            {
+                let session_id = session_id.clone();
+                match kind {
+                    SessionConfirmKind::Archive => OverlayAction::ArchiveAndCleanupSession {
+                        session_id,
+                        discard_dirty: false,
+                    },
+                    SessionConfirmKind::ArchiveDirty => OverlayAction::ArchiveAndCleanupSession {
+                        session_id,
+                        discard_dirty: true,
+                    },
+                    SessionConfirmKind::Cleanup => OverlayAction::CleanupSessionWorktree {
+                        session_id,
+                        discard_dirty: false,
+                    },
+                    SessionConfirmKind::CleanupDirty => OverlayAction::CleanupSessionWorktree {
+                        session_id,
+                        discard_dirty: true,
+                    },
+                    SessionConfirmKind::ApproveAll => OverlayAction::ApproveAll,
+                }
+            } else {
+                OverlayAction::None
+            }
         }
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
@@ -1715,17 +2092,35 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 }
             }
-            Overlay::SessionConfirm {
-                kind, session_id, ..
-            } => match kind {
-                SessionConfirmKind::Archive => OverlayAction::ArchiveSession {
-                    session_id: session_id.clone(),
-                },
-                SessionConfirmKind::Cleanup => OverlayAction::CleanupSessionWorktree {
-                    session_id: session_id.clone(),
-                },
-                SessionConfirmKind::ApproveAll => OverlayAction::ApproveAll,
+            Overlay::GitAbortMerge { .. } => OverlayAction::GitAbortMerge,
+            Overlay::GitDeleteBranch { name, .. } => {
+                OverlayAction::GitDeleteBranch { name: name.clone() }
+            }
+            Overlay::GitRenameBranch { from, name, .. } => OverlayAction::GitRenameBranch {
+                from: from.clone(),
+                to: name.trim().to_string(),
             },
+            Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                merge,
+                ..
+            } => Overlay::branch_enter(items, filter, *selected, *merge),
+            // Confirmations are routed by the `Key::Enter` arm above, which
+            // needs the kind to pick the matching action.
+            Overlay::SessionConfirm { .. } => OverlayAction::None,
+            Overlay::GitCommit { message, error } => {
+                let trimmed = message.trim();
+                if trimmed.is_empty() {
+                    *error = Some("A commit message is required.".into());
+                    OverlayAction::None
+                } else {
+                    OverlayAction::CommitGit {
+                        message: trimmed.into(),
+                    }
+                }
+            }
             Overlay::TrustSession { operation_id, .. } => OverlayAction::FinalizeSessionCreation {
                 operation_id: *operation_id,
             },
@@ -2969,23 +3364,46 @@ impl Widget for OverlayWidget<'_> {
                 )
                 .render(r, buf);
             }
-            Overlay::SessionConfirm {
-                kind,
-                label,
-                detail,
-                ..
+            Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                current,
+                merge,
+                error,
             } => {
-                let r = centered_rect(68, 36, area);
+                let r = centered_rect(64, 44, area);
                 clear_modal(r, buf);
-                let (title, question) = match kind {
-                    SessionConfirmKind::Archive => ("Archive session", "Archive"),
-                    SessionConfirmKind::Cleanup => ("Remove worktree", "Remove the worktree for"),
-                    SessionConfirmKind::ApproveAll => {
-                        ("Enable approve-all", "Enable approve-all for")
-                    }
+                let matches = Overlay::branch_matches(items, filter);
+                // Two rows for the filter line and its blank, two for the hint
+                // line and its blank, two for the block's own border.
+                let rows = Overlay::branch_rows(
+                    items,
+                    &matches,
+                    *selected,
+                    current.as_deref(),
+                    (r.height as usize).saturating_sub(6),
+                );
+                let empty = if matches.is_empty() && !filter.trim().is_empty() {
+                    format!("\n\nNo branch matches `{filter}`.")
+                } else {
+                    String::new()
+                };
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                let (title, hint) = if *merge {
+                    ("Merge into the current branch", "Enter merge · Esc cancel")
+                } else {
+                    (
+                        "Branch",
+                        "Enter switch · an unmatched name creates · x delete · r rename · Esc cancel",
+                    )
                 };
                 Paragraph::new(format!(
-                    "{question} `{label}`?\n\n{detail}\n\nEnter confirm · Esc cancel"
+                    "Filter: {filter}█{empty}\n\n{}\n\n{hint}{error}",
+                    rows.join("\n")
                 ))
                 .block(
                     Block::default()
@@ -2996,6 +3414,130 @@ impl Widget for OverlayWidget<'_> {
                         .title(theme::modal_title(title)),
                 )
                 .render(r, buf);
+            }
+            Overlay::GitDeleteBranch { name, detail } => {
+                let r = centered_rect(68, 30, area);
+                clear_modal(r, buf);
+                Paragraph::new(format!("{detail}\n\nEnter delete `{name}` · Esc cancel"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::error_callout())
+                            .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
+                            .title(theme::modal_title("Delete branch")),
+                    )
+                    .render(r, buf);
+            }
+            Overlay::GitRenameBranch { from, name, error } => {
+                let r = centered_rect(72, 30, area);
+                clear_modal(r, buf);
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                Paragraph::new(format!(
+                    "New name: {name}█{error}\n\nEnter rename · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title(&format!("Rename `{from}`"))),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitAbortMerge { detail } => {
+                let r = centered_rect(68, 30, area);
+                clear_modal(r, buf);
+                // Destructive: the border takes the severity colour so it reads
+                // as a warning before the words are read.
+                Paragraph::new(format!(
+                    "{detail}\n\nEnter abort merge · Esc keep resolving"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::error_callout())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title("Abort merge")),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitCommit { message, error } => {
+                let r = centered_rect(72, 32, area);
+                clear_modal(r, buf);
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                Paragraph::new(format!(
+                    "Message: {message}█{error}\n\nEnter commit · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title("Commit staged changes")),
+                )
+                .render(r, buf);
+            }
+            Overlay::SessionConfirm {
+                kind,
+                label,
+                detail,
+                ..
+            } => {
+                let r = centered_rect(68, 36, area);
+                clear_modal(r, buf);
+                let (title, question) = match kind {
+                    SessionConfirmKind::Archive => ("Archive session", "Archive"),
+                    SessionConfirmKind::ArchiveDirty => (
+                        "Discard changes and archive",
+                        "Permanently remove the dirty worktree for",
+                    ),
+                    SessionConfirmKind::Cleanup => ("Remove worktree", "Remove the worktree for"),
+                    SessionConfirmKind::CleanupDirty => (
+                        "Discard changes and remove worktree",
+                        "Permanently remove the dirty worktree for",
+                    ),
+                    SessionConfirmKind::ApproveAll => {
+                        ("Enable approve-all", "Enable approve-all for")
+                    }
+                };
+                let border = if kind.discards_dirty() {
+                    theme::error_callout()
+                } else {
+                    theme::border()
+                };
+                let hint = if kind.discards_dirty() {
+                    "Enter permanently delete · Esc back"
+                } else {
+                    "Enter confirm · Esc cancel"
+                };
+                let body = if kind.discards_dirty() {
+                    format!(
+                        "{detail}\n\nEvery uncommitted, untracked, and ignored file in the \
+                         worktree is deleted. The branch and commits are kept."
+                    )
+                } else {
+                    detail.clone()
+                };
+                Paragraph::new(format!("{question} `{label}`?\n\n{body}\n\n{hint}"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(border)
+                            .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
+                            .title(theme::modal_title(title)),
+                    )
+                    .render(r, buf);
             }
             Overlay::SessionInput {
                 mode,
@@ -3697,7 +4239,70 @@ mod tests {
         assert_eq!(kind, SessionConfirmKind::Archive);
         // The old copy promised the worktree was kept, which stops being true
         // the moment archiving also cleans up.
-        assert!(detail.contains("clean worktree is removed"), "{detail}");
+        assert!(detail.contains("clean worktrees are removed"), "{detail}");
+    }
+
+    fn dirty_confirm(kind: SessionConfirmKind) -> Overlay {
+        Overlay::SessionConfirm {
+            kind,
+            session_id: "abc".into(),
+            label: "parser".into(),
+            detail: "base detail".into(),
+        }
+    }
+
+    #[test]
+    fn the_discard_confirmation_dispatches_the_destructive_action() {
+        let mut archive = dirty_confirm(SessionConfirmKind::ArchiveDirty);
+        assert_eq!(
+            handle_overlay_key(&mut archive, Key::Enter),
+            OverlayAction::ArchiveAndCleanupSession {
+                session_id: "abc".into(),
+                discard_dirty: true,
+            }
+        );
+
+        let mut cleanup = dirty_confirm(SessionConfirmKind::CleanupDirty);
+        assert_eq!(
+            handle_overlay_key(&mut cleanup, Key::Enter),
+            OverlayAction::CleanupSessionWorktree {
+                session_id: "abc".into(),
+                discard_dirty: true,
+            }
+        );
+    }
+
+    #[test]
+    fn declining_the_discard_confirmation_steps_back_to_the_plain_one() {
+        // Esc must never delete work and must never leave the operator without
+        // a way back to the confirmation they came from.
+        for (dirty, plain) in [
+            (
+                SessionConfirmKind::ArchiveDirty,
+                SessionConfirmKind::Archive,
+            ),
+            (
+                SessionConfirmKind::CleanupDirty,
+                SessionConfirmKind::Cleanup,
+            ),
+        ] {
+            let mut overlay = dirty_confirm(dirty);
+            let action = handle_overlay_key(&mut overlay, Key::Esc);
+            let OverlayAction::OpenSessionConfirm {
+                kind,
+                detail,
+                label,
+                ..
+            } = action
+            else {
+                panic!("Esc must step back, got {action:?}");
+            };
+            assert_eq!(kind, plain);
+            assert_eq!(label, "parser");
+            assert_eq!(detail, "base detail");
+            // Nothing destructive is dispatched by stepping back.
+            assert!(!kind.discards_dirty());
+        }
     }
 
     #[test]
@@ -5303,6 +5908,112 @@ mod tests {
                 "overlay rendered no text: {overlay:?}"
             );
         }
+    }
+
+    fn branch_overlay(items: &[&str], filter: &str, selected: usize, merge: bool) -> Overlay {
+        Overlay::GitBranch {
+            selected,
+            filter: filter.into(),
+            items: items.iter().map(|name| name.to_string()).collect(),
+            current: Some("main".into()),
+            merge,
+            error: None,
+        }
+    }
+
+    /// `Enter` on the branch picker: an existing name switches to it, and a
+    /// name that matches nothing is a create — that is how a new branch is
+    /// named without a second dialog.
+    #[test]
+    fn branch_picker_enter_switches_creates_or_merges() {
+        let items = ["main", "feature/x"];
+
+        // A filter that narrows to branches takes the selection, never
+        // inventing a branch from the typed prefix.
+        let mut overlay = branch_overlay(&items, "feat", 0, false);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "feature/x".into()
+            }
+        );
+
+        // A name no branch carries creates it, verbatim including the slash.
+        let mut overlay = branch_overlay(&items, "fix/typo", 0, false);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitCreateBranch {
+                name: "fix/typo".into()
+            },
+            "a name that matches nothing is the create verb"
+        );
+
+        // An exact match on an existing branch still switches, never re-creates.
+        let mut overlay = branch_overlay(&items, "main", 0, false);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "main".into()
+            }
+        );
+
+        // Merge mode takes the highlighted branch and never invents one.
+        let mut overlay = branch_overlay(&items, "feature", 1, true);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitMergeBranch {
+                name: "feature/x".into()
+            }
+        );
+        let mut overlay = branch_overlay(&items, "no/such", 0, true);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None,
+            "there is nothing to merge from a branch that does not exist"
+        );
+    }
+
+    #[test]
+    fn branch_picker_steps_only_through_what_the_filter_shows() {
+        let names = ["feature/x", "feature/y", "main"];
+        let items: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        // `main` does not carry `feature`, so the filter must exclude it.
+        assert_eq!(Overlay::branch_matches(&items, "feature"), vec![0, 1]);
+
+        let mut overlay = branch_overlay(&names, "feature", 0, false);
+        overlay.move_sel(1);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "feature/y".into()
+            },
+            "`↓` must not land on a branch the filter hid"
+        );
+        // And it stays inside the filtered window: a step past the end wraps
+        // to `feature/x`, never to `main`.
+        overlay.move_sel(1);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "feature/x".into()
+            }
+        );
+    }
+
+    #[test]
+    fn abort_merge_confirmation_aborts_only_on_enter() {
+        let mut overlay = Overlay::GitAbortMerge {
+            detail: "2 unresolved files will be replaced.".into(),
+        };
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::Close,
+            "Esc keeps resolving"
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitAbortMerge
+        );
     }
 }
 

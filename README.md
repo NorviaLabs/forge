@@ -197,6 +197,10 @@ Useful in-app commands:
 /resize        Resize panes with arrow keys (`/resize reset` restores defaults)
 /theme         Change the presentation theme
 /status        Session status and diagnostics
+/git           Review, stage, commit, branch and merge in the center pane
+               (`s`/`u` stage, `d` cycles working tree/staged/last turn, `c` commit,
+               `<`/`>` pull/push, `f` fetch, `b` branches (`x` delete, `r` rename),
+               `M` merge, `a` abort merge)
 /goal          Work toward a completion condition until it holds (`/goal clear` stops)
 /grill-me      Interview me to sharpen a plan or design before I commit
 /effort        Set model effort

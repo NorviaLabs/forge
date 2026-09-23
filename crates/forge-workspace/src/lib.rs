@@ -12,4 +12,6 @@
 pub mod file_context;
 pub mod file_ops;
 pub mod git_review;
+pub mod git_service;
 pub mod git_status;
+pub mod git_sync;

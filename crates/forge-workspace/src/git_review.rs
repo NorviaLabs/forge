@@ -90,6 +90,28 @@ pub fn combined_diff_text(root: &Path, path: &Path) -> Result<(String, bool), St
     Ok((output, untracked))
 }
 
+/// The index against `HEAD` — the hunks a commit would take.
+///
+/// Distinct from [`combined_diff_text`], which reads `HEAD` against the
+/// *working tree*: reviewing what you staged is a different question from
+/// reviewing what you changed, and only this answers the first.
+pub fn staged_diff_text(root: &Path, path: &Path) -> Result<String, String> {
+    let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+    // An untracked file has nothing in the index, so it can never appear here:
+    // returning git's empty output is the truthful answer, not an error.
+    run_git(
+        root,
+        &[
+            "diff",
+            "--no-color",
+            "--cached",
+            "--",
+            &rel.to_string_lossy(),
+        ],
+        false,
+    )
+}
+
 pub fn discard_hunk(root: &Path, path: &Path, hunk_index: usize) -> Result<(), String> {
     let diff = combined_diff(root, path)?;
     if diff.untracked {

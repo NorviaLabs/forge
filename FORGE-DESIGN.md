@@ -527,6 +527,14 @@ surface. The old top task strip is superseded (`§11`).
   drawn only when the whole block fits: a short pane falls back to the unframed
   layout rather than painting half a box.
 - **Files tab** is today's explorer, unchanged.
+- **Git tab** appears only where the workspace is a repository (`.git` at the
+  session's root — a directory in a plain checkout, a file in a linked
+  worktree, so both qualify). It is not a new column and adds no permanent
+  chrome: it splits the space `Files` already had. Its column is the explorer
+  filtered to the changed files and the patch renders in the Workspace pane, so
+  entering the tab opens the working-tree review and leaving it puts the pane
+  back exactly as `Esc` does. `/git` reaches the same view without the column,
+  and stays reachable below `files_fit()` where the tab bar is gone.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
 - Below `files_fit()` the whole navigator collapses exactly as `Files` does
@@ -575,8 +583,8 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 |---|---|
 | Next visible block | `Tab` (while the `Panel` block holds the keyboard, plain `Tab` goes to its shell) |
 | Previous visible block | `Shift+Tab` |
-| Navigator tabs `Sessions` / `Files` (repository mode) | `Ctrl+1` / `Ctrl+2`; `Ctrl+E` flips the two (`Ctrl+1` also focuses the list) |
-| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `+` · `Files`, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
+| Navigator tabs `Sessions` / `Files` / `Git` (repository mode) | `Ctrl+1` / `Ctrl+2` / `Ctrl+3`; `Ctrl+E` flips `Sessions` and `Files` (`Ctrl+1` also focuses the list). `Ctrl+3` is inert outside a repository rather than switching to a tab the row does not draw |
+| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `+` · `Files` · `Git`, halting at each end, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |
@@ -872,6 +880,41 @@ Rules:
 - Reviewed files carry the `✓` tick; counts stay ASCII even in narrow panes.
 - Stale diff state must be explicit; binary/untracked/conflicted states must be truthful.
 - `/diff` holds no content state itself — the pane reads live diff state so refreshes update in place.
+- Three sources, cycled by `d` in the order the questions are asked: the
+  **working tree** (everything against `HEAD`, the default and the only one the
+  header does not name), the **index** (`git diff --cached` — exactly what a
+  commit would take, which is the only way to review a partial stage), and the
+  **last turn** (the transcript's own cards, not `git`, so it stays honest when
+  the tree has moved on). The staged list is the same status snapshot filtered
+  to paths with a staged side, and each entry's unstaged half is cleared before
+  its marker is read: the marker comes from the more severe of the two sides, so
+  leaving the working-tree side in place would label a file in the index list
+  with a change that is not in it.
+- The hint row's right-aligned tag carries the branch before the layout: the
+  branch name with only the non-zero `↓behind ↑ahead`, or the `pull`/`push` in
+  flight (`Pushing origin/main…`). A running operation outranks the branch, and
+  the branch outranks the `split` layout note, which it then follows after a
+  `·`. A branch the pane cannot read renders `branch ?` — an empty tag would
+  read as "nothing to report", which is the one answer that is certainly wrong
+  when the state is merely unknown. An in-progress merge outranks the plain
+  branch name (`merging · 2 unresolved`): it is the state that decides the next
+  key.
+- Branch deletion and branch rename live in the picker, not on the view's key
+  row: both act on *a* branch, and the picker is where a branch is chosen. `x`
+  deletes behind a confirmation and `r` renames in one prefilled field, and both
+  are inert in merge mode, where the list is answering "merge what?" rather than
+  "which branch?". Deletion has **no force path in the UI**: `-d` refuses a
+  branch whose commits are not merged anywhere, and that refusal is the feature —
+  escalating to `-D` from a TUI is how commits get lost by accident. Rename is
+  allowed on the branch `HEAD` is on; deletion is not. The asymmetry is
+  deliberate: rename destroys nothing.
+- A merge in progress also earns a full-width banner above the file list, in the
+  warning severity colour rather than the focus accent — it is a state to act
+  on, not the pane that owns the keyboard. One row, elided when narrow, and it
+  yields to the patch on a pane too short for both, exactly as the hint row does.
+  Conflict resolution deliberately reuses what is already bound: `o` opens the
+  conflicted path, `s` stages the saved resolution, `c` commits the merge, and
+  only the destructive exit is new — `a` aborts, and only behind a confirmation.
 
 ### 9.9 Terminal (BottomPanel)
 

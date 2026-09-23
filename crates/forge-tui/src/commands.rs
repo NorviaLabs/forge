@@ -68,6 +68,8 @@ pub enum SlashCommand {
     },
     /// Show session status overlay.
     Status,
+    /// Open the working-tree Git workspace in the center pane.
+    Git,
     /// Show the token-budget breakdown by category (system prompt, tool
     /// schemas, messages) — the detail `/status` deliberately omits.
     Context,
@@ -220,6 +222,13 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             name: parts.next().map(|s| s.to_string()),
         }),
         "status" => Ok(SlashCommand::Status),
+        "git" => {
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/git".into()))
+            } else {
+                Ok(SlashCommand::Git)
+            }
+        }
         "context" | "ctx" => Ok(SlashCommand::Context),
         "plan" => Ok(SlashCommand::Plan),
         "goal" => match parts.next() {
@@ -308,6 +317,15 @@ pub fn grill_me_prompt(topic: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_git_workspace() {
+        assert_eq!(parse_slash("/git").unwrap().unwrap(), SlashCommand::Git);
+        assert_eq!(
+            parse_slash("/git status").unwrap().unwrap_err(),
+            CommandError::Usage("/git".into())
+        );
+    }
 
     #[test]
     fn resize_enters_mode_or_resets_the_layout() {

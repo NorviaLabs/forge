@@ -27,6 +27,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         ("/model", "Switch model for future turns"),
         ("/theme", "Switch presentation theme"),
         ("/status", "Show session status and diagnostics"),
+        ("/git", "Inspect and stage working-tree changes"),
         ("/context", "Show the token budget broken down by category"),
         ("/plan", "Inspect the latest execution plan"),
         ("/goal", "Work toward a completion condition until it holds"),
