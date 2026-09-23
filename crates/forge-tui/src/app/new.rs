@@ -224,6 +224,7 @@ impl TuiApp {
         };
         app.init_file_watcher();
         app.load_ui_state();
+        app.restore_goal();
         app.restore_saved_auth().apply_connection_chrome()
     }
 

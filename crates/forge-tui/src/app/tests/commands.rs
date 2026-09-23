@@ -29,6 +29,82 @@ async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
 }
 
 #[tokio::test]
+async fn goal_state_round_trips_through_session_storage() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.goal = Some(GoalState {
+        condition: "all tests pass".into(),
+        turns_evaluated: 3,
+        last_reason: Some("one suite remains".into()),
+        started_at: Instant::now(),
+    });
+    app.persist_goal();
+    app.goal = None;
+
+    app.restore_goal();
+
+    let goal = app.goal.as_ref().expect("goal restored");
+    assert_eq!(goal.condition, "all tests pass");
+    assert_eq!(goal.turns_evaluated, 3);
+    assert_eq!(goal.last_reason.as_deref(), Some("one suite remains"));
+}
+
+#[tokio::test]
+async fn goal_waits_for_a_promoted_queued_turn_before_evaluating() {
+    let model = Arc::new(MockModelClient::script(vec![goal_test_reply(
+        "MET: should not be consumed",
+    )]));
+    let (_dir, mut app) = focus_test_app_with_model(model).await;
+    app.goal = Some(GoalState {
+        condition: "all tests pass".into(),
+        turns_evaluated: 0,
+        last_reason: None,
+        started_at: Instant::now(),
+    });
+    app.pending_turn.request_continue();
+
+    app.advance_goal_after_turn().await.unwrap();
+
+    assert!(app.goal.is_some());
+    assert!(app.pending_turn.continue_requested());
+    assert!(!app.pending_turn.has_prompt());
+}
+
+#[tokio::test]
+async fn goal_evaluator_request_is_toolless_and_uses_a_system_instruction() {
+    let model = Arc::new(MockModelClient::script(vec![
+        goal_test_reply("work with evidence"),
+        goal_test_reply("NOT_MET: more evidence is needed"),
+    ]));
+    let (_dir, mut app) = focus_test_app_with_model(model.clone()).await;
+
+    app.dispatch_line("/goal all tests pass").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let request = model.last_request().expect("evaluator request captured");
+    assert!(request.tools.is_empty());
+    let instruction = request.messages.last().expect("evaluator instruction");
+    assert_eq!(instruction.role, MessageRole::System);
+    assert!(instruction.content.contains("untrusted evidence"));
+    assert!(instruction
+        .content
+        .contains("<goal>\nall tests pass\n</goal>"));
+}
+
+#[tokio::test]
+async fn goal_is_rolled_back_when_the_initial_turn_cannot_start() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect.auth_suspended = true;
+    app.connect.profile = None;
+    app.runtime.provider = "openai".into();
+    app.runtime.model_label = "gpt-test".into();
+
+    app.dispatch_line("/goal all tests pass").await.unwrap();
+
+    assert!(app.goal.is_none());
+    assert!(!app.pending_turn.has_prompt());
+}
+
+#[tokio::test]
 async fn plain_home_scrolls_to_conversation_start_without_draft() {
     let (_dir, mut app) = focus_test_app().await;
     let home = event::KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
@@ -2450,6 +2526,27 @@ async fn goal_evaluator_starts_another_turn_while_unmet() {
 }
 
 #[tokio::test]
+async fn goal_does_not_accept_an_unverified_completion_claim() {
+    let model = Arc::new(MockModelClient::script(vec![
+        goal_test_reply("All tests pass now."),
+        goal_test_reply("NOT_MET: no test output confirms this claim"),
+    ]));
+    let (_dir, mut app) = focus_test_app_with_model(model).await;
+
+    app.dispatch_line("/goal all tests pass").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    assert!(
+        app.goal.is_some(),
+        "a claim without evidence must not complete the goal"
+    );
+    assert!(
+        app.pending_turn.has_prompt(),
+        "the goal should continue working"
+    );
+}
+
+#[tokio::test]
 async fn goal_evaluator_pauses_on_an_unreadable_verdict() {
     let model = Arc::new(MockModelClient::script(vec![
         goal_test_reply("did some work"),
@@ -2473,7 +2570,7 @@ async fn goal_evaluator_pauses_on_an_unreadable_verdict() {
 }
 
 #[tokio::test]
-async fn goal_evaluator_clears_the_goal_when_impossible() {
+async fn goal_evaluator_pauses_the_goal_when_impossible() {
     let model = Arc::new(MockModelClient::script(vec![
         goal_test_reply("looked into it"),
         goal_test_reply("IMPOSSIBLE: the target API was removed upstream"),
@@ -2485,7 +2582,7 @@ async fn goal_evaluator_clears_the_goal_when_impossible() {
         .unwrap();
     app.drain_pending_prompt(None).await.unwrap();
 
-    assert!(app.goal.is_none());
+    assert!(app.goal.is_some());
     assert!(!app.pending_turn.has_prompt());
     assert!(
         app.feedback.text.contains("impossible"),

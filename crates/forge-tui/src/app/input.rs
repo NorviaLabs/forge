@@ -382,6 +382,7 @@ impl TuiApp {
             status_state: std::mem::take(&mut self.status_state),
             search_status: std::mem::take(&mut self.search_status),
             pending_turn: std::mem::take(&mut self.pending_turn),
+            goal: self.goal.take(),
             pending_interaction: std::mem::take(&mut self.pending_interaction),
             task_selection: std::mem::take(&mut self.task_selection),
             timing: std::mem::take(&mut self.timing),
@@ -430,6 +431,7 @@ impl TuiApp {
         self.status_state = state.status_state;
         self.search_status = state.search_status;
         self.pending_turn = state.pending_turn;
+        self.goal = state.goal;
         self.pending_interaction = state.pending_interaction;
         self.task_selection = state.task_selection;
         self.timing = state.timing;
