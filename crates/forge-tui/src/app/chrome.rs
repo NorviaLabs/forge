@@ -648,50 +648,25 @@ impl TuiApp {
     /// Toast with an explicit severity. Transient notifications deliberately
     /// have one in-app destination: the top-right toast overlay.
     pub(super) fn push_toast_with(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
-        self.set_feedback(severity, text);
+        self.toast.show(severity, text);
     }
 
     pub(super) fn tick_toast(&mut self) {
         self.toast.expire(Duration::from_secs(2));
     }
 
-    /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
+    /// Set the latest compatibility feedback state and show it as a toast.
     pub fn set_feedback(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
         let text = text.into();
         self.toast.show(severity, text.clone());
         self.status_state.message = text.clone();
         self.feedback = FeedbackModel { text, severity };
-        self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
-    }
-
-    pub(super) fn expire_info_feedback(&mut self) {
-        if self.feedback.severity == FeedbackSeverity::Info && !self.feedback.is_empty() {
-            self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
-        }
-    }
-
-    pub(super) fn tick_feedback(&mut self) {
-        if self
-            .feedback_until
-            .is_some_and(|until| Instant::now() >= until)
-        {
-            self.feedback = FeedbackModel::default();
-            self.status_state.message.clear();
-            self.feedback_until = None;
-        }
     }
 
     /// Operator errors remain visible in the transient toast and activity.
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
 
-        // A provider can emit the same failure more than once while a turn is
-        // unwinding. The toast stack replaces the current notice, keeping one
-        // transient notification visible.
-        if self.feedback.severity == FeedbackSeverity::Error && self.feedback.text == msg {
-            self.busy_state.set_phase(BusyPhase::Idle);
-            return;
-        }
         self.toast
             .push_overlay(FeedbackSeverity::Error, msg.clone());
         // Keep the compatibility models populated for status consumers and
@@ -728,7 +703,6 @@ impl TuiApp {
             )
         });
         if self.feedback.severity == FeedbackSeverity::Error {
-            self.feedback = FeedbackModel::default();
             self.status_state.message.clear();
         }
     }

@@ -1238,7 +1238,6 @@ impl TuiApp {
                     });
                     self.turn_summaries_revision = self.turn_summaries_revision.wrapping_add(1);
                     self.clear_error_chrome();
-                    self.feedback = FeedbackModel::default();
                     self.status_state.message.clear();
                     self.toast.clear();
                     self.conversation_view.scroll = 0;
@@ -1322,7 +1321,6 @@ impl TuiApp {
                     self.push_toast(msg);
                 }
             }
-            self.expire_info_feedback();
             return Ok(());
         }
 

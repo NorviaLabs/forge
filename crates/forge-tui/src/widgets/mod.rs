@@ -13,7 +13,7 @@ pub mod turn_line;
 
 pub use background_strip::BackgroundStripWidget;
 pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState};
-pub use feedback::{classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity};
+pub use feedback::{classify_operator_error, FeedbackModel, FeedbackSeverity};
 pub use footer::{footer_short_model_id, FooterActivity, FooterBar, FooterFocus, FooterModel};
 pub use input::{composer_cursor_position, composer_text_area_width, InputBar, InputModel};
 pub(crate) use navigator::TEXT_COL;

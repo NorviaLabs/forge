@@ -933,7 +933,6 @@ pub(super) async fn tick_application(app: &mut TuiApp) -> Result<bool, TuiError>
     app.poll_background_tasks().await?;
     app.poll_approved_hitl().await?;
     app.tick_toast();
-    app.tick_feedback();
     app.drain_auto_hitl().await?;
     // Newly arrived approvals claim focus + scroll-into-view once.
     app.sync_approval_focus();

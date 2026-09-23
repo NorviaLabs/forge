@@ -1057,7 +1057,7 @@ async fn new_without_a_repository_explains_instead_of_doing_nothing() {
 }
 
 #[tokio::test]
-async fn slash_command_info_feedback_expires() {
+async fn slash_command_info_uses_toast() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -1074,11 +1074,7 @@ async fn slash_command_info_feedback_expires() {
 
     app.dispatch_line("/help").await.unwrap();
     assert!(app.feedback.text.contains("Help"));
-    app.feedback_until = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
-    app.tick_feedback();
-
-    assert!(app.feedback.is_empty());
-    assert!(app.status_state.message.is_empty());
+    assert!(app.toast.has_toast());
 }
 
 #[tokio::test]

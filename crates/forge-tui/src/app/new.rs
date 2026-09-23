@@ -99,7 +99,6 @@ impl TuiApp {
             slash_suggestions: SlashSuggestionState { selected: 0 },
             inline_search: None,
             feedback: FeedbackModel::default(),
-            feedback_until: None,
             banner_state: BannerState {
                 items: startup_banners,
             },
@@ -320,7 +319,6 @@ impl TuiApp {
             slash_suggestions: SlashSuggestionState { selected: 0 },
             inline_search: None,
             feedback: FeedbackModel::default(),
-            feedback_until: None,
             banner_state: BannerState {
                 items: startup_banners,
             },

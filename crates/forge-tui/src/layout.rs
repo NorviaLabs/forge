@@ -98,7 +98,8 @@ fn sidebar_width(content_width: u16) -> u16 {
     }
 }
 
-/// Split terminal; `feedback_h` is 0 or 1 (feedback strip).
+/// Split terminal. `feedback_h` is retained for source compatibility; no
+/// feedback strip is reserved.
 pub fn split_areas(area: Rect) -> LayoutRegions {
     split_areas_ex(area, 0)
 }
@@ -223,7 +224,7 @@ pub fn split_areas_with_expanded_conversation(
 #[allow(clippy::too_many_arguments)]
 pub fn split_areas_with_preferences(
     area: Rect,
-    feedback_h: u16,
+    _feedback_h: u16,
     input_h: u16,
     show_files: bool,
     queue_h: u16,
@@ -243,7 +244,7 @@ pub fn split_areas_with_preferences(
         width: content_width,
         height: area.height,
     };
-    let fb = feedback_h.min(2);
+    let fb = 0;
     let input_h = input_h.clamp(3, THEME_DOCK_H);
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
@@ -686,47 +687,29 @@ mod tests {
         assert!(clamped.bottom_panel.height <= 32);
     }
 
-    /// The status line is a shell row above the footer, not a row inside the
-    /// conversation column. It used to shift the transcript up and down by a
-    /// line every time a message appeared and then expired.
+    /// The retired feedback row remains zero-height even for legacy callers.
     #[test]
-    fn status_line_reserved_above_the_footer() {
+    fn retired_feedback_row_does_not_reserve_space() {
         let area = Rect::new(0, 0, 120, 30);
 
         let r = split_areas_ex(area, 1);
-        assert_eq!(r.feedback.height, 1);
-        // Full content width: it is no longer scoped to the sidebar.
-        assert_eq!(r.feedback.width, content_width(area));
-        // Everything the conversation column occupies ends above it.
-        let sidebar = r.sidebar.expect("sidebar at this width");
-        assert!(r.feedback.y >= sidebar.y + sidebar.height);
+        assert_eq!(r.feedback.height, 0);
 
-        // With a footer reserved, the status line sits directly on top of it.
         let with_footer = split_areas_with_chrome(area, 1, 3, false, 0, 0, 2, true, 0, 0);
-        assert_eq!(
-            with_footer.feedback.y + with_footer.feedback.height,
-            with_footer.footer.y
-        );
+        assert_eq!(with_footer.feedback.height, 0);
         assert_eq!(
             with_footer.footer.y + with_footer.footer.height,
             area.height
         );
     }
 
-    /// A status line must never take a row away from the conversation. The
-    /// transcript is `Min`-constrained, so it absorbs whatever the shell band
-    /// costs — and this asserts the shell costs it nothing inside the sidebar.
     #[test]
-    fn status_line_does_not_enter_the_sidebar_split() {
+    fn feedback_row_never_shrinks_sidebar() {
         let area = Rect::new(0, 0, 120, 30);
         let without = split_areas_ex(area, 0);
         let with = split_areas_ex(area, 1);
-        let without_sidebar = without.sidebar.expect("sidebar");
-        let with_sidebar = with.sidebar.expect("sidebar");
-        // Only the composer's column positions are unchanged; the conversation
-        // height shrinks by the shell row, not by a row inside the sidebar.
-        assert_eq!(with_sidebar.y, without_sidebar.y);
-        assert_eq!(with.input.y, without.input.y - 1);
+        assert_eq!(with.sidebar, without.sidebar);
+        assert_eq!(with.input, without.input);
     }
 
     #[test]

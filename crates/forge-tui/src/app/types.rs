@@ -1898,7 +1898,6 @@ pub struct TuiApp {
     pub(crate) inline_search: Option<InlineSearchState>,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     pub(crate) feedback: FeedbackModel,
-    pub(crate) feedback_until: Option<Instant>,
     pub(crate) banner_state: BannerState,
     /// Per-turn completion metadata (DESIGN-005): view-only presentation
     /// state keyed by session plus user-message ordinal. Each record renders
