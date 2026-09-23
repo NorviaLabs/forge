@@ -191,7 +191,7 @@ impl TuiApp {
     /// A click on the navigator tab bar switches to the painted tab.
     fn click_navigator_tab(&mut self, col: u16, area: Rect) {
         use crate::widgets::NavigatorTab;
-        let tab = navigator_tab_at(col, area);
+        let tab = navigator_tab_at(col, area, self.navigator_git_available());
         self.navigator_tab = tab;
         self.navigator_tab_explicit = true;
         // A click hands the keyboard to the tab's pane, so the row stops holding
@@ -201,7 +201,9 @@ impl TuiApp {
         self.focus_block(match tab {
             NavigatorTab::Sessions => FocusBlock::TaskStrip,
             NavigatorTab::Files => FocusBlock::Files,
+            NavigatorTab::Git => FocusBlock::Files,
         });
+        self.apply_navigator_git_tab(tab == NavigatorTab::Git);
     }
 
     /// A click on the navigator row's `+` cell creates a session: the same verb
@@ -298,7 +300,8 @@ impl TuiApp {
         if !self.hover_navigator_new_session {
             if let Some(area) = self.navigator_tabs_area {
                 if cell_inside(area, col, row) {
-                    self.hover_navigator_tab = Some(navigator_tab_at(col, area));
+                    self.hover_navigator_tab =
+                        Some(navigator_tab_at(col, area, self.navigator_git_available()));
                 }
             }
         }
@@ -315,7 +318,7 @@ impl TuiApp {
                     self.hover_session = Some(index);
                 }
             }
-            crate::widgets::NavigatorTab::Files => {
+            crate::widgets::NavigatorTab::Files | crate::widgets::NavigatorTab::Git => {
                 let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
                 if row >= tree_top {
                     let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
@@ -863,14 +866,8 @@ impl TuiApp {
 /// The `+` cell straddles these columns and is claimed before this runs, so
 /// anything that reaches here is either left of the `Sessions` tab's edge or
 /// right of the `Files` tab's, never the cell itself.
-fn navigator_tab_at(col: u16, area: Rect) -> crate::widgets::NavigatorTab {
-    use crate::widgets::NavigatorTab;
-    let files_x = area.x + crate::widgets::navigator::SESSIONS_TAB_WIDTH;
-    if col < files_x {
-        NavigatorTab::Sessions
-    } else {
-        NavigatorTab::Files
-    }
+fn navigator_tab_at(col: u16, area: Rect, git: bool) -> crate::widgets::NavigatorTab {
+    crate::widgets::navigator::navigator_tab_at(col, area, git)
 }
 
 /// Resolve the selected menu item by index (indirection to sidestep borrow

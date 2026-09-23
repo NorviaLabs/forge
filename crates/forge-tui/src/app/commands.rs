@@ -1282,6 +1282,7 @@ impl TuiApp {
                         rows: self.status_report_rows(),
                     });
                 }
+                Ok(SlashCommand::Git) => self.open_git_view(),
                 Ok(SlashCommand::Context) => {
                     self.overlay = Some(Overlay::StatusReport {
                         title: "Context".into(),

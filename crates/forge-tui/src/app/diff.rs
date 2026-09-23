@@ -13,6 +13,27 @@ use crate::diff_view::{entries_from_changed_files, DiffEntry, DiffSource, DiffSt
 use crate::overlays::StatusRow;
 
 impl TuiApp {
+    /// Git uses the existing live working-tree review pane; no separate
+    /// navigation state or patch cache is needed.
+    pub(super) fn open_git_view(&mut self) {
+        self.open_diff_view(DiffSource::WorkingTree);
+        if self.workspace_is_git_repository() {
+            self.status_state.message = "Git workspace · working tree".into();
+        }
+    }
+
+    /// Enter or leave the navigator's `Git` tab. The tab's own column is the
+    /// explorer filtered to the changed files and the patch renders in the
+    /// Workspace pane, so the two are switched together: leaving the tab puts
+    /// the pane back exactly as `Esc` does.
+    pub(super) fn apply_navigator_git_tab(&mut self, on_git: bool) {
+        if on_git {
+            self.open_git_view();
+        } else if self.diff_view_is_open() {
+            self.close_diff_view();
+        }
+    }
+
     /// Enter `/diff`. Focuses the workspace pane and filters the explorer to
     /// the changed files, remembering nothing else so `Esc` can put both back.
     // Retained as the seam for the Git workflow redesign.
@@ -59,8 +80,10 @@ impl TuiApp {
     }
 
     // Retained with the diff-view seam for the Git workflow redesign.
+    // A workspace is a repository when its root holds `.git` — a directory in a
+    // plain checkout, a file in a linked worktree. Both count.
     #[allow(dead_code)]
-    fn workspace_is_git_repository(&self) -> bool {
+    pub(super) fn workspace_is_git_repository(&self) -> bool {
         self.session_view.workspace_root().join(".git").exists()
     }
 

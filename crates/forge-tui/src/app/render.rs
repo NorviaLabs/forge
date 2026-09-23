@@ -403,6 +403,7 @@ impl TuiApp {
                     crate::widgets::NavigatorTabs {
                         tab: navigator_tab,
                         needs_you,
+                        git: self.navigator_git_available(),
                         focused: self.navigator_tab_row_focused,
                         hover: self.hover_navigator_tab,
                         row_stop: self.navigator_row_stop,

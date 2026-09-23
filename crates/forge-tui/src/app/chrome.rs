@@ -27,6 +27,14 @@ impl TuiApp {
     /// `Sessions` when more than one session exists and `Files` otherwise.
     pub(crate) fn effective_navigator_tab(&self) -> crate::widgets::NavigatorTab {
         if self.navigator_tab_explicit {
+            // An explicit `Git` only stands while the tab exists: leaving the
+            // repository (or hiding the column) must not leave the row with no
+            // tab drawn as active.
+            if self.navigator_tab == crate::widgets::NavigatorTab::Git
+                && !self.navigator_git_available()
+            {
+                return crate::widgets::NavigatorTab::Files;
+            }
             self.navigator_tab
         } else if self.session_chrome.len() > 1 {
             crate::widgets::NavigatorTab::Sessions

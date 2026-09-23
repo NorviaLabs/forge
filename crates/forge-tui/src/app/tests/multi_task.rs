@@ -2087,6 +2087,46 @@ async fn the_drawn_tab_row_carries_the_plus_cell() {
         .unwrap();
 }
 
+/// The `Git` tab exists only where the column is drawn and the workspace is a
+/// repository, and reaching it opens the working-tree review: the changed files
+/// in the navigator column, the patch in the Workspace pane (`FORGE-DESIGN
+/// §7.7`).
+#[tokio::test]
+async fn the_git_tab_reviews_the_working_tree_and_only_exists_in_a_repository() {
+    use crate::widgets::NavigatorTab;
+    let (dir, mut app, handle) = app_with_supervisor().await;
+    std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+    draw_app(&mut app, 140, 40);
+    assert!(app.navigator_git_available(), "the fixture is a repository");
+
+    // `Ctrl+1` / `Ctrl+2` stay reserved for the two tabs that always exist.
+    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
+    assert!(app.diff_view_is_open(), "the tab opens the review pane");
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Workspace,
+        "so `s`/`u` reach the patch without another trip through `Tab`"
+    );
+
+    // Hiding the column takes the tab with it, and the chord goes inert rather
+    // than switching to a tab the row no longer draws.
+    app.workspace_files.visible = false;
+    assert!(!app.navigator_git_available());
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_ne!(app.effective_navigator_tab(), NavigatorTab::Git);
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// The row's stops run `Sessions · + · Files` left to right: `←`/`→` walk them,
 /// stop at each end, and `Enter` on the `+` cell creates a session — the same
 /// prompt-less create the Sessions list's `n` runs (`FORGE-DESIGN §7.7`).
@@ -2104,11 +2144,29 @@ async fn the_tab_rows_plus_cell_creates_a_session() {
     // `↑` lands on the tab on screen, never on the `+` cell.
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
 
-    // The right end of the row does not wrap back to the `+` cell.
+    // The right end of the row is the last stop it draws. In a repository that
+    // is the `Git` tab; the row still does not wrap back to the `+` cell.
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Git);
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
+
+    // And it halts there rather than wrapping to `Sessions`.
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Git);
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
+    assert_eq!(
+        app.effective_navigator_tab(),
+        NavigatorTab::Files,
+        "stepping back off `Git` closes the review pane with it"
+    );
 
     app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
