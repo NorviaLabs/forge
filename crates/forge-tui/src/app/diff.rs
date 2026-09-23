@@ -48,6 +48,7 @@ impl TuiApp {
             return;
         }
         self.workspace_files.explorer.refresh_git_status();
+        self.refresh_git_branch();
         self.workspace_navigation.navigate_to(WorkspaceView::Diff);
         self.focus_block(FocusBlock::Workspace);
         self.refresh_diff_entries();
@@ -415,6 +416,17 @@ impl TuiApp {
                 self.open_git_commit();
                 true
             }
+            // Directional, because `p` is already "previous changed file" and
+            // stealing it would trade one muscle memory for another. Only the
+            // working tree can be pulled into or pushed from.
+            KeyCode::Char('>') => {
+                self.start_git_sync(forge_workspace::git_sync::SyncOperation::Push);
+                true
+            }
+            KeyCode::Char('<') => {
+                self.start_git_sync(forge_workspace::git_sync::SyncOperation::Pull);
+                true
+            }
             KeyCode::Char('?') => {
                 self.overlay = Some(Overlay::StatusReport {
                     title: "Diff shortcuts".into(),
@@ -444,6 +456,8 @@ pub(super) fn diff_shortcut_rows() -> Vec<StatusRow> {
             ("v", "Unified / split layout"),
             ("s / u", "Stage / unstage this file"),
             ("c", "Commit the staged changes"),
+            (">", "Push to the upstream branch"),
+            ("<", "Pull from the upstream branch"),
             ("o", "Open this file at the cursor's line"),
             ("d", "Switch working tree / last turn"),
             ("Esc", "Close the diff view"),
@@ -604,6 +618,96 @@ impl TuiApp {
                 self.note_workspace_changed();
             }
             Err(error) => self.set_feedback(FeedbackSeverity::Error, error.to_string()),
+        }
+    }
+
+    /// Kick the branch read that the sync row and the `pull`/`push` refusals
+    /// both depend on. Cheap to call repeatedly: the cache coalesces onto an
+    /// in-flight read.
+    pub(super) fn refresh_git_branch(&mut self) {
+        let root = self.session_view.workspace_root().to_path_buf();
+        self.git_sync.start_branch_refresh(root);
+    }
+
+    /// The right-aligned tag on the review pane's hint row.
+    ///
+    /// Priority: what is happening now beats what the branch is. A running
+    /// `pull` is the thing the operator is waiting on; the branch and its
+    /// ahead/behind answer "is there anything to do at all".
+    pub(super) fn git_sync_tag(&self) -> Option<String> {
+        let sync = &self.git_sync;
+        if let Some(operation) = sync.running {
+            let target = sync.upstream().unwrap_or("upstream");
+            return Some(format!("{} {target}…", operation.active()));
+        }
+        // A repository this code cannot read must not look like one that is in
+        // sync: `?` says the state is unknown, where an empty tag would claim
+        // there is nothing to report.
+        if sync.error.is_some() {
+            return Some("branch ?".into());
+        }
+        let branch = sync.branch.as_ref()?;
+        let name = match (&branch.branch, branch.detached) {
+            (Some(name), _) => name.as_str(),
+            (None, true) => "detached",
+            (None, false) => "?",
+        };
+        let mut tag = name.to_string();
+        // Only what is actually waiting: `↓0 ↑0` is noise on every clean read.
+        if branch.behind > 0 {
+            tag.push_str(&format!(" ↓{}", branch.behind));
+        }
+        if branch.ahead > 0 {
+            tag.push_str(&format!(" ↑{}", branch.ahead));
+        }
+        Some(tag)
+    }
+
+    /// Apply a finished `pull`/`push`: refresh what it moved and report it.
+    pub(super) fn poll_git_sync(&mut self) {
+        self.git_sync.poll();
+        let Some(outcome) = self.git_sync.poll_operation() else {
+            return;
+        };
+        // Both operations move the branch, and a pull moves the working tree
+        // with it, so the status cache and every cached patch are stale either
+        // way.
+        self.refresh_git_branch();
+        self.note_workspace_changed();
+        let target = self
+            .git_sync
+            .upstream()
+            .map(str::to_string)
+            .unwrap_or_else(|| "upstream".into());
+        match outcome.result {
+            Ok(_) => self.set_feedback(
+                FeedbackSeverity::Info,
+                format!("{} {target}", outcome.operation.finished()),
+            ),
+            // Git's own words: a rejected push and an offline pull fail for
+            // different reasons and the operator needs to tell them apart.
+            Err(error) => self.set_feedback(
+                FeedbackSeverity::Error,
+                format!("{} failed · {}", outcome.operation.label(), error),
+            ),
+        }
+    }
+
+    /// `<` / `>`. The cache refuses a second operation and a missing upstream
+    /// before either can spawn a subprocess that would only fail on the
+    /// network.
+    pub(super) fn start_git_sync(&mut self, operation: forge_workspace::git_sync::SyncOperation) {
+        let root = self.session_view.workspace_root().to_path_buf();
+        match self.git_sync.start_operation(root, operation) {
+            Ok(()) => {
+                let target = self
+                    .git_sync
+                    .upstream()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "upstream".into());
+                self.status_state.message = format!("{} {target}…", operation.active());
+            }
+            Err(reason) => self.set_feedback(FeedbackSeverity::Warn, reason),
         }
     }
 

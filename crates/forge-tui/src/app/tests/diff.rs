@@ -136,6 +136,135 @@ async fn commit_covers_only_staged_changes_and_refuses_an_empty_index() {
     );
 }
 
+/// The sync row and the two refusals, against a real repository and a real
+/// local remote — so a push that reports success has actually pushed.
+#[tokio::test]
+async fn the_sync_row_reports_the_branch_and_pull_push_end_to_end() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "one\n")], &[]);
+    let remote = TempDir::new().unwrap();
+    // Bare: a non-bare remote refuses a push to the branch it has checked out,
+    // which would test git's policy rather than this code.
+    git_run(remote.path(), &["init", "--bare", "-q", "-b", "main"]);
+    let remote_path = remote.path().to_str().unwrap().to_string();
+
+    app.open_git_view();
+    settle_git(&mut app);
+
+    // No upstream yet: the row must not claim to know a branch state it cannot
+    // read, and both operations have to be refused before spawning anything.
+    settle_sync(&mut app);
+    assert!(app.git_sync.branch.is_none() || app.git_sync.upstream().is_none());
+    assert_eq!(app.git_sync_tag().as_deref(), Some("main"));
+    app.start_git_sync(forge_workspace::git_sync::SyncOperation::Push);
+    assert!(
+        app.git_sync.running.is_none(),
+        "a push with no upstream must not start"
+    );
+    assert!(
+        app.feedback.text.contains("no upstream"),
+        "and must say why: {}",
+        app.feedback.text
+    );
+
+    // Give the branch an upstream and a local commit to send.
+    git_run(dir.path(), &["remote", "add", "origin", &remote_path]);
+    git_run(dir.path(), &["push", "-q", "-u", "origin", "main"]);
+    std::fs::write(dir.path().join("tracked.txt"), "two\n").unwrap();
+    git_run(dir.path(), &["commit", "-qam", "second"]);
+    settle_sync(&mut app);
+    assert_eq!(app.git_sync.upstream(), Some("origin/main"));
+    assert_eq!(
+        app.git_sync_tag().as_deref(),
+        Some("main ↑1"),
+        "one commit is waiting to go out"
+    );
+
+    app.start_git_sync(forge_workspace::git_sync::SyncOperation::Push);
+    assert!(
+        app.git_sync_tag()
+            .as_deref()
+            .is_some_and(|tag| tag.starts_with("Pushing origin/main")),
+        "the row says what is happening now: {:?}",
+        app.git_sync_tag()
+    );
+    settle_sync(&mut app);
+    assert_eq!(app.feedback.severity, FeedbackSeverity::Info);
+    assert_eq!(app.feedback.text, "Pushed origin/main");
+    assert_eq!(
+        app.git_sync_tag().as_deref(),
+        Some("main"),
+        "the count clears because the commit is on the remote"
+    );
+
+    // And it really landed there.
+    let sent = git_stdout(
+        remote.path(),
+        &["log", "-1", "--pretty=%s", "refs/heads/main"],
+    );
+    assert_eq!(sent.trim(), "second");
+}
+
+/// A repository with no branch state reads as unknown, never as in sync.
+#[tokio::test]
+async fn an_unreadable_branch_renders_as_unknown_rather_than_clean() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("tracked.txt", "one\n")],
+        &[("tracked.txt", "two\n")],
+    );
+    app.open_git_view();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    // A branch read that failed has to say `?`. An empty tag would read as
+    // "nothing to report", which is the one answer that is certainly wrong.
+    app.git_sync.branch = None;
+    app.git_sync.error = Some("git is not usable here".into());
+    assert_eq!(app.git_sync_tag().as_deref(), Some("branch ?"));
+    app.start_git_sync(forge_workspace::git_sync::SyncOperation::Pull);
+    assert!(app.git_sync.running.is_none());
+    assert!(
+        app.feedback.text.contains("could not be read"),
+        "and must not guess an upstream: {}",
+        app.feedback.text
+    );
+}
+
+fn git_run(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Pump the branch read and any operation until both settle.
+fn settle_sync(app: &mut TuiApp) {
+    let root = app.session_view.workspace_root().to_path_buf();
+    app.git_sync.start_branch_refresh(root);
+    for _ in 0..600 {
+        app.poll_git_sync();
+        if !app.git_sync.loading && app.git_sync.running.is_none() {
+            // One more pass so a finished operation's follow-up (a fresh branch
+            // read) also lands before the test asserts.
+            app.poll_git_sync();
+            if !app.git_sync.loading {
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the sync state never settled");
+}
+
 fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .arg("-C")

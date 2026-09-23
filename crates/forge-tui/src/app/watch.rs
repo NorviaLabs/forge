@@ -92,6 +92,8 @@ impl TuiApp {
         // blocking worker and lands on a later tick via
         // `poll_workspace_refresh` — never on the terminal thread.
         self.workspace_files.explorer.request_workspace_refresh();
+        // A commit, checkout or merge moves the branch too.
+        self.refresh_git_branch();
     }
 
     fn tool_may_mutate_workspace(name: &str) -> bool {

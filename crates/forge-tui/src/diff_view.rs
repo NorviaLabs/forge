@@ -713,6 +713,15 @@ pub fn entries_from_changed_files(files: &[ChangedFile]) -> Vec<DiffEntry> {
 pub struct DiffViewWidget<'a> {
     pub view: &'a mut DiffView,
     pub focused: bool,
+    /// Right-aligned tag for the hint row: the branch with its ahead/behind, or
+    /// the `pull`/`push` in flight. Preformatted by the caller because the
+    /// widget has no business knowing about a sync cache — it only has to draw
+    /// a string.
+    ///
+    /// The hint row is where this lives because the pane title already carries
+    /// the selected file and its counts, and this pane is about 50 columns wide
+    /// in practice: anything appended to the title is invisible.
+    pub sync: Option<String>,
 }
 
 impl Widget for DiffViewWidget<'_> {
@@ -769,13 +778,21 @@ impl Widget for DiffViewWidget<'_> {
                 ));
                 Paragraph::new(Line::from(spans)).render(hints, buf);
             } else {
-                // A right-aligned tag for the layout, so the header does not
-                // have to carry state it has no room for.
-                let tag = match self.view.effective_layout(inner.width) {
+                // A right-aligned tag for the layout and the branch, so the
+                // header does not have to carry state it has no room for. The
+                // branch leads: whether the remote has moved is the thing that
+                // decides the next action, and the layout is a display
+                // preference.
+                let layout = match self.view.effective_layout(inner.width) {
                     PatchLayout::Split => "split",
                     PatchLayout::Unified => "",
                 };
-                let budget = inner.width as usize - tag.len().min(inner.width as usize);
+                let tag = match (&self.sync, layout.is_empty()) {
+                    (Some(sync), true) => sync.clone(),
+                    (Some(sync), false) => format!("{sync} · {layout}"),
+                    (None, _) => layout.to_string(),
+                };
+                let budget = inner.width as usize - tag.chars().count().min(inner.width as usize);
                 Paragraph::new(Line::from(crate::hints::hint_spans(
                     crate::hints::DIFF,
                     budget,
@@ -1335,12 +1352,46 @@ mod widget_tests {
         view
     }
 
+    #[test]
+    fn the_sync_tag_shares_the_hint_row_with_the_keys_and_the_layout() {
+        let mut view = view_with_patch();
+        let plain = render_with_sync(&mut view, 80, 8, Some("main ↓2 ↑1".into()));
+        assert!(plain.contains("main ↓2 ↑1"), "{plain}");
+        // The branch must not cost the row the keymap it also carries.
+        assert!(plain.contains("hunk"), "{plain}");
+        assert!(plain.contains("file"), "{plain}");
+
+        // The branch leads and the layout note follows it: whether the remote
+        // has moved decides the next action, the layout does not.
+        let mut split = view_with_patch();
+        split.layout = PatchLayout::Split;
+        let rows = render_with_sync(&mut split, 100, 8, Some("main".into()));
+        assert!(rows.contains("main · split"), "{rows}");
+
+        // With nothing to say about a branch the row is exactly as it was.
+        let mut bare = view_with_patch();
+        bare.layout = PatchLayout::Split;
+        let rows = render_with_sync(&mut bare, 100, 8, None);
+        assert!(rows.contains("split"), "{rows}");
+        assert!(!rows.contains(" · split"), "no dangling separator: {rows}");
+    }
+
     fn render(view: &mut DiffView, width: u16, height: u16) -> String {
+        render_with_sync(view, width, height, None)
+    }
+
+    fn render_with_sync(
+        view: &mut DiffView,
+        width: u16,
+        height: u16,
+        sync: Option<String>,
+    ) -> String {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         DiffViewWidget {
             view,
             focused: true,
+            sync,
         }
         .render(area, &mut buf);
         (0..height)

@@ -874,6 +874,9 @@ impl TuiApp {
             self.render_cache.conversation = None;
         }
         let _ = self.workspace_files.explorer.poll_git();
+        // Branch state and any in-flight pull/push. Off the render path for
+        // the same reason as the status poll above.
+        self.poll_git_sync();
         // Ordered after `poll_git` so a completed status or patch request is
         // visible to `/diff` on the same tick it lands.
         self.pump_diff_view();

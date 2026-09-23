@@ -95,6 +95,10 @@ pub(crate) struct SessionViewState {
     pub(crate) interactive_terminal: Option<InteractiveTerminal>,
     pub(crate) explorer_dialog: ExplorerDialogState,
     pub(crate) diff_explorer_was_visible: Option<bool>,
+    /// Branch/upstream/ahead-behind and the in-flight `pull`/`push`. Beside
+    /// `diff_view` because both describe the same worktree, and both have to
+    /// move with the session when the operator switches tasks.
+    pub(crate) git_sync: forge_workspace::git_sync::GitSyncCache,
     pub(crate) pending_editor_path: Option<PathBuf>,
     pub(crate) pending_editor_home: bool,
     pub(crate) external_editor: ExternalEditorState,
@@ -157,6 +161,7 @@ impl Default for SessionViewState {
             interactive_terminal: None,
             explorer_dialog: ExplorerDialogState::default(),
             diff_explorer_was_visible: None,
+            git_sync: forge_workspace::git_sync::GitSyncCache::default(),
             pending_editor_path: None,
             pending_editor_home: false,
             external_editor: ExternalEditorState { requested: false },
@@ -1945,6 +1950,10 @@ pub struct TuiApp {
     /// Explorer visibility to restore when split view (which hides it) is
     /// turned off or the diff view closes.
     pub(crate) diff_explorer_was_visible: Option<bool>,
+    /// Branch/upstream/ahead-behind and the in-flight `pull`/`push`. Beside
+    /// `diff_view` because both describe the same worktree, and both have to
+    /// move with the session when the operator switches tasks.
+    pub(crate) git_sync: forge_workspace::git_sync::GitSyncCache,
     /// Editing state staged for the editable workspace editor.
     #[allow(dead_code)] // Consumed when the editor rendering/input migration lands.
     pub(crate) editor_session: Option<EditorSession>,

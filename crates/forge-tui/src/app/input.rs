@@ -360,6 +360,7 @@ impl TuiApp {
             interactive_terminal: self.interactive_terminal.take(),
             explorer_dialog: std::mem::take(&mut self.explorer_dialog),
             diff_explorer_was_visible: self.diff_explorer_was_visible.take(),
+            git_sync: std::mem::take(&mut self.git_sync),
             pending_editor_path: self.pending_editor_path.take(),
             pending_editor_home: std::mem::take(&mut self.pending_editor_home),
             external_editor: std::mem::replace(
@@ -410,6 +411,7 @@ impl TuiApp {
         self.interactive_terminal = state.interactive_terminal;
         self.explorer_dialog = state.explorer_dialog;
         self.diff_explorer_was_visible = state.diff_explorer_was_visible;
+        self.git_sync = state.git_sync;
         self.pending_editor_path = state.pending_editor_path;
         self.pending_editor_home = state.pending_editor_home;
         self.external_editor = state.external_editor;
