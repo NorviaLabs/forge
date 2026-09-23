@@ -201,6 +201,8 @@ Useful in-app commands:
                (`s`/`u` stage, `d` cycles working tree/staged/last turn, `c` commit,
                `<`/`>` pull/push, `f` fetch, `b` branches (`x` delete, `r` rename),
                `M` merge, `a` abort merge)
+/goal          Work toward a completion condition until it holds (`/goal clear` stops)
+/grill-me      Interview me to sharpen a plan or design before I commit
 /effort        Set model effort
 /thinking      Toggle model thinking generation
 /help          Open help

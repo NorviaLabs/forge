@@ -206,6 +206,43 @@ pub(crate) async fn focus_test_app_with_theme(theme_id: &str) -> (TempDir, TuiAp
             .path()
             .join("empty-creds.toml"),
     );
+    // Restoring those credentials also rewrites `runtime.provider` and
+    // `runtime.model_label`, so a fixture that expects the mock provider must
+    // re-assert it. Without this, tests that need a live provider pass on a
+    // clean machine and fail with "Not connected" on one with saved
+    // credentials — order- and host-dependent either way.
+    force_mock_provider(&mut app);
+    (dir, app)
+}
+
+/// Pin a fixture back to the mock provider. Use after any construction path
+/// that may have adopted the host's saved provider selection.
+pub(crate) fn force_mock_provider(app: &mut TuiApp) {
+    app.runtime.provider = "mock".into();
+    app.runtime.model_label = "mock".into();
+}
+
+/// Like `focus_test_app`, but the session runs on a caller-supplied model, so a
+/// test can script a specific reply sequence (the `/goal` evaluator consumes a
+/// second, tool-less model call after the turn it judges).
+pub(crate) async fn focus_test_app_with_model(model: Arc<dyn ModelClient>) -> (TempDir, TuiApp) {
+    let dir = TempDir::new().unwrap();
+    let session = session_for_workspace_with_model(dir.path(), model).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            cwd: dir.path().to_path_buf(),
+            ..test_runtime_config()
+        },
+    );
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
+        tempfile::TempDir::new()
+            .unwrap()
+            .path()
+            .join("empty-creds.toml"),
+    );
+    force_mock_provider(&mut app);
     (dir, app)
 }
 

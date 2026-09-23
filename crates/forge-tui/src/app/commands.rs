@@ -1295,6 +1295,18 @@ impl TuiApp {
                         rows: self.plan_report_rows(),
                     });
                 }
+                Ok(SlashCommand::Goal { action }) => match action {
+                    GoalAction::Show => self.show_goal(),
+                    GoalAction::Clear => self.clear_goal_command(),
+                    GoalAction::Set(condition) => self.set_goal(condition).await?,
+                },
+                Ok(SlashCommand::GrillMe { topic }) => {
+                    // The interview is an ordinary turn — reuse the normal
+                    // message path so the provider gate, credentials, and
+                    // attachment handling all apply unchanged.
+                    let prompt = crate::commands::grill_me_prompt(topic.as_deref());
+                    Box::pin(self.dispatch_line(&prompt)).await?;
+                }
                 Ok(SlashCommand::Effort) => {
                     self.open_connect_picker_compact(ConnectModelColumn::Effort);
                 }

@@ -11,6 +11,23 @@ pub enum CommandError {
     Usage(String),
 }
 
+/// Argument to `/goal`: one command sets, shows, or clears the session's
+/// completion condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalAction {
+    /// No argument — report the active goal (or that none is set).
+    Show,
+    /// `clear` (or an alias) — drop the active goal before it resolves.
+    Clear,
+    /// Any other text — the completion condition to work toward.
+    Set(String),
+}
+
+/// Words accepted in place of `clear` so `/goal off`, `/goal stop`, and the
+/// like read naturally. Only an exact, lone argument clears; `clear now` is a
+/// condition, not a command.
+const GOAL_CLEAR_ALIASES: [&str; 6] = ["clear", "stop", "off", "reset", "none", "cancel"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     /// Open the help overlay — the same one the empty composer's `?`
@@ -57,6 +74,17 @@ pub enum SlashCommand {
     /// schemas, messages) — the detail `/status` deliberately omits.
     Context,
     Plan,
+    /// Set, inspect, or clear the session's completion condition. Setting one
+    /// starts a turn with the condition as the directive; after each turn a
+    /// separate evaluator decides whether to keep going.
+    Goal {
+        action: GoalAction,
+    },
+    /// Start a relentless interview that sharpens a plan before committing to
+    /// it. The optional topic is folded into the interview prompt.
+    GrillMe {
+        topic: Option<String>,
+    },
     /// Open the effort picker.
     Effort,
     /// Toggle thinking generation, or set it explicitly.
@@ -89,17 +117,25 @@ impl SlashCommand {
     /// session. Model settings are safe to change because they are read when
     /// the next model step is built; lifecycle, provider, or terminal-
     /// ownership changes wait until the turn is finished (or interrupted).
+    /// `/goal clear` and `/goal` (status) stay available — only the forms that
+    /// queue a fresh turn wait.
     pub fn available_while_busy(&self) -> bool {
-        !matches!(
-            self,
-            Self::Continue
-                | Self::Fork
-                | Self::ResumeList
-                | Self::Resume { .. }
-                | Self::Compact
-                | Self::Disconnect { .. }
-                | Self::Edit { .. }
-        )
+        match self {
+            Self::Goal {
+                action: GoalAction::Set(_),
+            }
+            | Self::GrillMe { .. } => false,
+            _ => !matches!(
+                self,
+                Self::Continue
+                    | Self::Fork
+                    | Self::ResumeList
+                    | Self::Resume { .. }
+                    | Self::Compact
+                    | Self::Disconnect { .. }
+                    | Self::Edit { .. }
+            ),
+        }
     }
 }
 
@@ -195,6 +231,37 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }
         "context" | "ctx" => Ok(SlashCommand::Context),
         "plan" => Ok(SlashCommand::Plan),
+        "goal" => match parts.next() {
+            None => Ok(SlashCommand::Goal {
+                action: GoalAction::Show,
+            }),
+            Some(word)
+                if GOAL_CLEAR_ALIASES.contains(&word.to_ascii_lowercase().as_str())
+                    && parts.next().is_none() =>
+            {
+                Ok(SlashCommand::Goal {
+                    action: GoalAction::Clear,
+                })
+            }
+            Some(_) => {
+                // Everything after `goal` is the condition, spaces and all.
+                let condition = rest
+                    .split_once(char::is_whitespace)
+                    .map(|(_, condition)| condition.trim())
+                    .filter(|condition| !condition.is_empty())
+                    .ok_or_else(|| CommandError::Usage("/goal <condition> | /goal clear".into()))?;
+                Ok(SlashCommand::Goal {
+                    action: GoalAction::Set(condition.to_string()),
+                })
+            }
+        },
+        "grill-me" | "grill_me" => Ok(SlashCommand::GrillMe {
+            topic: rest
+                .split_once(char::is_whitespace)
+                .map(|(_, topic)| topic.trim())
+                .filter(|topic| !topic.is_empty())
+                .map(str::to_string),
+        }),
         "effort" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/effort".into()))
@@ -227,6 +294,24 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         },
         other => Err(CommandError::Unknown(other.to_string())),
     }
+}
+
+/// Prompt `/grill-me` sends: a relentless interview that sharpens a plan or
+/// design before the operator commits to it. The optional topic is appended so
+/// the model knows what to interrogate.
+pub fn grill_me_prompt(topic: Option<&str>) -> String {
+    let mut prompt = String::from(
+        "Interview me relentlessly to sharpen this before I commit to it. \
+         Ask one question at a time and wait for my answer before asking the next. \
+         Push on the weakest assumptions, unstated constraints, failure modes, and \
+         the parts I am hand-waving. Do not propose a solution until the questioning \
+         is done; when it is, summarize the sharpened plan and the open risks.",
+    );
+    if let Some(topic) = topic.map(str::trim).filter(|topic| !topic.is_empty()) {
+        prompt.push_str("\n\nSubject: ");
+        prompt.push_str(topic);
+    }
+    prompt
 }
 
 #[cfg(test)]
@@ -555,5 +640,91 @@ mod tests {
             parse_slash("/connect xai").unwrap().unwrap_err(),
             CommandError::Usage("/connect".into())
         );
+    }
+
+    #[test]
+    fn parses_goal_set_show_and_clear() {
+        assert_eq!(
+            parse_slash("/goal").unwrap().unwrap(),
+            SlashCommand::Goal {
+                action: GoalAction::Show
+            }
+        );
+        // The whole tail is the condition, spaces and all.
+        assert_eq!(
+            parse_slash("/goal all tests in test/auth pass")
+                .unwrap()
+                .unwrap(),
+            SlashCommand::Goal {
+                action: GoalAction::Set("all tests in test/auth pass".into())
+            }
+        );
+        // Every alias clears only when it is the lone argument.
+        for alias in GOAL_CLEAR_ALIASES {
+            assert_eq!(
+                parse_slash(&format!("/goal {alias}")).unwrap().unwrap(),
+                SlashCommand::Goal {
+                    action: GoalAction::Clear
+                },
+                "{alias}"
+            );
+        }
+        // `clear now` is a condition, not the clear command.
+        assert_eq!(
+            parse_slash("/goal clear now").unwrap().unwrap(),
+            SlashCommand::Goal {
+                action: GoalAction::Set("clear now".into())
+            }
+        );
+    }
+
+    #[test]
+    fn goal_set_and_grill_me_wait_for_a_free_session() {
+        // Both queue a fresh turn, so neither may run mid-turn.
+        assert!(!SlashCommand::Goal {
+            action: GoalAction::Set("x".into())
+        }
+        .available_while_busy());
+        assert!(!SlashCommand::GrillMe { topic: None }.available_while_busy());
+        // Reading and clearing the goal touch no turn and stay available.
+        assert!(SlashCommand::Goal {
+            action: GoalAction::Show
+        }
+        .available_while_busy());
+        assert!(SlashCommand::Goal {
+            action: GoalAction::Clear
+        }
+        .available_while_busy());
+    }
+
+    #[test]
+    fn parses_grill_me_with_and_without_a_topic() {
+        assert_eq!(
+            parse_slash("/grill-me").unwrap().unwrap(),
+            SlashCommand::GrillMe { topic: None }
+        );
+        assert_eq!(
+            parse_slash("/grill_me").unwrap().unwrap(),
+            SlashCommand::GrillMe { topic: None }
+        );
+        assert_eq!(
+            parse_slash("/grill-me my migration plan").unwrap().unwrap(),
+            SlashCommand::GrillMe {
+                topic: Some("my migration plan".into())
+            }
+        );
+    }
+
+    #[test]
+    fn grill_me_prompt_names_the_topic_only_when_given() {
+        let bare = grill_me_prompt(None);
+        assert!(bare.contains("Interview me relentlessly"));
+        assert!(!bare.contains("Subject:"));
+
+        let with_topic = grill_me_prompt(Some("  the cache design  "));
+        assert!(with_topic.contains("Subject: the cache design"));
+
+        // A blank topic is the same as none.
+        assert_eq!(grill_me_prompt(Some("   ")), bare);
     }
 }
