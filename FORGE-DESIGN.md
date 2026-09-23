@@ -880,6 +880,13 @@ Rules:
 - Reviewed files carry the `✓` tick; counts stay ASCII even in narrow panes.
 - Stale diff state must be explicit; binary/untracked/conflicted states must be truthful.
 - `/diff` holds no content state itself — the pane reads live diff state so refreshes update in place.
+- The hint row's right-aligned tag carries the branch before the layout: the
+  branch name with only the non-zero `↓behind ↑ahead`, or the `pull`/`push` in
+  flight (`Pushing origin/main…`). A running operation outranks the branch, and
+  the branch outranks the `split` layout note, which it then follows after a
+  `·`. A branch the pane cannot read renders `branch ?` — an empty tag would
+  read as "nothing to report", which is the one answer that is certainly wrong
+  when the state is merely unknown.
 
 ### 9.9 Terminal (BottomPanel)
 
