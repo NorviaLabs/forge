@@ -71,6 +71,23 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
 }
 
 #[tokio::test]
+async fn empty_session_model_does_not_replace_global_model_fallback() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.runtime.model_label = "openai/gpt-6-luna".into();
+    let session_id = app.selected_session_id;
+    let mut snapshot = app.supervisor.as_ref().unwrap().snapshots[&session_id].clone();
+    snapshot.details.as_mut().unwrap().active_model.clear();
+
+    app.sync_supervised_presentation(&snapshot);
+
+    assert_eq!(app.selected_model_label(), "openai/gpt-6-luna");
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn terminal_and_explorer_follow_the_session_worktree() {
     if !crate::interactive_terminal::pty_allocation_available() {
         eprintln!("skipping: this host denies PTY allocation");
