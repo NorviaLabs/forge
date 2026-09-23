@@ -20,6 +20,9 @@ pub enum SyntaxLanguage {
     Html,
     Css,
     Bash,
+    Toml,
+    Yaml,
+    Ini,
     Unknown,
 }
 
@@ -36,6 +39,9 @@ impl SyntaxLanguage {
             SyntaxLanguage::Html => tree_sitter_html::LANGUAGE.into(),
             SyntaxLanguage::Css => tree_sitter_css::LANGUAGE.into(),
             SyntaxLanguage::Bash => tree_sitter_bash::LANGUAGE.into(),
+            SyntaxLanguage::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
+            SyntaxLanguage::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+            SyntaxLanguage::Ini => tree_sitter_ini::LANGUAGE.into(),
             SyntaxLanguage::Unknown => tree_sitter_rust::LANGUAGE.into(),
         }
     }
@@ -53,6 +59,9 @@ impl std::fmt::Display for SyntaxLanguage {
             SyntaxLanguage::Html => "html",
             SyntaxLanguage::Css => "css",
             SyntaxLanguage::Bash => "bash",
+            SyntaxLanguage::Toml => "toml",
+            SyntaxLanguage::Yaml => "yaml",
+            SyntaxLanguage::Ini => "ini",
             SyntaxLanguage::Unknown => "unknown",
         };
         write!(f, "{}", s)
@@ -70,6 +79,9 @@ impl std::str::FromStr for SyntaxLanguage {
             "python" | "py" | "pyi" => Ok(SyntaxLanguage::Python),
             "go" | "golang" => Ok(SyntaxLanguage::Go),
             "json" => Ok(SyntaxLanguage::Json),
+            "toml" => Ok(SyntaxLanguage::Toml),
+            "yaml" | "yml" => Ok(SyntaxLanguage::Yaml),
+            "ini" => Ok(SyntaxLanguage::Ini),
             "html" | "htm" => Ok(SyntaxLanguage::Html),
             "css" | "scss" | "sass" | "less" => Ok(SyntaxLanguage::Css),
             "bash" | "sh" | "zsh" | "shell" => Ok(SyntaxLanguage::Bash),
@@ -97,6 +109,10 @@ fn build_language_map() -> HashMap<&'static str, SyntaxLanguage> {
         ("go", SyntaxLanguage::Go),
         ("golang", SyntaxLanguage::Go),
         ("json", SyntaxLanguage::Json),
+        ("toml", SyntaxLanguage::Toml),
+        ("yaml", SyntaxLanguage::Yaml),
+        ("yml", SyntaxLanguage::Yaml),
+        ("ini", SyntaxLanguage::Ini),
         ("html", SyntaxLanguage::Html),
         ("htm", SyntaxLanguage::Html),
         ("css", SyntaxLanguage::Css),
