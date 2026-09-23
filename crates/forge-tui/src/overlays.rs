@@ -126,6 +126,24 @@ pub enum Overlay {
         message: String,
         error: Option<String>,
     },
+    /// Pick a branch to switch to, or to merge in. One list with a filter,
+    /// because the two verbs differ only in what `Enter` does with the choice.
+    GitBranch {
+        selected: usize,
+        filter: String,
+        items: Vec<String>,
+        /// HEAD's branch, annotated in the list; `None` when detached.
+        current: Option<String>,
+        /// `false` switches, `true` merges the chosen branch into the current
+        /// one.
+        merge: bool,
+        error: Option<String>,
+    },
+    /// Confirmation before abandoning a merge. Destructive, so it is never the
+    /// first thing a key press does (`FORGE-DESIGN §8`).
+    GitAbortMerge {
+        detail: String,
+    },
     FileExplorer {
         cwd: String,
         selected: usize,
@@ -612,6 +630,87 @@ fn effort_options(model: &str) -> Vec<ReasoningEffort> {
 impl Overlay {
     pub fn welcome() -> Self {
         Self::Help
+    }
+
+    /// Indices of the branch names matching `filter`, case-insensitively. An
+    /// empty filter matches everything, so the picker opens on the whole list.
+    ///
+    /// One source of truth for the keyboard and the renderer: what is
+    /// highlighted and what `Enter` acts on can then never disagree.
+    fn branch_matches(items: &[String], filter: &str) -> Vec<usize> {
+        let filter = filter.trim().to_ascii_lowercase();
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| filter.is_empty() || name.to_ascii_lowercase().contains(&filter))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// What `Enter` does on the branch picker.
+    ///
+    /// A filter that matches no existing branch is a *create* while switching —
+    /// that is how a new branch is named, and it saves a second dialog. A
+    /// filter that matches something takes the selection instead, so narrowing
+    /// the list and pressing `Enter` can never invent a branch from a prefix.
+    /// Merging has no create reading at all: a branch that does not exist
+    /// cannot be merged.
+    ///
+    /// The one case this cannot express is a new branch whose name is a
+    /// substring of an existing one (`feat` while `feature/x` exists): the
+    /// filter matches, so `Enter` switches. That is the rarer direction by a
+    /// wide margin, and guessing the other way would make every narrowed list
+    /// ambiguous.
+    fn branch_enter(items: &[String], filter: &str, selected: usize, merge: bool) -> OverlayAction {
+        let typed = filter.trim();
+        let matches = Self::branch_matches(items, filter);
+        if !merge && !typed.is_empty() && matches.is_empty() {
+            return OverlayAction::GitCreateBranch {
+                name: typed.to_string(),
+            };
+        }
+        let chosen = matches
+            .get(selected.min(matches.len().saturating_sub(1)))
+            .map(|index| items[*index].clone());
+        match (chosen, merge) {
+            (Some(name), true) => OverlayAction::GitMergeBranch { name },
+            (Some(name), false) => OverlayAction::GitSwitchBranch { name },
+            (None, _) => OverlayAction::None,
+        }
+    }
+
+    /// The branch rows to paint: a window around the selection rather than a
+    /// page that scrolls the current branch out of sight.
+    fn branch_rows(
+        items: &[String],
+        matches: &[usize],
+        selected: usize,
+        current: Option<&str>,
+        budget: usize,
+    ) -> Vec<String> {
+        if matches.is_empty() || budget == 0 {
+            return Vec::new();
+        }
+        let selected = selected.min(matches.len() - 1);
+        let first = selected
+            .saturating_sub(budget / 2)
+            .min(matches.len().saturating_sub(budget.min(matches.len())));
+        matches
+            .iter()
+            .skip(first)
+            .take(budget)
+            .enumerate()
+            .map(|(offset, index)| {
+                let name = &items[*index];
+                let cursor = if first + offset == selected { ">" } else { " " };
+                let marker = if current.is_some_and(|current| current == name) {
+                    " current"
+                } else {
+                    ""
+                };
+                format!("{cursor} {name}{marker}")
+            })
+            .collect()
     }
 
     fn session_switcher_indices(items: &[SessionSwitcherItem], filter: &str) -> Vec<usize> {
@@ -1134,6 +1233,21 @@ impl Overlay {
                 let n = items.len() as i32;
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
+            Self::GitBranch {
+                selected,
+                filter,
+                items,
+                ..
+            } => {
+                // Steps through the FILTERED rows, so `↓` never lands on a
+                // branch the filter has hidden.
+                let matches = Overlay::branch_matches(items, filter);
+                if matches.is_empty() {
+                    return;
+                }
+                let current = (*selected).min(matches.len() - 1);
+                *selected = (current as i32 + delta).rem_euclid(matches.len() as i32) as usize;
+            }
             Self::FileExplorer {
                 selected, items, ..
             } => {
@@ -1171,6 +1285,20 @@ pub enum OverlayAction {
     CommitGit {
         message: String,
     },
+    /// Switch to an existing local branch.
+    GitSwitchBranch {
+        name: String,
+    },
+    /// Create a local branch from the typed name and switch to it.
+    GitCreateBranch {
+        name: String,
+    },
+    /// Merge an existing local branch into the current one.
+    GitMergeBranch {
+        name: String,
+    },
+    /// The operator confirmed the abort; abandon the in-progress merge.
+    GitAbortMerge,
     OpenSessionInput(SessionInputMode),
     OpenSessionRename {
         session_id: String,
@@ -1469,6 +1597,55 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     label.push(c);
                     *error = None;
                 }
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GitBranch { .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                error,
+                ..
+            } = overlay
+            {
+                if !c.is_control() {
+                    filter.push(c);
+                    *selected = 0;
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::GitBranch { .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                error,
+                ..
+            } = overlay
+            {
+                // A branch name has no spaces, so a pasted one is taken whole
+                // rather than split by the picker's own filter syntax.
+                filter.extend(
+                    data.chars()
+                        .filter(|c| !c.is_control() && !c.is_whitespace()),
+                );
+                *selected = 0;
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GitBranch { .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                error,
+                ..
+            } = overlay
+            {
+                filter.pop();
+                *selected = 0;
+                *error = None;
             }
             OverlayAction::None
         }
@@ -1824,6 +2001,14 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 }
             }
+            Overlay::GitAbortMerge { .. } => OverlayAction::GitAbortMerge,
+            Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                merge,
+                ..
+            } => Overlay::branch_enter(items, filter, *selected, *merge),
             // Confirmations are routed by the `Key::Enter` arm above, which
             // needs the kind to pick the matching action.
             Overlay::SessionConfirm { .. } => OverlayAction::None,
@@ -3078,6 +3263,75 @@ impl Widget for OverlayWidget<'_> {
                         .style(theme::panel())
                         .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title("Rename session")),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                current,
+                merge,
+                error,
+            } => {
+                let r = centered_rect(64, 44, area);
+                clear_modal(r, buf);
+                let matches = Overlay::branch_matches(items, filter);
+                // Two rows for the filter line and its blank, two for the hint
+                // line and its blank, two for the block's own border.
+                let rows = Overlay::branch_rows(
+                    items,
+                    &matches,
+                    *selected,
+                    current.as_deref(),
+                    (r.height as usize).saturating_sub(6),
+                );
+                let empty = if matches.is_empty() && !filter.trim().is_empty() {
+                    format!("\n\nNo branch matches `{filter}`.")
+                } else {
+                    String::new()
+                };
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                let (title, hint) = if *merge {
+                    ("Merge into the current branch", "Enter merge · Esc cancel")
+                } else {
+                    (
+                        "Branch",
+                        "Enter switch · a name that matches nothing creates it · Esc cancel",
+                    )
+                };
+                Paragraph::new(format!(
+                    "Filter: {filter}█{empty}\n\n{}\n\n{hint}{error}",
+                    rows.join("\n")
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title(title)),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitAbortMerge { detail } => {
+                let r = centered_rect(68, 30, area);
+                clear_modal(r, buf);
+                // Destructive: the border takes the severity colour so it reads
+                // as a warning before the words are read.
+                Paragraph::new(format!(
+                    "{detail}\n\nEnter abort merge · Esc keep resolving"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::error_callout())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title("Abort merge")),
                 )
                 .render(r, buf);
             }
@@ -5522,6 +5776,112 @@ mod tests {
                 "overlay rendered no text: {overlay:?}"
             );
         }
+    }
+
+    fn branch_overlay(items: &[&str], filter: &str, selected: usize, merge: bool) -> Overlay {
+        Overlay::GitBranch {
+            selected,
+            filter: filter.into(),
+            items: items.iter().map(|name| name.to_string()).collect(),
+            current: Some("main".into()),
+            merge,
+            error: None,
+        }
+    }
+
+    /// `Enter` on the branch picker: an existing name switches to it, and a
+    /// name that matches nothing is a create — that is how a new branch is
+    /// named without a second dialog.
+    #[test]
+    fn branch_picker_enter_switches_creates_or_merges() {
+        let items = ["main", "feature/x"];
+
+        // A filter that narrows to branches takes the selection, never
+        // inventing a branch from the typed prefix.
+        let mut overlay = branch_overlay(&items, "feat", 0, false);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "feature/x".into()
+            }
+        );
+
+        // A name no branch carries creates it, verbatim including the slash.
+        let mut overlay = branch_overlay(&items, "fix/typo", 0, false);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitCreateBranch {
+                name: "fix/typo".into()
+            },
+            "a name that matches nothing is the create verb"
+        );
+
+        // An exact match on an existing branch still switches, never re-creates.
+        let mut overlay = branch_overlay(&items, "main", 0, false);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "main".into()
+            }
+        );
+
+        // Merge mode takes the highlighted branch and never invents one.
+        let mut overlay = branch_overlay(&items, "feature", 1, true);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitMergeBranch {
+                name: "feature/x".into()
+            }
+        );
+        let mut overlay = branch_overlay(&items, "no/such", 0, true);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None,
+            "there is nothing to merge from a branch that does not exist"
+        );
+    }
+
+    #[test]
+    fn branch_picker_steps_only_through_what_the_filter_shows() {
+        let names = ["feature/x", "feature/y", "main"];
+        let items: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        // `main` does not carry `feature`, so the filter must exclude it.
+        assert_eq!(Overlay::branch_matches(&items, "feature"), vec![0, 1]);
+
+        let mut overlay = branch_overlay(&names, "feature", 0, false);
+        overlay.move_sel(1);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "feature/y".into()
+            },
+            "`↓` must not land on a branch the filter hid"
+        );
+        // And it stays inside the filtered window: a step past the end wraps
+        // to `feature/x`, never to `main`.
+        overlay.move_sel(1);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitSwitchBranch {
+                name: "feature/x".into()
+            }
+        );
+    }
+
+    #[test]
+    fn abort_merge_confirmation_aborts_only_on_enter() {
+        let mut overlay = Overlay::GitAbortMerge {
+            detail: "2 unresolved files will be replaced.".into(),
+        };
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::Close,
+            "Esc keeps resolving"
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::GitAbortMerge
+        );
     }
 }
 

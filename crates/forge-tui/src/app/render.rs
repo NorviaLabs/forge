@@ -1166,10 +1166,12 @@ impl TuiApp {
                 Some(WorkspaceView::Diff) => {
                     // Read before the widget borrows `diff_view` mutably.
                     let sync = self.git_sync_tag();
+                    let merge = self.git_merge_banner();
                     frame.render_widget(
                         crate::diff_view::DiffViewWidget {
                             view: &mut self.diff_view,
                             sync,
+                            merge,
                             focused: crate::widgets::background_focused(
                                 self.focus.block() == FocusBlock::Workspace,
                                 modal_open,

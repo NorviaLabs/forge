@@ -427,6 +427,21 @@ impl TuiApp {
                 self.start_git_sync(forge_workspace::git_sync::SyncOperation::Pull);
                 true
             }
+            KeyCode::Char('b') => {
+                self.open_git_branch_picker(false);
+                true
+            }
+            KeyCode::Char('M') => {
+                self.open_git_merge_picker();
+                true
+            }
+            // `a` only ever confirms or aborts; it never merges. Unbound in
+            // spirit anywhere else in this view, and never the first thing a
+            // destructive key press does.
+            KeyCode::Char('a') => {
+                self.abort_git_merge();
+                true
+            }
             KeyCode::Char('?') => {
                 self.overlay = Some(Overlay::StatusReport {
                     title: "Diff shortcuts".into(),
@@ -458,6 +473,9 @@ pub(super) fn diff_shortcut_rows() -> Vec<StatusRow> {
             ("c", "Commit the staged changes"),
             (">", "Push to the upstream branch"),
             ("<", "Pull from the upstream branch"),
+            ("b", "Switch branch, or create one by typing a new name"),
+            ("M", "Merge a branch into the current one"),
+            ("a", "Abort an in-progress merge (confirmed)"),
             ("o", "Open this file at the cursor's line"),
             ("d", "Switch working tree / last turn"),
             ("Esc", "Close the diff view"),
@@ -631,14 +649,31 @@ impl TuiApp {
 
     /// The right-aligned tag on the review pane's hint row.
     ///
-    /// Priority: what is happening now beats what the branch is. A running
-    /// `pull` is the thing the operator is waiting on; the branch and its
-    /// ahead/behind answer "is there anything to do at all".
+    /// Priority: what is happening now beats what the branch is, and an
+    /// in-progress merge beats the plain branch name — it is the state that
+    /// decides what the next key should be (`FORGE-DESIGN §9.8`).
     pub(super) fn git_sync_tag(&self) -> Option<String> {
         let sync = &self.git_sync;
-        if let Some(operation) = sync.running {
-            let target = sync.upstream().unwrap_or("upstream");
+        if let Some(operation) = sync.running.as_ref() {
+            let target = match &operation {
+                // A merge is with a branch, not an upstream, so naming the
+                // upstream would name the wrong thing.
+                forge_workspace::git_sync::SyncOperation::Merge { branch } => branch.clone(),
+                forge_workspace::git_sync::SyncOperation::Switch { branch }
+                | forge_workspace::git_sync::SyncOperation::Create { branch } => branch.clone(),
+                _ => sync.upstream().unwrap_or("upstream").to_string(),
+            };
             return Some(format!("{} {target}…", operation.active()));
+        }
+        if sync
+            .conflicts
+            .as_ref()
+            .is_some_and(|conflicts| conflicts.merge_in_progress)
+        {
+            return Some(format!(
+                "merging · {} unresolved",
+                self.git_conflict_count()
+            ));
         }
         // A repository this code cannot read must not look like one that is in
         // sync: `?` says the state is unknown, where an empty tag would claim
@@ -682,14 +717,42 @@ impl TuiApp {
         match outcome.result {
             Ok(_) => self.set_feedback(
                 FeedbackSeverity::Info,
-                format!("{} {target}", outcome.operation.finished()),
+                match &outcome.operation {
+                    // Naming the upstream would name the wrong thing for a
+                    // branch verb.
+                    forge_workspace::git_sync::SyncOperation::Merge { branch } => {
+                        format!("{} {branch}", outcome.operation.finished())
+                    }
+                    forge_workspace::git_sync::SyncOperation::Switch { branch }
+                    | forge_workspace::git_sync::SyncOperation::Create { branch } => {
+                        format!("{} · on {branch}", outcome.operation.finished())
+                    }
+                    _ => format!("{} {target}", outcome.operation.finished()),
+                },
             ),
             // Git's own words: a rejected push and an offline pull fail for
             // different reasons and the operator needs to tell them apart.
-            Err(error) => self.set_feedback(
-                FeedbackSeverity::Error,
-                format!("{} failed · {}", outcome.operation.label(), error),
-            ),
+            Err(error) => match &outcome.operation {
+                // A merge that stops for conflicts exits non-zero, but nothing
+                // failed: git is asking for a human. Git's first line names the
+                // path, and the banner carries the next step once the refresh
+                // lands — reporting "failed" here would train the operator to
+                // ignore a message that usually means "do your job".
+                forge_workspace::git_sync::SyncOperation::Merge { branch } => {
+                    let first = error.lines().find(|line| !line.trim().is_empty());
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        match first {
+                            Some(line) => format!("Merge of {branch} stopped · {line}"),
+                            None => format!("Merge of {branch} stopped"),
+                        },
+                    );
+                }
+                _ => self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("{} failed · {}", outcome.operation.label(), error),
+                ),
+            },
         }
     }
 
@@ -698,6 +761,9 @@ impl TuiApp {
     /// network.
     pub(super) fn start_git_sync(&mut self, operation: forge_workspace::git_sync::SyncOperation) {
         let root = self.session_view.workspace_root().to_path_buf();
+        // Read before the operation is handed to the worker, which takes
+        // ownership of it.
+        let active = operation.active();
         match self.git_sync.start_operation(root, operation) {
             Ok(()) => {
                 let target = self
@@ -705,10 +771,177 @@ impl TuiApp {
                     .upstream()
                     .map(str::to_string)
                     .unwrap_or_else(|| "upstream".into());
-                self.status_state.message = format!("{} {target}…", operation.active());
+                self.status_state.message = format!("{active} {target}…");
             }
             Err(reason) => self.set_feedback(FeedbackSeverity::Warn, reason),
         }
+    }
+
+    /// `b` / `M`. Both pickers read the same cached branch list, so they share
+    /// every guard: a source that cannot switch branches, and a branch state
+    /// this code could not read — opening a picker over stale data would invite
+    /// a choice that then fails.
+    fn open_git_branch_picker(&mut self, merge: bool) {
+        if self.diff_view.source != DiffSource::WorkingTree {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "Branches apply to the working tree; press d to switch",
+            );
+            return;
+        }
+        if self.git_sync.error.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "The branch could not be read, so there is nothing to choose from",
+            );
+            return;
+        }
+        if self.git_sync.branches.is_empty() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "No local branches yet — commit once to create one",
+            );
+            return;
+        }
+        self.overlay = Some(Overlay::GitBranch {
+            selected: 0,
+            filter: String::new(),
+            items: self.git_sync.branches.clone(),
+            current: self
+                .git_sync
+                .branch
+                .as_ref()
+                .and_then(|branch| branch.branch.clone()),
+            merge,
+            error: None,
+        });
+    }
+
+    pub(super) fn open_git_merge_picker(&mut self) {
+        if self
+            .git_sync
+            .conflicts
+            .as_ref()
+            .is_some_and(|conflicts| conflicts.merge_in_progress)
+        {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "A merge is already in progress — finish or abort it first",
+            );
+            return;
+        }
+        self.open_git_branch_picker(true);
+    }
+
+    /// Start one branch operation on the worker. Every branch verb shares this
+    /// so a refusal always reads the same way and never leaves the overlay up
+    /// over an action that did not start.
+    fn start_branch_operation(
+        &mut self,
+        operation: forge_workspace::git_sync::SyncOperation,
+        what: &str,
+    ) {
+        let root = self.session_view.workspace_root().to_path_buf();
+        match self.git_sync.start_operation(root, operation) {
+            Ok(()) => {
+                self.overlay = None;
+                self.status_state.message = format!("{what}…");
+            }
+            Err(reason) => {
+                self.overlay = None;
+                self.set_feedback(FeedbackSeverity::Warn, reason);
+            }
+        }
+    }
+
+    pub(super) fn switch_git_branch(&mut self, name: &str) {
+        self.start_branch_operation(
+            forge_workspace::git_sync::SyncOperation::Switch {
+                branch: name.to_string(),
+            },
+            &format!("Switching to {name}"),
+        );
+    }
+
+    pub(super) fn create_git_branch(&mut self, name: &str) {
+        self.start_branch_operation(
+            forge_workspace::git_sync::SyncOperation::Create {
+                branch: name.to_string(),
+            },
+            &format!("Creating {name}"),
+        );
+    }
+
+    pub(super) fn merge_git_branch(&mut self, name: &str) {
+        self.start_branch_operation(
+            forge_workspace::git_sync::SyncOperation::Merge {
+                branch: name.to_string(),
+            },
+            &format!("Merging {name}"),
+        );
+    }
+
+    /// `a`. Aborting throws the merge away, so it confirms first and the
+    /// operation itself only runs from the confirmation (`FORGE-DESIGN §8`).
+    /// Called both by the key and by the confirmed action, so the two can never
+    /// diverge: no confirmation open → raise it; confirmation open → run it.
+    pub(super) fn abort_git_merge(&mut self) {
+        let conflicts = self.git_sync.conflicts.as_ref();
+        let in_progress = conflicts.is_some_and(|conflicts| conflicts.merge_in_progress);
+        if !in_progress {
+            self.set_feedback(FeedbackSeverity::Warn, "No merge is in progress to abort");
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::GitAbortMerge { .. })) {
+            self.start_branch_operation(
+                forge_workspace::git_sync::SyncOperation::AbortMerge,
+                "Aborting merge",
+            );
+            return;
+        }
+        let unresolved = self.git_conflict_count();
+        let detail = format!(
+            "This abandons the merge and returns the working tree to its pre-merge state. \
+             {unresolved} unresolved {} still on disk will be replaced by the pre-merge contents.",
+            if unresolved == 1 { "file" } else { "files" }
+        );
+        self.overlay = Some(Overlay::GitAbortMerge { detail });
+    }
+
+    /// Unresolved paths, counted from the same status the file list draws, so
+    /// the banner and the `!` markers can never disagree.
+    pub(super) fn git_conflict_count(&self) -> usize {
+        self.workspace_files
+            .explorer
+            .git_status
+            .details
+            .values()
+            .filter(|status| {
+                status.staged == Some(forge_workspace::git_status::GitStatusKind::Conflicted)
+                    || status.unstaged
+                        == Some(forge_workspace::git_status::GitStatusKind::Conflicted)
+            })
+            .count()
+    }
+
+    /// The merge banner for the review pane, or `None` when no merge is in
+    /// progress. Preformatted for the widget, like `git_sync_tag`.
+    pub(super) fn git_merge_banner(&self) -> Option<String> {
+        let conflicts = self.git_sync.conflicts.as_ref()?;
+        if !conflicts.merge_in_progress {
+            return None;
+        }
+        let unresolved = self.git_conflict_count();
+        Some(if unresolved == 0 {
+            // Every conflict is resolved but the merge commit has not been made
+            // yet — committing with `c` is the last step, so say that rather
+            // than leaving the operator to guess.
+            "MERGE IN PROGRESS · all resolved · c commits the merge".to_string()
+        } else {
+            format!(
+                "MERGE IN PROGRESS · {unresolved} unresolved · o opens, s marks resolved, a aborts"
+            )
+        })
     }
 
     /// `s` / `u`. Staging is reversible and touches only the index, so it runs

@@ -232,6 +232,164 @@ async fn an_unreadable_branch_renders_as_unknown_rather_than_clean() {
     );
 }
 
+/// The branch picker's guards, and a real merge that stops for conflicts,
+/// shows the banner, and is abandoned only through the confirmation.
+#[tokio::test]
+async fn a_conflicting_merge_banners_and_aborts_only_when_confirmed() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "one\n")], &[]);
+    let root = dir.path();
+
+    // A branch that edits the same line, so the merge cannot be fast-forward.
+    git_run(root, &["switch", "-q", "-c", "side"]);
+    std::fs::write(root.join("tracked.txt"), "side\n").unwrap();
+    git_run(root, &["commit", "-qam", "side"]);
+    git_run(root, &["switch", "-q", "main"]);
+    std::fs::write(root.join("tracked.txt"), "main\n").unwrap();
+    git_run(root, &["commit", "-qam", "main"]);
+
+    app.open_git_view();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    // `a` with no merge in progress refuses rather than confirming something
+    // that cannot happen.
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert!(app.overlay.is_none(), "no merge, no confirmation");
+    assert!(
+        app.status_state.message.contains("No merge is in progress")
+            || app.feedback.text.contains("No merge is in progress"),
+        "and it says why"
+    );
+
+    // The picker offers every local branch, with HEAD marked.
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    let Some(Overlay::GitBranch {
+        items,
+        current,
+        merge,
+        ..
+    }) = app.overlay.as_ref()
+    else {
+        panic!("`b` opens the branch picker");
+    };
+    assert!(items.contains(&"side".to_string()), "{items:?}");
+    assert_eq!(current.as_deref(), Some("main"));
+    assert!(!merge, "`b` switches; `M` merges");
+    app.overlay = None;
+
+    // Merge `side`, which conflicts.
+    app.merge_git_branch("side");
+    settle_sync(&mut app);
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    let conflicts = app.git_sync.conflicts.as_ref().expect("a conflict read");
+    assert!(
+        conflicts.merge_in_progress,
+        "git left the merge in progress"
+    );
+    assert_eq!(app.git_conflict_count(), 1, "one unresolved file");
+
+    // A conflicting merge is the expected outcome, not a failure: the operator
+    // is being asked to resolve, so this must not read as an error.
+    assert_eq!(
+        app.feedback.severity,
+        FeedbackSeverity::Warn,
+        "a stopped merge is a warning: {}",
+        app.feedback.text
+    );
+    assert!(
+        app.feedback.text.contains("Merge of side stopped"),
+        "{}",
+        app.feedback.text
+    );
+
+    // And the pane says what to do about it.
+    let banner = app.git_merge_banner().expect("a banner while merging");
+    assert!(banner.contains("1 unresolved"), "{banner}");
+    assert!(banner.contains('a'), "it names the abort key: {banner}");
+    assert!(
+        app.git_sync_tag()
+            .is_some_and(|tag| tag.contains("merging")),
+        "the tag says a merge is in progress: {:?}",
+        app.git_sync_tag()
+    );
+
+    // Merging while a merge is in progress is refused.
+    app.merge_git_branch("side");
+    assert!(app.git_sync.running.is_none());
+    assert!(
+        app.feedback.text.contains("already in progress"),
+        "{}",
+        app.feedback.text
+    );
+
+    // `a` confirms first and does NOT abort on the way to the confirmation.
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    let Some(Overlay::GitAbortMerge { detail }) = app.overlay.as_ref() else {
+        panic!("`a` asks first");
+    };
+    assert!(detail.contains("pre-merge"), "{detail}");
+    assert!(
+        git_stdout(root, &["status", "--short"]).contains("UU"),
+        "nothing was aborted just by asking: {}",
+        git_stdout(root, &["status", "--short"])
+    );
+
+    // Confirming runs it, and the tree goes back to the pre-merge contents.
+    app.abort_git_merge();
+    settle_sync(&mut app);
+    settle_git(&mut app);
+    assert!(app.overlay.is_none(), "the confirmation closes on confirm");
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "main\n",
+        "the merge is abandoned and the pre-merge contents are back"
+    );
+    assert!(app.git_merge_banner().is_none(), "and the banner is gone");
+}
+
+/// Creating a branch from a name the picker does not know, and switching back.
+#[tokio::test]
+async fn the_picker_creates_a_named_branch_and_switches_between_branches() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "one\n")], &[]);
+    app.open_git_view();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    // A name that matches nothing is offered as a create.
+    let mut overlay = Overlay::GitBranch {
+        selected: 0,
+        filter: "fix/typo".into(),
+        items: app.git_sync.branches.clone(),
+        current: Some("main".into()),
+        merge: false,
+        error: None,
+    };
+    let OverlayAction::GitCreateBranch { name } =
+        handle_overlay_key(&mut overlay, OverlayKey::Enter)
+    else {
+        panic!("an unknown name creates a branch");
+    };
+    app.create_git_branch(&name);
+    settle_sync(&mut app);
+
+    assert_eq!(app.feedback.severity, FeedbackSeverity::Info);
+    assert_eq!(app.feedback.text, "Created · on fix/typo");
+    assert_eq!(
+        app.git_sync
+            .branch
+            .as_ref()
+            .and_then(|b| b.branch.as_deref()),
+        Some("fix/typo"),
+        "and HEAD really moved"
+    );
+    assert!(app.git_sync.branches.contains(&"fix/typo".to_string()));
+    assert!(app.git_sync.branches.contains(&"main".to_string()));
+}
+
 fn git_run(dir: &std::path::Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .arg("-C")

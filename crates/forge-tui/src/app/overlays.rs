@@ -291,6 +291,10 @@ impl TuiApp {
             OverlayAction::CommitGit { message } => {
                 self.commit_staged_changes(&message);
             }
+            OverlayAction::GitSwitchBranch { name } => self.switch_git_branch(&name),
+            OverlayAction::GitCreateBranch { name } => self.create_git_branch(&name),
+            OverlayAction::GitMergeBranch { name } => self.merge_git_branch(&name),
+            OverlayAction::GitAbortMerge => self.abort_git_merge(),
             OverlayAction::RenameSession { session_id, label } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");

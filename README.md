@@ -197,7 +197,8 @@ Useful in-app commands:
 /resize        Resize panes with arrow keys (`/resize reset` restores defaults)
 /theme         Change the presentation theme
 /status        Session status and diagnostics
-/git           Review, stage, commit and sync changes in the center pane (`s`/`u` stage, `c` commit, `<`/`>` pull/push, Esc closes)
+/git           Review, stage, commit, branch and merge in the center pane
+               (`s`/`u` stage, `c` commit, `<`/`>` pull/push, `b` branches, `M` merge, `a` abort merge)
 /effort        Set model effort
 /thinking      Toggle model thinking generation
 /help          Open help
