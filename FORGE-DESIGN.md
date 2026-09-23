@@ -527,6 +527,14 @@ surface. The old top task strip is superseded (`§11`).
   drawn only when the whole block fits: a short pane falls back to the unframed
   layout rather than painting half a box.
 - **Files tab** is today's explorer, unchanged.
+- **Git tab** appears only where the workspace is a repository (`.git` at the
+  session's root — a directory in a plain checkout, a file in a linked
+  worktree, so both qualify). It is not a new column and adds no permanent
+  chrome: it splits the space `Files` already had. Its column is the explorer
+  filtered to the changed files and the patch renders in the Workspace pane, so
+  entering the tab opens the working-tree review and leaving it puts the pane
+  back exactly as `Esc` does. `/git` reaches the same view without the column,
+  and stays reachable below `files_fit()` where the tab bar is gone.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
 - Below `files_fit()` the whole navigator collapses exactly as `Files` does
@@ -575,8 +583,8 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 |---|---|
 | Next visible block | `Tab` (while the `Panel` block holds the keyboard, plain `Tab` goes to its shell) |
 | Previous visible block | `Shift+Tab` |
-| Navigator tabs `Sessions` / `Files` (repository mode) | `Ctrl+1` / `Ctrl+2`; `Ctrl+E` flips the two (`Ctrl+1` also focuses the list) |
-| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `+` · `Files`, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
+| Navigator tabs `Sessions` / `Files` / `Git` (repository mode) | `Ctrl+1` / `Ctrl+2` / `Ctrl+3`; `Ctrl+E` flips `Sessions` and `Files` (`Ctrl+1` also focuses the list). `Ctrl+3` is inert outside a repository rather than switching to a tab the row does not draw |
+| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `+` · `Files` · `Git`, halting at each end, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |

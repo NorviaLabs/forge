@@ -21,6 +21,10 @@ use crate::theme;
 pub enum NavigatorTab {
     Sessions,
     Files,
+    /// Working-tree review. The tab only exists while the workspace is inside a
+    /// Git repository, and its column is the explorer filtered to the changed
+    /// files — the patch itself renders in the Workspace pane.
+    Git,
 }
 
 impl NavigatorTab {
@@ -28,6 +32,7 @@ impl NavigatorTab {
         match self {
             Self::Sessions => "Sessions",
             Self::Files => "Files",
+            Self::Git => "Git",
         }
     }
 }
@@ -40,6 +45,7 @@ pub enum NavigatorRowStop {
     #[default]
     Sessions,
     Files,
+    Git,
     NewSession,
 }
 
@@ -50,6 +56,7 @@ impl NavigatorRowStop {
         match tab {
             NavigatorTab::Sessions => Self::Sessions,
             NavigatorTab::Files => Self::Files,
+            NavigatorTab::Git => Self::Git,
         }
     }
 }
@@ -195,10 +202,77 @@ pub(crate) fn new_session_cell(area: Rect) -> Option<Rect> {
     ))
 }
 
+/// The navigator tab row's tab rects, left to right. `git` adds the third tab,
+/// which splits the space the `Sessions` tab and the `+` cell leave with
+/// `Files`; without it the two-tab layout is exactly as it was, so nothing
+/// moves in a workspace that is not a repository.
+///
+/// Painting, keyboard stops and pointer routing all read this, so the three can
+/// never disagree about where a tab is.
+pub(crate) fn navigator_tab_rects(area: Rect, git: bool) -> Vec<(NavigatorTab, Rect)> {
+    if area.width == 0 || area.height == 0 {
+        return Vec::new();
+    }
+    let split = SESSIONS_TAB_WIDTH.min(area.width);
+    let sessions = Rect::new(area.x, area.y, split, area.height);
+    let new_session = new_session_cell(area);
+    let start = match new_session {
+        Some(cell) => cell.x + cell.width.saturating_sub(1),
+        None => area.x + split.saturating_sub(1),
+    };
+    let remaining = area.right().saturating_sub(start);
+    if !git || remaining < 2 {
+        return vec![
+            (NavigatorTab::Sessions, sessions),
+            (
+                NavigatorTab::Files,
+                Rect::new(start, area.y, remaining, area.height),
+            ),
+        ];
+    }
+    // `Files` and `Git` share one edge column, the way the `Sessions` tab and
+    // the `+` cell do, so the row keeps reading as one strip.
+    let files_width = remaining / 2;
+    let git_x = start + files_width.saturating_sub(1);
+    vec![
+        (NavigatorTab::Sessions, sessions),
+        (
+            NavigatorTab::Files,
+            Rect::new(start, area.y, files_width, area.height),
+        ),
+        (
+            NavigatorTab::Git,
+            Rect::new(
+                git_x,
+                area.y,
+                area.right().saturating_sub(git_x),
+                area.height,
+            ),
+        ),
+    ]
+}
+
+/// The tab whose box covers `col`, for pointer routing. Falls back to the
+/// nearest tab so a click in a shared edge column still lands somewhere.
+pub(crate) fn navigator_tab_at(col: u16, area: Rect, git: bool) -> NavigatorTab {
+    let rects = navigator_tab_rects(area, git);
+    let mut fallback = NavigatorTab::Sessions;
+    for (tab, rect) in &rects {
+        fallback = *tab;
+        if col >= rect.x && col < rect.right() {
+            return *tab;
+        }
+    }
+    fallback
+}
+
 /// Framed tabs across the top of the navigator column.
 pub struct NavigatorTabs {
     pub tab: NavigatorTab,
     pub needs_you: usize,
+    /// Whether the workspace is a repository, which is the only case the `Git`
+    /// tab exists in.
+    pub git: bool,
     /// The row itself holds the keyboard (`↑` at the top of either tab's list,
     /// `FORGE-DESIGN §8.3`). Both outlines then take the L3 accent step while
     /// the active tab keeps its `accent_soft` ground, so the row reads as the
@@ -228,21 +302,7 @@ impl Widget for NavigatorTabs {
         // edge with it, so the create verb reads as acting on sessions.
         // One source of truth for painting, keyboard stops and pointer routing.
         let new_session = new_session_cell(area);
-        let split = SESSIONS_TAB_WIDTH.min(area.width);
-        let sessions_area = Rect::new(area.x, area.y, split, area.height);
-        let files_area = if let Some(cell) = new_session {
-            let x = cell.x + cell.width.saturating_sub(1);
-            Rect::new(x, area.y, area.right().saturating_sub(x), area.height)
-        } else {
-            let x = area.x + split.saturating_sub(1);
-            Rect::new(x, area.y, area.right().saturating_sub(x), area.height)
-        };
-        for (index, (tab, tab_area)) in [
-            (NavigatorTab::Sessions, sessions_area),
-            (NavigatorTab::Files, files_area),
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, (tab, tab_area)) in navigator_tab_rects(area, self.git).into_iter().enumerate()
         {
             let is_active = tab == self.tab;
             let hovered = !is_active && self.hover == Some(tab);
@@ -300,11 +360,11 @@ impl Widget for NavigatorTabs {
             // them on different axes.
             let label_x = inner.x + inner.width.saturating_sub(label_width) / 2;
             buf.set_string(label_x, inner.y, &label, label_style);
-            if index == 1 && self.tab == NavigatorTab::Files && self.needs_you > 0 {
+            if index == 1 && self.tab != NavigatorTab::Sessions && self.needs_you > 0 {
                 // The Sessions tab (12 wide, 8-cell label) cannot hold a
                 // badge beside its label, so the wide Files tab hosts it —
-                // shown only while viewing Files, when the session list's
-                // own need states are out of sight.
+                // shown whenever the session list's own need states are out
+                // of sight, which is also true while the Git tab is up.
                 let badge = format!("{} need", self.needs_you);
                 let badge_width = badge.chars().count() as u16;
                 let badge_x = inner.right().saturating_sub(badge_width);
@@ -811,6 +871,7 @@ mod tests {
         let row_stop = match tab {
             NavigatorTab::Sessions => NavigatorRowStop::Sessions,
             NavigatorTab::Files => NavigatorRowStop::Files,
+            NavigatorTab::Git => NavigatorRowStop::Git,
         };
         render_row(width, tab, needs_you, hover, row_stop, false, focused)
     }
@@ -833,6 +894,7 @@ mod tests {
                     NavigatorTabs {
                         tab,
                         needs_you,
+                        git: false,
                         focused,
                         hover,
                         row_stop,
@@ -843,6 +905,40 @@ mod tests {
             })
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn the_git_tab_paints_and_hit_tests_on_one_layout() {
+        let area = ratatui::layout::Rect::new(0, 0, 40, 3);
+        let rects = navigator_tab_rects(area, true);
+        assert_eq!(
+            rects.iter().map(|(tab, _)| *tab).collect::<Vec<_>>(),
+            vec![
+                NavigatorTab::Sessions,
+                NavigatorTab::Files,
+                NavigatorTab::Git
+            ],
+            "the third tab sits at the right end, after `Files`"
+        );
+        // Painting and pointer routing read one layout, so a tab's own middle
+        // can never resolve to a different tab than the one drawn there.
+        for (tab, rect) in &rects {
+            assert_eq!(navigator_tab_at(rect.x + rect.width / 2, area, true), *tab);
+        }
+        assert_eq!(
+            rects.last().unwrap().1.right(),
+            area.right(),
+            "the row still ends at the column's own right edge"
+        );
+
+        // Without a repository the row is exactly today's two-tab one: `Git` is
+        // the only box that appears, and `Files` reclaims the whole remainder.
+        let two = navigator_tab_rects(area, false);
+        assert_eq!(
+            two.iter().map(|(tab, _)| *tab).collect::<Vec<_>>(),
+            vec![NavigatorTab::Sessions, NavigatorTab::Files]
+        );
+        assert_eq!(two[1].1.right(), area.right());
     }
 
     /// First column carrying `symbol` on row `y`.

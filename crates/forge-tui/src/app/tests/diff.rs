@@ -32,6 +32,37 @@ fn repo_with_changes(dir: &std::path::Path, baseline: &[(&str, &str)], changes: 
     }
 }
 
+#[tokio::test]
+async fn git_command_opens_live_working_tree_and_stage_refreshes_status() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("tracked.txt", "one\n")],
+        &[("tracked.txt", "two\n")],
+    );
+
+    app.open_git_view();
+    settle_git(&mut app);
+    assert!(app.diff_view_is_open());
+    assert_eq!(app.diff_view.source, DiffSource::WorkingTree);
+    assert_eq!(
+        app.diff_view.selected_path().unwrap(),
+        std::path::Path::new("tracked.txt")
+    );
+    settle_patch(&mut app);
+    assert!(matches!(app.diff_view.patch, PatchState::Ready(_)));
+
+    app.stage_selected_diff_file(true);
+    settle_git(&mut app);
+    assert!(app
+        .diff_view
+        .entries
+        .iter()
+        .any(|entry| entry.path == std::path::Path::new("tracked.txt")));
+    app.close_diff_view();
+    assert!(!app.diff_view_is_open());
+}
+
 /// Drive the async git-status cache to completion, the way the event loop
 /// tick does, so a test can assert on a settled file list.
 fn settle_git(app: &mut TuiApp) {

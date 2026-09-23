@@ -404,7 +404,7 @@ fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, PathStatus>, String> 
     parse_null_terminated(&output.stdout)
 }
 
-fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, PathStatus>, String> {
+pub(crate) fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, PathStatus>, String> {
     let mut map = HashMap::new();
     let text = String::from_utf8_lossy(data);
     let parts: Vec<&str> = text.split('\0').collect();
