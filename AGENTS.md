@@ -70,6 +70,7 @@ cargo build --release --locked --package forge-cli
 - `main` is protected on the remote: force-pushes are blocked, so a commit pushed to `main` cannot be removed — always branch first.
 - Open a PR for every change and let it merge via PR, not direct push.
 - Keep commits focused; squash-friendly single commits per PR are the norm in this repo.
+- Never add any document from docs/ folder to git.
 
 ## Provider/Model Notes
 
