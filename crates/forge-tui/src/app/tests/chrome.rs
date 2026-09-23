@@ -988,34 +988,22 @@ async fn tui10_repeated_error_does_not_duplicate_chrome() {
 }
 
 #[tokio::test]
-async fn tui08_feedback_strip_visible_on_frame() {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "m".into(),
-            provider: "mock".into(),
-            cwd: PathBuf::from("."),
-            version: "0.10.0".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
+async fn toast_error_visible_on_frame() {
+    let (_dir, mut app) = focus_test_app().await;
     app.report_error("429 rate limit");
-    let backend = TestBackend::new(100, 30);
-    let mut term = Terminal::new(backend).unwrap();
-    term.draw(|f| app.draw(f)).unwrap();
+    draw_app(&mut app, 100, 30);
     let mut text = String::new();
-    let buf = term.backend().buffer();
-    for y in 0..buf.area().height {
-        for x in 0..buf.area().width {
-            text.push_str(buf[(x, y)].symbol());
+    let backend = ratatui::backend::TestBackend::new(100, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    for y in 0..buffer.area().height {
+        for x in 0..buffer.area().width {
+            text.push_str(buffer[(x, y)].symbol());
         }
-        text.push('\n');
     }
+    assert!(app.toast.has_toast());
+    assert!(text.contains("rate limited"));
     let regions = crate::layout::split_areas_with_expanded_conversation(
         ratatui::layout::Rect::new(0, 0, 100, 30),
         1,
@@ -1028,19 +1016,7 @@ async fn tui08_feedback_strip_visible_on_frame() {
         0,
         0,
     );
-    assert_eq!(regions.feedback.height, 1);
-    // The status line lives in the shell band above the footer now, below the
-    // conversation column — it used to sit inside the sidebar above the
-    // composer, shifting the transcript every time a message expired.
-    assert!(regions.feedback.y > regions.input.y);
-    assert_eq!(
-        regions.feedback.y + regions.feedback.height,
-        regions.footer.y
-    );
-    assert!(
-        text.contains("rate limited") || text.contains("429") || text.contains("Model error"),
-        "frame missing feedback:\n{text}"
-    );
+    assert_eq!(regions.feedback.height, 0);
 }
 
 #[tokio::test]

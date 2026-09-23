@@ -1,11 +1,4 @@
-//! Feedback strip (Phase 10 / TUI-08) — always-visible latest status/error.
-
-use crate::status_glyph::{status_indicator_now, Status};
-use crate::theme;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Padding, Paragraph, Widget, Wrap};
+//! Severity labels and error classification shared by toast notifications.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FeedbackSeverity {
@@ -14,33 +7,6 @@ pub enum FeedbackSeverity {
     Warn,
     Error,
     Ok,
-}
-
-pub struct FeedbackBar<'a> {
-    pub model: &'a FeedbackModel,
-}
-
-impl Widget for FeedbackBar<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 || self.model.is_empty() {
-            return;
-        }
-        let (icon, style) = match self.model.severity {
-            FeedbackSeverity::Info => (status_indicator_now(Status::Info), theme::info()),
-            FeedbackSeverity::Warn => (status_indicator_now(Status::Warning), theme::warn()),
-            FeedbackSeverity::Error => (status_indicator_now(Status::Error), theme::danger()),
-            FeedbackSeverity::Ok => (status_indicator_now(Status::Success), theme::ok()),
-        };
-        Paragraph::new(Line::from(vec![
-            icon,
-            Span::raw(" "),
-            Span::styled(&self.model.text, style),
-        ]))
-        .style(theme::panel())
-        .wrap(Wrap { trim: true })
-        .block(Block::default().padding(Padding::horizontal(crate::design::PANE_PAD_X)))
-        .render(area, buf);
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -131,20 +97,6 @@ pub fn classify_operator_error(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    fn render_feedback(model: &FeedbackModel, width: u16, height: u16) -> String {
-        let area = Rect::new(0, 0, width, height);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| frame.render_widget(FeedbackBar { model }, area))
-            .unwrap();
-        let buf = terminal.backend().buffer();
-        (0..height)
-            .flat_map(|y| (0..width).map(move |x| buf[(x, y)].symbol()))
-            .collect()
-    }
 
     #[test]
     fn classify_rate_limit() {
@@ -188,31 +140,6 @@ mod tests {
         assert_eq!(FeedbackModel::warn("w").severity, FeedbackSeverity::Warn);
         assert_eq!(FeedbackModel::error("e").severity, FeedbackSeverity::Error);
         assert_eq!(FeedbackModel::ok("o").severity, FeedbackSeverity::Ok);
-    }
-
-    #[test]
-    fn render_skips_empty_and_wraps_long_messages() {
-        let empty = FeedbackModel::default();
-        assert!(render_feedback(&empty, 20, 4).trim().is_empty());
-
-        let long = FeedbackModel::warn("abcdefghijklmnopqrstuvwxyz");
-        let rendered = render_feedback(&long, 20, 4);
-        // 2026 grammar: warning renders `[?]`, not the animated WAIT word.
-        assert!(rendered.contains("[?]") && rendered.contains("abcdef"));
-    }
-
-    /// The status line has no border, so it pads directly to the footer's text
-    /// origin — the shell band it shares, not the conversation column it used
-    /// to sit in.
-    #[test]
-    fn single_row_strip_starts_at_the_footer_text_origin() {
-        let model = FeedbackModel::error("boom");
-        let area = Rect::new(0, 0, 40, 1);
-        let mut buf = Buffer::empty(area);
-        FeedbackBar { model: &model }.render(area, &mut buf);
-        let inset = crate::design::PANE_PAD_X;
-        assert_eq!(buf[(0, 0)].symbol(), " ");
-        assert_eq!(buf[(inset, 0)].symbol(), "[");
     }
 
     #[test]

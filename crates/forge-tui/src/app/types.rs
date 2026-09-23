@@ -1473,7 +1473,6 @@ impl ExitState {
 
 #[derive(Default)]
 pub(crate) struct ToastState {
-    current: Option<(Instant, String)>,
     stack: crate::widgets::ToastStack,
 }
 
@@ -1482,11 +1481,8 @@ impl ToastState {
         &mut self,
         severity: crate::widgets::feedback::FeedbackSeverity,
         text: impl Into<String>,
-    ) -> String {
-        let text = text.into();
-        self.current = Some((Instant::now(), text.clone()));
-        self.stack.push(severity, text.clone());
-        text
+    ) {
+        self.stack.push(severity, text);
     }
 
     pub(crate) fn push_overlay(
@@ -1497,27 +1493,23 @@ impl ToastState {
         self.stack.push(severity, text);
     }
 
-    /// Whether a toast is on screen. The only way to observe a push that
-    /// deliberately skipped the feedback strip.
+    /// Whether a toast is on screen.
     #[cfg(test)]
     pub(crate) fn has_toast(&self) -> bool {
         self.stack.has_toast()
     }
 
+    pub(crate) fn expire(&mut self, _timeout: Duration) {
+        self.stack.tick();
+    }
+
     pub(crate) fn clear(&mut self) {
-        self.current = None;
         self.stack.clear();
     }
 
-    pub(crate) fn expire(&mut self, timeout: Duration) {
-        if self
-            .current
-            .as_ref()
-            .is_some_and(|(shown_at, _)| shown_at.elapsed() > timeout)
-        {
-            self.current = None;
-        }
-        self.stack.tick();
+    #[cfg(test)]
+    pub(crate) fn expire_for_test(&mut self) {
+        self.stack.tick_for_test();
     }
 
     pub(crate) fn render_overlay(
@@ -1898,7 +1890,6 @@ pub struct TuiApp {
     pub(crate) inline_search: Option<InlineSearchState>,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     pub(crate) feedback: FeedbackModel,
-    pub(crate) feedback_until: Option<Instant>,
     pub(crate) banner_state: BannerState,
     /// Per-turn completion metadata (DESIGN-005): view-only presentation
     /// state keyed by session plus user-message ordinal. Each record renders
