@@ -1419,6 +1419,17 @@ impl TuiApp {
             if !self.session_runtime.queue().is_empty() {
                 self.dequeue_and_send_next().await;
             }
+            // Judge an active `/goal` now that the turn has settled. Runs last
+            // so a queued turn, if any, keeps its place ahead of the goal. The
+            // evaluator is a live model call, so paint the wait first.
+            if self.goal.is_some() {
+                self.set_feedback(FeedbackSeverity::Info, "◎ evaluating goal…");
+                if let Some(term) = terminal {
+                    term.draw(|f| self.draw(f))
+                        .map_err(|error| TuiError::Other(error.to_string()))?;
+                }
+            }
+            self.advance_goal_after_turn().await?;
         }
         Ok(())
     }

@@ -1187,6 +1187,20 @@ impl PendingTurnState {
     }
 }
 
+/// An active `/goal` completion condition plus the bookkeeping `/goal` status
+/// reports and the post-turn evaluator updates.
+#[derive(Debug, Clone)]
+pub(crate) struct GoalState {
+    /// The condition the evaluator judges after every completed turn.
+    pub(crate) condition: String,
+    /// Turns the evaluator has judged since the goal was set.
+    pub(crate) turns_evaluated: u32,
+    /// The evaluator's most recent reason, for `/goal` and the verdict line.
+    pub(crate) last_reason: Option<String>,
+    /// When the goal was set, for the status line's elapsed time.
+    pub(crate) started_at: Instant,
+}
+
 /// Deferred interactions owned by the event loop.
 ///
 /// How far an approval's grant reaches.
@@ -1900,6 +1914,9 @@ pub struct TuiApp {
     pub(crate) turn_summaries_revision: u64,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pub(crate) pending_turn: PendingTurnState,
+    /// Active `/goal` completion condition; `None` when no goal is running.
+    /// Session-scoped: `/new`, `/fork`, and `/resume` start without one.
+    pub(crate) goal: Option<GoalState>,
     pub(crate) pending_interaction: PendingInteractionState,
     /// Commands submitted without awaiting execution. Polled every tick so a
     /// busy actor can never block input or rendering. App-level rather than

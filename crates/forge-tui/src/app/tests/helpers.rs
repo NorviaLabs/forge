@@ -209,6 +209,29 @@ pub(crate) async fn focus_test_app_with_theme(theme_id: &str) -> (TempDir, TuiAp
     (dir, app)
 }
 
+/// Like `focus_test_app`, but the session runs on a caller-supplied model, so a
+/// test can script a specific reply sequence (the `/goal` evaluator consumes a
+/// second, tool-less model call after the turn it judges).
+pub(crate) async fn focus_test_app_with_model(model: Arc<dyn ModelClient>) -> (TempDir, TuiApp) {
+    let dir = TempDir::new().unwrap();
+    let session = session_for_workspace_with_model(dir.path(), model).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            cwd: dir.path().to_path_buf(),
+            ..test_runtime_config()
+        },
+    );
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
+        tempfile::TempDir::new()
+            .unwrap()
+            .path()
+            .join("empty-creds.toml"),
+    );
+    (dir, app)
+}
+
 pub(crate) fn render_app_text(app: &mut TuiApp, width: u16, height: u16) -> String {
     use ratatui::backend::TestBackend;
 

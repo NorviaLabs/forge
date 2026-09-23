@@ -2317,3 +2317,179 @@ async fn benign_semantic_commands_cover_navigation_and_editor_dispatch() {
     assert!(app.external_editor.requested);
     assert!(app.overlay.is_some());
 }
+
+/// A scripted assistant reply with no tool calls, for the `/goal` evaluator
+/// tests where each model call must return a specific line.
+fn goal_test_reply(text: &str) -> ModelResponse {
+    ModelResponse {
+        text: text.into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }
+}
+
+#[tokio::test]
+async fn goal_sets_a_condition_and_starts_a_turn() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/goal all tests in test/auth pass")
+        .await
+        .unwrap();
+
+    let goal = app.goal.as_ref().expect("goal is set");
+    assert_eq!(goal.condition, "all tests in test/auth pass");
+    assert_eq!(goal.turns_evaluated, 0);
+    // Setting a goal starts a turn with the condition as the directive.
+    assert_eq!(
+        app.pending_turn.prompt(),
+        Some("all tests in test/auth pass")
+    );
+}
+
+#[tokio::test]
+async fn goal_without_a_condition_opens_a_status_report() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/goal").await.unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
+}
+
+#[tokio::test]
+async fn goal_clear_drops_the_condition() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/goal all tests pass").await.unwrap();
+    assert!(app.goal.is_some());
+    // Drop the turn the set queued so the clear is judged on its own.
+    app.pending_turn.clear();
+
+    app.dispatch_line("/goal clear").await.unwrap();
+
+    assert!(app.goal.is_none());
+    assert!(
+        app.feedback.text.contains("Goal cleared"),
+        "feedback={}",
+        app.feedback.text
+    );
+}
+
+#[tokio::test]
+async fn goal_set_and_grill_me_are_refused_while_busy() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.busy_state
+        .start(crate::widgets::status::BusyPhase::Model);
+
+    app.dispatch_line("/goal all tests pass").await.unwrap();
+    assert!(app.goal.is_none(), "a busy session must not start a goal");
+    assert!(
+        app.feedback.text.contains("unavailable"),
+        "feedback={}",
+        app.feedback.text
+    );
+
+    app.dispatch_line("/grill-me").await.unwrap();
+    assert!(!app.pending_turn.has_prompt());
+}
+
+#[tokio::test]
+async fn grill_me_queues_an_interview_turn() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/grill-me the cache design")
+        .await
+        .unwrap();
+
+    let prompt = app.pending_turn.prompt().expect("interview queued");
+    assert!(prompt.contains("Interview me relentlessly"));
+    assert!(prompt.contains("the cache design"));
+}
+
+#[tokio::test]
+async fn goal_evaluator_clears_the_goal_when_met() {
+    let model = Arc::new(MockModelClient::script(vec![
+        goal_test_reply("did the work"),
+        goal_test_reply("MET: the suite passes and lint is clean"),
+    ]));
+    let (_dir, mut app) = focus_test_app_with_model(model).await;
+
+    app.dispatch_line("/goal all tests pass").await.unwrap();
+    // Draining the goal turn settles it, which runs the evaluator.
+    app.drain_pending_prompt(None).await.unwrap();
+
+    assert!(app.goal.is_none(), "feedback={}", app.feedback.text);
+    assert!(
+        !app.pending_turn.has_prompt(),
+        "a met goal must not start another turn"
+    );
+    assert!(
+        app.feedback.text.contains("goal met"),
+        "{}",
+        app.feedback.text
+    );
+}
+
+#[tokio::test]
+async fn goal_evaluator_starts_another_turn_while_unmet() {
+    let model = Arc::new(MockModelClient::script(vec![
+        goal_test_reply("partial work"),
+        goal_test_reply("NOT_MET: two call sites still fail to compile"),
+    ]));
+    let (_dir, mut app) = focus_test_app_with_model(model).await;
+
+    app.dispatch_line("/goal every call site compiles")
+        .await
+        .unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let goal = app.goal.as_ref().expect("goal still active");
+    assert_eq!(goal.turns_evaluated, 1);
+    assert_eq!(
+        goal.last_reason.as_deref(),
+        Some("two call sites still fail to compile")
+    );
+    let prompt = app.pending_turn.prompt().expect("continuation queued");
+    assert!(prompt.contains("every call site compiles"));
+    assert!(prompt.contains("two call sites still fail to compile"));
+}
+
+#[tokio::test]
+async fn goal_evaluator_pauses_on_an_unreadable_verdict() {
+    let model = Arc::new(MockModelClient::script(vec![
+        goal_test_reply("did some work"),
+        goal_test_reply("Sure, here is my analysis of the work so far."),
+    ]));
+    let (_dir, mut app) = focus_test_app_with_model(model).await;
+
+    app.dispatch_line("/goal all tests pass").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    assert!(app.goal.is_some(), "the goal stays set");
+    assert!(
+        !app.pending_turn.has_prompt(),
+        "an unreadable verdict must not spin the session"
+    );
+    assert!(
+        app.feedback.text.contains("goal paused"),
+        "feedback={}",
+        app.feedback.text
+    );
+}
+
+#[tokio::test]
+async fn goal_evaluator_clears_the_goal_when_impossible() {
+    let model = Arc::new(MockModelClient::script(vec![
+        goal_test_reply("looked into it"),
+        goal_test_reply("IMPOSSIBLE: the target API was removed upstream"),
+    ]));
+    let (_dir, mut app) = focus_test_app_with_model(model).await;
+
+    app.dispatch_line("/goal the removed API is used again")
+        .await
+        .unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    assert!(app.goal.is_none());
+    assert!(!app.pending_turn.has_prompt());
+    assert!(
+        app.feedback.text.contains("impossible"),
+        "feedback={}",
+        app.feedback.text
+    );
+}

@@ -197,6 +197,8 @@ Useful in-app commands:
 /resize        Resize panes with arrow keys (`/resize reset` restores defaults)
 /theme         Change the presentation theme
 /status        Session status and diagnostics
+/goal          Work toward a completion condition until it holds (`/goal clear` stops)
+/grill-me      Interview me to sharpen a plan or design before I commit
 /effort        Set model effort
 /thinking      Toggle model thinking generation
 /help          Open help
