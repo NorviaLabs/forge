@@ -648,7 +648,13 @@ impl TuiApp {
     /// Toast with an explicit severity. Transient notifications deliberately
     /// have one in-app destination: the top-right toast overlay.
     pub(super) fn push_toast_with(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
-        self.toast.push_overlay(severity, text);
+        let text = text.into();
+        self.toast.push_overlay(severity, text.clone());
+        self.feedback = FeedbackModel {
+            text: text.clone(),
+            severity,
+        };
+        self.status_state.message = text;
     }
 
     pub(super) fn tick_toast(&mut self) {
