@@ -29,6 +29,44 @@ async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
 }
 
 #[tokio::test]
+async fn plain_home_scrolls_to_conversation_start_without_draft() {
+    let (_dir, mut app) = focus_test_app().await;
+    let home = event::KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(
+        app.semantic_command_for_global_key(home),
+        Some(SemanticCommand::GoToConversationStart)
+    );
+    app.execute_semantic_command(SemanticCommand::GoToConversationStart)
+        .await
+        .unwrap();
+    assert!(!app.conversation_view.follow);
+    assert_eq!(app.conversation_view.scroll, u16::MAX);
+
+    app.input.set_text("draft");
+    assert_eq!(app.semantic_command_for_global_key(home), None);
+}
+
+#[tokio::test]
+async fn plain_end_returns_scrolled_conversation_to_latest_without_draft() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.follow = false;
+    app.conversation_view.scroll = 12;
+
+    let end = event::KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
+    let command = app.semantic_command_for_global_key(end);
+    assert_eq!(command, Some(SemanticCommand::ReturnToLatest));
+    app.execute_semantic_command(command.unwrap())
+        .await
+        .unwrap();
+    assert!(app.conversation_view.follow);
+    assert_eq!(app.conversation_view.scroll, 0);
+
+    app.conversation_view.follow = false;
+    app.input.set_text("draft");
+    assert_eq!(app.semantic_command_for_global_key(end), None);
+}
+
+#[tokio::test]
 async fn confirming_approve_all_resumes_an_existing_pending_approval() {
     let (_fake_home, _home_guard) = fake_home_guard();
     let (dir, mut app) = focus_test_app().await;

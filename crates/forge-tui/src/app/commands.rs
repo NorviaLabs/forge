@@ -310,6 +310,16 @@ impl TuiApp {
             KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ReturnToLatest)
             }
+            KeyCode::End
+                if key.modifiers.is_empty()
+                    && !self.conversation_view.follow
+                    && self.input.text.is_empty() =>
+            {
+                Some(SemanticCommand::ReturnToLatest)
+            }
+            KeyCode::Home if key.modifiers.is_empty() && self.input.text.is_empty() => {
+                Some(SemanticCommand::GoToConversationStart)
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::QuitOrInterrupt)
             }
@@ -640,6 +650,11 @@ impl TuiApp {
                 self.conversation_view.scroll = 0;
                 self.conversation_view.follow = true;
                 self.set_feedback(FeedbackSeverity::Info, "conversation: latest");
+            }
+            SemanticCommand::GoToConversationStart => {
+                self.conversation_view.scroll = u16::MAX;
+                self.conversation_view.follow = false;
+                self.set_feedback(FeedbackSeverity::Info, "conversation: start");
             }
             SemanticCommand::PageConversation(up) => {
                 let page = self.conversation_page_rows();
