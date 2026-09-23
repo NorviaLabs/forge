@@ -757,6 +757,7 @@ pub(crate) enum SemanticCommand {
     PasteClipboardImage,
     ToggleToolDetails,
     ReturnToLatest,
+    GoToConversationStart,
     /// Move the transcript one measured page (see
     /// [`TuiApp::conversation_page_rows`]). `true` pages towards older
     /// content (`PageUp`), `false` towards the latest.

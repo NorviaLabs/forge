@@ -291,7 +291,7 @@ impl TuiApp {
             };
         }
         if !self.conversation_view.follow {
-            return Some("Ctrl+End return to latest".into());
+            return Some("Home start · End latest".into());
         }
         if self.focus.block() == FocusBlock::Composer
             && (self.attachment.file().is_some() || self.attachment.has_images())
