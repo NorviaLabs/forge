@@ -123,7 +123,6 @@ pub(crate) struct SessionViewState {
     /// Per-session approve-all mode, moved with the rest of the view on a
     /// switch. Never persisted; a restart or a new session starts it off.
     pub(crate) approve_all: bool,
-    pub(crate) model_label: String,
     pub(crate) provider: String,
 }
 
@@ -182,7 +181,6 @@ impl Default for SessionViewState {
             reasoning_effort: ReasoningEffortState::default(),
             thinking_enabled: true,
             approve_all: false,
-            model_label: String::new(),
             provider: String::new(),
         }
     }

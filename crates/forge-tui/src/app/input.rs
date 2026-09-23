@@ -387,10 +387,6 @@ impl TuiApp {
             reasoning_effort: std::mem::take(&mut self.reasoning_effort),
             thinking_enabled: self.thinking_enabled,
             approve_all: self.approve_all,
-            // Copied, not moved: the incoming task may have no model recorded
-            // yet, and a blank footer between the save and the restore would
-            // be a visible flicker on every switch.
-            model_label: self.runtime.model_label.clone(),
             provider: self.runtime.provider.clone(),
         }
     }
@@ -438,11 +434,6 @@ impl TuiApp {
         self.reasoning_effort = state.reasoning_effort;
         self.thinking_enabled = state.thinking_enabled;
         self.approve_all = state.approve_all;
-        // A task that has never been shown has no model of its own recorded
-        // yet; keep whatever is on screen rather than blanking the footer.
-        if !state.model_label.is_empty() {
-            self.runtime.model_label = state.model_label;
-        }
         if !state.provider.is_empty() {
             self.runtime.provider = state.provider;
         }
@@ -571,10 +562,10 @@ impl TuiApp {
             .session_view_states
             .remove(&session_id)
             .unwrap_or_else(|| {
-                // First visit: a blank view, but seeded with the model that is
-                // already showing so the footer does not flicker to empty.
+                // First visit: a blank per-session view. Model identity comes
+                // from the selected session snapshot, with runtime config only
+                // as the legacy-session fallback.
                 SessionViewState {
-                    model_label: self.runtime.model_label.clone(),
                     provider: self.runtime.provider.clone(),
                     ..Default::default()
                 }
