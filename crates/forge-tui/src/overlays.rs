@@ -119,6 +119,13 @@ pub enum Overlay {
         current: String,
         items: Vec<(String, String)>,
     },
+    /// The commit message prompt. One text field, like `SessionRename`, because
+    /// a commit message is one line of intent — the staged diff it describes is
+    /// already on screen behind it.
+    GitCommit {
+        message: String,
+        error: Option<String>,
+    },
     FileExplorer {
         cwd: String,
         selected: usize,
@@ -1160,6 +1167,10 @@ pub enum OverlayAction {
     },
     /// Explain, without leaving the overlay, why a key did nothing here.
     Toast(String),
+    /// Commit the staged changes with this message.
+    CommitGit {
+        message: String,
+    },
     OpenSessionInput(SessionInputMode),
     OpenSessionRename {
         session_id: String,
@@ -1458,6 +1469,32 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     label.push(c);
                     *error = None;
                 }
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GitCommit { .. }) => {
+            if let Overlay::GitCommit { message, error } = overlay {
+                if !c.is_control() && c != '\n' {
+                    message.push(c);
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::GitCommit { .. }) => {
+            if let Overlay::GitCommit { message, error } = overlay {
+                // A commit subject is one line: `split_whitespace` flattens a
+                // pasted multi-line body rather than silently cutting it at the
+                // first line break.
+                message.push_str(&data.split_whitespace().collect::<Vec<_>>().join(" "));
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GitCommit { .. }) => {
+            if let Overlay::GitCommit { message, error } = overlay {
+                message.pop();
+                *error = None;
             }
             OverlayAction::None
         }
@@ -1790,6 +1827,17 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             // Confirmations are routed by the `Key::Enter` arm above, which
             // needs the kind to pick the matching action.
             Overlay::SessionConfirm { .. } => OverlayAction::None,
+            Overlay::GitCommit { message, error } => {
+                let trimmed = message.trim();
+                if trimmed.is_empty() {
+                    *error = Some("A commit message is required.".into());
+                    OverlayAction::None
+                } else {
+                    OverlayAction::CommitGit {
+                        message: trimmed.into(),
+                    }
+                }
+            }
             Overlay::TrustSession { operation_id, .. } => OverlayAction::FinalizeSessionCreation {
                 operation_id: *operation_id,
             },
@@ -3030,6 +3078,26 @@ impl Widget for OverlayWidget<'_> {
                         .style(theme::panel())
                         .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title("Rename session")),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitCommit { message, error } => {
+                let r = centered_rect(72, 32, area);
+                clear_modal(r, buf);
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                Paragraph::new(format!(
+                    "Message: {message}█{error}\n\nEnter commit · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title("Commit staged changes")),
                 )
                 .render(r, buf);
             }

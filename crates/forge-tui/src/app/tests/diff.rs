@@ -63,6 +63,94 @@ async fn git_command_opens_live_working_tree_and_stage_refreshes_status() {
     assert!(!app.diff_view_is_open());
 }
 
+/// The commit flow: refuse with nothing staged, then commit exactly the index
+/// and leave the unstaged change alone.
+#[tokio::test]
+async fn commit_covers_only_staged_changes_and_refuses_an_empty_index() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("staged.txt", "one\n"), ("loose.txt", "one\n")],
+        &[("staged.txt", "two\n"), ("loose.txt", "two\n")],
+    );
+
+    app.open_git_view();
+    settle_git(&mut app);
+
+    // Nothing staged yet: the prompt must not open, because `git commit` would
+    // only fail after the operator had typed a message.
+    assert_eq!(app.staged_change_count(), 0);
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(app.overlay.is_none(), "an empty index opens no prompt");
+    assert!(
+        app.status_state.message.contains("Nothing staged"),
+        "and says why: {}",
+        app.status_state.message
+    );
+
+    // Stage one of the two changes, then commit through the real overlay path.
+    app.diff_view
+        .select_path(std::path::Path::new("staged.txt"));
+    app.stage_selected_diff_file(true);
+    settle_git(&mut app);
+    assert_eq!(app.staged_change_count(), 1);
+
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(matches!(app.overlay, Some(Overlay::GitCommit { .. })));
+
+    // Enter on an empty message reports the error instead of dispatching.
+    assert_eq!(
+        handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter),
+        OverlayAction::None
+    );
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::GitCommit { error: Some(_), .. })
+    ));
+
+    for ch in "add staged change".chars() {
+        handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Char(ch));
+    }
+    let OverlayAction::CommitGit { message } =
+        handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter)
+    else {
+        panic!("a non-empty message must dispatch a commit");
+    };
+    app.commit_staged_changes(&message);
+    settle_git(&mut app);
+
+    assert!(app.overlay.is_none(), "the prompt closes on commit");
+    // The commit landed, with only the staged file in it.
+    let log = git_stdout(dir.path(), &["log", "-1", "--pretty=%s"]);
+    assert_eq!(log.trim(), "add staged change");
+    let committed = git_stdout(dir.path(), &["show", "--stat", "--pretty=", "HEAD"]);
+    assert!(committed.contains("staged.txt"), "{committed}");
+    assert!(
+        !committed.contains("loose.txt"),
+        "an unstaged file must not ride along: {committed}"
+    );
+    // `loose.txt` is still modified in the worktree, uncommitted.
+    assert_eq!(
+        git_stdout(dir.path(), &["status", "--short"]),
+        " M loose.txt\n"
+    );
+}
+
+fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
 /// Drive the async git-status cache to completion, the way the event loop
 /// tick does, so a test can assert on a settled file list.
 fn settle_git(app: &mut TuiApp) {

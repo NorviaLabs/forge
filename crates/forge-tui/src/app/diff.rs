@@ -411,6 +411,10 @@ impl TuiApp {
                 self.open_selected_diff_file();
                 true
             }
+            KeyCode::Char('c') => {
+                self.open_git_commit();
+                true
+            }
             KeyCode::Char('?') => {
                 self.overlay = Some(Overlay::StatusReport {
                     title: "Diff shortcuts".into(),
@@ -439,6 +443,7 @@ pub(super) fn diff_shortcut_rows() -> Vec<StatusRow> {
             ("m", "Mark this file reviewed"),
             ("v", "Unified / split layout"),
             ("s / u", "Stage / unstage this file"),
+            ("c", "Commit the staged changes"),
             ("o", "Open this file at the cursor's line"),
             ("d", "Switch working tree / last turn"),
             ("Esc", "Close the diff view"),
@@ -527,6 +532,79 @@ impl TuiApp {
             (crate::diff_view::PatchLayout::Split, _) => "Split view".into(),
             _ => "Unified view".into(),
         };
+    }
+
+    /// `c` in the working-tree review. Opens the message prompt, or explains
+    /// why there is nothing to commit — an empty commit would fail in `git`
+    /// anyway, and failing before the prompt is one less dead end.
+    pub(super) fn open_git_commit(&mut self) {
+        if self.diff_view.source != DiffSource::WorkingTree {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "Committing applies to the working tree; press d to switch",
+            );
+            return;
+        }
+        let staged = self.staged_change_count();
+        if staged == 0 {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "Nothing staged — press s on a file to stage it first",
+            );
+            return;
+        }
+        self.overlay = Some(Overlay::GitCommit {
+            message: String::new(),
+            error: None,
+        });
+        self.status_state.message = format!("Reviewing {staged} staged change(s)");
+    }
+
+    /// Staged paths in the current status snapshot, derived from the same
+    /// status the file list draws so the count can never disagree with the
+    /// markers on screen.
+    pub(super) fn staged_change_count(&self) -> usize {
+        self.workspace_files
+            .explorer
+            .git_status
+            .details
+            .values()
+            .filter(|status| status.staged.is_some())
+            .count()
+    }
+
+    /// Commit the index. Only staged changes go in: `git commit` without `-a`
+    /// is the whole contract here, and the message came from the prompt above.
+    pub(super) fn commit_staged_changes(&mut self, message: &str) {
+        self.overlay = None;
+        let root = self.session_view.workspace_root().to_path_buf();
+        let service = match forge_workspace::git_service::LocalGit::new(&root) {
+            Ok(service) => service,
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Error, error.to_string());
+                return;
+            }
+        };
+        match service.commit(message) {
+            // `git commit` reports `[main abc1234] subject` on its first line;
+            // the rest is the file/insertion summary a status line has no room
+            // for.
+            Ok(output) => {
+                let summary = output.lines().next().unwrap_or_default().trim();
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    if summary.is_empty() {
+                        "Committed".to_string()
+                    } else {
+                        format!("Committed · {summary}")
+                    },
+                );
+                // The index and `HEAD` both moved, so the status cache and every
+                // cached patch are stale.
+                self.note_workspace_changed();
+            }
+            Err(error) => self.set_feedback(FeedbackSeverity::Error, error.to_string()),
+        }
     }
 
     /// `s` / `u`. Staging is reversible and touches only the index, so it runs

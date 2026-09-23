@@ -288,6 +288,9 @@ impl TuiApp {
                     detail,
                 });
             }
+            OverlayAction::CommitGit { message } => {
+                self.commit_staged_changes(&message);
+            }
             OverlayAction::RenameSession { session_id, label } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
