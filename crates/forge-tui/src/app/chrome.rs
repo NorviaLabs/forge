@@ -381,6 +381,16 @@ impl TuiApp {
                         self.sync_supervised_presentation(&snapshot);
                     }
                 }
+                forge_session::SupervisorEvent::GoalNotice {
+                    session_id,
+                    message,
+                } => {
+                    if session_id == self.selected_session_id {
+                        self.set_feedback(FeedbackSeverity::Info, message);
+                    } else {
+                        self.toast.push_overlay(FeedbackSeverity::Info, message);
+                    }
+                }
                 forge_session::SupervisorEvent::SessionUpdated(snapshot) => {
                     let snapshot = *snapshot;
                     let lifecycle = snapshot.session.lifecycle;
@@ -480,6 +490,18 @@ impl TuiApp {
                         // turn is never announced with a success tick.
                         self.toast
                             .push_overlay(session_notice_severity(state), message);
+                    }
+                }
+                forge_session::SupervisorEvent::GoalStatus {
+                    session_id,
+                    condition,
+                } => {
+                    if session_id == self.selected_session_id {
+                        match condition {
+                            Some(condition) => self
+                                .set_feedback(FeedbackSeverity::Info, format!("Goal: {condition}")),
+                            None => self.set_feedback(FeedbackSeverity::Info, "No goal set"),
+                        }
                     }
                 }
                 forge_session::SupervisorEvent::Stream { session_id, event }

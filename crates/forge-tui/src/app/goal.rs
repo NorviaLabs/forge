@@ -45,10 +45,10 @@ impl TuiApp {
     /// `/goal <condition>` — record the condition and start working toward it.
     pub(super) async fn set_goal(&mut self, condition: String) -> Result<(), TuiError> {
         if self.selected_is_supervised() {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                "/goal is unavailable for supervised sessions",
-            );
+            self.submit_session_command(forge_session::SupervisorCommand::SetGoal {
+                session_id: self.selected_session_id,
+                condition,
+            });
             return Ok(());
         }
         self.goal = Some(GoalState {
@@ -74,6 +74,12 @@ impl TuiApp {
 
     /// `/goal` — report the active goal, or say that none is set.
     pub(super) fn show_goal(&mut self) {
+        if self.selected_is_supervised() {
+            self.submit_session_command(forge_session::SupervisorCommand::GetGoal {
+                session_id: self.selected_session_id,
+            });
+            return;
+        }
         self.overlay = Some(Overlay::StatusReport {
             title: "Goal".into(),
             rows: self.goal_report_rows(),
@@ -82,6 +88,12 @@ impl TuiApp {
 
     /// `/goal clear` (and its aliases) — drop the active goal.
     pub(super) fn clear_goal_command(&mut self) {
+        if self.selected_is_supervised() {
+            self.submit_session_command(forge_session::SupervisorCommand::ClearGoal {
+                session_id: self.selected_session_id,
+            });
+            return;
+        }
         match self.goal.take() {
             Some(goal) => {
                 self.remove_persisted_goal();
