@@ -1741,33 +1741,11 @@ impl Widget for ConversationWidget<'_> {
 
 /// Detect language from file path, returning language name for syntax highlighting.
 pub(super) fn lang_from_path(path: &str) -> Option<&'static str> {
-    let path_lower = path.to_lowercase();
-    let filename = path_lower
-        .rsplit('/')
-        .next()
-        .unwrap_or(&path_lower)
-        .rsplit('\\')
-        .next()
-        .unwrap_or(&path_lower);
-
-    let ext = filename.rsplit('.').next()?;
-    match ext {
-        "rs" => Some("rust"),
-        "ts" | "tsx" => Some("typescript"),
-        "js" | "jsx" | "mjs" => Some("javascript"),
-        "py" => Some("python"),
-        "go" => Some("go"),
-        "json" => Some("json"),
-        "toml" => Some("toml"),
-        "yaml" | "yml" => Some("yaml"),
-        "ini" => Some("ini"),
-        "html" | "htm" => Some("html"),
-        "css" => Some("css"),
-        "sh" | "bash" | "zsh" => Some("bash"),
-        "md" => Some("markdown"),
-        "txt" | "log" => None,
-        _ => None,
+    if path.to_ascii_lowercase().ends_with(".md") {
+        return Some("markdown");
     }
+    let language = forge_syntax::detect_from_path(path);
+    (language != forge_syntax::SyntaxLanguage::Unknown).then(|| language.as_str())
 }
 
 fn approval_question(tool: &str) -> &'static str {
@@ -4197,6 +4175,30 @@ mod tests {
                 "plan card content must have no background fill — canvas shows through, got {span:?}"
             );
         }
+    }
+
+    #[test]
+    fn file_language_detection_uses_shared_registry() {
+        for path in [
+            "main.cjs",
+            "api.pyi",
+            "style.scss",
+            "style.sass",
+            "style.less",
+            "view.tsx",
+            "App.java",
+            "main.cpp",
+            "Dockerfile",
+            "Makefile",
+        ] {
+            assert_eq!(
+                lang_from_path(path),
+                Some(forge_syntax::detect_from_path(path).as_str()),
+                "{path}"
+            );
+        }
+        assert_eq!(lang_from_path("README.md"), Some("markdown"));
+        assert_eq!(lang_from_path("notes.txt"), None);
     }
 
     #[test]

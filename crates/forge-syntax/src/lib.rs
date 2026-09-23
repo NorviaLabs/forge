@@ -3,6 +3,7 @@
 mod cache;
 mod highlight;
 mod lang;
+mod queries;
 
 pub use cache::{clear_highlight_cache, highlight_cache_stats, HighlightCacheStats};
 pub use highlight::{
