@@ -206,6 +206,8 @@ async fn light_theme_representative_layout_snapshot() {
     app.conversation_view.splash_dismissed = true;
     app.workspace_files.visible = true;
     app.handle_theme_command(Some("light"));
+    app.status_state.message.clear();
+    app.toast.clear();
     app.session_runtime.messages.push(Message {
         outcome: Default::default(),
         role: MessageRole::User,
@@ -228,7 +230,10 @@ async fn light_theme_representative_layout_snapshot() {
         tool_calls: vec![],
         attachments: Vec::new(),
     });
-    app.feedback = FeedbackModel::error("Model error: rate limited (HTTP 429).");
+    app.clear_error_chrome();
+    app.status_state.message.clear();
+    app.report_error("429 rate limit");
+    app.toast.expire_for_test();
     app.render_cache.conversation = None;
     app.input.set_text("draft reply");
     app.input.cursor = app.input.text.len();

@@ -96,6 +96,11 @@ impl ToastStack {
         }
     }
 
+    #[cfg(test)]
+    pub fn tick_for_test(&mut self) {
+        self.clear();
+    }
+
     pub fn has_toast(&self) -> bool {
         self.engine.has_toast()
     }

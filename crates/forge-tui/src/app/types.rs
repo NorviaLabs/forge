@@ -1499,12 +1499,17 @@ impl ToastState {
         self.stack.has_toast()
     }
 
+    pub(crate) fn expire(&mut self, _timeout: Duration) {
+        self.stack.tick();
+    }
+
     pub(crate) fn clear(&mut self) {
         self.stack.clear();
     }
 
-    pub(crate) fn expire(&mut self, _timeout: Duration) {
-        self.stack.tick();
+    #[cfg(test)]
+    pub(crate) fn expire_for_test(&mut self) {
+        self.stack.tick_for_test();
     }
 
     pub(crate) fn render_overlay(
