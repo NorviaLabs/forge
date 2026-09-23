@@ -722,6 +722,11 @@ pub struct DiffViewWidget<'a> {
     /// the selected file and its counts, and this pane is about 50 columns wide
     /// in practice: anything appended to the title is invisible.
     pub sync: Option<String>,
+    /// Full-width banner above the file list while a merge is in progress, or
+    /// `None`. Preformatted by the caller for the same reason as `sync`, and
+    /// rendered in the warning severity colour rather than the focus accent:
+    /// this is a state to act on, not the pane that owns the keyboard.
+    pub merge: Option<String>,
 }
 
 impl Widget for DiffViewWidget<'_> {
@@ -819,6 +824,34 @@ impl Widget for DiffViewWidget<'_> {
                 .saturating_sub(if hint_row { 2 } else { 1 })
                 .saturating_sub(spacer),
             ..inner
+        };
+        if body.height == 0 {
+            return;
+        }
+
+        // A merge in progress is the state that decides the next key, so it
+        // earns a row of its own above the list. It yields to the patch on a
+        // short pane for the same reason the hint row does: one line of the
+        // change is worth more than a line of state when there is only room for
+        // one of them.
+        let body = if let (Some(banner), true) = (self.merge.as_deref(), body.height > 2) {
+            let banner_area = Rect { height: 1, ..body };
+            let mut text: String = banner.chars().take(body.width as usize).collect();
+            if banner.chars().count() > body.width as usize && body.width > 1 {
+                text = banner
+                    .chars()
+                    .take(body.width as usize - 1)
+                    .collect::<String>()
+                    + "…";
+            }
+            Paragraph::new(Line::from(Span::styled(text, theme::warn()))).render(banner_area, buf);
+            Rect {
+                y: body.y.saturating_add(1),
+                height: body.height.saturating_sub(1),
+                ..body
+            }
+        } else {
+            body
         };
         if body.height == 0 {
             return;
@@ -1376,6 +1409,59 @@ mod widget_tests {
         assert!(!rows.contains(" · split"), "no dangling separator: {rows}");
     }
 
+    #[test]
+    fn the_merge_banner_takes_a_row_only_when_the_pane_can_spare_one() {
+        let banner = "MERGE IN PROGRESS · 2 unresolved · o opens, s marks resolved, a aborts";
+
+        // Present when a merge is in progress, and it does not cost the pane
+        // its hint row.
+        let mut view = view_with_patch();
+        let text = render_full(&mut view, 90, 10, None, Some(banner.to_string()));
+        assert!(text.contains("MERGE IN PROGRESS"), "{text}");
+        assert!(text.contains("hunk"), "the keymap row survives: {text}");
+
+        // Absent with no merge, and no stray blank row where it would have been.
+        let mut view = view_with_patch();
+        let quiet = render_full(&mut view, 90, 10, None, None);
+        assert!(!quiet.contains("MERGE"), "{quiet}");
+
+        // A pane too short to hold both keeps the patch line: one line of the
+        // change is worth more than one line of state.
+        let mut view = view_with_patch();
+        let short = render_full(&mut view, 90, 4, None, Some(banner.to_string()));
+        assert!(
+            !short.contains("MERGE IN PROGRESS"),
+            "a short pane drops the banner rather than the patch: {short}"
+        );
+    }
+
+    #[test]
+    fn the_merge_banner_is_elided_rather_than_wrapped_into_the_patch() {
+        let long = "MERGE IN PROGRESS · 12 unresolved · o opens the file, s stages the saved resolution as resolved, a aborts the whole thing";
+        let mut view = view_with_patch();
+        let text = render_full(&mut view, 40, 10, None, Some(long.to_string()));
+        let rows: Vec<&str> = text.lines().filter(|line| line.contains("MERGE")).collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the banner is one row, never wrapped: {text}"
+        );
+        assert!(
+            rows[0]
+                .trim_end()
+                .trim_end_matches('│')
+                .trim_end()
+                .ends_with('…'),
+            "a banner too long for the pane is elided: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[0].chars().count() <= 40,
+            "and it stays inside the pane: {:?}",
+            rows[0]
+        );
+    }
+
     fn render(view: &mut DiffView, width: u16, height: u16) -> String {
         render_with_sync(view, width, height, None)
     }
@@ -1386,12 +1472,23 @@ mod widget_tests {
         height: u16,
         sync: Option<String>,
     ) -> String {
+        render_full(view, width, height, sync, None)
+    }
+
+    fn render_full(
+        view: &mut DiffView,
+        width: u16,
+        height: u16,
+        sync: Option<String>,
+        merge: Option<String>,
+    ) -> String {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         DiffViewWidget {
             view,
             focused: true,
             sync,
+            merge,
         }
         .render(area, &mut buf);
         (0..height)

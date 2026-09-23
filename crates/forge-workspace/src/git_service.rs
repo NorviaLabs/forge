@@ -171,6 +171,186 @@ mod tests {
     }
 
     #[test]
+    fn branches_and_current_branch_report_where_head_is() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let main = service.current_branch().unwrap().unwrap();
+        git(dir.path(), &["branch", "alpha"]);
+        git(dir.path(), &["branch", "feature/x"]);
+        // A remote-tracking ref is not a branch this can switch to.
+        git(
+            dir.path(),
+            &["update-ref", "refs/remotes/origin/remote", "HEAD"],
+        );
+        assert_eq!(
+            service.branches().unwrap(),
+            vec!["alpha".to_string(), "feature/x".to_string(), main.clone()]
+        );
+        assert_eq!(service.current_branch().unwrap().as_deref(), Some(&*main));
+
+        // A branch sharing its name with a tag. `%(refname:short)` would
+        // disambiguate it against the tag and print `heads/alpha`, which is not
+        // a name `switch` can land on — the whole reason this reads `lstrip=2`.
+        git(dir.path(), &["tag", "alpha", &main]);
+        assert!(
+            service.branches().unwrap().contains(&"alpha".to_string()),
+            "a name that collides with a tag must still read as itself: {:?}",
+            service.branches().unwrap()
+        );
+
+        // Detached: no branch, and that is not an error.
+        git(dir.path(), &["checkout", "-q", "--detach"]);
+        assert_eq!(service.current_branch().unwrap(), None);
+        assert!(service.branches().unwrap().contains(&main));
+
+        // An unborn branch has no commit for `rev-parse` to resolve, but its
+        // name is still the answer.
+        let fresh = TempDir::new().unwrap();
+        git(fresh.path(), &["init", "-q", "-b", "trunk"]);
+        let unborn = LocalGit::new(fresh.path()).unwrap();
+        assert_eq!(unborn.current_branch().unwrap().as_deref(), Some("trunk"));
+        assert!(unborn.branches().unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_branch_creates_and_switches() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let main = service.current_branch().unwrap().unwrap();
+        service.create_branch("feature/one").unwrap();
+        assert_eq!(
+            service.current_branch().unwrap().as_deref(),
+            Some("feature/one")
+        );
+        assert_eq!(
+            service.branches().unwrap(),
+            vec!["feature/one".to_string(), main]
+        );
+        // The commit it was created from is untouched: the new branch starts
+        // where `HEAD` was.
+        assert_eq!(service.status().unwrap().len(), 0);
+        // Git refuses a duplicate rather than moving the existing branch.
+        assert!(service.create_branch("feature/one").is_err());
+    }
+
+    #[test]
+    fn switch_branch_moves_head() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let main = service.current_branch().unwrap().unwrap();
+        git(dir.path(), &["branch", "other"]);
+        service.switch_branch("other").unwrap();
+        assert_eq!(service.current_branch().unwrap().as_deref(), Some("other"));
+        service.switch_branch(&main).unwrap();
+        assert_eq!(service.current_branch().unwrap().as_deref(), Some(&*main));
+        // A branch that does not exist fails in Git's own words.
+        assert!(service.switch_branch("missing").is_err());
+    }
+
+    /// The guard is pure, so it can be pinned down case by case without a
+    /// repository — and nothing it refuses can reach a subprocess, because it
+    /// runs before the only call that spawns one.
+    #[test]
+    fn branch_name_validation_refuses_options_and_illegal_refs() {
+        for name in [
+            "",
+            "   ",
+            "\t",
+            "-branch",
+            "--force",
+            "-",
+            "feat/x~1",
+            "feat^x",
+            "feat:x",
+            "feat?x",
+            "feat*x",
+            "feat[x",
+            "feat\\x",
+            "feat x",
+            "feat..x",
+            "feat@{x",
+            "feat//x",
+            "feat/",
+            "feat.lock",
+            "feat\nx",
+            "feat\u{7}x",
+        ] {
+            assert!(
+                matches!(
+                    valid_branch_name(name),
+                    Err(GitServiceError::InvalidBranch(_))
+                ),
+                "{name:?} must be refused"
+            );
+        }
+        for name in ["main", "feat/x", "release-1.0", "a-b", "user/fix-1", "v1.2"] {
+            assert!(valid_branch_name(name).is_ok(), "{name:?} must be allowed");
+        }
+    }
+
+    #[test]
+    fn branch_operations_refuse_an_option_shaped_name_before_spawning() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        let before = service.current_branch().unwrap();
+        for name in ["--force", "-d", "feat/x~1", ""] {
+            assert!(matches!(
+                service.create_branch(name),
+                Err(GitServiceError::InvalidBranch(_))
+            ));
+            assert!(matches!(
+                service.switch_branch(name),
+                Err(GitServiceError::InvalidBranch(_))
+            ));
+        }
+        // `--detach` is the sharp case: had it reached Git as argv, HEAD would
+        // now be detached. It is still on the branch, and no branch was made.
+        assert!(matches!(
+            service.switch_branch("--detach"),
+            Err(GitServiceError::InvalidBranch(_))
+        ));
+        assert_eq!(service.current_branch().unwrap(), before);
+        assert_eq!(service.branches().unwrap(), vec![before.unwrap()]);
+    }
+
+    #[test]
+    fn abort_merge_restores_the_tree_after_a_conflict() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        // Nothing to abort yet: Git's own refusal, which the sync cache also
+        // guards against before it spawns anything.
+        assert!(service.abort_merge().is_err());
+
+        let main = service.current_branch().unwrap().unwrap();
+        git(dir.path(), &["switch", "-qc", "side"]);
+        fs::write(dir.path().join("a"), "side\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "side"]);
+        git(dir.path(), &["switch", "-q", &main]);
+        fs::write(dir.path().join("a"), "main\n").unwrap();
+        service.stage(Path::new("a")).unwrap();
+        service.commit("main").unwrap();
+
+        let conflict = service.merge("side").unwrap_err();
+        // The reason a conflict gives lives on Git's stdout, so the message
+        // must not come back empty.
+        assert!(conflict.to_string().contains("CONFLICT"), "{conflict}");
+        assert!(service.conflict_state().unwrap().merge_in_progress);
+        // Both sides are in the working tree, marked, and the merge is not
+        // finished: `abort` has something to undo.
+        assert!(fs::read_to_string(dir.path().join("a"))
+            .unwrap()
+            .starts_with("<<<<<<< HEAD\nmain\n=======\nside\n>>>>>>> "));
+
+        service.abort_merge().unwrap();
+        let state = service.conflict_state().unwrap();
+        assert!(!state.merge_in_progress);
+        assert!(state.paths.is_empty());
+        assert_eq!(fs::read_to_string(dir.path().join("a")).unwrap(), "main\n");
+        assert!(service.status().unwrap().is_empty());
+        assert_eq!(service.current_branch().unwrap().as_deref(), Some(&*main));
+    }
+
+    #[test]
     fn pull_and_push_use_configured_upstream() {
         let dir = repo();
         let remote = TempDir::new().unwrap();
@@ -262,14 +442,20 @@ impl LocalGit {
     }
 
     fn run(&self, operation: &'static str, args: &[&str]) -> Result<String, GitServiceError> {
-        let output = scoped_command(&self.root)
+        output_text(operation, self.spawn(operation, args)?)
+    }
+
+    /// The one place a Git subprocess is started, so every call gets the same
+    /// scrubbed environment. Callers that must read a non-zero exit themselves
+    /// (a detached `HEAD`) use this instead of [`Self::run`].
+    fn spawn(&self, operation: &'static str, args: &[&str]) -> Result<Output, GitServiceError> {
+        scoped_command(&self.root)
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_EDITOR", "true")
             .env("GIT_MERGE_AUTOEDIT", "no")
             .output()
-            .map_err(|source| GitServiceError::Io { operation, source })?;
-        output_text(operation, output)
+            .map_err(|source| GitServiceError::Io { operation, source })
     }
 
     /// Paths may be relative to the root or absolute within it. Reject
@@ -363,6 +549,79 @@ impl LocalGit {
             ahead,
             behind,
         })
+    }
+
+    /// Local branch names, sorted. Remote-tracking refs are deliberately left
+    /// out: every name here is something `switch` can actually land on.
+    pub fn branches(&self) -> Result<Vec<String>, GitServiceError> {
+        // `lstrip=2` rather than `:short`: `:short` disambiguates against
+        // tags and remote-tracking refs, so a branch that shares its name with
+        // either prints as `heads/<name>` — a name `switch` cannot land on.
+        // Stripping the fixed `refs/heads/` prefix yields the branch name
+        // itself, always.
+        let output = self.run(
+            "for-each-ref",
+            &["for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads"],
+        )?;
+        let mut names: Vec<String> = output
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
+    /// `HEAD`'s branch, or `None` when detached.
+    ///
+    /// `symbolic-ref` rather than `rev-parse`: it still answers on an unborn
+    /// branch, where there is no commit for `rev-parse` to resolve.
+    pub fn current_branch(&self) -> Result<Option<String>, GitServiceError> {
+        let output = self.spawn(
+            "symbolic-ref",
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )?;
+        if output.status.success() {
+            return Ok(Some(
+                String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            ));
+        }
+        // A detached `HEAD` is the one expected non-zero exit, and `--quiet`
+        // keeps it silent. Anything that says why it failed is a real failure.
+        if output.stderr.is_empty() {
+            return Ok(None);
+        }
+        Err(GitServiceError::Git {
+            operation: "symbolic-ref",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+
+    /// Create `name` and switch to it.
+    ///
+    /// The name is a single argv element, so it can never be split into extra
+    /// arguments — but Git would still read a leading `-` as an option, which
+    /// is why the name is validated before anything is spawned.
+    pub fn create_branch(&self, name: &str) -> Result<String, GitServiceError> {
+        valid_branch_name(name)?;
+        self.run("switch", &["switch", "-c", name])
+    }
+
+    /// Switch to an existing local branch, under the same guard as
+    /// [`Self::create_branch`].
+    pub fn switch_branch(&self, name: &str) -> Result<String, GitServiceError> {
+        valid_branch_name(name)?;
+        // `--` ends option parsing, so even a name this guard lets through can
+        // only be read as a ref.
+        self.run("switch", &["switch", "--", name])
+    }
+
+    /// Abandon an in-progress merge, restoring the pre-merge working tree.
+    /// Git itself refuses this when there is nothing to abort.
+    pub fn abort_merge(&self) -> Result<String, GitServiceError> {
+        self.run("merge", &["merge", "--abort"])
     }
 
     pub fn conflict_state(&self) -> Result<ConflictState, GitServiceError> {
@@ -461,6 +720,29 @@ impl LocalGit {
     }
 }
 
+/// A branch name handed to Git as one argv element still has to be refused when
+/// Git would read it as an option, or when it is not a legal ref name at all.
+///
+/// Pure by construction: it takes no service and starts nothing, which is what
+/// makes "refused before spawning" checkable in a test.
+fn valid_branch_name(name: &str) -> Result<(), GitServiceError> {
+    let illegal = name
+        .chars()
+        .any(|c| matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\') || c.is_control());
+    if name.trim().is_empty()
+        || name.starts_with('-')
+        || illegal
+        || name.ends_with('/')
+        || name.ends_with(".lock")
+        || name.contains("..")
+        || name.contains("@{")
+        || name.contains("//")
+    {
+        return Err(GitServiceError::InvalidBranch(name.to_owned()));
+    }
+    Ok(())
+}
+
 fn scoped_command(root: &Path) -> Command {
     let mut command = Command::new("git");
     command.current_dir(root);
@@ -481,10 +763,16 @@ fn scoped_command(root: &Path) -> Command {
 
 fn output_text(operation: &'static str, output: Output) -> Result<String, GitServiceError> {
     if !output.status.success() {
-        return Err(GitServiceError::Git {
-            operation,
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+        // Git's `fatal:` lines go to stderr, but its ordinary progress does
+        // not: a conflicting `merge` explains itself on stdout, so an empty
+        // stderr must not become an empty message.
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let message = if stderr.is_empty() {
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        } else {
+            stderr
+        };
+        return Err(GitServiceError::Git { operation, message });
     }
     String::from_utf8(output.stdout).map_err(|e| GitServiceError::Git {
         operation,

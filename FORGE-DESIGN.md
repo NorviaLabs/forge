@@ -886,7 +886,16 @@ Rules:
   the branch outranks the `split` layout note, which it then follows after a
   `·`. A branch the pane cannot read renders `branch ?` — an empty tag would
   read as "nothing to report", which is the one answer that is certainly wrong
-  when the state is merely unknown.
+  when the state is merely unknown. An in-progress merge outranks the plain
+  branch name (`merging · 2 unresolved`): it is the state that decides the next
+  key.
+- A merge in progress also earns a full-width banner above the file list, in the
+  warning severity colour rather than the focus accent — it is a state to act
+  on, not the pane that owns the keyboard. One row, elided when narrow, and it
+  yields to the patch on a pane too short for both, exactly as the hint row does.
+  Conflict resolution deliberately reuses what is already bound: `o` opens the
+  conflicted path, `s` stages the saved resolution, `c` commits the merge, and
+  only the destructive exit is new — `a` aborts, and only behind a confirmation.
 
 ### 9.9 Terminal (BottomPanel)
 
