@@ -5572,6 +5572,7 @@ async fn cancellation_yields_interrupted_and_never_completes() {
 async fn cancelling_a_turn_aborts_the_running_tool() {
     struct SlowMarkerTool {
         marker: std::path::PathBuf,
+        started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     }
 
     #[async_trait]
@@ -5593,6 +5594,9 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
             _ctx: &ToolContext,
             _args: serde_json::Value,
         ) -> Result<ToolOutput, ToolError> {
+            if let Some(started) = self.started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             let _ = std::fs::write(&self.marker, "done");
             Ok(ToolOutput::success("done"))
@@ -5601,9 +5605,11 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
 
     let dir = tempdir().unwrap();
     let marker = dir.path().join("cancel-marker");
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(SlowMarkerTool {
         marker: marker.clone(),
+        started: std::sync::Mutex::new(Some(started_tx)),
     }));
     let model = script(vec![]);
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
@@ -5612,7 +5618,9 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
 
     let cancel = s.begin_turn_cancellation_scope();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        started_rx
+            .await
+            .expect("tool should start before cancellation");
         cancel.cancel();
     });
 
@@ -5628,7 +5636,6 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
         "cancel must abort the running tool"
     );
 
-    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
     assert!(
         !marker.exists(),
         "cancelled tool still executed its side effect"
