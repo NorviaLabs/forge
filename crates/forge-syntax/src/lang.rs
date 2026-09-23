@@ -9,7 +9,7 @@ use tree_sitter::Language as TsLanguage;
 static LANGUAGE_MAP: OnceLock<HashMap<&'static str, SyntaxLanguage>> = OnceLock::new();
 
 /// Supported programming languages for syntax highlighting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SyntaxLanguage {
     Rust,
     TypeScript,
@@ -23,6 +23,20 @@ pub enum SyntaxLanguage {
     Toml,
     Yaml,
     Ini,
+    C,
+    Cpp,
+    Java,
+    CSharp,
+    Ruby,
+    Php,
+    Swift,
+    Kotlin,
+    Sql,
+    Make,
+    Dockerfile,
+    Scss,
+    Less,
+    Tsx,
     Unknown,
 }
 
@@ -42,14 +56,28 @@ impl SyntaxLanguage {
             SyntaxLanguage::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
             SyntaxLanguage::Yaml => tree_sitter_yaml::LANGUAGE.into(),
             SyntaxLanguage::Ini => tree_sitter_ini::LANGUAGE.into(),
+            SyntaxLanguage::C => tree_sitter_c::LANGUAGE.into(),
+            SyntaxLanguage::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            SyntaxLanguage::Java => tree_sitter_java::LANGUAGE.into(),
+            SyntaxLanguage::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            SyntaxLanguage::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+            SyntaxLanguage::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+            SyntaxLanguage::Swift => tree_sitter_swift::LANGUAGE.into(),
+            SyntaxLanguage::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+            SyntaxLanguage::Sql => tree_sitter_sequel::LANGUAGE.into(),
+            SyntaxLanguage::Make => tree_sitter_make::LANGUAGE.into(),
+            SyntaxLanguage::Dockerfile => tree_sitter_dockerfile_updated::language(),
+            SyntaxLanguage::Scss => tree_sitter_scss::language(),
+            SyntaxLanguage::Less => tree_sitter_less::language(),
+            SyntaxLanguage::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             SyntaxLanguage::Unknown => tree_sitter_rust::LANGUAGE.into(),
         }
     }
 }
 
-impl std::fmt::Display for SyntaxLanguage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+impl SyntaxLanguage {
+    pub fn as_str(self) -> &'static str {
+        match self {
             SyntaxLanguage::Rust => "rust",
             SyntaxLanguage::TypeScript => "typescript",
             SyntaxLanguage::JavaScript => "javascript",
@@ -62,9 +90,28 @@ impl std::fmt::Display for SyntaxLanguage {
             SyntaxLanguage::Toml => "toml",
             SyntaxLanguage::Yaml => "yaml",
             SyntaxLanguage::Ini => "ini",
+            SyntaxLanguage::C => "c",
+            SyntaxLanguage::Cpp => "cpp",
+            SyntaxLanguage::Java => "java",
+            SyntaxLanguage::CSharp => "csharp",
+            SyntaxLanguage::Ruby => "ruby",
+            SyntaxLanguage::Php => "php",
+            SyntaxLanguage::Swift => "swift",
+            SyntaxLanguage::Kotlin => "kotlin",
+            SyntaxLanguage::Sql => "sql",
+            SyntaxLanguage::Make => "make",
+            SyntaxLanguage::Dockerfile => "dockerfile",
+            SyntaxLanguage::Scss => "scss",
+            SyntaxLanguage::Less => "less",
+            SyntaxLanguage::Tsx => "tsx",
             SyntaxLanguage::Unknown => "unknown",
-        };
-        write!(f, "{}", s)
+        }
+    }
+}
+
+impl std::fmt::Display for SyntaxLanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -72,31 +119,48 @@ impl std::str::FromStr for SyntaxLanguage {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "rust" | "rs" => Ok(SyntaxLanguage::Rust),
-            "typescript" | "ts" | "tsx" => Ok(SyntaxLanguage::TypeScript),
-            "javascript" | "js" | "jsx" | "mjs" | "cjs" => Ok(SyntaxLanguage::JavaScript),
-            "python" | "py" | "pyi" => Ok(SyntaxLanguage::Python),
-            "go" | "golang" => Ok(SyntaxLanguage::Go),
-            "json" => Ok(SyntaxLanguage::Json),
-            "toml" => Ok(SyntaxLanguage::Toml),
-            "yaml" | "yml" => Ok(SyntaxLanguage::Yaml),
-            "ini" => Ok(SyntaxLanguage::Ini),
-            "html" | "htm" => Ok(SyntaxLanguage::Html),
-            "css" | "scss" | "sass" | "less" => Ok(SyntaxLanguage::Css),
-            "bash" | "sh" | "zsh" | "shell" => Ok(SyntaxLanguage::Bash),
-            "unknown" | "*" => Ok(SyntaxLanguage::Unknown),
-            other => Err(format!("unknown language: {other}")),
+        let name = s.to_lowercase();
+        if matches!(name.as_str(), "unknown" | "*") {
+            return Ok(Self::Unknown);
         }
+        language_map()
+            .get(name.as_str())
+            .copied()
+            .ok_or_else(|| format!("unknown language: {s}"))
     }
 }
 
 fn build_language_map() -> HashMap<&'static str, SyntaxLanguage> {
     HashMap::from([
+        ("c", SyntaxLanguage::C),
+        ("cpp", SyntaxLanguage::Cpp),
+        ("java", SyntaxLanguage::Java),
+        ("csharp", SyntaxLanguage::CSharp),
+        ("ruby", SyntaxLanguage::Ruby),
+        ("php", SyntaxLanguage::Php),
+        ("swift", SyntaxLanguage::Swift),
+        ("kotlin", SyntaxLanguage::Kotlin),
+        ("sql", SyntaxLanguage::Sql),
+        ("make", SyntaxLanguage::Make),
+        ("dockerfile", SyntaxLanguage::Dockerfile),
+        ("h", SyntaxLanguage::C),
+        ("cc", SyntaxLanguage::Cpp),
+        ("cxx", SyntaxLanguage::Cpp),
+        ("hpp", SyntaxLanguage::Cpp),
+        ("hh", SyntaxLanguage::Cpp),
+        ("hxx", SyntaxLanguage::Cpp),
+        ("c++", SyntaxLanguage::Cpp),
+        ("cs", SyntaxLanguage::CSharp),
+        ("c#", SyntaxLanguage::CSharp),
+        ("rb", SyntaxLanguage::Ruby),
+        ("kt", SyntaxLanguage::Kotlin),
+        ("kts", SyntaxLanguage::Kotlin),
+        ("mk", SyntaxLanguage::Make),
+        ("makefile", SyntaxLanguage::Make),
         ("rs", SyntaxLanguage::Rust),
         ("rust", SyntaxLanguage::Rust),
         ("ts", SyntaxLanguage::TypeScript),
-        ("tsx", SyntaxLanguage::TypeScript),
+        ("tsx", SyntaxLanguage::Tsx),
         ("typescript", SyntaxLanguage::TypeScript),
         ("js", SyntaxLanguage::JavaScript),
         ("jsx", SyntaxLanguage::JavaScript),
@@ -116,9 +180,9 @@ fn build_language_map() -> HashMap<&'static str, SyntaxLanguage> {
         ("html", SyntaxLanguage::Html),
         ("htm", SyntaxLanguage::Html),
         ("css", SyntaxLanguage::Css),
-        ("scss", SyntaxLanguage::Css),
-        ("sass", SyntaxLanguage::Css),
-        ("less", SyntaxLanguage::Css),
+        ("scss", SyntaxLanguage::Scss),
+        ("sass", SyntaxLanguage::Scss),
+        ("less", SyntaxLanguage::Less),
         ("sh", SyntaxLanguage::Bash),
         ("bash", SyntaxLanguage::Bash),
         ("zsh", SyntaxLanguage::Bash),
@@ -215,6 +279,12 @@ pub fn detect_from_path(path: &str) -> SyntaxLanguage {
         .next()
         .unwrap_or(&path_lower);
 
+    if matches!(filename, "makefile" | "gnumakefile") {
+        return SyntaxLanguage::Make;
+    }
+    if filename == "dockerfile" || filename.starts_with("dockerfile.") {
+        return SyntaxLanguage::Dockerfile;
+    }
     if let Some(dot_pos) = filename.rfind('.') {
         let ext = &filename[dot_pos + 1..];
         if let Some(lang) = language_map().get(ext) {
@@ -258,34 +328,14 @@ mod tests {
 
     #[test]
     fn syntax_language_parse_display_and_parser_cover_supported_languages() {
-        for (alias, language, display) in [
-            ("rs", SyntaxLanguage::Rust, "rust"),
-            ("ts", SyntaxLanguage::TypeScript, "typescript"),
-            ("tsx", SyntaxLanguage::TypeScript, "typescript"),
-            ("js", SyntaxLanguage::JavaScript, "javascript"),
-            ("jsx", SyntaxLanguage::JavaScript, "javascript"),
-            ("mjs", SyntaxLanguage::JavaScript, "javascript"),
-            ("cjs", SyntaxLanguage::JavaScript, "javascript"),
-            ("py", SyntaxLanguage::Python, "python"),
-            ("pyi", SyntaxLanguage::Python, "python"),
-            ("go", SyntaxLanguage::Go, "go"),
-            ("golang", SyntaxLanguage::Go, "go"),
-            ("json", SyntaxLanguage::Json, "json"),
-            ("html", SyntaxLanguage::Html, "html"),
-            ("htm", SyntaxLanguage::Html, "html"),
-            ("css", SyntaxLanguage::Css, "css"),
-            ("scss", SyntaxLanguage::Css, "css"),
-            ("sass", SyntaxLanguage::Css, "css"),
-            ("less", SyntaxLanguage::Css, "css"),
-            ("sh", SyntaxLanguage::Bash, "bash"),
-            ("zsh", SyntaxLanguage::Bash, "bash"),
-            ("shell", SyntaxLanguage::Bash, "bash"),
-            ("*", SyntaxLanguage::Unknown, "unknown"),
-        ] {
-            let parsed: SyntaxLanguage = alias.parse().unwrap();
-            assert_eq!(parsed, language);
-            assert_eq!(language.to_string(), display);
-            let _parser = get_parser(language);
+        for (alias, language) in language_map() {
+            assert_eq!(alias.parse::<SyntaxLanguage>().unwrap(), *language);
+            assert_eq!(
+                language.as_str().parse::<SyntaxLanguage>().unwrap(),
+                *language
+            );
+            let _parser = get_parser(*language);
+            let _query = crate::queries::query(*language);
         }
         assert!("definitely-not-a-language"
             .parse::<SyntaxLanguage>()
@@ -337,12 +387,14 @@ mod tests {
 
     #[test]
     fn detect_from_path_handles_case_windows_paths_and_unknowns() {
-        assert_eq!(
-            detect_from_path("C:\\Temp\\APP.TSX"),
-            SyntaxLanguage::TypeScript
-        );
+        assert_eq!(detect_from_path("C:\\Temp\\APP.TSX"), SyntaxLanguage::Tsx);
         assert_eq!(detect_from_path("/tmp/site.HTML"), SyntaxLanguage::Html);
-        assert_eq!(detect_from_path("Dockerfile"), SyntaxLanguage::Unknown);
+        assert_eq!(detect_from_path("Dockerfile"), SyntaxLanguage::Dockerfile);
+        assert_eq!(
+            detect_from_path("Dockerfile.dev"),
+            SyntaxLanguage::Dockerfile
+        );
+        assert_eq!(detect_from_path("build/Makefile"), SyntaxLanguage::Make);
         assert_eq!(detect_from_path("archive.tar.gz"), SyntaxLanguage::Unknown);
     }
 }

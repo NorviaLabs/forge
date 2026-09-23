@@ -3,6 +3,7 @@
 use crate::lang::{get_parser, SyntaxLanguage};
 use std::ops::Range;
 use std::sync::Arc;
+use tree_sitter::StreamingIterator;
 
 #[derive(Debug, Clone)]
 pub struct HighlightSpan {
@@ -169,8 +170,18 @@ pub fn highlight(lang: &str, code: &str, theme: &HighlightTheme) -> Vec<Highligh
     };
 
     let mut spans = Vec::new();
-    let mut cursor = tree.walk();
-    collect_highlights(&mut cursor, theme, &mut spans);
+    let query = crate::queries::query(lang);
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut captures = cursor.captures(query, tree.root_node(), code.as_bytes());
+    while let Some((matched, index)) = captures.next() {
+        let capture = matched.captures()[*index];
+        if let Some(class) = capture_class(query.capture_names()[capture.index as usize]) {
+            spans.push(HighlightSpan {
+                range: capture.node.byte_range(),
+                style: theme.style_for_class(class),
+            });
+        }
+    }
 
     if spans.is_empty() {
         spans.push(HighlightSpan {
@@ -185,116 +196,29 @@ pub fn highlight(lang: &str, code: &str, theme: &HighlightTheme) -> Vec<Highligh
     merge_spans(spans)
 }
 
-fn collect_highlights(
-    cursor: &mut tree_sitter::TreeCursor,
-    theme: &HighlightTheme,
-    spans: &mut Vec<HighlightSpan>,
-) {
-    let node = cursor.node();
-    let kind = node.kind();
-
-    let style = match kind {
-        // Comments
-        "comment" | "line_comment" | "block_comment" | "documentation_comment" => {
-            Some(theme.style_for_class(HighlightClass::Comment))
-        }
-        // Attributes
-        "attribute_item" | "attribute" | "decorator" => {
-            Some(theme.style_for_class(HighlightClass::Attribute))
-        }
-        // Strings
-        "string_literal" | "char_literal" | "interpreted_string_literal"
-        | "template_string" | "raw_string_literal" => {
-            Some(theme.style_for_class(HighlightClass::String))
-        }
-        // Numbers
-        "integer_literal" | "float_literal" | "integer" | "float"
-        | "hex_integer" | "octal_integer" | "binary_integer" => {
-            Some(theme.style_for_class(HighlightClass::Number))
-        }
-        // Function name: identifier inside a declaration or call
-        "identifier" => {
-            if let Some(parent) = node.parent() {
-                match parent.kind() {
-                    "function_item" | "function_declaration"
-                    | "method_declaration" | "method_definition"
-                    | "function_signature" => {
-                        Some(theme.style_for_class(HighlightClass::Function))
-                    }
-                    "call_expression" | "method_call" => {
-                        Some(theme.style_for_class(HighlightClass::Function))
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        }
-        // Types
-        "type_identifier" | "primitive_type" | "builtin_type"
-        | "scoped_type_identifier" => {
-            Some(theme.style_for_class(HighlightClass::Type))
-        }
-        // Punctuation
-        "{" | "}" | "(" | ")" | "[" | "]" | "," | ";"
-        | "::" | "." | "->" | "=>" => {
-            Some(theme.style_for_class(HighlightClass::Punctuation))
-        }
-        // Operators
-        "=" | "+" | "-" | "*" | "/" | "%" | "==" | "!="
-        | "<" | ">" | "<=" | ">=" | "&&" | "||" | "!"
-        | "&" | "|" | "^" | "<<" | ">>" | "+=" | "-="
-        | "*=" | "/=" | "?" | ".." | "..=" => {
-            Some(theme.style_for_class(HighlightClass::Operator))
-        }
-        // Keywords (tree-sitter uses literal token text as node kind)
-        "fn" | "let" | "mut" | "pub" | "use" | "mod"
-        | "struct" | "enum" | "impl" | "trait"
-        | "return" | "if" | "else" | "match" | "for"
-        | "while" | "loop" | "break" | "continue"
-        | "as" | "in" | "ref" | "self" | "super" | "crate"
-        | "const" | "static" | "type" | "where"
-        | "unsafe" | "extern" | "async" | "await"
-        | "dyn" | "move" | "macro_rules"
-        // Python keywords
-        | "def" | "class" | "import" | "from" | "with"
-        | "try" | "except" | "finally" | "raise"
-        | "yield" | "lambda" | "pass" | "global"
-        | "nonlocal" | "del" | "assert" | "elif"
-        // JS/TS keywords
-        | "function" | "var" | "new" | "delete" | "throw"
-        | "catch" | "typeof" | "instanceof" | "void"
-        | "switch" | "case" | "default" | "export" | "extends"
-        | "interface" | "package"
-        // Go keywords
-        | "func" | "go" | "defer" | "select" | "chan" | "map" | "range"
-        // Literals
-        | "true" | "false" | "nil" | "null" | "undefined"
-        | "True" | "False" | "None" => {
-            Some(theme.style_for_class(HighlightClass::Keyword))
-        }
-        _ => None,
-    };
-
-    if let Some(style) = style {
-        let start = node.start_byte();
-        let end = node.end_byte();
-        if end > start {
-            spans.push(HighlightSpan {
-                range: start..end,
-                style,
-            });
-        }
-    }
-
-    if cursor.goto_first_child() {
-        collect_highlights(cursor, theme, spans);
-        while cursor.goto_next_sibling() {
-            collect_highlights(cursor, theme, spans);
-        }
-        cursor.goto_parent();
-    }
+fn capture_class(name: &str) -> Option<HighlightClass> {
+    use HighlightClass::*;
+    Some(match name {
+        "variable.member" => Property,
+        "string.special.key" => Property,
+        _ => match name.split('.').next()? {
+            "comment" => Comment,
+            "keyword" | "boolean" | "constant" => Keyword,
+            "string" | "character" => String,
+            "number" | "float" => Number,
+            "function" | "method" | "constructor" => Function,
+            "type" | "namespace" | "module" => Type,
+            "variable" => Variable,
+            "operator" => Operator,
+            "punctuation" => Punctuation,
+            "property" | "field" => Property,
+            "tag" => Tag,
+            "attribute" => Attribute,
+            _ => return None,
+        },
+    })
 }
+
 fn merge_spans(spans: Vec<HighlightSpan>) -> Vec<HighlightSpan> {
     if spans.is_empty() {
         return spans;
@@ -442,6 +366,30 @@ pub type HighlightedLines = Arc<Vec<Vec<HighlightedSegment>>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn highlight_toml() {
+        let code = "[package]\nname = \"forge\"\nenabled = true\ncount = 42\n\"quoted\" = 'literal'\n# comment\n";
+        let spans = highlight("toml", code, &HighlightTheme::default());
+        for (token, class) in [
+            ("package", HighlightClass::Property),
+            ("name", HighlightClass::Property),
+            ("\"forge\"", HighlightClass::String),
+            ("true", HighlightClass::Keyword),
+            ("42", HighlightClass::Number),
+            ("\"quoted\"", HighlightClass::Property),
+            ("'literal'", HighlightClass::String),
+            ("# comment", HighlightClass::Comment),
+        ] {
+            let start = code.find(token).unwrap();
+            assert!(
+                spans.iter().any(|span| span.range.start <= start
+                    && span.range.end >= start + token.len()
+                    && span.style.class == class),
+                "missing {class:?} for {token}: {spans:?}"
+            );
+        }
+    }
 
     #[test]
     fn highlight_rust() {
@@ -672,8 +620,8 @@ mod tests {
     /// A blank line between statements carries no spans at all, which drives
     /// `highlight_to_lines_uncached` through its `segments.is_empty()`
     /// fallback for that one line while sibling lines still get real spans.
-    /// The line with `let y = x` also leaves unstyled text (` x`) after the
-    /// last span (`=`) before `line_end`, exercising the trailing-remainder
+    /// The incomplete line with `let y = x` leaves unstyled text after the
+    /// last span before `line_end`, exercising the trailing-remainder
     /// push for a non-blank line.
     #[test]
     fn highlight_to_lines_handles_blank_lines_and_trailing_unstyled_text() {
@@ -690,15 +638,13 @@ mod tests {
         assert_eq!(blank.len(), 1);
         assert_eq!(blank[0].0, "");
 
-        // `    let y = x` has a keyword span ("let") and an operator span
-        // ("="), but the trailing " x" is unstyled and must still appear as
-        // its own trailing segment rather than being dropped.
+        // The incomplete statement's trailing text must not be dropped.
         let let_y_line = &lines[3];
         let joined: String = let_y_line.iter().map(|seg| seg.0.as_str()).collect();
         assert_eq!(joined, "    let y = x");
         assert_eq!(
             let_y_line.last().expect("line must have segments").0,
-            " x",
+            " y = x",
             "unstyled text after the last span must be pushed as a trailing segment"
         );
     }
