@@ -1138,7 +1138,7 @@ impl ConversationRenderInternals for ConversationModel {
                         let sub_width = width.saturating_sub(5 + rail_extra);
                         for wrapped in wrap(subcommand, sub_width) {
                             let mut sub_line = Line::from(Span::styled(
-                                format!("{INDENT_UNIT}  {wrapped}"),
+                                format!("{INDENT_UNIT}{wrapped}"),
                                 theme::muted(),
                             ));
                             if rail {
@@ -3489,6 +3489,7 @@ mod tests {
         let text = rendered_text(&model);
 
         assert!(text.contains("$ cargo build"), "{text}");
+        assert!(!text.contains(">    "), "{text}");
         // A command too wide for the pane wraps with the connector carried
         // down, so the full invocation stays visible instead of truncating.
         assert!(text.contains("--short"), "{text}");
