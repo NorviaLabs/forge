@@ -295,6 +295,9 @@ impl TuiApp {
             OverlayAction::GitCreateBranch { name } => self.create_git_branch(&name),
             OverlayAction::GitMergeBranch { name } => self.merge_git_branch(&name),
             OverlayAction::GitAbortMerge => self.abort_git_merge(),
+            OverlayAction::GitDeleteBranch { name } => self.delete_git_branch(&name),
+            OverlayAction::OpenGitRename { from } => self.open_git_rename(&from),
+            OverlayAction::GitRenameBranch { from, to } => self.rename_git_branch(&from, &to),
             OverlayAction::RenameSession { session_id, label } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");

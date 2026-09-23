@@ -144,6 +144,19 @@ pub enum Overlay {
     GitAbortMerge {
         detail: String,
     },
+    /// Confirmation before deleting a branch. Also destructive: the commits on
+    /// it go with it.
+    GitDeleteBranch {
+        name: String,
+        detail: String,
+    },
+    /// Rename a branch. One field, prefilled with the current name, like
+    /// `GitCommit` — the branch being renamed is named in the title.
+    GitRenameBranch {
+        from: String,
+        name: String,
+        error: Option<String>,
+    },
     FileExplorer {
         cwd: String,
         selected: usize,
@@ -1299,6 +1312,20 @@ pub enum OverlayAction {
     },
     /// The operator confirmed the abort; abandon the in-progress merge.
     GitAbortMerge,
+    /// Delete the named branch. Carries the confirmation on the first press
+    /// and the deletion on the second, so the two can never diverge.
+    GitDeleteBranch {
+        name: String,
+    },
+    /// Open the rename prompt for the named branch.
+    OpenGitRename {
+        from: String,
+    },
+    /// Rename `from` to the typed name.
+    GitRenameBranch {
+        from: String,
+        to: String,
+    },
     OpenSessionInput(SessionInputMode),
     OpenSessionRename {
         session_id: String,
@@ -1600,6 +1627,47 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        // `x` and `r` act on the highlighted branch. They are deliberately
+        // inert in merge mode, where the list is answering "merge what?" and a
+        // delete or rename would be answering a question nobody asked.
+        Key::Char('x') if matches!(overlay, Overlay::GitBranch { merge: false, .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                ..
+            } = overlay
+            {
+                let matches = Overlay::branch_matches(items, filter);
+                match matches.get((*selected).min(matches.len().saturating_sub(1))) {
+                    Some(index) => OverlayAction::GitDeleteBranch {
+                        name: items[*index].clone(),
+                    },
+                    None => OverlayAction::None,
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
+        Key::Char('r') if matches!(overlay, Overlay::GitBranch { merge: false, .. }) => {
+            if let Overlay::GitBranch {
+                selected,
+                filter,
+                items,
+                ..
+            } = overlay
+            {
+                let matches = Overlay::branch_matches(items, filter);
+                match matches.get((*selected).min(matches.len().saturating_sub(1))) {
+                    Some(index) => OverlayAction::OpenGitRename {
+                        from: items[*index].clone(),
+                    },
+                    None => OverlayAction::None,
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
         Key::Char(c) if matches!(overlay, Overlay::GitBranch { .. }) => {
             if let Overlay::GitBranch {
                 selected,
@@ -1645,6 +1713,29 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             {
                 filter.pop();
                 *selected = 0;
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GitRenameBranch { .. }) => {
+            if let Overlay::GitRenameBranch { name, error, .. } = overlay {
+                if !c.is_control() && c != '\n' {
+                    name.push(c);
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(data) if matches!(overlay, Overlay::GitRenameBranch { .. }) => {
+            if let Overlay::GitRenameBranch { name, error, .. } = overlay {
+                name.extend(data.chars().filter(|c| !c.is_control()));
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GitRenameBranch { .. }) => {
+            if let Overlay::GitRenameBranch { name, error, .. } = overlay {
+                name.pop();
                 *error = None;
             }
             OverlayAction::None
@@ -2002,6 +2093,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 }
             }
             Overlay::GitAbortMerge { .. } => OverlayAction::GitAbortMerge,
+            Overlay::GitDeleteBranch { name, .. } => {
+                OverlayAction::GitDeleteBranch { name: name.clone() }
+            }
+            Overlay::GitRenameBranch { from, name, .. } => OverlayAction::GitRenameBranch {
+                from: from.clone(),
+                to: name.trim().to_string(),
+            },
             Overlay::GitBranch {
                 selected,
                 filter,
@@ -3300,7 +3398,7 @@ impl Widget for OverlayWidget<'_> {
                 } else {
                     (
                         "Branch",
-                        "Enter switch · a name that matches nothing creates it · Esc cancel",
+                        "Enter switch · an unmatched name creates · x delete · r rename · Esc cancel",
                     )
                 };
                 Paragraph::new(format!(
@@ -3314,6 +3412,40 @@ impl Widget for OverlayWidget<'_> {
                         .style(theme::panel())
                         .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title(title)),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitDeleteBranch { name, detail } => {
+                let r = centered_rect(68, 30, area);
+                clear_modal(r, buf);
+                Paragraph::new(format!("{detail}\n\nEnter delete `{name}` · Esc cancel"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::error_callout())
+                            .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
+                            .title(theme::modal_title("Delete branch")),
+                    )
+                    .render(r, buf);
+            }
+            Overlay::GitRenameBranch { from, name, error } => {
+                let r = centered_rect(72, 30, area);
+                clear_modal(r, buf);
+                let error = error
+                    .as_ref()
+                    .map(|error| format!("\n\n{error}"))
+                    .unwrap_or_default();
+                Paragraph::new(format!(
+                    "New name: {name}█{error}\n\nEnter rename · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title(&format!("Rename `{from}`"))),
                 )
                 .render(r, buf);
             }

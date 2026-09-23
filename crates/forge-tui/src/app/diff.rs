@@ -9,7 +9,7 @@ use forge_transcript::{ChatItem, ConversationModel, ConversationViewOpts};
 use forge_workspace::git_review::parse_file_diff;
 
 use super::*;
-use crate::diff_view::{entries_from_changed_files, DiffEntry, DiffSource, DiffStatus, Patch};
+use crate::diff_view::{entries_for_source, DiffEntry, DiffSource, DiffStatus, Patch};
 use crate::overlays::StatusRow;
 
 impl TuiApp {
@@ -106,8 +106,11 @@ impl TuiApp {
             }
         }
         let entries = match self.diff_view.source {
-            DiffSource::WorkingTree => entries_from_changed_files(
+            // One builder for both git-backed sources: the staged one filters
+            // the same snapshot rather than running a second `git status`.
+            DiffSource::WorkingTree | DiffSource::Staged => entries_for_source(
                 &self.workspace_files.explorer.git_status.changed_files(),
+                self.diff_view.source,
             ),
             DiffSource::LastTurn => self.last_turn_diff_entries(),
         };
@@ -197,12 +200,22 @@ impl TuiApp {
             return;
         }
         let root = self.session_view.workspace_root().to_path_buf();
-        match self
-            .workspace_files
-            .explorer
-            .git_status
-            .get_combined_diff(&path)
-        {
+        // The staged source reviews the index, the working tree reviews
+        // everything against HEAD. Reading the wrong one would show the
+        // operator a patch that is not what they asked for.
+        let staged = self.diff_view.source == DiffSource::Staged;
+        let cached = if staged {
+            self.workspace_files
+                .explorer
+                .git_status
+                .get_staged_diff(&path)
+        } else {
+            self.workspace_files
+                .explorer
+                .git_status
+                .get_combined_diff(&path)
+        };
+        match cached {
             Some(Ok(text)) => {
                 let untracked = self
                     .diff_view
@@ -216,10 +229,17 @@ impl TuiApp {
                 self.diff_view.set_patch_error(revision, path, error);
             }
             None => {
-                self.workspace_files
-                    .explorer
-                    .git_status
-                    .request_combined_diff(root, path);
+                if staged {
+                    self.workspace_files
+                        .explorer
+                        .git_status
+                        .request_staged_diff(root, path);
+                } else {
+                    self.workspace_files
+                        .explorer
+                        .git_status
+                        .request_combined_diff(root, path);
+                }
             }
         }
     }
@@ -427,6 +447,13 @@ impl TuiApp {
                 self.start_git_sync(forge_workspace::git_sync::SyncOperation::Pull);
                 true
             }
+            // `f` fetches without merging, so the operator can look at what is
+            // incoming before `<` takes it. That is the whole reason to have
+            // both keys.
+            KeyCode::Char('f') => {
+                self.start_git_sync(forge_workspace::git_sync::SyncOperation::Fetch);
+                true
+            }
             KeyCode::Char('b') => {
                 self.open_git_branch_picker(false);
                 true
@@ -473,11 +500,15 @@ pub(super) fn diff_shortcut_rows() -> Vec<StatusRow> {
             ("c", "Commit the staged changes"),
             (">", "Push to the upstream branch"),
             ("<", "Pull from the upstream branch"),
-            ("b", "Switch branch, or create one by typing a new name"),
+            ("f", "Fetch from the upstream branch without merging"),
+            (
+                "b",
+                "Switch branch, create, rename (`r`) or delete (`x`) one",
+            ),
             ("M", "Merge a branch into the current one"),
             ("a", "Abort an in-progress merge (confirmed)"),
             ("o", "Open this file at the cursor's line"),
-            ("d", "Switch working tree / last turn"),
+            ("d", "Cycle working tree / staged / last turn"),
             ("Esc", "Close the diff view"),
         ]
         .into_iter()
@@ -570,7 +601,7 @@ impl TuiApp {
     /// why there is nothing to commit — an empty commit would fail in `git`
     /// anyway, and failing before the prompt is one less dead end.
     pub(super) fn open_git_commit(&mut self) {
-        if self.diff_view.source != DiffSource::WorkingTree {
+        if self.diff_view.source == DiffSource::LastTurn {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "Committing applies to the working tree; press d to switch",
@@ -655,15 +686,25 @@ impl TuiApp {
     pub(super) fn git_sync_tag(&self) -> Option<String> {
         let sync = &self.git_sync;
         if let Some(operation) = sync.running.as_ref() {
-            let target = match &operation {
-                // A merge is with a branch, not an upstream, so naming the
-                // upstream would name the wrong thing.
-                forge_workspace::git_sync::SyncOperation::Merge { branch } => branch.clone(),
-                forge_workspace::git_sync::SyncOperation::Switch { branch }
-                | forge_workspace::git_sync::SyncOperation::Create { branch } => branch.clone(),
-                _ => sync.upstream().unwrap_or("upstream").to_string(),
+            use forge_workspace::git_sync::SyncOperation;
+            // A branch verb is with a branch, not an upstream, so naming the
+            // upstream would name the wrong thing. Aborting a merge is not
+            // *with* anything, so it names no target at all.
+            let target = match operation {
+                SyncOperation::Merge { branch }
+                | SyncOperation::Switch { branch }
+                | SyncOperation::Create { branch }
+                | SyncOperation::DeleteBranch { branch, .. } => Some(branch.clone()),
+                SyncOperation::RenameBranch { from, .. } => Some(from.clone()),
+                SyncOperation::AbortMerge => None,
+                SyncOperation::Pull | SyncOperation::Push | SyncOperation::Fetch => {
+                    Some(sync.upstream().unwrap_or("upstream").to_string())
+                }
             };
-            return Some(format!("{} {target}…", operation.active()));
+            return Some(match target {
+                Some(target) => format!("{} {target}…", operation.active()),
+                None => format!("{}…", operation.active()),
+            });
         }
         if sync
             .conflicts
@@ -727,6 +768,17 @@ impl TuiApp {
                     | forge_workspace::git_sync::SyncOperation::Create { branch } => {
                         format!("{} · on {branch}", outcome.operation.finished())
                     }
+                    forge_workspace::git_sync::SyncOperation::DeleteBranch { branch, .. } => {
+                        format!("{} {branch}", outcome.operation.finished())
+                    }
+                    // Both ends, because a rename the operator did not intend
+                    // is only visible in the pair.
+                    forge_workspace::git_sync::SyncOperation::RenameBranch { from, to } => {
+                        format!("{} {from} → {to}", outcome.operation.finished())
+                    }
+                    forge_workspace::git_sync::SyncOperation::AbortMerge => {
+                        outcome.operation.finished().to_string()
+                    }
                     _ => format!("{} {target}", outcome.operation.finished()),
                 },
             ),
@@ -782,7 +834,7 @@ impl TuiApp {
     /// this code could not read — opening a picker over stale data would invite
     /// a choice that then fails.
     fn open_git_branch_picker(&mut self, merge: bool) {
-        if self.diff_view.source != DiffSource::WorkingTree {
+        if self.diff_view.source == DiffSource::LastTurn {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "Branches apply to the working tree; press d to switch",
@@ -908,6 +960,89 @@ impl TuiApp {
         self.overlay = Some(Overlay::GitAbortMerge { detail });
     }
 
+    /// `x` in the picker, and the confirmed action. Deletion destroys the
+    /// commits the branch holds, so it confirms first and only runs from the
+    /// confirmation — the same dual role as `abort_git_merge`.
+    ///
+    /// There is deliberately no force path in the UI: `-d` refuses a branch
+    /// whose commits are not merged anywhere, and that refusal is the feature.
+    /// Escalating to `-D` from a TUI is how commits get lost by accident, so
+    /// losing an unmerged branch stays a shell operation.
+    pub(super) fn delete_git_branch(&mut self, name: &str) {
+        if self.git_sync.error.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "The branch could not be read, so there is nothing to delete",
+            );
+            return;
+        }
+        if self
+            .git_sync
+            .branch
+            .as_ref()
+            .and_then(|branch| branch.branch.as_deref())
+            == Some(name)
+        {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("Cannot delete `{name}`: HEAD is on it"),
+            );
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::GitDeleteBranch { .. })) {
+            self.start_branch_operation(
+                forge_workspace::git_sync::SyncOperation::DeleteBranch {
+                    branch: name.to_string(),
+                    force: false,
+                },
+                &format!("Deleting {name}"),
+            );
+            return;
+        }
+        self.overlay = Some(Overlay::GitDeleteBranch {
+            name: name.to_string(),
+            detail: format!(
+                "This deletes `{name}` and the commits that are only on it. Git refuses if \
+                 they are not merged anywhere; Forge will not force it."
+            ),
+        });
+    }
+
+    /// `r` in the picker: ask for the new name. Renaming destroys nothing, so
+    /// unlike deletion it needs no confirmation — only a valid name.
+    pub(super) fn open_git_rename(&mut self, from: &str) {
+        if self.git_sync.error.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "The branch could not be read, so there is nothing to rename",
+            );
+            return;
+        }
+        self.overlay = Some(Overlay::GitRenameBranch {
+            from: from.to_string(),
+            // Prefilled with the current name, so the edit is a correction
+            // rather than a retype.
+            name: from.to_string(),
+            error: None,
+        });
+    }
+
+    pub(super) fn rename_git_branch(&mut self, from: &str, to: &str) {
+        if to.trim().is_empty() {
+            if let Some(Overlay::GitRenameBranch { error, .. }) = self.overlay.as_mut() {
+                *error = Some("A branch needs a name".into());
+            }
+            return;
+        }
+        self.start_branch_operation(
+            forge_workspace::git_sync::SyncOperation::RenameBranch {
+                from: from.to_string(),
+                to: to.to_string(),
+            },
+            &format!("Renaming {from} to {to}"),
+        );
+    }
+
     /// Unresolved paths, counted from the same status the file list draws, so
     /// the banner and the `!` markers can never disagree.
     pub(super) fn git_conflict_count(&self) -> usize {
@@ -947,7 +1082,7 @@ impl TuiApp {
     /// `s` / `u`. Staging is reversible and touches only the index, so it runs
     /// without a confirmation; discarding work would not, and is not bound.
     pub(super) fn stage_selected_diff_file(&mut self, stage: bool) {
-        if self.diff_view.source != DiffSource::WorkingTree {
+        if self.diff_view.source == DiffSource::LastTurn {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "Staging applies to the working tree; press d to switch",
