@@ -46,8 +46,8 @@ pub fn reviewability(status: PathStatus, diff: &FileDiff) -> Reviewability {
 
 /// Dirty worktree + index vs `HEAD`. Untracked files are a synthetic add diff.
 pub fn combined_diff(root: &Path, path: &Path) -> Result<FileDiff, String> {
-    let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-    let (output, untracked) = combined_diff_text(root, path)?;
+    let rel = validated_relative_path(root, path)?;
+    let (output, untracked) = combined_diff_text_validated(root, &rel)?;
     Ok(parse_file_diff(rel, &output, untracked))
 }
 
@@ -58,7 +58,12 @@ pub fn combined_diff(root: &Path, path: &Path) -> Result<FileDiff, String> {
 /// `/diff` view — can hold the cheap `String` and parse on demand, instead of
 /// keeping a parsed [`FileDiff`] per changed file.
 pub fn combined_diff_text(root: &Path, path: &Path) -> Result<(String, bool), String> {
-    let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+    let rel = validated_relative_path(root, path)?;
+    combined_diff_text_validated(root, &rel)
+}
+
+fn combined_diff_text_validated(root: &Path, rel: &Path) -> Result<(String, bool), String> {
+    let rel = rel.to_path_buf();
     let tracked = is_tracked(root, &rel);
     let (output, untracked) = if tracked {
         (
@@ -96,7 +101,7 @@ pub fn combined_diff_text(root: &Path, path: &Path) -> Result<(String, bool), St
 /// *working tree*: reviewing what you staged is a different question from
 /// reviewing what you changed, and only this answers the first.
 pub fn staged_diff_text(root: &Path, path: &Path) -> Result<String, String> {
-    let rel = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+    let rel = validated_relative_path(root, path)?;
     // An untracked file has nothing in the index, so it can never appear here:
     // returning git's empty output is the truthful answer, not an error.
     run_git(
@@ -113,6 +118,7 @@ pub fn staged_diff_text(root: &Path, path: &Path) -> Result<String, String> {
 }
 
 pub fn discard_hunk(root: &Path, path: &Path, hunk_index: usize) -> Result<(), String> {
+    validated_relative_path(root, path)?;
     let diff = combined_diff(root, path)?;
     if diff.untracked {
         return Err("untracked files must be deleted, not reverse-applied".into());
@@ -128,8 +134,8 @@ pub fn discard_hunk(root: &Path, path: &Path, hunk_index: usize) -> Result<(), S
 }
 
 pub fn restore_path(root: &Path, path: &Path) -> Result<(), String> {
-    let rel = path.strip_prefix(root).unwrap_or(path);
-    if !is_tracked(root, rel) {
+    let rel = validated_relative_path(root, path)?;
+    if !is_tracked(root, &rel) {
         return Err("untracked files cannot be restored to HEAD".into());
     }
     run_git(
@@ -147,30 +153,60 @@ pub fn restore_path(root: &Path, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn delete_untracked(root: &Path, path: &Path) -> Result<(), String> {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
-    let canon_root = root
+/// Keep review subprocesses scoped to ordinary paths inside the selected worktree.
+fn validated_relative_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let root = root
         .canonicalize()
         .map_err(|e| format!("workspace root: {e}"))?;
-    let canon = abs
-        .canonicalize()
-        .map_err(|e| format!("cannot delete {}: {e}", abs.display()))?;
-    if !canon.starts_with(&canon_root) {
-        return Err("refusing to delete a path outside the workspace".into());
+    let rel = if path.is_absolute() {
+        let absolute = if path.exists() {
+            path.canonicalize()
+                .map_err(|e| format!("workspace path: {e}"))?
+        } else {
+            path.to_path_buf()
+        };
+        absolute
+            .strip_prefix(&root)
+            .map_err(|_| "path is outside the workspace")?
+            .to_path_buf()
+    } else {
+        path.to_path_buf()
+    };
+    if rel.as_os_str().is_empty()
+        || rel
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || rel
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str() == ".git")
+    {
+        return Err("invalid workspace path".into());
     }
-    if is_tracked(root, abs.strip_prefix(root).unwrap_or(&abs)) {
+    let mut current = root;
+    for component in rel.components() {
+        current.push(component);
+        if fs::symlink_metadata(&current).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err("path crosses a symlink".into());
+        }
+    }
+    Ok(rel)
+}
+
+pub fn delete_untracked(root: &Path, path: &Path) -> Result<(), String> {
+    let rel = validated_relative_path(root, path)?;
+    if is_tracked(root, &rel) {
         return Err("refusing to delete a tracked path".into());
     }
-    let meta =
-        fs::symlink_metadata(&canon).map_err(|e| format!("stat {}: {e}", canon.display()))?;
+    let abs = root
+        .canonicalize()
+        .map_err(|e| format!("workspace root: {e}"))?
+        .join(&rel);
+    let meta = fs::symlink_metadata(&abs).map_err(|e| format!("stat {}: {e}", abs.display()))?;
     if meta.is_dir() {
-        fs::remove_dir_all(&canon).map_err(|e| format!("delete dir {}: {e}", canon.display()))?;
+        fs::remove_dir_all(&abs).map_err(|e| format!("delete dir {}: {e}", abs.display()))?;
     } else {
-        fs::remove_file(&canon).map_err(|e| format!("delete {}: {e}", canon.display()))?;
+        fs::remove_file(&abs).map_err(|e| format!("delete {}: {e}", abs.display()))?;
     }
     Ok(())
 }
@@ -239,7 +275,7 @@ fn apply_reverse_hunk(root: &Path, diff: &FileDiff, hunk: &DiffHunk) -> Result<(
             .unwrap_or(0)
     ));
     fs::write(&patch_path, patch).map_err(|e| format!("write patch: {e}"))?;
-    let worktree = Command::new("git")
+    let worktree = git_command(root)
         .args([
             "apply",
             "--reverse",
@@ -257,7 +293,7 @@ fn apply_reverse_hunk(root: &Path, diff: &FileDiff, hunk: &DiffHunk) -> Result<(
         ));
     }
     // Index may already match HEAD (unstaged-only). Ignore a cached miss.
-    let _ = Command::new("git")
+    let _ = git_command(root)
         .args([
             "apply",
             "--reverse",
@@ -272,18 +308,34 @@ fn apply_reverse_hunk(root: &Path, diff: &FileDiff, hunk: &DiffHunk) -> Result<(
 }
 
 fn is_tracked(root: &Path, rel: &Path) -> bool {
-    Command::new("git")
+    git_command(root)
         .args(["ls-files", "--error-unmatch", "--", &rel.to_string_lossy()])
-        .current_dir(root)
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
 }
 
+fn git_command(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(root);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_PREFIX",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn run_git(root: &Path, args: &[&str], allow_one: bool) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = git_command(root)
         .args(args)
-        .current_dir(root)
         .output()
         .map_err(|e| format!("git {} failed: {e}", args.first().copied().unwrap_or("")))?;
     let code = output.status.code().unwrap_or(1);
@@ -301,7 +353,7 @@ fn run_git(root: &Path, args: &[&str], allow_one: bool) -> Result<String, String
 /// Add `path` to the index. Reversible with [`unstage_path`], which is why
 /// `/diff` binds it without a confirmation step.
 pub fn stage_path(root: &Path, path: &Path) -> Result<(), String> {
-    let rel = path.strip_prefix(root).unwrap_or(path);
+    let rel = validated_relative_path(root, path)?;
     run_git(root, &["add", "--", &rel.to_string_lossy()], false)?;
     Ok(())
 }
@@ -312,7 +364,7 @@ pub fn stage_path(root: &Path, path: &Path) -> Result<(), String> {
 /// there is no `HEAD` to restore from; `git rm --cached` is the fallback that
 /// still only touches the index.
 pub fn unstage_path(root: &Path, path: &Path) -> Result<(), String> {
-    let rel = path.strip_prefix(root).unwrap_or(path);
+    let rel = validated_relative_path(root, path)?;
     let name = rel.to_string_lossy().to_string();
     match run_git(root, &["restore", "--staged", "--", &name], false) {
         Ok(_) => Ok(()),
@@ -437,5 +489,24 @@ diff --git a/file.txt b/file.txt
         let err = delete_untracked(dir.path(), Path::new("file.txt")).unwrap_err();
         assert!(err.contains("tracked"), "{err}");
         assert!(dir.path().join("file.txt").exists());
+    }
+
+    #[test]
+    fn git_review_operations_reject_paths_outside_or_through_symlinks() {
+        let dir = repo();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret"), "keep\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
+
+        assert!(stage_path(dir.path(), outside.path().join("secret").as_path()).is_err());
+        #[cfg(unix)]
+        {
+            assert!(delete_untracked(dir.path(), Path::new("link/secret")).is_err());
+            assert_eq!(
+                fs::read_to_string(outside.path().join("secret")).unwrap(),
+                "keep\n"
+            );
+        }
     }
 }
