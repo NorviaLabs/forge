@@ -107,22 +107,12 @@ pub fn session_name_from_prompt(prompt: &str) -> String {
     let first_line = prompt.split('\n').next().unwrap_or("");
     let cut = sentence_end(first_line).unwrap_or(first_line.len());
     let head = trim_trailing(first_line[..cut].trim());
-    let words: Vec<&str> = head.split_whitespace().collect();
-    let start = words
-        .iter()
-        .position(|word| !is_filler_word(word))
-        .unwrap_or(0);
-    let selected = words
-        .iter()
-        .skip(start)
-        .take(TITLE_MAX_WORDS)
-        .copied()
-        .collect::<Vec<_>>();
+    let selected = meaningful_head(head);
     if selected.is_empty() {
         return "Untitled session".to_string();
     }
 
-    let mut name = selected.join(" ");
+    let mut name = selected;
     name = trim_trailing(&name).to_string();
     if let Some(first) = name.get(0..1) {
         name.replace_range(0..1, &first.to_ascii_uppercase());
@@ -1208,7 +1198,15 @@ mod tests {
     fn session_name_from_prompt_uses_natural_spacing() {
         assert_eq!(
             session_name_from_prompt("Fix the login bug. Then run tests"),
-            "Fix the login bug"
+            "Fix login bug"
+        );
+    }
+
+    #[test]
+    fn session_name_from_prompt_skips_filler_words() {
+        assert_eq!(
+            session_name_from_prompt("Could you please fix the login bug?"),
+            "Fix login bug"
         );
     }
 
