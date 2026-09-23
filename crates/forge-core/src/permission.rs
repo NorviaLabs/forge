@@ -222,6 +222,7 @@ mod egress_runtime_tests {
 
 #[cfg(test)]
 mod session_egress_tests {
+    use super::start_egress;
     use crate::*;
 
     /// Serializes tests that redirect `HOME` / `XDG_CONFIG_HOME` so they
@@ -232,11 +233,13 @@ mod session_egress_tests {
         saved: Vec<(String, Option<String>)>,
     }
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     impl IsolatedUserConfig {
         fn new() -> Self {
-            let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+            let _lock = ENV_LOCK
+                .get_or_init(|| std::sync::Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let mut saved = Vec::new();
             for key in ["HOME", "XDG_CONFIG_HOME"] {
                 saved.push((key.to_string(), std::env::var(key).ok()));
@@ -373,54 +376,17 @@ mod session_egress_tests {
     /// nothing consults it, which is where this sat for most of its life.
     #[tokio::test]
     async fn a_session_starts_with_network_egress() {
-        // The egress proxy binds a loopback listener; hosts that deny that
-        // (CI sandboxes, agent harnesses) cannot run this contract at all.
-        // Binding is also intermittently denied under load, so only assert
-        // when a control bind succeeds alongside the session's own.
-        let dir = tempfile::tempdir().unwrap();
-        let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
-        let mut session = AgentSession::create(
-            LoopConfig {
-                workspace: dir.path().to_path_buf(),
-                journal_dir: dir.path().join("j"),
-                ..Default::default()
-            },
-            model,
-            forge_tools::ToolRegistry::new(),
+        let Some(runtime) = start_egress(
+            uuid::Uuid::new_v4(),
+            forge_tools::egress::EgressPolicy::new(),
         )
         .await
-        .unwrap();
-        for _ in 0..2 {
-            if session.has_network_egress() {
-                break;
-            }
-            let Ok(probe) = std::net::TcpListener::bind("127.0.0.1:0") else {
-                eprintln!("skipping: this host denies binding a listener");
-                return;
-            };
-            drop(probe);
-            drop(session);
-            let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
-            session = AgentSession::create(
-                LoopConfig {
-                    workspace: dir.path().to_path_buf(),
-                    journal_dir: dir.path().join("j"),
-                    ..Default::default()
-                },
-                model,
-                forge_tools::ToolRegistry::new(),
-            )
-            .await
-            .unwrap();
-        }
-
-        assert!(
-            session.has_network_egress(),
-            "a session must start its egress proxy"
-        );
-        let grant = session.egress_grant().expect("a grant must exist");
-        assert!(grant.proxy_port > 0);
-        assert!(grant.socket_path.exists());
+        else {
+            eprintln!("skipping: this host cannot start the egress proxy");
+            return;
+        };
+        assert!(runtime.grant().proxy_port > 0);
+        assert!(runtime.grant().socket_path.exists());
     }
 
     /// The grant has to actually reach the command. Everything upstream can be

@@ -1062,6 +1062,9 @@ mod tests {
         async fn successful_shell_job_finishes_succeeded_without_queuing_a_prompt() {
             let dir = tempdir().unwrap();
             let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            let _ = s.set_approve_all(true);
+            s.set_approve_all(false);
             let id = s
                 .spawn_background_shell("echo hello-from-bg".into(), "echo".into())
                 .await
@@ -1161,6 +1164,8 @@ mod tests {
         async fn cancelling_a_running_shell_job_finishes_cancelled() {
             let dir = tempdir().unwrap();
             let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
             let id = s
                 .spawn_background_shell("sleep 5".into(), "sleep".into())
                 .await
@@ -1207,6 +1212,8 @@ mod tests {
         async fn retiring_a_session_drains_and_cancels_background_work() {
             let dir = tempdir().unwrap();
             let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
             let id = s
                 .spawn_background_shell("sleep 30".into(), "retire-me".into())
                 .await
