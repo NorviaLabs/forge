@@ -262,6 +262,86 @@ async fn a_confined_git_status_works_inside_a_linked_worktree() {
     assert!(text.contains("new.txt"), "status output: {text}");
 }
 
+/// A read-only GitHub CLI lookup needs linked-worktree metadata for implicit
+/// repository discovery, but should not receive Git write access. Use
+/// `rev-parse` as the portable probe; it exercises the same Git metadata path.
+#[tokio::test]
+async fn a_confined_repo_discovery_works_inside_a_linked_worktree_readonly() {
+    require_sandbox!();
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .expect("run git")
+    };
+    assert!(git(&["init", "-q"]).status.success());
+    std::fs::write(repo.path().join("file.txt"), "hi").unwrap();
+    assert!(git(&["add", "file.txt"]).status.success());
+    git(&["config", "user.email", "forge@test"]);
+    git(&["config", "user.name", "Forge Test"]);
+    assert!(git(&["commit", "-q", "-m", "init", "--no-verify"])
+        .status
+        .success());
+
+    let base = tempfile::tempdir().unwrap();
+    let worktree = base.path().join("session-1");
+    let added = git(&[
+        "worktree",
+        "add",
+        "-q",
+        worktree.to_str().unwrap(),
+        "-b",
+        "forge/session-1",
+    ]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    let policy = SandboxPolicy::for_workspace(&worktree).with_command_access("git rev-parse");
+    let (program, args) =
+        wrap_shell_command("sh", "git rev-parse --show-toplevel", &policy).unwrap();
+    let config = worktree.join(".forge-host-identity").join("gitconfig");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "").unwrap();
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(&worktree)
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "read-only repository discovery must succeed in linked worktree; stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert_eq!(stdout.trim(), worktree.to_string_lossy());
+
+    let common_config = repo.path().join(".git/config");
+    let write = format!(
+        "git config --file {} forge.probe denied",
+        common_config.display()
+    );
+    let (program, args) = wrap_shell_command("sh", &write, &policy).unwrap();
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(&worktree)
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "read-only discovery must not grant Git writes"
+    );
+}
+
 /// The same scenario through the real tool path: the agent runs `git status`
 /// in a managed session's linked worktree. The full spawn path must work —
 /// linked metadata reachable, and git pointed at a spawn-local global config
