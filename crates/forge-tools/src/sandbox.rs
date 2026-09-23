@@ -1470,10 +1470,15 @@ mod tests {
             );
         }
 
-        let plain = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
+        let plain_policy = SandboxPolicy::for_workspace(ws.path());
+        let plain = seatbelt_profile(&plain_policy).unwrap();
         assert!(
-            !primary_file_read_rule(&plain).contains(&format!("(subpath \"{gitdir}\")")),
-            "without a git grant the outside gitdir stays outside the sandbox"
+            primary_file_read_rule(&plain).contains(&format!("(subpath \"{gitdir}\")")),
+            "repository discovery needs the linked worktree gitdir readable"
+        );
+        assert!(
+            !primary_file_write_rule(&plain).contains(&format!("(subpath \"{gitdir}\")")),
+            "repository discovery must not make the linked worktree gitdir writable"
         );
     }
 
