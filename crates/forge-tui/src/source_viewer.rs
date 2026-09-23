@@ -32,13 +32,16 @@ fn preview_kind(rel_path: &str) -> Option<TextPreviewKind> {
         _ if filename == ".env" || filename.starts_with(".env.") => TextPreviewKind::Config,
         _ => match extension.as_str() {
             "md" | "markdown" => TextPreviewKind::Markdown,
-            "json" | "yaml" | "yml" | "toml" | "csv" | "tsv" => TextPreviewKind::Structured,
+            "json" => TextPreviewKind::Json,
+            "yaml" | "yml" => TextPreviewKind::Yaml,
+            "toml" => TextPreviewKind::Toml,
+            "ini" => TextPreviewKind::Ini,
+            "csv" | "tsv" => TextPreviewKind::Structured,
             "html" | "htm" => TextPreviewKind::Html,
             "xml" => TextPreviewKind::Xml,
             "svg" => TextPreviewKind::Svg,
             "css" | "scss" | "less" => TextPreviewKind::Stylesheet,
             "diff" | "patch" => TextPreviewKind::Diff,
-            "ini" => TextPreviewKind::Config,
             "mmd" | "mermaid" => TextPreviewKind::Mermaid,
             "log" => TextPreviewKind::Log,
             _ => return None,
@@ -71,6 +74,10 @@ fn preview_lines(kind: TextPreviewKind, lines: &[String]) -> Vec<Line<'static>> 
 
 fn preview_language(kind: TextPreviewKind) -> Option<&'static str> {
     match kind {
+        TextPreviewKind::Json => Some("json"),
+        TextPreviewKind::Toml => Some("toml"),
+        TextPreviewKind::Yaml => Some("yaml"),
+        TextPreviewKind::Ini => Some("ini"),
         TextPreviewKind::Stylesheet => Some("css"),
         TextPreviewKind::Html | TextPreviewKind::Xml | TextPreviewKind::Svg => Some("html"),
         _ => None,
@@ -216,6 +223,10 @@ pub enum ViewerMode {
 pub enum TextPreviewKind {
     Markdown,
     Structured,
+    Json,
+    Yaml,
+    Toml,
+    Ini,
     Html,
     Xml,
     Svg,
@@ -2049,14 +2060,10 @@ mod tests {
 
     #[test]
     fn portable_preview_kinds_cover_structured_html_and_logs() {
-        assert_eq!(
-            preview_kind("config.json"),
-            Some(TextPreviewKind::Structured)
-        );
-        assert_eq!(
-            preview_kind("config.YAML"),
-            Some(TextPreviewKind::Structured)
-        );
+        assert_eq!(preview_kind("config.json"), Some(TextPreviewKind::Json));
+        assert_eq!(preview_kind("config.YAML"), Some(TextPreviewKind::Yaml));
+        assert_eq!(preview_kind("settings.toml"), Some(TextPreviewKind::Toml));
+        assert_eq!(preview_kind("settings.ini"), Some(TextPreviewKind::Ini));
         assert_eq!(preview_kind("index.html"), Some(TextPreviewKind::Html));
         assert_eq!(preview_kind("server.log"), Some(TextPreviewKind::Log));
         assert_eq!(preview_kind("main.rs"), None);
