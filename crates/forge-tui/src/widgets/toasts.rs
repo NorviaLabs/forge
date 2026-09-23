@@ -1,12 +1,6 @@
 //! Toast overlay backed by [`ratatui_toaster`](https://crates.io/crates/ratatui-toaster).
 //!
-//! The home-grown [`ToastState`](crate::app::ToastState) only ever mirrored
-//! its text into the feedback strip — nothing painted it as an overlay, so a
-//! success notice and a chat error looked identical: one persistent line.
-//! This stack renders the same push as a positioned, auto-expiring toast on
-//! top of everything else, while the feedback strip keeps its persistent
-//! latest-status role. Toasts are notification, not interaction: they never
-//! take focus and never block input.
+//! Toasts are transient notifications: they never take focus or block input.
 
 use std::borrow::Cow;
 use std::time::{Duration, Instant};

@@ -648,7 +648,7 @@ impl TuiApp {
     /// Toast with an explicit severity. Transient notifications deliberately
     /// have one in-app destination: the top-right toast overlay.
     pub(super) fn push_toast_with(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
-        self.toast.show(severity, text);
+        self.toast.push_overlay(severity, text);
     }
 
     pub(super) fn tick_toast(&mut self) {
@@ -667,6 +667,10 @@ impl TuiApp {
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
 
+        if self.feedback.severity == FeedbackSeverity::Error && self.feedback.text == msg {
+            self.busy_state.set_phase(BusyPhase::Idle);
+            return;
+        }
         self.toast
             .push_overlay(FeedbackSeverity::Error, msg.clone());
         // Keep the compatibility models populated for status consumers and
