@@ -80,11 +80,6 @@ pub enum SlashCommand {
     Goal {
         action: GoalAction,
     },
-    /// Start a relentless interview that sharpens a plan before committing to
-    /// it. The optional topic is folded into the interview prompt.
-    GrillMe {
-        topic: Option<String>,
-    },
     /// Open the effort picker.
     Effort,
     /// Toggle thinking generation, or set it explicitly.
@@ -123,8 +118,7 @@ impl SlashCommand {
         match self {
             Self::Goal {
                 action: GoalAction::Set(_),
-            }
-            | Self::GrillMe { .. } => false,
+            } => false,
             _ => !matches!(
                 self,
                 Self::Continue
@@ -255,13 +249,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 })
             }
         },
-        "grill-me" | "grill_me" => Ok(SlashCommand::GrillMe {
-            topic: rest
-                .split_once(char::is_whitespace)
-                .map(|(_, topic)| topic.trim())
-                .filter(|topic| !topic.is_empty())
-                .map(str::to_string),
-        }),
         "effort" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/effort".into()))
@@ -294,24 +281,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         },
         other => Err(CommandError::Unknown(other.to_string())),
     }
-}
-
-/// Prompt `/grill-me` sends: a relentless interview that sharpens a plan or
-/// design before the operator commits to it. The optional topic is appended so
-/// the model knows what to interrogate.
-pub fn grill_me_prompt(topic: Option<&str>) -> String {
-    let mut prompt = String::from(
-        "Interview me relentlessly to sharpen this before I commit to it. \
-         Ask one question at a time and wait for my answer before asking the next. \
-         Push on the weakest assumptions, unstated constraints, failure modes, and \
-         the parts I am hand-waving. Do not propose a solution until the questioning \
-         is done; when it is, summarize the sharpened plan and the open risks.",
-    );
-    if let Some(topic) = topic.map(str::trim).filter(|topic| !topic.is_empty()) {
-        prompt.push_str("\n\nSubject: ");
-        prompt.push_str(topic);
-    }
-    prompt
 }
 
 #[cfg(test)]
@@ -679,13 +648,11 @@ mod tests {
     }
 
     #[test]
-    fn goal_set_and_grill_me_wait_for_a_free_session() {
-        // Both queue a fresh turn, so neither may run mid-turn.
+    fn goal_set_waits_for_a_free_session() {
         assert!(!SlashCommand::Goal {
             action: GoalAction::Set("x".into())
         }
         .available_while_busy());
-        assert!(!SlashCommand::GrillMe { topic: None }.available_while_busy());
         // Reading and clearing the goal touch no turn and stay available.
         assert!(SlashCommand::Goal {
             action: GoalAction::Show
@@ -695,36 +662,5 @@ mod tests {
             action: GoalAction::Clear
         }
         .available_while_busy());
-    }
-
-    #[test]
-    fn parses_grill_me_with_and_without_a_topic() {
-        assert_eq!(
-            parse_slash("/grill-me").unwrap().unwrap(),
-            SlashCommand::GrillMe { topic: None }
-        );
-        assert_eq!(
-            parse_slash("/grill_me").unwrap().unwrap(),
-            SlashCommand::GrillMe { topic: None }
-        );
-        assert_eq!(
-            parse_slash("/grill-me my migration plan").unwrap().unwrap(),
-            SlashCommand::GrillMe {
-                topic: Some("my migration plan".into())
-            }
-        );
-    }
-
-    #[test]
-    fn grill_me_prompt_names_the_topic_only_when_given() {
-        let bare = grill_me_prompt(None);
-        assert!(bare.contains("Interview me relentlessly"));
-        assert!(!bare.contains("Subject:"));
-
-        let with_topic = grill_me_prompt(Some("  the cache design  "));
-        assert!(with_topic.contains("Subject: the cache design"));
-
-        // A blank topic is the same as none.
-        assert_eq!(grill_me_prompt(Some("   ")), bare);
     }
 }

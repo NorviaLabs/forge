@@ -2384,21 +2384,6 @@ async fn goal_set_and_grill_me_are_refused_while_busy() {
         "feedback={}",
         app.feedback.text
     );
-
-    app.dispatch_line("/grill-me").await.unwrap();
-    assert!(!app.pending_turn.has_prompt());
-}
-
-#[tokio::test]
-async fn grill_me_queues_an_interview_turn() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.dispatch_line("/grill-me the cache design")
-        .await
-        .unwrap();
-
-    let prompt = app.pending_turn.prompt().expect("interview queued");
-    assert!(prompt.contains("Interview me relentlessly"));
-    assert!(prompt.contains("the cache design"));
 }
 
 #[tokio::test]

@@ -31,7 +31,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         ("/context", "Show the token budget broken down by category"),
         ("/plan", "Inspect the latest execution plan"),
         ("/goal", "Work toward a completion condition until it holds"),
-        ("/grill-me", "Interview me to sharpen a plan or design"),
         ("/effort", "Set model effort"),
         ("/thinking", "Toggle model thinking"),
         (
