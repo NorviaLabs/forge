@@ -24,6 +24,12 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     app.external_editor.requested = true;
     assert!(app.cancellation.request());
     app.progress_state.description = Some("building index".into());
+    app.goal = Some(GoalState {
+        condition: "first task goal".into(),
+        turns_evaluated: 2,
+        last_reason: Some("still working".into()),
+        started_at: Instant::now(),
+    });
 
     app.save_session_view_state(first);
 
@@ -44,6 +50,7 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     assert!(!app.external_editor.requested);
     assert!(!app.cancellation.is_requested());
     assert!(app.progress_state.description.is_none());
+    assert!(app.goal.is_none());
 
     app.restore_session_view_state(first);
 
@@ -67,6 +74,10 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
     assert_eq!(
         app.progress_state.description.as_deref(),
         Some("building index")
+    );
+    assert_eq!(
+        app.goal.as_ref().map(|goal| goal.condition.as_str()),
+        Some("first task goal")
     );
 }
 

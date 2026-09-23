@@ -917,7 +917,10 @@ impl TuiApp {
     }
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
-        let skill_line = if let Some(skill_name) = line
+        let built_in = parse_slash(line).is_some_and(|result| result.is_ok());
+        let skill_line = if built_in {
+            None
+        } else if let Some(skill_name) = line
             .split_whitespace()
             .next()
             .and_then(|token| token.strip_prefix('/'))
@@ -941,7 +944,7 @@ impl TuiApp {
         if let Some(cmd_res) = parse_slash(line) {
             let slash_name = line.split_whitespace().next().unwrap_or("/");
             if let Ok(command) = &cmd_res {
-                if self.busy_state.is_active() && !command.available_while_busy() {
+                if self.selected_turn_running() && !command.available_while_busy() {
                     self.set_feedback(
                         FeedbackSeverity::Warn,
                         format!(
@@ -1015,6 +1018,7 @@ impl TuiApp {
                             self.session_view_states.remove(&old_session_id);
                             self.session_runtime = DirectSessionSlot::some(session);
                             self.selected_session_id = session_id;
+                            self.goal = None;
                             self.session_chrome
                                 .retain(|task| task.session_id == session_id);
                             if self.session_chrome.is_empty() {
@@ -1156,6 +1160,7 @@ impl TuiApp {
                             self.overlay = None;
                             self.busy_state.stop();
                             self.selected_session_id = self.session_runtime.session_id;
+                            self.restore_goal();
                             self.session_view = SessionSnapshot::capture(&self.session_runtime);
                             self.transcript_view =
                                 TranscriptSnapshot::capture(&self.session_runtime);
