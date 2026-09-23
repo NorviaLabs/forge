@@ -1781,7 +1781,8 @@ async fn execute_command(
             state.grant_trust(&workspace)?;
         }
         SupervisorCommand::SubmitPrompt { session_id, text } => {
-            if state.control.session(session_id).await?.label.is_empty() {
+            let session = state.control.session(session_id).await?;
+            if session.ownership != WorktreeOwnership::Primary && session.label.is_empty() {
                 state
                     .control
                     .rename(session_id, &forge_types::session_name_from_prompt(&text))
@@ -1800,7 +1801,8 @@ async fn execute_command(
             text,
             attachments,
         } => {
-            if state.control.session(session_id).await?.label.is_empty() {
+            let session = state.control.session(session_id).await?;
+            if session.ownership != WorktreeOwnership::Primary && session.label.is_empty() {
                 state
                     .control
                     .rename(session_id, &forge_types::session_name_from_prompt(&text))
