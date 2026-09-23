@@ -171,6 +171,66 @@ impl TuiApp {
         }
     }
 
+    /// Whether the on-screen confirmation is the destructive one for `kind`.
+    ///
+    /// A `discard_dirty` action is only honored when it came from that exact
+    /// confirmation, so no other path can route around the second prompt.
+    fn confirmed_discard(&self, kind: crate::overlays::SessionConfirmKind) -> bool {
+        matches!(self.overlay, Some(Overlay::SessionConfirm { kind: on_screen, .. }) if on_screen == kind)
+    }
+
+    /// Second confirmation before a command deletes uncommitted work.
+    ///
+    /// Returns true when the destructive confirmation is now on screen and the
+    /// caller must dispatch nothing. Declining it steps back to the plain
+    /// confirmation, so a dirty worktree can never be archived without also
+    /// removing it.
+    fn require_discard_confirmation(
+        &mut self,
+        session_id: uuid::Uuid,
+        kind: crate::overlays::SessionConfirmKind,
+    ) -> bool {
+        let Some(workspace) = self
+            .supervisor
+            .as_ref()
+            .and_then(|supervisor| supervisor.snapshots.get(&session_id))
+            .map(|snapshot| snapshot.task.workspace.clone())
+        else {
+            return false;
+        };
+        match forge_storage::worktree_is_dirty(&workspace) {
+            Ok(false) => false,
+            Ok(true) => {
+                if let Some(Overlay::SessionConfirm {
+                    session_id,
+                    label,
+                    detail,
+                    ..
+                }) = self.overlay.as_ref()
+                {
+                    let (session_id, label, detail) =
+                        (session_id.clone(), label.clone(), detail.clone());
+                    self.overlay = Some(Overlay::SessionConfirm {
+                        kind,
+                        session_id,
+                        label,
+                        detail,
+                    });
+                }
+                true
+            }
+            Err(error) => {
+                // Refuse rather than guess: an unreadable worktree is not
+                // proof that deleting its contents is safe.
+                self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("could not inspect the worktree: {error}"),
+                );
+                true
+            }
+        }
+    }
+
     pub(super) async fn apply_overlay_action(
         &mut self,
         action: OverlayAction,
@@ -242,11 +302,31 @@ impl TuiApp {
                 );
                 self.overlay = None;
             }
-            OverlayAction::ArchiveSession { session_id } => {
+            OverlayAction::ArchiveAndCleanupSession {
+                session_id,
+                discard_dirty,
+            } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
+                if discard_dirty
+                    && !self.confirmed_discard(crate::overlays::SessionConfirmKind::ArchiveDirty)
+                {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        "discarding uncommitted work needs its own confirmation",
+                    );
+                    return Ok(());
+                }
+                if !discard_dirty
+                    && self.require_discard_confirmation(
+                        session_id,
+                        crate::overlays::SessionConfirmKind::ArchiveDirty,
+                    )
+                {
+                    return Ok(());
+                }
                 self.overlay = None;
                 // The operator confirmed, so this is where the view is parked —
                 // not before the confirmation, which a cancel must leave alone.
@@ -275,7 +355,7 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Info, "stopping to archive…");
                     return Ok(());
                 }
-                self.submit_archive_and_cleanup(session_id);
+                self.submit_archive_and_cleanup_with_policy(session_id, discard_dirty);
             }
             OverlayAction::ApproveAll => {
                 self.overlay = None;
@@ -287,16 +367,39 @@ impl TuiApp {
                     );
                 }
             }
-            OverlayAction::CleanupSessionWorktree { session_id } => {
+            OverlayAction::CleanupSessionWorktree {
+                session_id,
+                discard_dirty,
+            } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
                     return Ok(());
                 };
+                if discard_dirty
+                    && !self.confirmed_discard(crate::overlays::SessionConfirmKind::CleanupDirty)
+                {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        "discarding uncommitted work needs its own confirmation",
+                    );
+                    return Ok(());
+                }
+                if !discard_dirty
+                    && self.require_discard_confirmation(
+                        session_id,
+                        crate::overlays::SessionConfirmKind::CleanupDirty,
+                    )
+                {
+                    return Ok(());
+                }
                 if !self.begin_session_view_retirement(session_id) {
                     return Ok(());
                 }
                 let queued = self.submit_session_command_tracked(
-                    forge_session::SupervisorCommand::RemoveManagedWorktree { session_id },
+                    forge_session::SupervisorCommand::RemoveManagedWorktree {
+                        session_id,
+                        discard_dirty,
+                    },
                     CommandFollowUp::Retirement { session_id },
                 );
                 if !queued {
@@ -631,11 +734,9 @@ mod tests {
                 session_id: "not-a-uuid".into(),
                 label: "renamed".into(),
             },
-            OverlayAction::ArchiveSession {
-                session_id: "not-a-uuid".into(),
-            },
             OverlayAction::CleanupSessionWorktree {
                 session_id: "not-a-uuid".into(),
+                discard_dirty: false,
             },
         ] {
             app.apply_overlay_action(action).await.unwrap();

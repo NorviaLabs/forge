@@ -93,12 +93,12 @@ impl TuiApp {
         let detail = if kind == crate::overlays::SessionConfirmKind::Cleanup {
             format!(
                 "Removes the worktree at\n{workspace}\nThe branch `{branch}` is kept. \
-                 Uncommitted work blocks removal."
+                 Uncommitted work needs a second confirmation."
             )
         } else {
             format!(
                 "Archiving is final — `{label}` cannot be reopened.\nIts branch `{branch}` is \
-                 kept; a clean worktree is removed.\nUncommitted work blocks removal."
+                 kept; a clean worktree is removed.\nUncommitted work needs a second confirmation."
             )
         };
         self.overlay = Some(Overlay::SessionConfirm {
@@ -150,11 +150,22 @@ impl TuiApp {
     /// them and strand a checkout. The removal tolerates arriving before its
     /// archive lands.
     pub(crate) fn submit_archive_and_cleanup(&mut self, session_id: uuid::Uuid) {
+        self.submit_archive_and_cleanup_with_policy(session_id, false);
+    }
+
+    pub(crate) fn submit_archive_and_cleanup_with_policy(
+        &mut self,
+        session_id: uuid::Uuid,
+        discard_dirty: bool,
+    ) {
         self.submit_session_command(forge_session::SupervisorCommand::ArchiveSession {
             session_id,
         });
         self.submit_session_command_tracked(
-            forge_session::SupervisorCommand::RemoveManagedWorktree { session_id },
+            forge_session::SupervisorCommand::RemoveManagedWorktree {
+                session_id,
+                discard_dirty,
+            },
             super::types::CommandFollowUp::Retirement { session_id },
         );
     }

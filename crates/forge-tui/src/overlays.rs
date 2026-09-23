@@ -222,11 +222,22 @@ pub struct SessionSwitcherItem {
 pub enum SessionConfirmKind {
     /// Final: an archived session cannot be reopened.
     Archive,
+    /// Explicit second confirmation to discard dirty worktree contents.
+    ArchiveDirty,
     /// Removes a clean managed worktree; the branch is kept.
     Cleanup,
+    /// Explicit second confirmation to discard dirty worktree contents.
+    CleanupDirty,
     /// Enables approve-all: confirms that the sandbox goes off for the
     /// session before the first auto-approval can happen.
     ApproveAll,
+}
+
+impl SessionConfirmKind {
+    /// Whether this confirmation authorizes deleting uncommitted work.
+    pub fn discards_dirty(self) -> bool {
+        matches!(self, Self::ArchiveDirty | Self::CleanupDirty)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1166,11 +1177,13 @@ pub enum OverlayAction {
         session_id: String,
         label: String,
     },
-    ArchiveSession {
-        session_id: String,
-    },
     CleanupSessionWorktree {
         session_id: String,
+        discard_dirty: bool,
+    },
+    ArchiveAndCleanupSession {
+        session_id: String,
+        discard_dirty: bool,
     },
     FinalizeSessionCreation {
         operation_id: u64,
@@ -1256,6 +1269,36 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 OverlayAction::Close
             }
         }
+        // Esc from a destructive second confirmation steps back to the plain
+        // confirmation it escalated from, so declining never discards work and
+        // never leaves the operator without a way back.
+        Key::Esc
+            if matches!(
+                overlay,
+                Overlay::SessionConfirm { kind, .. } if kind.discards_dirty()
+            ) =>
+        {
+            if let Overlay::SessionConfirm {
+                kind,
+                session_id,
+                label,
+                detail,
+            } = overlay
+            {
+                let back = match kind {
+                    SessionConfirmKind::CleanupDirty => SessionConfirmKind::Cleanup,
+                    _ => SessionConfirmKind::Archive,
+                };
+                OverlayAction::OpenSessionConfirm {
+                    kind: back,
+                    session_id: session_id.clone(),
+                    label: label.clone(),
+                    detail: detail.clone(),
+                }
+            } else {
+                OverlayAction::Close
+            }
+        }
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
@@ -1293,7 +1336,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         label: item.label.clone(),
                         detail: format!(
                             "Archiving is final — `{}` cannot be reopened.\nIts branch `{}` is kept; \
-                             a clean worktree is removed.\nUncommitted work blocks removal.",
+                             clean worktrees are removed. Dirty worktrees require a second confirmation.",
                             item.label, item.branch
                         ),
                     },
@@ -1528,6 +1571,35 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Enter if matches!(overlay, Overlay::SessionConfirm { .. }) => {
+            if let Overlay::SessionConfirm {
+                kind, session_id, ..
+            } = overlay
+            {
+                let session_id = session_id.clone();
+                match kind {
+                    SessionConfirmKind::Archive => OverlayAction::ArchiveAndCleanupSession {
+                        session_id,
+                        discard_dirty: false,
+                    },
+                    SessionConfirmKind::ArchiveDirty => OverlayAction::ArchiveAndCleanupSession {
+                        session_id,
+                        discard_dirty: true,
+                    },
+                    SessionConfirmKind::Cleanup => OverlayAction::CleanupSessionWorktree {
+                        session_id,
+                        discard_dirty: false,
+                    },
+                    SessionConfirmKind::CleanupDirty => OverlayAction::CleanupSessionWorktree {
+                        session_id,
+                        discard_dirty: true,
+                    },
+                    SessionConfirmKind::ApproveAll => OverlayAction::ApproveAll,
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
@@ -1715,17 +1787,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 }
             }
-            Overlay::SessionConfirm {
-                kind, session_id, ..
-            } => match kind {
-                SessionConfirmKind::Archive => OverlayAction::ArchiveSession {
-                    session_id: session_id.clone(),
-                },
-                SessionConfirmKind::Cleanup => OverlayAction::CleanupSessionWorktree {
-                    session_id: session_id.clone(),
-                },
-                SessionConfirmKind::ApproveAll => OverlayAction::ApproveAll,
-            },
+            // Confirmations are routed by the `Key::Enter` arm above, which
+            // needs the kind to pick the matching action.
+            Overlay::SessionConfirm { .. } => OverlayAction::None,
             Overlay::TrustSession { operation_id, .. } => OverlayAction::FinalizeSessionCreation {
                 operation_id: *operation_id,
             },
@@ -2979,23 +3043,47 @@ impl Widget for OverlayWidget<'_> {
                 clear_modal(r, buf);
                 let (title, question) = match kind {
                     SessionConfirmKind::Archive => ("Archive session", "Archive"),
+                    SessionConfirmKind::ArchiveDirty => (
+                        "Discard changes and archive",
+                        "Permanently remove the dirty worktree for",
+                    ),
                     SessionConfirmKind::Cleanup => ("Remove worktree", "Remove the worktree for"),
+                    SessionConfirmKind::CleanupDirty => (
+                        "Discard changes and remove worktree",
+                        "Permanently remove the dirty worktree for",
+                    ),
                     SessionConfirmKind::ApproveAll => {
                         ("Enable approve-all", "Enable approve-all for")
                     }
                 };
-                Paragraph::new(format!(
-                    "{question} `{label}`?\n\n{detail}\n\nEnter confirm · Esc cancel"
-                ))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border())
-                        .style(theme::panel())
-                        .padding(Padding::horizontal(MODAL_PAD_X))
-                        .title(theme::modal_title(title)),
-                )
-                .render(r, buf);
+                let border = if kind.discards_dirty() {
+                    theme::error_callout()
+                } else {
+                    theme::border()
+                };
+                let hint = if kind.discards_dirty() {
+                    "Enter permanently delete · Esc back"
+                } else {
+                    "Enter confirm · Esc cancel"
+                };
+                let body = if kind.discards_dirty() {
+                    format!(
+                        "{detail}\n\nEvery uncommitted, untracked, and ignored file in the \
+                         worktree is deleted. The branch and commits are kept."
+                    )
+                } else {
+                    detail.clone()
+                };
+                Paragraph::new(format!("{question} `{label}`?\n\n{body}\n\n{hint}"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(border)
+                            .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
+                            .title(theme::modal_title(title)),
+                    )
+                    .render(r, buf);
             }
             Overlay::SessionInput {
                 mode,
@@ -3697,7 +3785,70 @@ mod tests {
         assert_eq!(kind, SessionConfirmKind::Archive);
         // The old copy promised the worktree was kept, which stops being true
         // the moment archiving also cleans up.
-        assert!(detail.contains("clean worktree is removed"), "{detail}");
+        assert!(detail.contains("clean worktrees are removed"), "{detail}");
+    }
+
+    fn dirty_confirm(kind: SessionConfirmKind) -> Overlay {
+        Overlay::SessionConfirm {
+            kind,
+            session_id: "abc".into(),
+            label: "parser".into(),
+            detail: "base detail".into(),
+        }
+    }
+
+    #[test]
+    fn the_discard_confirmation_dispatches_the_destructive_action() {
+        let mut archive = dirty_confirm(SessionConfirmKind::ArchiveDirty);
+        assert_eq!(
+            handle_overlay_key(&mut archive, Key::Enter),
+            OverlayAction::ArchiveAndCleanupSession {
+                session_id: "abc".into(),
+                discard_dirty: true,
+            }
+        );
+
+        let mut cleanup = dirty_confirm(SessionConfirmKind::CleanupDirty);
+        assert_eq!(
+            handle_overlay_key(&mut cleanup, Key::Enter),
+            OverlayAction::CleanupSessionWorktree {
+                session_id: "abc".into(),
+                discard_dirty: true,
+            }
+        );
+    }
+
+    #[test]
+    fn declining_the_discard_confirmation_steps_back_to_the_plain_one() {
+        // Esc must never delete work and must never leave the operator without
+        // a way back to the confirmation they came from.
+        for (dirty, plain) in [
+            (
+                SessionConfirmKind::ArchiveDirty,
+                SessionConfirmKind::Archive,
+            ),
+            (
+                SessionConfirmKind::CleanupDirty,
+                SessionConfirmKind::Cleanup,
+            ),
+        ] {
+            let mut overlay = dirty_confirm(dirty);
+            let action = handle_overlay_key(&mut overlay, Key::Esc);
+            let OverlayAction::OpenSessionConfirm {
+                kind,
+                detail,
+                label,
+                ..
+            } = action
+            else {
+                panic!("Esc must step back, got {action:?}");
+            };
+            assert_eq!(kind, plain);
+            assert_eq!(label, "parser");
+            assert_eq!(detail, "base detail");
+            // Nothing destructive is dispatched by stepping back.
+            assert!(!kind.discards_dirty());
+        }
     }
 
     #[test]
