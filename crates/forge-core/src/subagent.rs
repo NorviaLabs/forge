@@ -23,7 +23,7 @@ fn get_writer_gate(root: &Path) -> Arc<Semaphore> {
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .expect("writer gate lock poisoned")
-        .entry(root.clone())
+        .entry(root.to_path_buf())
         .or_insert_with(|| Arc::new(Semaphore::new(1)))
         .clone()
 }
