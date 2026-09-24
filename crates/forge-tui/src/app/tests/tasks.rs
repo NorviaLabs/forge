@@ -85,6 +85,7 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
         .spawn_subagent(forge_core::SubagentSpec {
             role: "risky-runner".into(),
             prompt: "run the risky command".into(),
+            mode: forge_tools::AgentMode::Writer,
             tool_allowlist: None,
         })
         .await
@@ -150,6 +151,7 @@ async fn app_with_a_blocking_subagent(
         .spawn_subagent(forge_core::SubagentSpec {
             role: "risky-runner".into(),
             prompt: "run the risky command".into(),
+            mode: forge_tools::AgentMode::Writer,
             tool_allowlist: None,
         })
         .await

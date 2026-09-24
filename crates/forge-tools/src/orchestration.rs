@@ -13,9 +13,21 @@ pub struct SpawnAgentArgs {
     pub task_name: String,
     /// First instruction sent to the child agent.
     pub message: String,
+    /// Scheduling mode. Read-only agents may share the workspace concurrently;
+    /// writers are serialized. Omitted values are writers for safety.
+    #[serde(default)]
+    pub mode: AgentMode,
     /// Optional allow-list that narrows the child's inherited tool policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_allowlist: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMode {
+    ReadOnly,
+    #[default]
+    Writer,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -95,7 +107,7 @@ macro_rules! orchestration_tool {
 orchestration_tool!(
     SpawnAgentTool,
     "spawn_agent",
-    "Start a child agent in an isolated worktree without waiting for it to finish.",
+    "Start a child agent without waiting. Read-only agents share the workspace concurrently; writers are serialized.",
     SpawnAgentArgs
 );
 orchestration_tool!(
@@ -174,6 +186,24 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn spawn_mode_defaults_to_writer_and_accepts_read_only() {
+        let default: SpawnAgentArgs = serde_json::from_value(json!({
+            "task_name": "reviewer",
+            "message": "Review the diff"
+        }))
+        .unwrap();
+        assert!(matches!(default.mode, AgentMode::Writer));
+
+        let read_only: SpawnAgentArgs = serde_json::from_value(json!({
+            "task_name": "reviewer",
+            "message": "Review the diff",
+            "mode": "read_only"
+        }))
+        .unwrap();
+        assert!(matches!(read_only.mode, AgentMode::ReadOnly));
     }
 
     #[test]

@@ -472,6 +472,7 @@ mod propagation_contract {
                 &SubagentSpec {
                     role: "child".into(),
                     prompt: "work".into(),
+                    mode: forge_tools::AgentMode::Writer,
                     tool_allowlist: None,
                 },
             )

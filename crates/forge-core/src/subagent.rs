@@ -9,9 +9,24 @@
 //! subagent runs exactly the same turn/tool-call machinery the top-level
 //! session already runs.
 
+use forge_tools::AgentMode;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
+use tokio::sync::Semaphore;
+
+static WRITER_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Semaphore>>>> = OnceLock::new();
+
+fn get_writer_gate(root: &Path) -> Arc<Semaphore> {
+    WRITER_GATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("writer gate lock poisoned")
+        .entry(root.to_path_buf())
+        .or_insert_with(|| Arc::new(Semaphore::new(1)))
+        .clone()
+}
 
 use forge_context::compaction::{CompactionPolicy, CompactionTelemetry, SessionContextState};
 use forge_durable::Journal;
@@ -43,6 +58,8 @@ pub struct SubagentSpec {
     pub role: String,
     /// The instruction handed to the subagent as its first user message.
     pub prompt: String,
+    /// Explicit scheduling mode. Omitted at the tool boundary defaults to Writer.
+    pub mode: AgentMode,
     /// `None` inherits the parent's full tool registry and governance ACL.
     /// `Some(names)` replaces the child's ACL with an allow-list of exactly
     /// those tool names, narrowing (not widening) what it can call.
@@ -380,6 +397,7 @@ impl AgentSession {
             runtime,
             hitl_rx,
             self.coordinator.clone(),
+            None,
         )
     }
 
@@ -507,6 +525,8 @@ impl AgentSession {
                     "subagents require the workspace to be inside a git repository".into(),
                 )
             })?;
+        let writer_gate =
+            matches!(spec.mode, AgentMode::Writer).then(|| get_writer_gate(&repo_root));
         let storage = forge_storage::LocalRuntimeStorage::new(&self.tool_ctx.workspace_root);
         let base_dir = storage
             .path_for(forge_storage::RuntimeDataKind::Worktree)
@@ -555,40 +575,50 @@ impl AgentSession {
             )
             .await?;
 
-        let worktree = match forge_storage::create_worktree(
-            &repo_root,
-            &base_dir,
-            self.session_id,
-            task_id.0,
-            &spec.role,
-        ) {
-            Ok(wt) => wt,
-            Err(e) => {
-                let _ = self.coordinator.update(
-                    child_session_id,
-                    AgentStatus::Failed,
-                    Some(e.to_string()),
-                );
-                return self
-                    .fail_subagent_spawn(task_id, format!("could not create worktree: {e}"))
-                    .await;
+        let worktree = if matches!(spec.mode, AgentMode::ReadOnly) {
+            None
+        } else {
+            match forge_storage::create_worktree(
+                &repo_root,
+                &base_dir,
+                self.session_id,
+                task_id.0,
+                &spec.role,
+            ) {
+                Ok(wt) => Some(wt),
+                Err(e) => {
+                    let _ = self.coordinator.update(
+                        child_session_id,
+                        AgentStatus::Failed,
+                        Some(e.to_string()),
+                    );
+                    return self
+                        .fail_subagent_spawn(task_id, format!("could not create worktree: {e}"))
+                        .await;
+                }
             }
         };
+        let child_workspace = worktree
+            .as_ref()
+            .map(|worktree| worktree.path.clone())
+            .unwrap_or_else(|| repo_root.clone());
         // Only journaled once the worktree actually exists — `workspace` is
         // how a restart finds this same checkout again (see
         // `reconcile_orphaned_background_tasks`).
-        self.journal
-            .append_subagent_spawned(
-                self.session_id,
-                task_id,
-                child_session_id,
-                &spec.role,
-                &worktree.path,
-            )
-            .await?;
+        if let Some(worktree) = &worktree {
+            self.journal
+                .append_subagent_spawned(
+                    self.session_id,
+                    task_id,
+                    child_session_id,
+                    &spec.role,
+                    &worktree.path,
+                )
+                .await?;
+        }
 
         let child = match self
-            .create_child(child_session_id, worktree.path.clone(), cancel, &spec)
+            .create_child(child_session_id, child_workspace, cancel, &spec)
             .await
         {
             Ok(child) => child,
@@ -598,7 +628,9 @@ impl AgentSession {
                     AgentStatus::Failed,
                     Some(e.to_string()),
                 );
-                let _ = forge_storage::remove_worktree(&repo_root, &worktree.path);
+                if let Some(worktree) = &worktree {
+                    let _ = forge_storage::remove_worktree(&repo_root, &worktree.path);
+                }
                 return self
                     .fail_subagent_spawn(task_id, format!("could not start subagent: {e}"))
                     .await;
@@ -606,9 +638,13 @@ impl AgentSession {
         };
 
         self.tasks.background.mark_running(task_id);
-        self.tasks
-            .background
-            .set_worktree(task_id, worktree.path.clone(), worktree.branch.clone());
+        if let Some(worktree) = &worktree {
+            self.tasks.background.set_worktree(
+                task_id,
+                worktree.path.clone(),
+                worktree.branch.clone(),
+            );
+        }
         let latest_message = self
             .tasks
             .background
@@ -631,6 +667,7 @@ impl AgentSession {
             runtime,
             hitl_rx,
             self.coordinator.clone(),
+            writer_gate,
         )?;
         self.tasks
             .receivers
@@ -686,11 +723,16 @@ fn spawn_subagent_actor(
     runtime: Arc<SubagentRuntime>,
     mut hitl_rx: tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
     coordinator: AgentCoordinator,
+    writer_gate: Option<Arc<Semaphore>>,
 ) -> Result<(), LoopError> {
     let (_, mut command_rx) = coordinator
         .actor_channel(child_session_id)
         .map_err(|error| LoopError::Other(error.to_string()))?;
     tokio::spawn(async move {
+        let _writer_permit = match writer_gate {
+            Some(gate) => Some(gate.acquire_owned().await.expect("writer gate closed")),
+            None => None,
+        };
         let mut child = child;
         let result = if let Some(prompt) = initial_prompt {
             Some(child.run_user_message(&prompt).await)
@@ -1192,6 +1234,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "risky-runner".into(),
                 prompt: "run the risky command".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1259,6 +1302,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "denied-runner".into(),
                 prompt: "run the risky command".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1318,6 +1362,7 @@ mod tests {
             s.spawn_subagent(SubagentSpec {
                 role: "interrupted".into(),
                 prompt: "do the thing".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1399,6 +1444,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "test-fixer".into(),
                 prompt: "fix the tests".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1417,6 +1463,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "test-fixer".into(),
                 prompt: "fix the failing tests".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1449,6 +1496,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "isolated".into(),
                 prompt: "go".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1474,6 +1522,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "explorer".into(),
                 prompt: "look around".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1514,6 +1563,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "cancel-me".into(),
                 prompt: "go".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1535,6 +1585,7 @@ mod tests {
             .spawn_subagent(SubagentSpec {
                 role: "child".into(),
                 prompt: "go".into(),
+                mode: AgentMode::Writer,
                 tool_allowlist: None,
             })
             .await
@@ -1559,6 +1610,7 @@ mod tests {
                 &SubagentSpec {
                     role: "scoped".into(),
                     prompt: "go".into(),
+                    mode: AgentMode::Writer,
                     tool_allowlist: Some(vec!["read_file".into()]),
                 },
             )
