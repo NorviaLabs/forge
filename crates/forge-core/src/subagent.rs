@@ -11,14 +11,14 @@
 
 use forge_tools::AgentMode;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::Semaphore;
 
 static WRITER_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Semaphore>>>> = OnceLock::new();
 
-fn get_writer_gate(root: &PathBuf) -> Arc<Semaphore> {
+fn get_writer_gate(root: &Path) -> Arc<Semaphore> {
     WRITER_GATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
