@@ -4854,7 +4854,6 @@ mod tests {
             let res = parse_slash(&it.cmd).expect("is slash");
             match it.cmd.as_str() {
                 "/resume" => assert_eq!(res.unwrap(), SlashCommand::ResumeList),
-                "/issues" => assert!(res.is_err()),
                 other => assert!(res.is_ok(), "palette cmd {other} should parse: {res:?}"),
             }
         }
