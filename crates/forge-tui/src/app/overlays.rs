@@ -240,6 +240,80 @@ impl TuiApp {
             OverlayAction::Close => {
                 self.dismiss_overlay();
             }
+            OverlayAction::CreateIssuePullRequest { issue_number } => {
+                self.overlay = None;
+                self.try_session_command(
+                    forge_session::SupervisorCommand::CreateIssuePullRequest {
+                        session_id: self.selected_session_id,
+                        issue_number,
+                    },
+                );
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!("Creating PR for issue #{issue_number}…"),
+                );
+            }
+            OverlayAction::RefreshIssuePullRequest { issue_number } => {
+                self.overlay = None;
+                self.try_session_command(
+                    forge_session::SupervisorCommand::RefreshIssuePullRequest {
+                        session_id: self.selected_session_id,
+                        issue_number,
+                    },
+                );
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!("Refreshing PR status for issue #{issue_number}…"),
+                );
+            }
+            OverlayAction::ApplyIssuePullRequestFeedback { issue_number } => {
+                self.overlay = None;
+                self.try_session_command(
+                    forge_session::SupervisorCommand::ApplyIssuePullRequestFeedback {
+                        session_id: self.selected_session_id,
+                        issue_number,
+                    },
+                );
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!("Queuing PR feedback task for issue #{issue_number}…"),
+                );
+            }
+            OverlayAction::SelectGithubIssue(issue) => {
+                if self.supervisor.is_some() {
+                    let command = forge_session::SupervisorCommand::CreateSession {
+                label: String::new(),
+                first_prompt: Some(format!(
+                    "Complete GitHub issue #{} ({}). Read the issue and implement its acceptance criteria. Do not expand scope; run relevant tests and stop after three failed attempts. Pause if requirements conflict or require a product decision.",
+                    issue.number, issue.url
+                )),
+                github_issue_number: Some(issue.number),
+                    };
+                    match self.try_session_command(command) {
+                        true => {
+                            self.overlay = None;
+                            self.set_feedback(
+                                FeedbackSeverity::Info,
+                                format!("Starting isolated worktree for issue #{}…", issue.number),
+                            );
+                        }
+                        false => {
+                            self.set_feedback(FeedbackSeverity::Error, "could not start issue task")
+                        }
+                    }
+                } else {
+                    self.overlay = None;
+                    self.input.text = format!(
+                        "Work on GitHub issue #{}: {} ({})",
+                        issue.number, issue.title, issue.url
+                    );
+                    self.focus_block(FocusBlock::Composer);
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        "Review the issue prompt and press Enter to start",
+                    );
+                }
+            }
             OverlayAction::SelectSession(id) => {
                 let Ok(session_id) = id.parse::<uuid::Uuid>() else {
                     self.set_feedback(FeedbackSeverity::Error, "invalid session id");
@@ -425,6 +499,7 @@ impl TuiApp {
                 if self.submit_session_command(forge_session::SupervisorCommand::CreateSession {
                     label,
                     first_prompt,
+                    github_issue_number: None,
                 }) {
                     self.overlay = None;
                     self.set_feedback(FeedbackSeverity::Info, "creating session worktree…");

@@ -3050,6 +3050,7 @@ async fn create_promptless_session(app: &mut TuiApp) -> SessionChromeItem {
     app.submit_session_command(forge_session::SupervisorCommand::CreateSession {
         label: String::new(),
         first_prompt: None,
+        github_issue_number: None,
     });
     wait_for_chrome_session(app, |item| !before.contains(&item.session_id)).await
 }

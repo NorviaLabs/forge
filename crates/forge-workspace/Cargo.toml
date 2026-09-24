@@ -7,6 +7,8 @@ description = "Workspace data services for Forge: file operations, Git status, a
 
 [dependencies]
 dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
