@@ -610,6 +610,7 @@ impl TuiApp {
             forge_session::SupervisorCommand::CreateSession {
                 label: String::new(),
                 first_prompt: None,
+                github_issue_number: None,
             },
             CommandFollowUp::FocusCreatedSession { known },
         );

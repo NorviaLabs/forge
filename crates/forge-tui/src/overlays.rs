@@ -32,6 +32,15 @@ pub enum Overlay {
         title: String,
         rows: Vec<StatusRow>,
     },
+    GithubIssues {
+        selected: usize,
+        filter: String,
+        items: Vec<forge_workspace::github::Issue>,
+        error: Option<String>,
+        action: usize,
+        action_menu: bool,
+        pr_states: std::collections::HashMap<u64, String>,
+    },
     /// Unified Connect + Model + Effort picker (`/connect` and `/model` both
     /// open this, differing only in `focus`) — one state source so the two
     /// commands can never disagree about "current".
@@ -1221,6 +1230,13 @@ impl Overlay {
                 let next = (current as i32 + delta).rem_euclid(indices.len() as i32) as usize;
                 *selected = indices[next];
             }
+            Self::GithubIssues {
+                selected, items, ..
+            } => {
+                if !items.is_empty() {
+                    *selected = (*selected as i32 + delta).rem_euclid(items.len() as i32) as usize;
+                }
+            }
             Self::SessionSwitcher {
                 selected,
                 filter,
@@ -1288,6 +1304,16 @@ pub enum OverlayAction {
     None,
     Close,
     SelectSession(String),
+    SelectGithubIssue(forge_workspace::github::Issue),
+    CreateIssuePullRequest {
+        issue_number: u64,
+    },
+    RefreshIssuePullRequest {
+        issue_number: u64,
+    },
+    ApplyIssuePullRequestFeedback {
+        issue_number: u64,
+    },
     CreateSession {
         label: String,
         first_prompt: Option<String>,
@@ -1465,8 +1491,66 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 OverlayAction::Close
             }
         }
-        Key::Esc => OverlayAction::Close,
+        Key::Esc => {
+            if let Overlay::GithubIssues {
+                action_menu: true, ..
+            } = overlay
+            {
+                if let Overlay::GithubIssues { action_menu, .. } = overlay {
+                    *action_menu = false;
+                }
+                OverlayAction::None
+            } else {
+                OverlayAction::Close
+            }
+        }
+        Key::Enter
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) =>
+        {
+            if let Overlay::GithubIssues {
+                selected,
+                items,
+                action,
+                action_menu,
+                ..
+            } = overlay
+            {
+                let Some(issue) = items.get(*selected) else {
+                    return OverlayAction::None;
+                };
+                let selected_action = *action;
+                *action_menu = false;
+                return match selected_action {
+                    0 => OverlayAction::SelectGithubIssue(issue.clone()),
+                    1 => OverlayAction::CreateIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    2 => OverlayAction::RefreshIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    _ => OverlayAction::ApplyIssuePullRequestFeedback {
+                        issue_number: issue.number,
+                    },
+                };
+            }
+            OverlayAction::None
+        }
         Key::Up => {
+            if let Overlay::GithubIssues {
+                action_menu: true,
+                action,
+                ..
+            } = overlay
+            {
+                *action = (*action).saturating_sub(1);
+                return OverlayAction::None;
+            }
             overlay.move_sel(-1);
             theme_preview_action(overlay)
         }
@@ -1529,9 +1613,155 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 None => OverlayAction::None,
             }
         }
+        Key::Down
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) =>
+        {
+            if let Overlay::GithubIssues { action, .. } = overlay {
+                *action = (*action + 1).min(3);
+            }
+            OverlayAction::None
+        }
+        Key::Down
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) =>
+        {
+            if let Overlay::GithubIssues { action, .. } = overlay {
+                *action = (*action + 1).min(3);
+            }
+            OverlayAction::None
+        }
         Key::Down => {
+            if let Overlay::GithubIssues {
+                action_menu: true,
+                action,
+                ..
+            } = overlay
+            {
+                *action = (*action + 1).min(3);
+                return OverlayAction::None;
+            }
             overlay.move_sel(1);
             theme_preview_action(overlay)
+        }
+        Key::Enter if matches!(overlay, Overlay::GithubIssues { .. }) => {
+            if let Overlay::GithubIssues {
+                selected,
+                items,
+                action_menu,
+                action,
+                ..
+            } = overlay
+            {
+                if *action_menu {
+                    let Some(issue) = items.get(*selected) else {
+                        return OverlayAction::None;
+                    };
+                    let result = match *action {
+                        0 => OverlayAction::SelectGithubIssue(issue.clone()),
+                        1 => OverlayAction::CreateIssuePullRequest {
+                            issue_number: issue.number,
+                        },
+                        2 => OverlayAction::RefreshIssuePullRequest {
+                            issue_number: issue.number,
+                        },
+                        _ => OverlayAction::ApplyIssuePullRequestFeedback {
+                            issue_number: issue.number,
+                        },
+                    };
+                    *action_menu = false;
+                    result
+                } else {
+                    items
+                        .get(*selected)
+                        .map(|_| {
+                            *action_menu = true;
+                            OverlayAction::None
+                        })
+                        .unwrap_or(OverlayAction::None)
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
+        Key::Char(c)
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) && matches!(c, '1'..='4') =>
+        {
+            if let Overlay::GithubIssues {
+                selected,
+                items,
+                action_menu,
+                ..
+            } = overlay
+            {
+                let issue = items.get(*selected);
+                let action = (c as usize) - ('1' as usize);
+                *action_menu = false;
+                return match (action, issue) {
+                    (0, Some(issue)) => OverlayAction::SelectGithubIssue(issue.clone()),
+                    (1, Some(issue)) => OverlayAction::CreateIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    (2, Some(issue)) => OverlayAction::RefreshIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    (3, Some(issue)) => OverlayAction::ApplyIssuePullRequestFeedback {
+                        issue_number: issue.number,
+                    },
+                    _ => OverlayAction::None,
+                };
+            }
+            OverlayAction::None
+        }
+        Key::Char(c)
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) && ('1'..='4').contains(&c) =>
+        {
+            if let Overlay::GithubIssues {
+                selected,
+                items,
+                action_menu,
+                ..
+            } = overlay
+            {
+                let issue = items.get(*selected);
+                *action_menu = false;
+                return match (c, issue) {
+                    ('1', Some(issue)) => OverlayAction::SelectGithubIssue(issue.clone()),
+                    ('2', Some(issue)) => OverlayAction::CreateIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    ('3', Some(issue)) => OverlayAction::RefreshIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    ('4', Some(issue)) => OverlayAction::ApplyIssuePullRequestFeedback {
+                        issue_number: issue.number,
+                    },
+                    _ => OverlayAction::None,
+                };
+            }
+            OverlayAction::None
         }
         Key::Left => {
             if let Some(path) = match overlay {
@@ -1540,6 +1770,138 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 _ => None,
             } {
                 return OverlayAction::FilePick { path, is_dir: true };
+            }
+            OverlayAction::None
+        }
+        Key::Char(c)
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) && matches!(c, '1'..='4') =>
+        {
+            if let Overlay::GithubIssues { action, .. } = overlay {
+                *action = (c as usize) - ('1' as usize);
+            }
+            OverlayAction::None
+        }
+        Key::Char(c)
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) && matches!(c, 's' | 'c' | 'r' | 'a') =>
+        {
+            let action = match c {
+                's' => 0,
+                'c' => 1,
+                'r' => 2,
+                _ => 3,
+            };
+            if let Overlay::GithubIssues {
+                action: selected,
+                items,
+                ..
+            } = overlay
+            {
+                *selected = action;
+                return match action {
+                    0 => items
+                        .get(*selected)
+                        .cloned()
+                        .map(OverlayAction::SelectGithubIssue)
+                        .unwrap_or(OverlayAction::None),
+                    1 => items
+                        .get(*selected)
+                        .map(|i| OverlayAction::CreateIssuePullRequest {
+                            issue_number: i.number,
+                        })
+                        .unwrap_or(OverlayAction::None),
+                    2 => items
+                        .get(*selected)
+                        .map(|i| OverlayAction::RefreshIssuePullRequest {
+                            issue_number: i.number,
+                        })
+                        .unwrap_or(OverlayAction::None),
+                    _ => items
+                        .get(*selected)
+                        .map(|i| OverlayAction::ApplyIssuePullRequestFeedback {
+                            issue_number: i.number,
+                        })
+                        .unwrap_or(OverlayAction::None),
+                };
+            }
+            OverlayAction::None
+        }
+        Key::Char(c)
+            if matches!(
+                overlay,
+                Overlay::GithubIssues {
+                    action_menu: true,
+                    ..
+                }
+            ) && matches!(c, '1'..='4') =>
+        {
+            if let Overlay::GithubIssues {
+                selected,
+                items,
+                action_menu,
+                ..
+            } = overlay
+            {
+                let issue = items.get(*selected);
+                *action_menu = false;
+                return match ((c as usize) - ('1' as usize), issue) {
+                    (0, Some(issue)) => OverlayAction::SelectGithubIssue(issue.clone()),
+                    (1, Some(issue)) => OverlayAction::CreateIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    (2, Some(issue)) => OverlayAction::RefreshIssuePullRequest {
+                        issue_number: issue.number,
+                    },
+                    (3, Some(issue)) => OverlayAction::ApplyIssuePullRequestFeedback {
+                        issue_number: issue.number,
+                    },
+                    _ => OverlayAction::None,
+                };
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GithubIssues { .. }) => {
+            if let Overlay::GithubIssues {
+                filter,
+                selected,
+                action_menu,
+                ..
+            } = overlay
+            {
+                if *action_menu {
+                    *action_menu = false;
+                } else if !c.is_control() {
+                    filter.push(c);
+                    *selected = 0;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GithubIssues { .. }) => {
+            if let Overlay::GithubIssues {
+                filter,
+                selected,
+                action_menu,
+                ..
+            } = overlay
+            {
+                if *action_menu {
+                    *action_menu = false;
+                } else {
+                    filter.pop();
+                    *selected = 0;
+                }
             }
             OverlayAction::None
         }
@@ -1908,6 +2270,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
+            Overlay::GithubIssues {
+                selected, items, ..
+            } => items
+                .get(*selected)
+                .cloned()
+                .map(OverlayAction::SelectGithubIssue)
+                .unwrap_or(OverlayAction::None),
             Overlay::ConnectModel {
                 providers,
                 provider_cursor,
@@ -2693,6 +3062,80 @@ impl Widget for OverlayWidget<'_> {
                 let inner = block.inner(r);
                 block.render(r, buf);
                 Paragraph::new(status_report_lines(rows, inner.width as usize)).render(inner, buf);
+            }
+            Overlay::GithubIssues {
+                selected,
+                filter,
+                items,
+                error,
+                action,
+                action_menu,
+                pr_states,
+            } => {
+                let r = centered_capped_rect(area, 76, 34);
+                clear_modal(r, buf);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .padding(Padding::horizontal(MODAL_PAD_X))
+                    .title(theme::modal_title("GitHub issues · current remote"));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                let mut lines = vec![
+                    Line::from(Span::styled(format!("Filter: {filter}"), theme::muted())),
+                    Line::from(""),
+                ];
+                if let Some(error) = error {
+                    lines.push(Line::from(Span::styled(error, theme::danger())));
+                } else if items.is_empty() {
+                    lines.push(Line::from(Span::styled("No open issues", theme::muted())));
+                } else {
+                    for (index, issue) in items.iter().enumerate() {
+                        let marker = if index == *selected { ">" } else { " " };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{marker} #{} ", issue.number),
+                                theme::accent_style(),
+                            ),
+                            Span::styled(issue.title.clone(), theme::text()),
+                            Span::styled(
+                                format!(
+                                    "  {}",
+                                    pr_states
+                                        .get(&issue.number)
+                                        .map(String::as_str)
+                                        .unwrap_or("No PR status")
+                                ),
+                                theme::muted(),
+                            ),
+                        ]));
+                    }
+                }
+                lines.push(Line::from(""));
+                if *action_menu {
+                    let choices = [
+                        "Start isolated issue task",
+                        "Create / refresh PR",
+                        "Refresh PR status",
+                        "Address review / CI feedback",
+                    ];
+                    for (index, label) in choices.iter().enumerate() {
+                        lines.push(Line::from(Span::styled(
+                            format!("{} {label}", if *action == index { ">" } else { " " }),
+                            if *action == index {
+                                theme::accent_style()
+                            } else {
+                                theme::text()
+                            },
+                        )));
+                    }
+                }
+                lines.push(Line::from(Span::styled(
+                    "↑↓ select · type to filter · Enter actions · Esc back/close",
+                    theme::metadata_style(),
+                )));
+                Paragraph::new(lines).render(inner, buf);
             }
             Overlay::ConnectModel {
                 providers,
@@ -4406,7 +4849,7 @@ mod tests {
     #[test]
     fn default_palette_covers_parseable_commands() {
         let items = default_palette_items();
-        // Every bare cmd (no required args) should parse; arg-required ones still listed.
+        // GitHub navigation is UI-owned; /issues remains only to show a redirect.
         for it in &items {
             let res = parse_slash(&it.cmd).expect("is slash");
             match it.cmd.as_str() {

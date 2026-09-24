@@ -13,6 +13,7 @@ forge-governance = { workspace = true }
 forge-mcp = { workspace = true }
 forge-model = { workspace = true }
 forge-storage = { workspace = true }
+forge-workspace = { workspace = true }
 forge-tools = { workspace = true }
 forge-types = { workspace = true }
 anyhow = { workspace = true }

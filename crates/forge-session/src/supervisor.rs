@@ -122,6 +122,19 @@ pub enum SupervisorCommand {
     CreateSession {
         label: String,
         first_prompt: Option<String>,
+        github_issue_number: Option<u64>,
+    },
+    CreateIssuePullRequest {
+        session_id: SessionId,
+        issue_number: u64,
+    },
+    RefreshIssuePullRequest {
+        session_id: SessionId,
+        issue_number: u64,
+    },
+    ApplyIssuePullRequestFeedback {
+        session_id: SessionId,
+        issue_number: u64,
     },
     AttachWorktree {
         workspace: PathBuf,
@@ -1298,9 +1311,190 @@ async fn execute_command(
     command: SupervisorCommand,
 ) -> Result<(), RepositorySupervisorError> {
     match command {
+        SupervisorCommand::CreateIssuePullRequest {
+            session_id,
+            issue_number,
+        } => {
+            let task = state.control.session(session_id).await?;
+            if task.ownership != WorktreeOwnership::Managed {
+                return Err(RepositorySupervisorError::Command(
+                    "PR creation requires a Forge-managed issue worktree".into(),
+                ));
+            }
+            if task.turn_state != SupervisorTurnState::Completed {
+                return Err(RepositorySupervisorError::Command(
+                    "wait for the issue task to finish before creating its PR".into(),
+                ));
+            }
+            let branch = task.branch.clone();
+            if branch.is_empty() {
+                return Err(RepositorySupervisorError::Command(
+                    "issue work has no branch yet; make and save a change first".into(),
+                ));
+            }
+            let workspace = task.workspace.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                forge_workspace::gh::push_branch(&workspace, &branch)?;
+                forge_workspace::gh::create_issue_pull_request_for_branch(
+                    &workspace,
+                    issue_number,
+                    &branch,
+                )
+            })
+            .await
+            .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?
+            .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
+            state.control.set_pr_url(session_id, &result).await?;
+            state.control.reset_github_retry(session_id).await?;
+            let _ = state.events.send(SupervisorEvent::Attention {
+                session_id,
+                state: SupervisorTurnState::Completed,
+                message: format!("Pull request created · {result}"),
+            });
+            return Ok(());
+        }
+        SupervisorCommand::RefreshIssuePullRequest {
+            session_id,
+            issue_number,
+        } => {
+            let task = state.control.session(session_id).await?;
+            if task.turn_state != SupervisorTurnState::Completed {
+                return Err(RepositorySupervisorError::Command(
+                    "issue task is still running".into(),
+                ));
+            }
+            let workspace = task.workspace;
+            let forge_tests_passed = task.github_tests_passed;
+            let result = tokio::task::spawn_blocking(move || {
+                let Some(pr) =
+                    forge_workspace::gh::find_issue_pull_request(&workspace, issue_number)?
+                else {
+                    return Ok("no pull request found".to_string());
+                };
+                let checks = forge_workspace::gh::checks(&workspace, &pr.number.to_string())?;
+                let gate = forge_workspace::gh::MergeGate {
+                    checks,
+                    review_decision: pr.review_decision.clone(),
+                };
+                let protected =
+                    forge_workspace::gh::branch_protection_configured(&workspace, &pr.base_branch)?;
+                if !protected {
+                    return Ok(format!("PR #{} ready · no branch protection configured; merge policy cannot be confirmed", pr.number));
+                }
+                let required_checks = forge_workspace::gh::branch_protection_status_checks(
+                    &workspace,
+                    &pr.base_branch,
+                )?;
+                let required_approvals = forge_workspace::gh::branch_protection_required_approvals(
+                    &workspace,
+                    &pr.base_branch,
+                )?;
+                let missing_required = required_checks.iter().any(|required| {
+                    !gate.checks.iter().any(|row| {
+                        row.contains(required) && row.split_whitespace().any(|part| part == "pass")
+                    })
+                });
+                if !missing_required
+                    && (required_approvals == 0
+                        || gate.review_decision.as_deref() == Some("APPROVED"))
+                    && forge_tests_passed
+                    && !gate.checks.is_empty()
+                    && gate
+                        .checks
+                        .iter()
+                        .all(|row| row.split_whitespace().any(|part| part == "pass"))
+                {
+                    forge_workspace::gh::merge(&workspace, &pr.number.to_string(), "squash")?;
+                    Ok(format!(
+                        "PR #{} merged · GitHub gates and Forge tests passed",
+                        pr.number
+                    ))
+                } else {
+                    Ok(format!(
+                        "PR #{} awaiting checks/review · checks: {:?} · review: {:?}",
+                        pr.number, gate.checks, gate.review_decision
+                    ))
+                }
+            })
+            .await
+            .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?
+            .map_err(|error: forge_workspace::github::GithubError| {
+                RepositorySupervisorError::Command(error.to_string())
+            })?;
+            let _ = state.events.send(SupervisorEvent::Attention {
+                session_id,
+                state: SupervisorTurnState::Completed,
+                message: result,
+            });
+            return Ok(());
+        }
+        SupervisorCommand::ApplyIssuePullRequestFeedback {
+            session_id,
+            issue_number,
+        } => {
+            let task = state.control.session(session_id).await?;
+            if task.turn_state != SupervisorTurnState::Completed {
+                return Err(RepositorySupervisorError::Command(
+                    "issue task is still running".into(),
+                ));
+            }
+            if task.github_retry_attempts >= 3 {
+                return Err(RepositorySupervisorError::Command(
+                    "PR feedback automation stopped after three attempts".into(),
+                ));
+            }
+            let workspace = task.workspace.clone();
+            let pr_url = task.github_pr_url.clone().ok_or_else(|| {
+                RepositorySupervisorError::Command("issue session has no recorded PR".into())
+            })?;
+            let issue_number_ref = issue_number;
+            let details = tokio::task::spawn_blocking(move || {
+                let pr =
+                    forge_workspace::gh::find_issue_pull_request(&workspace, issue_number_ref)?
+                        .ok_or_else(|| {
+                            forge_workspace::github::GithubError::Command(
+                                "open PR not found".into(),
+                            )
+                        })?;
+                let checks = forge_workspace::gh::checks(&workspace, &pr.number.to_string())?;
+                let prompt = forge_workspace::gh::review_followup_prompt(
+                    &workspace,
+                    &pr.number.to_string(),
+                    &checks,
+                )?;
+                Ok::<_, forge_workspace::github::GithubError>((pr, prompt))
+            })
+            .await
+            .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?
+            .map_err(|error: forge_workspace::github::GithubError| {
+                RepositorySupervisorError::Command(error.to_string())
+            })?;
+            let (_pr, Some(prompt)) = details else {
+                return Err(RepositorySupervisorError::Command(
+                    "no failed checks or inline review comments to address".into(),
+                ));
+            };
+            state.control.increment_github_retry(session_id).await?;
+            state
+                .control
+                .enqueue_prompt(session_id, &format!("{prompt}\n\nPR: {pr_url}"))
+                .await?;
+            state
+                .control
+                .set_github_tests_passed(session_id, false)
+                .await?;
+            state
+                .control
+                .set_turn_state(session_id, SupervisorTurnState::Queued)
+                .await?;
+            publish_actor(&state, session_id).await?;
+            start_prompt_driver(state, session_id).await?;
+            return Ok(());
+        }
         SupervisorCommand::CreateSession {
             label,
             first_prompt,
+            github_issue_number,
         } => {
             // An empty label is legal: the task starts unnamed and is named
             // from its first prompt. A prompt supplied here (the form path)
@@ -1323,14 +1517,26 @@ async fn execute_command(
             let _git_mutation = state.git_mutation.lock().await;
             let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
             let base_dir = storage.path_for(RuntimeDataKind::Worktree)?;
-            let pending = state
-                .control
-                .begin_managed_creation(
-                    &label,
-                    &state.cfg.resolved_workspace,
-                    first_prompt.as_deref(),
-                )
-                .await?;
+            let pending = if let Some(issue_number) = github_issue_number {
+                state
+                    .control
+                    .begin_managed_creation_for_issue(
+                        &label,
+                        &state.cfg.resolved_workspace,
+                        first_prompt.as_deref().unwrap_or_default(),
+                        issue_number,
+                    )
+                    .await?
+            } else {
+                state
+                    .control
+                    .begin_managed_creation(
+                        &label,
+                        &state.cfg.resolved_workspace,
+                        first_prompt.as_deref(),
+                    )
+                    .await?
+            };
             // Branch from the *initiating* worktree's committed HEAD, not the
             // main worktree's — launching Forge from a linked worktree must
             // fork the work that worktree is actually on. The worktree starts
@@ -1377,6 +1583,11 @@ async fn execute_command(
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 archived_at: None,
+                github_issue_number,
+                github_pr_url: None,
+                github_auto_pr: false,
+                github_retry_attempts: 0,
+                github_tests_passed: false,
             };
             state
                 .control
@@ -1395,6 +1606,16 @@ async fn execute_command(
                     Some(pending.operation_id),
                 )
                 .await?;
+            if let Some(issue_number) = github_issue_number {
+                state
+                    .control
+                    .set_github_issue(task.session_id, issue_number)
+                    .await?;
+                state
+                    .control
+                    .set_github_auto_pr(task.session_id, true)
+                    .await?;
+            }
             state
                 .control
                 .set_base_sha(task.session_id, &worktree.base_sha)
@@ -2788,6 +3009,42 @@ async fn run_one_inner(
         });
     }
     if turn_state == SupervisorTurnState::Completed {
+        let task = state.control.session(session_id).await?;
+        if task.github_auto_pr {
+            if let Some(issue_number) = task.github_issue_number {
+                if !task.branch.is_empty() {
+                    let workspace = task.workspace.clone();
+                    let branch = task.branch.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        forge_workspace::gh::push_branch(&workspace, &branch).and_then(|()| {
+                            forge_workspace::gh::create_issue_pull_request_for_branch(
+                                &workspace,
+                                issue_number,
+                                &branch,
+                            )
+                        })
+                    })
+                    .await;
+                    let message = match result {
+                        Ok(Ok(url)) => {
+                            state.control.set_pr_url(session_id, &url).await?;
+                            format!("Pull request created · {url}")
+                        }
+                        Ok(Err(error)) => format!(
+                            "PR creation paused · {error} · retry with /pr create {issue_number}"
+                        ),
+                        Err(error) => format!("PR creation failed · {error}"),
+                    };
+                    let _ = state.events.send(SupervisorEvent::Attention {
+                        session_id,
+                        state: turn_state,
+                        message,
+                    });
+                }
+            }
+        }
+    }
+    if turn_state == SupervisorTurnState::Completed {
         let condition = task_actor.goal.lock().await.clone();
         if let Some(condition) = condition {
             let request = {
@@ -3528,6 +3785,11 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,
+            github_issue_number: None,
+            github_pr_url: None,
+            github_auto_pr: false,
+            github_retry_attempts: 0,
+            github_tests_passed: false,
         }
     }
 
@@ -3576,6 +3838,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "discard-dirty".into(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -5787,6 +6050,7 @@ mod tests {
                     .command(SupervisorCommand::CreateSession {
                         label: "gated".into(),
                         first_prompt: None,
+                        github_issue_number: None,
                     })
                     .await
             }
@@ -5829,6 +6093,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: String::new(),
                 first_prompt: Some("rewrite the lexer".into()),
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -5874,6 +6139,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "parser".into(),
                 first_prompt: Some("rewrite the lexer".into()),
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -5927,6 +6193,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: String::new(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -5992,6 +6259,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: String::new(),
                 first_prompt: Some("rewrite the lexer".into()),
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6067,6 +6335,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "Fix the parser".into(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6161,6 +6430,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: String::new(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6221,6 +6491,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "Research the parser".into(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6274,6 +6545,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "parser".into(),
                 first_prompt: Some("rewrite the lexer".into()),
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6334,6 +6606,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "cleanup".into(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6572,6 +6845,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "dirty-cleanup".into(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6744,6 +7018,7 @@ mod tests {
             .command(SupervisorCommand::CreateSession {
                 label: "inherits".into(),
                 first_prompt: None,
+                github_issue_number: None,
             })
             .await
             .unwrap();
@@ -6906,6 +7181,7 @@ mod tests {
             SupervisorCommand::CreateSession {
                 label: "x".into(),
                 first_prompt: None,
+                github_issue_number: None,
             },
             SupervisorCommand::AttachWorktree {
                 workspace: PathBuf::from("."),

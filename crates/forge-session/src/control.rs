@@ -147,6 +147,11 @@ pub struct RepositorySession {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
+    pub github_issue_number: Option<u64>,
+    pub github_pr_url: Option<String>,
+    pub github_auto_pr: bool,
+    pub github_retry_attempts: u32,
+    pub github_tests_passed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -334,6 +339,52 @@ impl RepositoryControl {
         Ok(())
     }
 
+    pub async fn set_github_auto_pr(
+        &self,
+        session_id: SessionId,
+        enabled: bool,
+    ) -> Result<(), RepositorySessionError> {
+        sqlx::query("UPDATE sessions SET github_auto_pr = ?, updated_at = ? WHERE session_id = ?")
+            .bind(i64::from(enabled))
+            .bind(Utc::now().to_rfc3339())
+            .bind(session_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn begin_managed_creation_for_issue(
+        &self,
+        label: &str,
+        source_workspace: &Path,
+        first_prompt: &str,
+        issue_number: u64,
+    ) -> Result<PendingCreation, RepositorySessionError> {
+        let pending = self
+            .begin_managed_creation(label, source_workspace, Some(first_prompt))
+            .await?;
+        sqlx::query("UPDATE pending_operations SET github_issue_number = ? WHERE operation_id = ?")
+            .bind(issue_number as i64)
+            .bind(pending.operation_id as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(pending)
+    }
+
+    pub async fn set_pr_url(
+        &self,
+        session_id: SessionId,
+        url: &str,
+    ) -> Result<(), RepositorySessionError> {
+        sqlx::query("UPDATE sessions SET github_pr_url = ?, updated_at = ? WHERE session_id = ?")
+            .bind(url)
+            .bind(Utc::now().to_rfc3339())
+            .bind(session_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn migrate(&self) -> Result<(), RepositorySessionError> {
         self.rename_legacy_sessions_table().await?;
         sqlx::query(
@@ -359,7 +410,12 @@ impl RepositoryControl {
                 reasoning_effort TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                archived_at TEXT
+                archived_at TEXT,
+                github_issue_number INTEGER,
+                github_pr_url TEXT,
+                github_auto_pr INTEGER NOT NULL DEFAULT 0,
+                github_retry_attempts INTEGER NOT NULL DEFAULT 0,
+                github_tests_passed INTEGER NOT NULL DEFAULT 0
             );
             DROP INDEX IF EXISTS sessions_live_workspace;
             DROP INDEX IF EXISTS sessions_live_slot;
@@ -377,6 +433,7 @@ impl RepositoryControl {
                 session_id TEXT,
                 error TEXT,
                 first_prompt TEXT,
+                github_issue_number INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -407,6 +464,31 @@ impl RepositoryControl {
         )
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn increment_github_retry(
+        &self,
+        session_id: SessionId,
+    ) -> Result<u32, RepositorySessionError> {
+        sqlx::query("UPDATE sessions SET github_retry_attempts = github_retry_attempts + 1 WHERE session_id = ?")
+            .bind(session_id.to_string()).execute(&self.pool).await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT github_retry_attempts FROM sessions WHERE session_id = ?")
+                .bind(session_id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count.max(0) as u32)
+    }
+
+    pub async fn reset_github_retry(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), RepositorySessionError> {
+        sqlx::query("UPDATE sessions SET github_retry_attempts = 0 WHERE session_id = ?")
+            .bind(session_id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -469,6 +551,35 @@ impl RepositoryControl {
         Ok(())
     }
 
+    pub async fn set_github_tests_passed(
+        &self,
+        session_id: SessionId,
+        passed: bool,
+    ) -> Result<(), RepositorySessionError> {
+        sqlx::query("UPDATE sessions SET github_tests_passed = ? WHERE session_id = ?")
+            .bind(i64::from(passed))
+            .bind(session_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_github_issue(
+        &self,
+        session_id: SessionId,
+        issue_number: u64,
+    ) -> Result<(), RepositorySessionError> {
+        sqlx::query(
+            "UPDATE sessions SET github_issue_number = ?, updated_at = ? WHERE session_id = ?",
+        )
+        .bind(issue_number as i64)
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Columns added after the first schema shipped. SQLite has no
     /// `ADD COLUMN IF NOT EXISTS`, so read `table_info` and add only what a
     /// pre-existing control database is actually missing.
@@ -497,6 +608,11 @@ impl RepositoryControl {
                 .execute(&self.pool)
                 .await?;
         }
+        if !existing.iter().any(|name| name == "github_issue_number") {
+            sqlx::query("ALTER TABLE pending_operations ADD COLUMN github_issue_number INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
         let session_columns: Vec<String> = sqlx::query("PRAGMA table_info(sessions)")
             .fetch_all(&self.pool)
             .await?
@@ -508,6 +624,46 @@ impl RepositoryControl {
             sqlx::query("ALTER TABLE sessions ADD COLUMN base_sha TEXT")
                 .execute(&self.pool)
                 .await?;
+        }
+        if !session_columns
+            .iter()
+            .any(|name| name == "github_issue_number")
+        {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN github_issue_number INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !session_columns.iter().any(|name| name == "github_pr_url") {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN github_pr_url TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !session_columns.iter().any(|name| name == "github_auto_pr") {
+            sqlx::query(
+                "ALTER TABLE sessions ADD COLUMN github_auto_pr INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        if !session_columns
+            .iter()
+            .any(|name| name == "github_retry_attempts")
+        {
+            sqlx::query(
+                "ALTER TABLE sessions ADD COLUMN github_retry_attempts INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        if !session_columns
+            .iter()
+            .any(|name| name == "github_tests_passed")
+        {
+            sqlx::query(
+                "ALTER TABLE sessions ADD COLUMN github_tests_passed INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
@@ -1543,6 +1699,13 @@ fn parse_session(
             .get::<Option<String>, _>("archived_at")
             .map(parse_timestamp)
             .transpose()?,
+        github_issue_number: row
+            .get::<Option<i64>, _>("github_issue_number")
+            .and_then(|n| u64::try_from(n).ok()),
+        github_pr_url: row.get("github_pr_url"),
+        github_auto_pr: row.get::<i64, _>("github_auto_pr") != 0,
+        github_retry_attempts: row.get::<i64, _>("github_retry_attempts").max(0) as u32,
+        github_tests_passed: row.get::<i64, _>("github_tests_passed") != 0,
     })
 }
 

@@ -18,6 +18,35 @@ fn truncate_skill_description(desc: &str) -> String {
 }
 
 impl TuiApp {
+    #[allow(dead_code)]
+    pub(super) fn open_github_issues(&mut self) {
+        let workspace = self.session_view.workspace_root().to_path_buf();
+        let result = forge_workspace::github::list_open_issues(&workspace, 50);
+        match result {
+            Ok(items) => {
+                self.overlay = Some(Overlay::GithubIssues {
+                    selected: 0,
+                    filter: String::new(),
+                    items,
+                    error: None,
+                    action: 0,
+                    action_menu: false,
+                    pr_states: Default::default(),
+                })
+            }
+            Err(error) => {
+                self.overlay = Some(Overlay::GithubIssues {
+                    selected: 0,
+                    filter: String::new(),
+                    items: Vec::new(),
+                    error: Some(error.to_string()),
+                    action: 0,
+                    action_menu: false,
+                    pr_states: Default::default(),
+                })
+            }
+        }
+    }
     pub(super) fn open_session_switcher(&mut self) {
         if let Some(supervisor) = self.supervisor.as_ref() {
             let selected_session_id = self.selected_session_id;
@@ -1287,7 +1316,6 @@ impl TuiApp {
                         rows: self.status_report_rows(),
                     });
                 }
-                Ok(SlashCommand::Git) => self.open_git_view(),
                 Ok(SlashCommand::Context) => {
                     self.overlay = Some(Overlay::StatusReport {
                         title: "Context".into(),

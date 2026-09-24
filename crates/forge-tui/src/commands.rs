@@ -68,8 +68,6 @@ pub enum SlashCommand {
     },
     /// Show session status overlay.
     Status,
-    /// Open the working-tree Git workspace in the center pane.
-    Git,
     /// Show the token-budget breakdown by category (system prompt, tool
     /// schemas, messages) — the detail `/status` deliberately omits.
     Context,
@@ -216,14 +214,11 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             name: parts.next().map(|s| s.to_string()),
         }),
         "status" => Ok(SlashCommand::Status),
-        "git" => {
-            if parts.next().is_some() {
-                Err(CommandError::Usage("/git".into()))
-            } else {
-                Ok(SlashCommand::Git)
-            }
-        }
-        "context" | "ctx" => Ok(SlashCommand::Context),
+        "context" | "ctx" if parts.next().is_none() => Ok(SlashCommand::Context),
+        "pr" | "issues" | "git" => Err(CommandError::Usage(
+            "Git and GitHub operations are driven from the navigator UI".into(),
+        )),
+
         "plan" => Ok(SlashCommand::Plan),
         "goal" => match parts.next() {
             None => Ok(SlashCommand::Goal {
@@ -288,12 +283,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_git_workspace() {
-        assert_eq!(parse_slash("/git").unwrap().unwrap(), SlashCommand::Git);
-        assert_eq!(
-            parse_slash("/git status").unwrap().unwrap_err(),
-            CommandError::Usage("/git".into())
-        );
+    fn parses_github_issue_browser() {
+        assert!(parse_slash("/issues").unwrap().is_err());
+        assert!(parse_slash("/pr status 42").unwrap().is_err());
     }
 
     #[test]
