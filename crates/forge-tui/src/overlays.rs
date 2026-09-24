@@ -4849,11 +4849,12 @@ mod tests {
     #[test]
     fn default_palette_covers_parseable_commands() {
         let items = default_palette_items();
-        // Every bare cmd (no required args) should parse; arg-required ones still listed.
+        // GitHub navigation is UI-owned; /issues remains only to show a redirect.
         for it in &items {
             let res = parse_slash(&it.cmd).expect("is slash");
             match it.cmd.as_str() {
                 "/resume" => assert_eq!(res.unwrap(), SlashCommand::ResumeList),
+                "/issues" => assert!(res.is_err()),
                 other => assert!(res.is_ok(), "palette cmd {other} should parse: {res:?}"),
             }
         }

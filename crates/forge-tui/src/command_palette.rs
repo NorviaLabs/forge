@@ -28,6 +28,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         ("/theme", "Switch presentation theme"),
         ("/status", "Show session status and diagnostics"),
         ("/context", "Show the token budget broken down by category"),
+        ("/issues", "Browse issues on the current GitHub remote"),
         ("/plan", "Inspect the latest execution plan"),
         ("/goal", "Work toward a completion condition until it holds"),
         ("/effort", "Set model effort"),

@@ -214,6 +214,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             name: parts.next().map(|s| s.to_string()),
         }),
         "status" => Ok(SlashCommand::Status),
+        "context" | "ctx" if parts.next().is_none() => Ok(SlashCommand::Context),
         "pr" | "issues" | "git" => Err(CommandError::Usage(
             "Git and GitHub operations are driven from the navigator UI".into(),
         )),
