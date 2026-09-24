@@ -1554,6 +1554,31 @@ impl TuiApp {
     }
 
     async fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        // The Git navigator tab is also the entry point for repository-hosted
+        // work. Keep this beside the changed-file list rather than adding a
+        // fourth tab: `i` opens the GitHub issues overlay for the current
+        // remote, while the normal Git tab continues to show the working tree.
+        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Char('i')
+        {
+            self.open_github_issues();
+            return Ok(true);
+        }
+        // The Git tab keeps focus in the changed-file explorer. Stage/unstage
+        // is a diff-view action too, so bridge the explorer selection to the
+        // patch selection before invoking the existing implementation.
+        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
+            && !self.workspace_files.explorer.search_focused
+            && key.modifiers.is_empty()
+            && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('u'))
+        {
+            if let Some(path) = self.workspace_files.explorer.selected_path.clone() {
+                self.select_diff_path(&path);
+                self.stage_selected_diff_file(key.code == KeyCode::Char('s'));
+            }
+            return Ok(true);
+        }
         if self.workspace_files.explorer.search_focused {
             if key.modifiers.is_empty() && matches!(key.code, KeyCode::Esc) {
                 // Esc backs out of the filter in two steps: clear the query and
@@ -1613,6 +1638,16 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
+        // Git review opens in the workspace pane, so the GitHub shortcut must
+        // be handled here as well as in the changed-file explorer. Otherwise
+        // entering the Git tab moves focus away from the only handler for `i`.
+        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Char('i')
+        {
+            self.open_github_issues();
+            return Ok(true);
+        }
         if self.diff_view_is_open() {
             return Ok(self.handle_diff_key(key));
         }
