@@ -18,6 +18,7 @@ fn truncate_skill_description(desc: &str) -> String {
 }
 
 impl TuiApp {
+    #[allow(dead_code)]
     pub(super) fn open_github_issues(&mut self) {
         let workspace = self.session_view.workspace_root().to_path_buf();
         let result = forge_workspace::github::list_open_issues(&workspace, 50);

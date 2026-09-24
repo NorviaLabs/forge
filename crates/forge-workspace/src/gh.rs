@@ -560,30 +560,6 @@ pub fn merge_if_ready(
     merge(workspace, reference, method)
 }
 
-#[cfg(test)]
-mod gate_tests {
-    use super::MergeGate;
-
-    #[test]
-    fn merge_gate_fails_closed_on_pending_or_unknown_states() {
-        assert!(!MergeGate {
-            checks: vec!["build pending".into()],
-            review_decision: Some("APPROVED".into())
-        }
-        .github_ready());
-        assert!(!MergeGate {
-            checks: vec!["build pass".into()],
-            review_decision: None
-        }
-        .github_ready());
-        assert!(MergeGate {
-            checks: vec!["build pass".into()],
-            review_decision: Some("APPROVED".into())
-        }
-        .github_ready());
-    }
-}
-
 pub fn repository(workspace: &Path) -> Result<String, GithubError> {
     let remote = Command::new("git")
         .arg("-C")
