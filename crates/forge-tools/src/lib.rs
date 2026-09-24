@@ -29,8 +29,9 @@ pub use builtins::{
 pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
 pub use orchestration::{
-    AgentMessageArgs, FollowupTaskTool, InterruptAgentTool, ListAgentsArgs, ListAgentsTool,
-    SendMessageTool, SpawnAgentArgs, SpawnAgentTool, TargetAgentArgs, WaitAgentArgs, WaitAgentTool,
+    AgentMessageArgs, AgentMode, FollowupTaskTool, InterruptAgentTool, ListAgentsArgs,
+    ListAgentsTool, SendMessageTool, SpawnAgentArgs, SpawnAgentTool, TargetAgentArgs,
+    WaitAgentArgs, WaitAgentTool,
 };
 pub use output_filters::compress_tool_output;
 pub use registry::{

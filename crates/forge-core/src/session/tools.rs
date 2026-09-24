@@ -1091,6 +1091,7 @@ impl AgentSession {
                     .spawn_subagent(SubagentSpec {
                         role: args.task_name,
                         prompt: args.message,
+                        mode: args.mode,
                         tool_allowlist: args.tool_allowlist,
                     })
                     .await?;
