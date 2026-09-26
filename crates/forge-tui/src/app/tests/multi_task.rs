@@ -82,6 +82,29 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
 }
 
 #[tokio::test]
+async fn ctrl_e_cycles_all_available_navigator_tabs() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    draw_app(&mut app, 140, 40);
+
+    for expected in [
+        NavigatorTab::Files,
+        NavigatorTab::Git,
+        NavigatorTab::Sessions,
+    ] {
+        app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert_eq!(app.effective_navigator_tab(), expected);
+    }
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn empty_session_model_does_not_replace_global_model_fallback() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.runtime.model_label = "openai/gpt-6-luna".into();

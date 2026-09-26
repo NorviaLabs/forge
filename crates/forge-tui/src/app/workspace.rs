@@ -47,23 +47,25 @@ impl TuiApp {
         }
         let already_in_files = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
 
-        // In the navigator (repository mode) Ctrl+E flips between the Sessions
-        // and Files tabs; the column is always present when it fits.
+        // In repository mode, cycle every available navigator tab. A non-repo
+        // still has only Sessions and Files.
         if self.supervisor.is_some() {
-            self.navigator_tab =
-                if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Files {
-                    crate::widgets::NavigatorTab::Sessions
-                } else {
-                    crate::widgets::NavigatorTab::Files
-                };
+            use crate::widgets::NavigatorTab::{Files, Git, Sessions};
+            self.navigator_tab = match self.effective_navigator_tab() {
+                Sessions => Files,
+                Files if self.navigator_git_available() => Git,
+                Files | Git => Sessions,
+            };
             self.navigator_tab_explicit = true;
             self.retarget_navigator_row_stop(self.navigator_tab);
-            self.apply_navigator_git_tab(false);
-            if self.navigator_tab == crate::widgets::NavigatorTab::Files {
-                self.workspace_files.visible = true;
-                self.focus_block(FocusBlock::Search);
-            } else {
-                self.focus_block(FocusBlock::TaskStrip);
+            self.apply_navigator_git_tab(self.navigator_tab == Git);
+            match self.navigator_tab {
+                Files => {
+                    self.workspace_files.visible = true;
+                    self.focus_block(FocusBlock::Search);
+                }
+                Git => self.focus_block(FocusBlock::Workspace),
+                Sessions => self.focus_block(FocusBlock::TaskStrip),
             }
             self.normalize_focus();
             return;

@@ -68,7 +68,7 @@ impl TuiApp {
         ));
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
-        text.push_str("• Ctrl+E  Toggle Files (focuses explorer when opening)\n");
+        text.push_str("• Ctrl+E  Cycle navigator tabs (Sessions / Files / Git in a repository)\n");
         text.push_str("• Ctrl+`  Toggle terminal panel\n");
         text.push_str("• F4  Open model picker\n");
         text.push_str("• F1  Help\n");
