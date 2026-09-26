@@ -171,7 +171,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 Ok(SlashCommand::New)
             }
         }
-        "sessions" => {
+        "sessions" | "tasks" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/sessions".into()))
             } else {
