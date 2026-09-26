@@ -36,6 +36,8 @@ pub enum DiffSource {
     /// Only what the most recent assistant turn wrote, taken from the
     /// transcript's own diff cards rather than from `git`.
     LastTurn,
+    /// Changes to the checked-in architecture diagram and documentation.
+    Architecture,
 }
 
 /// Separate index and worktree rows for the Git navigator. A path modified on
@@ -79,6 +81,7 @@ impl DiffSource {
             Self::WorkingTree => "working tree",
             Self::Staged => "staged",
             Self::LastTurn => "last turn",
+            Self::Architecture => "architecture",
         }
     }
 
@@ -91,6 +94,7 @@ impl DiffSource {
             Self::WorkingTree => Self::Staged,
             Self::Staged => Self::LastTurn,
             Self::LastTurn => Self::WorkingTree,
+            Self::Architecture => Self::WorkingTree,
         }
     }
 }
@@ -585,7 +589,9 @@ impl DiffView {
             DiffSource::WorkingTree => String::new(),
             // Both of the others are unusual enough to name: the working tree
             // is the default, so it is the one that says nothing.
-            DiffSource::Staged | DiffSource::LastTurn => format!(" · {source}"),
+            DiffSource::Staged | DiffSource::LastTurn | DiffSource::Architecture => {
+                format!(" · {source}")
+            }
         };
         format!("DIFF · {path}{counts} · {position}{source}")
     }
@@ -752,7 +758,9 @@ pub fn entries_for_source(files: &[ChangedFile], source: DiffSource) -> Vec<Diff
                 .collect();
             entries_from_changed_files(&staged)
         }
-        DiffSource::WorkingTree | DiffSource::LastTurn => entries_from_changed_files(files),
+        DiffSource::WorkingTree | DiffSource::LastTurn | DiffSource::Architecture => {
+            entries_from_changed_files(files)
+        }
     }
 }
 
@@ -964,11 +972,13 @@ impl Widget for DiffViewWidget<'_> {
                     DiffSource::LastTurn => {
                         "The last turn did not edit any files.\nPress d to see the working tree."
                     }
+                    DiffSource::Architecture => "No architecture changes.\nEdit the architecture diagram to review its visual diff.",
                 };
                 let heading = match self.view.source {
                     DiffSource::WorkingTree => "No changes in the working tree",
                     DiffSource::Staged => "Nothing staged",
                     DiffSource::LastTurn => "No changes in the last turn",
+                    DiffSource::Architecture => "No architecture changes",
                 };
                 render_message(body, buf, heading, hint);
                 return;

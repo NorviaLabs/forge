@@ -93,6 +93,10 @@ pub enum SlashCommand {
     /// overlay — without a palette entry the terminal is unreachable for
     /// anyone who hasn't memorised it.
     Terminal,
+    /// Review changes to the architecture docs and diagram.
+    Architecture,
+    /// Open the background-task Kanban board.
+    Tasks,
     /// Enter pane resize mode, or restore the responsive defaults.
     Resize,
     ResizeReset,
@@ -167,7 +171,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 Ok(SlashCommand::New)
             }
         }
-        "sessions" | "tasks" => {
+        "sessions" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/sessions".into()))
             } else {
@@ -269,6 +273,8 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             }
         }
         "terminal" | "term" | "shell" => Ok(SlashCommand::Terminal),
+        "architecture" | "arch" => Ok(SlashCommand::Architecture),
+        "board" => Ok(SlashCommand::Tasks),
         "resize" => match parts.next() {
             None => Ok(SlashCommand::Resize),
             Some("reset") if parts.next().is_none() => Ok(SlashCommand::ResizeReset),
@@ -322,6 +328,23 @@ mod tests {
     }
 
     #[test]
+    fn architecture_review_command_is_parseable() {
+        assert_eq!(
+            parse_slash("/architecture").unwrap().unwrap(),
+            SlashCommand::Architecture
+        );
+        assert_eq!(
+            parse_slash("/arch").unwrap().unwrap(),
+            SlashCommand::Architecture
+        );
+    }
+
+    #[test]
+    fn tasks_board_command_is_parseable() {
+        assert_eq!(parse_slash("/board").unwrap().unwrap(), SlashCommand::Tasks);
+    }
+
+    #[test]
     fn parses_phase1_commands() {
         assert!(parse_slash("/tools").unwrap().is_err());
         assert!(parse_slash("/journal").unwrap().is_err());
@@ -356,6 +379,7 @@ mod tests {
             SlashCommand::Theme { name: None },
             SlashCommand::Status,
             SlashCommand::Terminal,
+            SlashCommand::Architecture,
         ] {
             assert!(command.available_while_busy(), "{command:?}");
         }

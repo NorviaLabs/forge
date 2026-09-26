@@ -1223,6 +1223,7 @@ dependencies = [
  "forge-tools",
  "forge-tui",
  "forge-types",
+ "portable-pty",
  "predicates",
  "serde_json",
  "tokio",

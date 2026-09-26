@@ -78,6 +78,9 @@ pub fn observe_stream_event(
 /// the async agent loop. The provider-facing `std::sync::mpsc` API cannot be
 /// made bounded here, but this prevents an unbounded Tokio queue in the core.
 const STREAM_EVENT_BUFFER_CAPACITY: usize = 64;
+/// Flush presentation deltas in bounded batches so a provider's rapid stream
+/// cannot leave arbitrarily large text buffers queued for the UI.
+const STREAM_DELTA_BATCH_BYTES: usize = 4096;
 
 /// Combine adjacent text/thinking deltas for presentation. This does not alter
 /// the session accumulator or durable turn events: those still observe every
@@ -90,15 +93,35 @@ fn coalesce_forward_events(events: Vec<ModelStreamEvent>) -> Vec<ModelStreamEven
             (
                 Some(ModelStreamEvent::TextDelta { text: previous }),
                 ModelStreamEvent::TextDelta { text },
-            ) => previous.push_str(&text),
+            ) if previous.len() + text.len() <= STREAM_DELTA_BATCH_BYTES => {
+                previous.push_str(&text)
+            }
             (
                 Some(ModelStreamEvent::ThinkingDelta { text: previous }),
                 ModelStreamEvent::ThinkingDelta { text },
-            ) => previous.push_str(&text),
+            ) if previous.len() + text.len() <= STREAM_DELTA_BATCH_BYTES => {
+                previous.push_str(&text)
+            }
             (_, event) => coalesced.push(event),
         }
     }
     coalesced
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn coalescing_caps_delta_batch_size() {
+        let events = coalesce_forward_events(vec![
+            ModelStreamEvent::TextDelta {
+                text: "x".repeat(STREAM_DELTA_BATCH_BYTES),
+            },
+            ModelStreamEvent::TextDelta { text: "y".into() },
+        ]);
+        assert_eq!(events.len(), 2);
+    }
 }
 
 /// Observe every event in `events`, then forward a coalesced presentation view.

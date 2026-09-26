@@ -123,6 +123,14 @@ impl TuiApp {
                     self.diff_view.source,
                 ),
                 DiffSource::LastTurn => self.last_turn_diff_entries(),
+                DiffSource::Architecture => {
+                    let files = ["ARCHITECTURE.md", "forge-architecture.mmd"];
+                    let changed = self.workspace_files.explorer.git_status.changed_files();
+                    crate::diff_view::entries_for_source(&changed, self.diff_view.source)
+                        .into_iter()
+                        .filter(|entry| files.iter().any(|path| entry.path == Path::new(path)))
+                        .collect()
+                }
             }
         };
         let previous = self.diff_view.selected_path().map(Path::to_path_buf);
