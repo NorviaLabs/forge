@@ -24,14 +24,18 @@ pub struct GitChangesList<'a> {
 impl GitChangesList<'_> {
     pub fn rows(entries: &[DiffEntry]) -> Vec<GitChangeRow> {
         let mut rows = Vec::new();
-        let mut prior = None;
-        for (index, entry) in entries.iter().enumerate() {
-            let side = entry.side.unwrap_or(DiffSide::Unstaged);
-            if prior != Some(side) {
-                rows.push(GitChangeRow::Group(side));
-                prior = Some(side);
+        for side in [DiffSide::Staged, DiffSide::Unstaged] {
+            let mut group_started = false;
+            for (index, entry) in entries.iter().enumerate() {
+                if entry.side.unwrap_or(DiffSide::Unstaged) != side {
+                    continue;
+                }
+                if !group_started {
+                    rows.push(GitChangeRow::Group(side));
+                    group_started = true;
+                }
+                rows.push(GitChangeRow::File(index));
             }
-            rows.push(GitChangeRow::File(index));
         }
         rows
     }

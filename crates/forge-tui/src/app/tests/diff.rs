@@ -32,6 +32,52 @@ fn repo_with_changes(dir: &std::path::Path, baseline: &[(&str, &str)], changes: 
     }
 }
 
+#[test]
+fn git_tab_renders_at_most_one_group_per_side() {
+    use crate::diff_view::{DiffEntry, DiffSide};
+    use crate::widgets::git_changes::{GitChangeRow, GitChangesList};
+
+    let entries = [
+        DiffEntry {
+            path: "a".into(),
+            marker: "M",
+            untracked: false,
+            side: Some(DiffSide::Staged),
+        },
+        DiffEntry {
+            path: "b".into(),
+            marker: "M",
+            untracked: false,
+            side: Some(DiffSide::Unstaged),
+        },
+        DiffEntry {
+            path: "c".into(),
+            marker: "M",
+            untracked: false,
+            side: Some(DiffSide::Staged),
+        },
+        DiffEntry {
+            path: "d".into(),
+            marker: "M",
+            untracked: false,
+            side: Some(DiffSide::Unstaged),
+        },
+    ];
+    let rows = GitChangesList::rows(&entries);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| **row == GitChangeRow::Group(DiffSide::Staged))
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| **row == GitChangeRow::Group(DiffSide::Unstaged))
+            .count(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn grouped_git_rows_show_the_right_diff_for_each_side() {
     let (dir, mut app) = focus_test_app().await;

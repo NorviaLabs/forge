@@ -370,6 +370,12 @@ impl TuiApp {
             }
             OverlayAction::GitSwitchBranch { name } => self.switch_git_branch(&name),
             OverlayAction::GitCreateBranch { name } => self.create_git_branch(&name),
+            OverlayAction::OpenGitCreateBranch => {
+                self.overlay = Some(Overlay::GitCreateBranch {
+                    name: String::new(),
+                    error: None,
+                });
+            }
             OverlayAction::GitMergeBranch { name } => self.merge_git_branch(&name),
             OverlayAction::GitAbortMerge => self.abort_git_merge(),
             OverlayAction::GitDeleteBranch { name } => self.delete_git_branch(&name),

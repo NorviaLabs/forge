@@ -81,6 +81,11 @@ pub enum Overlay {
         /// Validation/authentication error shown inside the modal.
         error: Option<String>,
     },
+    /// Enter a new branch name without the existing-branch picker shortcuts.
+    GitCreateBranch {
+        name: String,
+        error: Option<String>,
+    },
     TrustSession {
         operation_id: u64,
         label: String,
@@ -669,28 +674,9 @@ impl Overlay {
             .collect()
     }
 
-    /// What `Enter` does on the branch picker.
-    ///
-    /// A filter that matches no existing branch is a *create* while switching —
-    /// that is how a new branch is named, and it saves a second dialog. A
-    /// filter that matches something takes the selection instead, so narrowing
-    /// the list and pressing `Enter` can never invent a branch from a prefix.
-    /// Merging has no create reading at all: a branch that does not exist
-    /// cannot be merged.
-    ///
-    /// The one case this cannot express is a new branch whose name is a
-    /// substring of an existing one (`feat` while `feature/x` exists): the
-    /// filter matches, so `Enter` switches. That is the rarer direction by a
-    /// wide margin, and guessing the other way would make every narrowed list
-    /// ambiguous.
+    /// What `Enter` does on the branch picker: switch or merge an existing match.
     fn branch_enter(items: &[String], filter: &str, selected: usize, merge: bool) -> OverlayAction {
-        let typed = filter.trim();
         let matches = Self::branch_matches(items, filter);
-        if !merge && !typed.is_empty() && matches.is_empty() {
-            return OverlayAction::GitCreateBranch {
-                name: typed.to_string(),
-            };
-        }
         let chosen = matches
             .get(selected.min(matches.len().saturating_sub(1)))
             .map(|index| items[*index].clone());
@@ -1332,6 +1318,8 @@ pub enum OverlayAction {
     GitCreateBranch {
         name: String,
     },
+    /// Open the dedicated new-branch name prompt.
+    OpenGitCreateBranch,
     /// Merge an existing local branch into the current one.
     GitMergeBranch {
         name: String,
@@ -1492,6 +1480,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
         }
         Key::Esc => {
+            if matches!(overlay, Overlay::GitCreateBranch { .. }) {
+                return OverlayAction::Close;
+            }
             if let Overlay::GithubIssues {
                 action_menu: true, ..
             } = overlay
@@ -1538,6 +1529,32 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         issue_number: issue.number,
                     },
                 };
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::GitCreateBranch { .. }) => {
+            if let Overlay::GitCreateBranch { name, error } = overlay {
+                if !c.is_control() && !c.is_whitespace() {
+                    name.push(c);
+                    *error = None;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(data) if matches!(overlay, Overlay::GitCreateBranch { .. }) => {
+            if let Overlay::GitCreateBranch { name, error } = overlay {
+                name.extend(
+                    data.chars()
+                        .filter(|c| !c.is_control() && !c.is_whitespace()),
+                );
+                *error = None;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::GitCreateBranch { .. }) => {
+            if let Overlay::GitCreateBranch { name, error } = overlay {
+                name.pop();
+                *error = None;
             }
             OverlayAction::None
         }
@@ -2011,6 +2028,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 OverlayAction::None
             }
         }
+        Key::Char('n') if matches!(overlay, Overlay::GitBranch { merge: false, .. }) => {
+            OverlayAction::OpenGitCreateBranch
+        }
         Key::Char('r') if matches!(overlay, Overlay::GitBranch { merge: false, .. }) => {
             if let Overlay::GitBranch {
                 selected,
@@ -2267,6 +2287,18 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 OverlayAction::None
             }
         }
+        Key::Enter if matches!(overlay, Overlay::GitCreateBranch { .. }) => {
+            if let Overlay::GitCreateBranch { name, error } = overlay {
+                if name.trim().is_empty() {
+                    *error = Some("A branch needs a name".into());
+                    OverlayAction::None
+                } else {
+                    OverlayAction::GitCreateBranch { name: name.clone() }
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
@@ -2509,6 +2541,14 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 } else {
                     OverlayAction::None
+                }
+            }
+            Overlay::GitCreateBranch { name, error } => {
+                if name.trim().is_empty() {
+                    *error = Some("A branch needs a name".into());
+                    OverlayAction::None
+                } else {
+                    OverlayAction::GitCreateBranch { name: name.clone() }
                 }
             }
             Overlay::FileViewer { .. } => OverlayAction::None,
@@ -3044,6 +3084,26 @@ impl Widget for OverlayWidget<'_> {
                         .style(theme::panel())
                         .padding(Padding::horizontal(MODAL_PAD_X))
                         .title(theme::modal_title("Help")),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitCreateBranch { name, error } => {
+                let r = centered_rect(72, 30, area);
+                clear_modal(r, buf);
+                let error = error
+                    .as_ref()
+                    .map(|e| format!("\n\n{e}"))
+                    .unwrap_or_default();
+                Paragraph::new(format!(
+                    "Branch name: {name}█{error}\n\nEnter create · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title("New branch")),
                 )
                 .render(r, buf);
             }
@@ -3841,7 +3901,7 @@ impl Widget for OverlayWidget<'_> {
                 } else {
                     (
                         "Branch",
-                        "Enter switch · an unmatched name creates · x delete · r rename · Esc cancel",
+                        "Enter switch · n new · x delete · r rename · Esc cancel",
                     )
                 };
                 Paragraph::new(format!(
@@ -6364,9 +6424,7 @@ mod tests {
         }
     }
 
-    /// `Enter` on the branch picker: an existing name switches to it, and a
-    /// name that matches nothing is a create — that is how a new branch is
-    /// named without a second dialog.
+    /// `Enter` on the branch picker switches to an existing match.
     #[test]
     fn branch_picker_enter_switches_creates_or_merges() {
         let items = ["main", "feature/x"];
@@ -6381,14 +6439,12 @@ mod tests {
             }
         );
 
-        // A name no branch carries creates it, verbatim including the slash.
+        // A name matching nothing does not switch; `n` opens the create prompt.
         let mut overlay = branch_overlay(&items, "fix/typo", 0, false);
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::GitCreateBranch {
-                name: "fix/typo".into()
-            },
-            "a name that matches nothing is the create verb"
+            OverlayAction::None,
+            "a name that matches nothing cannot trigger a branch operation"
         );
 
         // An exact match on an existing branch still switches, never re-creates.
