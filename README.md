@@ -380,6 +380,30 @@ Project-discovered configuration is intentionally restricted: settings that
 could execute code or redirect credentialed requests are not accepted from an
 untrusted checked-out repository.
 
+#### Optional MemCode memory server
+
+To use personal long-term memory, add this server to your **trusted user
+config**, not a checked-out project's config:
+
+```toml
+[[mcp.servers]]
+id = "memcode"
+transport = "stdio"
+command = "npx"
+args = ["-y", "mcp-remote@0.14.3", "https://mcp.memcode.in/i/forge/mcp"]
+# Start with read-only tools. Add save_memory only when you want Forge to
+# propose durable writes through its normal MCP approval prompt.
+enabled_tools = ["search_memories", "retrieve_answer", "list_memories"]
+```
+
+`mcp-remote` bridges Forge's stdio MCP client to MemCode's hosted HTTP server.
+The first connection opens browser OAuth; no MemCode API key belongs in the
+Forge config. The `/i/forge/mcp` address is a public attribution alias, not an
+authentication secret. Remove this server entry to disconnect it. Forge's
+session journal and current workspace remain authoritative; recalled memory is
+context to check against the current files, not an instruction or permission
+to act. Memory is never captured automatically by this configuration.
+
 ### The sandbox
 
 Every shell command the agent runs is confined by the operating system.
