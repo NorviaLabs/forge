@@ -33,6 +33,77 @@ fn repo_with_changes(dir: &std::path::Path, baseline: &[(&str, &str)], changes: 
 }
 
 #[tokio::test]
+async fn grouped_git_rows_show_the_right_diff_for_each_side() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "base\n")], &[]);
+    std::fs::write(dir.path().join("tracked.txt"), "staged\n").unwrap();
+    git_run(dir.path(), &["add", "tracked.txt"]);
+    std::fs::write(dir.path().join("tracked.txt"), "unstaged\n").unwrap();
+
+    app.open_git_view();
+    settle_git(&mut app);
+    assert_eq!(app.diff_view.entries.len(), 2);
+    assert_eq!(
+        app.diff_view.entries[0].side,
+        Some(crate::diff_view::DiffSide::Staged)
+    );
+    assert_eq!(
+        app.diff_view.entries[1].side,
+        Some(crate::diff_view::DiffSide::Unstaged)
+    );
+    settle_patch(&mut app);
+    let crate::diff_view::PatchState::Ready(staged) = &app.diff_view.patch else {
+        panic!("staged patch loads");
+    };
+    assert!(staged.lines.iter().any(|line| line.contains("staged")));
+
+    std::fs::write(dir.path().join("tracked.txt"), "staged\nunstaged\n").unwrap();
+    settle_git(&mut app);
+    app.diff_view.select(1);
+    app.diff_view.patch = PatchState::Loading;
+    app.diff_view.loaded_for = None;
+    app.pump_diff_view();
+    settle_patch(&mut app);
+    let crate::diff_view::PatchState::Ready(unstaged) = &app.diff_view.patch else {
+        panic!("unstaged patch loads");
+    };
+    assert!(
+        unstaged.lines.iter().any(|line| line.starts_with('+')),
+        "unstaged row must load the unstaged hunk"
+    );
+}
+
+#[test]
+fn git_tab_lists_staged_and_unstaged_sides_as_distinct_rows() {
+    use crate::diff_view::{entries_for_sides, DiffSide};
+    use forge_workspace::git_status::{ChangedFile, GitStatusKind as K};
+
+    let entries = entries_for_sides(&[
+        ChangedFile {
+            path: "both.rs".into(),
+            staged: Some(K::Modified),
+            unstaged: Some(K::Modified),
+        },
+        ChangedFile {
+            path: "new.rs".into(),
+            staged: None,
+            unstaged: Some(K::Untracked),
+        },
+    ]);
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].side, Some(DiffSide::Staged));
+    assert_eq!(entries[1].side, Some(DiffSide::Unstaged));
+    assert_eq!(entries[0].path, entries[1].path);
+    assert_eq!(entries[2].side, Some(DiffSide::Unstaged));
+    assert!(entries[2].untracked, "untracked files belong to Unstaged");
+    let text = crate::widgets::git_changes::GitChangesList::render_text(&entries, 0, 36, 14);
+    assert!(text.contains("STAGED"), "{text}");
+    assert!(text.contains("UNSTAGED"), "{text}");
+    assert!(text.contains("both.rs"), "{text}");
+    assert!(text.contains("new.rs"), "{text}");
+}
+
+#[tokio::test]
 async fn git_command_opens_live_working_tree_and_stage_refreshes_status() {
     let (dir, mut app) = focus_test_app().await;
     repo_with_changes(

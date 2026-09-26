@@ -2,6 +2,7 @@ pub mod background_strip;
 pub mod bottom_panel;
 pub mod feedback;
 pub mod footer;
+pub mod git_changes;
 pub mod input;
 pub mod navigator;
 pub mod panel;

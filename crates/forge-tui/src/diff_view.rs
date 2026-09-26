@@ -38,6 +38,41 @@ pub enum DiffSource {
     LastTurn,
 }
 
+/// Separate index and worktree rows for the Git navigator. A path modified on
+/// both sides intentionally appears twice so each row can load its own patch.
+pub fn entries_for_sides(files: &[ChangedFile]) -> Vec<DiffEntry> {
+    let mut entries = Vec::new();
+    for file in files {
+        for (kind, side) in [
+            (file.staged, DiffSide::Staged),
+            (file.unstaged, DiffSide::Unstaged),
+        ] {
+            let Some(kind) = kind else { continue };
+            if kind == GitStatusKind::Ignored {
+                continue;
+            }
+            entries.push(DiffEntry {
+                path: file.path.clone(),
+                marker: if kind == GitStatusKind::Untracked {
+                    GitStatusKind::Added.marker()
+                } else {
+                    kind.marker()
+                },
+                untracked: kind == GitStatusKind::Untracked,
+                side: Some(side),
+            });
+        }
+    }
+    entries.sort_by(|a, b| {
+        a.path.cmp(&b.path).then_with(|| match (a.side, b.side) {
+            (Some(DiffSide::Staged), Some(DiffSide::Unstaged)) => std::cmp::Ordering::Less,
+            (Some(DiffSide::Unstaged), Some(DiffSide::Staged)) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        })
+    });
+    entries
+}
+
 impl DiffSource {
     pub fn label(self) -> &'static str {
         match self {
@@ -67,6 +102,15 @@ pub struct DiffEntry {
     pub path: PathBuf,
     pub marker: &'static str,
     pub untracked: bool,
+    /// Which side's patch this row reviews. `None` retains legacy combined
+    /// working-tree semantics for `/diff` and existing callers.
+    pub side: Option<DiffSide>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSide {
+    Staged,
+    Unstaged,
 }
 
 /// A patch ready to render: hunk headers interleaved with their body lines,
@@ -738,6 +782,7 @@ pub fn entries_from_changed_files(files: &[ChangedFile]) -> Vec<DiffEntry> {
                     primary.marker()
                 },
                 untracked: status.is_untracked(),
+                side: None,
             })
         })
         .collect();
@@ -1604,6 +1649,7 @@ mod v2_tests {
             path: PathBuf::from("a.rs"),
             marker: "M",
             untracked: false,
+            side: None,
         }]);
         view.set_patch(1, PathBuf::from("a.rs"), patch_with(lines));
         view
@@ -1677,11 +1723,13 @@ mod v2_tests {
                 path: PathBuf::from("a.rs"),
                 marker: "M",
                 untracked: false,
+                side: None,
             },
             DiffEntry {
                 path: PathBuf::from("b.rs"),
                 marker: "M",
                 untracked: false,
+                side: None,
             },
         ]);
         assert!(view.toggle_reviewed(), "first press marks");
@@ -1800,6 +1848,7 @@ mod header_budget_tests {
             path: PathBuf::from("tracker/metrics.py"),
             marker: "M",
             untracked: false,
+            side: None,
         }]);
         let working = view.header();
         assert!(!working.contains("working tree"), "{working}");
@@ -1818,6 +1867,7 @@ mod header_budget_tests {
                     path: PathBuf::from(format!("crates/forge-tui/src/file_{n}.rs")),
                     marker: "M",
                     untracked: false,
+                    side: None,
                 })
                 .collect(),
         );

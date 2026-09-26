@@ -17,19 +17,21 @@ impl TuiApp {
     /// navigation state or patch cache is needed.
     pub(super) fn open_git_view(&mut self) {
         self.open_diff_view(DiffSource::WorkingTree);
+        self.git_grouped_list = true;
+        self.refresh_diff_entries();
+        self.focus_block(FocusBlock::Files);
         if self.workspace_is_git_repository() {
-            self.status_state.message = "Git workspace · working tree".into();
+            self.status_state.message = "Git workspace · staged and unstaged changes".into();
         }
     }
 
-    /// Enter or leave the navigator's `Git` tab. The tab's own column is the
-    /// explorer filtered to the changed files and the patch renders in the
-    /// Workspace pane, so the two are switched together: leaving the tab puts
-    /// the pane back exactly as `Esc` does.
+    /// Enter or leave the navigator's `Git` tab. Its changed-file list is split
+    /// into staged and unstaged groups; the patch renders in the Workspace pane.
     pub(super) fn apply_navigator_git_tab(&mut self, on_git: bool) {
         if on_git {
             self.open_git_view();
         } else if self.diff_view_is_open() {
+            self.git_grouped_list = false;
             self.close_diff_view();
         }
     }
@@ -39,7 +41,9 @@ impl TuiApp {
     // Retained as the seam for the Git workflow redesign.
     #[allow(dead_code)]
     pub(super) fn open_diff_view(&mut self, source: DiffSource) {
+        self.git_grouped_list = false;
         self.diff_view = crate::diff_view::DiffView::new(source);
+        self.workspace_files.explorer.set_diff_filter(None);
         if !self.workspace_is_git_repository() {
             self.diff_view.status = DiffStatus::NotARepo;
             self.workspace_navigation.navigate_to(WorkspaceView::Diff);
@@ -62,7 +66,10 @@ impl TuiApp {
         if let Some(previous) = self.diff_explorer_was_visible.take() {
             self.workspace_files.visible = previous;
         }
-        self.workspace_files.explorer.set_diff_filter(None);
+        if !self.git_grouped_list {
+            self.workspace_files.explorer.set_diff_filter(None);
+        }
+        self.git_grouped_list = false;
         let restored = self
             .workspace_navigation
             .pop_previous_valid(|view| !matches!(view, WorkspaceView::Diff));
@@ -105,18 +112,38 @@ impl TuiApp {
                 None => {}
             }
         }
-        let entries = match self.diff_view.source {
-            // One builder for both git-backed sources: the staged one filters
-            // the same snapshot rather than running a second `git status`.
-            DiffSource::WorkingTree | DiffSource::Staged => entries_for_source(
+        let entries = if self.git_grouped_list {
+            crate::diff_view::entries_for_sides(
                 &self.workspace_files.explorer.git_status.changed_files(),
-                self.diff_view.source,
-            ),
-            DiffSource::LastTurn => self.last_turn_diff_entries(),
+            )
+        } else {
+            match self.diff_view.source {
+                DiffSource::WorkingTree | DiffSource::Staged => entries_for_source(
+                    &self.workspace_files.explorer.git_status.changed_files(),
+                    self.diff_view.source,
+                ),
+                DiffSource::LastTurn => self.last_turn_diff_entries(),
+            }
         };
+        let previous = self.diff_view.selected_path().map(Path::to_path_buf);
+        let previous_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
         let paths: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         self.diff_view.set_entries(entries);
-        self.workspace_files.explorer.set_diff_filter(Some(paths));
+        if self.git_grouped_list {
+            let root = self.session_view.workspace_root().to_path_buf();
+            self.workspace_files.explorer.set_git_change_nodes(
+                paths,
+                previous.and_then(|path| {
+                    self.diff_view
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path == path && entry.side == previous_side)
+                        .map(|entry| root.join(&entry.path))
+                }),
+            );
+        } else {
+            self.workspace_files.explorer.set_diff_filter(Some(paths));
+        }
     }
 
     /// The files the most recent assistant turn wrote, taken from the
@@ -129,6 +156,7 @@ impl TuiApp {
                 path: PathBuf::from(path),
                 marker: "M",
                 untracked: false,
+                side: None,
             })
             .collect()
     }
@@ -196,14 +224,31 @@ impl TuiApp {
         }
 
         let revision = self.workspace_files.explorer.git_status.revision();
-        if self.diff_view.patch_is_current(revision) {
+        if self.diff_view.patch_is_current(revision)
+            && self
+                .diff_view
+                .loaded_for
+                .as_ref()
+                .is_some_and(|(_, loaded_path)| {
+                    self.diff_view.selected_entry().is_some_and(|entry| {
+                        entry.side
+                            == self
+                                .diff_view
+                                .entries
+                                .iter()
+                                .find(|candidate| &candidate.path == loaded_path)
+                                .and_then(|entry| entry.side)
+                    })
+                })
+        {
             return;
         }
         let root = self.session_view.workspace_root().to_path_buf();
-        // The staged source reviews the index, the working tree reviews
-        // everything against HEAD. Reading the wrong one would show the
-        // operator a patch that is not what they asked for.
-        let staged = self.diff_view.source == DiffSource::Staged;
+        // Grouped Git rows carry their own side, so the same path can show
+        // index and worktree patches independently.
+        let selected_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
+        let staged = selected_side == Some(crate::diff_view::DiffSide::Staged)
+            || (selected_side.is_none() && self.diff_view.source == DiffSource::Staged);
         let cached = if staged {
             self.workspace_files
                 .explorer
@@ -213,7 +258,7 @@ impl TuiApp {
             self.workspace_files
                 .explorer
                 .git_status
-                .get_combined_diff(&path)
+                .get_unstaged_diff(&path)
         };
         match cached {
             Some(Ok(text)) => {
@@ -238,7 +283,7 @@ impl TuiApp {
                     self.workspace_files
                         .explorer
                         .git_status
-                        .request_combined_diff(root, path);
+                        .request_unstaged_diff(root, path);
                 }
             }
         }

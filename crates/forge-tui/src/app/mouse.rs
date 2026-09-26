@@ -242,23 +242,39 @@ impl TuiApp {
         Ok(())
     }
 
-    /// Share the explorer's search/border budget rather than duplicating it.
+    /// Select a file row in either the Files tree or grouped Git changes.
     async fn click_file_row(&mut self, row: u16, area: Rect) -> Result<(), TuiError> {
-        let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
-        if row < tree_top {
-            if row > area.y {
-                self.focus_block(FocusBlock::Search);
+        match self.effective_navigator_tab() {
+            crate::widgets::NavigatorTab::Files => {
+                let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
+                if row < tree_top {
+                    if row > area.y {
+                        self.focus_block(FocusBlock::Search);
+                    }
+                    return Ok(());
+                }
+                let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
+                if index < self.workspace_files.explorer.visible_nodes().len() {
+                    self.focus_block(FocusBlock::Files);
+                    self.workspace_files.explorer.select_visible_row(index);
+                    self.execute_semantic_command(SemanticCommand::OpenSelectedEntry)
+                        .await?;
+                }
             }
-            return Ok(());
+            crate::widgets::NavigatorTab::Git => {
+                let local = row.saturating_sub(area.y + 1) as usize;
+                if let Some(index) = crate::widgets::git_changes::GitChangesList::absolute_file_at(
+                    &self.diff_view.entries,
+                    local,
+                    self.diff_view.selected,
+                    area.height.saturating_sub(2) as usize,
+                ) {
+                    self.diff_view.select(index);
+                    self.focus_block(FocusBlock::Files);
+                }
+            }
+            crate::widgets::NavigatorTab::Sessions => {}
         }
-        let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
-        if index >= self.workspace_files.explorer.visible_nodes().len() {
-            return Ok(());
-        }
-        self.focus_block(FocusBlock::Files);
-        self.workspace_files.explorer.select_visible_row(index);
-        self.execute_semantic_command(SemanticCommand::OpenSelectedEntry)
-            .await?;
         Ok(())
     }
 
@@ -318,7 +334,16 @@ impl TuiApp {
                     self.hover_session = Some(index);
                 }
             }
-            crate::widgets::NavigatorTab::Files | crate::widgets::NavigatorTab::Git => {
+            crate::widgets::NavigatorTab::Git => {
+                let local = row.saturating_sub(area.y + 1) as usize;
+                self.hover_file = crate::widgets::git_changes::GitChangesList::absolute_file_at(
+                    &self.diff_view.entries,
+                    local,
+                    self.diff_view.selected,
+                    area.height.saturating_sub(2) as usize,
+                );
+            }
+            crate::widgets::NavigatorTab::Files => {
                 let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
                 if row >= tree_top {
                     let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;

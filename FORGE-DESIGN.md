@@ -583,7 +583,7 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 |---|---|
 | Next visible block | `Tab` (while the `Panel` block holds the keyboard, plain `Tab` goes to its shell) |
 | Previous visible block | `Shift+Tab` |
-| Navigator tabs `Sessions` / `Files` / `Git` (repository mode) | `Ctrl+1` / `Ctrl+2` / `Ctrl+3`; `Ctrl+E` cycles all available tabs (`Sessions` → `Files` → `Git` → `Sessions`) (`Ctrl+1` also focuses the list). `Ctrl+3` is inert outside a repository rather than switching to a tab the row does not draw |
+| Navigator tabs `Sessions` / `Files` / `Git` (repository mode) | `Ctrl+1` / `Ctrl+2` / `Ctrl+3`; `Ctrl+E` cycles all available tabs (`Sessions` → `Files` → `Git` → `Sessions`). The Git tab separates staged and unstaged changes; paths changed on both sides appear in both groups, and untracked files are unstaged. `Ctrl+3` is inert outside a repository |
 | Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `+` · `Files` · `Git`, halting at each end, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |

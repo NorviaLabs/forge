@@ -89,6 +89,7 @@ pub(crate) struct SessionViewState {
     pub(crate) editor_message: Option<String>,
     pub(crate) editor_viewport: EditorViewportState,
     pub(crate) diff_view: crate::diff_view::DiffView,
+    pub(crate) git_grouped_list: bool,
     pub(crate) workspace_files: WorkspaceFilesState,
     pub(crate) file_watch: FileWatchState,
     pub(crate) bottom_panel: BottomPanelState,
@@ -153,6 +154,7 @@ impl Default for SessionViewState {
             editor_message: None,
             editor_viewport: EditorViewportState { height: 24 },
             diff_view: crate::diff_view::DiffView::default(),
+            git_grouped_list: false,
             workspace_files: WorkspaceFilesState {
                 visible: true,
                 explorer: FileExplorer::new(None, forge_config::FileIconMode::Unicode),
@@ -1966,6 +1968,7 @@ pub struct TuiApp {
     /// background git-status refresh can update the file list without the
     /// pane having to be re-opened.
     pub(crate) diff_view: crate::diff_view::DiffView,
+    pub(crate) git_grouped_list: bool,
     /// Explorer visibility to restore when split view (which hides it) is
     /// turned off or the diff view closes.
     pub(crate) diff_explorer_was_visible: Option<bool>,

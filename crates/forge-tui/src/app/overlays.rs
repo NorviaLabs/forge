@@ -69,6 +69,9 @@ impl TuiApp {
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Cycle navigator tabs (Sessions / Files / Git in a repository)\n");
+        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git {
+            text.push_str("• ↑/↓  Select change  ·  Enter  Focus patch  ·  s/u  Stage/unstage\n");
+        }
         text.push_str("• Ctrl+`  Toggle terminal panel\n");
         text.push_str("• F4  Open model picker\n");
         text.push_str("• F1  Help\n");

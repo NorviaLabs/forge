@@ -192,6 +192,29 @@ struct SearchEntry {
 }
 
 impl FileExplorer {
+    pub fn set_git_change_nodes(&mut self, paths: Vec<PathBuf>, selected: Option<PathBuf>) {
+        let root = self.root_path().map(Path::to_path_buf).unwrap_or_default();
+        self.visible = paths
+            .into_iter()
+            .map(|relative| VisibleNode {
+                path: root.join(&relative),
+                display_name: relative.to_string_lossy().into_owned(),
+                kind: FileKind::File,
+                expanded: false,
+                loading: false,
+                loaded: true,
+                error: None,
+                child_count: 0,
+                depth: 0,
+            })
+            .collect();
+        self.selected_path = selected
+            .filter(|path| self.visible.iter().any(|node| &node.path == path))
+            .or_else(|| self.visible.first().map(|node| node.path.clone()));
+        self.selected_index = None;
+        self.scroll = self.scroll.min(self.visible.len().saturating_sub(1));
+    }
+
     pub fn new(root_path: Option<PathBuf>, icon_mode: FileIconMode) -> Self {
         let root_path = root_path.map(|p| p.canonicalize().unwrap_or(p));
         let mut explorer = Self {
@@ -754,7 +777,7 @@ impl FileExplorer {
         self.selected_index = None;
     }
 
-    fn selected_visible_index(&mut self) -> Option<usize> {
+    pub fn selected_visible_index(&mut self) -> Option<usize> {
         if let Some(index) = self.selected_index {
             if self
                 .visible
@@ -1250,6 +1273,7 @@ pub(crate) const TREE_ROW_OFFSET: u16 = 1 + TREE_TOP_OFFSET;
 pub struct FileExplorerWidget<'a> {
     pub explorer: &'a mut FileExplorer,
     pub focused: bool,
+    pub show_search: bool,
     /// Whether `FocusBlock::Search` (not just `Files`) is the active block —
     /// finer-grained than `focused`, which is true for either. Drives the
     /// solid/hollow state of the focus-indicator dot on the rule.
@@ -1273,7 +1297,12 @@ impl Widget for FileExplorerWidget<'_> {
         block.render(area, buf);
         // The footer row (selected relative path) always reserves 1 row;
         // the tree's own budget sits below the search box + rule.
-        let height = inner.height.saturating_sub(TREE_TOP_OFFSET + 1) as usize;
+        let tree_top = if self.show_search {
+            TREE_TOP_OFFSET
+        } else {
+            1 + crate::design::TREE_TOP_GAP_Y
+        };
+        let height = inner.height.saturating_sub(tree_top + 1) as usize;
         self.explorer.ensure_selection_visible(height);
         let visible = &self.explorer.visible;
         let mut lines = Vec::new();
@@ -1367,7 +1396,7 @@ impl Widget for FileExplorerWidget<'_> {
                 }
             }
         }
-        if inner.height >= TREE_TOP_OFFSET {
+        if self.show_search && inner.height >= TREE_TOP_OFFSET {
             let search_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_ROW_HEIGHT);
             let search_block = Block::default()
                 .borders(Borders::ALL)
@@ -1426,9 +1455,9 @@ impl Widget for FileExplorerWidget<'_> {
             Paragraph::new(lines).render(
                 Rect::new(
                     inner.x.saturating_add(TREE_LEAD_INSET),
-                    inner.y + TREE_TOP_OFFSET,
+                    inner.y + tree_top,
                     inner.width.saturating_sub(TREE_LEAD_INSET),
-                    inner.height.saturating_sub(TREE_TOP_OFFSET + 1),
+                    inner.height.saturating_sub(tree_top + 1),
                 ),
                 buf,
             );
@@ -2246,6 +2275,7 @@ mod tests {
         FileExplorerWidget {
             explorer,
             focused: true,
+            show_search: true,
             search_active,
             hover: None,
         }
@@ -2262,6 +2292,7 @@ mod tests {
         FileExplorerWidget {
             explorer,
             focused: true,
+            show_search: true,
             search_active: false,
             hover,
         }

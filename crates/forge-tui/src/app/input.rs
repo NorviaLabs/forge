@@ -172,6 +172,14 @@ impl TuiApp {
             self.create_session_now();
             return Ok(true);
         }
+        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
+            && !self.workspace_files.explorer.search_focused
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Enter
+        {
+            self.focus_block(FocusBlock::Workspace);
+            return Ok(true);
+        }
         // `↑` at the top of the list reaches the navigator's tab row instead of
         // being a no-op (`FORGE-DESIGN §8.3`). An open peek owns `↑` first, so
         // this fires on the press after the peek closes.
@@ -354,6 +362,7 @@ impl TuiApp {
             editor_message: self.editor_message.take(),
             editor_viewport: std::mem::replace(&mut self.editor_viewport, blank.editor_viewport),
             diff_view: std::mem::take(&mut self.diff_view),
+            git_grouped_list: self.git_grouped_list,
             workspace_files: std::mem::replace(&mut self.workspace_files, blank.workspace_files),
             file_watch: std::mem::replace(&mut self.file_watch, blank.file_watch),
             bottom_panel: std::mem::take(&mut self.bottom_panel),
@@ -406,6 +415,7 @@ impl TuiApp {
         self.editor_message = state.editor_message;
         self.editor_viewport = state.editor_viewport;
         self.diff_view = state.diff_view;
+        self.git_grouped_list = state.git_grouped_list;
         self.workspace_files = state.workspace_files;
         self.file_watch = state.file_watch;
         self.bottom_panel = state.bottom_panel;
@@ -1565,17 +1575,36 @@ impl TuiApp {
             self.open_github_issues();
             return Ok(true);
         }
-        // The Git tab keeps focus in the changed-file explorer. Stage/unstage
-        // is a diff-view action too, so bridge the explorer selection to the
-        // patch selection before invoking the existing implementation.
+        // The Git list has its own cursor; move it independently of paths so a
+        // file with both staged and unstaged changes remains addressable twice.
+        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
+            && !self.workspace_files.explorer.search_focused
+            && key.modifiers.is_empty()
+            && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            let delta: isize = if key.code == KeyCode::Up { -1 } else { 1 };
+            let count = self.diff_view.entries.len();
+            if count > 0 {
+                let next = self
+                    .diff_view
+                    .selected
+                    .saturating_add_signed(delta)
+                    .min(count - 1);
+                self.diff_view.select(next);
+            }
+            return Ok(true);
+        }
         if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
             && !self.workspace_files.explorer.search_focused
             && key.modifiers.is_empty()
             && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('u'))
         {
-            if let Some(path) = self.workspace_files.explorer.selected_path.clone() {
-                self.select_diff_path(&path);
-                self.stage_selected_diff_file(key.code == KeyCode::Char('s'));
+            let stage = key.code == KeyCode::Char('s');
+            let selected_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
+            if (stage && selected_side == Some(crate::diff_view::DiffSide::Unstaged))
+                || (!stage && selected_side == Some(crate::diff_view::DiffSide::Staged))
+            {
+                self.stage_selected_diff_file(stage);
             }
             return Ok(true);
         }
@@ -1649,6 +1678,14 @@ impl TuiApp {
             return Ok(true);
         }
         if self.diff_view_is_open() {
+            if self.git_grouped_list && key.modifiers.is_empty() && key.code == KeyCode::Esc {
+                self.navigator_tab = crate::widgets::NavigatorTab::Files;
+                self.navigator_tab_explicit = true;
+                self.git_grouped_list = false;
+                self.close_diff_view();
+                self.focus_block(FocusBlock::Search);
+                return Ok(true);
+            }
             return Ok(self.handle_diff_key(key));
         }
         if let Some(command) = self.semantic_command_for_workspace_key(key) {

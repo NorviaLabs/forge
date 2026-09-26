@@ -64,8 +64,14 @@ impl TuiApp {
                     self.workspace_files.visible = true;
                     self.focus_block(FocusBlock::Search);
                 }
-                Git => self.focus_block(FocusBlock::Workspace),
+                Git => self.focus_block(FocusBlock::Files),
                 Sessions => self.focus_block(FocusBlock::TaskStrip),
+            }
+            if self.navigator_tab == Git {
+                self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
+                self.git_grouped_list = true;
+                self.refresh_diff_entries();
+                self.focus_block(FocusBlock::Files);
             }
             self.normalize_focus();
             return;

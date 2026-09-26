@@ -50,6 +50,7 @@ impl TuiApp {
             && self.workspace_files.visible;
         self.workspace_files.explorer.search_focused = pane_owns_keys
             && self.focus.block() == FocusBlock::Search
+            && self.effective_navigator_tab() != crate::widgets::NavigatorTab::Git
             && self.focus.mode() == FocusMode::Navigation
             && self.workspace_files.visible;
         self.bottom_panel.focused = self.focus.block() == FocusBlock::BottomPanel
@@ -131,15 +132,15 @@ impl TuiApp {
         let pane = match tab {
             crate::widgets::NavigatorTab::Sessions => FocusBlock::TaskStrip,
             crate::widgets::NavigatorTab::Files => FocusBlock::Search,
-            // The Git tab's column is the explorer filtered to the changed
-            // files; its patch renders in the Workspace pane, so the keyboard
-            // stays on the column that lists them.
-            crate::widgets::NavigatorTab::Git => FocusBlock::Search,
+            crate::widgets::NavigatorTab::Git => FocusBlock::Files,
         };
-        // Before the keyboard is handed to the pane: entering the Git tab opens
-        // the review pane, and that would otherwise take the row's keyboard
-        // away from it a keystroke after the row moved there.
         self.apply_navigator_git_tab(tab == crate::widgets::NavigatorTab::Git);
+        if tab == crate::widgets::NavigatorTab::Git {
+            self.git_grouped_list = true;
+            self.refresh_diff_entries();
+        } else {
+            self.git_grouped_list = false;
+        }
         // Moving the keyboard to the new tab's pane is deliberate, so the row
         // travels with it instead of being dropped as a block change.
         self.navigator_tab_row_block = pane;

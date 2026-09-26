@@ -747,7 +747,11 @@ impl TuiApp {
                     // Enter points the patch pane at that file instead of
                     // dropping out of review into the editor.
                     if self.diff_view_is_open() {
-                        self.select_diff_path(&path);
+                        if self.git_grouped_list {
+                            self.focus_block(FocusBlock::Workspace);
+                        } else {
+                            self.select_diff_path(&path);
+                        }
                     } else if path.is_file() || path.is_symlink() {
                         self.open_file_in_editor(&path);
                     } else {

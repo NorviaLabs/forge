@@ -1022,6 +1022,7 @@ async fn switching_tasks_discards_the_previous_worktree_diff_cache() {
         path: "old.txt".into(),
         marker: "M",
         untracked: false,
+        side: None,
     });
     app.workspace_navigation.navigate_to(WorkspaceView::Diff);
 
@@ -2139,11 +2140,15 @@ async fn the_git_tab_reviews_the_working_tree_and_only_exists_in_a_repository() 
         .unwrap();
     assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
     assert!(app.diff_view_is_open(), "the tab opens the review pane");
+    let rendered = render_app_text(&mut app, 140, 40);
+    assert!(!rendered.contains("Search files..."), "{rendered}");
     assert_eq!(
         app.focus.block(),
-        FocusBlock::Workspace,
-        "so `s`/`u` reach the patch without another trip through `Tab`"
+        FocusBlock::Files,
+        "the changed-file list owns navigation; Tab moves to the patch"
     );
+    assert!(rendered.contains("STAGED"), "{rendered}");
+    assert!(rendered.contains("UNSTAGED"), "{rendered}");
 
     // Hiding the column takes the tab with it, and the chord goes inert rather
     // than switching to a tab the row no longer draws.

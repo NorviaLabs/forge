@@ -266,7 +266,9 @@ impl TuiApp {
             task_mode && navigator_tab == crate::widgets::NavigatorTab::Sessions;
         let available = FocusAvailability {
             task_strip: true,
-            search: regions.files.is_some() && !navigator_sessions,
+            search: regions.files.is_some()
+                && !navigator_sessions
+                && navigator_tab != crate::widgets::NavigatorTab::Git,
             files: regions.files.is_some() && !navigator_sessions,
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
@@ -508,10 +510,48 @@ impl TuiApp {
                         },
                         list_area,
                     );
+                } else if navigator_tab == crate::widgets::NavigatorTab::Git {
+                    let selected_row = self.diff_view.selected;
+                    let list_height = rows[1].height.saturating_sub(2) as usize;
+                    let selected_visual = crate::widgets::git_changes::GitChangesList::row_for_file(
+                        &self.diff_view.entries,
+                        selected_row,
+                        list_height,
+                    );
+                    let git_list_focused = self.focus.block() == FocusBlock::Files
+                        && !modal_open
+                        && !self.navigator_tab_row_focused;
+                    let git_hover = git_list_focused.then_some(self.hover_file).flatten();
+                    frame.render_widget(
+                        crate::widgets::git_changes::GitChangesList {
+                            entries: &self.diff_view.entries,
+                            selected: selected_visual,
+                            focused: self.focus.block() == FocusBlock::Files
+                                && !modal_open
+                                && !self.navigator_tab_row_focused,
+                            hover: git_hover,
+                        },
+                        rows[1],
+                    );
+                    if self.diff_view.entries.is_empty() && rows[1].height > 3 {
+                        frame.render_widget(
+                            Paragraph::new(Line::styled(
+                                "No staged or unstaged changes",
+                                crate::theme::muted(),
+                            )),
+                            ratatui::layout::Rect {
+                                x: rows[1].x + 1,
+                                y: rows[1].y + 2,
+                                width: rows[1].width.saturating_sub(2),
+                                height: 1,
+                            },
+                        );
+                    }
                 } else {
                     frame.render_widget(
                         FileExplorerWidget {
                             explorer: &mut self.workspace_files.explorer,
+                            show_search: true,
                             focused: crate::widgets::background_focused(
                                 matches!(
                                     self.focus.block(),
@@ -553,6 +593,7 @@ impl TuiApp {
                 frame.render_widget(
                     FileExplorerWidget {
                         explorer: &mut self.workspace_files.explorer,
+                        show_search: true,
                         focused: crate::widgets::background_focused(
                             matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
                             modal_open,
