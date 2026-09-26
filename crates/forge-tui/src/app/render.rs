@@ -2250,7 +2250,7 @@ mod tests {
         super::open_preview_above_streamed_thinking(
             &mut preview,
             "planning the fix",
-            Some(&Line::from(Span::raw("│ Explored repository")).into()),
+            Some(&Line::from(Span::raw("  Explored repository")).into()),
         );
         let text: Vec<String> = preview
             .iter()
@@ -2290,7 +2290,7 @@ mod tests {
         super::open_preview_above_streamed_thinking(
             &mut preview,
             "   ",
-            Some(&Line::from(Span::raw("│ Explored repository")).into()),
+            Some(&Line::from(Span::raw("  Explored repository")).into()),
         );
         let text: Vec<String> = preview
             .iter()

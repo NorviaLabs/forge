@@ -438,7 +438,7 @@ fn estimate_wrapped_lines(text: &str, width: usize) -> usize {
 fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: usize) -> usize {
     let body = match block {
         ConversationBlock::UserMessage(p) => {
-            estimate_wrapped_lines(&p.text, width.saturating_sub(2)).saturating_add(1)
+            estimate_wrapped_lines(&p.text, width.saturating_sub(MESSAGE_PADDING)).saturating_add(1)
         }
         ConversationBlock::AssistantAnswer(p) => estimate_wrapped_lines(&p.text, prose_width)
             .saturating_add(usize::from(!p.streaming && !p.text.trim().is_empty())),
@@ -949,7 +949,7 @@ impl ConversationRenderInternals for ConversationModel {
                     // §5 role landmark: renderer-owned neutral author label,
                     // legible without color (shape, not hue, carries authorship).
                     lines.push(Line::from(Span::styled(
-                        "You",
+                        format!("{}You", " ".repeat(MESSAGE_PADDING)),
                         theme::text().add_modifier(Modifier::BOLD),
                     )));
                     if gap {
@@ -959,7 +959,7 @@ impl ConversationRenderInternals for ConversationModel {
                     let prefix_width = MESSAGE_PADDING;
                     let user_lines = user_message_gutter::render_user_message_lines(
                         &p.text,
-                        width.saturating_sub(prefix_width),
+                        message_content_width(width),
                         &theme_id,
                         false,
                         wrap,
@@ -1008,7 +1008,7 @@ impl ConversationRenderInternals for ConversationModel {
                     // previews stay unlabeled; the label lands once settled.
                     if !p.streaming && !p.text.trim().is_empty() {
                         lines.push(Line::from(Span::styled(
-                            "Answer",
+                            format!("{}Answer", " ".repeat(MESSAGE_PADDING)),
                             theme::text().add_modifier(Modifier::BOLD),
                         )));
                         if gap {
@@ -1128,22 +1128,15 @@ impl ConversationRenderInternals for ConversationModel {
                         activity_detail_label(p.expanded),
                         theme::dim(),
                     ));
-                    let mut line = Line::from(spans);
-                    if rail {
-                        prefix_line_rail(&mut line);
-                    }
+                    let line = Line::from(spans);
                     lines.push(line);
-                    let rail_extra = if rail { RAIL_EXTRA } else { 0 };
                     for subcommand in p.subcommands.iter() {
-                        let sub_width = width.saturating_sub(5 + rail_extra);
+                        let sub_width = width.saturating_sub(5);
                         for wrapped in wrap(subcommand, sub_width) {
-                            let mut sub_line = Line::from(Span::styled(
+                            let sub_line = Line::from(Span::styled(
                                 format!("{INDENT_UNIT}{wrapped}"),
                                 theme::muted(),
                             ));
-                            if rail {
-                                prefix_line_rail(&mut sub_line);
-                            }
                             lines.push(sub_line);
                         }
                     }
@@ -1152,19 +1145,16 @@ impl ConversationRenderInternals for ConversationModel {
                             .items
                             .iter()
                             .flat_map(|item| {
-                                wrap(item, width.saturating_sub(2 + rail_extra)).into_iter()
+                                wrap(item, width.saturating_sub(MESSAGE_PADDING)).into_iter()
                             })
                             .collect();
                         let visible = rendered_items.len();
                         let shown = rendered_items.iter().take(7);
                         for wrapped in shown {
-                            let mut item_line = Line::from(Span::styled(
+                            let item_line = Line::from(Span::styled(
                                 format!("{INDENT_UNIT}{wrapped}"),
                                 theme::muted(),
                             ));
-                            if rail {
-                                prefix_line_rail(&mut item_line);
-                            }
                             lines.push(item_line);
                         }
                         if visible > 7 {
@@ -2368,7 +2358,11 @@ const MESSAGE_PADDING: usize = 2;
 fn prose_width_for(width: usize) -> usize {
     // §10: 96-column reading measure within the pane. Code, tool commands
     // and tabular data bypass this and keep full content width at render.
-    width.saturating_sub(MESSAGE_PADDING * 2).clamp(4, 96)
+    message_content_width(width).clamp(4, 96)
+}
+
+fn message_content_width(width: usize) -> usize {
+    width.saturating_sub(MESSAGE_PADDING)
 }
 
 /// Widest a *card* may be drawn: the approval, question, home and plan cards.
@@ -2381,9 +2375,6 @@ const CARD_MAX_WIDTH: usize = 80;
 
 /// Pane widths below this drop the rail and indent (flat mode).
 const RAIL_MIN_WIDTH: usize = 50;
-
-/// Columns the rail unit (`│ `) consumes from wrapped content.
-const RAIL_EXTRA: usize = 2;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct NumberedDiffLine {
@@ -3091,7 +3082,7 @@ mod tests {
         let lines = m.lines_for_width(WIDTH);
         assert_eq!(
             line_text(&lines[0]),
-            "You",
+            "  You",
             "renderer-owned author label: {lines:?}"
         );
         assert_eq!(
@@ -5586,6 +5577,11 @@ mod tests {
             .find(|l| line_text(l).contains("fix the failing test"))
             .expect("user message");
         assert!(!line_text(user).starts_with('│'));
+        let activity = lines
+            .iter()
+            .find(|l| line_text(l).contains("Explored repository"))
+            .expect("activity row");
+        assert!(!line_text(activity).starts_with('│'));
         let answer = lines
             .iter()
             .find(|l| line_text(l).contains("Root cause"))
@@ -5604,7 +5600,7 @@ mod tests {
         );
         assert_eq!(
             line_text(&lines[answer_idx - 2]),
-            "Answer",
+            "  Answer",
             "renderer-owned final-response label precedes the answer"
         );
         assert!(
