@@ -86,6 +86,11 @@ async fn ctrl_e_cycles_all_available_navigator_tabs() {
     use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     draw_app(&mut app, 140, 40);
+    assert!(
+        app.navigator_git_available(),
+        "Git tab should be available in repository mode"
+    );
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
 
     for expected in [
         NavigatorTab::Files,

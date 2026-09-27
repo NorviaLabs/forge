@@ -34,7 +34,10 @@ impl TuiApp {
         // toggling `visible` changes nothing on screen and focusing it parks the
         // cursor in an invisible pane. Say why instead of doing nothing: the
         // width requirement is otherwise undiscoverable.
-        if self.last_frame_width > 0 && !crate::layout::files_fit(self.last_frame_width) {
+        if self.supervisor.is_none()
+            && self.last_frame_width > 0
+            && !crate::layout::files_fit(self.last_frame_width)
+        {
             self.set_feedback(
                 FeedbackSeverity::Info,
                 format!(
@@ -46,36 +49,6 @@ impl TuiApp {
             return;
         }
         let already_in_files = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
-
-        // In repository mode, cycle every available navigator tab. A non-repo
-        // still has only Sessions and Files.
-        if self.supervisor.is_some() {
-            use crate::widgets::NavigatorTab::{Files, Git, Sessions};
-            self.navigator_tab = match self.effective_navigator_tab() {
-                Sessions => Files,
-                Files if self.navigator_git_available() => Git,
-                Files | Git => Sessions,
-            };
-            self.navigator_tab_explicit = true;
-            self.retarget_navigator_row_stop(self.navigator_tab);
-            self.apply_navigator_git_tab(self.navigator_tab == Git);
-            match self.navigator_tab {
-                Files => {
-                    self.workspace_files.visible = true;
-                    self.focus_block(FocusBlock::Search);
-                }
-                Git => self.focus_block(FocusBlock::Files),
-                Sessions => self.focus_block(FocusBlock::TaskStrip),
-            }
-            if self.navigator_tab == Git {
-                self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
-                self.git_grouped_list = true;
-                self.refresh_diff_entries();
-                self.focus_block(FocusBlock::Files);
-            }
-            self.normalize_focus();
-            return;
-        }
 
         if self.workspace_files.visible && !already_in_files {
             self.focus_block(FocusBlock::Search);

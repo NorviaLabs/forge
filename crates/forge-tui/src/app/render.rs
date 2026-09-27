@@ -261,7 +261,11 @@ impl TuiApp {
         // Questions reuse `FocusBlock::Approval` (same inline transcript
         // prompt as HITL); omitting them here kicks focus off the menu on the
         // first frame, so ↑↓ never move the selection.
-        let navigator_tab = self.effective_navigator_tab();
+        let navigator_tab = if task_mode && regions.files.is_some() {
+            self.effective_navigator_tab()
+        } else {
+            crate::widgets::NavigatorTab::Files
+        };
         let navigator_sessions =
             task_mode && navigator_tab == crate::widgets::NavigatorTab::Sessions;
         let available = FocusAvailability {

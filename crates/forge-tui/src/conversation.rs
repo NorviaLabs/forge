@@ -5352,7 +5352,7 @@ mod tests {
         let after = lines[rule_pos + 1..]
             .iter()
             .map(line_text)
-            .find(|t| !t.is_empty() && t != "You")
+            .find(|t| !t.is_empty() && t.trim() != "You")
             .expect("content after the rule");
         assert!(
             after.contains("third"),
