@@ -273,12 +273,7 @@ impl TuiApp {
         let selected_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
         let staged = selected_side == Some(crate::diff_view::DiffSide::Staged)
             || (selected_side.is_none() && self.diff_view.source == DiffSource::Staged);
-        let cached = if selected_side == Some(crate::diff_view::DiffSide::Unstaged) {
-            self.workspace_files
-                .explorer
-                .git_status
-                .get_unstaged_diff(&path)
-        } else if staged {
+        let cached = if staged {
             self.workspace_files
                 .explorer
                 .git_status
@@ -308,11 +303,6 @@ impl TuiApp {
                         .explorer
                         .git_status
                         .request_staged_diff(root, path);
-                } else if selected_side == Some(crate::diff_view::DiffSide::Unstaged) {
-                    self.workspace_files
-                        .explorer
-                        .git_status
-                        .request_unstaged_diff(root, path);
                 } else {
                     self.workspace_files
                         .explorer

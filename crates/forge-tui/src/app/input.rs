@@ -1684,15 +1684,17 @@ impl TuiApp {
             self.open_github_issues();
             return Ok(true);
         }
-        if self.diff_view_is_open() && self.git_grouped_list {
-            if self.git_grouped_list && key.modifiers.is_empty() && key.code == KeyCode::Esc {
-                self.navigator_tab = crate::widgets::NavigatorTab::Files;
-                self.navigator_tab_explicit = true;
-                self.git_grouped_list = false;
-                self.close_diff_view();
-                self.focus_block(FocusBlock::Search);
-                return Ok(true);
-            }
+        if self.diff_view_is_open()
+            && self.git_grouped_list
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Esc
+        {
+            self.navigator_tab = crate::widgets::NavigatorTab::Files;
+            self.navigator_tab_explicit = true;
+            self.git_grouped_list = false;
+            self.close_diff_view();
+            self.focus_block(FocusBlock::Search);
+            return Ok(true);
         }
         if self.diff_view_is_open() && !self.git_grouped_list {
             return Ok(self.handle_diff_key(key));
