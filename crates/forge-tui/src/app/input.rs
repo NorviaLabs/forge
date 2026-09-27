@@ -199,6 +199,13 @@ impl TuiApp {
         // The session verbs only apply on the Sessions tab; the Files tab hands
         // navigation to the explorer.
         if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions {
+            if matches!(key.code, KeyCode::Char('x') if key.modifiers.is_empty()) {
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    "select the Sessions tab to archive a session",
+                );
+                return Ok(true);
+            }
             return Ok(false);
         }
         let focused_id = self.session_chrome[self.task_strip_selection].session_id;

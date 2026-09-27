@@ -290,6 +290,13 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
     app.focus_block(FocusBlock::TaskStrip);
     // `x` confirms before it does anything; the archive and the checkout
     // removal are then dispatched together from that confirmation.
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none(), "Files tab must not archive sessions");
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -2509,6 +2516,13 @@ async fn x_archives_and_cleans_an_idle_managed_session() {
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(crate::overlays::Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::Archive,
+            ..
+        })
+    ));
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -2604,6 +2618,13 @@ async fn a_clean_archive_reports_the_checkout_removed_not_uncommitted_work() {
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(crate::overlays::Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::Archive,
+            ..
+        })
+    ));
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
