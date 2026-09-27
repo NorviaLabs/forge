@@ -114,7 +114,11 @@ impl TuiApp {
         }
         let grouped = self.git_grouped_list
             && self.diff_view.source == DiffSource::WorkingTree
-            && self.navigator_tab == crate::widgets::NavigatorTab::Git;
+            && (self.navigator_tab == crate::widgets::NavigatorTab::Git
+                || matches!(
+                    self.focus.block(),
+                    FocusBlock::Files | FocusBlock::Workspace
+                ));
         let entries = if grouped {
             crate::diff_view::entries_for_sides(
                 &self.workspace_files.explorer.git_status.changed_files(),
@@ -248,21 +252,19 @@ impl TuiApp {
         }
 
         let revision = self.workspace_files.explorer.git_status.revision();
+        let selected_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
         if self.diff_view.patch_is_current(revision)
             && self
                 .diff_view
                 .loaded_for
                 .as_ref()
                 .is_some_and(|(_, loaded_path)| {
-                    self.diff_view.selected_entry().is_some_and(|entry| {
-                        entry.side
-                            == self
-                                .diff_view
-                                .entries
-                                .iter()
-                                .find(|candidate| &candidate.path == loaded_path)
-                                .and_then(|entry| entry.side)
-                    })
+                    self.diff_view
+                        .entries
+                        .iter()
+                        .find(|entry| &entry.path == loaded_path)
+                        .and_then(|entry| entry.side)
+                        == selected_side
                 })
         {
             return;
