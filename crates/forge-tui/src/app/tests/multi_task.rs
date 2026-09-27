@@ -2504,6 +2504,8 @@ async fn x_archives_and_cleans_an_idle_managed_session() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -2597,6 +2599,8 @@ async fn a_clean_archive_reports_the_checkout_removed_not_uncommitted_work() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -2666,6 +2670,8 @@ async fn confirmed_dirty_archive_removes_the_worktree() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
