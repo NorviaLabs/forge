@@ -200,10 +200,6 @@ impl TuiApp {
         // navigation to the explorer.
         if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions {
             if matches!(key.code, KeyCode::Char('x') if key.modifiers.is_empty()) {
-                self.set_feedback(
-                    FeedbackSeverity::Info,
-                    "select the Sessions tab to archive a session",
-                );
                 return Ok(true);
             }
             return Ok(false);

@@ -293,6 +293,12 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
     app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
     app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
