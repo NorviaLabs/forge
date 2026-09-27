@@ -129,13 +129,19 @@ impl TuiApp {
         self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
         self.navigator_peek = None;
         self.navigator_reply.clear();
+        if tab == crate::widgets::NavigatorTab::Files {
+            self.workspace_files.visible = true;
+        }
         let pane = match tab {
             crate::widgets::NavigatorTab::Sessions => FocusBlock::TaskStrip,
             crate::widgets::NavigatorTab::Files => FocusBlock::Search,
             crate::widgets::NavigatorTab::Git => FocusBlock::Files,
         };
         self.apply_navigator_git_tab(tab == crate::widgets::NavigatorTab::Git);
+        self.git_grouped_list = tab == crate::widgets::NavigatorTab::Git;
         if tab == crate::widgets::NavigatorTab::Git {
+            self.workspace_files.visible = true;
+            self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
             self.git_grouped_list = true;
             self.refresh_diff_entries();
         } else {

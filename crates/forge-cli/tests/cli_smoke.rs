@@ -1,5 +1,38 @@
 use assert_cmd::Command;
 
+#[cfg(unix)]
+#[test]
+fn forge_help_runs_in_a_pty() {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::io::Read;
+
+    let pty = match native_pty_system().openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(pty) => pty,
+        Err(error) if error.to_string().contains("Operation not permitted") => {
+            eprintln!("PTY unavailable in this environment: {error}");
+            return;
+        }
+        Err(error) => panic!("open PTY: {error}"),
+    };
+    let mut command = CommandBuilder::new(std::env::var("CARGO_BIN_EXE_forge").unwrap());
+    command.arg("--help");
+    let mut child = pty.slave.spawn_command(command).unwrap();
+    drop(pty.slave);
+    let mut output = String::new();
+    pty.master
+        .try_clone_reader()
+        .unwrap()
+        .read_to_string(&mut output)
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(output.contains("Commands:"), "PTY output: {output}");
+}
+
 #[test]
 fn help_lists_core_options_and_native_bench_command() {
     let assert = Command::cargo_bin("forge")

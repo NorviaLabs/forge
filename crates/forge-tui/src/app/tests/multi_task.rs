@@ -86,6 +86,11 @@ async fn ctrl_e_cycles_all_available_navigator_tabs() {
     use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     draw_app(&mut app, 140, 40);
+    assert!(
+        app.navigator_git_available(),
+        "Git tab should be available in repository mode"
+    );
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
 
     for expected in [
         NavigatorTab::Files,
@@ -285,6 +290,15 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
     app.focus_block(FocusBlock::TaskStrip);
     // `x` confirms before it does anything; the archive and the checkout
     // removal are then dispatched together from that confirmation.
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -2499,9 +2513,19 @@ async fn x_archives_and_cleans_an_idle_managed_session() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(crate::overlays::Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::Archive,
+            ..
+        })
+    ));
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -2592,9 +2616,19 @@ async fn a_clean_archive_reports_the_checkout_removed_not_uncommitted_work() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(crate::overlays::Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::Archive,
+            ..
+        })
+    ));
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -2661,9 +2695,19 @@ async fn confirmed_dirty_archive_removes_the_worktree() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(crate::overlays::Overlay::SessionConfirm {
+            kind: crate::overlays::SessionConfirmKind::Archive,
+            ..
+        })
+    ));
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();

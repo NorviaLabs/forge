@@ -100,7 +100,7 @@ impl TuiApp {
     pub(super) fn refresh_diff_entries(&mut self) {
         // A git-status failure has to surface here, not as an empty list that
         // reads as "no changes".
-        if self.diff_view.source == DiffSource::WorkingTree {
+        if self.diff_view.source == DiffSource::WorkingTree && !self.git_grouped_list {
             match self.workspace_files.explorer.git_status.error.clone() {
                 Some(error) => {
                     self.diff_view.status = DiffStatus::Failed(error);
@@ -112,10 +112,26 @@ impl TuiApp {
                 None => {}
             }
         }
-        let entries = if self.git_grouped_list {
+        let grouped = self.git_grouped_list
+            && self.diff_view.source == DiffSource::WorkingTree
+            && self.navigator_tab == crate::widgets::NavigatorTab::Git;
+        let entries = if grouped {
             crate::diff_view::entries_for_sides(
                 &self.workspace_files.explorer.git_status.changed_files(),
             )
+        } else if self.diff_view.source == DiffSource::Architecture {
+            let architecture_files = ["ARCHITECTURE.md", "forge-architecture.mmd"];
+            entries_for_source(
+                &self.workspace_files.explorer.git_status.changed_files(),
+                self.diff_view.source,
+            )
+            .into_iter()
+            .filter(|entry| {
+                architecture_files
+                    .iter()
+                    .any(|path| entry.path == Path::new(path))
+            })
+            .collect()
         } else {
             match self.diff_view.source {
                 DiffSource::WorkingTree | DiffSource::Staged => entries_for_source(
@@ -123,13 +139,21 @@ impl TuiApp {
                     self.diff_view.source,
                 ),
                 DiffSource::LastTurn => self.last_turn_diff_entries(),
+                DiffSource::Architecture => {
+                    let files = ["ARCHITECTURE.md", "forge-architecture.mmd"];
+                    let changed = self.workspace_files.explorer.git_status.changed_files();
+                    crate::diff_view::entries_for_source(&changed, self.diff_view.source)
+                        .into_iter()
+                        .filter(|entry| files.iter().any(|path| entry.path == Path::new(path)))
+                        .collect()
+                }
             }
         };
         let previous = self.diff_view.selected_path().map(Path::to_path_buf);
         let previous_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
         let paths: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
         self.diff_view.set_entries(entries);
-        if self.git_grouped_list {
+        if grouped {
             let root = self.session_view.workspace_root().to_path_buf();
             self.workspace_files.explorer.set_git_change_nodes(
                 paths,
@@ -224,21 +248,19 @@ impl TuiApp {
         }
 
         let revision = self.workspace_files.explorer.git_status.revision();
+        let selected_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
         if self.diff_view.patch_is_current(revision)
             && self
                 .diff_view
                 .loaded_for
                 .as_ref()
                 .is_some_and(|(_, loaded_path)| {
-                    self.diff_view.selected_entry().is_some_and(|entry| {
-                        entry.side
-                            == self
-                                .diff_view
-                                .entries
-                                .iter()
-                                .find(|candidate| &candidate.path == loaded_path)
-                                .and_then(|entry| entry.side)
-                    })
+                    self.diff_view
+                        .entries
+                        .iter()
+                        .find(|entry| &entry.path == loaded_path)
+                        .and_then(|entry| entry.side)
+                        == selected_side
                 })
         {
             return;
@@ -291,6 +313,9 @@ impl TuiApp {
 
     /// `d` — swap between the working tree and the last turn.
     pub(super) fn toggle_diff_source(&mut self) {
+        if self.git_grouped_list {
+            return;
+        }
         self.diff_view.source = self.diff_view.source.toggled();
         self.diff_view.status = DiffStatus::Ready;
         self.diff_view.patch = crate::diff_view::PatchState::Loading;

@@ -204,6 +204,11 @@ impl TuiApp {
             NavigatorTab::Git => FocusBlock::Files,
         });
         self.apply_navigator_git_tab(tab == NavigatorTab::Git);
+        self.git_grouped_list = tab == NavigatorTab::Git;
+        if self.git_grouped_list {
+            self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
+            self.refresh_diff_entries();
+        }
     }
 
     /// A click on the navigator row's `+` cell creates a session: the same verb
