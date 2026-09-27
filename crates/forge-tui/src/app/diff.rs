@@ -114,11 +114,7 @@ impl TuiApp {
         }
         let grouped = self.git_grouped_list
             && self.diff_view.source == DiffSource::WorkingTree
-            && (self.navigator_tab == crate::widgets::NavigatorTab::Git
-                || matches!(
-                    self.focus.block(),
-                    FocusBlock::Files | FocusBlock::Workspace
-                ));
+            && self.navigator_tab == crate::widgets::NavigatorTab::Git;
         let entries = if grouped {
             crate::diff_view::entries_for_sides(
                 &self.workspace_files.explorer.git_status.changed_files(),

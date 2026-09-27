@@ -40,6 +40,7 @@ async fn grouped_git_rows_show_the_right_diff_for_each_side() {
     git_run(dir.path(), &["add", "tracked.txt"]);
     std::fs::write(dir.path().join("tracked.txt"), "unstaged\n").unwrap();
 
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
     assert_eq!(app.diff_view.entries.len(), 2);
