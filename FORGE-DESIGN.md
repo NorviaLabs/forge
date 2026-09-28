@@ -890,6 +890,14 @@ Rules:
   its marker is read: the marker comes from the more severe of the two sides, so
   leaving the working-tree side in place would label a file in the index list
   with a change that is not in it.
+- `c` commits the index; it does not stage first. When nothing is staged it
+  follows VS Code's smart commit instead of refusing: a prompt offers **Yes**
+  (stage every change and commit), **Always** (same, and `[tui] smart_commit`
+  is written so later commits skip the prompt), or **Cancel**. With
+  `[tui] smart_commit` already on, `c` skips the prompt. `C` is the explicit
+  commit-all — stage every change (`git add -A`, untracked included) and commit,
+  never prompting — matching VS Code's separate "Commit All" action. A tree
+  with no changes at all is the only refusal.
 - The hint row's right-aligned tag carries the branch before the layout: the
   branch name with only the non-zero `↓behind ↑ahead`, or the `pull`/`push` in
   flight (`Pushing origin/main…`). A running operation outranks the branch, and

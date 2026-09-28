@@ -365,8 +365,17 @@ impl TuiApp {
                     detail,
                 });
             }
-            OverlayAction::CommitGit { message } => {
-                self.commit_staged_changes(&message);
+            OverlayAction::CommitGit { message, all } => {
+                self.commit_changes(&message, all);
+            }
+            OverlayAction::GitCommitAll { remember } => {
+                if remember {
+                    self.git_smart_commit = true;
+                    if let Err(error) = forge_config::persist_smart_commit(true) {
+                        self.set_feedback(FeedbackSeverity::Warn, error.to_string());
+                    }
+                }
+                self.open_git_commit_all();
             }
             OverlayAction::GitSwitchBranch { name } => self.switch_git_branch(&name),
             OverlayAction::GitCreateBranch { name } => self.create_git_branch(&name),

@@ -31,7 +31,8 @@ pub use theme::{
 };
 pub use trust::{
     grant_trust, grant_trust_at, is_trusted, is_trusted_at, persist_committed_theme,
-    persist_committed_theme_at, trust_display_path, trust_file_path, TrustError, HOME_PROJECTS_DIR,
+    persist_committed_theme_at, persist_smart_commit, persist_smart_commit_at, trust_display_path,
+    trust_file_path, TrustError, HOME_PROJECTS_DIR,
 };
 
 #[derive(Debug, Error)]
@@ -337,6 +338,10 @@ pub struct TuiConfig {
     /// while the terminal is unfocused.
     #[serde(default)]
     pub notify: NotifyMode,
+    /// VS Code's `git.enableSmartCommit`: when set, committing with nothing
+    /// staged stages every change and commits, instead of offering the choice.
+    #[serde(default)]
+    pub smart_commit: bool,
 }
 
 impl Default for TuiConfig {
@@ -346,6 +351,7 @@ impl Default for TuiConfig {
             theme: default_theme_id(),
             theme_committed: false,
             notify: NotifyMode::default(),
+            smart_commit: false,
         }
     }
 }
@@ -363,6 +369,7 @@ struct TuiConfigFile {
     theme: Option<String>,
     theme_committed: Option<bool>,
     notify: Option<String>,
+    smart_commit: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -844,6 +851,9 @@ impl ConfigFile {
             }
             if let Some(committed) = tui.theme_committed {
                 cfg.tui.theme_committed = committed;
+            }
+            if let Some(smart_commit) = tui.smart_commit {
+                cfg.tui.smart_commit = smart_commit;
             }
         }
         if let Some(validation) = self.validation {
@@ -1734,6 +1744,7 @@ max_query_chars = 0
                 theme: Some("system".into()),
                 theme_committed: Some(true),
                 notify: Some("both".into()),
+                smart_commit: Some(true),
             }),
             ..Default::default()
         };
@@ -1742,6 +1753,7 @@ max_query_chars = 0
         assert_eq!(cfg.tui.theme, THEME_SYSTEM);
         assert!(cfg.tui.theme_committed);
         assert_eq!(cfg.tui.notify, NotifyMode::Both);
+        assert!(cfg.tui.smart_commit);
     }
 
     /// An invalid `file_icons` / `theme` string in the file is silently
@@ -1755,6 +1767,7 @@ max_query_chars = 0
                 theme: Some("bogus".into()),
                 theme_committed: None,
                 notify: Some("bogus".into()),
+                smart_commit: None,
             }),
             ..Default::default()
         };

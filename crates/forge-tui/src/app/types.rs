@@ -1969,6 +1969,10 @@ pub struct TuiApp {
     /// pane having to be re-opened.
     pub(crate) diff_view: crate::diff_view::DiffView,
     pub(crate) git_grouped_list: bool,
+    /// VS Code's smart commit: once on (chosen via "Always" or `[tui]
+    /// smart_commit`), committing with nothing staged stages everything and
+    /// commits without the prompt.
+    pub(crate) git_smart_commit: bool,
     /// Explorer visibility to restore when split view (which hides it) is
     /// turned off or the diff view closes.
     pub(crate) diff_explorer_was_visible: Option<bool>,

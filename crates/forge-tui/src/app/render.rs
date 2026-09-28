@@ -515,13 +515,6 @@ impl TuiApp {
                         list_area,
                     );
                 } else if navigator_tab == crate::widgets::NavigatorTab::Git {
-                    let selected_row = self.diff_view.selected;
-                    let list_height = rows[1].height.saturating_sub(2) as usize;
-                    let selected_visual = crate::widgets::git_changes::GitChangesList::row_for_file(
-                        &self.diff_view.entries,
-                        selected_row,
-                        list_height,
-                    );
                     let git_list_focused = self.focus.block() == FocusBlock::Files
                         && !modal_open
                         && !self.navigator_tab_row_focused;
@@ -529,7 +522,7 @@ impl TuiApp {
                     frame.render_widget(
                         crate::widgets::git_changes::GitChangesList {
                             entries: &self.diff_view.entries,
-                            selected: selected_visual,
+                            selected: self.diff_view.selected,
                             focused: self.focus.block() == FocusBlock::Files
                                 && !modal_open
                                 && !self.navigator_tab_row_focused,

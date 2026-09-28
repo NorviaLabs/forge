@@ -2136,6 +2136,35 @@ async fn the_drawn_tab_row_carries_the_plus_cell() {
         .unwrap();
 }
 
+/// The changed-file list draws a group heading above the first file, but the
+/// selection arrow indexes entries rather than drawn rows: the first file must
+/// still carry it.
+#[tokio::test]
+async fn the_git_tab_marks_the_first_file_with_the_selection_arrow() {
+    let (dir, mut app, handle) = app_with_supervisor().await;
+    std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.diff_view_is_open());
+
+    let rendered = render_app_text(&mut app, 140, 40);
+    let group = rendered
+        .lines()
+        .position(|line| line.contains("UNSTAGED"))
+        .expect("the changed-file list draws its group heading");
+    let first_file = rendered.lines().nth(group + 1).unwrap_or_default();
+    assert!(
+        first_file.contains("> "),
+        "the first file row must carry the selection arrow: {rendered}"
+    );
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// The `Git` tab exists only where the column is drawn and the workspace is a
 /// repository, and reaching it opens the working-tree review: the changed files
 /// in the navigator column, the patch in the Workspace pane (`FORGE-DESIGN

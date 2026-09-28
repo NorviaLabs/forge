@@ -506,6 +506,12 @@ impl TuiApp {
                 self.open_git_commit();
                 true
             }
+            // `C` is the explicit commit-all VS Code keeps in its menu: stage
+            // every change and commit, no prompt.
+            KeyCode::Char('C') => {
+                self.open_git_commit_all();
+                true
+            }
             // Directional, because `p` is already "previous changed file" and
             // stealing it would trade one muscle memory for another. Only the
             // working tree can be pulled into or pushed from.
@@ -568,6 +574,7 @@ pub(super) fn diff_shortcut_rows() -> Vec<StatusRow> {
             ("v", "Unified / split layout"),
             ("s / u", "Stage / unstage this file"),
             ("c", "Commit the staged changes"),
+            ("C", "Commit every change (stage all first)"),
             (">", "Push to the upstream branch"),
             ("<", "Pull from the upstream branch"),
             ("f", "Fetch from the upstream branch without merging"),
@@ -667,9 +674,10 @@ impl TuiApp {
         };
     }
 
-    /// `c` in the working-tree review. Opens the message prompt, or explains
-    /// why there is nothing to commit — an empty commit would fail in `git`
-    /// anyway, and failing before the prompt is one less dead end.
+    /// `c` in the working-tree review. Commits the index. When nothing is
+    /// staged it matches VS Code: with smart commit on, stage everything and
+    /// commit; otherwise offer the stage-all choice. Only a tree with no
+    /// changes at all is refused, and that is said rather than implied.
     pub(super) fn open_git_commit(&mut self) {
         if self.diff_view.source == DiffSource::LastTurn {
             self.set_feedback(
@@ -678,19 +686,49 @@ impl TuiApp {
             );
             return;
         }
-        let staged = self.staged_change_count();
-        if staged == 0 {
+        if self.staged_change_count() > 0 {
+            self.open_git_commit_prompt(false);
+            return;
+        }
+        if !self.worktree_has_changes() {
+            self.set_feedback(FeedbackSeverity::Warn, "No changes to commit");
+            return;
+        }
+        if self.git_smart_commit {
+            self.open_git_commit_prompt(true);
+        } else {
+            self.overlay = Some(Overlay::GitCommitSuggest { selected: 0 });
+        }
+    }
+
+    /// `C` — commit every change whether or not it is staged (VS Code's
+    /// "Commit All"). Never prompts: the key already named the intent.
+    pub(super) fn open_git_commit_all(&mut self) {
+        if self.diff_view.source == DiffSource::LastTurn {
             self.set_feedback(
                 FeedbackSeverity::Warn,
-                "Nothing staged — press s on a file to stage it first",
+                "Committing applies to the working tree; press d to switch",
             );
             return;
         }
+        if !self.worktree_has_changes() {
+            self.set_feedback(FeedbackSeverity::Warn, "No changes to commit");
+            return;
+        }
+        self.open_git_commit_prompt(true);
+    }
+
+    fn open_git_commit_prompt(&mut self, all: bool) {
         self.overlay = Some(Overlay::GitCommit {
             message: String::new(),
             error: None,
+            all,
         });
-        self.status_state.message = format!("Reviewing {staged} staged change(s)");
+        self.status_state.message = if all {
+            "Reviewing all changes".into()
+        } else {
+            format!("Reviewing {} staged change(s)", self.staged_change_count())
+        };
     }
 
     /// Staged paths in the current status snapshot, derived from the same
@@ -706,9 +744,20 @@ impl TuiApp {
             .count()
     }
 
-    /// Commit the index. Only staged changes go in: `git commit` without `-a`
-    /// is the whole contract here, and the message came from the prompt above.
-    pub(super) fn commit_staged_changes(&mut self, message: &str) {
+    /// Whether the working tree holds any change at all, staged or not — the
+    /// condition that decides between the commit prompt and "no changes".
+    pub(super) fn worktree_has_changes(&self) -> bool {
+        self.workspace_files
+            .explorer
+            .git_status
+            .details
+            .values()
+            .any(|status| status.staged.is_some() || status.unstaged.is_some())
+    }
+
+    /// Commit the index, or with `all` stage every change first. The message
+    /// came from the prompt above.
+    pub(super) fn commit_changes(&mut self, message: &str, all: bool) {
         self.overlay = None;
         let root = self.session_view.workspace_root().to_path_buf();
         let service = match forge_workspace::git_service::LocalGit::new(&root) {
@@ -718,7 +767,12 @@ impl TuiApp {
                 return;
             }
         };
-        match service.commit(message) {
+        let result = if all {
+            service.commit_all(message)
+        } else {
+            service.commit(message)
+        };
+        match result {
             // `git commit` reports `[main abc1234] subject` on its first line;
             // the rest is the file/insertion summary a status line has no room
             // for.
