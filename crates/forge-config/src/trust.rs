@@ -109,6 +109,33 @@ pub fn persist_committed_theme(theme_id: &str) -> Result<(), ConfigError> {
 
 pub fn persist_committed_theme_at(path: &Path, theme_id: &str) -> Result<(), ConfigError> {
     let id = normalize_theme_id(theme_id);
+    edit_tui_table(path, |tui| {
+        tui.insert("theme".into(), toml::Value::String(id));
+        tui.insert("theme_committed".into(), toml::Value::Boolean(true));
+    })
+}
+
+/// Write `[tui] smart_commit` into the user config file. Mirrors VS Code's
+/// "Always" choice: every later commit with nothing staged stages all changes.
+pub fn persist_smart_commit(enabled: bool) -> Result<(), ConfigError> {
+    let path = user_config_path()
+        .ok_or_else(|| ConfigError::Message("no user config directory is available".into()))?;
+    persist_smart_commit_at(&path, enabled)
+}
+
+pub fn persist_smart_commit_at(path: &Path, enabled: bool) -> Result<(), ConfigError> {
+    edit_tui_table(path, |tui| {
+        tui.insert("smart_commit".into(), toml::Value::Boolean(enabled));
+    })
+}
+
+/// Load the user config as a TOML table, hand `[tui]` to `edit`, and write it
+/// back. Shared so the theme and smart-commit preferences cannot drift in how
+/// they handle an absent file, a malformed one, or sibling keys.
+fn edit_tui_table(
+    path: &Path,
+    edit: impl FnOnce(&mut toml::map::Map<String, toml::Value>),
+) -> Result<(), ConfigError> {
     let mut value: toml::Value = if path.is_file() {
         let text = fs::read_to_string(path)?;
         toml::from_str(&text).unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
@@ -124,8 +151,7 @@ pub fn persist_committed_theme_at(path: &Path, theme_id: &str) -> Result<(), Con
     let tui = tui
         .as_table_mut()
         .ok_or_else(|| ConfigError::Message("[tui] is not a table".into()))?;
-    tui.insert("theme".into(), toml::Value::String(id));
-    tui.insert("theme_committed".into(), toml::Value::Boolean(true));
+    edit(tui);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -192,6 +218,17 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("keep-me"));
         assert!(text.contains("theme_committed"));
+    }
+
+    #[test]
+    fn persist_smart_commit_writes_and_keeps_siblings() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[tui]\ntheme = \"forge-dark\"\n").unwrap();
+        persist_smart_commit_at(&path, true).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("smart_commit = true"), "{text}");
+        assert!(text.contains("forge-dark"), "{text}");
     }
 
     /// A directory that cannot be canonicalized (it does not exist) is never

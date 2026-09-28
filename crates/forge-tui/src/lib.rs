@@ -13,6 +13,7 @@ mod editor;
 mod editor_session;
 mod effort;
 mod file_explorer;
+pub mod git_prefs;
 mod hints;
 mod history;
 mod interactive_terminal;

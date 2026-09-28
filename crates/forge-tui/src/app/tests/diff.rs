@@ -135,10 +135,10 @@ async fn git_command_opens_live_working_tree_and_stage_refreshes_status() {
     assert!(!app.diff_view_is_open());
 }
 
-/// The commit flow: refuse with nothing staged, then commit exactly the index
-/// and leave the unstaged change alone.
+/// The commit flow: with something staged, `c` commits exactly the index and
+/// leaves the unstaged change alone.
 #[tokio::test]
-async fn commit_covers_only_staged_changes_and_refuses_an_empty_index() {
+async fn commit_covers_only_staged_changes() {
     let (dir, mut app) = focus_test_app().await;
     repo_with_changes(
         dir.path(),
@@ -149,18 +149,6 @@ async fn commit_covers_only_staged_changes_and_refuses_an_empty_index() {
     app.open_git_view();
     settle_git(&mut app);
 
-    // Nothing staged yet: the prompt must not open, because `git commit` would
-    // only fail after the operator had typed a message.
-    assert_eq!(app.staged_change_count(), 0);
-    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-    assert!(app.overlay.is_none(), "an empty index opens no prompt");
-    assert!(
-        app.status_state.message.contains("Nothing staged"),
-        "and says why: {}",
-        app.status_state.message
-    );
-
-    // Stage one of the two changes, then commit through the real overlay path.
     app.diff_view
         .select_path(std::path::Path::new("staged.txt"));
     app.stage_selected_diff_file(true);
@@ -168,7 +156,9 @@ async fn commit_covers_only_staged_changes_and_refuses_an_empty_index() {
     assert_eq!(app.staged_change_count(), 1);
 
     app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-    assert!(matches!(app.overlay, Some(Overlay::GitCommit { .. })));
+    let Some(Overlay::GitCommit { all: false, .. }) = app.overlay else {
+        panic!("a staged commit opens the plain message prompt");
+    };
 
     // Enter on an empty message reports the error instead of dispatching.
     assert_eq!(
@@ -183,12 +173,13 @@ async fn commit_covers_only_staged_changes_and_refuses_an_empty_index() {
     for ch in "add staged change".chars() {
         handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Char(ch));
     }
-    let OverlayAction::CommitGit { message } =
+    let OverlayAction::CommitGit { message, all } =
         handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter)
     else {
         panic!("a non-empty message must dispatch a commit");
     };
-    app.commit_staged_changes(&message);
+    assert!(!all);
+    app.commit_changes(&message, all);
     settle_git(&mut app);
 
     assert!(app.overlay.is_none(), "the prompt closes on commit");
@@ -206,6 +197,119 @@ async fn commit_covers_only_staged_changes_and_refuses_an_empty_index() {
         git_stdout(dir.path(), &["status", "--short"]),
         " M loose.txt\n"
     );
+}
+
+/// VS Code's smart-commit prompt: `c` with nothing staged offers to stage
+/// everything and commit, and "Yes" commits every change.
+#[tokio::test]
+async fn commit_with_nothing_staged_offers_stage_all() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("a.txt", "one\n")],
+        &[("a.txt", "two\n"), ("new.txt", "new\n")],
+    );
+
+    app.open_git_view();
+    settle_git(&mut app);
+    assert_eq!(app.staged_change_count(), 0);
+    assert!(app.worktree_has_changes());
+
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitCommitSuggest { selected: 0 })),
+        "nothing staged must offer the choice, not refuse"
+    );
+
+    // "Yes" opens the all-changes message prompt.
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    assert_eq!(action, OverlayAction::GitCommitAll { remember: false });
+    app.apply_overlay_action(action).await.unwrap();
+    let Some(Overlay::GitCommit { all: true, .. }) = app.overlay else {
+        panic!("Yes must open the commit-all prompt");
+    };
+
+    for ch in "commit everything".chars() {
+        handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Char(ch));
+    }
+    let OverlayAction::CommitGit { message, all } =
+        handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter)
+    else {
+        panic!("a non-empty message must dispatch a commit");
+    };
+    app.apply_overlay_action(OverlayAction::CommitGit { message, all })
+        .await
+        .unwrap();
+    settle_git(&mut app);
+
+    let files: Vec<String> = git_stdout(
+        dir.path(),
+        &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+    )
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(str::to_string)
+    .collect();
+    assert!(files.iter().any(|f| f == "a.txt"), "{files:?}");
+    assert!(
+        files.iter().any(|f| f == "new.txt"),
+        "untracked must ride along: {files:?}"
+    );
+    assert_eq!(git_stdout(dir.path(), &["status", "--short"]), "");
+}
+
+/// "Always" returns the action that turns smart commit on and remembers it.
+#[tokio::test]
+async fn commit_suggestion_always_remembers_the_choice() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
+    app.open_git_view();
+    settle_git(&mut app);
+
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    // Move to "Always" (index 1), then choose it.
+    handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Down);
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    assert_eq!(action, OverlayAction::GitCommitAll { remember: true });
+}
+
+/// With smart commit on, `c` with nothing staged skips the prompt.
+#[tokio::test]
+async fn smart_commit_skips_the_prompt() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
+    app.open_git_view();
+    settle_git(&mut app);
+    app.git_smart_commit = true;
+
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitCommit { all: true, .. })),
+        "smart commit goes straight to the all-changes prompt"
+    );
+}
+
+/// `C` is the explicit commit-all: it stages every change and commits, no
+/// prompt, even when some changes are already staged.
+#[tokio::test]
+async fn commit_all_key_stages_everything() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("a.txt", "one\n")],
+        &[("a.txt", "two\n"), ("new.txt", "new\n")],
+    );
+    app.open_git_view();
+    settle_git(&mut app);
+
+    app.handle_diff_key(event::KeyEvent::new(
+        KeyCode::Char('C'),
+        KeyModifiers::SHIFT,
+    ));
+    let Some(Overlay::GitCommit { all: true, .. }) = app.overlay else {
+        panic!("`C` opens the commit-all prompt directly");
+    };
 }
 
 /// The sync row and the two refusals, against a real repository and a real

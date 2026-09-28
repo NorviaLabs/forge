@@ -149,6 +149,33 @@ mod tests {
     }
 
     #[test]
+    fn commit_all_stages_tracked_and_untracked() {
+        let dir = repo();
+        let service = LocalGit::new(dir.path()).unwrap();
+        fs::write(dir.path().join("new"), "new\n").unwrap();
+        fs::write(dir.path().join("a"), "changed\n").unwrap();
+        service.commit_all("everything").unwrap();
+        assert!(service.status().unwrap().is_empty());
+        let listed = git(
+            dir.path(),
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+        );
+        let files: Vec<&str> = listed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert!(
+            files.contains(&"new"),
+            "untracked file must be included: {files:?}"
+        );
+        assert!(
+            files.contains(&"a"),
+            "tracked change must be included: {files:?}"
+        );
+    }
+
+    #[test]
     fn merge_reports_conflicts_and_rejects_revisions() {
         let dir = repo();
         let service = LocalGit::new(dir.path()).unwrap();
@@ -919,6 +946,14 @@ impl LocalGit {
         Ok(())
     }
 
+    /// Stage every change in the working tree, tracked or untracked (`git add
+    /// -A`). The commit-all path stages the same set VS Code's smart commit
+    /// does under its default `smartCommitChanges = all`.
+    pub fn stage_all(&self) -> Result<(), GitServiceError> {
+        self.run("add", &["add", "-A"])?;
+        Ok(())
+    }
+
     pub fn commit(&self, message: &str) -> Result<String, GitServiceError> {
         if message.trim().is_empty() || message.contains('\0') {
             return Err(GitServiceError::Git {
@@ -927,6 +962,14 @@ impl LocalGit {
             });
         }
         self.run("commit", &["commit", "-m", message])
+    }
+
+    /// Stage every change, then commit it. Two steps rather than `commit -a`
+    /// because `-a` omits untracked files, and the commit-all action means
+    /// everything on screen.
+    pub fn commit_all(&self, message: &str) -> Result<String, GitServiceError> {
+        self.stage_all()?;
+        self.commit(message)
     }
 
     /// Pull from the configured upstream, retaining ordinary merge conflicts.

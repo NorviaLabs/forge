@@ -133,10 +133,17 @@ pub enum Overlay {
     },
     /// The commit message prompt. One text field, like `SessionRename`, because
     /// a commit message is one line of intent — the staged diff it describes is
-    /// already on screen behind it.
+    /// already on screen behind it. `all` commits every change (`git add -A`
+    /// first) rather than just the index.
     GitCommit {
         message: String,
         error: Option<String>,
+        all: bool,
+    },
+    /// VS Code's prompt when a commit is requested with nothing staged: stage
+    /// everything and commit, do that from now on, or cancel.
+    GitCommitSuggest {
+        selected: usize,
     },
     /// Pick a branch to switch to, or to merge in. One list with a filter,
     /// because the two verbs differ only in what `Enter` does with the choice.
@@ -289,6 +296,10 @@ impl SessionConfirmKind {
         matches!(self, Self::ArchiveDirty | Self::CleanupDirty)
     }
 }
+
+/// The three answers to VS Code's "Nothing staged, commit everything?" prompt,
+/// in order. `Always` turns on smart commit and persists it.
+pub const GIT_COMMIT_SUGGEST: [&str; 3] = ["Yes", "Always", "Cancel"];
 
 #[derive(Debug, Clone)]
 pub struct FileExplorerItem {
@@ -1186,6 +1197,10 @@ impl Overlay {
 
     pub fn move_sel(&mut self, delta: i32) {
         match self {
+            Self::GitCommitSuggest { selected } => {
+                let n = GIT_COMMIT_SUGGEST.len() as i32;
+                *selected = (*selected as i32 + delta).rem_euclid(n) as usize;
+            }
             Self::ConnectModel {
                 providers,
                 provider_cursor,
@@ -1323,9 +1338,16 @@ pub enum OverlayAction {
     },
     /// Explain, without leaving the overlay, why a key did nothing here.
     Toast(String),
-    /// Commit the staged changes with this message.
+    /// Commit the staged changes with this message. `all` stages every change
+    /// first (the commit-all path).
     CommitGit {
         message: String,
+        all: bool,
+    },
+    /// Open the commit prompt in commit-all mode. `remember` also turns on
+    /// smart commit (VS Code's "Always") and persists the choice.
+    GitCommitAll {
+        remember: bool,
     },
     /// Switch to an existing local branch.
     GitSwitchBranch {
@@ -2106,7 +2128,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Char(c) if matches!(overlay, Overlay::GitCommit { .. }) => {
-            if let Overlay::GitCommit { message, error } = overlay {
+            if let Overlay::GitCommit { message, error, .. } = overlay {
                 if !c.is_control() && c != '\n' {
                     message.push(c);
                     *error = None;
@@ -2115,7 +2137,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Paste(ref data) if matches!(overlay, Overlay::GitCommit { .. }) => {
-            if let Overlay::GitCommit { message, error } = overlay {
+            if let Overlay::GitCommit { message, error, .. } = overlay {
                 // A commit subject is one line: `split_whitespace` flattens a
                 // pasted multi-line body rather than silently cutting it at the
                 // first line break.
@@ -2125,7 +2147,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Backspace if matches!(overlay, Overlay::GitCommit { .. }) => {
-            if let Overlay::GitCommit { message, error } = overlay {
+            if let Overlay::GitCommit { message, error, .. } = overlay {
                 message.pop();
                 *error = None;
             }
@@ -2274,6 +2296,11 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
             Overlay::TaskBoard { .. } => OverlayAction::Close,
+            Overlay::GitCommitSuggest { selected } => match *selected {
+                0 => OverlayAction::GitCommitAll { remember: false },
+                1 => OverlayAction::GitCommitAll { remember: true },
+                _ => OverlayAction::Close,
+            },
             Overlay::GithubIssues {
                 selected, items, ..
             } => items
@@ -2483,7 +2510,11 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             // Confirmations are routed by the `Key::Enter` arm above, which
             // needs the kind to pick the matching action.
             Overlay::SessionConfirm { .. } => OverlayAction::None,
-            Overlay::GitCommit { message, error } => {
+            Overlay::GitCommit {
+                message,
+                error,
+                all,
+            } => {
                 let trimmed = message.trim();
                 if trimmed.is_empty() {
                     *error = Some("A commit message is required.".into());
@@ -2491,6 +2522,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 } else {
                     OverlayAction::CommitGit {
                         message: trimmed.into(),
+                        all: *all,
                     }
                 }
             }
@@ -3958,13 +3990,22 @@ impl Widget for OverlayWidget<'_> {
                 )
                 .render(r, buf);
             }
-            Overlay::GitCommit { message, error } => {
+            Overlay::GitCommit {
+                message,
+                error,
+                all,
+            } => {
                 let r = centered_rect(72, 32, area);
                 clear_modal(r, buf);
                 let error = error
                     .as_ref()
                     .map(|error| format!("\n\n{error}"))
                     .unwrap_or_default();
+                let title = if *all {
+                    "Commit all changes"
+                } else {
+                    "Commit staged changes"
+                };
                 Paragraph::new(format!(
                     "Message: {message}█{error}\n\nEnter commit · Esc cancel"
                 ))
@@ -3974,7 +4015,33 @@ impl Widget for OverlayWidget<'_> {
                         .border_style(theme::border())
                         .style(theme::panel())
                         .padding(Padding::horizontal(MODAL_PAD_X))
-                        .title(theme::modal_title("Commit staged changes")),
+                        .title(theme::modal_title(title)),
+                )
+                .render(r, buf);
+            }
+            Overlay::GitCommitSuggest { selected } => {
+                let r = centered_rect(60, 36, area);
+                clear_modal(r, buf);
+                let rows = GIT_COMMIT_SUGGEST
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| {
+                        let marker = if index == *selected { "> " } else { "  " };
+                        format!("{marker}{label}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Paragraph::new(format!(
+                    "Nothing is staged.\n\nStage all changes and commit them?\n\n{rows}\n\n\
+                     ↑↓ move · Enter choose · Esc cancel"
+                ))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .padding(Padding::horizontal(MODAL_PAD_X))
+                        .title(theme::modal_title("No staged changes")),
                 )
                 .render(r, buf);
             }
