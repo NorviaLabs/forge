@@ -43,18 +43,6 @@ impl GitChangesList<'_> {
         }
     }
 
-    pub fn row_for_file(entries: &[DiffEntry], selected: usize, height: usize) -> usize {
-        let rows = Self::rows(entries);
-        let file_row = rows
-            .iter()
-            .position(|row| *row == GitChangeRow::File(selected))
-            .unwrap_or(0);
-        let start = file_row
-            .saturating_sub(height / 2)
-            .min(rows.len().saturating_sub(height));
-        file_row.saturating_sub(start)
-    }
-
     pub fn absolute_file_at(
         entries: &[DiffEntry],
         visible_row: usize,
