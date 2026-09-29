@@ -104,6 +104,165 @@ fn git_tab_lists_staged_and_unstaged_sides_as_distinct_rows() {
     assert!(text.contains("new.rs"), "{text}");
 }
 
+#[test]
+fn git_tab_draws_each_group_heading_once() {
+    use crate::diff_view::{entries_for_sides, DiffSide};
+    use forge_workspace::git_status::{ChangedFile, GitStatusKind as K};
+
+    // `a.rs` is staged and then changed again, `b.rs` is staged too. Ordered by
+    // path the sides interleave and STAGED is drawn twice; grouping must leave
+    // exactly one heading per side.
+    let entries = entries_for_sides(&[
+        ChangedFile {
+            path: "a.rs".into(),
+            staged: Some(K::Modified),
+            unstaged: Some(K::Modified),
+        },
+        ChangedFile {
+            path: "b.rs".into(),
+            staged: Some(K::Modified),
+            unstaged: None,
+        },
+    ]);
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].side, Some(DiffSide::Staged));
+    assert_eq!(entries[1].side, Some(DiffSide::Staged));
+    assert_eq!(entries[2].side, Some(DiffSide::Unstaged));
+    let text = crate::widgets::git_changes::GitChangesList::render_text(&entries, 0, 36, 14);
+    assert_eq!(text.matches(" STAGED").count(), 1, "{text}");
+    assert_eq!(text.matches(" UNSTAGED").count(), 1, "{text}");
+}
+
+/// Staging a file hands the cursor to the next file in the group it left, so a
+/// run of `s` walks the unstaged list instead of re-anchoring on the staged row.
+#[tokio::test]
+async fn staging_advances_the_cursor_to_the_next_unstaged_file() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("a.txt", "0\n"), ("b.txt", "0\n"), ("c.txt", "0\n")],
+        &[("a.txt", "1\n"), ("b.txt", "1\n"), ("c.txt", "1\n")],
+    );
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+
+    app.diff_view.select_path(std::path::Path::new("a.txt"));
+    assert_eq!(app.diff_view.entries.len(), 3, "all three are unstaged");
+
+    app.stage_selected_diff_file(true);
+    settle_git(&mut app);
+
+    assert_eq!(
+        app.diff_view.selected_path().unwrap(),
+        std::path::Path::new("b.txt"),
+        "the cursor moves off the file that just left the group"
+    );
+    assert_eq!(
+        app.diff_view.selected_entry().unwrap().side,
+        Some(crate::diff_view::DiffSide::Unstaged)
+    );
+}
+
+/// `o` on the Git tab opens the selected changed file in the editor at the
+/// cursor's line — the escape hatch for fixing a change mid-review.
+#[tokio::test]
+async fn o_from_the_git_tab_opens_the_file_for_editing() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("tracked.txt", "one\n")],
+        &[("tracked.txt", "two\nthree\n")],
+    );
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+
+    assert!(app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)));
+    assert!(app.current_workspace_is_file());
+    assert_eq!(
+        app.source_viewer.path.as_deref(),
+        Some(
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .join("tracked.txt")
+                .as_path()
+        )
+    );
+    assert!(
+        app.editor_session.is_some(),
+        "a .txt file opens as an editable buffer"
+    );
+    app.handle_key(event::KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        app.editor_session.as_ref().unwrap().is_dirty(),
+        "editor keys must not be captured by Git"
+    );
+}
+
+#[tokio::test]
+async fn unstaging_advances_to_the_next_staged_file() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("a.txt", "0\n"), ("b.txt", "0\n")],
+        &[("a.txt", "1\n"), ("b.txt", "1\n")],
+    );
+    git_run(dir.path(), &["add", "-A"]);
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+    app.stage_selected_diff_file(false);
+    settle_git(&mut app);
+    assert_eq!(
+        app.diff_view.selected_path(),
+        Some(std::path::Path::new("b.txt"))
+    );
+    assert_eq!(
+        app.diff_view.selected_entry().unwrap().side,
+        Some(crate::diff_view::DiffSide::Staged)
+    );
+}
+
+#[tokio::test]
+async fn external_index_replacements_refresh_git_repeatedly() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "0\n")], &[("a.txt", "1\n")]);
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+    app.init_file_watcher();
+    for (args, expected) in [
+        (vec!["add", "a.txt"], crate::diff_view::DiffSide::Staged),
+        (
+            vec!["reset", "HEAD", "--", "a.txt"],
+            crate::diff_view::DiffSide::Unstaged,
+        ),
+        (vec!["add", "a.txt"], crate::diff_view::DiffSide::Staged),
+    ] {
+        git_run(dir.path(), &args);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.poll_file_changes();
+            app.tick_render_state();
+            if app.diff_view.entries.len() == 1 && app.diff_view.entries[0].side == Some(expected) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "index watch did not refresh {expected:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
 #[tokio::test]
 async fn git_command_opens_live_working_tree_and_stage_refreshes_status() {
     let (dir, mut app) = focus_test_app().await;

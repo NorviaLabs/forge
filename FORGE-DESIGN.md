@@ -635,6 +635,14 @@ instead of quietly typing into the chat draft. Leaving the tab (`Ctrl+1`,
 `Ctrl+E`, the row, or `Esc`) puts the workspace pane back exactly as `Esc` does
 outside repository mode.
 
+Git rows are grouped staged-first, then unstaged, with paths sorted within
+each group and at most one heading per nonempty group. A successful stage or
+unstage advances to the next file in the same group when one exists. Status
+refreshes preserve the selected path and side. Working-tree changes and Git
+index replacements trigger debounced status refreshes, including linked
+worktrees. `o` opens the selected working-tree file; preview-capable files
+keep their preview-first behavior (`i` edits), and editor focus owns its keys.
+
 ### 8.4 Active block treatment
 
 Three border levels (`design.rs`, `theme::panel_border`):
