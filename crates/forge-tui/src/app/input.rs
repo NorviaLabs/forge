@@ -1641,6 +1641,9 @@ impl TuiApp {
         if !(self.git_grouped_list && self.navigator_tab == crate::widgets::NavigatorTab::Git) {
             return Ok(None);
         }
+        if self.focus.block() == FocusBlock::Workspace && !self.diff_view_is_open() {
+            return Ok(None);
+        }
         // The diff search prompt owns the keyboard while it is open.
         if !self.diff_view.search.open && key.modifiers.is_empty() {
             match key.code {

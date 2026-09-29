@@ -65,12 +65,19 @@ pub fn entries_for_sides(files: &[ChangedFile]) -> Vec<DiffEntry> {
             });
         }
     }
+    // Staged rows lead, then unstaged, each block sorted by path. Grouping the
+    // side is what lets the list draw one `STAGED` and one `UNSTAGED` heading:
+    // a path order that interleaved the sides repeated a heading every time a
+    // path happened to change side.
     entries.sort_by(|a, b| {
-        a.path.cmp(&b.path).then_with(|| match (a.side, b.side) {
-            (Some(DiffSide::Staged), Some(DiffSide::Unstaged)) => std::cmp::Ordering::Less,
-            (Some(DiffSide::Unstaged), Some(DiffSide::Staged)) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        })
+        let side_rank = |entry: &DiffEntry| match entry.side {
+            Some(DiffSide::Staged) => 0u8,
+            Some(DiffSide::Unstaged) => 1u8,
+            None => 2u8,
+        };
+        side_rank(a)
+            .cmp(&side_rank(b))
+            .then_with(|| a.path.cmp(&b.path))
     });
     entries
 }
@@ -320,7 +327,9 @@ impl DiffView {
     /// when it survives. A file that changes mid-turn must not scroll the pane
     /// out from under whoever is reading it.
     pub fn set_entries(&mut self, entries: Vec<DiffEntry>) {
-        let previous = self.selected_path().map(Path::to_path_buf);
+        let previous = self
+            .selected_entry()
+            .map(|entry| (entry.path.clone(), entry.side));
         let same = entries == self.entries;
         self.entries = entries;
         if self.entries.is_empty() {
@@ -336,11 +345,22 @@ impl DiffView {
             self.status = DiffStatus::Ready;
         }
         self.selected = previous
-            .as_deref()
-            .and_then(|path| self.entries.iter().position(|entry| entry.path == path))
+            .as_ref()
+            .and_then(|(path, side)| {
+                self.entries
+                    .iter()
+                    .position(|entry| &entry.path == path && entry.side == *side)
+            })
             .unwrap_or(0)
             .min(self.entries.len() - 1);
-        if !same && previous.as_deref() != self.selected_path() {
+        if !same
+            && previous
+                .as_ref()
+                .map(|(path, side)| (path.as_path(), *side))
+                != self
+                    .selected_entry()
+                    .map(|entry| (entry.path.as_path(), entry.side))
+        {
             self.scroll = 0;
         }
     }
@@ -393,6 +413,20 @@ impl DiffView {
         }
         let prev = (self.selected + self.entries.len() - 1) % self.entries.len();
         self.select(prev);
+    }
+
+    /// The next entry strictly after the selection that shares its side, or
+    /// `None` at the end of a group. The Git list uses this after a stage or
+    /// unstage so the cursor keeps moving through the group being worked in —
+    /// the toggled row leaves that group and a plain "same path" anchor would
+    /// leave the cursor sitting on it in its new group. Rows without a side
+    /// (the legacy `/diff` list) never match, so those keep their cursor.
+    pub fn next_in_same_side(&self) -> Option<usize> {
+        let side = self.selected_entry()?.side?;
+        self.entries[self.selected.saturating_add(1)..]
+            .iter()
+            .position(|entry| entry.side == Some(side))
+            .map(|offset| self.selected + 1 + offset)
     }
 
     fn patch_len(&self) -> usize {
@@ -1286,6 +1320,77 @@ mod tests {
         ]);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, Path::new("real.rs"));
+    }
+
+    #[test]
+    fn sides_group_so_each_heading_appears_once() {
+        // `b.rs` staged and changed again, `a.rs` only staged. A path-first
+        // order would interleave the sides (`b` staged, `b` unstaged, `a`
+        // staged) and repeat STAGED; grouping keeps every staged row before
+        // every unstaged one.
+        let entries = entries_for_sides(&[
+            changed(
+                "b.rs",
+                Some(GitStatusKind::Modified),
+                Some(GitStatusKind::Modified),
+            ),
+            changed("a.rs", Some(GitStatusKind::Modified), None),
+        ]);
+        let sides: Vec<Option<DiffSide>> = entries.iter().map(|entry| entry.side).collect();
+        assert_eq!(
+            sides,
+            vec![
+                Some(DiffSide::Staged),
+                Some(DiffSide::Staged),
+                Some(DiffSide::Unstaged)
+            ]
+        );
+        // Path order is preserved inside each group.
+        assert_eq!(entries[0].path, Path::new("a.rs"));
+        assert_eq!(entries[1].path, Path::new("b.rs"));
+    }
+
+    #[test]
+    fn next_in_same_side_stops_at_the_group() {
+        let mut view = DiffView::default();
+        view.set_entries(entries_for_sides(&[
+            changed("a.rs", Some(GitStatusKind::Modified), None),
+            changed("b.rs", None, Some(GitStatusKind::Modified)),
+            changed("c.rs", None, Some(GitStatusKind::Modified)),
+        ]));
+        // Rows: a (staged), b (unstaged), c (unstaged).
+        view.select(1);
+        assert_eq!(view.next_in_same_side(), Some(2), "b advances to c");
+        view.select(2);
+        assert_eq!(view.next_in_same_side(), None, "c ends the unstaged group");
+        view.select(0);
+        assert_eq!(
+            view.next_in_same_side(),
+            None,
+            "a is the whole staged group"
+        );
+
+        // Ungrouped `/diff` rows carry no side, so they never advance.
+        view.set_entries(entries_from_changed_files(&[changed(
+            "x.rs",
+            None,
+            Some(GitStatusKind::Modified),
+        )]));
+        assert_eq!(view.next_in_same_side(), None);
+    }
+
+    #[test]
+    fn refresh_preserves_the_selected_side_of_a_path() {
+        let entries = entries_for_sides(&[changed(
+            "both.rs",
+            Some(GitStatusKind::Modified),
+            Some(GitStatusKind::Modified),
+        )]);
+        let mut view = DiffView::default();
+        view.set_entries(entries.clone());
+        view.select(1);
+        view.set_entries(entries);
+        assert_eq!(view.selected, 1);
     }
 
     #[test]

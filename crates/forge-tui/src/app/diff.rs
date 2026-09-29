@@ -1228,6 +1228,13 @@ impl TuiApp {
         let Some(relative) = self.diff_view.selected_path().map(Path::to_path_buf) else {
             return;
         };
+        // A stage only moves an unstaged row and an unstage only a staged one;
+        // on any other row the git call is idempotent, so the cursor stays put.
+        let moves_group = match self.diff_view.selected_entry().and_then(|entry| entry.side) {
+            Some(crate::diff_view::DiffSide::Unstaged) => stage,
+            Some(crate::diff_view::DiffSide::Staged) => !stage,
+            None => false,
+        };
         let root = self.session_view.workspace_root().to_path_buf();
         let result = if stage {
             forge_workspace::git_review::stage_path(&root, &relative)
@@ -1238,6 +1245,14 @@ impl TuiApp {
             Ok(()) => {
                 let verb = if stage { "Staged" } else { "Unstaged" };
                 self.status_state.message = format!("{verb} {}", relative.display());
+                // Keep the review moving: the toggled row leaves the group it
+                // was in, so hand the cursor to the next file that shared that
+                // group. A no-op at the end of a group or for an ungrouped row.
+                if moves_group {
+                    if let Some(next) = self.diff_view.next_in_same_side() {
+                        self.diff_view.select(next);
+                    }
+                }
                 // The index moved, so the status cache and every cached patch
                 // for this revision are stale.
                 self.note_workspace_changed();

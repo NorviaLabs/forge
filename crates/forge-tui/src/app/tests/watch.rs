@@ -4,8 +4,94 @@
 
 use super::prelude::*;
 
-use super::super::watch::path_is_ignored_by_file_watcher;
+use super::super::watch::{classify_watch_path, git_index_path, path_is_ignored_by_file_watcher};
 use crate::file_explorer::RefreshTestGate;
+
+#[test]
+fn git_index_path_resolves_plain_checkouts_and_linked_worktrees() {
+    // Plain checkout: `.git` is a directory, so the index sits inside it.
+    let plain = TempDir::new().unwrap();
+    std::fs::create_dir(plain.path().join(".git")).unwrap();
+    assert_eq!(
+        git_index_path(plain.path()).unwrap(),
+        plain.path().join(".git/index")
+    );
+
+    // Linked worktree: `.git` is a `gitdir:` pointer file and the index lives
+    // in the gitdir it names, outside the workspace root.
+    let worktree = TempDir::new().unwrap();
+    let gitdir = TempDir::new().unwrap();
+    std::fs::write(
+        worktree.path().join(".git"),
+        format!("gitdir: {}\n", gitdir.path().display()),
+    )
+    .unwrap();
+    assert_eq!(
+        git_index_path(worktree.path()).unwrap(),
+        gitdir.path().join("index")
+    );
+
+    // A directory that is not a repository has no index to watch.
+    let none = TempDir::new().unwrap();
+    assert_eq!(git_index_path(none.path()), None);
+}
+
+#[test]
+fn classify_watch_path_keeps_the_index_but_drops_internal_churn() {
+    let index = PathBuf::from("/repo/.git/index");
+
+    // The index is enqueued as a status-only signal, never a tree change.
+    assert_eq!(
+        classify_watch_path(&index, Some(&index), true),
+        Some(false),
+        "the index must refresh Git without rebuilding the tree"
+    );
+    // Git internals other than the index stay ignored.
+    assert_eq!(
+        classify_watch_path(&PathBuf::from("/repo/.git/HEAD"), Some(&index), true),
+        None
+    );
+    assert_eq!(
+        classify_watch_path(
+            &PathBuf::from("/repo/.forge/progress.json"),
+            Some(&index),
+            true
+        ),
+        None
+    );
+    // An ordinary source write keeps the caller's tree-change classification.
+    assert_eq!(
+        classify_watch_path(&PathBuf::from("/repo/src/lib.rs"), Some(&index), true),
+        Some(true)
+    );
+    assert_eq!(
+        classify_watch_path(&PathBuf::from("/repo/src/lib.rs"), Some(&index), false),
+        Some(false)
+    );
+    // Without a resolved index (non-repository), `.git` content is ignored.
+    assert_eq!(classify_watch_path(&index, None, true), None);
+}
+
+/// An index write refreshes the status cache, which is what surfaces an external
+/// `git add` in the changed-file list.
+#[tokio::test]
+async fn git_index_change_refreshes_status() {
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
+    assert!(!app.workspace_files.explorer.git_status.loading);
+
+    // `immediate` is a test-only short-circuit for the debounce; the real
+    // classifier marks the index `tree_changed: false`.
+    let index = git_index_path(app.session_view.workspace_root()).unwrap();
+    app.file_watch.inject_test_change(index, false, true);
+    app.poll_file_changes();
+
+    assert!(
+        app.workspace_files.explorer.git_status.loading,
+        "an index change starts a status refresh"
+    );
+}
 
 #[tokio::test]
 async fn file_change_event_refreshes_git_status() {
