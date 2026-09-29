@@ -200,7 +200,9 @@ Useful in-app commands:
 /git           Review, stage, commit, branch and merge in the center pane
                (`s`/`u` stage, `d` cycles working tree/staged/last turn, `c` commit,
                `<`/`>` pull/push, `f` fetch, `b` branches (`x` delete, `r` rename),
-               `M` merge, `a` abort merge)
+               `M` merge, `a` abort merge). In the navigator's Git tab the same keys
+               work from the changed-file list, which adds `↑`/`↓` to move the list
+               cursor and `i` for issues
 /goal          Work toward a completion condition until it holds (`/goal clear` stops)
 /effort        Set model effort
 /thinking      Toggle model thinking generation

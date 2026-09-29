@@ -87,6 +87,18 @@ impl TuiApp {
         )
     }
 
+    /// Leave the Git navigator tab, closing the working-tree review with it and
+    /// handing the keyboard back to the changed-file list's column. Shared by
+    /// `Esc` from either pane of the tab — the list and the patch are one
+    /// surface spread across two blocks.
+    pub(super) fn leave_git_tab(&mut self) {
+        self.navigator_tab = crate::widgets::NavigatorTab::Files;
+        self.navigator_tab_explicit = true;
+        self.git_grouped_list = false;
+        self.close_diff_view();
+        self.focus_block(FocusBlock::Search);
+    }
+
     // Retained with the diff-view seam for the Git workflow redesign.
     // A workspace is a repository when its root holds `.git` — a directory in a
     // plain checkout, a file in a linked worktree. Both count.

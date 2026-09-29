@@ -1410,3 +1410,123 @@ async fn staging_is_refused_on_the_last_turn_source() {
         "nothing was staged"
     );
 }
+
+#[tokio::test]
+async fn git_tab_review_keys_reach_the_diff_keymap_from_either_pane() {
+    // The Git tab renders the patch pane's diff hint row, so its keys must work
+    // from the changed-file list *and* the patch — not fall through to the chat
+    // draft (#composer-swallowed-git-keys).
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
+
+    // From the list: `c` commits instead of typing.
+    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::GitCommit { .. }) | Some(Overlay::GitCommitSuggest { .. })
+        ),
+        "c must commit from the changed-file list (input={:?})",
+        app.input.text
+    );
+    assert!(app.input.text.is_empty());
+    app.overlay = None;
+
+    // Tab moves to the patch; `c` still commits there.
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Workspace,
+        "Tab reaches the patch"
+    );
+    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::GitCommit { .. }) | Some(Overlay::GitCommitSuggest { .. })
+        ),
+        "c must commit from the patch pane (input={:?})",
+        app.input.text
+    );
+}
+
+#[tokio::test]
+async fn git_tab_esc_leaves_the_tab_from_either_pane() {
+    use crate::widgets::NavigatorTab;
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
+    app.navigator_tab = NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+
+    // From the list.
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    assert!(
+        !app.diff_view_is_open(),
+        "Esc closes the review with the tab"
+    );
+
+    // And from the patch.
+    app.navigator_tab = NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    assert!(!app.diff_view_is_open());
+}
+
+#[tokio::test]
+async fn git_tab_list_keeps_its_own_cursor_and_staging_keys() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("a.txt", "one\n"), ("b.txt", "one\n")],
+        &[("a.txt", "two\n"), ("b.txt", "two\n")],
+    );
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
+    app.open_git_view();
+    settle_git(&mut app);
+    assert!(app.diff_view.entries.len() >= 2);
+
+    let first = app.diff_view.selected;
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.diff_view.selected, first + 1, "↓ moves the list cursor");
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Files,
+        "moving the cursor must not move focus off the list"
+    );
+
+    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    settle_git(&mut app);
+    let staged = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&staged.stdout).trim(), "b.txt");
+}

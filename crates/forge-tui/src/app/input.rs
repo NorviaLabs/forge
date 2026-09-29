@@ -1568,50 +1568,6 @@ impl TuiApp {
     }
 
     async fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
-        // The Git navigator tab is also the entry point for repository-hosted
-        // work. Keep this beside the changed-file list rather than adding a
-        // fourth tab: `i` opens the GitHub issues overlay for the current
-        // remote, while the normal Git tab continues to show the working tree.
-        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
-            && key.modifiers.is_empty()
-            && key.code == KeyCode::Char('i')
-        {
-            self.open_github_issues();
-            return Ok(true);
-        }
-        // The Git list has its own cursor; move it independently of paths so a
-        // file with both staged and unstaged changes remains addressable twice.
-        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
-            && !self.workspace_files.explorer.search_focused
-            && key.modifiers.is_empty()
-            && matches!(key.code, KeyCode::Up | KeyCode::Down)
-        {
-            let delta: isize = if key.code == KeyCode::Up { -1 } else { 1 };
-            let count = self.diff_view.entries.len();
-            if count > 0 {
-                let next = self
-                    .diff_view
-                    .selected
-                    .saturating_add_signed(delta)
-                    .min(count - 1);
-                self.diff_view.select(next);
-            }
-            return Ok(true);
-        }
-        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
-            && !self.workspace_files.explorer.search_focused
-            && key.modifiers.is_empty()
-            && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('u'))
-        {
-            let stage = key.code == KeyCode::Char('s');
-            let selected_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
-            if (stage && selected_side == Some(crate::diff_view::DiffSide::Unstaged))
-                || (!stage && selected_side == Some(crate::diff_view::DiffSide::Staged))
-            {
-                self.stage_selected_diff_file(stage);
-            }
-            return Ok(true);
-        }
         if self.workspace_files.explorer.search_focused {
             if key.modifiers.is_empty() && matches!(key.code, KeyCode::Esc) {
                 // Esc backs out of the filter in two steps: clear the query and
@@ -1667,39 +1623,79 @@ impl TuiApp {
         Box::pin(self.execute_semantic_command(command)).await
     }
 
+    /// Keys for the Git navigator tab's review, which spans two blocks: the
+    /// changed-file list (`Files`) and the patch (`Workspace`). Both panes route
+    /// through here so the tab reads as one surface instead of two keymaps.
+    ///
+    /// The list keeps the keys it is built around — `↑`/`↓` move its cursor (it
+    /// is the file picker), `s`/`u` stage the selected side, `i` opens issues,
+    /// `Enter` hands the keyboard to the patch — and `Esc` leaves the tab.
+    /// Every other key belongs to the patch, whose hint row advertises the diff
+    /// keymap; routing those to `handle_diff_key` is what keeps that row honest
+    /// instead of typing the keystroke into the chat draft.
+    ///
+    /// `None` when the Git review is not on screen, so callers fall back to the
+    /// ordinary Files/Workspace handling. `Some(false)` when a key neither pane
+    /// owns should still start a draft.
+    async fn git_review_key(&mut self, key: event::KeyEvent) -> Result<Option<bool>, TuiError> {
+        if !(self.git_grouped_list && self.navigator_tab == crate::widgets::NavigatorTab::Git) {
+            return Ok(None);
+        }
+        // The diff search prompt owns the keyboard while it is open.
+        if !self.diff_view.search.open && key.modifiers.is_empty() {
+            match key.code {
+                KeyCode::Char('i') => {
+                    self.open_github_issues();
+                    return Ok(Some(true));
+                }
+                KeyCode::Esc => {
+                    self.leave_git_tab();
+                    return Ok(Some(true));
+                }
+                KeyCode::Enter => {
+                    // `Enter` is the list's "act on this row": it hands the
+                    // keyboard to the patch, where the review's actions live.
+                    self.focus_block(FocusBlock::Workspace);
+                    return Ok(Some(true));
+                }
+                // The list has its own cursor; move it independently of paths so
+                // a file with both staged and unstaged changes stays addressable
+                // twice.
+                KeyCode::Up | KeyCode::Down => {
+                    let delta: isize = if key.code == KeyCode::Up { -1 } else { 1 };
+                    let count = self.diff_view.entries.len();
+                    if count > 0 {
+                        let next = self
+                            .diff_view
+                            .selected
+                            .saturating_add_signed(delta)
+                            .min(count - 1);
+                        self.diff_view.select(next);
+                    }
+                    return Ok(Some(true));
+                }
+                KeyCode::Char('s') | KeyCode::Char('u') => {
+                    let stage = key.code == KeyCode::Char('s');
+                    let selected_side =
+                        self.diff_view.selected_entry().and_then(|entry| entry.side);
+                    if (stage && selected_side == Some(crate::diff_view::DiffSide::Unstaged))
+                        || (!stage && selected_side == Some(crate::diff_view::DiffSide::Staged))
+                    {
+                        self.stage_selected_diff_file(stage);
+                    }
+                    return Ok(Some(true));
+                }
+                _ => {}
+            }
+        }
+        Ok(Some(self.handle_diff_key(key)))
+    }
+
     async fn handle_workspace_navigation_key(
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
-        if self.git_grouped_list && self.navigator_tab == crate::widgets::NavigatorTab::Git {
-            self.git_grouped_list = false;
-            let handled = self.handle_file_explorer_key(key).await?;
-            self.git_grouped_list = true;
-            return Ok(handled);
-        }
-        // Git review opens in the workspace pane, so the GitHub shortcut must
-        // be handled here as well as in the changed-file explorer. Otherwise
-        // entering the Git tab moves focus away from the only handler for `i`.
-        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
-            && key.modifiers.is_empty()
-            && key.code == KeyCode::Char('i')
-        {
-            self.open_github_issues();
-            return Ok(true);
-        }
-        if self.diff_view_is_open()
-            && self.git_grouped_list
-            && key.modifiers.is_empty()
-            && key.code == KeyCode::Esc
-        {
-            self.navigator_tab = crate::widgets::NavigatorTab::Files;
-            self.navigator_tab_explicit = true;
-            self.git_grouped_list = false;
-            self.close_diff_view();
-            self.focus_block(FocusBlock::Search);
-            return Ok(true);
-        }
-        if self.diff_view_is_open() && !self.git_grouped_list {
+        if self.diff_view_is_open() {
             return Ok(self.handle_diff_key(key));
         }
         if let Some(command) = self.semantic_command_for_workspace_key(key) {
@@ -1721,6 +1717,17 @@ impl TuiApp {
         // a stop of its own (`FORGE-DESIGN §8.3`).
         if self.navigator_tab_row_focused {
             return self.handle_navigator_tab_row_key(key).await;
+        }
+        // The Git tab's list and patch are one review surface: both route
+        // through the same keymap. Everything else keeps its ordinary block
+        // handling.
+        if matches!(
+            self.focus.block(),
+            FocusBlock::Files | FocusBlock::Search | FocusBlock::Workspace
+        ) {
+            if let Some(handled) = self.git_review_key(key).await? {
+                return Ok(handled);
+            }
         }
         match self.focus.block() {
             FocusBlock::TaskStrip => self.handle_task_strip_key(key).await,

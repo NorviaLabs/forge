@@ -534,7 +534,10 @@ surface. The old top task strip is superseded (`§11`).
   filtered to the changed files and the patch renders in the Workspace pane, so
   entering the tab opens the working-tree review and leaving it puts the pane
   back exactly as `Esc` does. `/git` reaches the same view without the column,
-  and stays reachable below `files_fit()` where the tab bar is gone.
+  and stays reachable below `files_fit()` where the tab bar is gone. The column
+  and the patch are one surface with one keymap (§8.3): the list owns
+  `↑`/`↓`/`s`/`u`/`i`/`Enter` and the patch owns the diff keymap, so the hint
+  row the patch draws is the truth about every key in the tab.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
 - Below `files_fit()` the whole navigator collapses exactly as `Files` does
@@ -616,6 +619,21 @@ matches the row as drawn; `Enter` activates the stop under the cursor — a tab
 steps back into its pane, the `+` cell creates a session. Resting on `+` moves
 nothing else: the active tab keeps its ground and `focus.block()` keeps the
 pane on screen, so the row never covers a key owner that is not drawn.
+
+The **Git tab** is the one tab whose surface spans two blocks — the
+changed-file list in the navigator column (`Files`) and the patch in the
+Workspace pane — so both route through one keymap rather than one apiece. The
+list keeps the keys it is built around, because it is the file picker: `↑`/`↓`
+move its own cursor (independently of the tree cursor, so a path changed on both
+sides stays addressable twice), `s`/`u` stage the selected side, `i` opens the
+issues overlay, and `Enter` hands the keyboard to the patch. `Esc` leaves the
+tab from either pane: list and patch are one interaction level, and it does not
+unwind level by level. Every other key belongs to the patch, whose hint row
+advertises the diff keymap — routing those from the list is what keeps that row
+honest, and it is why a printable key in this tab commits or switches source
+instead of quietly typing into the chat draft. Leaving the tab (`Ctrl+1`,
+`Ctrl+E`, the row, or `Esc`) puts the workspace pane back exactly as `Esc` does
+outside repository mode.
 
 ### 8.4 Active block treatment
 
@@ -863,6 +881,10 @@ the single plan surface.
 
 ### 9.8 Diff viewer
 
+The patch pane's keys are the review's keys: they act whether the keyboard is
+on the patch or on the Git tab's changed-file list, whose hint row this pane
+draws (`FORGE-DESIGN §8.3`).
+
 Conventional semantics with textual fallbacks:
 
 - addition: `diff_add` + `+`
@@ -923,6 +945,12 @@ Rules:
   Conflict resolution deliberately reuses what is already bound: `o` opens the
   conflicted path, `s` stages the saved resolution, `c` commits the merge, and
   only the destructive exit is new — `a` aborts, and only behind a confirmation.
+- These keys act from the Git tab's changed-file list as well as the patch
+  (`FORGE-DESIGN §8.3`). `↑`/`↓` and `s`/`u` stay with the list, which is the
+  file picker and advertises them on its own rows; `Esc` closes the tab from
+  either pane. Everything else below belongs to the review, not the block that
+  happens to hold the keyboard — the pane draws one hint row for the tab, so one
+  keymap has to back it.
 
 ### 9.9 Terminal (BottomPanel)
 
