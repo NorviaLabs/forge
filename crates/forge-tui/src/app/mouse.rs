@@ -87,6 +87,15 @@ impl TuiApp {
         self.explorer_dialog.is_open()
             || self.session_view.pending_hitl.is_some()
             || self.overlay.is_some()
+            // The search/jump-to-line prompts take every keystroke, so a click
+            // landing behind one cannot act on what it names: a caret placed
+            // under a prompt nobody can type into is a caret the keyboard can
+            // no longer reach. `dispatch_mouse_scroll` already refuses the wheel
+            // for the same reason.
+            || matches!(
+                self.focus.mode(),
+                FocusMode::Transient(TransientOwner::SourceSearch | TransientOwner::JumpToLine)
+            )
     }
 
     /// Focus the block under the pointer and act on the hit row/tab. A click
@@ -132,10 +141,16 @@ impl TuiApp {
         }
         if let Some(area) = self.navigator_list_area {
             if cell_inside(area, col, row) {
+                // Same rule as the tab click above: a click on the row's own
+                // surface hands the keyboard to the pane the row sits above,
+                // so the tab row stops holding it. Without this the click's
+                // focus change is invisible — the pane paints unfocused and
+                // every bare key still goes to the row.
+                self.navigator_tab_row_focused = false;
                 if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Sessions {
                     self.click_session_row(row, area, double).await?;
                 } else {
-                    self.click_file_row(row, area).await?;
+                    self.click_file_row(row, area, double).await?;
                 }
                 return Ok(());
             }
@@ -149,6 +164,50 @@ impl TuiApp {
         if let Some(area) = self.composer_area {
             if cell_inside(area, col, row) {
                 self.enter_chat_composer();
+                return Ok(());
+            }
+        }
+        // The composer popups float above the input, over the sidebar column,
+        // so their rows have to be claimed before the surface they cover.
+        if let Some(index) = self
+            .slash_popup_rows
+            .iter()
+            .find(|(_, rect)| cell_inside(*rect, col, row))
+            .map(|(index, _)| *index)
+        {
+            self.slash_suggestions.selected = index;
+            self.enter_chat_composer();
+            // The second click accepts, the way `Tab` does.
+            if double {
+                self.complete_slash_suggestion();
+            }
+            return Ok(());
+        }
+        if let Some(index) = self
+            .inline_search_rows
+            .iter()
+            .find(|(_, rect)| cell_inside(*rect, col, row))
+            .map(|(index, _)| *index)
+        {
+            if let Some(state) = self.inline_search.as_mut() {
+                state.selected = index;
+            }
+            self.enter_chat_composer();
+            // The second click accepts, the way `Enter` does.
+            if double {
+                self.insert_inline_search_selection();
+            }
+            return Ok(());
+        }
+        if let Some(area) = self.queue_area {
+            if cell_inside(area, col, row) {
+                self.click_queue_row(col, row, area);
+                return Ok(());
+            }
+        }
+        if let Some(area) = self.background_area {
+            if cell_inside(area, col, row) {
+                self.click_background_row(col, row, area, double).await?;
                 return Ok(());
             }
         }
@@ -187,6 +246,7 @@ impl TuiApp {
         if let Some(area) = self.editor_area {
             if cell_inside(area, col, row) {
                 self.focus_block(FocusBlock::Workspace);
+                self.click_place_caret(col, row, area);
                 return Ok(());
             }
         }
@@ -197,6 +257,88 @@ impl TuiApp {
             }
         }
         Ok(())
+    }
+
+    /// A click on a queued-message row selects it. Select is all it does: the
+    /// strip's only per-row verb is destructive (`CancelSelectedQueueMessage`),
+    /// and `EditLastQueuedMessage` always edits the *last* message rather than
+    /// the selected one, so there is no non-destructive act a second click
+    /// could perform.
+    fn click_queue_row(&mut self, col: u16, row: u16, area: Rect) {
+        let len = self.selected_queue_messages().len();
+        if let Some(index) = crate::widgets::queued_messages::message_index_at(
+            len,
+            self.task_selection.queue(),
+            area,
+            col,
+            row,
+        ) {
+            self.task_selection.select_queue(index);
+        }
+    }
+
+    /// A click on a background-task row selects it and takes the keyboard,
+    /// matching the strip's own grammar. A double click attaches the task's
+    /// session — the non-destructive "open it" verb, and the same move a
+    /// double click makes on a session row.
+    async fn click_background_row(
+        &mut self,
+        col: u16,
+        row: u16,
+        area: Rect,
+        double: bool,
+    ) -> Result<(), TuiError> {
+        self.focus_block(FocusBlock::Sidebar);
+        let rows = self.painted_background_rows(area.height.saturating_sub(1) as usize);
+        if let Some(index) = crate::widgets::background_strip::row_index_at(&rows, area, col, row) {
+            self.task_selection.select_task(index);
+            if double {
+                self.execute_semantic_command(SemanticCommand::AttachSelectedBackgroundTask)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The background-strip rows exactly as the renderer built them, so a row
+    /// index from hit-testing addresses the row the operator sees.
+    fn painted_background_rows(&self, visible: usize) -> Vec<crate::tasks_strip::StripRow> {
+        crate::tasks_strip::BackgroundStrip::build(
+            &self.selected_background_tasks(),
+            chrono::Utc::now(),
+            visible,
+        )
+        .rows
+    }
+
+    /// A click in the editor places the caret at the cell under the pointer. In
+    /// the read-only preview there is no caret to move, so the click moves the
+    /// current line instead — the same thing every line-scrolling key moves, so
+    /// `j`/`k` and the other navigation continue from where the pointer left
+    /// the cursor.
+    fn click_place_caret(&mut self, col: u16, row: u16, area: Rect) {
+        let live_lines = self.editor_session.as_ref().map(|editor| {
+            editor
+                .text()
+                .split('\n')
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
+        let lines = live_lines.as_deref().unwrap_or(&self.source_viewer.lines);
+        let Some((line, char)) = crate::selection::editor_cell_to_position(
+            lines,
+            self.source_viewer.top_line,
+            self.source_viewer.h_scroll,
+            area,
+            col,
+            row,
+        ) else {
+            return;
+        };
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.set_cursor(line, char);
+        }
+        self.source_viewer.current_line = line;
     }
 
     /// A click on the navigator tab bar switches to the painted tab.
@@ -259,7 +401,7 @@ impl TuiApp {
     }
 
     /// Select a file row in either the Files tree or grouped Git changes.
-    async fn click_file_row(&mut self, row: u16, area: Rect) -> Result<(), TuiError> {
+    async fn click_file_row(&mut self, row: u16, area: Rect, double: bool) -> Result<(), TuiError> {
         match self.effective_navigator_tab() {
             crate::widgets::NavigatorTab::Files => {
                 let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
@@ -287,6 +429,17 @@ impl TuiApp {
                 ) {
                     self.diff_view.select(index);
                     self.focus_block(FocusBlock::Files);
+                    // A git row selects on the first click and acts on the
+                    // second, like a session row: the patch lives in the
+                    // Workspace block, so acting means handing the keyboard
+                    // there. `Enter` is that same move (`git_review_key`).
+                    if double {
+                        self.git_review_key(crossterm::event::KeyEvent::new(
+                            KeyCode::Enter,
+                            KeyModifiers::NONE,
+                        ))
+                        .await?;
+                    }
                 }
             }
             crate::widgets::NavigatorTab::Sessions => {}
@@ -304,6 +457,7 @@ impl TuiApp {
         self.hover_navigator_tab = None;
         self.hover_navigator_new_session = false;
         self.hover_queue = None;
+        self.hover_background = None;
         self.hover_option = self.option_at(col, row);
         self.hover_overlay = self.overlay_row_at(col, row);
         if self.pointer_blocked() {
@@ -314,6 +468,14 @@ impl TuiApp {
             self.hover_queue = crate::widgets::queued_messages::message_index_at(
                 messages.len(),
                 self.task_selection.queue(),
+                area,
+                col,
+                row,
+            );
+        }
+        if let Some(area) = self.background_area {
+            self.hover_background = crate::widgets::background_strip::row_index_at(
+                &self.painted_background_rows(area.height.saturating_sub(1) as usize),
                 area,
                 col,
                 row,
@@ -457,6 +619,25 @@ impl TuiApp {
                     *selected = index;
                 }
                 (OverlayRow::Theme(index), Overlay::Theme { selected, .. }) => {
+                    *selected = index;
+                }
+                (OverlayRow::Issue(index), Overlay::GithubIssues { selected, .. }) => {
+                    // Only the issue selection moves, exactly as `Up`/`Down`
+                    // do: the action menu keeps its own highlight and the index
+                    // it last had, so clicking an issue can never silently
+                    // retarget a choice the operator already made.
+                    *selected = index;
+                }
+                (OverlayRow::IssueAction(index), Overlay::GithubIssues { action, .. }) => {
+                    *action = index;
+                }
+                (OverlayRow::CommitSuggest(index), Overlay::GitCommitSuggest { selected }) => {
+                    *selected = index;
+                }
+                (OverlayRow::Branch(index), Overlay::GitBranch { selected, .. }) => {
+                    *selected = index;
+                }
+                (OverlayRow::FileExplorer(index), Overlay::FileExplorer { selected, .. }) => {
                     *selected = index;
                 }
                 _ => return Ok(()),

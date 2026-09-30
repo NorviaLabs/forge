@@ -252,6 +252,9 @@ impl TuiApp {
         self.navigator_list_area = None;
         self.task_strip_area = None;
         self.footer_area = None;
+        self.background_area = None;
+        self.slash_popup_rows.clear();
+        self.inline_search_rows.clear();
         self.option_rects.clear();
         self.overlay_rows.borrow_mut().clear();
         self.conversation_rows.clear();
@@ -950,14 +953,18 @@ impl TuiApp {
         if regions.background.height > 1 {
             let visible = (regions.background.height - 1) as usize;
             let strip = tasks_strip::BackgroundStrip::build(&background_tasks, strip_now, visible);
+            self.background_area = Some(regions.background);
             frame.render_widget(
                 BackgroundStripWidget {
                     strip: &strip,
                     selected: self.task_selection.task(),
+                    hover: self.hover_background,
                     focused: self.focus.block() == FocusBlock::Sidebar,
                 },
                 regions.background,
             );
+        } else {
+            self.background_area = None;
         }
         let width = conversation_text_width(sidebar_width);
         // Tail-only changes use `StreamMarkdownCache` and must become visible
@@ -1403,6 +1410,24 @@ impl TuiApp {
                         format!(" Commands ({n}) · {hint} ")
                     };
                     frame.render_widget(ratatui::widgets::Clear, sug_area);
+                    // The palette floats over the transcript, so the click has
+                    // to be claimed before the transcript's own area can take
+                    // focus away from the composer.
+                    let row_area = ratatui::layout::Rect {
+                        x: sug_area.x.saturating_add(1),
+                        width: sug_area.width.saturating_sub(2),
+                        height: 1,
+                        ..sug_area
+                    };
+                    for index in start..start + visible {
+                        self.slash_popup_rows.push((
+                            index,
+                            ratatui::layout::Rect {
+                                y: sug_area.y + 1 + (index - start) as u16,
+                                ..row_area
+                            },
+                        ));
+                    }
                     frame.render_widget(
                         Paragraph::new(lines).block(
                             ratatui::widgets::Block::default()
@@ -1608,7 +1633,7 @@ impl TuiApp {
     /// above the composer as the slash palette. Rows get a `Commands` and a
     /// `History` header; the highlighted row is marked and `search_match`
     /// highlights the contiguous query run in command/history text.
-    fn render_inline_search(&self, frame: &mut ratatui::Frame, input: ratatui::layout::Rect) {
+    fn render_inline_search(&mut self, frame: &mut ratatui::Frame, input: ratatui::layout::Rect) {
         let Some(state) = self.inline_search.as_ref() else {
             return;
         };
@@ -1729,6 +1754,22 @@ impl TuiApp {
         } else {
             format!(" Search: {query} · Esc close ")
         };
+        // Section headers are painted but not selectable, so only the item
+        // rows are recorded; the click has to be claimed before the transcript
+        // underneath can take focus off the composer.
+        for (position, row) in rows.iter().skip(start).take(visible).enumerate() {
+            if let Row::Item(index) = row {
+                self.inline_search_rows.push((
+                    *index,
+                    ratatui::layout::Rect {
+                        x: area.x.saturating_add(1),
+                        y: area.y + 1 + position as u16,
+                        width: area.width.saturating_sub(2),
+                        height: 1,
+                    },
+                ));
+            }
+        }
         frame.render_widget(ratatui::widgets::Clear, area);
         frame.render_widget(
             Paragraph::new(lines).block(

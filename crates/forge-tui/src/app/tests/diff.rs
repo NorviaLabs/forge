@@ -725,6 +725,67 @@ async fn the_picker_creates_a_named_branch_and_switches_between_branches() {
     assert!(app.git_sync.branches.contains(&"main".to_string()));
 }
 
+/// The branch picker's second click is its `Enter`: the same switch the
+/// keyboard performs, driven by the row the pointer is on.
+#[tokio::test]
+async fn double_clicking_a_branch_row_switches_to_it() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "one\n")], &[]);
+    let root = dir.path();
+    for args in [
+        vec!["switch", "-q", "-c", "side"],
+        vec!["switch", "-q", "main"],
+    ] {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(&args)
+            .status()
+            .unwrap();
+    }
+    app.open_git_view();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+    app.handle_diff_key(event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitBranch { .. })),
+        "`b` opens the branch picker"
+    );
+    render_app_text(&mut app, 120, 40);
+    let rows = app.overlay_rows.borrow().clone();
+    let side = rows
+        .iter()
+        .find_map(|(row, rect)| match row {
+            crate::overlays::OverlayRow::Branch(index) if *index == 1 => Some(*rect),
+            _ => None,
+        })
+        .expect("the `side` row is captured");
+
+    app.handle_mouse(left_click(side.x + 2, side.y))
+        .await
+        .unwrap();
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitBranch { selected: 1, .. })),
+        "the first click only selects"
+    );
+    app.handle_mouse(left_click(side.x + 2, side.y))
+        .await
+        .unwrap();
+    settle_git(&mut app);
+    settle_sync(&mut app);
+
+    assert!(app.overlay.is_none(), "accepting the row closed the picker");
+    assert!(git_stdout(root, &["branch", "--show-current"]).contains("side"));
+    assert_eq!(
+        app.git_sync
+            .branch
+            .as_ref()
+            .and_then(|branch| branch.branch.as_deref()),
+        Some("side"),
+        "and HEAD really moved"
+    );
+}
+
 /// The staged source answers a different question from the working tree, and
 /// the sharpest proof is a file that is staged AND then changed again: the two
 /// sources must show different patches for it.

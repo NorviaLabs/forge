@@ -1643,7 +1643,10 @@ impl TuiApp {
     /// `None` when the Git review is not on screen, so callers fall back to the
     /// ordinary Files/Workspace handling. `Some(false)` when a key neither pane
     /// owns should still start a draft.
-    async fn git_review_key(&mut self, key: event::KeyEvent) -> Result<Option<bool>, TuiError> {
+    pub(super) async fn git_review_key(
+        &mut self,
+        key: event::KeyEvent,
+    ) -> Result<Option<bool>, TuiError> {
         if !(self.git_grouped_list && self.navigator_tab == crate::widgets::NavigatorTab::Git) {
             return Ok(None);
         }

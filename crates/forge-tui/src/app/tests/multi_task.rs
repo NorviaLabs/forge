@@ -1386,7 +1386,7 @@ async fn a_finished_session_elsewhere_notifies_the_toast_only() {
 /// trust redirected at a temporary store so granting it never touches the
 /// developer's own. The supervisor starts with no registered sessions, so
 /// the roster only ever contains what the test creates.
-async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHandle) {
+pub(super) async fn app_with_supervisor() -> (TempDir, TuiApp, forge_session::SupervisorHandle) {
     let model: Arc<dyn forge_model::ModelClient> =
         Arc::new(forge_model::MockModelClient::script(vec![
             forge_types::ModelResponse {

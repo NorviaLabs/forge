@@ -1076,6 +1076,17 @@ impl TaskSelectionState {
         }
     }
 
+    /// Point the queue cursor at a specific row. Pointer hit-testing already
+    /// bounds the index, so this only records it.
+    pub(crate) fn select_queue(&mut self, index: usize) {
+        self.queue = Some(index);
+    }
+
+    /// Point the background-task cursor at a specific row.
+    pub(crate) fn select_task(&mut self, index: usize) {
+        self.tasks = Some(index);
+    }
+
     pub(crate) fn clamp_queue(&mut self, len: usize) {
         self.queue = match (len, self.queue) {
             (0, _) => None,
@@ -2049,6 +2060,17 @@ pub struct TuiApp {
     pub(crate) footer_area: Option<ratatui::layout::Rect>,
     /// Outbound queue strip rect from the last draw.
     pub(crate) queue_area: Option<ratatui::layout::Rect>,
+    /// Background-activity strip rect from the last draw.
+    pub(crate) background_area: Option<ratatui::layout::Rect>,
+    /// Hovered background-task index (pointer motion; never moves the
+    /// selection).
+    pub(crate) hover_background: Option<usize>,
+    /// Slash-command suggestion rows `(index, rect)` from the last draw.
+    /// They paint over the transcript, so the click has to be claimed before
+    /// the transcript's own area can take focus.
+    pub(crate) slash_popup_rows: Vec<(usize, ratatui::layout::Rect)>,
+    /// `Ctrl+r` palette rows `(index, rect)` from the last draw.
+    pub(crate) inline_search_rows: Vec<(usize, ratatui::layout::Rect)>,
     /// Last left-click `(when, column, row)` for double-click detection.
     pub(crate) last_click: Option<(Instant, u16, u16)>,
     /// Hovered navigator session index (pointer motion; never moves focus).

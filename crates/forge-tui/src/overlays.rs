@@ -715,23 +715,24 @@ impl Overlay {
         }
     }
 
-    /// The branch rows to paint: a window around the selection rather than a
-    /// page that scrolls the current branch out of sight.
+    /// Paint a window around the selection, paired with each branch's `items`
+    /// index. The second return value is the first position in the filtered
+    /// matches, so pointer selection uses the keyboard's index space.
     fn branch_rows(
         items: &[String],
         matches: &[usize],
         selected: usize,
         current: Option<&str>,
         budget: usize,
-    ) -> Vec<String> {
+    ) -> (Vec<(usize, String)>, usize) {
         if matches.is_empty() || budget == 0 {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         let selected = selected.min(matches.len() - 1);
         let first = selected
             .saturating_sub(budget / 2)
             .min(matches.len().saturating_sub(budget.min(matches.len())));
-        matches
+        let rows = matches
             .iter()
             .skip(first)
             .take(budget)
@@ -744,9 +745,10 @@ impl Overlay {
                 } else {
                     ""
                 };
-                format!("{cursor} {name}{marker}")
+                (*index, format!("{cursor} {name}{marker}"))
             })
-            .collect()
+            .collect();
+        (rows, first)
     }
 
     fn session_switcher_indices(items: &[SessionSwitcherItem], filter: &str) -> Vec<usize> {
@@ -3030,6 +3032,11 @@ pub enum OverlayRow {
     Resume(usize),
     Session(usize),
     Theme(usize),
+    Issue(usize),
+    IssueAction(usize),
+    CommitSuggest(usize),
+    Branch(usize),
+    FileExplorer(usize),
 }
 
 /// Record one list row's screen rect for pointer hit-testing. No-op without a
@@ -3049,6 +3056,19 @@ fn record_row(
                 ..area
             },
         ));
+    }
+}
+
+/// [`record_row`] for paragraphs: a line the paragraph clipped away was never
+/// painted, so it must not be clickable either.
+fn record_in(
+    sink: Option<&std::cell::RefCell<Vec<(OverlayRow, Rect)>>>,
+    row: OverlayRow,
+    area: Rect,
+    y: u16,
+) {
+    if y >= area.y && y < area.bottom() {
+        record_row(sink, row, area, y);
     }
 }
 
@@ -3173,12 +3193,29 @@ impl Widget for OverlayWidget<'_> {
                 } else {
                     for (index, issue) in items.iter().enumerate() {
                         let marker = if index == *selected { ">" } else { " " };
+                        let hovered =
+                            hover_row == Some(OverlayRow::Issue(index)) && index != *selected;
+                        let ground = |style: ratatui::style::Style| {
+                            if hovered {
+                                style
+                                    .patch(theme::surface_hover())
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                style
+                            }
+                        };
+                        record_in(
+                            sink,
+                            OverlayRow::Issue(index),
+                            inner,
+                            inner.y + 2 + index as u16,
+                        );
                         lines.push(Line::from(vec![
                             Span::styled(
                                 format!("{marker} #{} ", issue.number),
-                                theme::accent_style(),
+                                ground(theme::accent_style()),
                             ),
-                            Span::styled(issue.title.clone(), theme::text()),
+                            Span::styled(issue.title.clone(), ground(theme::text())),
                             Span::styled(
                                 format!(
                                     "  {}",
@@ -3187,12 +3224,22 @@ impl Widget for OverlayWidget<'_> {
                                         .map(String::as_str)
                                         .unwrap_or("No PR status")
                                 ),
-                                theme::muted(),
+                                ground(theme::muted()),
                             ),
                         ]));
                     }
                 }
                 lines.push(Line::from(""));
+                // The action menu starts on the line after the blank that
+                // follows the issue rows. The error and empty-list variants
+                // put one line there instead of the rows.
+                let menu_top = inner.y
+                    + 3
+                    + if error.is_some() || items.is_empty() {
+                        1
+                    } else {
+                        items.len() as u16
+                    };
                 if *action_menu {
                     let choices = [
                         "Start isolated issue task",
@@ -3201,9 +3248,21 @@ impl Widget for OverlayWidget<'_> {
                         "Address review / CI feedback",
                     ];
                     for (index, label) in choices.iter().enumerate() {
+                        let hovered =
+                            hover_row == Some(OverlayRow::IssueAction(index)) && index != *action;
+                        record_in(
+                            sink,
+                            OverlayRow::IssueAction(index),
+                            inner,
+                            menu_top + index as u16,
+                        );
                         lines.push(Line::from(Span::styled(
                             format!("{} {label}", if *action == index { ">" } else { " " }),
-                            if *action == index {
+                            if hovered {
+                                theme::text()
+                                    .patch(theme::surface_hover())
+                                    .add_modifier(Modifier::BOLD)
+                            } else if *action == index {
                                 theme::accent_style()
                             } else {
                                 theme::text()
@@ -3900,7 +3959,7 @@ impl Widget for OverlayWidget<'_> {
                 let matches = Overlay::branch_matches(items, filter);
                 // Two rows for the filter line and its blank, two for the hint
                 // line and its blank, two for the block's own border.
-                let rows = Overlay::branch_rows(
+                let (rows, window) = Overlay::branch_rows(
                     items,
                     &matches,
                     *selected,
@@ -3924,18 +3983,37 @@ impl Widget for OverlayWidget<'_> {
                         "Enter switch · an unmatched name creates · x delete · r rename · Esc cancel",
                     )
                 };
+                let rows_text = rows
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .padding(Padding::horizontal(MODAL_PAD_X))
+                    .title(theme::modal_title(title));
+                let inner = block.inner(r);
+                // The filter line, a blank, then the rows. The "no branch
+                // matches" note adds two lines ahead of them, but only in the
+                // case where there are no rows to address.
+                let rows_top = inner.y + if empty.is_empty() { 2 } else { 4 };
+                // The keyboard's `selected` indexes the filtered matches, and
+                // the window is a contiguous slice of them, so the row's
+                // selection index is its offset from the window's first.
+                for (offset, _) in rows.iter().enumerate() {
+                    record_in(
+                        sink,
+                        OverlayRow::Branch(window + offset),
+                        inner,
+                        rows_top + offset as u16,
+                    );
+                }
                 Paragraph::new(format!(
-                    "Filter: {filter}█{empty}\n\n{}\n\n{hint}{error}",
-                    rows.join("\n")
+                    "Filter: {filter}█{empty}\n\n{rows_text}\n\n{hint}{error}"
                 ))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border())
-                        .style(theme::panel())
-                        .padding(Padding::horizontal(MODAL_PAD_X))
-                        .title(theme::modal_title(title)),
-                )
+                .block(block)
                 .render(r, buf);
             }
             Overlay::GitDeleteBranch { name, detail } => {
@@ -4031,18 +4109,28 @@ impl Widget for OverlayWidget<'_> {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .padding(Padding::horizontal(MODAL_PAD_X))
+                    .title(theme::modal_title("No staged changes"));
+                let inner = block.inner(r);
+                // Two lines of question, then a blank, so the choices start on
+                // the fourth line of the paragraph.
+                for index in 0..GIT_COMMIT_SUGGEST.len() {
+                    record_in(
+                        sink,
+                        OverlayRow::CommitSuggest(index),
+                        inner,
+                        inner.y + 4 + index as u16,
+                    );
+                }
                 Paragraph::new(format!(
                     "Nothing is staged.\n\nStage all changes and commit them?\n\n{rows}\n\n\
                      ↑↓ move · Enter choose · Esc cancel"
                 ))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border())
-                        .style(theme::panel())
-                        .padding(Padding::horizontal(MODAL_PAD_X))
-                        .title(theme::modal_title("No staged changes")),
-                )
+                .block(block)
                 .render(r, buf);
             }
             Overlay::SessionConfirm {
@@ -4204,22 +4292,6 @@ impl Widget for OverlayWidget<'_> {
                     .saturating_add(1)
                     .saturating_sub(visible)
                     .min(items.len().saturating_sub(visible));
-                let list_items: Vec<ListItem> = items
-                    .iter()
-                    .enumerate()
-                    .skip(start)
-                    .take(visible)
-                    .map(|(index, item)| {
-                        let marker = if index == *selected { "> " } else { "  " };
-                        let style = if index == *selected {
-                            theme::selected_row()
-                        } else {
-                            theme::text()
-                        };
-                        let kind = if item.is_dir { "📁" } else { "  " };
-                        ListItem::new(Span::styled(format!("{marker}{kind} {}", item.name), style))
-                    })
-                    .collect();
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -4244,6 +4316,35 @@ impl Widget for OverlayWidget<'_> {
                     .style(theme::muted())
                     .render(regions[0], buf);
                 let list_area = picker_scrollbar(regions[1], buf, items.len(), start, visible);
+                let list_items: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(visible)
+                    .map(|(index, item)| {
+                        let marker = if index == *selected { "> " } else { "  " };
+                        let selected_row = index == *selected;
+                        let hovered =
+                            hover_row == Some(OverlayRow::FileExplorer(index)) && !selected_row;
+                        record_row(
+                            sink,
+                            OverlayRow::FileExplorer(index),
+                            list_area,
+                            list_area.y + (index - start) as u16,
+                        );
+                        let style = if selected_row {
+                            theme::selected_row()
+                        } else if hovered {
+                            theme::text()
+                                .patch(theme::surface_hover())
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            theme::text()
+                        };
+                        let kind = if item.is_dir { "📁" } else { "  " };
+                        ListItem::new(Span::styled(format!("{marker}{kind} {}", item.name), style))
+                    })
+                    .collect();
                 List::new(list_items).render(list_area, buf);
                 let status = error
                     .as_deref()
@@ -4416,6 +4517,147 @@ mod tests {
                 .contains(Modifier::BOLD),
             "hovered row lost its weight step"
         );
+    }
+
+    /// The keyboard-only lists record their painted rows too, and the recorded
+    /// rect is checked against the cell the row actually drew — the failure
+    /// this whole mechanism exists to prevent is a rect that points at a line
+    /// above or below the row it names.
+    #[test]
+    fn the_git_and_issue_lists_record_the_rows_they_paint() {
+        fn recorded(overlay: &Overlay, area: Rect) -> (Buffer, Vec<(OverlayRow, Rect)>) {
+            let mut buf = Buffer::empty(area);
+            let sink = std::cell::RefCell::new(Vec::new());
+            OverlayWidget {
+                overlay,
+                row_sink: Some(&sink),
+                hover_row: None,
+            }
+            .render(area, &mut buf);
+            (buf, sink.into_inner())
+        }
+        fn line_text(buf: &Buffer, area: Rect, y: u16) -> String {
+            (area.x..area.right())
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        }
+
+        // GitHub issues: the issue rows, then the action menu under them.
+        let issues = Overlay::GithubIssues {
+            selected: 0,
+            filter: String::new(),
+            items: vec![
+                forge_workspace::github::Issue {
+                    number: 11,
+                    title: "crash on start".into(),
+                    url: String::new(),
+                    state: "open".into(),
+                    labels: Vec::new(),
+                },
+                forge_workspace::github::Issue {
+                    number: 12,
+                    title: "stale docs".into(),
+                    url: String::new(),
+                    state: "open".into(),
+                    labels: Vec::new(),
+                },
+            ],
+            error: None,
+            action: 0,
+            action_menu: true,
+            pr_states: Default::default(),
+        };
+        let area = Rect::new(0, 0, 100, 48);
+        let (buf, rows) = recorded(&issues, area);
+        for (row, needle) in [
+            (OverlayRow::Issue(0), "#11 crash on start"),
+            (OverlayRow::Issue(1), "#12 stale docs"),
+            (OverlayRow::IssueAction(1), "Create / refresh PR"),
+        ] {
+            let (_, rect) = rows
+                .iter()
+                .find(|(recorded, _)| *recorded == row)
+                .unwrap_or_else(|| panic!("{row:?} was not recorded: {rows:?}"));
+            let text = line_text(&buf, area, rect.y);
+            assert!(
+                text.contains(needle),
+                "{row:?} points at `{text}`, which does not hold `{needle}`"
+            );
+        }
+
+        // The commit-suggest choices.
+        let suggest = Overlay::GitCommitSuggest { selected: 0 };
+        let (buf, rows) = recorded(&suggest, area);
+        for (index, needle) in GIT_COMMIT_SUGGEST.iter().enumerate() {
+            let row = OverlayRow::CommitSuggest(index);
+            let (_, rect) = rows
+                .iter()
+                .find(|(recorded, _)| *recorded == row)
+                .unwrap_or_else(|| panic!("{row:?} was not recorded: {rows:?}"));
+            let text = line_text(&buf, area, rect.y);
+            assert!(
+                text.contains(needle),
+                "{row:?} points at `{text}`, which does not hold `{needle}`"
+            );
+        }
+
+        // The branch picker, whose recorded index is into the filtered matches
+        // — the same space the keyboard's `selected` lives in.
+        let branches = Overlay::GitBranch {
+            selected: 1,
+            filter: String::new(),
+            items: vec!["main".into(), "feat/one".into(), "fix/two".into()],
+            current: Some("main".into()),
+            merge: false,
+            error: None,
+        };
+        let (buf, rows) = recorded(&branches, area);
+        for (index, needle) in ["main", "feat/one", "fix/two"].iter().enumerate() {
+            let row = OverlayRow::Branch(index);
+            let (_, rect) = rows
+                .iter()
+                .find(|(recorded, _)| *recorded == row)
+                .unwrap_or_else(|| panic!("{row:?} was not recorded: {rows:?}"));
+            let text = line_text(&buf, area, rect.y);
+            assert!(
+                text.contains(needle),
+                "{row:?} points at `{text}`, which does not hold `{needle}`"
+            );
+        }
+
+        // The read-only file explorer.
+        let explorer = Overlay::FileExplorer {
+            cwd: "/tmp".into(),
+            selected: 0,
+            items: vec![
+                FileExplorerItem {
+                    name: "src".into(),
+                    path: "/tmp/src".into(),
+                    is_dir: true,
+                },
+                FileExplorerItem {
+                    name: "notes.md".into(),
+                    path: "/tmp/notes.md".into(),
+                    is_dir: false,
+                },
+            ],
+            error: None,
+        };
+        let (buf, rows) = recorded(&explorer, area);
+        for (index, needle) in ["src", "notes.md"].iter().enumerate() {
+            let row = OverlayRow::FileExplorer(index);
+            let (_, rect) = rows
+                .iter()
+                .find(|(recorded, _)| *recorded == row)
+                .unwrap_or_else(|| panic!("{row:?} was not recorded: {rows:?}"));
+            let text = line_text(&buf, area, rect.y);
+            assert!(
+                text.contains(needle),
+                "{row:?} points at `{text}`, which does not hold `{needle}`"
+            );
+        }
     }
 
     #[test]

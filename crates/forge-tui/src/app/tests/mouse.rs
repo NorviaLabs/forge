@@ -773,3 +773,546 @@ async fn click_selects_a_question_option_row() {
     assert_eq!(app.focus.block(), FocusBlock::Approval);
     assert_eq!(app.question_menu_indexes().1, 1);
 }
+
+/// A click on a row in the navigator list hands the keyboard to the pane under
+/// the tab row, exactly as a click on the tab itself does. Without this the
+/// click's focus change is invisible: the pane paints unfocused and every bare
+/// key still goes to the tab row, which swallows them on purpose.
+#[tokio::test]
+async fn click_on_a_navigator_row_drops_the_tab_row_focus() {
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.session_chrome.push(SessionChromeItem {
+        session_id: uuid::Uuid::new_v4(),
+        slot: None,
+        label: "one".into(),
+        branch: "main".into(),
+        lifecycle: forge_types::TaskLifecycle::Ready,
+        selected: true,
+        secondary: None,
+        attention: false,
+        updated_at: chrono::Utc::now(),
+    });
+    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::TaskStrip);
+    app.focus_navigator_tab_row();
+    assert!(app.navigator_tab_row_focused, "the row holds the keyboard");
+
+    app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
+    app.handle_mouse(left_click(2, 5)).await.unwrap();
+
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    assert_eq!(app.task_strip_selection, 0);
+    assert!(
+        !app.navigator_tab_row_focused,
+        "the clicked pane must own the keyboard, not the tab row"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A git-changes row selects on the first click and acts on the second, like a
+/// session row: the patch lives in the Workspace block, so acting means
+/// handing the keyboard there.
+#[tokio::test]
+async fn double_click_on_a_git_row_hands_the_keyboard_to_the_patch() {
+    use crate::diff_view::{DiffEntry, DiffSide};
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.navigator_tab = crate::widgets::NavigatorTab::Git;
+    app.navigator_tab_explicit = true;
+    app.git_grouped_list = true;
+    app.diff_view.entries = ["a.txt", "b.txt"]
+        .into_iter()
+        .map(|path| DiffEntry {
+            path: path.into(),
+            marker: "M",
+            untracked: false,
+            side: Some(DiffSide::Unstaged),
+        })
+        .collect();
+    app.diff_view.selected = 1;
+    // The list's first inner row is the `Unstaged` group heading, which is not
+    // selectable, so file 0 sits one row below the pane's top border.
+    app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
+    app.focus_block(FocusBlock::Files);
+
+    app.handle_mouse(left_click(2, 7)).await.unwrap();
+    assert_eq!(app.diff_view.selected, 0, "one click selects the row");
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Files,
+        "one click does not jump to the patch"
+    );
+
+    app.handle_mouse(left_click(2, 7)).await.unwrap();
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Workspace,
+        "the second click acts, the way `Enter` does"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A queued-message row is selectable by pointer. Before this the strip only
+/// took hover, so `Ctrl+Backspace` could only ever cancel the row `Ctrl+↑` had
+/// landed on — a mouse had no way to reach any other row.
+#[tokio::test]
+async fn click_on_a_queued_message_row_selects_it() {
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    // Written straight into the roster, so the fixture does not depend on when
+    // a submitted prompt shows up in the supervisor's snapshot.
+    app.supervisor
+        .as_mut()
+        .unwrap()
+        .snapshots
+        .get_mut(&app.selected_session_id)
+        .unwrap()
+        .queued_prompts = vec![(1, "first".into()), (2, "second".into())];
+    assert_eq!(app.selected_queue_messages().len(), 2, "fixture");
+    app.background_area = Some(ratatui::layout::Rect::new(0, 40, 40, 4));
+    // Row 0 is the strip's header; the two messages follow it.
+    app.queue_area = Some(ratatui::layout::Rect::new(0, 30, 40, 3));
+    app.focus_block(FocusBlock::Composer);
+
+    app.handle_mouse(left_click(6, 32)).await.unwrap();
+
+    assert_eq!(
+        app.task_selection.queue(),
+        Some(1),
+        "the clicked row becomes the one Ctrl+Backspace acts on"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A click inside the background-activity strip is claimed by the strip and
+/// hands the keyboard to the block it belongs to. The strip's own rows are
+/// exercised in `widgets::background_strip`; this pins the routing, so the
+/// click can never fall through to the transcript underneath it.
+#[tokio::test]
+async fn click_in_the_background_strip_takes_the_keyboard() {
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.background_area = Some(ratatui::layout::Rect::new(0, 40, 40, 4));
+    app.focus_block(FocusBlock::Composer);
+
+    app.handle_mouse(left_click(6, 42)).await.unwrap();
+
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// A slash-command suggestion row is selectable by pointer, and the click keeps
+/// the keyboard in the composer. The palette floats over the transcript, so
+/// before the renderer recorded its rows the click fell through to the
+/// transcript and moved the keyboard out of the composer entirely.
+#[tokio::test]
+async fn click_on_a_slash_suggestion_row_keeps_the_keyboard_in_the_composer() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("/");
+    app.focus_block(FocusBlock::Composer);
+    draw_app(&mut app, 100, 40);
+    let (index, rect) = app.slash_popup_rows[1];
+    assert!(
+        rect.width > 1 && rect.height == 1,
+        "degenerate row {rect:?}"
+    );
+
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+
+    assert_eq!(app.slash_suggestions.selected, index);
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Composer,
+        "the popup is part of the composer, not the transcript beneath it"
+    );
+}
+
+/// The second click on a suggestion row accepts it, the way `Tab` does.
+#[tokio::test]
+async fn double_click_on_a_slash_suggestion_row_accepts_it() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("/");
+    app.focus_block(FocusBlock::Composer);
+    draw_app(&mut app, 100, 40);
+    let (index, rect) = app.slash_popup_rows[1];
+    let expected = format!("{} ", app.slash_suggestions()[index].cmd);
+
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+
+    assert_eq!(app.input.text, expected);
+}
+
+/// Same contract for the `Ctrl+r` commands+history palette. Its section headers
+/// are painted but not selectable, so only item rows are hittable.
+#[tokio::test]
+async fn clicking_the_inline_search_palette_selects_and_double_click_accepts() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_inline_search();
+    app.focus_block(FocusBlock::Composer);
+    draw_app(&mut app, 100, 40);
+    assert!(
+        !app.inline_search_rows.is_empty(),
+        "the palette painted no hittable rows"
+    );
+    // Every recorded row must be a real line, not the palette's own border.
+    for (_, rect) in &app.inline_search_rows {
+        assert_eq!(rect.height, 1, "degenerate row {rect:?}");
+    }
+    let (index, rect) = app.inline_search_rows[2];
+    let expected = app.inline_search_items()[index].clone();
+    let expected = match expected {
+        crate::app::InlineSearchItem::Command(item) => format!("{} ", item.display_cmd()),
+        crate::app::InlineSearchItem::History(text) => text,
+    };
+
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+    assert_eq!(app.inline_search.as_ref().unwrap().selected, index);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+
+    app.handle_mouse(left_click(rect.x + 2, rect.y))
+        .await
+        .unwrap();
+    assert_eq!(app.input.text, expected);
+    assert!(app.inline_search.is_none(), "accepting closes the palette");
+}
+
+/// A click in the editor places the caret at the cell under the pointer, using
+/// the same gutter math as drag-selection, so the two can never disagree about
+/// where the text is.
+#[tokio::test]
+async fn click_in_the_editor_places_the_caret() {
+    let (dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    let path = dir.path().join("lines.txt");
+    std::fs::write(&path, "alpha\nbravo\ncharlie\n").unwrap();
+    app.open_file_in_editor(&path);
+    draw_app(&mut app, 100, 40);
+    let area = app.editor_area.expect("the editor pane is on screen");
+    // `editor_body` skips the pane's border and header; the text starts after
+    // the line-number gutter (3 cells wide, minimum, plus 3 cells of space).
+    let body = crate::selection::editor_body(area);
+    let content_x = body.x + 6;
+
+    app.handle_mouse(left_click(content_x + 3, body.y + 1))
+        .await
+        .unwrap();
+
+    let editor = app.editor_session.as_ref().expect("a live editor");
+    assert_eq!(editor.cursor_row(), 1, "the clicked line");
+    assert_eq!(editor.cursor_col(), 3, "the clicked character");
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+
+    // Clicking left of the line numbers means the start of the line.
+    app.handle_mouse(left_click(body.x, body.y + 2))
+        .await
+        .unwrap();
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 2);
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 0);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// In the read-only preview there is no caret, so a click moves the current
+/// line — the same thing every line-scrolling key moves, which keeps `j`/`k`
+/// and the other navigation continuing from where the pointer left the cursor.
+#[tokio::test]
+async fn click_in_a_read_only_preview_moves_the_current_line() {
+    let (dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    let path = dir.path().join("lines.txt");
+    std::fs::write(&path, "alpha\nbravo\ncharlie\n").unwrap();
+    app.open_file_in_editor(&path);
+    // The read-only viewer is what a file the editor cannot open gets.
+    app.editor_session = None;
+    app.source_viewer.lines = vec![
+        "alpha".to_string(),
+        "bravo".to_string(),
+        "charlie".to_string(),
+    ];
+    draw_app(&mut app, 100, 40);
+    let area = app.editor_area.expect("the preview is on screen");
+    let body = crate::selection::editor_body(area);
+
+    app.handle_mouse(left_click(body.x + 8, body.y + 2))
+        .await
+        .unwrap();
+
+    assert_eq!(app.source_viewer.current_line, 2);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+/// The GitHub issue list and its action menu are selectable by pointer. The
+/// double click is the issue list's `Enter`, which opens the action menu — the
+/// same split the keyboard has between moving and choosing.
+#[tokio::test]
+async fn click_selects_a_github_issue_row_and_its_action_row() {
+    let (_dir, mut app) = focus_test_app().await;
+    let issue = |number: u64, title: &str| forge_workspace::github::Issue {
+        number,
+        title: title.into(),
+        url: String::new(),
+        state: "open".into(),
+        labels: Vec::new(),
+    };
+    app.overlay = Some(Overlay::GithubIssues {
+        selected: 0,
+        filter: String::new(),
+        items: vec![issue(11, "crash on start"), issue(12, "stale docs")],
+        error: None,
+        action: 0,
+        action_menu: true,
+        pr_states: Default::default(),
+    });
+    render_app_text(&mut app, 120, 40);
+    let rows = app.overlay_rows.borrow().clone();
+    let rect_of = |row| {
+        rows.iter()
+            .find(|(recorded, _)| *recorded == row)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("{row:?} captured: {rows:?}"))
+    };
+    let block_before = app.focus.block();
+
+    app.handle_mouse(left_click(
+        rect_of(crate::overlays::OverlayRow::Issue(1)).x + 2,
+        rect_of(crate::overlays::OverlayRow::Issue(1)).y,
+    ))
+    .await
+    .unwrap();
+    app.handle_mouse(left_click(
+        rect_of(crate::overlays::OverlayRow::IssueAction(2)).x + 2,
+        rect_of(crate::overlays::OverlayRow::IssueAction(2)).y,
+    ))
+    .await
+    .unwrap();
+
+    match &app.overlay {
+        Some(Overlay::GithubIssues {
+            selected, action, ..
+        }) => {
+            assert_eq!(*selected, 1, "the clicked issue");
+            assert_eq!(*action, 2, "the clicked action");
+        }
+        other => panic!("overlay lost: {other:?}"),
+    }
+    assert_eq!(app.focus.block(), block_before, "a click never moves focus");
+
+    // Selecting an issue with the menu closed and double-clicking it runs the
+    // issue list's own `Enter`: open the action menu.
+    if let Some(Overlay::GithubIssues { action_menu, .. }) = &mut app.overlay {
+        *action_menu = false;
+    }
+    let second = rect_of(crate::overlays::OverlayRow::Issue(1));
+    app.handle_mouse(left_click(second.x + 2, second.y))
+        .await
+        .unwrap();
+    app.handle_mouse(left_click(second.x + 2, second.y))
+        .await
+        .unwrap();
+    match &app.overlay {
+        Some(Overlay::GithubIssues { action_menu, .. }) => assert!(
+            *action_menu,
+            "the second click accepted, the way Enter does"
+        ),
+        other => panic!("overlay lost: {other:?}"),
+    }
+}
+
+/// The commit-suggest choices are selectable, and the second click on `Cancel`
+/// closes the menu through the same `Enter` path the keyboard uses.
+#[tokio::test]
+async fn click_selects_a_commit_suggest_row_and_double_click_cancels() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.overlay = Some(Overlay::GitCommitSuggest { selected: 0 });
+    render_app_text(&mut app, 120, 40);
+    let rows = app.overlay_rows.borrow().clone();
+    let rect_of = |row| {
+        rows.iter()
+            .find(|(recorded, _)| *recorded == row)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("{row:?} captured: {rows:?}"))
+    };
+    let always = rect_of(crate::overlays::OverlayRow::CommitSuggest(1));
+
+    app.handle_mouse(left_click(always.x + 2, always.y))
+        .await
+        .unwrap();
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitCommitSuggest { selected: 1 })),
+        "the clicked choice is the highlighted one"
+    );
+
+    let cancel = rect_of(crate::overlays::OverlayRow::CommitSuggest(2));
+    app.handle_mouse(left_click(cancel.x + 2, cancel.y))
+        .await
+        .unwrap();
+    app.handle_mouse(left_click(cancel.x + 2, cancel.y))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none(), "Cancel accepted, so the menu closed");
+}
+
+/// A branch row records its index into the *filtered* matches — the space the
+/// keyboard's `selected` lives in — not into the branch list. `main` is filtered
+/// out here, so the first painted row is `feat/one` and must land on `0`.
+#[tokio::test]
+async fn click_selects_a_branch_row_in_the_filtered_index_space() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.overlay = Some(Overlay::GitBranch {
+        selected: 0,
+        filter: "feat".into(),
+        items: vec!["main".into(), "feat/one".into(), "feat/two".into()],
+        current: Some("main".into()),
+        merge: false,
+        error: None,
+    });
+    render_app_text(&mut app, 120, 40);
+    let rows = app.overlay_rows.borrow().clone();
+    let row: Vec<_> = rows
+        .iter()
+        .filter(|(row, _)| matches!(row, crate::overlays::OverlayRow::Branch(_)))
+        .cloned()
+        .collect();
+    assert_eq!(
+        row.iter()
+            .filter(|(kind, _)| *kind == crate::overlays::OverlayRow::Branch(0))
+            .count(),
+        1,
+        "only the first match is recorded: {row:?}"
+    );
+    let (_, first) = row[0];
+    let (_, second) = row[1];
+
+    app.handle_mouse(left_click(first.x + 2, first.y))
+        .await
+        .unwrap();
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitBranch { selected: 0, .. })),
+        "feat/one is the first match, not item 1"
+    );
+    app.handle_mouse(left_click(second.x + 2, second.y))
+        .await
+        .unwrap();
+    assert!(
+        matches!(app.overlay, Some(Overlay::GitBranch { selected: 1, .. })),
+        "feat/two is the second match"
+    );
+}
+
+/// A file-explorer row is selectable, and the second click on a directory
+/// descends into it — the same `Enter` path the keyboard uses.
+#[tokio::test]
+async fn click_selects_a_file_explorer_row_and_double_click_descends() {
+    let (dir, mut app) = focus_test_app().await;
+    let sub = dir.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    app.overlay = Some(Overlay::FileExplorer {
+        cwd: dir.path().display().to_string(),
+        selected: 0,
+        items: vec![
+            crate::overlays::FileExplorerItem {
+                name: "sub".into(),
+                path: sub.display().to_string(),
+                is_dir: true,
+            },
+            crate::overlays::FileExplorerItem {
+                name: "notes.md".into(),
+                path: dir.path().join("notes.md").display().to_string(),
+                is_dir: false,
+            },
+        ],
+        error: None,
+    });
+    render_app_text(&mut app, 120, 40);
+    let rows = app.overlay_rows.borrow().clone();
+    let rect_of = |row| {
+        rows.iter()
+            .find(|(recorded, _)| *recorded == row)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("{row:?} captured: {rows:?}"))
+    };
+    let file = rect_of(crate::overlays::OverlayRow::FileExplorer(1));
+
+    app.handle_mouse(left_click(file.x + 2, file.y))
+        .await
+        .unwrap();
+    assert!(
+        matches!(app.overlay, Some(Overlay::FileExplorer { selected: 1, .. })),
+        "the clicked entry is the highlighted one"
+    );
+
+    let directory = rect_of(crate::overlays::OverlayRow::FileExplorer(0));
+    app.handle_mouse(left_click(directory.x + 2, directory.y))
+        .await
+        .unwrap();
+    app.handle_mouse(left_click(directory.x + 2, directory.y))
+        .await
+        .unwrap();
+    match &app.overlay {
+        // The explorer canonicalizes what it opens, which is what makes its
+        // `..` handling work, so the assertion compares canonical paths.
+        Some(Overlay::FileExplorer { cwd, .. }) => assert_eq!(
+            cwd,
+            &sub.canonicalize().unwrap().display().to_string(),
+            "the second click entered the directory, the way Enter does"
+        ),
+        other => panic!("overlay lost: {other:?}"),
+    }
+}
+
+/// The search prompt takes every keystroke, so a click landing behind it must
+/// not act on the pane it covers — a caret placed under a prompt the keyboard
+/// can no longer reach is worse than no click at all.
+#[tokio::test]
+async fn a_click_behind_the_source_search_prompt_is_ignored() {
+    let (dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    let path = dir.path().join("lines.txt");
+    std::fs::write(&path, "alpha\nbravo\ncharlie\n").unwrap();
+    app.open_file_in_editor(&path);
+    draw_app(&mut app, 100, 40);
+    let area = app.editor_area.expect("the editor pane is on screen");
+    let body = crate::selection::editor_body(area);
+    app.source_viewer.start_search();
+    app.source_viewer.append_search_char('a');
+    app.normalize_focus();
+    let mode = app.focus.mode();
+
+    app.handle_mouse(left_click(body.x + 9, body.y + 1))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.mode(), mode, "the prompt keeps the keyboard");
+    let editor = app.editor_session.as_ref().expect("a live editor");
+    assert_eq!(
+        (editor.cursor_row(), editor.cursor_col()),
+        (0, 0),
+        "a click behind the prompt must not move the caret"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}

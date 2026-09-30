@@ -28,9 +28,41 @@ pub struct BackgroundStripWidget<'a> {
     /// reason the strip exists: the keys already worked, but with nothing drawn
     /// the selection was invisible.
     pub selected: Option<usize>,
+    /// Row under the pointer (pointer motion only; never moves the
+    /// selection). Painted as `›` in the row's own reserved gutter cell, so
+    /// hover can never shift text.
+    pub hover: Option<usize>,
     /// Whether the Sidebar block owns the keyboard. A selection inside an
     /// inactive block stays visible but muted and must not imply ownership.
     pub focused: bool,
+}
+
+/// Rows are one line each, plus a second for a row that carries a detail line.
+/// Paint and hit-testing both step by this, so a row the pointer addresses is
+/// always the row the operator sees.
+fn row_height(row: &StripRow) -> u16 {
+    1 + u16::from(row.detail.is_some())
+}
+
+/// Index of the strip row under a pointer cell, if any. Row 0 is the strip
+/// header and is never hittable. Shared with the renderer through
+/// [`row_height`] so the two can never disagree.
+pub fn row_index_at(rows: &[StripRow], area: Rect, col: u16, row: u16) -> Option<usize> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    if col < area.x || col >= area.right() || row <= area.y || row >= area.bottom() {
+        return None;
+    }
+    let mut y = area.y + 1;
+    for (index, entry) in rows.iter().enumerate() {
+        let height = row_height(entry);
+        if row < y + height {
+            return Some(index);
+        }
+        y += height;
+    }
+    None
 }
 
 impl Widget for BackgroundStripWidget<'_> {
@@ -50,10 +82,17 @@ impl Widget for BackgroundStripWidget<'_> {
                 break;
             }
             let selected = self.selected == Some(index);
-            self.render_row(row, selected, area.x, y, width, buf);
+            let hovered = self.hover == Some(index);
+            self.render_row(
+                row,
+                selected,
+                hovered,
+                Rect::new(area.x, y, width as u16, 1),
+                buf,
+            );
             // A row with a second line is two lines tall; advancing by one
             // would draw the next row over that line.
-            lines_above += 1 + u16::from(row.detail.is_some());
+            lines_above += row_height(row);
         }
     }
 }
@@ -96,11 +135,12 @@ impl BackgroundStripWidget<'_> {
         &self,
         row: &StripRow,
         selected: bool,
-        x: u16,
-        y: u16,
-        width: usize,
+        hovered: bool,
+        area: Rect,
         buf: &mut Buffer,
     ) {
+        let Rect { x, y, width, .. } = area;
+        let width = width as usize;
         // The selected row takes the neutral `selection` ground plus the `>`
         // pointer, the same treatment the navigator's rows get. A selection in
         // an unfocused block keeps the ground but drops to secondary text, so
@@ -114,10 +154,23 @@ impl BackgroundStripWidget<'_> {
                 theme::focused_selection_style().patch(theme::dim()),
                 Span::styled("> ", theme::dim()),
             ),
+            // Hover is a pointer affordance on a row that can be acted on: a
+            // raised ground plus the non-colour `›` marker, in the row's own
+            // reserved gutter, so it never shifts text (§8.6).
+            (false, _) if hovered => (
+                theme::text().patch(theme::surface_hover()),
+                Span::styled("› ", theme::active_panel_border()),
+            ),
             (false, _) => (theme::text_secondary(), Span::raw("  ")),
         };
         if selected {
             theme::fill(Rect::new(x, y, width as u16, 1), buf, row_style);
+        } else if hovered {
+            theme::fill(
+                Rect::new(x, y, width as u16, 1),
+                buf,
+                theme::surface_hover(),
+            );
         }
 
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -230,6 +283,17 @@ mod tests {
         w: u16,
         h: u16,
     ) -> String {
+        draw_with_hover(strip, selected, None, focused, w, h)
+    }
+
+    fn draw_with_hover(
+        strip: &BackgroundStrip,
+        selected: Option<usize>,
+        hover: Option<usize>,
+        focused: bool,
+        w: u16,
+        h: u16,
+    ) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal
             .draw(|frame| {
@@ -237,6 +301,7 @@ mod tests {
                     BackgroundStripWidget {
                         strip,
                         selected,
+                        hover,
                         focused,
                     },
                     frame.area(),
@@ -389,5 +454,64 @@ mod tests {
 
         assert!(text.contains("one"), "{text}");
         assert!(!text.contains("two"), "a clipped row must not draw: {text}");
+    }
+
+    /// Hit-testing must agree with painting cell for cell, including for a
+    /// row whose detail line makes it two lines tall. Row 0 is the header and
+    /// is not hittable.
+    #[test]
+    fn row_index_at_addresses_the_painted_rows() {
+        let mut tall = row(StripState::Blocked, "explore", "9s");
+        tall.detail = Some("bash cargo clippy".into());
+        let strip = strip_of(
+            vec![
+                row(StripState::Active, "one", "1s"),
+                tall,
+                row(StripState::Active, "three", "3s"),
+            ],
+            0,
+        );
+        let area = Rect::new(0, 10, 44, 6);
+
+        // Header, then row 0 on the line under it.
+        assert_eq!(row_index_at(&strip.rows, area, 4, 10), None);
+        assert_eq!(row_index_at(&strip.rows, area, 4, 11), Some(0));
+        // The blocked row owns two lines, so the next row starts below both.
+        assert_eq!(row_index_at(&strip.rows, area, 4, 12), Some(1));
+        assert_eq!(row_index_at(&strip.rows, area, 4, 13), Some(1));
+        assert_eq!(row_index_at(&strip.rows, area, 4, 14), Some(2));
+        // Past the last row, and outside the region's columns.
+        assert_eq!(row_index_at(&strip.rows, area, 4, 15), None);
+        assert_eq!(row_index_at(&strip.rows, area, 44, 12), None);
+    }
+
+    /// Hover is the pointer's ring on an actionable row: a raised ground plus a
+    /// non-colour marker, drawn in the row's own reserved gutter so the label
+    /// cannot shift.
+    #[test]
+    fn hover_marks_the_row_without_moving_its_text() {
+        let strip = strip_of(
+            vec![
+                row(StripState::Active, "explore", "12s"),
+                row(StripState::Active, "verify", "31s"),
+            ],
+            0,
+        );
+
+        let hovered = draw_with_hover(&strip, None, Some(1), true, 44, 3);
+        let idle = draw(&strip, None, true, 44, 3);
+
+        assert!(
+            hovered.contains("› [>] ◆ verify"),
+            "the hovered row needs the pointer: {hovered}"
+        );
+        assert!(
+            hovered.contains("  [>] ◆ explore"),
+            "only the hovered row takes it: {hovered}"
+        );
+        assert!(
+            hovered.contains("12s") && idle.contains("12s"),
+            "an unhovered row keeps its text"
+        );
     }
 }
