@@ -82,8 +82,20 @@ pub struct FooterModel {
     pub prompt_cache_reads: u64,
     /// Live background activity for the second row. All-zero renders nothing.
     pub activity: FooterActivity,
-    /// Hovered left chip (0 = model, 1 = effort); tint only, never focus.
+    /// Hovered left chip (0 = model, 1 = effort, 2 = notes); tint only, never
+    /// focus.
     pub hover_chip: Option<usize>,
+    /// Session scratchpad state for the third chip. `None` hides the chip
+    /// entirely; `Some` shows a line count, and the word `unsaved` when the
+    /// buffer has edits since the last write.
+    pub scratchpad: Option<ScratchpadChip>,
+}
+
+/// Line count plus unsaved state for the footer's scratchpad chip.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScratchpadChip {
+    pub lines: usize,
+    pub dirty: bool,
 }
 
 pub struct FooterBar<'a> {
@@ -95,7 +107,7 @@ pub struct FooterBar<'a> {
 
 /// x-ranges `(model, effort)` of the footer's left chips, published by a
 /// paint into a [`ChipSink`] for pointer hit-testing.
-pub type ChipSink<'a> = std::cell::RefCell<Option<[(u16, u16); 2]>>;
+pub type ChipSink<'a> = std::cell::RefCell<Option<[(u16, u16); 3]>>;
 
 /// Strip a `provider/` prefix from a wire model id for display.
 pub fn footer_short_model_id(model: &str) -> &str {
@@ -470,6 +482,45 @@ impl Widget for FooterBar<'_> {
             },
         ));
 
+        // The scratchpad is an ordinary third chip: same separator, same
+        // secondary weight, no new visual class for one feature. The count is a
+        // word (`9 lines`), never a meter, and unsaved state is spelled out so
+        // colour never travels alone.
+        let notes_range = m.scratchpad.map(|chip| {
+            left.push(Span::raw(" "));
+            left.push(Span::styled("\u{2502}", theme::border_muted()));
+            left.push(Span::raw(" "));
+            let notes_x = area.x
+                + left
+                    .iter()
+                    .map(|span| span.content.chars().count() as u16)
+                    .sum::<u16>();
+            let base = if dim {
+                theme::dim()
+            } else {
+                theme::text_secondary()
+            };
+            let style = if m.hover_chip == Some(2) {
+                base.patch(theme::surface_hover())
+            } else {
+                base
+            };
+            let mut label = format!("notes {} lines", chip.lines);
+            let mut width = label.chars().count() as u16;
+            left.push(Span::styled(label.clone(), style));
+            if chip.dirty {
+                left.push(Span::raw(" "));
+                label = "\u{25cf} unsaved".into();
+                width = label.chars().count() as u16;
+                left.push(Span::styled(
+                    label,
+                    theme::warn().add_modifier(Modifier::BOLD),
+                ));
+                width += 1;
+            }
+            (notes_x, notes_x + width)
+        });
+
         let left_line = ratatui::text::Line::from(left);
         let left_w = left_line.width() as u16;
 
@@ -488,7 +539,12 @@ impl Widget for FooterBar<'_> {
             let model_end = model_x + llm_label_w;
             let effort_x = model_end + 3;
             let effort_end = effort_x + m.effort_label.chars().count() as u16;
-            *sink.borrow_mut() = Some([(model_x, model_end), (effort_x, effort_end)]);
+            let (notes_x, notes_end) = notes_range.unwrap_or((0, 0));
+            *sink.borrow_mut() = Some([
+                (model_x, model_end),
+                (effort_x, effort_end),
+                (notes_x, notes_end),
+            ]);
         }
 
         // Activity (right) never yields when it's the read-only state — it's

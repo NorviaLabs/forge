@@ -1992,6 +1992,15 @@ pub struct TuiApp {
     /// A global quit was requested while the editor was dirty; the `DirtyExit`
     /// dialog owns the decision and only exits on Save/Discard (#647).
     pub(crate) pending_editor_quit: bool,
+    /// Session-scoped running notes, loaded on demand. `None` means the
+    /// operator has not opened the scratchpad in this session yet; the footer
+    /// chip reads its state from here so it can report a count without forcing
+    /// the file into memory.
+    pub(crate) scratchpad: Option<super::scratchpad::Scratchpad>,
+    /// Cached `(lines, dirty)` for the footer chip, read once from disk so the
+    /// repainting footer never stats the filesystem. Refreshed from the live
+    /// buffer whenever the scratchpad is open.
+    pub(crate) scratchpad_summary: Option<(usize, bool)>,
     pub(crate) file_watch: FileWatchState,
     pub(crate) bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,
@@ -2054,7 +2063,7 @@ pub struct TuiApp {
     pub(crate) hover_navigator_new_session: bool,
     /// x-ranges `(model, effort)` of the footer's left chips, from the last
     /// draw, for pointer hit-testing.
-    pub(crate) footer_chip_rects: Option<[(u16, u16); 2]>,
+    pub(crate) footer_chip_rects: Option<[(u16, u16); 3]>,
     /// Hovered footer chip index (0 = model, 1 = effort).
     pub(crate) hover_chip: Option<usize>,
     /// Hovered queued-message index (pointer motion; never moves the selection).

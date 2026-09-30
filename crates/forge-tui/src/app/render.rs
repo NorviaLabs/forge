@@ -1522,6 +1522,13 @@ impl TuiApp {
             }
         }
 
+        // Read before the immutable borrows that build the footer model. The
+        // count is cached after the first read, so this is not a per-frame
+        // filesystem hit.
+        let scratchpad_chip = self
+            .scratchpad_status()
+            .map(|(lines, dirty)| crate::widgets::footer::ScratchpadChip { lines, dirty });
+
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
             // The footer's own per-chip hint and the task strip's session
@@ -1554,6 +1561,7 @@ impl TuiApp {
             prompt_cache_reads: self.session_view.prompt_cache_hits,
             activity: footer_activity(&self.selected_background_tasks()),
             hover_chip: self.hover_chip,
+            scratchpad: scratchpad_chip,
         };
         self.footer_area = Some(regions.footer);
         let footer_chip_sink = std::cell::RefCell::new(None);
@@ -1568,6 +1576,8 @@ impl TuiApp {
 
         if let Some(dialog) = self.explorer_dialog.current() {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
+        } else if self.scratchpad.is_some() {
+            self.render_scratchpad(area, frame.buffer_mut());
         } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),

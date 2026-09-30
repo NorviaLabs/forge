@@ -192,6 +192,7 @@ Useful in-app commands:
 /compact       Compact the active context
 /disconnect    Remove a saved provider connection
 /edit          Open the active file in your editor
+/notes         Toggle this session's scratchpad (running notes, `:w` saves)
 /context-file  Attach the active file to the next message
 /terminal      Open the terminal panel
 /resize        Resize panes with arrow keys (`/resize reset` restores defaults)

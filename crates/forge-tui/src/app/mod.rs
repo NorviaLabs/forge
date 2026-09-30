@@ -102,6 +102,7 @@ mod quit;
 /// only — `TuiApp`'s fields and every signature are unchanged.
 mod render;
 mod resize;
+mod scratchpad;
 mod selection;
 pub(crate) use selection::SelectedRuntime;
 mod session_state;
