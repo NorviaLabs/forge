@@ -205,6 +205,39 @@ pub(crate) fn editor_body(area: Rect) -> Rect {
     }
 }
 
+/// Map a screen cell to a `(line, character)` position in the Editor pane's
+/// text, or `None` when the cell is outside the text body. Shares
+/// [`editor_body`] and the gutter math with [`editor_selection_text`], so a
+/// caret and a drag-selection can never disagree about where the text is.
+/// A click in the gutter lands at column 0 rather than being rejected, which
+/// is what a click left of the numbers means.
+pub(crate) fn editor_cell_to_position(
+    lines: &[String],
+    top_line: usize,
+    h_scroll: usize,
+    area: Rect,
+    col: u16,
+    row: u16,
+) -> Option<(usize, usize)> {
+    let body = editor_body(area);
+    if body.width == 0 || body.height == 0 {
+        return None;
+    }
+    if col < body.x || col >= body.right() || row < body.y || row >= body.bottom() {
+        return None;
+    }
+    let total = lines.len().max(1);
+    let number_width = total.to_string().len().max(3);
+    let content_x = body.x.saturating_add((number_width + 3) as u16);
+    let index = top_line + (row - body.y) as usize;
+    // Character space, then clamped to the line so a click past its end lands
+    // on its end rather than one past it.
+    let char = h_scroll
+        .saturating_add(col.saturating_sub(content_x) as usize)
+        .min(lines.get(index)?.chars().count());
+    Some((index, char))
+}
+
 /// Map a selection rect in screen coordinates to the Editor pane's text,
 /// excluding the line-number gutter (content begins after `gutter` columns).
 pub(crate) fn editor_selection_text(
@@ -513,6 +546,50 @@ mod tests {
         // row6=>idx1: full => "def"
         // row7=>idx2: b=char_for_col(7)=0 => ""
         assert_eq!(editor_selection_text(&lines, 0, 0, area, &s), "abc\ndef\n");
+    }
+
+    #[test]
+    fn editor_cell_maps_to_a_line_and_character() {
+        let lines = vec![
+            "alpha".to_string(),
+            "bravo".to_string(),
+            "charlie".to_string(),
+        ];
+        // body x=3,y=5,w=18,h=4; number_width 3, gutter 6, content_x=9.
+        let area = Rect::new(2, 3, 20, 7);
+        assert_eq!(
+            editor_cell_to_position(&lines, 0, 0, area, 12, 6),
+            Some((1, 3)),
+            "the second line, three characters in"
+        );
+        // Clicking left of the numbers means the start of the line.
+        assert_eq!(
+            editor_cell_to_position(&lines, 0, 0, area, 5, 5),
+            Some((0, 0))
+        );
+        // Past the end of a line clamps to the end, never one past it.
+        assert_eq!(
+            editor_cell_to_position(&lines, 0, 0, area, 20, 5),
+            Some((0, 5))
+        );
+        // The header and the pane's own border are not text.
+        assert_eq!(editor_cell_to_position(&lines, 0, 0, area, 12, 4), None);
+        assert_eq!(editor_cell_to_position(&lines, 0, 0, area, 12, 3), None);
+    }
+
+    #[test]
+    fn editor_cell_follows_the_scroll_offsets() {
+        let lines = (0..40)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>();
+        // body x=1,y=2,w=28,h=4; number_width 3, gutter 6, content_x=7.
+        let area = Rect::new(0, 0, 30, 7);
+        // The first body row is line 20 after scrolling, and its first visible
+        // column is character 4.
+        assert_eq!(
+            editor_cell_to_position(&lines, 20, 4, area, 7, 2),
+            Some((20, 4))
+        );
     }
 
     #[test]
