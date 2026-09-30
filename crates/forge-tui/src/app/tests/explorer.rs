@@ -4,6 +4,124 @@
 
 use super::prelude::*;
 
+async fn wait_for_content_results(app: &mut TuiApp) {
+    for _ in 0..1_000 {
+        app.workspace_files.explorer.poll_search_load();
+        if app.workspace_files.explorer.search_result_count().is_some() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    panic!("content search did not finish");
+}
+
+#[tokio::test]
+async fn content_search_shortcuts_open_the_exact_source_location() {
+    use crate::file_explorer::FileSearchMode;
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("matches.md");
+    fs::write(&path, "# Heading\nfirst needle\néé needle\n").unwrap();
+    app.open_file_in_editor(&path);
+    assert!(app.source_viewer.markdown_preview);
+    app.input.set_text("draft");
+
+    app.handle_key(press(
+        KeyCode::Char('F'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert_eq!(
+        app.workspace_files.explorer.search_mode,
+        FileSearchMode::Content
+    );
+    app.handle_paste("needle\n");
+    wait_for_content_results(&mut app).await;
+    assert_eq!(app.workspace_files.explorer.search_query, "needle");
+    assert_eq!(
+        app.workspace_files
+            .explorer
+            .search_result_count()
+            .as_deref(),
+        Some("2 matches")
+    );
+
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.source_viewer.current_line, 2);
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 2);
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 3);
+    assert!(
+        !app.source_viewer.markdown_preview,
+        "search opens source, not rendered preview"
+    );
+    assert_eq!(app.input.text, "draft");
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+
+    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert_eq!(
+        app.workspace_files.explorer.search_mode,
+        FileSearchMode::Names
+    );
+}
+
+#[tokio::test]
+async fn content_search_retains_target_through_dirty_editor_confirmation() {
+    let (dir, mut app) = focus_test_app().await;
+    let original = dir.path().join("original.rs");
+    let target = dir.path().join("target.rs");
+    fs::write(&original, "original\n").unwrap();
+    fs::write(&target, "unrelated\n  needle\n").unwrap();
+    app.open_file_in_editor(&original);
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .substitute("original", "unsaved", true, true);
+    app.handle_key(press(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ))
+    .await
+    .unwrap();
+    app.handle_paste("needle");
+    wait_for_content_results(&mut app).await;
+    app.workspace_files.explorer.select_visible_row(1);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current(),
+        Some(ExplorerDialog::DirtySwitch { .. })
+    ));
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().serialized_text(),
+        "unsaved\n"
+    );
+    assert_eq!(app.pending_editor_location, Some((2, 3)));
+
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.source_viewer.path.as_deref(),
+        Some(target.canonicalize().unwrap().as_path())
+    );
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 1);
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 2);
+    assert_eq!(app.pending_editor_location, None);
+}
+
 #[tokio::test]
 async fn explorer_dialog_rendering_covers_all_file_modal_variants() {
     let (dir, app) = focus_test_app().await;

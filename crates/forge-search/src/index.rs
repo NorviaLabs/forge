@@ -9,6 +9,7 @@ use fff_search::{
     PaginationArgs, QueryParser, SharedFilePicker, SharedFrecency,
 };
 use std::collections::HashSet;
+use std::io::{BufRead, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -267,12 +268,20 @@ impl WorkspaceIndex {
             .as_ref()
             .ok_or_else(|| SearchError::Init("workspace picker missing".into()))?;
 
-        let parsed = scoped_grep_query(pattern, path_filter, include);
+        let parsed = if mode == GrepQueryMode::Literal {
+            let mut query = scoped_grep_query("", path_filter, include);
+            query.raw_query = pattern.trim();
+            query.fuzzy_query = fff_query_parser::FuzzyQuery::Text(pattern.trim());
+            query
+        } else {
+            scoped_grep_query(pattern, path_filter, include)
+        };
         let result = picker.grep(
             &parsed,
             &GrepSearchOptions {
                 mode: grep_mode(pattern, mode),
                 page_limit: max_results,
+                max_matches_per_file: max_results,
                 before_context: DEFAULT_CONTEXT_LINES,
                 after_context: DEFAULT_CONTEXT_LINES,
                 ..Default::default()
@@ -288,8 +297,34 @@ impl WorkspaceIndex {
             .max(1);
         let total_matched = result.matches.len();
         let mut hits = Vec::with_capacity(result.matches.len().min(max_results));
-        for entry in result.matches.into_iter().take(max_results) {
+        for mut entry in result.matches.into_iter().take(max_results) {
             let rel = result.files[entry.file_index].relative_path(picker);
+            // fff computes literal columns from its 512-byte display prefix.
+            // A match beyond that prefix needs the source line, not column 1.
+            if mode == GrepQueryMode::Literal && entry.match_byte_offsets.is_empty() {
+                if let Some(line) =
+                    std::fs::File::open(self.root.join(&rel))
+                        .ok()
+                        .and_then(|mut file| {
+                            file.seek(SeekFrom::Start(entry.byte_offset)).ok()?;
+                            let mut line = String::new();
+                            std::io::BufReader::new(file).read_line(&mut line).ok()?;
+                            Some(line)
+                        })
+                {
+                    let needle = pattern.trim().as_bytes();
+                    if let Some(column) = line.as_bytes().windows(needle.len()).position(|part| {
+                        if pattern.chars().any(char::is_uppercase) {
+                            part == needle
+                        } else {
+                            part.eq_ignore_ascii_case(needle)
+                        }
+                    }) {
+                        entry.col = column;
+                        entry.line_content = line;
+                    }
+                }
+            }
             let relevance = entry
                 .fuzzy_score
                 .map(|score| (score as f32 / max_fuzzy as f32).clamp(0.0, 1.0));
@@ -297,7 +332,7 @@ impl WorkspaceIndex {
                 path: rel.to_string(),
                 line: entry.line_number,
                 column: entry.col.saturating_add(1) as u32,
-                text: truncate_chars(entry.line_content.trim(), MAX_GREP_LINE_CHARS),
+                text: grep_line_snippet(&entry.line_content, entry.col),
                 context: format_grep_context(&entry.context_before, &entry.context_after)
                     .map(|ctx| truncate_chars(&ctx, MAX_GREP_CONTEXT_CHARS)),
                 relevance,
@@ -377,6 +412,28 @@ impl WorkspaceIndex {
         }
         Ok(())
     }
+}
+
+fn grep_line_snippet(text: &str, column: usize) -> String {
+    let before = text
+        .char_indices()
+        .take_while(|(byte, _)| *byte < column)
+        .count();
+    let start = before.saturating_sub(MAX_GREP_LINE_CHARS / 4);
+    if start == 0 || text.chars().count() <= MAX_GREP_LINE_CHARS {
+        return truncate_chars(text.trim(), MAX_GREP_LINE_CHARS);
+    }
+    truncate_chars(
+        &format!(
+            "…{}",
+            text.chars()
+                .skip(start)
+                .take(MAX_GREP_LINE_CHARS)
+                .collect::<String>()
+                .trim_end()
+        ),
+        MAX_GREP_LINE_CHARS,
+    )
 }
 
 /// Merge name hits and content hits into one ordered, deduplicated file list.
@@ -663,6 +720,61 @@ mod tests {
         assert_eq!(response.hits.len(), 1);
         assert!(response.hits[0].text.chars().count() <= MAX_GREP_LINE_CHARS);
         assert!(response.hits[0].text.ends_with('…'));
+    }
+
+    #[test]
+    fn grep_snippet_keeps_a_late_unicode_match_and_original_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = "é".repeat(500);
+        std::fs::write(
+            dir.path().join("late.rs"),
+            format!("{prefix}needle{}\n", "x".repeat(500)),
+        )
+        .unwrap();
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let response = index
+            .grep("needle", None, GrepQueryMode::Literal, 10)
+            .unwrap();
+        let hit = &response.hits[0];
+        assert_eq!(hit.column, prefix.len() as u32 + 1);
+        assert!(hit.text.starts_with('…'));
+        assert!(hit.text.contains("needle"));
+        assert!(hit.text.chars().count() <= MAX_GREP_LINE_CHARS);
+    }
+
+    #[test]
+    fn literal_grep_keeps_constraint_like_text_and_phrase_spacing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("plain.txt"),
+            "match *.rs exactly\nhello  world\nhello world\n",
+        )
+        .unwrap();
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let glob = index
+            .grep("match *.rs exactly", None, GrepQueryMode::Literal, 10)
+            .unwrap();
+        assert_eq!(glob.hits.len(), 1);
+        assert_eq!(glob.hits[0].path, "plain.txt");
+        let phrase = index
+            .grep("hello  world", None, GrepQueryMode::Literal, 10)
+            .unwrap();
+        assert_eq!(phrase.hits.len(), 1);
+        assert_eq!(phrase.hits[0].line, 2);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -14,7 +14,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use forge_config::FileIconMode;
-use forge_search::{MergedSearch, WorkspaceIndex, WorkspaceIndexOptions, DEFAULT_SEARCH_MAX_FILES};
+use forge_search::{
+    GrepQueryMode, GrepSearchHit, MergedSearch, WorkspaceIndex, WorkspaceIndexOptions,
+    DEFAULT_SEARCH_MAX_FILES,
+};
 
 use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
@@ -91,7 +94,25 @@ pub struct VisibleNode {
     pub error: Option<String>,
     pub child_count: usize,
     pub depth: usize,
+    pub content_match: Option<GrepSearchHit>,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FileSearchMode {
+    #[default]
+    Names,
+    Content,
+}
+
+#[derive(Debug)]
+struct ExplorerSearchResults {
+    query: String,
+    names: MergedSearch,
+    content: Vec<GrepSearchHit>,
+    truncated: bool,
+}
+
+const MAX_CONTENT_MATCHES: usize = 200;
 
 #[derive(Debug)]
 pub struct FileExplorer {
@@ -101,21 +122,24 @@ pub struct FileExplorer {
     /// `move_selection` uses this so holding j/k does not rescan every
     /// `PathBuf` on a large listing.
     selected_index: Option<usize>,
+    selected_match_line: Option<u64>,
     pub scroll: usize,
     pub focused: bool,
     pub search_focused: bool,
     pub search_query: String,
+    pub search_mode: FileSearchMode,
     pub icon_mode: FileIconMode,
     root_path: Option<PathBuf>,
     pub git_status: GitStatusCache,
     visible: Vec<VisibleNode>,
-    search_loader: Option<Receiver<Result<MergedSearch, String>>>,
+    search_loader: Option<Receiver<Result<ExplorerSearchResults, String>>>,
     search_cancel: Option<Arc<AtomicBool>>,
     search_loading: bool,
-    /// Name-and-content matches for the current query, installed when the
+    /// Matches for the current query, installed when the
     /// worker's scan lands. Stale results stay on screen while the next query
     /// runs so the listing does not blink empty on every keystroke.
-    search_results: Option<Arc<MergedSearch>>,
+    search_results: Option<Arc<ExplorerSearchResults>>,
+    collapsed_search_files: HashSet<PathBuf>,
     /// The workspace index, opened on the first search keystroke and kept for
     /// the rest of the session.
     search_engine: SearchEngine,
@@ -240,6 +264,7 @@ impl FileExplorer {
                 error: None,
                 child_count: 0,
                 depth: 0,
+                content_match: None,
             })
             .collect();
         self.selected_path = selected
@@ -255,10 +280,12 @@ impl FileExplorer {
             root: root_path.clone().map(FileNode::root),
             selected_path: root_path.clone(),
             selected_index: None,
+            selected_match_line: None,
             scroll: 0,
             focused: false,
             search_focused: true,
             search_query: String::new(),
+            search_mode: FileSearchMode::Names,
             icon_mode,
             root_path: root_path.clone(),
             git_status: GitStatusCache::new(),
@@ -267,6 +294,7 @@ impl FileExplorer {
             search_cancel: None,
             search_loading: false,
             search_results: None,
+            collapsed_search_files: HashSet::new(),
             search_engine: SearchEngine::default(),
             search_unavailable: false,
             diff_filter: None,
@@ -519,19 +547,13 @@ impl FileExplorer {
     }
 
     pub fn set_search_query(&mut self, query: impl Into<String>) {
-        let previous_index = self
-            .selected_path
-            .as_ref()
-            .and_then(|path| self.visible.iter().position(|node| &node.path == path))
-            .unwrap_or(0);
+        let previous_index = self.selected_visible_index().unwrap_or(0);
         self.search_query = query.into();
         if self.search_query.trim().is_empty() {
             self.cancel_search_load();
             self.search_results = None;
             self.search_unavailable = false;
         } else {
-            // Content matching means every keystroke needs a fresh scan, not
-            // just the first one that opens the index.
             self.start_search_load();
         }
         self.rebuild_visible();
@@ -541,6 +563,35 @@ impl FileExplorer {
 
     pub fn clear_search(&mut self) {
         self.set_search_query(String::new());
+    }
+
+    pub fn set_search_mode(&mut self, mode: FileSearchMode) {
+        if self.search_mode == mode {
+            return;
+        }
+        self.cancel_search_load();
+        self.search_mode = mode;
+        self.search_results = None;
+        self.collapsed_search_files.clear();
+        self.selected_match_line = None;
+        self.set_search_query(self.search_query.clone());
+    }
+
+    fn content_search_active(&self) -> bool {
+        self.search_mode == FileSearchMode::Content && !self.search_query.trim().is_empty()
+    }
+
+    fn row_is_selected(&self, node: &VisibleNode) -> bool {
+        self.selected_path.as_ref() == Some(&node.path)
+            && self.selected_match_line == node.content_match.as_ref().map(|hit| hit.line)
+    }
+
+    pub fn selected_content_match(&self) -> Option<&GrepSearchHit> {
+        self.visible
+            .iter()
+            .find(|node| self.row_is_selected(node))?
+            .content_match
+            .as_ref()
     }
 
     pub fn selected_relative_path(&self) -> Option<String> {
@@ -628,10 +679,18 @@ impl FileExplorer {
         let Some(first) = self.visible.first() else {
             return true;
         };
-        self.selected_path.as_ref() == Some(&first.path)
+        self.row_is_selected(first)
     }
 
     pub fn expand_selected(&mut self) {
+        if self.content_search_active() {
+            if let Some(path) = self.selected_path.clone() {
+                self.collapsed_search_files.remove(&path);
+                self.rebuild_visible();
+                self.repair_selection(0);
+            }
+            return;
+        }
         if let Some(index) = self.selected_visible_index() {
             let node = &self.visible[index];
             if node.kind != FileKind::Directory {
@@ -671,6 +730,17 @@ impl FileExplorer {
     }
 
     pub fn activate_selected(&mut self) {
+        if self.content_search_active() {
+            let Some(path) = self.selected_path.clone() else {
+                return;
+            };
+            if self.collapsed_search_files.contains(&path) {
+                self.expand_selected();
+            } else {
+                self.collapse_selected();
+            }
+            return;
+        }
         let Some(path) = self.selected_path.clone() else {
             return;
         };
@@ -685,6 +755,15 @@ impl FileExplorer {
     }
 
     pub fn collapse_selected(&mut self) {
+        if self.content_search_active() {
+            if let Some(path) = self.selected_path.clone() {
+                self.collapsed_search_files.insert(path);
+                self.selected_match_line = None;
+                self.rebuild_visible();
+                self.repair_selection(0);
+            }
+            return;
+        }
         let Some(path) = self.selected_path.clone() else {
             return;
         };
@@ -716,7 +795,7 @@ impl FileExplorer {
         }
     }
 
-    /// Scan name *and* content for the current query on a worker thread.
+    /// Scan names or content for the current query on a worker thread.
     ///
     /// Every keystroke supersedes the scan before it: the stale worker is
     /// cancelled and its result dropped on arrival, so the listing only ever
@@ -733,14 +812,43 @@ impl FileExplorer {
         self.cancel_search_load();
         self.search_unavailable = false;
         let engine = self.search_engine.clone();
+        let mode = self.search_mode;
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let outcome = engine.index(&root_path).and_then(|index| {
-                index
-                    .search_files(&query, DEFAULT_SEARCH_MAX_FILES)
-                    .map_err(|error| error.to_string())
+                match mode {
+                    FileSearchMode::Names => index
+                        .find_files_quick_open(&query, DEFAULT_SEARCH_MAX_FILES, None)
+                        .map(|response| ExplorerSearchResults {
+                            query: query.clone(),
+                            truncated: response.total_matched >= DEFAULT_SEARCH_MAX_FILES,
+                            names: MergedSearch {
+                                paths: response.hits.into_iter().map(|hit| hit.path).collect(),
+                                truncated: response.total_matched >= DEFAULT_SEARCH_MAX_FILES,
+                            },
+                            content: Vec::new(),
+                        }),
+                    FileSearchMode::Content => index
+                        .grep(
+                            &query,
+                            None,
+                            GrepQueryMode::Literal,
+                            MAX_CONTENT_MATCHES + 1,
+                        )
+                        .map(|response| ExplorerSearchResults {
+                            query: query.clone(),
+                            names: MergedSearch::default(),
+                            truncated: response.hits.len() > MAX_CONTENT_MATCHES,
+                            content: response
+                                .hits
+                                .into_iter()
+                                .take(MAX_CONTENT_MATCHES)
+                                .collect(),
+                        }),
+                }
+                .map_err(|error| error.to_string())
             });
             if !worker_cancel.load(Ordering::Relaxed) {
                 let _ = tx.send(outcome);
@@ -773,11 +881,7 @@ impl FileExplorer {
         };
         match rx.try_recv() {
             Ok(outcome) => {
-                let previous_index = self
-                    .selected_path
-                    .as_ref()
-                    .and_then(|path| self.visible.iter().position(|node| &node.path == path))
-                    .unwrap_or(0);
+                let previous_index = self.selected_visible_index().unwrap_or(0);
                 match outcome {
                     Ok(results) => {
                         self.search_results = Some(Arc::new(results));
@@ -813,11 +917,21 @@ impl FileExplorer {
         if self.search_query.trim().is_empty() {
             return None;
         }
-        let count = results.paths.len();
+        let (count, noun) = if self.search_mode == FileSearchMode::Content {
+            (results.content.len(), "match")
+        } else {
+            (results.names.paths.len(), "file")
+        };
         Some(format!(
-            "{count}{} file{}",
+            "{count}{} {noun}{}",
             if results.truncated { "+" } else { "" },
-            if count == 1 { "" } else { "s" }
+            if count == 1 {
+                ""
+            } else if noun == "match" {
+                "es"
+            } else {
+                "s"
+            }
         ))
     }
 
@@ -851,6 +965,7 @@ impl FileExplorer {
                     error: None,
                     child_count: 0,
                     depth: 0,
+                    content_match: None,
                 })
                 .collect();
             self.selected_index = None;
@@ -859,8 +974,17 @@ impl FileExplorer {
         let mut visible = Vec::new();
         if !self.search_query.trim().is_empty() {
             if let Some(results) = &self.search_results {
-                flatten_search_results(self.root_path.as_deref(), results, &mut visible);
-            } else if !self.search_unavailable {
+                if self.search_mode == FileSearchMode::Content {
+                    flatten_content_results(
+                        self.root_path.as_deref(),
+                        &results.content,
+                        &self.collapsed_search_files,
+                        &mut visible,
+                    );
+                } else {
+                    flatten_search_results(self.root_path.as_deref(), &results.names, &mut visible);
+                }
+            } else if !self.search_unavailable && self.search_mode == FileSearchMode::Names {
                 // No scan has landed yet: show what the loaded tree can answer
                 // so the first keystrokes are not a blank pane. A failed scan
                 // skips this — its own state line is the honest one.
@@ -868,8 +992,10 @@ impl FileExplorer {
                     flatten_filtered(root, 0, &self.search_query, self.root_path(), &mut visible);
                 }
             }
-        } else if let Some(root) = &self.root {
-            flatten_filtered(root, 0, "", self.root_path(), &mut visible);
+        } else if self.search_mode == FileSearchMode::Names {
+            if let Some(root) = &self.root {
+                flatten_filtered(root, 0, "", self.root_path(), &mut visible);
+            }
         }
         self.visible = visible;
         self.selected_index = None;
@@ -880,15 +1006,15 @@ impl FileExplorer {
             if self
                 .visible
                 .get(index)
-                .is_some_and(|node| Some(&node.path) == self.selected_path.as_ref())
+                .is_some_and(|node| self.row_is_selected(node))
             {
                 return Some(index);
             }
         }
         let index = self
-            .selected_path
-            .as_ref()
-            .and_then(|path| self.visible.iter().position(|node| &node.path == path))?;
+            .visible
+            .iter()
+            .position(|node| self.row_is_selected(node))?;
         self.selected_index = Some(index);
         Some(index)
     }
@@ -898,6 +1024,7 @@ impl FileExplorer {
             return;
         };
         self.selected_path = Some(node.path.clone());
+        self.selected_match_line = node.content_match.as_ref().map(|hit| hit.line);
         self.selected_index = Some(index);
     }
 
@@ -910,13 +1037,10 @@ impl FileExplorer {
     fn repair_selection(&mut self, previous_index: usize) {
         if self.visible.is_empty() {
             self.selected_index = None;
+            self.selected_match_line = None;
             return;
         }
-        if self
-            .visible
-            .iter()
-            .any(|node| Some(&node.path) == self.selected_path.as_ref())
-        {
+        if self.visible.iter().any(|node| self.row_is_selected(node)) {
             self.selected_index = None;
             return;
         }
@@ -925,6 +1049,11 @@ impl FileExplorer {
 
     /// Returns the selected path if it points to a regular file.
     pub fn selected_file_path(&self) -> Option<PathBuf> {
+        if self.content_search_active() {
+            return self
+                .selected_content_match()
+                .and_then(|_| self.selected_path.clone());
+        }
         let path = self.selected_path.as_ref()?;
         let is_file = self
             .visible
@@ -939,11 +1068,8 @@ impl FileExplorer {
     }
 
     fn ensure_selection_visible(&mut self, height: usize) {
-        let Some(selected) = self.selected_path.as_ref() else {
-            return;
-        };
-        let Some(index) = self.visible.iter().position(|node| &node.path == selected) else {
-            self.selected_path = self.visible.first().map(|node| node.path.clone());
+        let Some(index) = self.selected_visible_index() else {
+            self.select_visible_index(0);
             self.scroll = 0;
             return;
         };
@@ -1012,6 +1138,7 @@ fn flatten_filtered(
         error: node.error.clone(),
         child_count: node.children.len(),
         depth,
+        content_match: None,
     });
     out.extend(matching_children);
     true
@@ -1071,6 +1198,7 @@ fn flatten_search_results(root: Option<&Path>, results: &MergedSearch, out: &mut
                 error: None,
                 child_count: 0,
                 depth: index,
+                content_match: None,
                 path: path.clone(),
             });
         }
@@ -1079,6 +1207,55 @@ fn flatten_search_results(root: Option<&Path>, results: &MergedSearch, out: &mut
         row.child_count = children.get(&row.path).copied().unwrap_or(0) as usize;
     }
     out.extend(rows);
+}
+
+fn flatten_content_results(
+    root: Option<&Path>,
+    hits: &[GrepSearchHit],
+    collapsed: &HashSet<PathBuf>,
+    out: &mut Vec<VisibleNode>,
+) {
+    let Some(root) = root else {
+        return;
+    };
+    let mut files: BTreeMap<&str, Vec<&GrepSearchHit>> = BTreeMap::new();
+    for hit in hits {
+        files.entry(&hit.path).or_default().push(hit);
+    }
+    for (relative, mut matches) in files {
+        matches.sort_by_key(|hit| hit.line);
+        matches.dedup_by_key(|hit| hit.line);
+        let path = root.join(relative);
+        let expanded = !collapsed.contains(&path);
+        out.push(VisibleNode {
+            path: path.clone(),
+            display_name: relative.to_string(),
+            kind: FileKind::File,
+            expanded,
+            loading: false,
+            loaded: true,
+            error: None,
+            child_count: matches.len(),
+            depth: 0,
+            content_match: None,
+        });
+        if expanded {
+            for hit in matches {
+                out.push(VisibleNode {
+                    path: path.clone(),
+                    display_name: hit.text.clone(),
+                    kind: FileKind::File,
+                    expanded: false,
+                    loading: false,
+                    loaded: true,
+                    error: None,
+                    child_count: 0,
+                    depth: 1,
+                    content_match: Some(hit.clone()),
+                });
+            }
+        }
+    }
 }
 
 fn path_matches_query(path: &str, query: &str) -> bool {
@@ -1128,6 +1305,65 @@ fn refresh_directory(root: Option<&Path>, node: &mut FileNode) {
             child.expanded = expanded;
             refresh_directory(root, child);
         }
+    }
+}
+
+fn content_match_line(
+    hit: &GrepSearchHit,
+    query: &str,
+    selected: bool,
+    focused: bool,
+    width: usize,
+) -> Line<'static> {
+    let selection = selected.then(|| {
+        if focused {
+            theme::selection_active()
+        } else {
+            theme::selection_inactive()
+        }
+    });
+    let prefix = format!("{}    {}  ", if selected { ">" } else { " " }, hit.line);
+    let budget = width.saturating_sub(prefix.len());
+    let mut text = hit.text.replace('\t', " ");
+    // Keep the match visible even when it occurs far along a source line.
+    if let Some((start, _)) = content_match_range(&text, query.trim()) {
+        let chars_before = text[..start].chars().count();
+        if chars_before >= budget.saturating_sub(query.chars().count()) {
+            let context = 8.min(budget.saturating_sub(query.chars().count() + 1));
+            let skip = chars_before.saturating_sub(context);
+            if skip > 0 {
+                text = format!("…{}", text.chars().skip(skip).collect::<String>());
+            }
+        }
+    }
+    let mut spans = vec![Span::styled(prefix, selection.unwrap_or_else(theme::muted))];
+    let base = selection.unwrap_or_else(theme::text);
+    let mut rest = text.as_str();
+    while let Some((start, end)) = content_match_range(rest, query.trim()) {
+        if start > 0 {
+            spans.push(Span::styled(rest[..start].to_string(), base));
+        }
+        let mut style = theme::search_match();
+        if let Some(selection) = selection {
+            style = style
+                .patch(selection)
+                .add_modifier(ratatui::style::Modifier::UNDERLINED);
+        }
+        spans.push(Span::styled(rest[start..end].to_string(), style));
+        rest = &rest[end..];
+    }
+    spans.push(Span::styled(rest.to_string(), base));
+    Line::from(spans)
+}
+
+fn content_match_range(text: &str, query: &str) -> Option<(usize, usize)> {
+    if query.is_empty() {
+        return None;
+    }
+    if query.chars().any(char::is_uppercase) {
+        text.find(query).map(|start| (start, start + query.len()))
+    } else {
+        match_byte_range_case_insensitive(text, query)
     }
 }
 
@@ -1316,6 +1552,9 @@ fn match_byte_range_case_insensitive(haystack: &str, needle: &str) -> Option<(us
             c.to_lowercase().map(move |lower| (byte, len, lower))
         })
         .collect();
+    if needle.len() > hay.len() {
+        return None;
+    }
     (0..=hay.len().saturating_sub(needle.len())).find_map(|i| {
         let matches = needle.iter().enumerate().all(|(j, nc)| hay[i + j].2 == *nc);
         if !matches {
@@ -1375,6 +1614,8 @@ impl Widget for FileExplorerWidget<'_> {
         };
         let height = inner.height.saturating_sub(tree_top + 1) as usize;
         self.explorer.ensure_selection_visible(height);
+        let selected_index = self.explorer.selected_visible_index();
+        let content_mode = self.explorer.search_mode == FileSearchMode::Content;
         let visible = &self.explorer.visible;
         let mut lines = Vec::new();
         if self.explorer.root.is_none() {
@@ -1398,38 +1639,76 @@ impl Widget for FileExplorerWidget<'_> {
                     ));
                 }
                 let list_height = height.saturating_sub(error_shown as usize);
-                let query = self.explorer.search_query.clone();
+                let query = self
+                    .explorer
+                    .search_results
+                    .as_ref()
+                    .map(|results| results.query.clone())
+                    .unwrap_or_else(|| self.explorer.search_query.clone());
                 for (offset, node) in visible
                     .iter()
                     .skip(self.explorer.scroll)
                     .take(list_height)
                     .enumerate()
                 {
-                    let selected = self.explorer.selected_path.as_ref() == Some(&node.path);
-                    let marker = match node.kind {
-                        FileKind::Directory if node.loading => "...",
-                        FileKind::Directory if node.expanded => "v",
-                        FileKind::Directory => ">",
-                        FileKind::File | FileKind::Symlink | FileKind::Unknown => " ",
+                    let selected = selected_index == Some(self.explorer.scroll + offset);
+                    let marker = if content_mode && node.content_match.is_none() {
+                        if node.expanded {
+                            "v"
+                        } else {
+                            ">"
+                        }
+                    } else {
+                        match node.kind {
+                            FileKind::Directory if node.loading => "...",
+                            FileKind::Directory if node.expanded => "v",
+                            FileKind::Directory => ">",
+                            FileKind::File | FileKind::Symlink | FileKind::Unknown => " ",
+                        }
                     };
                     let prefix = TREE_INDENT.repeat(node.depth);
-                    let status = if matches!(node.kind, FileKind::File | FileKind::Symlink) {
+                    let status = if node.content_match.is_none()
+                        && matches!(node.kind, FileKind::File | FileKind::Symlink)
+                    {
                         self.explorer.git_status_for(&node.path)
                     } else {
                         None
                     };
-                    let mut line = explorer_row_line(
-                        &prefix,
-                        marker,
-                        &node.path,
-                        &node.display_name,
-                        node.kind,
-                        selected,
-                        self.focused,
-                        status,
-                        self.explorer.icon_mode,
-                        &query,
-                    );
+                    let group_name = if content_mode && node.content_match.is_none() {
+                        let count = format!(" ({})", node.child_count);
+                        let budget = inner.width.saturating_sub(TREE_LEAD_INSET + 3) as usize;
+                        format!(
+                            "{}{count}",
+                            crate::path_display::elide_path(
+                                &node.display_name,
+                                budget.saturating_sub(count.len()),
+                            )
+                        )
+                    } else {
+                        node.display_name.clone()
+                    };
+                    let mut line = if let Some(hit) = &node.content_match {
+                        content_match_line(
+                            hit,
+                            &query,
+                            selected,
+                            self.focused,
+                            inner.width.saturating_sub(TREE_LEAD_INSET) as usize,
+                        )
+                    } else {
+                        explorer_row_line(
+                            &prefix,
+                            marker,
+                            &node.path,
+                            &group_name,
+                            node.kind,
+                            selected,
+                            self.focused,
+                            status,
+                            self.explorer.icon_mode,
+                            if content_mode { "" } else { &query },
+                        )
+                    };
                     // Hover is a pointer affordance: raised ground plus a
                     // weight step. Selection wins and nothing about the row's
                     // layout or focus changes.
@@ -1463,6 +1742,10 @@ impl Widget for FileExplorerWidget<'_> {
                 // query, so it never borrows the no-matches line.
                 if self.explorer.search_unavailable {
                     lines.push(Line::styled("Search unavailable", theme::muted()));
+                } else if content_mode && self.explorer.search_query.trim().is_empty() {
+                    lines.push(Line::styled("Type to find in files", theme::muted()));
+                } else if visible.is_empty() && self.explorer.search_loading {
+                    lines.push(Line::styled("Searching...", theme::muted()));
                 } else if visible.is_empty()
                     && !query.trim().is_empty()
                     && !self.explorer.search_loading
@@ -1480,6 +1763,14 @@ impl Widget for FileExplorerWidget<'_> {
                 .borders(Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .padding(Padding::horizontal(1))
+                .title_bottom(Line::from(crate::hints::hint_spans(
+                    if content_mode {
+                        &[("Ctrl+P", "files")]
+                    } else {
+                        &[("Ctrl+Shift+F", "content")]
+                    },
+                    search_area.width.saturating_sub(2) as usize,
+                )))
                 .border_style(if self.search_active {
                     theme::active_panel_border()
                 } else {
@@ -1498,18 +1789,24 @@ impl Widget for FileExplorerWidget<'_> {
             let reserved = count_width.min(field_width.saturating_sub(SEARCH_PREFIX_WIDTH));
             let query_room = field_width
                 .saturating_sub(SEARCH_PREFIX_WIDTH)
-                .saturating_sub(reserved) as usize;
+                .saturating_sub(reserved)
+                .saturating_sub(u16::from(text_focused)) as usize;
             let shown_query: String = self
                 .explorer
                 .search_query
                 .chars()
                 .take(query_room)
                 .collect();
+            let placeholder = if content_mode {
+                "Find in files..."
+            } else {
+                "Search files..."
+            };
             let (search, search_style) = if self.explorer.search_query.is_empty() {
                 let text = if text_focused {
-                    format!("{}Search files...", theme::CURSOR_GLYPH)
+                    format!("{}{placeholder}", theme::CURSOR_GLYPH)
                 } else {
-                    "Search files...".to_string()
+                    placeholder.to_string()
                 };
                 (text, theme::composer_placeholder())
             } else {
@@ -2149,10 +2446,8 @@ mod tests {
         );
     }
 
-    /// Content search is the point of the feature: a file whose *name* does not
-    /// match the query still belongs in the listing.
     #[test]
-    fn search_matches_file_content_as_well_as_file_names() {
+    fn content_search_is_separate_from_filename_navigation() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("src")).unwrap();
         fs::write(
@@ -2168,18 +2463,178 @@ mod tests {
 
         explorer.set_search_query("distinctive_payload");
         wait_for_search_load(&mut explorer);
+        assert!(explorer.visible_nodes().is_empty());
+
+        explorer.set_search_mode(FileSearchMode::Content);
+        wait_for_search_load(&mut explorer);
 
         let names: Vec<_> = explorer
             .visible_nodes()
             .iter()
             .map(|node| node.display_name.clone())
             .collect();
-        assert_eq!(names, ["src", "handler.rs"]);
+        assert_eq!(
+            names,
+            ["src/handler.rs", "pub fn distinctive_payload_marker() {}"]
+        );
+        assert!(explorer.visible_nodes()[0].content_match.is_none());
+        assert_eq!(
+            explorer.visible_nodes()[1]
+                .content_match
+                .as_ref()
+                .unwrap()
+                .line,
+            1
+        );
         assert!(!explorer.search_unavailable);
     }
 
-    /// A one-character query sweeps the whole workspace for noise, so content
-    /// matching stays off until the query is worth scanning for.
+    #[test]
+    fn content_search_groups_matches_and_preserves_selection_style() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("needle.rs"), "needle\n").unwrap();
+        fs::write(
+            root.path().join("handler.rs"),
+            "first needle\nsecond needle\n",
+        )
+        .unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        explorer.set_search_mode(FileSearchMode::Content);
+        explorer.set_search_query("needle");
+        wait_for_search_load(&mut explorer);
+        assert_eq!(explorer.search_result_count().as_deref(), Some("3 matches"));
+        assert_eq!(explorer.visible_nodes().len(), 5);
+        explorer.select_visible_row(1);
+        assert_eq!(explorer.selected_content_match().unwrap().line, 1);
+        explorer.move_selection(1);
+        assert_eq!(explorer.selected_content_match().unwrap().line, 2);
+        assert!(!explorer.selection_at_first_row());
+
+        let area = Rect::new(0, 0, 60, 18);
+        for focused in [false, true] {
+            let mut buf = Buffer::empty(area);
+            FileExplorerWidget {
+                explorer: &mut explorer,
+                focused,
+                show_search: true,
+                search_active: false,
+                hover: None,
+            }
+            .render(area, &mut buf);
+            let rows: Vec<_> = (0..area.height).map(|y| row_text(&buf, area, y)).collect();
+            let content_y = rows
+                .iter()
+                .position(|row| row.contains("second needle"))
+                .unwrap() as u16;
+            let content_row = &rows[content_y as usize];
+            assert!(
+                content_row.contains(">    2  second needle"),
+                "{content_row}"
+            );
+            let label_x = content_row.find("needle").unwrap() as u16;
+            let style = if focused {
+                theme::selection_active()
+            } else {
+                theme::selection_inactive()
+            };
+            assert_eq!(buf[(label_x, content_y)].fg, style.fg.unwrap());
+        }
+
+        explorer.collapse_selected();
+        assert_eq!(explorer.visible_nodes().len(), 3);
+        assert!(explorer.selected_content_match().is_none());
+        assert!(explorer.selected_file_path().is_none());
+        explorer.expand_selected();
+        assert_eq!(explorer.visible_nodes().len(), 5);
+        explorer.clear_search();
+        assert!(explorer.visible_nodes().is_empty());
+        explorer.set_search_mode(FileSearchMode::Names);
+        assert!(explorer
+            .visible_nodes()
+            .iter()
+            .all(|node| node.content_match.is_none()));
+    }
+
+    #[test]
+    fn content_search_caps_matches_truthfully_even_in_one_file() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("many.rs"),
+            "needle\n".repeat(MAX_CONTENT_MATCHES + 10),
+        )
+        .unwrap();
+        let mut explorer =
+            FileExplorer::new(Some(root.path().to_path_buf()), FileIconMode::Unicode);
+        explorer.set_search_mode(FileSearchMode::Content);
+        explorer.set_search_query("needle");
+        wait_for_search_load(&mut explorer);
+        assert_eq!(
+            explorer.search_result_count().as_deref(),
+            Some("200+ matches")
+        );
+        assert_eq!(explorer.visible_nodes().len(), MAX_CONTENT_MATCHES + 1);
+    }
+
+    #[test]
+    fn content_snippets_highlight_literal_phrases_and_fit_narrow_rows() {
+        let hit = GrepSearchHit {
+            path: "src/handler.rs".into(),
+            line: 42,
+            column: 1,
+            text: format!("{}Needle value, needle value", "prefix ".repeat(20)),
+            context: None,
+            relevance: None,
+            is_definition: false,
+        };
+        let line = content_match_line(&hit, "needle value", false, false, 30);
+        let highlights: Vec<_> = line
+            .spans
+            .iter()
+            .filter(|span| span.style == theme::search_match())
+            .collect();
+        assert_eq!(highlights.len(), 2);
+        assert_eq!(highlights[0].content, "Needle value");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
+        Paragraph::new(line).render(buf.area, &mut buf);
+        assert!(row_text(&buf, buf.area, 0).contains("Needle value"));
+        assert_eq!(
+            content_match_range("needle Needle", "Needle"),
+            Some((7, 13))
+        );
+        assert_eq!(content_match_range("a", "a much longer query"), None);
+    }
+
+    #[test]
+    fn content_results_render_at_supported_terminal_sizes() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("client.rs"),
+            "let distinctive_payload = 1;\n",
+        )
+        .unwrap();
+        let mut explorer =
+            FileExplorer::new(Some(root.path().to_path_buf()), FileIconMode::Unicode);
+        explorer.set_search_mode(FileSearchMode::Content);
+        explorer.set_search_query("distinctive_payload");
+        wait_for_search_load(&mut explorer);
+        for (width, height) in [(80, 18), (120, 40), (160, 50)] {
+            // The navigator occupies 28–37 columns, not the whole terminal.
+            let area = Rect::new(0, 0, if width == 80 { 28 } else { 37 }, height);
+            let buf = render_widget(&mut explorer, area, true);
+            let shown = (0..area.height)
+                .map(|y| row_text(&buf, area, y))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(shown.contains("client.rs (1)"), "{width}x{height}: {shown}");
+            assert!(shown.contains("1 match"), "{width}x{height}: {shown}");
+            assert!(shown.contains("Ctrl+P files"), "{width}x{height}: {shown}");
+            assert!(shown.contains("distinctive"), "{width}x{height}: {shown}");
+        }
+    }
+
     #[test]
     fn a_single_character_query_matches_names_only() {
         let root = tempfile::tempdir().unwrap();
@@ -2243,7 +2698,11 @@ mod tests {
     fn search_result_count_marks_a_truncated_listing() {
         let root = tempfile::tempdir().unwrap();
         for index in 0..4 {
-            fs::write(root.path().join(format!("f{index}.txt")), "shared token\n").unwrap();
+            fs::write(
+                root.path().join(format!("token{index}.txt")),
+                "shared token\n",
+            )
+            .unwrap();
         }
         let mut explorer = FileExplorer::new(
             Some(root.path().to_path_buf()),
@@ -2262,8 +2721,13 @@ mod tests {
                 .truncated
         );
 
-        explorer.search_results = Some(Arc::new(MergedSearch {
-            paths: vec!["a".into(), "b".into()],
+        explorer.search_results = Some(Arc::new(ExplorerSearchResults {
+            query: "token".into(),
+            names: MergedSearch {
+                paths: vec!["a".into(), "b".into()],
+                truncated: true,
+            },
+            content: Vec::new(),
             truncated: true,
         }));
         assert_eq!(explorer.search_result_count().as_deref(), Some("2+ files"));
@@ -2462,10 +2926,12 @@ mod tests {
             root: Some(root),
             selected_path: Some(PathBuf::from("/tmp/forge-test-root")),
             selected_index: None,
+            selected_match_line: None,
             scroll: 0,
             focused: false,
             search_focused: true,
             search_query: String::new(),
+            search_mode: FileSearchMode::Names,
             icon_mode: FileIconMode::Unicode,
             root_path: Some(PathBuf::from("/tmp/forge-test-root")),
             git_status: GitStatusCache::new(),
@@ -2474,6 +2940,7 @@ mod tests {
             search_cancel: None,
             search_loading: false,
             search_results: None,
+            collapsed_search_files: HashSet::new(),
             search_engine: SearchEngine::default(),
             search_unavailable: false,
             diff_filter: None,

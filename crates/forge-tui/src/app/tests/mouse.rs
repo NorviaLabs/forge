@@ -14,6 +14,50 @@ fn wheel_up() -> event::MouseEvent {
 }
 
 #[tokio::test]
+async fn clicking_content_match_opens_its_line_and_file_group_toggles() {
+    let (dir, mut app) = focus_test_app().await;
+    std::fs::write(
+        dir.path().join("search.rs"),
+        "first needle\nsecond needle\n",
+    )
+    .unwrap();
+    app.handle_key(press(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ))
+    .await
+    .unwrap();
+    app.handle_paste("needle");
+    for _ in 0..1_000 {
+        app.workspace_files.explorer.poll_search_load();
+        if app.workspace_files.explorer.search_result_count().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!(
+        app.workspace_files
+            .explorer
+            .search_result_count()
+            .as_deref(),
+        Some("2 matches")
+    );
+    render_app_text(&mut app, 140, 45);
+    let list = app.navigator_list_area.unwrap();
+    let y = list.y + crate::file_explorer::TREE_ROW_OFFSET;
+    app.handle_mouse(left_click(list.x + 3, y + 2))
+        .await
+        .unwrap();
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 1);
+    assert_eq!(app.source_viewer.current_line, 1);
+
+    app.handle_mouse(left_click(list.x + 3, y)).await.unwrap();
+    assert_eq!(app.workspace_files.explorer.visible_nodes().len(), 1);
+    app.handle_mouse(left_click(list.x + 3, y)).await.unwrap();
+    assert_eq!(app.workspace_files.explorer.visible_nodes().len(), 3);
+}
+
+#[tokio::test]
 async fn dragging_to_conversation_top_scrolls_and_extends_selection() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_area = Some(ratatui::layout::Rect::new(0, 5, 80, 10));

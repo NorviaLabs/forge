@@ -101,6 +101,7 @@ pub(crate) struct SessionViewState {
     /// move with the session when the operator switches tasks.
     pub(crate) git_sync: forge_workspace::git_sync::GitSyncCache,
     pub(crate) pending_editor_path: Option<PathBuf>,
+    pub(crate) pending_editor_location: Option<(usize, usize)>,
     pub(crate) pending_editor_home: bool,
     pub(crate) external_editor: ExternalEditorState,
     pub(crate) cancellation: CancellationState,
@@ -166,6 +167,7 @@ impl Default for SessionViewState {
             diff_explorer_was_visible: None,
             git_sync: forge_workspace::git_sync::GitSyncCache::default(),
             pending_editor_path: None,
+            pending_editor_location: None,
             pending_editor_home: false,
             external_editor: ExternalEditorState { requested: false },
             cancellation: CancellationState::default(),
@@ -729,6 +731,7 @@ pub(crate) enum SemanticCommand {
     EditLastQueuedMessage,
     InsertComposerNewline,
     OpenInlineSearch,
+    OpenFileSearch(crate::file_explorer::FileSearchMode),
     OpenSlashCommands,
     OpenHelp,
     SelectEntry(PathBuf),
@@ -1999,6 +2002,7 @@ pub struct TuiApp {
     /// Last Vim-style editor result, cleared by the next keypress.
     pub(crate) editor_message: Option<String>,
     pub(crate) pending_editor_path: Option<PathBuf>,
+    pub(crate) pending_editor_location: Option<(usize, usize)>,
     pub(crate) pending_editor_home: bool,
     /// A global quit was requested while the editor was dirty; the `DirtyExit`
     /// dialog owns the decision and only exits on Save/Discard (#647).

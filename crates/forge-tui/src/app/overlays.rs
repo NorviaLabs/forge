@@ -69,6 +69,8 @@ impl TuiApp {
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Cycle navigator tabs (Sessions / Files / Git in a repository)\n");
+        text.push_str("• Ctrl+P  Find a file by name\n");
+        text.push_str("• Ctrl+Shift+F  Find text in files\n");
         if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git {
             text.push_str("• ↑/↓  Select change  ·  Enter  Focus patch  ·  s/u  Stage/unstage\n");
         }
@@ -99,13 +101,21 @@ impl TuiApp {
                 text.push_str("• Alt+E  Open the external editor\n");
             }
             FocusBlock::Search => {
-                text.push_str("• Type  Fuzzy-filter files by workspace path\n");
+                if self.workspace_files.explorer.search_mode
+                    == crate::file_explorer::FileSearchMode::Content
+                {
+                    text.push_str("• Type  Find literal text in workspace files\n");
+                    text.push_str("• ←/→  Collapse / expand file matches\n");
+                    text.push_str("• Enter  Open match at its source line or toggle file group\n");
+                } else {
+                    text.push_str("• Type  Fuzzy-filter files by workspace path\n");
+                    text.push_str("• Enter  Open the selected file\n");
+                }
                 text.push_str("• Ctrl+U  Clear file search\n");
                 text.push_str("• ↑/↓  Move tree selection without leaving search\n");
                 if self.navigator_tab_row_available() {
                     text.push_str("• ↑ at the first row  Move onto the navigator tab row\n");
                 }
-                text.push_str("• Enter  Open the selected file\n");
                 text.push_str("• Tab / Shift+Tab  Next / previous block\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
@@ -114,8 +124,15 @@ impl TuiApp {
                     text.push_str("• ↑ at the first row  Move onto the navigator tab row\n");
                 }
                 text.push_str("• ↑/↓  Move selection\n");
-                text.push_str("• ←/→  Collapse / expand directory\n");
-                text.push_str("• Enter  Open file or expand directory\n");
+                if self.workspace_files.explorer.search_mode
+                    == crate::file_explorer::FileSearchMode::Content
+                {
+                    text.push_str("• ←/→  Collapse / expand file matches\n");
+                    text.push_str("• Enter  Open match at its source line or toggle file group\n");
+                } else {
+                    text.push_str("• ←/→  Collapse / expand directory\n");
+                    text.push_str("• Enter  Open file or expand directory\n");
+                }
                 text.push_str("• n / N  New file / folder\n");
                 text.push_str("• R  Rename · d  Delete\n");
                 text.push_str("• Esc  Return to previous block\n");
