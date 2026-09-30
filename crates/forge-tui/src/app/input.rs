@@ -22,6 +22,12 @@ impl TuiApp {
             KeyCode::Enter if key.modifiers.is_empty() => {
                 let command = std::mem::take(command);
                 self.editor_command = None;
+                // The scratchpad speaks the same `:w` / `:q` grammar, but saves
+                // its own file rather than the workspace source viewer's.
+                if self.scratchpad.is_some() {
+                    self.run_scratchpad_command(&command);
+                    return Ok(true);
+                }
                 match command.as_str() {
                     "w" | "write" => {
                         self.save_active_editor();
@@ -2271,6 +2277,29 @@ impl TuiApp {
             self.handle_editor_command_key(key).await?;
             return Ok(());
         }
+        // Ctrl+N toggles the session scratchpad, from anywhere — including from
+        // inside the notes, which is what makes it a toggle rather than an
+        // open-only shortcut, and matches the footer chip. It is checked before
+        // the surface below so it reaches in, and well before type-to-compose so
+        // it never loses to a draft. The `:` command line above still wins, so
+        // Ctrl+N cannot interrupt a half-typed `:w`.
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+            if self.scratchpad.is_some() {
+                self.close_scratchpad();
+            } else {
+                self.open_scratchpad();
+            }
+            return Ok(());
+        }
+
+        // The scratchpad owns the keyboard while open: it is a document surface,
+        // not a dialog, so it sits below a blocking confirmation but above every
+        // other route — a keystroke must never reach the conversation behind it.
+        if self.scratchpad.is_some() {
+            self.handle_scratchpad_key(key);
+            return Ok(());
+        }
+
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 self.handle_search_key(key);

@@ -157,6 +157,17 @@ impl TuiApp {
                 self.focus_block(FocusBlock::Footer);
                 if let Some(chip) = self.footer_chip_at(col, row) {
                     self.composer_chip_focus = Some(chip);
+                    // The notes chip is an action, not a picker: clicking it
+                    // toggles the scratchpad rather than opening a menu, and it
+                    // never takes footer focus (so Enter still sends).
+                    if chip == 2 {
+                        if self.scratchpad.is_some() {
+                            self.close_scratchpad();
+                        } else {
+                            self.open_scratchpad();
+                        }
+                        return Ok(());
+                    }
                     let focus = if chip == 0 {
                         FooterFocus::Llm
                     } else {
@@ -372,6 +383,8 @@ impl TuiApp {
             Some(0)
         } else if (ranges[1].0..ranges[1].1).contains(&col) {
             Some(1)
+        } else if ranges[2].0 < ranges[2].1 && (ranges[2].0..ranges[2].1).contains(&col) {
+            Some(2)
         } else {
             None
         }

@@ -155,6 +155,8 @@ impl TuiApp {
             pending_editor_path: None,
             pending_editor_home: false,
             pending_editor_quit: false,
+            scratchpad: None,
+            scratchpad_summary: None,
             file_watch: FileWatchState::new(),
             bottom_panel: BottomPanelState::default(),
             workspace_files: WorkspaceFilesState {
@@ -380,6 +382,8 @@ impl TuiApp {
             pending_editor_path: None,
             pending_editor_home: false,
             pending_editor_quit: false,
+            scratchpad: None,
+            scratchpad_summary: None,
             file_watch: FileWatchState::new(),
             bottom_panel: BottomPanelState::default(),
             workspace_files: WorkspaceFilesState {

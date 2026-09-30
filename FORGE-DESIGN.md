@@ -599,6 +599,7 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 | Go back through workspace history | `Alt+←` |
 | Start a draft | any printable key the active block has no binding for (`input.rs::type_to_compose`) |
 | Contextual help | `/help` |
+| Toggle the session scratchpad (running notes) | `Ctrl+N` |
 
 Type-to-chat is the rule for every block except `Panel`: an unconsumed
 printable key starts a message, because with no local meaning that is the only

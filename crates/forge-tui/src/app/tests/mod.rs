@@ -21,6 +21,7 @@ mod mouse;
 mod multi_task;
 mod prelude;
 mod questions;
+mod scratchpad;
 mod tasks;
 mod theme;
 mod watch;
