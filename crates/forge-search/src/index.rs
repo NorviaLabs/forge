@@ -1,11 +1,14 @@
 use crate::quick_open::rerank_quick_open_hits;
-use crate::types::{FileSearchHit, FindResponse, GrepQueryMode, GrepResponse, GrepSearchHit};
+use crate::types::{
+    FileSearchHit, FindResponse, GrepQueryMode, GrepResponse, GrepSearchHit, MergedSearch,
+};
 use fff_query_parser::{Constraint, GrepConfig, QueryParser as GrepQueryParser};
 use fff_search::{
     file_picker::{FFFMode, FilePicker, FilePickerOptions, FuzzySearchOptions},
     grep::{GrepMode, GrepSearchOptions},
     PaginationArgs, QueryParser, SharedFilePicker, SharedFrecency,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +19,15 @@ const DEFAULT_CONTEXT_LINES: usize = 1;
 /// Cap in-memory grep hit text so a 30-hit search cannot materialize whole files.
 const MAX_GREP_LINE_CHARS: usize = 240;
 const MAX_GREP_CONTEXT_CHARS: usize = 320;
+/// Ceiling on files listed for one search-as-you-type query.
+pub const DEFAULT_SEARCH_MAX_FILES: usize = 200;
+/// Content matching waits for this many characters. One character is a
+/// whole-workspace scan whose only possible output is noise.
+pub const MIN_CONTENT_QUERY_CHARS: usize = 2;
+/// Content hits requested per listed file. Grep returns one hit per matching
+/// *line*, so a query that lands in popular files needs several pages of hits
+/// before the distinct-file count reaches [`DEFAULT_SEARCH_MAX_FILES`].
+const CONTENT_PAGE_MULTIPLIER: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum SearchError {
@@ -299,6 +311,33 @@ impl WorkspaceIndex {
         })
     }
 
+    /// Search the workspace by file name *and* file content.
+    ///
+    /// Name hits come first, ranked as the Files panel already ranks them;
+    /// files that matched only on content follow. A file that matches both
+    /// ways is listed once, in the name tier, so content search can never
+    /// displace a filename the user expected to see.
+    pub fn search_files(&self, query: &str, max_files: usize) -> Result<MergedSearch, SearchError> {
+        let query = query.trim();
+        if max_files == 0 || query.is_empty() {
+            return Ok(MergedSearch::default());
+        }
+        let name = self.find_files_quick_open(query, max_files, None)?;
+        let remaining = max_files.saturating_sub(name.hits.len());
+        let content = if remaining > 0 && query.chars().count() >= MIN_CONTENT_QUERY_CHARS {
+            let page_limit = max_files
+                .saturating_mul(CONTENT_PAGE_MULTIPLIER)
+                .max(remaining);
+            self.grep_scoped(query, None, None, GrepQueryMode::Literal, page_limit)?
+        } else {
+            GrepResponse {
+                hits: Vec::new(),
+                total_matched: 0,
+            }
+        };
+        Ok(merge_search_results(name, content, max_files))
+    }
+
     /// Re-read a file the agent just wrote so later grep/glob see the new bytes
     /// without waiting on the filesystem watcher.
     pub fn note_file_changed(&self, path: impl AsRef<Path>) -> Result<(), SearchError> {
@@ -337,6 +376,40 @@ impl WorkspaceIndex {
             }
         }
         Ok(())
+    }
+}
+
+/// Merge name hits and content hits into one ordered, deduplicated file list.
+///
+/// Name hits keep their ranking and always precede content-only hits. Pure, so
+/// the rule is testable without a workspace, an index, or a UI.
+pub fn merge_search_results(
+    name: FindResponse,
+    content: GrepResponse,
+    max_files: usize,
+) -> MergedSearch {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut paths: Vec<String> = Vec::new();
+    for hit in name
+        .hits
+        .iter()
+        .map(|hit| hit.path.as_str())
+        .chain(content.hits.iter().map(|hit| hit.path.as_str()))
+    {
+        if paths.len() >= max_files {
+            break;
+        }
+        if seen.insert(hit) {
+            paths.push(hit.to_string());
+        }
+    }
+    MergedSearch {
+        // Either tier stopped early — a full name tier, or a content page that
+        // came back full — so the listing is a prefix, not the result set.
+        truncated: max_files > 0
+            && (paths.len() >= max_files
+                || content.total_matched >= max_files.saturating_mul(CONTENT_PAGE_MULTIPLIER)),
+        paths,
     }
 }
 
@@ -384,6 +457,7 @@ fn grep_mode(pattern: &str, mode: GrepQueryMode) -> GrepMode {
                 GrepMode::PlainText
             }
         }
+        GrepQueryMode::Literal => GrepMode::PlainText,
         GrepQueryMode::Regex => GrepMode::Regex,
         GrepQueryMode::Fuzzy => GrepMode::Fuzzy,
     }
@@ -669,5 +743,216 @@ mod tests {
         std::fs::write(&path, "new").unwrap();
         index.note_file_changed(&path).unwrap();
         index.note_file_opened(&path).unwrap();
+    }
+
+    fn name_response(paths: &[&str]) -> FindResponse {
+        FindResponse {
+            hits: paths
+                .iter()
+                .map(|path| FileSearchHit {
+                    path: (*path).to_string(),
+                    score: 1,
+                    relevance: 1.0,
+                    match_ranges: Vec::new(),
+                })
+                .collect(),
+            total_matched: paths.len(),
+            total_files: paths.len(),
+        }
+    }
+
+    fn content_response(paths: &[&str]) -> GrepResponse {
+        GrepResponse {
+            hits: paths
+                .iter()
+                .map(|path| GrepSearchHit {
+                    path: (*path).to_string(),
+                    line: 1,
+                    column: 1,
+                    text: String::new(),
+                    context: None,
+                    relevance: None,
+                    is_definition: false,
+                })
+                .collect(),
+            total_matched: paths.len(),
+        }
+    }
+
+    #[test]
+    fn merge_puts_name_hits_first_and_dedupes_across_tiers() {
+        let merged = merge_search_results(
+            name_response(&["src/lib.rs", "src/main.rs"]),
+            content_response(&["src/main.rs", "docs/guide.md"]),
+            10,
+        );
+        assert_eq!(
+            merged.paths,
+            vec!["src/lib.rs", "src/main.rs", "docs/guide.md"]
+        );
+        assert!(!merged.truncated);
+    }
+
+    #[test]
+    fn merge_reports_truncation_when_a_tier_fills_the_cap() {
+        let filled =
+            merge_search_results(name_response(&["a.rs", "b.rs"]), content_response(&[]), 2);
+        assert_eq!(filled.paths, vec!["a.rs", "b.rs"]);
+        assert!(filled.truncated);
+
+        // A full content page means the scan stopped early even though the
+        // listing is nowhere near the cap.
+        let full_page = merge_search_results(
+            name_response(&["a.rs"]),
+            GrepResponse {
+                hits: Vec::new(),
+                total_matched: DEFAULT_SEARCH_MAX_FILES * 8,
+            },
+            DEFAULT_SEARCH_MAX_FILES,
+        );
+        assert_eq!(full_page.paths, vec!["a.rs"]);
+        assert!(full_page.truncated);
+    }
+
+    #[test]
+    fn merge_with_no_capacity_lists_nothing_and_claims_no_truncation() {
+        let merged = merge_search_results(name_response(&["a.rs"]), content_response(&[]), 0);
+        assert!(merged.paths.is_empty());
+        assert!(!merged.truncated);
+    }
+
+    #[test]
+    fn search_files_finds_content_in_a_file_whose_name_does_not_match() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn distinctive_symbol_name() {}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/other.rs"), "pub fn unrelated() {}\n").unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let merged = index.search_files("distinctive_symbol", 10).unwrap();
+        assert_eq!(merged.paths, vec!["src/lib.rs"]);
+        assert!(!merged.truncated);
+    }
+
+    #[test]
+    fn search_files_ranks_a_name_match_above_a_content_only_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("needle.rs"), "nothing here\n").unwrap();
+        std::fs::write(dir.path().join("aardvark.rs"), "let needle = 1;\n").unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let merged = index.search_files("needle", 10).unwrap();
+        assert_eq!(
+            merged.paths,
+            vec!["needle.rs", "aardvark.rs"],
+            "the filename match leads and the content-only hit follows"
+        );
+    }
+
+    #[test]
+    fn search_files_waits_for_two_characters_before_scanning_content() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("plain.rs"), "let zz = 1;\n").unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // `z` would sweep the whole workspace for a single character, so the
+        // content tier stays off and only names are considered.
+        let single = index.search_files("z", 10).unwrap();
+        assert!(single.paths.iter().all(|path| path.contains('z')));
+
+        let two = index.search_files("zz", 10).unwrap();
+        assert!(two.paths.contains(&"plain.rs".to_string()));
+    }
+
+    #[test]
+    fn search_files_stops_at_the_cap_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..12 {
+            std::fs::write(dir.path().join(format!("f{index}.txt")), "shared token\n").unwrap();
+        }
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let merged = index.search_files("token", 3).unwrap();
+        assert_eq!(merged.paths.len(), 3);
+        assert!(merged.truncated);
+    }
+
+    #[test]
+    fn search_files_treats_a_slash_wrapped_query_as_plain_text() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "wrapped\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "/wrapped/ inner\n").unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // `Plain` reads `/…/` as a regex literal and would list both files. A
+        // search field's query is never a regex, so only the file that really
+        // contains the slashes comes back.
+        let merged = index.search_files("/wrapped/", 10).unwrap();
+        assert_eq!(merged.paths, vec!["b.txt"]);
+    }
+
+    /// A short query against a deeply nested path scored below zero from the
+    /// leading and suffix penalties alone. That used to read as "no match", so
+    /// `cl` listed nothing at all even though the index held the file.
+    #[test]
+    fn short_queries_still_match_deeply_nested_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/api/deep")).unwrap();
+        std::fs::write(dir.path().join("src/api/deep/client.rs"), "").unwrap();
+
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for query in ["c", "cl", "cli", "client"] {
+            assert_eq!(
+                index.search_files(query, 200).unwrap().paths,
+                vec!["src/api/deep/client.rs"],
+                "{query:?} must still list the file whose name contains it"
+            );
+        }
     }
 }

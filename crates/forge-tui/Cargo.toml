@@ -16,6 +16,7 @@ forge-core = { workspace = true }
 forge-session = { workspace = true }
 forge-context = { workspace = true }
 forge-tools = { workspace = true }
+forge-search = { workspace = true }
 forge-config = { workspace = true }
 forge-governance = { workspace = true }
 forge-model = { workspace = true }

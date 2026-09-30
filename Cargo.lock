@@ -1497,6 +1497,7 @@ dependencies = [
  "forge-core",
  "forge-governance",
  "forge-model",
+ "forge-search",
  "forge-session",
  "forge-storage",
  "forge-syntax",

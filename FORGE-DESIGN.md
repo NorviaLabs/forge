@@ -877,6 +877,22 @@ the single plan surface.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.
 - Directory expansion uses ASCII `>` / `v` with 2-cell indentation; the query match inside a name takes the shared `search_match` highlight (contiguous runs only — fuzzy-only matches stay plain).
 - A filtered-to-nothing query reports `No matches for "<query>"`; an empty repository reports `This directory is empty`. The two states are never the same line.
+- **The query matches names *and* contents.** Filename hits rank first in
+  Quick Open order, then files that matched only on content; a file matching
+  both ways is listed once, in the name tier. Content matching is plain
+  case-insensitive text and stays off below two characters, where a
+  whole-workspace scan could only return noise. Results are capped, and the
+  count sits at the right edge of the field as `N files`, with `+` after the
+  number when the listing is a truncated prefix of the result set — the query
+  text truncates around the count rather than over it.
+- Search results are ranked, not walked: each match contributes the ancestors
+  it needs, in rank order, so a directory row always precedes what it holds.
+  The workspace root is not itself a result row.
+- A scan that could not run reports `Search unavailable`, never the
+  no-matches line: a failed index says nothing about the query. The next
+  keystroke retries the open.
+- Gitignored paths are out of scope for Files search, matching what the `grep`
+  tool sees. `.git` and `target` were the only exclusions before this change.
 - Do not clear the visible tree during a Git-only refresh (pinned by test — FORGE-DESIGN invariant).
 - Empty, loading, unavailable and failed states must be distinct.
 

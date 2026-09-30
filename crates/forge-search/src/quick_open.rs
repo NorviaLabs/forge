@@ -297,10 +297,10 @@ fn score_fuzzy_word_boundary(
     visit(&mut ctx, 0, 0, None, 0, &mut matches, &mut best);
 
     let (score, indices) = best?;
-    if score <= 0 {
-        return None;
-    }
-
+    // A non-positive score means the match sits deep in the path or matches
+    // late in the name — heavily penalised, not absent. Rejecting it here made
+    // `rerank_quick_open_hits` drop real filename matches, so a query like
+    // `cl` found `src/api/deep/client.rs` in the raw index but listed nothing.
     let match_ranges = indices_to_ranges(&indices, h_bytes);
     Some(QuickOpenScore {
         score,
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn rerank_drops_weak_quick_open_matches() {
+    fn rerank_drops_hits_the_query_does_not_actually_occur_in() {
         let hits = rerank_quick_open_hits(
             vec![
                 FileSearchHit {
@@ -396,6 +396,8 @@ mod tests {
             ],
             "search",
         );
+        // A low fff score is not grounds for dropping a hit: only a query the
+        // path does not contain at all goes away. Ranking, not filtering.
         assert_eq!(hits.len(), 1);
         assert!(hits[0].path.ends_with("search.rs"));
         assert!(!hits[0].match_ranges.is_empty());

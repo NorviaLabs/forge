@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use ratatui::buffer::Buffer;
@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use forge_config::FileIconMode;
+use forge_search::{MergedSearch, WorkspaceIndex, WorkspaceIndexOptions, DEFAULT_SEARCH_MAX_FILES};
 
 use crate::status_glyph::{status_indicator_now, Status};
 use crate::theme;
@@ -108,11 +109,19 @@ pub struct FileExplorer {
     root_path: Option<PathBuf>,
     pub git_status: GitStatusCache,
     visible: Vec<VisibleNode>,
-    search_loader: Option<Receiver<Vec<SearchEntry>>>,
+    search_loader: Option<Receiver<Result<MergedSearch, String>>>,
     search_cancel: Option<Arc<AtomicBool>>,
     search_loading: bool,
-    /// Compact, immutable filesystem index shared across query keystrokes.
-    search_index: Option<Arc<Vec<SearchEntry>>>,
+    /// Name-and-content matches for the current query, installed when the
+    /// worker's scan lands. Stale results stay on screen while the next query
+    /// runs so the listing does not blink empty on every keystroke.
+    search_results: Option<Arc<MergedSearch>>,
+    /// The workspace index, opened on the first search keystroke and kept for
+    /// the rest of the session.
+    search_engine: SearchEngine,
+    /// The last scan could not run. Distinct from "no matches": a failed index
+    /// says nothing about whether the query matches anything.
+    search_unavailable: bool,
     /// `/diff` mode: show only these repository-relative paths, as a flat
     /// list. Flat rather than tree-shaped on purpose — a changed file inside a
     /// collapsed directory must still be reachable, and the lazy tree only
@@ -182,13 +191,38 @@ impl RefreshTestGate {
     }
 }
 
-#[derive(Debug)]
-struct SearchEntry {
-    path: PathBuf,
-    relative: String,
-    display_name: String,
-    kind: FileKind,
-    depth: usize,
+/// The workspace index, opened lazily and shared by every search keystroke.
+///
+/// A mutex rather than `OnceLock` because a failed open must not be cached:
+/// the next keystroke retries instead of reporting "Search unavailable" for the
+/// rest of the session. Concurrent workers serialize on the lock, so a burst of
+/// keystrokes opens one index rather than one per keystroke.
+#[derive(Clone, Debug, Default)]
+struct SearchEngine(Arc<Mutex<Option<Arc<WorkspaceIndex>>>>);
+
+impl SearchEngine {
+    fn index(&self, root: &Path) -> Result<Arc<WorkspaceIndex>, String> {
+        let mut slot = self
+            .0
+            .lock()
+            .map_err(|_| "search index lock poisoned".to_string())?;
+        if let Some(index) = slot.as_ref() {
+            return Ok(index.clone());
+        }
+        // `wait_for_scan: false` keeps the open off the critical path; the
+        // first query waits for the scan inside `search_files` instead.
+        let index = WorkspaceIndex::open_with_options(
+            root,
+            WorkspaceIndexOptions {
+                watch: true,
+                wait_for_scan: false,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        *slot = Some(index.clone());
+        Ok(index)
+    }
 }
 
 impl FileExplorer {
@@ -232,7 +266,9 @@ impl FileExplorer {
             search_loader: None,
             search_cancel: None,
             search_loading: false,
-            search_index: None,
+            search_results: None,
+            search_engine: SearchEngine::default(),
+            search_unavailable: false,
             diff_filter: None,
             refresh_generation: 0,
             pending_refresh: None,
@@ -252,7 +288,7 @@ impl FileExplorer {
     pub fn load_root(&mut self) {
         self.invalidate_workspace_refresh();
         self.cancel_search_load();
-        self.search_index = None;
+        self.search_results = None;
         if let Some(root) = self.root.as_mut() {
             load_children(self.root_path.as_deref(), root);
         }
@@ -269,7 +305,7 @@ impl FileExplorer {
     pub fn refresh_workspace(&mut self) {
         self.invalidate_workspace_refresh();
         self.cancel_search_load();
-        self.search_index = None;
+        self.search_results = None;
         let root_path = self.root_path.clone();
         if let Some(root) = self.root.as_mut() {
             refresh_loaded_directories(root_path.as_deref(), root);
@@ -367,7 +403,7 @@ impl FileExplorer {
 
     fn install_workspace_refresh(&mut self, root: FileNode) {
         self.cancel_search_load();
-        self.search_index = None;
+        self.search_results = None;
         self.root = Some(root);
         self.restart_search_load_if_needed();
         self.rebuild_visible();
@@ -387,10 +423,23 @@ impl FileExplorer {
         self.refresh_install_count
     }
 
+    /// Identity of the open index, so a test can prove later keystrokes reused
+    /// it instead of opening a second one.
+    #[cfg(test)]
+    fn search_engine_ptr(&self) -> *const WorkspaceIndex {
+        self.search_engine
+            .0
+            .lock()
+            .expect("search lock")
+            .as_ref()
+            .map(Arc::as_ptr)
+            .unwrap_or(std::ptr::null())
+    }
+
     pub fn refresh_selected(&mut self) {
         self.invalidate_workspace_refresh();
         self.cancel_search_load();
-        self.search_index = None;
+        self.search_results = None;
         let selected = self.selected_path.clone();
         let root_path = self.root_path.clone();
         if let Some(path) = selected {
@@ -413,7 +462,7 @@ impl FileExplorer {
     pub fn refresh_parent_and_select(&mut self, parent: &Path, selected: &Path) {
         self.invalidate_workspace_refresh();
         self.cancel_search_load();
-        self.search_index = None;
+        self.search_results = None;
         let root_path = self.root_path.clone();
         if let Some(node) = self.find_mut(parent) {
             if node.kind == FileKind::Directory {
@@ -475,15 +524,15 @@ impl FileExplorer {
             .as_ref()
             .and_then(|path| self.visible.iter().position(|node| &node.path == path))
             .unwrap_or(0);
-        let was_empty = self.search_query.trim().is_empty();
-        let query = query.into();
-
-        if was_empty && !query.trim().is_empty() {
-            self.start_search_load();
-        }
-        self.search_query = query;
+        self.search_query = query.into();
         if self.search_query.trim().is_empty() {
             self.cancel_search_load();
+            self.search_results = None;
+            self.search_unavailable = false;
+        } else {
+            // Content matching means every keystroke needs a fresh scan, not
+            // just the first one that opens the index.
+            self.start_search_load();
         }
         self.rebuild_visible();
         self.repair_selection(previous_index);
@@ -667,20 +716,34 @@ impl FileExplorer {
         }
     }
 
+    /// Scan name *and* content for the current query on a worker thread.
+    ///
+    /// Every keystroke supersedes the scan before it: the stale worker is
+    /// cancelled and its result dropped on arrival, so the listing only ever
+    /// shows the query that is actually in the field. The previous result set
+    /// stays on screen meanwhile rather than blinking empty between keystrokes.
     fn start_search_load(&mut self) {
-        if self.search_index.is_some() || self.search_loading {
-            return;
-        }
         let Some(root_path) = self.root_path.clone() else {
             return;
         };
+        let query = self.search_query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        self.cancel_search_load();
+        self.search_unavailable = false;
+        let engine = self.search_engine.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let index = build_search_index(&root_path, &worker_cancel);
+            let outcome = engine.index(&root_path).and_then(|index| {
+                index
+                    .search_files(&query, DEFAULT_SEARCH_MAX_FILES)
+                    .map_err(|error| error.to_string())
+            });
             if !worker_cancel.load(Ordering::Relaxed) {
-                let _ = tx.send(index);
+                let _ = tx.send(outcome);
             }
         });
         self.search_loader = Some(rx);
@@ -702,29 +765,60 @@ impl FileExplorer {
         }
     }
 
-    fn poll_search_load(&mut self) {
+    /// Install the worker's result. Runs on the terminal thread, so it only
+    /// moves the already-computed answer — never the scan itself.
+    pub fn poll_search_load(&mut self) {
         let Some(rx) = self.search_loader.take() else {
             return;
         };
         match rx.try_recv() {
-            Ok(index) => {
+            Ok(outcome) => {
                 let previous_index = self
                     .selected_path
                     .as_ref()
                     .and_then(|path| self.visible.iter().position(|node| &node.path == path))
                     .unwrap_or(0);
-                self.search_index = Some(Arc::new(index));
+                match outcome {
+                    Ok(results) => {
+                        self.search_results = Some(Arc::new(results));
+                        self.search_unavailable = false;
+                    }
+                    Err(_) => {
+                        self.search_results = None;
+                        self.search_unavailable = true;
+                    }
+                }
                 self.search_cancel = None;
                 self.search_loading = false;
                 self.rebuild_visible();
                 self.repair_selection(previous_index);
             }
             Err(TryRecvError::Empty) => self.search_loader = Some(rx),
+            // A panicked worker drops the sender, which is a failed scan too.
             Err(TryRecvError::Disconnected) => {
+                self.search_results = None;
+                self.search_unavailable = true;
                 self.search_cancel = None;
                 self.search_loading = false;
+                self.rebuild_visible();
             }
         }
+    }
+
+    /// The result count shown at the right edge of the Search field. `+` marks
+    /// a listing that hit the cap, so a truncated result set never reads as a
+    /// complete one.
+    pub fn search_result_count(&self) -> Option<String> {
+        let results = self.search_results.as_ref()?;
+        if self.search_query.trim().is_empty() {
+            return None;
+        }
+        let count = results.paths.len();
+        Some(format!(
+            "{count}{} file{}",
+            if results.truncated { "+" } else { "" },
+            if count == 1 { "" } else { "s" }
+        ))
     }
 
     /// Restrict the listing to `paths` (repository-relative), or clear the
@@ -764,11 +858,15 @@ impl FileExplorer {
         }
         let mut visible = Vec::new();
         if !self.search_query.trim().is_empty() {
-            if let Some(index) = &self.search_index {
-                flatten_search_index(index, &self.search_query, &mut visible);
-            } else if let Some(root) = &self.root {
-                // Show already-loaded paths while the one-time index builds.
-                flatten_filtered(root, 0, &self.search_query, self.root_path(), &mut visible);
+            if let Some(results) = &self.search_results {
+                flatten_search_results(self.root_path.as_deref(), results, &mut visible);
+            } else if !self.search_unavailable {
+                // No scan has landed yet: show what the loaded tree can answer
+                // so the first keystrokes are not a blank pane. A failed scan
+                // skips this — its own state line is the honest one.
+                if let Some(root) = &self.root {
+                    flatten_filtered(root, 0, &self.search_query, self.root_path(), &mut visible);
+                }
             }
         } else if let Some(root) = &self.root {
             flatten_filtered(root, 0, "", self.root_path(), &mut visible);
@@ -932,82 +1030,55 @@ fn fuzzy_subsequence(path: &str, query: &str) -> bool {
     true
 }
 
-fn build_search_index(root: &Path, cancel: &AtomicBool) -> Vec<SearchEntry> {
-    let mut index = vec![SearchEntry {
-        path: root.to_path_buf(),
-        relative: ".".into(),
-        display_name: root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| root.display().to_string()),
-        kind: FileKind::Directory,
-        depth: 0,
-    }];
-    index_directory(root, root, 1, cancel, &mut index);
-    index
-}
-
-fn index_directory(
-    root: &Path,
-    directory: &Path,
-    depth: usize,
-    cancel: &AtomicBool,
-    index: &mut Vec<SearchEntry>,
-) {
-    if cancel.load(Ordering::Relaxed) {
-        return;
-    }
-    let Ok(children) = read_children(Some(root), directory) else {
+/// Turn ranked search results into tree rows.
+///
+/// The result list is ranked, not sorted by path, so rows keep rank order and
+/// each match contributes the ancestors it needs on the way. A directory row
+/// therefore always precedes the matches it holds, and a directory matched by
+/// several results still appears once.
+fn flatten_search_results(root: Option<&Path>, results: &MergedSearch, out: &mut Vec<VisibleNode>) {
+    let Some(root) = root else {
         return;
     };
-    for child in children {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        let relative = child
-            .path
-            .strip_prefix(root)
-            .unwrap_or(&child.path)
-            .to_string_lossy()
-            .into_owned();
-        index.push(SearchEntry {
-            path: child.path.clone(),
-            relative,
-            display_name: child.display_name,
-            kind: child.kind,
-            depth,
-        });
-        if child.kind == FileKind::Directory {
-            index_directory(root, &child.path, depth + 1, cancel, index);
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut rows: Vec<VisibleNode> = Vec::with_capacity(results.paths.len());
+    let mut children: HashMap<PathBuf, u32> = HashMap::new();
+    for relative in &results.paths {
+        let components: Vec<&str> = relative
+            .split('/')
+            .filter(|component| !component.is_empty() && *component != ".")
+            .collect();
+        let mut path = root.to_path_buf();
+        for (index, component) in components.iter().enumerate() {
+            path.push(component);
+            let is_file = index + 1 == components.len();
+            if let Some(parent) = path.parent() {
+                *children.entry(parent.to_path_buf()).or_default() += 1;
+            }
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            rows.push(VisibleNode {
+                display_name: component.to_string(),
+                kind: if is_file {
+                    FileKind::File
+                } else {
+                    FileKind::Directory
+                },
+                expanded: !is_file,
+                loading: false,
+                loaded: true,
+                error: None,
+                child_count: 0,
+                depth: index,
+                path: path.clone(),
+            });
         }
     }
-}
-
-fn flatten_search_index(index: &[SearchEntry], query: &str, out: &mut Vec<VisibleNode>) {
-    let mut included = HashSet::new();
-    for entry in index {
-        if !path_matches_query(&entry.relative, query) {
-            continue;
-        }
-        let mut path = Some(entry.path.as_path());
-        while let Some(current) = path {
-            included.insert(current.to_path_buf());
-            path = current.parent();
-        }
+    for row in &mut rows {
+        row.child_count = children.get(&row.path).copied().unwrap_or(0) as usize;
     }
-    for entry in index.iter().filter(|entry| included.contains(&entry.path)) {
-        out.push(VisibleNode {
-            path: entry.path.clone(),
-            display_name: entry.display_name.clone(),
-            kind: entry.kind,
-            expanded: entry.kind == FileKind::Directory,
-            loading: false,
-            loaded: true,
-            error: None,
-            child_count: usize::from(entry.kind == FileKind::Directory),
-            depth: entry.depth,
-        });
-    }
+    out.extend(rows);
 }
 
 fn path_matches_query(path: &str, query: &str) -> bool {
@@ -1387,8 +1458,15 @@ impl Widget for FileExplorerWidget<'_> {
                     }
                 }
                 // A query that filters everything out is a different state
-                // from an empty repository: say what didn't match.
-                if visible.is_empty() && !query.trim().is_empty() {
+                // from an empty repository: say what didn't match. A failed
+                // scan is a third state again — it says nothing about the
+                // query, so it never borrows the no-matches line.
+                if self.explorer.search_unavailable {
+                    lines.push(Line::styled("Search unavailable", theme::muted()));
+                } else if visible.is_empty()
+                    && !query.trim().is_empty()
+                    && !self.explorer.search_loading
+                {
                     lines.push(Line::styled(
                         format!("No matches for \"{}\"", query.trim()),
                         theme::muted(),
@@ -1411,6 +1489,22 @@ impl Widget for FileExplorerWidget<'_> {
             let search_inner = search_block.inner(search_area);
             search_block.render(search_area, buf);
             let text_focused = self.focused && self.explorer.search_focused;
+            // The result count shares the Search field, so it claims its cells
+            // first and the query truncates around it. A listing that hit the
+            // cap still has to be able to say so.
+            let count = self.explorer.search_result_count().unwrap_or_default();
+            let count_width = count.chars().count() as u16;
+            let field_width = search_inner.width;
+            let reserved = count_width.min(field_width.saturating_sub(SEARCH_PREFIX_WIDTH));
+            let query_room = field_width
+                .saturating_sub(SEARCH_PREFIX_WIDTH)
+                .saturating_sub(reserved) as usize;
+            let shown_query: String = self
+                .explorer
+                .search_query
+                .chars()
+                .take(query_room)
+                .collect();
             let (search, search_style) = if self.explorer.search_query.is_empty() {
                 let text = if text_focused {
                     format!("{}Search files...", theme::CURSOR_GLYPH)
@@ -1420,9 +1514,9 @@ impl Widget for FileExplorerWidget<'_> {
                 (text, theme::composer_placeholder())
             } else {
                 let text = if text_focused {
-                    format!("{}{}", self.explorer.search_query, theme::CURSOR_GLYPH)
+                    format!("{}{}", shown_query, theme::CURSOR_GLYPH)
                 } else {
-                    self.explorer.search_query.clone()
+                    shown_query.clone()
                 };
                 (text, theme::composer_text())
             };
@@ -1432,19 +1526,21 @@ impl Widget for FileExplorerWidget<'_> {
             } else {
                 theme::muted()
             };
-            Paragraph::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled("/ ", prefix_style),
-                Span::styled(search, search_style),
-            ]))
-            .render(search_inner, buf);
+                Span::styled(search.clone(), search_style),
+            ];
+            if reserved > 0 {
+                let used = SEARCH_PREFIX_WIDTH + search.chars().count() as u16;
+                spans.push(Span::raw(
+                    " ".repeat(field_width.saturating_sub(used + reserved) as usize),
+                ));
+                spans.push(Span::styled(count, theme::muted()));
+            }
+            Paragraph::new(Line::from(spans)).render(search_inner, buf);
             if text_focused {
-                let cursor_x = search_inner.x
-                    + SEARCH_PREFIX_WIDTH
-                    + if self.explorer.search_query.is_empty() {
-                        0
-                    } else {
-                        self.explorer.search_query.chars().count() as u16
-                    };
+                let cursor_x =
+                    search_inner.x + SEARCH_PREFIX_WIDTH + shown_query.chars().count() as u16;
                 if cursor_x < search_inner.right() {
                     theme::paint_caret(buf, cursor_x, search_inner.y);
                 }
@@ -2013,7 +2109,7 @@ mod tests {
         let mut explorer =
             FileExplorer::new(Some(root_path.clone()), forge_config::FileIconMode::Unicode);
 
-        explorer.set_search_query("api cli");
+        explorer.set_search_query("client");
         let src = explorer
             .root
             .as_ref()
@@ -2029,6 +2125,8 @@ mod tests {
         assert!(explorer.search_loading);
         wait_for_search_load(&mut explorer);
 
+        // Ranked results, not a tree walk: the match and the ancestors it needs
+        // come from the index, and the workspace root itself is not a result.
         let visible: Vec<_> = explorer
             .visible_nodes()
             .iter()
@@ -2044,7 +2142,6 @@ mod tests {
         assert_eq!(
             visible,
             vec![
-                PathBuf::from("."),
                 PathBuf::from("src"),
                 PathBuf::from("src/api"),
                 PathBuf::from("src/api/client.rs"),
@@ -2052,8 +2149,59 @@ mod tests {
         );
     }
 
+    /// Content search is the point of the feature: a file whose *name* does not
+    /// match the query still belongs in the listing.
     #[test]
-    fn search_keystrokes_reuse_compact_index_without_materializing_tree() {
+    fn search_matches_file_content_as_well_as_file_names() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(
+            root.path().join("src/handler.rs"),
+            "pub fn distinctive_payload_marker() {}\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("src/other.rs"), "pub fn unrelated() {}\n").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+
+        explorer.set_search_query("distinctive_payload");
+        wait_for_search_load(&mut explorer);
+
+        let names: Vec<_> = explorer
+            .visible_nodes()
+            .iter()
+            .map(|node| node.display_name.clone())
+            .collect();
+        assert_eq!(names, ["src", "handler.rs"]);
+        assert!(!explorer.search_unavailable);
+    }
+
+    /// A one-character query sweeps the whole workspace for noise, so content
+    /// matching stays off until the query is worth scanning for.
+    #[test]
+    fn a_single_character_query_matches_names_only() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("alpha.rs"), "let zz_marker = 1;\n").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+
+        explorer.set_search_query("z");
+        wait_for_search_load(&mut explorer);
+        assert!(
+            !explorer
+                .visible_nodes()
+                .iter()
+                .any(|node| node.display_name == "alpha.rs"),
+            "a one-character query must not list every file containing that letter"
+        );
+    }
+
+    #[test]
+    fn search_keystrokes_reuse_one_engine_without_materializing_tree() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("src/api/deep")).unwrap();
         fs::write(root.path().join("src/api/deep/client.rs"), "").unwrap();
@@ -2062,9 +2210,9 @@ mod tests {
             forge_config::FileIconMode::Unicode,
         );
 
-        explorer.set_search_query("c");
+        explorer.set_search_query("client");
         wait_for_search_load(&mut explorer);
-        let index = Arc::as_ptr(explorer.search_index.as_ref().unwrap());
+        let engine = explorer.search_engine_ptr();
         let src = explorer
             .root
             .as_ref()
@@ -2075,15 +2223,78 @@ mod tests {
             .unwrap();
         assert!(!src.loaded, "search must not materialize the FileNode tree");
 
-        for query in ["cl", "cli", "client"] {
+        // Every keystroke scans again — content matching cannot be answered
+        // from a cached list — but they all share one index.
+        for query in ["cli", "client", "cl"] {
             explorer.set_search_query(query);
-            assert_eq!(Arc::as_ptr(explorer.search_index.as_ref().unwrap()), index);
-            assert!(!explorer.search_loading);
+            assert!(explorer.search_loading);
+            wait_for_search_load(&mut explorer);
+            assert_eq!(explorer.search_engine_ptr(), engine);
         }
         assert!(explorer
             .visible
             .iter()
             .any(|node| node.display_name == "client.rs"));
+    }
+
+    /// The count tells a truncated listing from a complete one; the design doc
+    /// requires the header to be truthful about truncation.
+    #[test]
+    fn search_result_count_marks_a_truncated_listing() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..4 {
+            fs::write(root.path().join(format!("f{index}.txt")), "shared token\n").unwrap();
+        }
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        assert_eq!(explorer.search_result_count(), None);
+
+        explorer.set_search_query("token");
+        wait_for_search_load(&mut explorer);
+        assert_eq!(explorer.search_result_count().as_deref(), Some("4 files"));
+        assert!(
+            !explorer
+                .search_results
+                .as_ref()
+                .expect("results installed")
+                .truncated
+        );
+
+        explorer.search_results = Some(Arc::new(MergedSearch {
+            paths: vec!["a".into(), "b".into()],
+            truncated: true,
+        }));
+        assert_eq!(explorer.search_result_count().as_deref(), Some("2+ files"));
+    }
+
+    /// A failed scan is not a failed query, so the two never share a line.
+    #[test]
+    fn an_unavailable_search_is_its_own_state() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("only.rs"), "content\n").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+
+        explorer.set_search_query("content");
+        wait_for_search_load(&mut explorer);
+        assert!(!explorer.search_unavailable);
+
+        explorer.search_results = None;
+        explorer.search_unavailable = true;
+        explorer.rebuild_visible();
+
+        let area = Rect::new(0, 0, 30, 14);
+        let buf = render_widget(&mut explorer, area, true);
+        let rendered: Vec<String> = (0..area.height)
+            .map(|offset| row_text(&buf, area, area.y + offset))
+            .collect();
+        let shown = rendered.join("\n");
+        assert!(shown.contains("Search unavailable"), "{shown}");
+        assert!(!shown.contains("No matches for"), "{shown}");
     }
 
     #[test]
@@ -2100,8 +2311,16 @@ mod tests {
         explorer.set_search_query("client");
         wait_for_search_load(&mut explorer);
         explorer.selected_path = Some(root_path.join("src/api/client.rs"));
+        // Every query rescans, so the narrowing lands on a later tick. Until
+        // it does, the previous result set is still the one on screen — which
+        // is why the selection has not moved yet.
         explorer.set_search_query("config");
+        assert_eq!(
+            explorer.selected_relative_path().as_deref(),
+            Some("src/api/client.rs")
+        );
 
+        wait_for_search_load(&mut explorer);
         assert_eq!(
             explorer.selected_relative_path().as_deref(),
             Some("src/config/client_config.rs")
@@ -2254,7 +2473,9 @@ mod tests {
             search_loader: None,
             search_cancel: None,
             search_loading: false,
-            search_index: None,
+            search_results: None,
+            search_engine: SearchEngine::default(),
+            search_unavailable: false,
             diff_filter: None,
             refresh_generation: 0,
             pending_refresh: None,
