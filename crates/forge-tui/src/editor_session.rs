@@ -6,7 +6,11 @@
 
 #![allow(dead_code)] // The session is introduced before the rendering/input migration.
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use edtui::actions::{
+    search::StartSearch, Chainable, FindFirst, FindNext, FindPrevious, SwitchMode,
+};
+use edtui::events::{KeyEventRegister, KeyInput};
 use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, Highlight, Index2,
     LineNumbers, Lines,
@@ -28,6 +32,7 @@ pub(crate) struct EditorSession {
     syntax_theme: forge_syntax::HighlightTheme,
     revision: u64,
     pending_operator: Option<char>,
+    reverse_search_start: Option<Index2>,
     highlight_pending: bool,
 }
 
@@ -70,12 +75,23 @@ fn normalize_text(text: &str) -> (String, DocumentFormat) {
     (normalized, format)
 }
 
+fn vim_event_handler() -> EditorEventHandler {
+    let mut handler = EditorEventHandler::vim_mode();
+    for key in [KeyInput::new('?'), KeyInput::shift('?')] {
+        handler.key_handler.insert(
+            KeyEventRegister::n(vec![key]),
+            StartSearch.chain(SwitchMode(EditorMode::Search)),
+        );
+    }
+    handler
+}
+
 impl EditorSession {
     pub(crate) fn new(text: &str) -> Self {
         let (text, format) = normalize_text(text);
         Self {
             state: EditorState::new(Lines::from(&text)),
-            event_handler: EditorEventHandler::vim_mode(),
+            event_handler: vim_event_handler(),
             accepted_text: text,
             dirty: false,
             format,
@@ -83,15 +99,58 @@ impl EditorSession {
             syntax_theme: forge_syntax::HighlightTheme::default(),
             revision: 0,
             pending_operator: None,
+            reverse_search_start: None,
             highlight_pending: false,
         }
     }
 
     /// Route one terminal key through edtui and report whether the buffer changed.
-    pub(crate) fn handle_key(&mut self, event: KeyEvent) -> bool {
+    pub(crate) fn handle_key(&mut self, mut event: KeyEvent) -> bool {
+        let mode = self.mode();
+        let cursor = self.state.cursor;
+        // edtui only accepts unmodified search characters; crossterm already
+        // supplies the shifted character, so keep its case and strip Shift.
+        if mode == EditorMode::Search
+            && matches!(event.code, KeyCode::Char(_))
+            && event.modifiers == KeyModifiers::SHIFT
+        {
+            event.modifiers = KeyModifiers::NONE;
+        }
         let change_kind = self.text_change_kind(event);
         let undo_before = matches!(change_kind, TextChangeKind::UndoRedo).then(|| self.text());
         self.event_handler.on_key_event(event, &mut self.state);
+        if mode == EditorMode::Normal && self.mode() == EditorMode::Search {
+            let backward = event.code == KeyCode::Char('?');
+            self.reverse_search_start = backward.then_some(cursor);
+            // n follows the last search direction; N goes the opposite way.
+            for (key, previous) in [
+                (KeyInput::new('n'), false),
+                (KeyInput::new('N'), true),
+                (KeyInput::shift('N'), true),
+            ] {
+                let key = KeyEventRegister::n(vec![key]);
+                if backward != previous {
+                    self.event_handler.key_handler.insert(key, FindPrevious);
+                } else {
+                    self.event_handler.key_handler.insert(key, FindNext);
+                }
+            }
+        }
+        if mode == EditorMode::Search
+            && event.modifiers.is_empty()
+            && matches!(
+                event.code,
+                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Enter
+            )
+        {
+            if let Some(start) = self.reverse_search_start {
+                // The predecessor of edtui's first forward match is the last
+                // match before the search origin, including wraparound.
+                self.state.cursor = start;
+                self.state.execute(FindFirst);
+                self.state.execute(FindPrevious);
+            }
+        }
         match change_kind {
             TextChangeKind::None => false,
             TextChangeKind::Guaranteed => {
@@ -278,6 +337,14 @@ impl EditorSession {
         self.state.search_pattern()
     }
 
+    pub(crate) fn search_prefix(&self) -> char {
+        if self.reverse_search_start.is_some() {
+            '?'
+        } else {
+            '/'
+        }
+    }
+
     /// Place the cursor. No longer test-only: `/diff`'s `o` opens a file at
     /// the line the patch cursor was sitting on, which needs this in a
     /// release build.
@@ -363,12 +430,13 @@ impl EditorSession {
     pub(crate) fn replace_text(&mut self, text: &str) {
         let (text, format) = normalize_text(text);
         self.state = EditorState::new(Lines::from(&text));
-        self.event_handler = EditorEventHandler::vim_mode();
+        self.event_handler = vim_event_handler();
         self.accepted_text = text;
         self.dirty = false;
         self.format = format;
         self.revision = self.revision.wrapping_add(1);
         self.pending_operator = None;
+        self.reverse_search_start = None;
         self.refresh_syntax_highlights();
     }
 
@@ -574,6 +642,127 @@ mod tests {
         session.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert_eq!(session.text(), "xhello");
         assert!(session.is_dirty());
+    }
+
+    #[test]
+    fn search_accepts_shifted_characters_without_editing_the_buffer() {
+        for prefix in ['/', '?'] {
+            let mut session = EditorSession::new("other!\nHello!\nend");
+            session.set_cursor(2, 0);
+            assert!(!session.handle_key(key(KeyCode::Char(prefix))));
+            assert_eq!(session.mode(), EditorMode::Search);
+            assert_eq!(session.search_prefix(), prefix);
+
+            assert!(!session.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT)));
+            for ch in "ello".chars() {
+                assert!(!session.handle_key(key(KeyCode::Char(ch))));
+            }
+            assert!(!session.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::SHIFT)));
+            for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+                session.handle_key(KeyEvent::new(KeyCode::Char('x'), modifiers));
+            }
+            assert_eq!(session.search_pattern(), "Hello!");
+            assert!(!session.handle_key(key(KeyCode::Enter)));
+            assert_eq!(session.mode(), EditorMode::Normal);
+            assert_eq!(session.state.cursor, Index2::new(1, 0));
+            assert_eq!(session.text(), "other!\nHello!\nend");
+            assert!(!session.is_dirty());
+            assert_eq!(session.revision(), 0);
+        }
+    }
+
+    #[test]
+    fn reverse_search_repeats_backward_and_wraps_at_the_start() {
+        let mut session = EditorSession::new("foo foo\nfoo\nend\nfoo");
+        session.set_cursor(2, 0);
+        session.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert_eq!(session.mode(), EditorMode::Search);
+        for ch in "foo".chars() {
+            session.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(session.state.cursor, Index2::new(1, 0));
+        session.handle_key(key(KeyCode::Enter));
+        assert_eq!(session.state.cursor, Index2::new(1, 0));
+
+        for expected in [Index2::new(0, 4), Index2::new(0, 0), Index2::new(3, 0)] {
+            assert!(!session.handle_key(key(KeyCode::Char('n'))));
+            assert_eq!(session.state.cursor, expected);
+        }
+        for (modifiers, expected) in [
+            (KeyModifiers::SHIFT, Index2::new(0, 0)),
+            (KeyModifiers::NONE, Index2::new(0, 4)),
+        ] {
+            session.handle_key(KeyEvent::new(KeyCode::Char('N'), modifiers));
+            assert_eq!(session.state.cursor, expected);
+        }
+
+        session.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(session.search_prefix(), '/');
+        for ch in "foo".chars() {
+            session.handle_key(key(KeyCode::Char(ch)));
+        }
+        session.handle_key(key(KeyCode::Enter));
+        assert_eq!(session.state.cursor, Index2::new(0, 4));
+        session.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(session.state.cursor, Index2::new(1, 0));
+        session.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!(session.state.cursor, Index2::new(0, 4));
+        assert!(!session.is_dirty());
+        assert_eq!(session.revision(), 0);
+    }
+
+    #[test]
+    fn reverse_search_starts_before_the_cursor_and_wraps() {
+        for (start, expected) in [
+            (Index2::new(0, 4), Index2::new(0, 0)),
+            (Index2::new(0, 6), Index2::new(0, 4)),
+            (Index2::new(0, 0), Index2::new(2, 0)),
+            (Index2::new(3, 0), Index2::new(2, 0)),
+        ] {
+            let mut session = EditorSession::new("foo foo\nbar\nfoo\nend");
+            session.set_cursor(start.row, start.col);
+            session.handle_key(key(KeyCode::Char('?')));
+            for ch in "foo".chars() {
+                session.handle_key(key(KeyCode::Char(ch)));
+            }
+            assert_eq!(session.state.cursor, expected);
+            session.handle_key(key(KeyCode::Enter));
+            assert_eq!(session.state.cursor, expected);
+        }
+    }
+
+    #[test]
+    fn reverse_search_backspace_and_cancel_preserve_the_origin() {
+        let mut session = EditorSession::new("foo\nbar\nfoo\nend");
+        session.set_cursor(3, 1);
+        session.handle_key(key(KeyCode::Char('?')));
+        for ch in "foo".chars() {
+            session.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(session.state.cursor, Index2::new(2, 0));
+        session.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(session.state.cursor, Index2::new(3, 1));
+        session.handle_key(key(KeyCode::Backspace));
+        assert_eq!(session.search_pattern(), "foo");
+        assert_eq!(session.state.cursor, Index2::new(2, 0));
+        for _ in 0..3 {
+            session.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(session.search_pattern(), "");
+        assert_eq!(session.state.cursor, Index2::new(3, 1));
+        session.handle_key(key(KeyCode::Char('f')));
+        session.handle_key(key(KeyCode::Esc));
+        assert_eq!(session.mode(), EditorMode::Normal);
+        assert_eq!(session.search_pattern(), "");
+        assert_eq!(session.state.cursor, Index2::new(3, 1));
+        assert!(!session.is_dirty());
+        assert_eq!(session.revision(), 0);
+
+        session.replace_text("foo");
+        assert_eq!(session.search_prefix(), '/');
+        session.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert_eq!(session.mode(), EditorMode::Search);
+        assert_eq!(session.search_prefix(), '?');
     }
 
     #[test]
