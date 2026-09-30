@@ -56,7 +56,7 @@ pub struct MergedSearch {
 pub enum GrepQueryMode {
     /// Literal text, unless the pattern is wrapped in `/…/`.
     Plain,
-    /// Never treat `/…/` as a regex literal.
+    /// Match literal text, without interpreting regex delimiters or query constraints.
     Literal,
     Regex,
     Fuzzy,

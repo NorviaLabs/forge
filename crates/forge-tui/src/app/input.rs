@@ -381,6 +381,7 @@ impl TuiApp {
             diff_explorer_was_visible: self.diff_explorer_was_visible.take(),
             git_sync: std::mem::take(&mut self.git_sync),
             pending_editor_path: self.pending_editor_path.take(),
+            pending_editor_location: self.pending_editor_location.take(),
             pending_editor_home: std::mem::take(&mut self.pending_editor_home),
             external_editor: std::mem::replace(
                 &mut self.external_editor,
@@ -434,6 +435,7 @@ impl TuiApp {
         self.diff_explorer_was_visible = state.diff_explorer_was_visible;
         self.git_sync = state.git_sync;
         self.pending_editor_path = state.pending_editor_path;
+        self.pending_editor_location = state.pending_editor_location;
         self.pending_editor_home = state.pending_editor_home;
         self.external_editor = state.external_editor;
         self.cancellation = state.cancellation;
@@ -1039,10 +1041,12 @@ impl TuiApp {
             ExplorerDialog::DirtySwitch { path } => match key.code {
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     self.pending_editor_path = None;
+                    self.pending_editor_location = None;
                     None
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     self.pending_editor_path = None;
+                    self.pending_editor_location = None;
                     None
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -1072,6 +1076,7 @@ impl TuiApp {
             ExplorerDialog::SaveConflict => match key.code {
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     self.pending_editor_path = None;
+                    self.pending_editor_location = None;
                     self.pending_editor_home = false;
                     self.pending_editor_quit = false;
                     None
@@ -1176,6 +1181,11 @@ impl TuiApp {
                 for ch in data.chars().filter(|ch| ch.is_ascii_digit()) {
                     self.source_viewer.append_jump_char(ch);
                 }
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Search => {
+                let mut query = self.workspace_files.explorer.search_query.clone();
+                query.extend(data.chars().filter(|ch| !ch.is_control()));
+                self.workspace_files.explorer.set_search_query(query);
             }
             FocusMode::Navigation => {}
         }
@@ -2301,6 +2311,19 @@ impl TuiApp {
         if self.scratchpad.is_some() {
             self.handle_scratchpad_key(key);
             return Ok(());
+        }
+
+        // Workspace search shortcuts must win over the editor's Ctrl+F/Ctrl+P
+        // handling, but never interrupt a modal, terminal, or command line.
+        if self.focus.mode() == FocusMode::Navigation
+            && self.focus.block() != FocusBlock::BottomPanel
+        {
+            if let Some(command @ SemanticCommand::OpenFileSearch(_)) =
+                self.semantic_command_for_global_key(key)
+            {
+                Box::pin(self.execute_semantic_command(command)).await?;
+                return Ok(());
+            }
         }
 
         match self.focus.mode() {

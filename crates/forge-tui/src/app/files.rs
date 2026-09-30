@@ -294,6 +294,7 @@ impl TuiApp {
     }
 
     pub(super) fn open_file_in_editor(&mut self, path: &Path) {
+        self.pending_editor_location = None;
         let same_path = self.source_viewer.path.as_deref() == Some(path)
             || self
                 .source_viewer
@@ -337,6 +338,32 @@ impl TuiApp {
             }
         }
         self.navigate_to_workspace_view(WorkspaceView::File(path.clone()));
+        if let Some(location) = self.pending_editor_location.take() {
+            self.reveal_editor_location(location);
+        }
+    }
+
+    pub(super) fn reveal_editor_location(&mut self, (line, column): (usize, usize)) {
+        if self.source_viewer.status != ViewerStatus::Ok {
+            return;
+        }
+        self.source_viewer.leave_preview_mode();
+        let row = line
+            .saturating_sub(1)
+            .min(self.source_viewer.lines.len().saturating_sub(1));
+        self.source_viewer.current_line = row;
+        self.source_viewer.top_line = row;
+        if let Some(editor) = self.editor_session.as_mut() {
+            // Grep columns are byte offsets; the editor cursor counts characters.
+            let buffer = editor.text();
+            let text = buffer.lines().nth(row).unwrap_or_default();
+            let byte = column.saturating_sub(1).min(text.len());
+            let col = text
+                .char_indices()
+                .take_while(|(offset, _)| *offset < byte)
+                .count();
+            editor.set_cursor(row, col);
+        }
     }
 
     #[cfg(test)]

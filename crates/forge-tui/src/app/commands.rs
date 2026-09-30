@@ -326,6 +326,18 @@ impl TuiApp {
         key: event::KeyEvent,
     ) -> Option<SemanticCommand> {
         match key.code {
+            KeyCode::Char('p') | KeyCode::Char('P') if key.modifiers == KeyModifiers::CONTROL => {
+                Some(SemanticCommand::OpenFileSearch(
+                    crate::file_explorer::FileSearchMode::Names,
+                ))
+            }
+            KeyCode::Char('f') | KeyCode::Char('F')
+                if key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT) =>
+            {
+                Some(SemanticCommand::OpenFileSearch(
+                    crate::file_explorer::FileSearchMode::Content,
+                ))
+            }
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::GoBack)
             }
@@ -708,6 +720,27 @@ impl TuiApp {
             SemanticCommand::OpenInlineSearch => {
                 self.open_inline_search();
             }
+            SemanticCommand::OpenFileSearch(mode) => {
+                if self.supervisor.is_none()
+                    && self.last_frame_width > 0
+                    && !crate::layout::files_fit(self.last_frame_width)
+                {
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        format!(
+                            "Files needs a wider terminal ({} columns; this one is {}).",
+                            crate::layout::files_min_frame_width(),
+                            self.last_frame_width,
+                        ),
+                    );
+                    return Ok(true);
+                }
+                self.select_navigator_tab_from_row(crate::widgets::NavigatorTab::Files);
+                self.leave_navigator_tab_row();
+                self.workspace_files.visible = true;
+                self.workspace_files.explorer.set_search_mode(mode);
+                self.focus_block(FocusBlock::Search);
+            }
             SemanticCommand::OpenSlashCommands => {
                 self.enter_chat_composer();
                 if self.input.text.is_empty() {
@@ -757,7 +790,19 @@ impl TuiApp {
                             self.select_diff_path(&path);
                         }
                     } else if path.is_file() || path.is_symlink() {
+                        let location = self
+                            .workspace_files
+                            .explorer
+                            .selected_content_match()
+                            .map(|hit| (hit.line as usize, hit.column as usize));
                         self.open_file_in_editor(&path);
+                        if let Some(location) = location {
+                            if self.pending_editor_path.as_deref() == Some(path.as_path()) {
+                                self.pending_editor_location = Some(location);
+                            } else if self.source_viewer.path.as_deref() == Some(path.as_path()) {
+                                self.reveal_editor_location(location);
+                            }
+                        }
                     } else {
                         self.set_feedback(
                             FeedbackSeverity::Warn,

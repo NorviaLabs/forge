@@ -532,7 +532,11 @@ surface. The old top task strip is superseded (`§11`).
   the `§6` hint grammar. A frame costs a line above and below the row, so it is
   drawn only when the whole block fits: a short pane falls back to the unframed
   layout rather than painting half a box.
-- **Files tab** is today's explorer, unchanged.
+- **Files tab** uses the explorer. Filename navigation (`Ctrl+P`) and Find in
+  Files (`Ctrl+Shift+F`) are separate modes of the search field. Content results
+  use collapsible file groups with line-numbered, highlighted snippets below
+  each path; selecting a snippet opens that source location, not a rendered
+  preview. Match origin is conveyed by structure, never a badge or colour alone.
 - **Git tab** appears only where the workspace is a repository (`.git` at the
   session's root — a directory in a plain checkout, a file in a linked
   worktree, so both qualify). It is not a new column and adds no permanent
@@ -881,17 +885,27 @@ the single plan surface.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.
 - Directory expansion uses ASCII `>` / `v` with 2-cell indentation; the query match inside a name takes the shared `search_match` highlight (contiguous runs only — fuzzy-only matches stay plain).
 - A filtered-to-nothing query reports `No matches for "<query>"`; an empty repository reports `This directory is empty`. The two states are never the same line.
-- **The query matches names *and* contents.** Filename hits rank first in
-  Quick Open order, then files that matched only on content; a file matching
-  both ways is listed once, in the name tier. Content matching is plain
-  case-insensitive text and stays off below two characters, where a
-  whole-workspace scan could only return noise. Results are capped, and the
-  count sits at the right edge of the field as `N files`, with `+` after the
-  number when the listing is a truncated prefix of the result set — the query
-  text truncates around the count rather than over it.
-- Search results are ranked, not walked: each match contributes the ancestors
-  it needs, in rank order, so a directory row always precedes what it holds.
-  The workspace root is not itself a result row.
+- **Filename navigation and content search are separate.** `Ctrl+P` focuses
+  `Search files...` with fuzzy workspace-path matching in Quick Open order.
+  Name results synthesize their ancestors, not the workspace root. The field's
+  bottom border advertises `Ctrl+Shift+F content`.
+- `Ctrl+Shift+F` focuses `Find in files...`. Literal content matches use smart
+  case (lowercase queries ignore case; an uppercase query is case-sensitive).
+  Results group by workspace-relative file path, with ASCII `>` / `v` disclosure
+  and a per-file line count; indented children show muted line numbers and
+  snippets using `search_match`. Selected snippets retain the neutral selection
+  style with underlined matches. `←` / `→` collapse / expand a file group, Enter
+  on a header toggles it, and Enter or a click on a match opens its exact source
+  line and column. A source result leaves rendered preview mode; unsaved buffers
+  still require the existing save/discard confirmation when switching files.
+  `Ctrl+P files` on the field's bottom border returns to filename navigation.
+- Results are capped at 200 files or matching lines. The right side of the
+  field shows `N files` or `N matches`, with `+` when more results were omitted;
+  query text truncates around the count. Empty content queries show
+  `Type to find in files`, never the ordinary explorer tree. A pending scan with
+  no previous results says `Searching...`; stale results keep their own query's
+  highlighting until the replacement arrives. Paste edits the focused query;
+  Ctrl+U clears it, and Esc clears a non-empty query before leaving Search.
 - A scan that could not run reports `Search unavailable`, never the
   no-matches line: a failed index says nothing about the query. The next
   keystroke retries the open.
