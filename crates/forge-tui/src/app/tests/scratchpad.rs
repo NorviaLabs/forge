@@ -160,13 +160,62 @@ async fn colon_q_bang_discards_without_writing() {
 }
 
 #[tokio::test]
-async fn the_slash_command_toggles_the_surface() {
+async fn ctrl_n_toggles_the_surface() {
     let (_dir, mut app) = focus_test_app().await;
 
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.scratchpad.is_some(), "Ctrl+N opens the notes");
+
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.scratchpad.is_none(), "Ctrl+N closes them again");
+}
+
+/// The binding is matched before type-to-compose, so a bare `n` must still
+/// start a draft. If this ever fails, notes have started eating keystrokes.
+#[tokio::test]
+async fn a_bare_n_still_starts_a_draft_rather_than_opening_the_notes() {
+    let (_dir, mut app) = focus_test_app().await;
+
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(
+        app.scratchpad.is_none(),
+        "an unmodified n is a draft, not a shortcut"
+    );
+    assert_eq!(app.input.text, "n", "the character went to the composer");
+}
+
+/// The binding must also work from inside the notes, otherwise it is an
+/// open-only shortcut and pressing it twice looks broken. This mirrors the
+/// footer chip, which toggles from either side.
+#[tokio::test]
+async fn ctrl_n_toggles_even_from_inside_the_notes() {
+    let (_dir, mut app) = focus_test_app().await;
     app.open_scratchpad();
-    assert!(app.scratchpad.is_some(), "`/notes` opens");
-    app.close_scratchpad();
-    assert!(app.scratchpad.is_none(), "`/notes` closes again");
+    for code in [KeyCode::Char('i'), KeyCode::Char('o'), KeyCode::Esc] {
+        app.handle_key(press(code, KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+
+    assert!(
+        app.scratchpad.is_none(),
+        "the same key closes what it opened"
+    );
+    assert!(
+        app.scratchpad_path().exists(),
+        "closing from the binding autosaved the pending note"
+    );
 }
 
 #[tokio::test]

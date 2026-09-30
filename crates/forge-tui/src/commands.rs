@@ -95,9 +95,6 @@ pub enum SlashCommand {
     Terminal,
     /// Review changes to the architecture docs and diagram.
     Architecture,
-    /// Toggle the session-scoped scratchpad — running notes that belong to the
-    /// operator and are never shown to the model.
-    Notes,
     /// Open the background-task Kanban board.
     Tasks,
     /// Enter pane resize mode, or restore the responsive defaults.
@@ -277,7 +274,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }
         "terminal" | "term" | "shell" => Ok(SlashCommand::Terminal),
         "architecture" | "arch" => Ok(SlashCommand::Architecture),
-        "notes" | "scratchpad" | "note" => Ok(SlashCommand::Notes),
         "board" => Ok(SlashCommand::Tasks),
         "resize" => match parts.next() {
             None => Ok(SlashCommand::Resize),

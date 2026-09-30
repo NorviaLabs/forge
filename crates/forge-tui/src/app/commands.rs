@@ -1360,16 +1360,6 @@ impl TuiApp {
                     self.open_bottom_panel();
                 }
                 Ok(SlashCommand::Architecture) => self.open_architecture_review(),
-                // Toggle, not open: the scratchpad is a pane you come back to,
-                // and an already-open one needs a way out that does not require
-                // knowing a keybinding. Closing autosaves.
-                Ok(SlashCommand::Notes) => {
-                    if self.scratchpad.is_some() {
-                        self.close_scratchpad();
-                    } else {
-                        self.open_scratchpad();
-                    }
-                }
                 Ok(SlashCommand::Tasks) => {
                     let strip = crate::tasks_strip::BackgroundStrip::build(
                         &self.selected_background_tasks(),
