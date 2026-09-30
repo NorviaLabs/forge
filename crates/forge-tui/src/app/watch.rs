@@ -134,6 +134,9 @@ impl TuiApp {
     pub(super) fn poll_file_changes(&mut self) {
         // Install any refresh the blocking worker finished since the last tick.
         self.workspace_files.explorer.poll_workspace_refresh();
+        // Same for a search scan: the worker runs off-thread, the result lands
+        // here, and until it arrives the listing shows the previous query.
+        self.workspace_files.explorer.poll_search_load();
         self.drain_inactive_file_watchers();
         let Some(batch) = self.file_watch.take_ready_batch() else {
             return;

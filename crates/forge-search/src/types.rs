@@ -37,10 +37,27 @@ pub struct GrepResponse {
     pub total_matched: usize,
 }
 
+/// Ordered, deduplicated file list for search-as-you-type.
+///
+/// Files whose *path* matches come first, then files that matched only on
+/// content, so the ranking the Files panel already shows survives. The TUI
+/// turns this back into tree rows by synthesizing the ancestors of each path.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MergedSearch {
+    /// Workspace-relative paths, in display order.
+    pub paths: Vec<String>,
+    /// True when either tier held more matches than `paths` does, so the
+    /// listing is a prefix of the result set rather than the whole thing.
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GrepQueryMode {
+    /// Literal text, unless the pattern is wrapped in `/…/`.
     Plain,
+    /// Never treat `/…/` as a regex literal.
+    Literal,
     Regex,
     Fuzzy,
 }
