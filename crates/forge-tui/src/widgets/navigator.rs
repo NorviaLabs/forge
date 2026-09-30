@@ -35,17 +35,6 @@ impl NavigatorTab {
             Self::Git => "Git",
         }
     }
-
-    /// The same name in the uppercase title grammar the navigator's title row
-    /// uses (`FORGE-DESIGN §5`), where the active tab's name is spelled out
-    /// rather than left to the tab row's own highlight.
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Sessions => "SESSIONS",
-            Self::Files => "FILES",
-            Self::Git => "GIT",
-        }
-    }
 }
 
 /// The stop the navigator tab row's cursor rests on. `Sessions` and `Files` are

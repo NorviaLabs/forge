@@ -379,15 +379,6 @@ impl TuiApp {
                     items: &strip_items,
                     overflow: 0,
                     focused: self.focus.block() == FocusBlock::TaskStrip,
-                    // The strip is the navigator column's title row, so it names
-                    // the pane actually on screen. A collapsed column draws no
-                    // tabs and keeps the session list's only surface, so the
-                    // title stays the one it is acting as there.
-                    title: if task_mode && regions.files.is_some() {
-                        navigator_tab.title()
-                    } else {
-                        crate::widgets::NavigatorTab::Sessions.title()
-                    },
                 },
                 regions.task_strip,
             );
