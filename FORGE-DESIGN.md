@@ -464,12 +464,11 @@ surface. The old top task strip is superseded (`§11`).
   session) switches tabs. They never show side by side: the layout already
   carries three content columns (navigator | Workspace | conversation) and
   cannot afford a fourth, and `Files` is the first thing to collapse (`§7.3`).
-- **The column's title row names the active tab.** The persistent session strip
-  above the tab row is that title, and it reads `SESSIONS` / `FILES` / `GIT` with
-  the active tab — the focus marker and the uppercase grammar as before. A
-  hardcoded `SESSIONS` titled the `Files` and `Git` panes with the session list's
-  name. Below `files_fit()` there is no tab row, so the title keeps reading
-  `SESSIONS`: there it is the only session surface on screen.
+- **The named tabs identify the active pane.** Do not repeat `SESSIONS` /
+  `FILES` / `GIT` or a title focus marker above the tab row. The persistent
+  session strip renders session names only, including below `files_fit()`
+  where the tab row is hidden; its selected and focused session styling stays
+  distinct.
 - The tab row is reachable from the keyboard: `↑` at the first row of either
   tab's list moves onto the row, where `←` / `→` walk its stops left to right —
   `Sessions`, `+`, `Files` — `Enter` activates the stop the cursor rests on,

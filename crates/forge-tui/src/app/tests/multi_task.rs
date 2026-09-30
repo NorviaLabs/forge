@@ -1916,26 +1916,37 @@ async fn navigator_defaults_to_sessions_once_a_second_session_exists() {
         .unwrap();
 }
 
-/// The navigator's title row names the pane actually on screen. It used to be
-/// hardcoded `SESSIONS`, so the `Files` and `Git` panes were titled with the
-/// session list's name (`FORGE-DESIGN §7.7`).
+/// The named tabs identify the navigator panes without a duplicate title above
+/// them (`FORGE-DESIGN §7.7`).
 #[tokio::test]
-async fn the_navigator_title_row_names_the_selected_pane() {
+async fn the_navigator_tabs_do_not_repeat_the_selected_pane_title() {
     use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let _ = create_promptless_session(&mut app).await;
-    for (tab, title) in [
-        (NavigatorTab::Sessions, "SESSIONS"),
-        (NavigatorTab::Files, "FILES"),
-        (NavigatorTab::Git, "GIT"),
+    for tab in [
+        NavigatorTab::Sessions,
+        NavigatorTab::Files,
+        NavigatorTab::Git,
     ] {
         app.navigator_tab = tab;
         app.navigator_tab_explicit = true;
-        let rendered = render_app_text(&mut app, 120, 40);
-        assert!(
-            rendered.contains(&format!(" {title} ")),
-            "{tab:?} should title the navigator: {rendered}"
-        );
+        for focused in [true, false] {
+            app.focus_block(if !focused {
+                FocusBlock::Composer
+            } else if tab == NavigatorTab::Sessions {
+                FocusBlock::TaskStrip
+            } else {
+                FocusBlock::Files
+            });
+            let rendered = render_app_text(&mut app, 120, 40);
+            assert!(rendered.contains(tab.label()), "{tab:?}: {rendered}");
+            for title in ["SESSIONS", "FILES", "GIT"] {
+                assert!(
+                    !rendered.contains(&format!(" {title} ")),
+                    "{tab:?} should not repeat {title:?}: {rendered}"
+                );
+            }
+        }
     }
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
