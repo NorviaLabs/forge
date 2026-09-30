@@ -1799,7 +1799,11 @@ impl SourceViewerWidget<'_> {
             message.to_string()
         } else if mode == "SEARCH" {
             format!(
-                "SEARCH /{}",
+                "SEARCH {}{}",
+                self.editor
+                    .as_deref()
+                    .map(EditorSession::search_prefix)
+                    .unwrap_or('/'),
                 self.editor
                     .as_deref()
                     .map(EditorSession::search_pattern)

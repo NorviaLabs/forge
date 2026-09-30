@@ -277,7 +277,10 @@ structured text, HTML/XML/SVG, stylesheets, diffs, configuration files, Mermaid
 diagrams, and logs start in read-only preview; press `i` to edit. Other text
 files start in Normal mode; press `i` to insert. `Esc` leaves the current
 interaction, and `Alt+E` hands the file to `$VISUAL`/`$EDITOR`. In Normal mode,
-`:` opens the editor command line. The beta command set includes `:w`, `:q`,
+`/` searches forward and `?` searches backward; both accept uppercase letters
+typed with Shift. Press `Enter` to accept or `Esc` to cancel. After accepting,
+use `n` to repeat in the same direction or `N` to go the opposite way. `:` opens
+the editor command line. The beta command set includes `:w`, `:q`,
 `:q!`, `:wq`, `:x`, `:preview`, `:edit`, `:e [path]`,
 `:s/pattern/replacement/[g]`, and `:%s/pattern/replacement/[g]`. Saving is
 immediate. Forge asks whether to save, discard, or cancel before leaving or
