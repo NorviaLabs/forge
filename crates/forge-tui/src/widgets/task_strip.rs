@@ -48,6 +48,10 @@ pub struct TaskStrip<'a> {
     pub items: &'a [TaskStripItem],
     pub overflow: usize,
     pub focused: bool,
+    /// The title row names the navigator pane on screen, so it follows the
+    /// active tab rather than reading `SESSIONS` under `Files` and `Git` too.
+    /// Uppercase, matching the title grammar the rest of the chrome uses.
+    pub title: &'a str,
 }
 
 impl Widget for TaskStrip<'_> {
@@ -56,17 +60,17 @@ impl Widget for TaskStrip<'_> {
             return;
         }
         let title = if self.focused {
-            " ● SESSIONS "
+            format!(" ● {} ", self.title)
         } else {
-            " SESSIONS "
+            format!(" {} ", self.title)
         };
         let title_style = if self.focused {
             theme::active_panel_border().add_modifier(Modifier::BOLD)
         } else {
             theme::metadata_style()
         };
-        let mut spans = vec![Span::styled(title, title_style)];
         let mut used = title.chars().count();
+        let mut spans = vec![Span::styled(title, title_style)];
         let mut hidden = self.overflow;
         for (position, item) in self.items.iter().enumerate() {
             if position > 0 {
@@ -141,6 +145,7 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::NavigatorTab;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -165,6 +170,7 @@ mod tests {
                         items: &items,
                         overflow: 3,
                         focused: true,
+                        title: "SESSIONS",
                     },
                     frame.area(),
                 );
@@ -216,6 +222,7 @@ mod tests {
                         items: &items,
                         overflow: 0,
                         focused: false,
+                        title: "SESSIONS",
                     },
                     frame.area(),
                 );
@@ -254,6 +261,7 @@ mod tests {
                         items: &items,
                         overflow: 0,
                         focused: false,
+                        title: "SESSIONS",
                     },
                     frame.area(),
                 );
@@ -295,6 +303,7 @@ mod tests {
                         items: &items,
                         overflow: 0,
                         focused: true,
+                        title: "SESSIONS",
                     },
                     frame.area(),
                 );
@@ -312,5 +321,86 @@ mod tests {
             text.contains("+"),
             "hidden task count should be shown: {text:?}"
         );
+    }
+
+    #[test]
+    fn the_title_names_the_pane_instead_of_always_reading_sessions() {
+        // The strip is the navigator column's title row, so it must follow the
+        // active pane rather than claim `SESSIONS` while Files or Git is up.
+        let items = vec![TaskStripItem {
+            slot: Some(1),
+            label: "alpha".into(),
+            branch: String::new(),
+            state: TaskStripState::Idle,
+            secondary: None,
+            selected: true,
+            focused: false,
+            attention: false,
+        }];
+        for (pane, title) in [
+            (NavigatorTab::Sessions, "SESSIONS"),
+            (NavigatorTab::Files, "FILES"),
+            (NavigatorTab::Git, "GIT"),
+        ] {
+            for focused in [true, false] {
+                let backend = TestBackend::new(60, 1);
+                let mut terminal = Terminal::new(backend).unwrap();
+                terminal
+                    .draw(|frame| {
+                        frame.render_widget(
+                            TaskStrip {
+                                items: &items,
+                                overflow: 0,
+                                focused,
+                                title: pane.title(),
+                            },
+                            frame.area(),
+                        );
+                    })
+                    .unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol().to_string())
+                    .collect();
+                assert!(
+                    text.contains(title),
+                    "{pane:?} should title the strip {title:?}: {text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_focused_marker_stays_with_the_pane_title() {
+        let items: Vec<TaskStripItem> = Vec::new();
+        let render = |focused: bool| {
+            let backend = TestBackend::new(30, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(
+                        TaskStrip {
+                            items: &items,
+                            overflow: 0,
+                            focused,
+                            title: NavigatorTab::Git.title(),
+                        },
+                        frame.area(),
+                    );
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol().to_string())
+                .collect::<String>()
+        };
+        assert!(render(true).contains("● GIT"));
+        assert!(render(false).contains("GIT") && !render(false).contains('●'));
     }
 }
