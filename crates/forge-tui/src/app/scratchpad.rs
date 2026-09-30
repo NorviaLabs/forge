@@ -324,7 +324,8 @@ impl super::TuiApp {
             .title(title);
 
         let inner = block.inner(panel);
-        buf.set_style(panel, theme::canvas());
+        ratatui::widgets::Clear.render(panel, buf);
+        theme::fill(panel, buf, theme::panel());
         block.render(panel, buf);
 
         // Leave the last row for the status line the editor itself reports.
