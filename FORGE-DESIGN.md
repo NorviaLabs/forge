@@ -702,6 +702,17 @@ Mouse is a second input for the same grammar, never a separate mode. Clicking mo
 - **Editor** clicks place the caret using the text body's gutter and scroll geometry; read-only source clicks move the current line. Source-search and jump-to-line prompts retain keyboard ownership and block click, hover and drag behind them, as they already block the wheel.
 - **Wheel** scrolls the focused pane's content (conversation, file tree, source viewer), matching the keyboard page/step size. `Shift` pages.
 - **Right-click** opens the copy/clear context menu over a text selection.
+  Its painted and clickable rectangle stays inside the frame, including after
+  resize. Selection endpoints are inclusive display cells: wide characters and
+  combining marks copy as whole glyphs. Source, preview and terminal copy use
+  the rendered viewport; scrolling, editing or resizing invalidates a finished
+  selection instead of leaving its highlight over unrelated text.
+- **Paste** follows keyboard ownership: dialogs, context menus and overlays
+  precede the underlying terminal or editor. File editors and the scratchpad
+  accept multiline paste in Insert mode and query text in Search mode; Normal
+  and Visual mode reject it visibly. Command-line paste inserts text without
+  executing it. Preview wheel input scrolls the visible preview, not its
+  backing editor; Shift+wheel invokes one page movement.
 - **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, navigator tabs, queued-message rows, background-task rows, and overlay list rows. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker in the row's reserved marker cell and/or a weight step — so clickability is never colour-only; the marker cell is pre-reserved, so hover never shifts text (`§7.7`). It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover: `selection` is the strongest neutral ground in both built-in themes (`selection` outranks `surface_hover`), so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
 
 ## 9. Component Specifications

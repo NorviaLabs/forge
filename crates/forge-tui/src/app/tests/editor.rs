@@ -4,6 +4,140 @@
 
 use super::prelude::*;
 
+fn source_wheel(kind: event::MouseEventKind, shift: bool) -> event::MouseEvent {
+    event::MouseEvent {
+        kind,
+        column: 0,
+        row: 0,
+        modifiers: if shift {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::NONE
+        },
+    }
+}
+
+#[tokio::test]
+async fn markdown_preview_wheel_scrolls_visible_rows_without_moving_source() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("wheel.md");
+    let source = (0..100)
+        .map(|row| format!("- row {row}\n"))
+        .collect::<String>();
+    fs::write(&path, &source).unwrap();
+    app.open_file_in_editor(&path);
+    draw_app(&mut app, 120, 18);
+    assert!(app.source_viewer.markdown_preview);
+    let source_lines = app.source_viewer.lines.clone();
+    let source_position = (app.source_viewer.current_line, app.source_viewer.top_line);
+    let editor_row = app.editor_session.as_ref().unwrap().cursor_row();
+
+    for (kind, expected) in [
+        (event::MouseEventKind::ScrollDown, 3),
+        (event::MouseEventKind::ScrollUp, 0),
+    ] {
+        app.handle_mouse(source_wheel(kind, false)).await.unwrap();
+        assert_eq!(app.source_viewer.preview_top, expected);
+        assert_eq!(app.source_viewer.lines, source_lines);
+        assert_eq!(
+            (app.source_viewer.current_line, app.source_viewer.top_line),
+            source_position
+        );
+        let editor = app.editor_session.as_ref().unwrap();
+        assert_eq!(editor.cursor_row(), editor_row);
+        assert_eq!(editor.text(), source);
+        assert!(!editor.is_dirty());
+    }
+}
+
+#[tokio::test]
+async fn preview_shift_wheel_matches_one_keyboard_page() {
+    let (dir, mut app) = focus_test_app().await;
+    for name in ["wheel.md", "wheel.json"] {
+        let path = dir.path().join(name);
+        let source = (0..100)
+            .map(|row| format!("- row {row}\n"))
+            .collect::<String>();
+        fs::write(&path, &source).unwrap();
+        app.open_file_in_editor(&path);
+        draw_app(&mut app, 120, 40);
+        assert!(app.source_viewer.markdown_preview || app.source_viewer.text_preview);
+        let page = app.editor_viewport.height.saturating_sub(4).max(1) as usize;
+        assert!(page > 3);
+        for (kind, key, start) in [
+            (event::MouseEventKind::ScrollDown, KeyCode::PageDown, 0),
+            (event::MouseEventKind::ScrollUp, KeyCode::PageUp, 50),
+        ] {
+            app.source_viewer.preview_top = start;
+            app.handle_mouse(source_wheel(kind, true)).await.unwrap();
+            let wheel_top = app.source_viewer.preview_top;
+            app.source_viewer.preview_top = start;
+            app.handle_key(press(key, KeyModifiers::NONE))
+                .await
+                .unwrap();
+            assert_eq!(wheel_top, app.source_viewer.preview_top, "{name}: {key:?}");
+            assert_eq!(wheel_top, if start == 0 { page } else { start - page });
+            assert_eq!(app.source_viewer.current_line, 0);
+            let editor = app.editor_session.as_ref().unwrap();
+            assert_eq!(editor.cursor_row(), 0);
+            assert_eq!(editor.text(), source);
+            assert!(!editor.is_dirty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn source_shift_wheel_matches_one_keyboard_page_in_each_editor_mode() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("wheel.rs");
+    let source = (0..300)
+        .map(|row| format!("// row {row}\n"))
+        .collect::<String>();
+    fs::write(&path, &source).unwrap();
+    for mode in ["normal", "insert", "readonly"] {
+        app.open_file_in_editor(&path);
+        if mode == "readonly" {
+            app.editor_session = None;
+        } else {
+            let editor = app.editor_session.as_mut().unwrap();
+            editor.set_cursor(100, 0);
+            if mode == "insert" {
+                editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+            }
+        }
+        app.source_viewer.current_line = 100;
+        draw_app(&mut app, 120, 40);
+        let initial_editor = app.editor_session.clone();
+        let initial_top = app.source_viewer.top_line;
+        for (kind, key) in [
+            (event::MouseEventKind::ScrollDown, KeyCode::PageDown),
+            (event::MouseEventKind::ScrollUp, KeyCode::PageUp),
+        ] {
+            app.editor_session = initial_editor.clone();
+            app.source_viewer.current_line = 100;
+            app.source_viewer.top_line = initial_top;
+            app.handle_mouse(source_wheel(kind, true)).await.unwrap();
+            let wheel_position = (app.source_viewer.current_line, app.source_viewer.top_line);
+            app.editor_session = initial_editor.clone();
+            app.source_viewer.current_line = 100;
+            app.source_viewer.top_line = initial_top;
+            app.handle_key(press(key, KeyModifiers::NONE))
+                .await
+                .unwrap();
+            assert_eq!(
+                wheel_position,
+                (app.source_viewer.current_line, app.source_viewer.top_line),
+                "{mode}: {key:?}"
+            );
+            assert_ne!(wheel_position.0, 100, "{mode}: {key:?} must move");
+            if let Some(editor) = app.editor_session.as_ref() {
+                assert_eq!(editor.text(), source);
+                assert!(!editor.is_dirty());
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn external_editor_keybind_sets_flag() {
     let (_dir, session) = test_session().await;

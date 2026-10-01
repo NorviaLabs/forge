@@ -2068,8 +2068,12 @@ pub struct TuiApp {
     pub(crate) context_menu: Option<crate::selection::ContextMenu>,
     pub(crate) conversation_area: Option<ratatui::layout::Rect>,
     pub(crate) conversation_rows: Vec<String>,
+    pub(crate) conversation_all_rows: Vec<String>,
+    pub(crate) conversation_copy_top: usize,
+    pub(crate) conversation_text: crate::selection::RenderedText,
     pub(crate) terminal_area: Option<ratatui::layout::Rect>,
     pub(crate) terminal_rows: Vec<String>,
+    pub(crate) terminal_text: crate::selection::RenderedText,
     /// Navigator tab-bar rect (Sessions | Files) from the last draw.
     pub(crate) navigator_tabs_area: Option<ratatui::layout::Rect>,
     /// Navigator list rect (session rows or file tree) from the last draw.

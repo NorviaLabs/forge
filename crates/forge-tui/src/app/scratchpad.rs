@@ -264,6 +264,17 @@ impl super::TuiApp {
         scratchpad.editor_mut().handle_key(key);
     }
 
+    pub(super) fn handle_scratchpad_paste(&mut self, data: &str) {
+        if let Some(scratchpad) = self.scratchpad.as_mut() {
+            if !scratchpad.editor_mut().handle_paste(data) {
+                self.set_feedback(
+                    super::FeedbackSeverity::Warn,
+                    "Paste requires scratchpad Insert or Search mode",
+                );
+            }
+        }
+    }
+
     /// `:w` / `:q` for the scratchpad, routed through the same command line the
     /// source editor uses so both surfaces speak one Vim grammar.
     pub(super) fn run_scratchpad_command(&mut self, command: &str) {

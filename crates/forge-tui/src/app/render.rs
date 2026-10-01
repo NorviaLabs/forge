@@ -1138,15 +1138,6 @@ impl TuiApp {
                     self.conversation_view.follow = true;
                 }
             }
-            self.conversation_rows = visible_conversation_copy_rows(
-                &cached_lines,
-                &live_lines,
-                &status_lines,
-                self.conversation_view.scroll,
-                self.conversation_view.follow,
-                bottom_padding,
-                conversation_area,
-            );
             sidebar_block.render(sidebar, frame.buffer_mut());
             theme::fill(conversation_area, frame.buffer_mut(), theme::canvas());
             render_conversation_scrollbar(
@@ -1178,6 +1169,110 @@ impl TuiApp {
                 conversation_area,
             );
             self.option_rects = option_sink.into_inner();
+            let total = cached_lines.len()
+                + live_lines.len()
+                + status_lines.len()
+                + bottom_padding as usize;
+            let max_scroll = total.saturating_sub(conversation_area.height as usize);
+            self.conversation_copy_top = if self.conversation_view.follow {
+                max_scroll
+            } else {
+                max_scroll.saturating_sub(self.conversation_view.scroll as usize)
+            };
+            let revision = {
+                use std::hash::{Hash, Hasher};
+                let mut hash = std::collections::hash_map::DefaultHasher::new();
+                for line in cached_lines
+                    .iter()
+                    .chain(live_lines.iter())
+                    .chain(status_lines.iter())
+                {
+                    line.spans.len().hash(&mut hash);
+                    for span in &line.spans {
+                        span.content.hash(&mut hash);
+                    }
+                }
+                bottom_padding.hash(&mut hash);
+                (if anchor_bottom {
+                    (conversation_area.height as usize).saturating_sub(total)
+                } else {
+                    0
+                })
+                .hash(&mut hash);
+                hash.finish()
+            };
+            let mut all_rows = if revision == self.conversation_text.revision {
+                std::mem::take(&mut self.conversation_all_rows)
+            } else {
+                let mut rows = cached_lines
+                    .iter()
+                    .chain(live_lines.iter())
+                    .chain(status_lines.iter())
+                    .map(|line| {
+                        line.spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>();
+                rows.resize(total, String::new());
+                if anchor_bottom && total < conversation_area.height as usize {
+                    rows.splice(
+                        0..0,
+                        std::iter::repeat_n(
+                            String::new(),
+                            conversation_area.height as usize - total,
+                        ),
+                    );
+                }
+                rows
+            };
+            let mut text =
+                crate::selection::RenderedText::capture(frame.buffer_mut(), conversation_area);
+            text.revision = revision;
+            let history_expanded = all_rows.len() >= self.conversation_all_rows.len()
+                && !self.conversation_all_rows.is_empty()
+                && all_rows[all_rows.len() - self.conversation_all_rows.len()..]
+                    .iter()
+                    .zip(&self.conversation_all_rows)
+                    .all(|(new, old)| new.trim_end() == old.trim_end());
+            // Autoscroll keeps logical transcript endpoints; other remappings
+            // must not leave frozen copied text over newly painted content.
+            if self.selection.is_dragging()
+                && self.selection.pane == Some(crate::selection::CopyPane::Conversation)
+                && ((text.revision != self.conversation_text.revision && !history_expanded)
+                    || text.area != self.conversation_text.area)
+            {
+                self.selection.clear();
+            } else if !self.selection.is_dragging() {
+                text.validate_selection(
+                    &self.conversation_text,
+                    crate::selection::CopyPane::Conversation,
+                    &mut self.selection,
+                );
+            }
+            self.conversation_text = text;
+            self.conversation_rows = self
+                .conversation_text
+                .rows
+                .iter()
+                .map(|cells| {
+                    let mut row = String::with_capacity(conversation_area.width as usize);
+                    for (_, _, text) in cells {
+                        row.push_str(text.symbol());
+                    }
+                    row
+                })
+                .collect();
+            // Capture the rendered viewport too: plan docks and approval/diff
+            // cards can replace rows from the ordinary transcript line list.
+            for (index, visible) in self.conversation_rows.iter().enumerate() {
+                if let Some(row) = all_rows.get_mut(self.conversation_copy_top + index) {
+                    row.clear();
+                    row.push_str(visible);
+                }
+            }
+            self.conversation_all_rows = all_rows;
         }
         // The approval decision now lives in the conversation itself (inline
         // transcript item) and the composer, so the center pane gets its full
@@ -1189,6 +1284,7 @@ impl TuiApp {
                     self.render_empty_workspace(chat_area, frame.buffer_mut());
                 }
                 Some(WorkspaceView::File(_)) => {
+                    let old_text = self.source_viewer.rendered_text.clone();
                     self.editor_viewport.height = chat_area.height;
                     if self.source_viewer.is_image() {
                         self.kitty_image_area = Some(ratatui::layout::Rect {
@@ -1209,6 +1305,11 @@ impl TuiApp {
                             editor_message: self.editor_message.as_deref(),
                         },
                         chat_area,
+                    );
+                    self.source_viewer.rendered_text.validate_selection(
+                        &old_text,
+                        crate::selection::CopyPane::Editor,
+                        &mut self.selection,
                     );
                 }
                 Some(WorkspaceView::Diff) => {
@@ -1233,17 +1334,14 @@ impl TuiApp {
 
         // Highlight a live drag-selection over the editor (sorted after the
         // source viewer so reverse-video is applied on top of its spans).
-        if self.selection.active && self.current_workspace_is_file() {
-            let line_count = self
-                .editor_session
-                .as_ref()
-                .map(EditorSession::line_count)
-                .unwrap_or(self.source_viewer.lines.len());
-            paint_editor_selection(
+        if self.selection.active
+            && self.selection.pane == Some(crate::selection::CopyPane::Editor)
+            && self.current_workspace_is_file()
+        {
+            paint_rows_selection(
                 frame.buffer_mut(),
                 &self.selection,
-                regions.chat,
-                line_count,
+                self.source_viewer.rendered_text.area,
             );
         }
         if self.selection.active
@@ -1313,6 +1411,28 @@ impl TuiApp {
                     modal_open,
                 ),
             );
+        }
+        if let Some(area) = self.terminal_area {
+            let text = crate::selection::RenderedText::capture(frame.buffer_mut(), area);
+            text.validate_selection(
+                &self.terminal_text,
+                crate::selection::CopyPane::Terminal,
+                &mut self.selection,
+            );
+            self.terminal_text = text;
+        }
+        if self.selection.active {
+            let visible = match self.selection.pane {
+                Some(crate::selection::CopyPane::Editor) => {
+                    self.editor_area.is_some() && !expand_conversation
+                }
+                Some(crate::selection::CopyPane::Conversation) => self.conversation_area.is_some(),
+                Some(crate::selection::CopyPane::Terminal) => self.terminal_area.is_some(),
+                None => false,
+            };
+            if !visible {
+                self.selection.clear();
+            }
         }
         if self.selection.active
             && self.selection.pane == Some(crate::selection::CopyPane::Terminal)
@@ -1626,7 +1746,8 @@ impl TuiApp {
         }
 
         // The right-click context menu is the topmost interactive layer.
-        if let Some(menu) = self.context_menu.as_ref() {
+        if let Some(menu) = self.context_menu.as_mut() {
+            menu.fit(area);
             render_context_menu(frame.buffer_mut(), menu);
         }
 
@@ -1807,49 +1928,6 @@ impl TuiApp {
     }
 }
 
-fn visible_conversation_copy_rows(
-    lines: &[crate::links::HyperlinkLine],
-    tail_lines: &[crate::links::HyperlinkLine],
-    status_lines: &[crate::links::HyperlinkLine],
-    scroll_from_bottom: u16,
-    follow: bool,
-    bottom_padding: u16,
-    area: ratatui::layout::Rect,
-) -> Vec<String> {
-    let tail_end = lines.len().saturating_add(tail_lines.len());
-    let content_len = tail_end.saturating_add(status_lines.len());
-    let total = content_len.saturating_add(bottom_padding as usize);
-    let max_scroll = total.saturating_sub(area.height as usize);
-    let scroll = if follow {
-        max_scroll
-    } else {
-        max_scroll.saturating_sub((scroll_from_bottom as usize).min(max_scroll))
-    };
-    let end = scroll.saturating_add(area.height as usize).min(total);
-    (scroll..end)
-        .map(|index| {
-            // Borrow the line: it was previously deep-cloned (spans and all)
-            // only to concatenate the text back out and drop the copy.
-            let line = if index < lines.len() {
-                Some(&lines[index])
-            } else if index < tail_end {
-                Some(&tail_lines[index - lines.len()])
-            } else if index < content_len {
-                Some(&status_lines[index - tail_end])
-            } else {
-                None
-            };
-            line.map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .unwrap_or_default()
-        })
-        .collect()
-}
-
 fn terminal_copy_rows(
     content: &str,
     height: u16,
@@ -1926,52 +2004,6 @@ fn render_centered_text(
         .render(inner, buf);
 }
 
-/// Paint a live drag-selection over the editor pane as reverse video. Only the
-/// visible selection rows within the editor body are touched; any part dragged
-/// outside the pane is ignored.
-fn paint_editor_selection(
-    buf: &mut ratatui::buffer::Buffer,
-    sel: &crate::selection::MouseSelection,
-    area: ratatui::layout::Rect,
-    line_count: usize,
-) {
-    use ratatui::style::Modifier;
-    let body = crate::selection::editor_body(area);
-    let Some(rect) = sel.rect() else {
-        return;
-    };
-    if body.height == 0 || body.width == 0 {
-        return;
-    }
-    let total = line_count.max(1);
-    let gutter = (total.to_string().len().max(3) + 3) as u16;
-    let content_x = body.x.saturating_add(gutter);
-    let right_edge = body.x.saturating_add(body.width).saturating_sub(1);
-    for row in rect.row_start..=rect.row_end {
-        if row < body.y || row >= body.y.saturating_add(body.height) {
-            continue;
-        }
-        let left = if row == rect.row_start {
-            rect.start_col.max(content_x)
-        } else {
-            content_x
-        };
-        let right = if row == rect.row_end {
-            rect.end_col.min(right_edge)
-        } else {
-            right_edge
-        };
-        if left > right {
-            continue;
-        }
-        for col in left..=right {
-            let cell = &mut buf[(col, row)];
-            let style = cell.style();
-            cell.set_style(style.add_modifier(Modifier::REVERSED));
-        }
-    }
-}
-
 /// Paint a live drag-selection over a rows-based pane (Conversation, Diff,
 /// Terminal) as reverse video, matching `paint_editor_selection`'s stream
 /// shape rather than a literal rectangle: the first row runs from the
@@ -1990,6 +2022,7 @@ fn paint_rows_selection(
     };
     let left_edge = area.x;
     let right_edge = area.right().saturating_sub(1);
+    let mapped = crate::selection::RenderedText::capture(buf, area);
     for row in rect.row_start..=rect.row_end {
         if row < area.y || row >= area.bottom() {
             continue;
@@ -2007,9 +2040,14 @@ fn paint_rows_selection(
         if left > right {
             continue;
         }
-        for col in left..=right {
-            let cell = &mut buf[(col, row)];
-            cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+        for (col, width, _) in &mapped.rows[(row - area.y) as usize] {
+            if *col > right || col.saturating_add(*width) <= left {
+                continue;
+            }
+            for col in *col..col.saturating_add(*width).min(area.right()) {
+                let cell = &mut buf[(col, row)];
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+            }
         }
     }
 }
@@ -2260,6 +2298,32 @@ mod tests {
             composer_input_height(&input, Rect::new(0, 0, 120, 40), false, true),
             3
         );
+    }
+
+    #[test]
+    fn selection_highlight_and_copy_include_the_same_wide_glyph() {
+        use crate::selection::{Cell, CopyPane, MouseSelection, RenderedText};
+        use ratatui::style::Modifier;
+        use ratatui::widgets::Widget;
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        Line::raw("A界BC🙂D e\u{301}Z").render(area, &mut buf);
+        let text = RenderedText::capture(&buf, area);
+        let mut sel = MouseSelection::default();
+        sel.start_in(CopyPane::Terminal, Cell { row: 0, col: 2 });
+        sel.update(Cell { row: 0, col: 2 });
+        super::paint_rows_selection(&mut buf, &sel, area);
+        assert_eq!(text.selection_text(&sel, false), "界");
+        for col in [1, 2] {
+            assert!(buf[(col, 0)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED));
+        }
+        assert!(!buf[(3, 0)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED));
     }
 
     #[test]

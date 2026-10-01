@@ -279,6 +279,12 @@ In full-screen programs using the alternate screen (such as Vim), `Esc` goes to
 the program and `Ctrl+Backtick` hides the panel. If the login shell exits through
 EOF or `exit 0`, hiding and reopening the panel starts a fresh shell.
 
+Paste into the file editor or scratchpad in Insert mode; Normal and Visual mode
+reject pasted text rather than interpreting it as commands. Drag-selection copies
+visible text, including Unicode glyphs. Scrolling, editing or resizing clears a
+finished selection when its displayed content changes. Right-click offers Copy
+and Clear selection in a menu that stays on screen.
+
 When a text file is open, the workspace uses Vim-style editing. Markdown,
 structured text, HTML/XML/SVG, stylesheets, diffs, configuration files, Mermaid
 diagrams, and logs start in read-only preview; press `i` to edit. Other text
