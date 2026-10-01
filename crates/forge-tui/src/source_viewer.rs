@@ -350,6 +350,7 @@ pub struct SourceViewer {
     pub text_preview: bool,
     pub text_preview_kind: Option<TextPreviewKind>,
     pub text_preview_lines: Vec<String>,
+    text_preview_row_count: usize,
     /// First visible rendered Markdown line (0-based).
     pub preview_top: usize,
     /// Last modified time observed for change detection.
@@ -381,6 +382,8 @@ pub struct SourceViewer {
     pub jump: JumpState,
     /// Last measured content width for horizontal match visibility.
     last_content_width: usize,
+    /// Copy geometry captured by the active renderer, excluding chrome/gutters.
+    pub(crate) rendered_text: crate::selection::RenderedText,
 }
 
 impl ViewerStatus {
@@ -410,6 +413,7 @@ impl Default for SourceViewer {
             text_preview: false,
             text_preview_kind: None,
             text_preview_lines: Vec::new(),
+            text_preview_row_count: 0,
             preview_top: 0,
             modified: None,
             identity: None,
@@ -423,6 +427,7 @@ impl Default for SourceViewer {
             search: SearchState::default(),
             jump: JumpState::default(),
             last_content_width: 0,
+            rendered_text: crate::selection::RenderedText::default(),
         }
     }
 }
@@ -858,7 +863,7 @@ impl SourceViewer {
     }
 
     pub fn scroll_preview(&mut self, delta: isize, page_height: usize) {
-        let max_top = self.preview_lines.len().saturating_sub(page_height.max(1));
+        let max_top = self.preview_line_count().saturating_sub(page_height.max(1));
         if delta < 0 {
             self.preview_top = self.preview_top.saturating_sub(delta.unsigned_abs());
         } else {
@@ -871,7 +876,15 @@ impl SourceViewer {
     }
 
     pub fn preview_to_last_line(&mut self, page_height: usize) {
-        self.preview_top = self.preview_lines.len().saturating_sub(page_height.max(1));
+        self.preview_top = self.preview_line_count().saturating_sub(page_height.max(1));
+    }
+
+    fn preview_line_count(&self) -> usize {
+        if self.text_preview {
+            self.text_preview_row_count
+        } else {
+            self.preview_lines.len()
+        }
     }
 
     pub fn move_cursor_vertical(&mut self, delta: isize, page_height: usize) {
@@ -1414,6 +1427,7 @@ pub struct SourceViewerWidget<'a> {
 
 impl Widget for SourceViewerWidget<'_> {
     fn render(mut self, area: Rect, buf: &mut Buffer) {
+        self.viewer.rendered_text = crate::selection::RenderedText::default();
         let block = Block::default()
             .borders(Borders::ALL)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
@@ -1467,6 +1481,16 @@ impl Widget for SourceViewerWidget<'_> {
             ViewerStatus::Image => self.render_image(inner, buf),
             ViewerStatus::Ok => self.render_content(inner, buf),
         }
+        self.viewer.rendered_text.revision = crate::selection::mapping_revision((
+            self.viewer.path.as_ref(),
+            self.viewer.top_line,
+            self.viewer.h_scroll,
+            self.viewer.preview_top,
+            self.viewer.markdown_preview,
+            self.viewer.text_preview,
+            self.editor.as_deref().map(EditorSession::revision),
+            self.editor.as_deref().map(EditorSession::viewport_offset),
+        ));
     }
 }
 
@@ -1695,6 +1719,17 @@ impl SourceViewerWidget<'_> {
 
         // Vertical position indicator.
         paint_vertical_scrollbar(buf, body, start, visible_height, total);
+        self.viewer.rendered_text = crate::selection::RenderedText::capture(
+            buf,
+            Rect::new(
+                body.x.saturating_add(gutter),
+                body.y,
+                body.width
+                    .saturating_sub(gutter)
+                    .saturating_sub(u16::from(total > visible_height)),
+                body.height,
+            ),
+        );
 
         if input_open {
             self.render_input(rows[2], buf);
@@ -1725,11 +1760,15 @@ impl SourceViewerWidget<'_> {
             kind.map(|kind| preview_lines(kind, &self.viewer.text_preview_lines))
                 .unwrap_or_default()
         };
+        let block = Block::default().title(header).borders(Borders::BOTTOM);
+        let body = block.inner(area);
+        self.viewer.text_preview_row_count = lines.len();
         Paragraph::new(lines)
-            .block(Block::default().title(header).borders(Borders::BOTTOM))
+            .block(block)
             .style(theme::code_block())
             .scroll((self.viewer.preview_top as u16, 0))
             .render(area, buf);
+        self.viewer.rendered_text = crate::selection::RenderedText::capture(buf, body);
     }
 
     fn render_editor_content(&mut self, area: Rect, buf: &mut Buffer) {
@@ -1786,6 +1825,18 @@ impl SourceViewerWidget<'_> {
         };
         if let Some(editor) = self.editor.as_deref_mut() {
             editor.render(body, buf);
+            // edtui's absolute-number gutter is digits + one separator cell.
+            // Capture laid-out text, including edtui scrolling, tabs and wraps.
+            let gutter = (editor.line_count().max(1).to_string().len() + 1) as u16;
+            self.viewer.rendered_text = crate::selection::RenderedText::capture(
+                buf,
+                Rect::new(
+                    body.x.saturating_add(gutter),
+                    body.y,
+                    body.width.saturating_sub(gutter),
+                    body.height,
+                ),
+            );
         }
 
         let status_style = if self.focused {
@@ -1903,6 +1954,13 @@ impl SourceViewerWidget<'_> {
         }
 
         paint_vertical_scrollbar(buf, body, start, visible_height, total);
+        self.viewer.rendered_text = crate::selection::RenderedText::capture(
+            buf,
+            Rect {
+                width: body.width.saturating_sub(u16::from(total > visible_height)),
+                ..body
+            },
+        );
 
         let status_style = if self.focused {
             theme::text()

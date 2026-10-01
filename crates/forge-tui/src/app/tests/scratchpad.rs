@@ -7,6 +7,34 @@
 use super::prelude::*;
 
 #[tokio::test]
+async fn scratchpad_paste_owns_input_and_preserves_insert_undo_and_command_text() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("pending draft");
+    app.open_scratchpad();
+    app.handle_paste("dd:q!\ni");
+    assert_eq!(app.scratchpad.as_ref().unwrap().editor().text(), "");
+    assert!(app.status_state.message.contains("Insert or Search mode"));
+
+    app.handle_scratchpad_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    app.handle_paste("NOTE-PASTE\r\n  :q!");
+    let editor = app.scratchpad.as_ref().unwrap().editor();
+    assert_eq!(editor.text(), "NOTE-PASTE\n  :q!");
+    assert_eq!(editor.mode(), edtui::EditorMode::Insert);
+    assert!(editor.is_dirty());
+    assert_eq!(app.input.text, "pending draft");
+    app.handle_scratchpad_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_scratchpad_key(press(KeyCode::Char('u'), KeyModifiers::NONE));
+    assert_eq!(app.scratchpad.as_ref().unwrap().editor().text(), "");
+    assert!(!app.scratchpad.as_ref().unwrap().is_dirty());
+
+    app.handle_scratchpad_key(press(KeyCode::Char(':'), KeyModifiers::NONE));
+    app.handle_paste("q!\n");
+    assert_eq!(app.editor_command.as_deref(), Some("q!"));
+    assert!(app.scratchpad.is_some(), "paste must not execute :q!");
+    assert!(!app.scratchpad_path().exists());
+}
+
+#[tokio::test]
 async fn scratchpad_clears_underlying_text_and_styles_only_inside_its_panel() {
     let (_dir, mut app) = focus_test_app().await;
     app.open_scratchpad();

@@ -301,6 +301,33 @@ fn left_release(column: u16, row: u16) -> event::MouseEvent {
 }
 
 #[tokio::test]
+async fn context_menu_corner_and_resize_keep_both_actions_clickable() {
+    let (_dir, mut app) = focus_test_app().await;
+    draw_app(&mut app, 120, 40);
+    app.handle_mouse(event::MouseEvent {
+        kind: event::MouseEventKind::Down(event::MouseButton::Right),
+        column: 118,
+        row: 38,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    draw_app(&mut app, 80, 18);
+    let rect = app.context_menu.as_ref().unwrap().rect();
+    assert!(rect.right() <= 80 && rect.bottom() <= 18);
+    app.handle_mouse(left_click(rect.x + 2, rect.y + 1))
+        .await
+        .unwrap();
+    app.handle_mouse(left_release(rect.x + 2, rect.y + 1))
+        .await
+        .unwrap();
+    assert!(
+        app.context_menu.is_none(),
+        "fitted Clear row uses fitted hit geometry"
+    );
+}
+
+#[tokio::test]
 async fn click_without_drag_clears_selection_instead_of_copying() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
@@ -1049,11 +1076,8 @@ async fn click_in_the_editor_places_the_caret() {
     std::fs::write(&path, "alpha\nbravo\ncharlie\n").unwrap();
     app.open_file_in_editor(&path);
     draw_app(&mut app, 100, 40);
-    let area = app.editor_area.expect("the editor pane is on screen");
-    // `editor_body` skips the pane's border and header; the text starts after
-    // the line-number gutter (3 cells wide, minimum, plus 3 cells of space).
-    let body = crate::selection::editor_body(area);
-    let content_x = body.x + 6;
+    let body = app.source_viewer.rendered_text.area;
+    let content_x = body.x;
 
     app.handle_mouse(left_click(content_x + 3, body.y + 1))
         .await
@@ -1093,8 +1117,7 @@ async fn click_in_a_read_only_preview_moves_the_current_line() {
         "charlie".to_string(),
     ];
     draw_app(&mut app, 100, 40);
-    let area = app.editor_area.expect("the preview is on screen");
-    let body = crate::selection::editor_body(area);
+    let body = app.source_viewer.rendered_text.area;
 
     app.handle_mouse(left_click(body.x + 8, body.y + 2))
         .await
@@ -1337,8 +1360,7 @@ async fn a_click_behind_the_source_search_prompt_is_ignored() {
     std::fs::write(&path, "alpha\nbravo\ncharlie\n").unwrap();
     app.open_file_in_editor(&path);
     draw_app(&mut app, 100, 40);
-    let area = app.editor_area.expect("the editor pane is on screen");
-    let body = crate::selection::editor_body(area);
+    let body = app.source_viewer.rendered_text.area;
     app.source_viewer.start_search();
     app.source_viewer.append_search_char('a');
     app.normalize_focus();

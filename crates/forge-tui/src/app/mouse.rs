@@ -311,34 +311,25 @@ impl TuiApp {
         .rows
     }
 
-    /// A click in the editor places the caret at the cell under the pointer. In
-    /// the read-only preview there is no caret to move, so the click moves the
-    /// current line instead — the same thing every line-scrolling key moves, so
-    /// `j`/`k` and the other navigation continue from where the pointer left
-    /// the cursor.
+    /// Use the editor's native viewport mapping. Transformed previews
+    /// have no source caret mapping and never move the hidden editor cursor.
     fn click_place_caret(&mut self, col: u16, row: u16, area: Rect) {
-        let live_lines = self.editor_session.as_ref().map(|editor| {
-            editor
-                .text()
-                .split('\n')
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        });
-        let lines = live_lines.as_deref().unwrap_or(&self.source_viewer.lines);
-        let Some((line, char)) = crate::selection::editor_cell_to_position(
-            lines,
-            self.source_viewer.top_line,
-            self.source_viewer.h_scroll,
-            area,
-            col,
-            row,
-        ) else {
+        if self.source_viewer.markdown_preview || self.source_viewer.text_preview {
             return;
-        };
-        if let Some(editor) = self.editor_session.as_mut() {
-            editor.set_cursor(line, char);
         }
-        self.source_viewer.current_line = line;
+        let body = self.source_viewer.rendered_text.area;
+        if row < body.y || row >= body.bottom() || !cell_inside(area, col, row) {
+            return;
+        }
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.place_cursor_at(col.max(body.x).min(body.right().saturating_sub(1)), row);
+            self.source_viewer.current_line = editor.cursor_row();
+            return;
+        }
+        let line = self.source_viewer.top_line + (row - body.y) as usize;
+        if line < self.source_viewer.lines.len() {
+            self.source_viewer.current_line = line;
+        }
     }
 
     /// A click on the navigator tab bar switches to the painted tab.
@@ -783,6 +774,9 @@ impl TuiApp {
                 }
                 let delta = self.conversation_view.scroll as i32 - before as i32;
                 self.selection.shift_rows(delta);
+                self.conversation_copy_top = self
+                    .conversation_copy_top
+                    .saturating_add_signed(-(delta as isize));
             }
         }
         self.selection.update(Cell { row, col });
@@ -807,37 +801,27 @@ impl TuiApp {
             return;
         }
         let text = match self.selection.pane {
-            Some(CopyPane::Editor) => match self.editor_area {
-                Some(area) => {
-                    let live_lines = self.editor_session.as_ref().map(|editor| {
-                        editor
-                            .text()
-                            .split('\n')
-                            .map(str::to_owned)
-                            .collect::<Vec<_>>()
-                    });
-                    let lines = live_lines.as_deref().unwrap_or(&self.source_viewer.lines);
-                    selection::editor_selection_text(
-                        lines,
-                        self.source_viewer.top_line,
-                        self.source_viewer.h_scroll,
-                        area,
-                        &self.selection,
-                    )
-                }
-                None => String::new(),
-            },
+            Some(CopyPane::Editor) => self
+                .source_viewer
+                .rendered_text
+                .selection_text(&self.selection, false),
             Some(CopyPane::Conversation) => match self.conversation_area {
                 Some(area) => self.conversation_selection_text(area),
                 None => String::new(),
             },
             Some(CopyPane::Terminal) => match self.terminal_area {
-                Some(area) => selection::visible_rows_selection_text(
-                    &self.terminal_rows,
-                    area,
-                    &self.selection,
-                    false,
-                ),
+                Some(area) => {
+                    if self.terminal_text.area == area {
+                        self.terminal_text.selection_text(&self.selection, false)
+                    } else {
+                        selection::visible_rows_selection_text(
+                            &self.terminal_rows,
+                            area,
+                            &self.selection,
+                            false,
+                        )
+                    }
+                }
                 None => String::new(),
             },
             None => String::new(),
@@ -862,29 +846,22 @@ impl TuiApp {
         }
     }
 
-    fn conversation_selection_text(&self, area: Rect) -> String {
-        let Some(cache) = self.render_cache.conversation.as_ref() else {
+    pub(super) fn conversation_selection_text(&self, area: Rect) -> String {
+        if self.conversation_all_rows.is_empty() {
             return selection::visible_rows_selection_text(
                 &self.conversation_rows,
                 area,
                 &self.selection,
                 true,
             );
-        };
-        let rows = cache
-            .lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
-        let max_scroll = rows.len().saturating_sub(area.height as usize);
-        let top =
-            max_scroll.saturating_sub((self.conversation_view.scroll as usize).min(max_scroll));
-        selection::rows_selection_text(&rows, top, area, &self.selection, true)
+        }
+        selection::rows_selection_text(
+            &self.conversation_all_rows,
+            self.conversation_copy_top,
+            area,
+            &self.selection,
+            true,
+        )
     }
 
     fn mouse_open_context_menu(&mut self, col: u16, row: u16) {
@@ -893,7 +870,9 @@ impl TuiApp {
         }
         let x = col.saturating_add(1);
         let y = row.saturating_add(1);
-        self.context_menu = Some(selection::ContextMenu::new(x, y));
+        let mut menu = selection::ContextMenu::new(x, y);
+        menu.fit(self.pane_resize.frame_area);
+        self.context_menu = Some(menu);
     }
 
     fn handle_mouse_context_menu(&mut self, event: &MouseEvent) {
@@ -1052,6 +1031,15 @@ impl TuiApp {
     }
 
     fn mouse_scroll_source_viewer(&mut self, direction: isize, shift: bool) {
+        // Preview navigation takes precedence over its editable backing buffer,
+        // just as it does in `handle_editor_key` / `handle_preview_key`.
+        if self.source_viewer.markdown_preview || self.source_viewer.text_preview {
+            let height = self.editor_viewport.height.saturating_sub(4).max(1) as usize;
+            let step = if shift { height as isize } else { WHEEL_NOTCH };
+            self.source_viewer
+                .scroll_preview(if direction < 0 { -step } else { step }, height);
+            return;
+        }
         // Page height matches the editor key handler so shift+wheel ==
         // PageUp/PageDown exactly.
         let page = self.editor_viewport.height.saturating_sub(2) as isize;
@@ -1066,7 +1054,7 @@ impl TuiApp {
         };
         if let Some(editor) = self.editor_session.as_mut() {
             let key = if shift {
-                if delta < 0 {
+                if direction < 0 {
                     crossterm::event::KeyCode::PageUp
                 } else {
                     crossterm::event::KeyCode::PageDown
@@ -1076,7 +1064,11 @@ impl TuiApp {
             } else {
                 crossterm::event::KeyCode::Down
             };
-            let steps = delta.unsigned_abs().max(1);
+            let steps = if shift {
+                1
+            } else {
+                delta.unsigned_abs().max(1)
+            };
             for _ in 0..steps {
                 editor.handle_key(crossterm::event::KeyEvent::new(
                     key,

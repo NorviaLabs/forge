@@ -5,6 +5,185 @@
 use super::prelude::*;
 
 #[tokio::test]
+async fn selection_copies_actual_transcript_cells_with_bottom_padding_and_unicode() {
+    use crate::selection::{Cell, CopyPane};
+    use ratatui::backend::TestBackend;
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::User,
+        (1..=80)
+            .map(|i| format!("ROW{i:02}: A界BC🙂D e\u{301}Z"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let area = app.conversation_area.unwrap();
+    let buf = terminal.backend().buffer();
+    let (row, col, expected) = (area.y..area.bottom())
+        .find_map(|row| {
+            (area.x..area.right().saturating_sub(6)).find_map(|col| {
+                let text = (0..6)
+                    .map(|dx| buf[(col + dx, row)].symbol())
+                    .collect::<String>();
+                (text.starts_with("ROW") && text.ends_with(':')).then_some((row, col, text))
+            })
+        })
+        .expect("numbered rows must be visible");
+    app.selection
+        .start_in(CopyPane::Conversation, Cell { row, col });
+    app.selection.update(Cell { row, col: col + 5 });
+    assert_eq!(app.conversation_selection_text(area), expected);
+    let bc = (col..area.right().saturating_sub(1))
+        .find(|x| buf[(*x, row)].symbol() == "B" && buf[(*x + 1, row)].symbol() == "C")
+        .unwrap();
+    app.selection
+        .start_in(CopyPane::Conversation, Cell { row, col: bc });
+    app.selection.update(Cell { row, col: bc + 1 });
+    assert_eq!(app.conversation_selection_text(area), "BC");
+    app.selection.finish("BC".into());
+    app.scroll_conversation_up(3);
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    assert!(
+        !app.selection.is_active(),
+        "scroll must clear frozen screen selection"
+    );
+}
+
+#[tokio::test]
+async fn selection_copies_live_tail_and_invalidates_on_content_and_resize() {
+    use crate::selection::{Cell, CopyPane};
+    use ratatui::backend::TestBackend;
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "history"));
+    app.busy_state.activate();
+    app.busy_state.set_phase(BusyPhase::Model);
+    app.timing.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
+    app.timing.turn_started = app.timing.started;
+    app.stream.preview = "LIVE ABCDEF".into();
+    app.stream.reveal_everything_for_tests();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let area = app.conversation_area.unwrap();
+    let buf = terminal.backend().buffer();
+    let (status_row, status_col) = (area.y..area.bottom())
+        .find_map(|row| {
+            (area.x..area.right().saturating_sub(2)).find_map(|col| {
+                ((0..3)
+                    .map(|dx| buf[(col + dx, row)].symbol())
+                    .collect::<String>()
+                    == "esc")
+                    .then_some((row, col))
+            })
+        })
+        .expect("busy status row must be painted after debounce");
+    app.selection.start_in(
+        CopyPane::Conversation,
+        Cell {
+            row: status_row,
+            col: status_col,
+        },
+    );
+    app.selection.update(Cell {
+        row: status_row,
+        col: status_col + 2,
+    });
+    assert_eq!(
+        app.conversation_selection_text(area),
+        "esc",
+        "status row shares copy layout"
+    );
+    let (row, col) = (area.y..area.bottom())
+        .find_map(|row| {
+            (area.x..area.right().saturating_sub(5)).find_map(|col| {
+                ((0..6)
+                    .map(|dx| buf[(col + dx, row)].symbol())
+                    .collect::<String>()
+                    == "ABCDEF")
+                    .then_some((row, col))
+            })
+        })
+        .expect("live tail must be rendered");
+    app.selection
+        .start_in(CopyPane::Conversation, Cell { row, col });
+    app.selection.update(Cell { row, col: col + 5 });
+    assert_eq!(app.conversation_selection_text(area), "ABCDEF");
+    app.selection.finish("ABCDEF".into());
+    app.stream.preview.push_str(" changed");
+    app.stream.reveal_everything_for_tests();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    assert!(
+        !app.selection.is_active(),
+        "content changes invalidate finished selection"
+    );
+    app.selection
+        .start_in(CopyPane::Conversation, Cell { row, col });
+    app.selection.update(Cell { row, col: col + 5 });
+    draw_app(&mut app, 100, 30);
+    assert!(
+        !app.selection.is_active(),
+        "resize invalidates active selection too"
+    );
+}
+
+#[tokio::test]
+async fn rendered_transcript_drag_keeps_visited_rows_when_autoscrolling() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::backend::TestBackend;
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::User,
+        (1..=80)
+            .map(|i| format!("ROW{i:02}: text"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let area = app.conversation_area.unwrap();
+    let row = area.y + 4;
+    let buf = terminal.backend().buffer();
+    let col = (area.x..area.right())
+        .find(|col| buf[(*col, row)].symbol() == "R")
+        .unwrap();
+    let anchor_text = (0..6)
+        .map(|dx| buf[(col + dx, row)].symbol())
+        .collect::<String>();
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: col + 5,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: col,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    assert!(app.selection.is_dragging());
+    let text = app.conversation_selection_text(area);
+    assert!(
+        text.contains(&anchor_text),
+        "drag lost its original rendered anchor: {text:?}"
+    );
+    assert!(
+        text.lines().count() > 4,
+        "drag must extend into scrolled history"
+    );
+}
+
+#[tokio::test]
 async fn presentation_misses_reuse_projection_and_content_changes_match_full_projection() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;

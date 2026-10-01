@@ -1,14 +1,132 @@
 //! Mouse text selection and the right-click context menu.
 //!
-//! v1 wire-up: the **Editor** (SourceViewer) pane. Selection is stored in
-//! terminal-screen coordinates (`Cell { row, col }`), which is the natural
-//! space crossterm delivers and the renderer paints. Each pane that wants copy
-//! exposes a helper that maps a screen selection rect back to pane text; the
-//! Editor one lives here. Panes later (conversation/diff/terminal) will provide
-//! their own mapping against the same `MouseSelection` state, so the selection
-//! engine itself is pane-agnostic.
+//! Endpoints are inclusive terminal cells. Source, preview and terminal panes
+//! capture rendered cell spans; transcript drags retain the complete row model
+//! and its painted viewport. Changed mappings invalidate screen selections.
 
+use ratatui::buffer::CellWidth;
 use ratatui::layout::Rect;
+
+/// Text and cell widths captured after the pane's renderer has laid out text.
+/// Wide-cell continuations are not characters; OSC 8 wrappers are not text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RenderedText {
+    pub area: Rect,
+    pub rows: Vec<Vec<(u16, u16, ratatui::buffer::Cell)>>,
+    pub revision: u64,
+}
+
+impl RenderedText {
+    pub fn capture(buf: &ratatui::buffer::Buffer, area: Rect) -> Self {
+        let rows = (area.y..area.bottom())
+            .map(|row| {
+                let mut cells = Vec::with_capacity(area.width as usize);
+                let mut col = area.x;
+                while col < area.right() {
+                    let cell = &buf[(col, row)];
+                    let width = cell.cell_width().max(1);
+                    let symbol = cell.symbol();
+                    let text = if let Some(link) = symbol.strip_prefix("\x1b]8;;") {
+                        link.split_once("\x1b\\")
+                            .and_then(|(_, label)| label.split_once("\x1b]8;;"))
+                            .map(|(label, _)| label)
+                            .unwrap_or("")
+                    } else {
+                        symbol
+                    };
+                    // Ratatui stores short symbols inline: no heap string per cell.
+                    let mut captured = ratatui::buffer::Cell::default();
+                    captured.set_symbol(text);
+                    cells.push((col, width, captured));
+                    col = col.saturating_add(width);
+                }
+                cells
+            })
+            .collect();
+        Self {
+            area,
+            rows,
+            revision: 0,
+        }
+    }
+
+    pub fn selection_text(&self, sel: &MouseSelection, strip_prefix: bool) -> String {
+        let Some(rect) = sel.rect() else {
+            return String::new();
+        };
+        let mut output = Vec::new();
+        for row in
+            rect.row_start.max(self.area.y)..=rect.row_end.min(self.area.bottom().saturating_sub(1))
+        {
+            let Some(cells) = self.rows.get((row - self.area.y) as usize) else {
+                continue;
+            };
+            let left = if row == rect.row_start {
+                rect.start_col
+            } else {
+                self.area.x
+            };
+            let right = if row == rect.row_end {
+                rect.end_col
+            } else {
+                self.area.right().saturating_sub(1)
+            };
+            let prefix = if strip_prefix
+                && cells
+                    .first()
+                    .is_some_and(|(_, _, text)| text.symbol() == "│")
+            {
+                self.area.x
+                    + if cells
+                        .get(1)
+                        .is_some_and(|(_, _, text)| text.symbol() == " ")
+                    {
+                        2
+                    } else {
+                        1
+                    }
+            } else {
+                self.area.x
+            };
+            let text = cells
+                .iter()
+                .filter(|(col, width, _)| {
+                    *col >= prefix && *col <= right && col.saturating_add(*width) > left
+                })
+                .map(|(_, _, text)| text.symbol())
+                .collect::<String>();
+            output.push(text.trim_end_matches(' ').to_owned());
+        }
+        output.join("\n")
+    }
+
+    /// Invalidate screen-anchored selections before painting changed cells.
+    pub fn validate_selection(&self, old: &Self, pane: CopyPane, sel: &mut MouseSelection) {
+        if sel.pane == Some(pane) && sel.is_active() && self != old {
+            sel.clear();
+        }
+    }
+}
+
+pub(crate) fn mapping_revision(value: impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hash);
+    hash.finish()
+}
+
+fn display_slice(line: &str, start: usize, end: usize) -> String {
+    let mut col = 0;
+    ratatui::text::Span::raw(line)
+        .styled_graphemes(ratatui::style::Style::default())
+        .filter(|text| {
+            let left = col;
+            col += ratatui::text::Span::raw(text.symbol).width();
+            left < end && col > start
+        })
+        .map(|text| text.symbol)
+        .collect()
+}
 
 /// A terminal cell in crossterm's 0-based screen coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +290,21 @@ impl ContextMenu {
         }
     }
 
+    /// Keep painting and pointer hit-testing on the same on-screen rectangle.
+    pub(crate) fn fit(&mut self, frame: Rect) {
+        self.width = self.width.min(frame.width);
+        self.x = self
+            .x
+            .clamp(frame.x, frame.right().saturating_sub(self.width));
+        self.y = self.y.clamp(
+            frame.y,
+            frame
+                .bottom()
+                .saturating_sub(self.items.len() as u16)
+                .max(frame.y),
+        );
+    }
+
     /// The popover rectangle (one row per item).
     pub(crate) fn rect(&self) -> Rect {
         Rect {
@@ -191,126 +324,6 @@ impl ContextMenu {
             None
         }
     }
-}
-
-/// The Editor pane's inner content area, matching `SourceViewerWidget`'s render
-/// geometry: surrounded by a bordered block (1 cell each side) with a one-row
-/// header at the top.
-pub(crate) fn editor_body(area: Rect) -> Rect {
-    Rect {
-        x: area.x.saturating_add(1),
-        y: area.y.saturating_add(2),
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(3),
-    }
-}
-
-/// Map a screen cell to a `(line, character)` position in the Editor pane's
-/// text, or `None` when the cell is outside the text body. Shares
-/// [`editor_body`] and the gutter math with [`editor_selection_text`], so a
-/// caret and a drag-selection can never disagree about where the text is.
-/// A click in the gutter lands at column 0 rather than being rejected, which
-/// is what a click left of the numbers means.
-pub(crate) fn editor_cell_to_position(
-    lines: &[String],
-    top_line: usize,
-    h_scroll: usize,
-    area: Rect,
-    col: u16,
-    row: u16,
-) -> Option<(usize, usize)> {
-    let body = editor_body(area);
-    if body.width == 0 || body.height == 0 {
-        return None;
-    }
-    if col < body.x || col >= body.right() || row < body.y || row >= body.bottom() {
-        return None;
-    }
-    let total = lines.len().max(1);
-    let number_width = total.to_string().len().max(3);
-    let content_x = body.x.saturating_add((number_width + 3) as u16);
-    let index = top_line + (row - body.y) as usize;
-    // Character space, then clamped to the line so a click past its end lands
-    // on its end rather than one past it.
-    let char = h_scroll
-        .saturating_add(col.saturating_sub(content_x) as usize)
-        .min(lines.get(index)?.chars().count());
-    Some((index, char))
-}
-
-/// Map a selection rect in screen coordinates to the Editor pane's text,
-/// excluding the line-number gutter (content begins after `gutter` columns).
-pub(crate) fn editor_selection_text(
-    lines: &[String],
-    top_line: usize,
-    h_scroll: usize,
-    area: Rect,
-    sel: &MouseSelection,
-) -> String {
-    let rect = match sel.rect() {
-        Some(r) => r,
-        None => return String::new(),
-    };
-    let body = editor_body(area);
-    if body.height == 0 || body.width == 0 {
-        return String::new();
-    }
-
-    let total = lines.len().max(1);
-    let number_width = total.to_string().len().max(3);
-    let gutter = (number_width + 3) as u16;
-    let content_x = body.x.saturating_add(gutter);
-    let content_width = body.width.saturating_sub(gutter);
-
-    // Screen column -> buffer char index (accounts for h_scroll + clipping).
-    let char_for_col = |col: u16| -> usize {
-        if col < content_x || content_width == 0 {
-            return h_scroll;
-        }
-        let rel = (col - content_x) as usize;
-        h_scroll + rel.min(content_width.saturating_sub(1) as usize)
-    };
-
-    // SourceViewer's line model is character-oriented while Rust string
-    // slicing is byte-oriented. Keep screen columns in character space, then
-    // convert safely at the final slice boundary so Unicode cannot panic or
-    // split a code point.
-    let slice_chars = |line: &str, start: usize, end: Option<usize>| -> String {
-        let mut chars = line.chars();
-        let skipped = chars.by_ref().skip(start);
-        match end {
-            Some(end) => skipped.take(end.saturating_sub(start)).collect(),
-            None => skipped.collect(),
-        }
-    };
-
-    let mut out: Vec<String> = Vec::new();
-    for row in rect.row_start..=rect.row_end {
-        if row < body.y || row >= body.y + body.height {
-            continue;
-        }
-        let index = top_line + (row - body.y) as usize;
-        let line = lines.get(index).map(String::as_str).unwrap_or("");
-        let first = row == rect.row_start;
-        let last = row == rect.row_end;
-
-        if first && last {
-            let a = char_for_col(rect.start_col).min(line.chars().count());
-            let b = char_for_col(rect.end_col).max(a).min(line.chars().count());
-            out.push(slice_chars(line, a, Some(b)));
-        } else if first {
-            let a = char_for_col(rect.start_col).min(line.chars().count());
-            out.push(slice_chars(line, a, None));
-        } else if last {
-            let b = char_for_col(rect.end_col).min(line.chars().count());
-            out.push(slice_chars(line, 0, Some(b)));
-        } else {
-            // Interior rows copy the full logical line (the gutter was never
-            // part of `content`, so line numbers never leak).
-            out.push(line.to_string());
-        }
-    }
-    out.join("\n")
 }
 
 /// Extract a selection from rows already clipped to a pane's visible area.
@@ -339,7 +352,6 @@ pub(crate) fn visible_rows_selection_text(
         } else {
             (raw.clone(), 0)
         };
-        let chars: Vec<char> = line.chars().collect();
         let start = rect
             .start_col
             .saturating_sub(area.x)
@@ -348,27 +360,15 @@ pub(crate) fn visible_rows_selection_text(
             .end_col
             .saturating_sub(area.x)
             .saturating_sub(prefix_width) as usize;
-        let selected = if row == rect.row_start && row == rect.row_end {
-            chars
-                .get(start.min(chars.len())..=end.min(chars.len().saturating_sub(1)))
-                .unwrap_or(&[])
-                .iter()
-                .collect()
-        } else if row == rect.row_start {
-            chars
-                .get(start.min(chars.len())..)
-                .unwrap_or(&[])
-                .iter()
-                .collect()
-        } else if row == rect.row_end {
-            chars
-                .get(..=end.min(chars.len().saturating_sub(1)))
-                .unwrap_or(&[])
-                .iter()
-                .collect()
-        } else {
-            line
-        };
+        let selected = display_slice(
+            &line,
+            if row == rect.row_start { start } else { 0 },
+            if row == rect.row_end {
+                end.saturating_add(1)
+            } else {
+                usize::MAX
+            },
+        );
         output.push(selected);
     }
     output.join("\n")
@@ -444,6 +444,226 @@ pub(crate) fn cell_inside(area: Rect, col: u16, row: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendered_cells_copy_unicode_using_display_columns() {
+        use ratatui::widgets::Widget;
+        let area = Rect::new(3, 2, 20, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::text::Line::raw("A界BC🙂D e\u{301}Z").render(area, &mut buf);
+        let text = RenderedText::capture(&buf, area);
+        let s = sel(Cell { row: 2, col: 6 }, Cell { row: 2, col: 7 });
+        assert_eq!(text.selection_text(&s, false), "BC");
+        assert_eq!(
+            visible_rows_selection_text(&["A界BC🙂D e\u{301}Z".into()], area, &s, false),
+            "BC"
+        );
+        let s = sel(Cell { row: 2, col: 12 }, Cell { row: 2, col: 13 });
+        assert_eq!(text.selection_text(&s, false), "e\u{301}Z");
+        let s = sel(Cell { row: 2, col: 5 }, Cell { row: 2, col: 5 });
+        assert_eq!(
+            text.selection_text(&s, false),
+            "界",
+            "continuation cell includes whole glyph"
+        );
+    }
+
+    #[test]
+    fn rendered_mapping_changes_clear_finished_and_active_selection() {
+        use ratatui::widgets::Widget;
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::text::Line::raw("TERM-28").render(area, &mut buf);
+        let old = RenderedText::capture(&buf, area);
+        let mut selection = MouseSelection::default();
+        selection.start_in(CopyPane::Terminal, Cell { row: 0, col: 0 });
+        selection.update(Cell { row: 0, col: 6 });
+        selection.finish(old.selection_text(&selection, false));
+        old.validate_selection(&old, CopyPane::Terminal, &mut selection);
+        assert!(selection.is_active());
+        ratatui::text::Line::raw("TERM-25").render(area, &mut buf);
+        let new = RenderedText::capture(&buf, area);
+        new.validate_selection(&old, CopyPane::Terminal, &mut selection);
+        assert!(!selection.is_active());
+        assert!(selection.text.is_empty());
+        selection.start_in(CopyPane::Terminal, Cell { row: 0, col: 0 });
+        let resized = RenderedText::capture(&buf, Rect::new(0, 0, 10, 1));
+        resized.validate_selection(&new, CopyPane::Terminal, &mut selection);
+        assert!(!selection.is_dragging());
+    }
+
+    #[test]
+    fn source_copy_uses_rendered_editor_and_preview_cells() {
+        use crate::source_viewer::{SourceViewer, SourceViewerWidget, ViewerStatus};
+        use ratatui::widgets::Widget;
+        let area = Rect::new(0, 0, 40, 12);
+        let mut viewer = SourceViewer::new();
+        viewer.status = ViewerStatus::Ok;
+        viewer.lines = vec!["ASCII: ABCDEF".into(), "OTHER ROW".into()];
+        let mut editor = crate::editor_session::EditorSession::new("ASCII: ABCDEF\nOTHER ROW");
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: false,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+        let (row, col) = (0..area.height)
+            .find_map(|y| {
+                (0..area.width.saturating_sub(5)).find_map(|x| {
+                    ((0..6)
+                        .map(|dx| buf[(x + dx, y)].symbol())
+                        .collect::<String>()
+                        == "ABCDEF")
+                        .then_some((y, x))
+                })
+            })
+            .expect("fixture must be visible in edtui buffer");
+        assert_eq!(
+            viewer
+                .rendered_text
+                .selection_text(&sel(Cell { row, col }, Cell { row, col: col + 5 }), false),
+            "ABCDEF"
+        );
+        assert!(row > 2, "actual editor includes air row");
+        editor.place_cursor_at(col, row);
+        assert_eq!((editor.cursor_row(), editor.cursor_col()), (0, 7));
+
+        viewer.markdown_preview = true;
+        editor = crate::editor_session::EditorSession::new("**PREVIEW**");
+        buf.reset();
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: false,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+        let body = viewer.rendered_text.area;
+        let row = (body.y..body.bottom())
+            .find(|y| {
+                (body.x..body.right())
+                    .map(|x| buf[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains("PREVIEW")
+            })
+            .unwrap();
+        assert_eq!(
+            viewer
+                .rendered_text
+                .selection_text(
+                    &sel(
+                        Cell { row, col: body.x },
+                        Cell {
+                            row,
+                            col: body.right() - 1
+                        }
+                    ),
+                    false
+                )
+                .trim(),
+            "PREVIEW"
+        );
+    }
+
+    #[test]
+    fn rendered_editor_mapping_tracks_wrapped_unicode_tabs_and_scrolled_lines() {
+        use crate::source_viewer::{SourceViewer, SourceViewerWidget, ViewerStatus};
+        use ratatui::widgets::Widget;
+        let area = Rect::new(0, 0, 20, 12);
+        let mut viewer = SourceViewer::new();
+        viewer.status = ViewerStatus::Ok;
+        let source = "01234567890123456A界BC\tD e\u{301}Z";
+        let mut editor = crate::editor_session::EditorSession::new(source);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: false,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+        let body = viewer.rendered_text.area;
+        let (row, col) = (body.y..body.bottom())
+            .find_map(|y| {
+                (body.x..body.right().saturating_sub(1)).find_map(|x| {
+                    (buf[(x, y)].symbol() == "B" && buf[(x + 1, y)].symbol() == "C")
+                        .then_some((y, x))
+                })
+            })
+            .unwrap();
+        assert!(row > body.y, "fixture wraps before BC");
+        assert_eq!(
+            viewer
+                .rendered_text
+                .selection_text(&sel(Cell { row, col }, Cell { row, col: col + 1 }), false),
+            "BC"
+        );
+        editor.place_cursor_at(col, row);
+        assert_eq!((editor.cursor_row(), editor.cursor_col()), (0, 19));
+        let (row, col) = (body.y..body.bottom())
+            .find_map(|y| {
+                (body.x..body.right()).find_map(|x| (buf[(x, y)].symbol() == "D").then_some((y, x)))
+            })
+            .unwrap();
+        editor.place_cursor_at(col, row);
+        assert_eq!(
+            (editor.cursor_row(), editor.cursor_col()),
+            (0, 22),
+            "expanded tab consumes one source character"
+        );
+
+        editor = crate::editor_session::EditorSession::new(
+            &(0..100)
+                .map(|i| format!("ROW{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        editor.set_cursor(70, 0);
+        buf.reset();
+        // edtui establishes its viewport height on the first frame, then
+        // scrolls to an already-positioned cursor on the next frame.
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: false,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: false,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+        let body = viewer.rendered_text.area;
+        let (row, col) = (body.y..body.bottom())
+            .find_map(|y| {
+                (body.x..body.right().saturating_sub(4)).find_map(|x| {
+                    ((0..5)
+                        .map(|dx| buf[(x + dx, y)].symbol())
+                        .collect::<String>()
+                        == "ROW70")
+                        .then_some((y, x))
+                })
+            })
+            .unwrap_or_else(|| panic!("ROW70 missing: {:?}", viewer.rendered_text.rows));
+        assert_eq!(
+            viewer
+                .rendered_text
+                .selection_text(&sel(Cell { row, col }, Cell { row, col: col + 4 }), false),
+            "ROW70"
+        );
+        editor.place_cursor_at(col, row);
+        assert_eq!((editor.cursor_row(), editor.cursor_col()), (70, 0));
+    }
 
     #[test]
     fn conversation_columns_are_measured_after_the_rail() {
@@ -536,92 +756,6 @@ mod tests {
     }
 
     #[test]
-    fn editor_extraction_multiline_skips_gutter() {
-        let lines = vec!["abc".to_string(), "def".to_string(), "ghi".to_string()];
-        // Tall area => body: x=3,y=5,width=8,height=4. total=3 lines, number_width=3,
-        // gutter=6, so content begins at col 9. Selection cols 4..7, rows 5..7.
-        let area = Rect::new(2, 3, 10, 7);
-        let s = sel(Cell { row: 5, col: 4 }, Cell { row: 7, col: 7 });
-        // row5=>idx0: start col4 < content_x7 => a=0 => "abc"
-        // row6=>idx1: full => "def"
-        // row7=>idx2: b=char_for_col(7)=0 => ""
-        assert_eq!(editor_selection_text(&lines, 0, 0, area, &s), "abc\ndef\n");
-    }
-
-    #[test]
-    fn editor_cell_maps_to_a_line_and_character() {
-        let lines = vec![
-            "alpha".to_string(),
-            "bravo".to_string(),
-            "charlie".to_string(),
-        ];
-        // body x=3,y=5,w=18,h=4; number_width 3, gutter 6, content_x=9.
-        let area = Rect::new(2, 3, 20, 7);
-        assert_eq!(
-            editor_cell_to_position(&lines, 0, 0, area, 12, 6),
-            Some((1, 3)),
-            "the second line, three characters in"
-        );
-        // Clicking left of the numbers means the start of the line.
-        assert_eq!(
-            editor_cell_to_position(&lines, 0, 0, area, 5, 5),
-            Some((0, 0))
-        );
-        // Past the end of a line clamps to the end, never one past it.
-        assert_eq!(
-            editor_cell_to_position(&lines, 0, 0, area, 20, 5),
-            Some((0, 5))
-        );
-        // The header and the pane's own border are not text.
-        assert_eq!(editor_cell_to_position(&lines, 0, 0, area, 12, 4), None);
-        assert_eq!(editor_cell_to_position(&lines, 0, 0, area, 12, 3), None);
-    }
-
-    #[test]
-    fn editor_cell_follows_the_scroll_offsets() {
-        let lines = (0..40)
-            .map(|index| format!("line {index}"))
-            .collect::<Vec<_>>();
-        // body x=1,y=2,w=28,h=4; number_width 3, gutter 6, content_x=7.
-        let area = Rect::new(0, 0, 30, 7);
-        // The first body row is line 20 after scrolling, and its first visible
-        // column is character 4.
-        assert_eq!(
-            editor_cell_to_position(&lines, 20, 4, area, 7, 2),
-            Some((20, 4))
-        );
-    }
-
-    #[test]
-    fn editor_single_line_span() {
-        let lines = vec!["hello world".to_string()];
-        let area = Rect::new(0, 0, 30, 7);
-        // body x=1,y=2,w=28,h=4; gutter=6; content_x=7 (char 0).
-        // Selecting from inside the gutter (col 6) clamps start to char 0;
-        // col 12 => char 5. Range "hello".
-        let s = sel(Cell { row: 2, col: 6 }, Cell { row: 2, col: 12 });
-        assert_eq!(editor_selection_text(&lines, 0, 0, area, &s), "hello");
-    }
-
-    #[test]
-    fn editor_extraction_clamps_to_line_length() {
-        let lines = vec!["xy".to_string()];
-        let area = Rect::new(0, 0, 30, 7);
-        // Start at char 1 (col 8), drag far right; end clamps to line len 2.
-        let s = sel(Cell { row: 2, col: 8 }, Cell { row: 2, col: 60 });
-        assert_eq!(editor_selection_text(&lines, 0, 0, area, &s), "y");
-    }
-
-    #[test]
-    fn editor_extraction_does_not_split_unicode() {
-        let lines = vec!["λ🙂z".to_string()];
-        let area = Rect::new(0, 0, 30, 7);
-        // content starts at col 7; select the first two character cells.
-        let s = sel(Cell { row: 2, col: 7 }, Cell { row: 2, col: 9 });
-        assert_eq!(editor_selection_text(&lines, 0, 0, area, &s), "λ🙂");
-    }
-
-    #[test]
     fn conversation_extraction_removes_rail_and_preserves_rows() {
         let rows = vec!["│ hello".to_string(), "│ world".to_string()];
         let area = Rect::new(4, 10, 20, 2);
@@ -653,6 +787,26 @@ mod tests {
         assert_eq!(m.index_at(12, 11), Some(1));
         assert_eq!(m.index_at(5, 11), None); // left of popover
         assert_eq!(m.index_at(12, 20), None); // below popover
+    }
+
+    #[test]
+    fn context_menu_fits_all_frame_corners_and_hit_testing() {
+        for frame in [Rect::new(0, 0, 80, 18), Rect::new(4, 3, 120, 40)] {
+            for (x, y) in [
+                (frame.x, frame.y),
+                (frame.right(), frame.y),
+                (frame.x, frame.bottom()),
+                (frame.right(), frame.bottom()),
+            ] {
+                let mut menu = ContextMenu::new(x, y);
+                menu.fit(frame);
+                assert!(frame.contains((menu.x, menu.y).into()));
+                assert!(menu.rect().right() <= frame.right());
+                assert!(menu.rect().bottom() <= frame.bottom());
+                assert_eq!(menu.index_at(menu.x, menu.y), Some(0));
+                assert_eq!(menu.index_at(menu.x, menu.y + 1), Some(1));
+            }
+        }
     }
 
     #[test]

@@ -1140,32 +1140,31 @@ impl TuiApp {
 
     /// Insert bracketed-paste text into the current explicit text owner.
     pub(super) fn handle_paste(&mut self, data: &str) {
-        if let Some(ExplorerDialog::Name { input, error, .. }) = self.explorer_dialog.current_mut()
-        {
-            for ch in data.chars().filter(|ch| !ch.is_control()) {
-                input.push(ch);
+        // Match keyboard ownership: dialogs and menus consume input before
+        // overlays, command lines, scratchpad, transients, or underlying panes.
+        if let Some(dialog) = self.explorer_dialog.current_mut() {
+            if let ExplorerDialog::Name { input, error, .. } = dialog {
+                input.extend(data.chars().filter(|ch| !ch.is_control()));
+                *error = None;
             }
-            *error = None;
             return;
         }
-        if self.focus.block() == FocusBlock::BottomPanel {
-            if let Some(terminal) = self.interactive_terminal.as_mut() {
-                match terminal.paste(data) {
-                    Ok(true) => self.toggle_bottom_panel(),
-                    Ok(false) => {}
-                    Err(error) => self.set_feedback(
-                        FeedbackSeverity::Error,
-                        format!("terminal paste failed: {error}"),
-                    ),
-                }
-                return;
-            }
+        if self.context_menu.is_some() {
+            return;
         }
         if let Some(ref mut ov) = self.overlay {
             let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
             return;
         }
         self.normalize_focus();
+        if let Some(command) = self.editor_command.as_mut() {
+            command.extend(data.chars().filter(|ch| !ch.is_control()));
+            return;
+        }
+        if self.scratchpad.is_some() {
+            self.handle_scratchpad_paste(data);
+            return;
+        }
         match self.focus.mode() {
             FocusMode::Navigation if self.focus.block() == FocusBlock::Composer => {
                 self.input.history_browse = false;
@@ -1186,6 +1185,34 @@ impl TuiApp {
                 let mut query = self.workspace_files.explorer.search_query.clone();
                 query.extend(data.chars().filter(|ch| !ch.is_control()));
                 self.workspace_files.explorer.set_search_query(query);
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::BottomPanel => {
+                if let Some(terminal) = self.interactive_terminal.as_mut() {
+                    match terminal.paste(data) {
+                        Ok(true) => self.toggle_bottom_panel(),
+                        Ok(false) => {}
+                        Err(error) => self.set_feedback(
+                            FeedbackSeverity::Error,
+                            format!("terminal paste failed: {error}"),
+                        ),
+                    }
+                }
+            }
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Workspace => {
+                let accepted = self.current_workspace_is_file()
+                    && !self.source_viewer.markdown_preview
+                    && !self.source_viewer.text_preview
+                    && self.editor_session.as_mut().is_some_and(|editor| {
+                        let accepted = editor.handle_paste(data);
+                        self.source_viewer.current_line = editor.cursor_row();
+                        accepted
+                    });
+                if !accepted {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "Paste requires editor Insert or Search mode",
+                    );
+                }
             }
             FocusMode::Navigation => {}
         }
@@ -2630,6 +2657,170 @@ mod tests {
 
     fn press_with(code: KeyCode, modifiers: KeyModifiers) -> event::KeyEvent {
         event::KeyEvent::new(code, modifiers)
+    }
+
+    #[tokio::test]
+    async fn paste_dialog_menu_and_overlay_precedence_is_independent_of_pty() {
+        let (dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.input.set_text("draft");
+        app.editor_command = Some("command".into());
+        app.overlay = Some(Overlay::session_switcher(Vec::new()));
+        app.context_menu = Some(crate::selection::ContextMenu::new(1, 1));
+        app.explorer_dialog.show(ExplorerDialog::Name {
+            action: ExplorerNameAction::CreateFile,
+            parent: dir.path().to_path_buf(),
+            source: None,
+            input: String::new(),
+            error: Some("old error".into()),
+        });
+        app.handle_paste("name\n");
+        assert!(
+            matches!(app.explorer_dialog.current(), Some(ExplorerDialog::Name { input, error, .. }) if input == "name" && error.is_none())
+        );
+        app.explorer_dialog.take();
+        app.handle_paste("menu must consume");
+        assert!(
+            matches!(&app.overlay, Some(Overlay::SessionSwitcher { filter, .. }) if filter.is_empty())
+        );
+        app.context_menu = None;
+        app.handle_paste("filter");
+        assert!(
+            matches!(&app.overlay, Some(Overlay::SessionSwitcher { filter, .. }) if filter == "filter")
+        );
+        assert_eq!(app.editor_command.as_deref(), Some("command"));
+        assert_eq!(app.input.text, "draft");
+    }
+
+    #[tokio::test]
+    async fn paste_modal_owners_never_reach_underlying_pty() {
+        if !crate::interactive_terminal::pty_allocation_available() {
+            eprintln!("skipping: this host denies PTY allocation");
+            return;
+        }
+        let (_dir, mut app) = app().await;
+        app.open_bottom_panel();
+        assert!(app.interactive_terminal.is_some());
+        app.focus.set_navigation(FocusBlock::BottomPanel);
+        app.input.set_text("pending draft");
+        app.overlay = Some(Overlay::Help);
+        app.handle_paste("MODAL_PASTE_LEAK");
+        assert!(matches!(app.overlay, Some(Overlay::Help)));
+        app.overlay = None;
+        app.context_menu = Some(crate::selection::ContextMenu::new(1, 1));
+        app.handle_paste("MENU_PASTE_LEAK");
+        app.context_menu = None;
+        for dialog in [ExplorerDialog::DirtyExit, ExplorerDialog::SaveConflict] {
+            app.explorer_dialog.show(dialog);
+            app.handle_paste("DIALOG_PASTE_LEAK");
+            assert!(app.explorer_dialog.is_open());
+            app.explorer_dialog.take();
+        }
+        app.overlay = Some(Overlay::session_switcher(Vec::new()));
+        app.handle_paste("FILTER_PASTE_LEAK");
+        assert!(
+            matches!(&app.overlay, Some(Overlay::SessionSwitcher { filter, .. }) if filter == "FILTER_PASTE_LEAK")
+        );
+        app.overlay = None;
+        app.editor_command = Some(String::new());
+        app.handle_paste("q!\n");
+        assert_eq!(app.editor_command.as_deref(), Some("q!"));
+        app.editor_command = None;
+        app.open_scratchpad();
+        app.handle_scratchpad_key(press(KeyCode::Char('i')));
+        app.handle_paste("NOTES_PASTE_LEAK");
+        assert_eq!(
+            app.scratchpad.as_ref().unwrap().editor().text(),
+            "NOTES_PASTE_LEAK"
+        );
+        app.scratchpad = None;
+        assert_eq!(app.input.text, "pending draft");
+        app.source_viewer.search.open = true;
+        app.handle_paste("SEARCH_PASTE_LEAK");
+        assert_eq!(app.source_viewer.search.query, "SEARCH_PASTE_LEAK");
+        app.source_viewer.search.open = false;
+        app.source_viewer.jump.open = true;
+        app.handle_paste("JUMP_PASTE_LEAK42\n");
+        assert_eq!(app.source_viewer.jump.input, "42");
+        app.source_viewer.jump.open = false;
+        app.focus.set_navigation(FocusBlock::BottomPanel);
+
+        // Positive control: the same terminal accepts paste once all owners
+        // above it are gone. Wait for echo before asserting rejected bytes.
+        app.handle_paste("PASTE_POSITIVE_CONTROL");
+        let terminal = app.interactive_terminal.as_mut().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            terminal.poll();
+            if terminal.display_output().contains("PASTE_POSITIVE_CONTROL") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let output = terminal.display_output();
+        assert!(
+            output.contains("PASTE_POSITIVE_CONTROL"),
+            "PTY echo: {output:?}"
+        );
+        assert!(
+            !output.contains("PASTE_LEAK"),
+            "modal paste reached PTY: {output:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paste_editor_command_search_and_composer_have_one_text_destination() {
+        let (dir, mut app) = app().await;
+        let path = dir.path().join("paste.rs");
+        std::fs::write(&path, "tail").unwrap();
+        app.open_file_in_editor(&path);
+        app.focus.set_navigation(FocusBlock::Workspace);
+        app.input.set_text("draft");
+        app.handle_paste("dd:q!\ni");
+        assert_eq!(app.editor_session.as_ref().unwrap().text(), "tail");
+        assert!(app.status_state.message.contains("Insert or Search mode"));
+        app.editor_session
+            .as_mut()
+            .unwrap()
+            .handle_key(press(KeyCode::Char('i')));
+        app.handle_paste("EDITOR-PASTE\n");
+        assert_eq!(
+            app.editor_session.as_ref().unwrap().text(),
+            "EDITOR-PASTE\ntail"
+        );
+        assert_eq!(app.source_viewer.current_line, 1);
+        app.source_viewer.text_preview = true;
+        app.handle_paste("hidden editor must not change");
+        assert_eq!(
+            app.editor_session.as_ref().unwrap().text(),
+            "EDITOR-PASTE\ntail"
+        );
+        app.source_viewer.text_preview = false;
+        let editor = app.editor_session.as_mut().unwrap();
+        editor.handle_key(press(KeyCode::Esc));
+        editor.handle_key(press(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "tail");
+        assert!(!editor.is_dirty());
+        editor.handle_key(press(KeyCode::Char('/')));
+        app.handle_paste("ta\nil");
+        assert_eq!(
+            app.editor_session.as_ref().unwrap().search_pattern(),
+            "tail"
+        );
+        assert_eq!(
+            app.editor_session.as_ref().unwrap().mode(),
+            edtui::EditorMode::Search
+        );
+        app.editor_command = Some(String::new());
+        app.handle_paste("q!\n");
+        assert_eq!(app.editor_command.as_deref(), Some("q!"));
+        assert!(app.editor_session.is_some());
+        assert_eq!(app.input.text, "draft");
+        app.editor_command = None;
+        focus_composer(&mut app);
+        app.handle_paste("\ncomposer paste");
+        assert_eq!(app.input.text, "draft\ncomposer paste");
+        assert_eq!(app.editor_session.as_ref().unwrap().text(), "tail");
     }
 
     #[test]

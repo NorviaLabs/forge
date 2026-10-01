@@ -181,6 +181,57 @@ impl EditorSession {
         }
     }
 
+    /// Accept paste only in text-entry modes. Direct insert actions preserve
+    /// edtui's existing Insert-session undo boundary without interpreting text
+    /// as Vim commands or triggering autoindent on pasted newlines.
+    pub(crate) fn handle_paste(&mut self, data: &str) -> bool {
+        match self.mode() {
+            EditorMode::Insert => {
+                let (text, _) = normalize_text(data);
+                let mut changed = false;
+                for ch in text
+                    .chars()
+                    .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+                {
+                    if ch == '\n' {
+                        self.state.execute(edtui::actions::LineBreak(1));
+                    } else {
+                        self.state.execute(edtui::actions::InsertChar(ch));
+                    }
+                    changed = true;
+                }
+                if changed {
+                    self.mark_changed();
+                }
+                true
+            }
+            EditorMode::Search => {
+                for ch in data.chars().filter(|ch| !ch.is_control()) {
+                    self.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+                }
+                true
+            }
+            EditorMode::Normal | EditorMode::Visual => false,
+        }
+    }
+
+    /// edtui owns viewport, wrapping and tab geometry; use its mouse mapping.
+    pub(crate) fn place_cursor_at(&mut self, column: u16, row: u16) {
+        self.event_handler.on_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut self.state,
+        );
+    }
+
+    pub(crate) fn viewport_offset(&self) -> (usize, usize) {
+        self.state.viewport_offset()
+    }
+
     fn text_change_kind(&mut self, event: KeyEvent) -> TextChangeKind {
         use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -624,6 +675,50 @@ mod tests {
         assert_eq!(session.text(), "after");
         assert_eq!(session.mode(), EditorMode::Normal);
         assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn paste_in_insert_mode_preserves_text_mode_and_session_undo() {
+        let mut session = EditorSession::new("tail");
+        session.handle_key(key(KeyCode::Char('i')));
+        session.handle_key(key(KeyCode::Char('x')));
+        assert!(session.handle_paste("α\t\r\n  :q!\rnext\n"));
+        assert_eq!(session.text(), "xα\t\n  :q!\nnext\ntail");
+        assert_eq!(session.mode(), EditorMode::Insert);
+        assert_eq!((session.cursor_row(), session.cursor_col()), (3, 0));
+        assert!(session.is_dirty());
+        assert_eq!(session.revision(), 2, "one revision per bulk paste");
+
+        session.handle_key(key(KeyCode::Esc));
+        session.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(session.text(), "tail");
+        assert!(!session.is_dirty());
+        session.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(session.text(), "xα\t\n  :q!\nnext\ntail");
+        assert!(session.is_dirty());
+    }
+
+    #[test]
+    fn paste_rejects_normal_and_visual_commands_and_accepts_search_text() {
+        let mut session = EditorSession::new("foo\nbar\nfoo\nend");
+        assert!(!session.handle_paste("dd:q!\ni"));
+        assert_eq!(session.text(), "foo\nbar\nfoo\nend");
+        session.handle_key(key(KeyCode::Char('v')));
+        assert!(!session.handle_paste("di"));
+        assert_eq!(session.mode(), EditorMode::Visual);
+        session.handle_key(key(KeyCode::Esc));
+        for prefix in ['/', '?'] {
+            session.set_cursor(3, 0);
+            session.handle_key(key(KeyCode::Char(prefix)));
+            assert!(session.handle_paste("fo\no\u{1b}"));
+            assert_eq!(session.search_pattern(), "foo");
+            assert_eq!(session.mode(), EditorMode::Search);
+            assert_eq!(session.cursor_row(), if prefix == '?' { 2 } else { 0 });
+            assert_eq!(session.text(), "foo\nbar\nfoo\nend");
+            assert!(!session.is_dirty());
+            assert_eq!(session.revision(), 0);
+            session.handle_key(key(KeyCode::Esc));
+        }
     }
 
     #[test]
