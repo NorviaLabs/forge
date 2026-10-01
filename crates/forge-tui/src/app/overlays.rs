@@ -172,7 +172,11 @@ impl TuiApp {
             FocusBlock::BottomPanel => {
                 text.push_str("• Type / paste  Send input to the shell\n");
                 text.push_str("• Ctrl+C / arrows / Tab  Shell controls\n");
-                text.push_str("• Esc / Ctrl+` / exit  Close the terminal panel\n");
+                text.push_str("• Shift+PgUp / Shift+PgDn / wheel  Terminal scrollback\n");
+                text.push_str(
+                    "• Esc / Ctrl+` / exit  Hide the terminal panel (shell stays alive)\n",
+                );
+                text.push_str("• Esc in a full-screen shell program  Send Esc to that program\n");
             }
         }
         if matches!(self.focus.mode(), FocusMode::Transient(_)) {

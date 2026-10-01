@@ -61,6 +61,7 @@ pub(crate) struct InteractiveTerminal {
     pub(crate) running: bool,
     pub(crate) shell: String,
     input_line: String,
+    input_line_trusted: bool,
     pending_command: Option<PendingTerminalCommand>,
     command_completion: Option<CommandCompletion>,
     hidden_status_marker: Option<String>,
@@ -116,6 +117,7 @@ impl InteractiveTerminal {
             running: true,
             shell,
             input_line: String::new(),
+            input_line_trusted: true,
             pending_command: None,
             command_completion: None,
             hidden_status_marker: None,
@@ -166,6 +168,7 @@ impl InteractiveTerminal {
     }
 
     pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.scroll_to_live();
         self.writer.write_all(bytes)?;
         self.writer.flush()
     }
@@ -173,49 +176,36 @@ impl InteractiveTerminal {
     /// Forward typed or pasted input, but treat a submitted `exit` as a request
     /// to close the panel instead of killing the login shell.
     pub(crate) fn consume_input(&mut self, bytes: &[u8]) -> io::Result<bool> {
-        if self.pending_command.is_some() {
+        if self.pending_command.is_some() || self.alternate_screen() {
             self.write(bytes)?;
             return Ok(false);
         }
-        let Some(newline) = bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n')) else {
-            let (forward, close) = feed_pending_command(&mut self.input_line, bytes);
-            if !forward.is_empty() {
-                self.write(&forward)?;
-            }
-            return Ok(close);
-        };
-
-        let (forward, close) = feed_pending_command(&mut self.input_line, &bytes[..newline]);
-        if !forward.is_empty() {
-            self.write(&forward)?;
+        // Cursor motion, history and completion make the shadow line unknown.
+        // Never interpret a partial reconstruction as the panel's bare `exit`.
+        if bytes.iter().any(|byte| {
+            byte.is_ascii_control()
+                && !matches!(byte, b'\r' | b'\n' | 0x7f | 0x08 | 0x15 | 0x03 | 0x17)
+        }) {
+            self.input_line_trusted = false;
         }
-        if close {
-            let (forward, close) = feed_pending_command(
-                &mut self.input_line,
-                &bytes[newline..newline.saturating_add(1)],
-            );
-            if !forward.is_empty() {
-                self.write(&forward)?;
-            }
-            return Ok(close);
-        }
-
-        let line = std::mem::take(&mut self.input_line);
-        if line.trim().is_empty() {
-            if !line.is_empty() {
-                self.write(&[LINE_KILL])?;
+        if !self.input_line_trusted {
+            self.write(bytes)?;
+            if bytes
+                .iter()
+                .any(|byte| matches!(byte, b'\r' | b'\n' | 0x03))
+            {
+                self.input_line.clear();
+                self.input_line_trusted = true;
             }
             return Ok(false);
         }
-        if is_panel_close_command(&line) {
-            self.write(&[LINE_KILL])?;
-            return Ok(true);
+        // Manual input belongs to the shell. Appending status scripts corrupts
+        // history, multiline input, completion and cursor-edited commands.
+        let (forward, close) = feed_pending_command(&mut self.input_line, bytes);
+        if !forward.is_empty() {
+            self.write(&forward)?;
         }
-        self.track_submitted_command(&line)?;
-        if newline + 1 < bytes.len() {
-            self.write(&bytes[newline + 1..])?;
-        }
-        Ok(false)
+        Ok(close)
     }
 
     pub(crate) fn start_command(&mut self, command: &str) -> io::Result<()> {
@@ -244,24 +234,18 @@ impl InteractiveTerminal {
         Ok(())
     }
 
-    fn track_submitted_command(&mut self, command: &str) -> io::Result<()> {
-        if self.pending_command.is_some() {
-            return Ok(());
+    pub(crate) fn paste(&mut self, data: &str) -> io::Result<bool> {
+        if !self.screen.screen().bracketed_paste() {
+            self.input_line_trusted = false;
+            self.write(data.as_bytes())?;
+            return Ok(false);
         }
-        self.command_sequence = self.command_sequence.wrapping_add(1);
-        let marker = format!("__FORGE_STATUS_{}__", self.command_sequence);
-        self.hidden_status_marker = Some(marker.clone());
-        let separator = command_separator(&self.shell);
-        let mut suffix =
-            format!("{separator}{}\r", command_suffix(&self.shell, &marker)).into_bytes();
-        suffix.push(b'\r');
-        self.write(&suffix)?;
-        self.pending_command = Some(PendingTerminalCommand {
-            command: command.to_owned(),
-            marker,
-            output: Vec::new(),
-        });
-        Ok(())
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend_from_slice(data.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        self.input_line_trusted = false;
+        self.write(&bytes)?;
+        Ok(false)
     }
 
     pub(crate) fn take_command_completion(&mut self) -> Option<CommandCompletion> {
@@ -295,6 +279,92 @@ impl InteractiveTerminal {
         &self.display
     }
 
+    pub(crate) fn render(
+        &self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+        focused: bool,
+    ) {
+        use ratatui::style::{Color, Modifier};
+        let color = |value, fallback| match value {
+            vt100::Color::Default => fallback,
+            vt100::Color::Idx(index) => Color::Indexed(index),
+            vt100::Color::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+        };
+        let base = crate::theme::text().patch(crate::theme::panel());
+        for row in 0..area.height {
+            for column in 0..area.width {
+                let Some(cell) = self.screen.screen().cell(row, column) else {
+                    continue;
+                };
+                let mut style = base
+                    .fg(color(cell.fgcolor(), base.fg.unwrap_or(Color::Reset)))
+                    .bg(color(cell.bgcolor(), base.bg.unwrap_or(Color::Reset)));
+                for (enabled, modifier) in [
+                    (cell.bold(), Modifier::BOLD),
+                    (cell.dim(), Modifier::DIM),
+                    (cell.italic(), Modifier::ITALIC),
+                    (cell.underline(), Modifier::UNDERLINED),
+                    (cell.inverse(), Modifier::REVERSED),
+                ] {
+                    if enabled {
+                        style = style.add_modifier(modifier);
+                    }
+                }
+                let target = &mut buf[(area.x + column, area.y + row)];
+                // Explicit !commands sanitize their instrumentation in display.
+                // The panel already painted that text; apply attributes without
+                // putting hidden status scripts back into its character cells.
+                if self.hidden_status_marker.is_none() {
+                    target.reset();
+                    target.set_symbol(if cell.has_contents() {
+                        cell.contents()
+                    } else {
+                        " "
+                    });
+                }
+                target.set_style(ratatui::style::Style::default().remove_modifier(Modifier::all()));
+                target.set_style(style);
+            }
+        }
+        if focused && self.cursor_visible() {
+            let (column, row) = self.cursor_position();
+            if column < area.width && row < area.height {
+                buf[(area.x + column, area.y + row)].set_style(crate::theme::caret());
+            }
+        }
+    }
+
+    pub(crate) fn scroll(&mut self, delta: isize) {
+        if self.screen.screen().alternate_screen() {
+            return;
+        }
+        let offset = self
+            .screen
+            .screen()
+            .scrollback()
+            .saturating_add_signed(delta);
+        self.screen.screen_mut().set_scrollback(offset);
+        self.display = self.screen.screen().contents();
+    }
+
+    fn scroll_to_live(&mut self) {
+        if self.screen.screen().scrollback() > 0 {
+            self.screen.screen_mut().set_scrollback(0);
+            self.display = self.screen.screen().contents();
+        }
+    }
+
+    pub(crate) fn cursor_visible(&self) -> bool {
+        self.running
+            && self.screen.screen().scrollback() == 0
+            && !self.screen.screen().hide_cursor()
+    }
+
+    pub(crate) fn alternate_screen(&self) -> bool {
+        self.screen.screen().alternate_screen()
+    }
+
     pub(crate) fn cursor_position(&self) -> (u16, u16) {
         let (row, column) = self.screen.screen().cursor_position();
         (column, row)
@@ -317,7 +387,21 @@ impl InteractiveTerminal {
             self.command_completion = Some(CommandCompletion { command, exit_code });
             return;
         }
-        let keep = pending.marker.len().saturating_add(16);
+        // Keep a whole possible wrapper fragment across PTY read boundaries.
+        // Filtering only the drained prefix could split a script in two and
+        // leave its suffix visible (especially after wrapping or resizing).
+        let keep = status_wrapper_parts(&self.shell, &pending.marker)
+            .iter()
+            .map(String::len)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(pending.marker.len())
+            .saturating_add(16);
+        pending.output = strip_status_wrapper_bytes(
+            std::mem::take(&mut pending.output),
+            &self.shell,
+            &pending.marker,
+        );
         if pending.output.len() > keep {
             let split_at = pending.output.len() - keep;
             let visible = strip_status_wrapper_bytes(
@@ -398,7 +482,7 @@ fn command_suffix(shell: &str, marker: &str) -> String {
             "$__forge_status = if ($__forge_success) {{ 0 }} else {{ if ($__forge_exit -ne $null) {{ $__forge_exit }} else {{ 1 }} }}\nWrite-Output \"{marker}$__forge_status\"\n"
         );
     }
-    format!("__forge_status=$?\nprintf '\\n{marker}%s\\n' \"$__forge_status\"\n")
+    format!("__forge_status=$?; printf '\\n{marker}%s\\n' \"$__forge_status\"")
 }
 
 fn status_wrapper_parts(shell: &str, marker: &str) -> Vec<String> {
@@ -417,8 +501,25 @@ fn status_wrapper_parts(shell: &str, marker: &str) -> Vec<String> {
 fn strip_status_wrapper_display(display: &str, shell: &str, marker: &str) -> String {
     status_wrapper_parts(shell, marker)
         .into_iter()
-        .fold(display.to_owned(), |display, part| {
-            display.replace(&part, "")
+        .fold(display.to_owned(), |mut display, part| {
+            // Screen contents insert line breaks when echoed scripts wrap.
+            // Match across those breaks so a resize cannot expose the wrapper.
+            while let Some((start, end)) = display.char_indices().find_map(|(start, _)| {
+                let mut cursor = start;
+                for byte in part.bytes() {
+                    while display.as_bytes().get(cursor) == Some(&b'\n') {
+                        cursor += 1;
+                    }
+                    if display.as_bytes().get(cursor) != Some(&byte) {
+                        return None;
+                    }
+                    cursor += 1;
+                }
+                Some((start, cursor))
+            }) {
+                display.replace_range(start..end, "");
+            }
+            display
         })
 }
 
@@ -660,15 +761,18 @@ mod tests {
     }
 
     #[test]
-    fn blank_submission_does_not_create_another_shell_prompt() {
+    fn empty_and_blank_manual_submissions_are_forwarded_unchanged() {
         let mut line = String::new();
         let (forward, close) = super::feed_pending_command(&mut line, b"");
         assert!(forward.is_empty());
         assert!(!close);
 
         line.push_str("   ");
-        assert!(line.trim().is_empty());
-        assert!(!line.is_empty());
+        assert_eq!(
+            super::feed_pending_command(&mut line, b"\r"),
+            (b"\r".to_vec(), false)
+        );
+        assert!(line.is_empty());
     }
 
     #[test]
@@ -714,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn blank_enter_does_not_change_live_shell_output() {
+    fn blank_enter_reaches_the_live_shell() {
         if !super::pty_allocation_available() {
             eprintln!("skipping: this host denies PTY allocation");
             return;
@@ -734,7 +838,7 @@ mod tests {
             terminal.poll();
             thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(terminal.display_output(), before);
+        assert_ne!(terminal.display_output(), before);
     }
 
     #[test]
@@ -762,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_command_reports_status_without_feeding_marker_to_process() {
+    fn typed_commands_and_history_recall_reach_shell_without_status_scripts() {
         if !super::pty_allocation_available() {
             eprintln!("skipping: this host denies PTY allocation");
             return;
@@ -773,14 +877,24 @@ mod tests {
         terminal.consume_input(b"\r").unwrap();
         for _ in 0..100 {
             terminal.poll();
-            if let Some(completion) = terminal.take_command_completion() {
-                assert_eq!(completion.command, "printf 'typed-output\\n'");
-                assert_eq!(completion.exit_code, Some(0));
-                assert!(terminal.display_output().contains("typed-output"));
+            if terminal.display_output().contains("typed-output\n") {
+                assert!(terminal.take_command_completion().is_none());
+                assert!(terminal.pending_command.is_none());
                 assert!(!terminal.display_output().contains("__forge_status"));
                 assert!(!terminal
                     .display_output()
                     .contains("printf '\\n__FORGE_STATUS_1__%s\\n' \"$__forge_status\""));
+                terminal.consume_input(b"\x1b[A\r").unwrap();
+                for _ in 0..20 {
+                    terminal.poll();
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert!(!terminal.display_output().contains("__FORGE_STATUS"));
+                assert!(
+                    terminal.display_output().matches("typed-output\n").count() >= 2,
+                    "history recall must execute the user's command: {:?}",
+                    terminal.display_output()
+                );
                 return;
             }
             thread::sleep(Duration::from_millis(10));
@@ -792,10 +906,106 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_exposes_history_and_typing_returns_to_live_screen() {
+        if !super::pty_allocation_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 40, 4).unwrap();
+        terminal.screen = vt100::Parser::new(4, 40, super::SCROLLBACK_LINES);
+        terminal
+            .screen
+            .process(b"first\r\nsecond\r\nthird\r\nfourth\r\nfifth\r\n");
+        terminal.scroll(3);
+        assert!(terminal.display_output().contains("first"));
+        assert!(!terminal.cursor_visible());
+        terminal.write(b"\x03").unwrap();
+        assert_eq!(terminal.screen.screen().scrollback(), 0);
+        assert!(terminal.display_output().contains("fifth"));
+    }
+
+    #[test]
+    fn cursor_edited_exit_text_does_not_hide_the_panel() {
+        if !super::pty_allocation_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 40, 4).unwrap();
+        terminal.consume_input(b"echo suffix").unwrap();
+        terminal.consume_input(b"\x01").unwrap();
+        assert!(!terminal.consume_input(b"exit\r").unwrap());
+    }
+
+    #[test]
+    fn explicit_command_wrappers_stay_hidden_across_split_pty_reads() {
+        if !super::pty_allocation_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 40, 4).unwrap();
+        let marker = "__FORGE_STATUS_TEST__";
+        terminal.pending_command = Some(super::PendingTerminalCommand {
+            command: "echo test".into(),
+            marker: marker.into(),
+            output: Vec::new(),
+        });
+        let wrapped = format!(
+            "echo test{}{}\r\nvisible-output\r\n{marker}0\r\n",
+            super::command_separator(&terminal.shell),
+            super::command_suffix(&terminal.shell, marker)
+        );
+        for bytes in wrapped.as_bytes().chunks(3) {
+            terminal.process_output(bytes);
+        }
+        let output = terminal.screen.screen().contents();
+        assert!(output.contains("visible-output"), "{output:?}");
+        assert!(!output.contains("forge_status"), "{output:?}");
+        assert!(!output.contains("FORGE_STATUS"), "{output:?}");
+        assert_eq!(
+            terminal.take_command_completion().unwrap().exit_code,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn terminal_render_preserves_ansi_attributes_unicode_and_cursor_text() {
+        if !super::pty_allocation_available() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 40, 4).unwrap();
+        terminal.screen = vt100::Parser::new(4, 40, 0);
+        terminal.screen.process(b"\x1b[31;1mFAIL\x1b[0m\r\n");
+        terminal.screen.process("é界".as_bytes());
+        terminal.screen.process(b"\x1b[2;1H");
+        let area = ratatui::layout::Rect::new(2, 1, 40, 4);
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 44, 6));
+        terminal.render(area, &mut buf, true);
+        assert_eq!(buf[(2, 1)].symbol(), "F");
+        assert_eq!(buf[(2, 1)].fg, ratatui::style::Color::Indexed(1));
+        assert!(buf[(2, 1)]
+            .modifier
+            .contains(ratatui::style::Modifier::BOLD));
+        assert_eq!(buf[(2, 2)].symbol(), "é", "cursor must not erase text");
+        assert_eq!(buf[(3, 2)].symbol(), "界");
+        terminal.screen.process(b"\x1b[?25l");
+        terminal.render(area, &mut buf, true);
+        assert_eq!(buf[(2, 2)].style().bg, crate::theme::panel().bg);
+        terminal.hidden_status_marker = Some("hidden".into());
+        terminal.screen.process(b"\x1b[1;1H__forge_status");
+        terminal.render(area, &mut buf, false);
+        assert_eq!(
+            buf[(2, 1)].symbol(),
+            "F",
+            "sanitized text must not be replaced with instrumentation"
+        );
+    }
+
+    #[test]
     fn command_scripts_preserve_shell_specific_syntax() {
         assert_eq!(
             super::command_script("/bin/sh", "printf hi", "__FORGE_STATUS_1__"),
-            "printf hi; __forge_status=$?\nprintf '\\n__FORGE_STATUS_1__%s\\n' \"$__forge_status\"\n\n"
+            "printf hi; __forge_status=$?; printf '\\n__FORGE_STATUS_1__%s\\n' \"$__forge_status\"\n"
         );
         assert!(
             super::command_script("powershell.exe", "Write-Output hi", "m")
@@ -803,6 +1013,22 @@ mod tests {
         );
         assert!(
             super::command_script("cmd.exe", "echo hi", "m").contains("call echo m%%ERRORLEVEL%%")
+        );
+    }
+
+    #[test]
+    fn wrapped_status_scripts_stay_hidden_after_resize() {
+        let marker = "__FORGE_STATUS_1__";
+        let wrapper = format!("; {}", super::command_suffix("zsh", marker));
+        let split = wrapper.find("forge_status").unwrap() + 4;
+        let display = format!(
+            "prompt echo hi{}\n{}\nhi\nprompt",
+            &wrapper[..split],
+            &wrapper[split..]
+        );
+        assert_eq!(
+            super::strip_status_wrapper_display(&display, "zsh", marker),
+            "prompt echo hi\nhi\nprompt"
         );
     }
 

@@ -284,7 +284,10 @@ impl TuiApp {
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
-                regions.bottom_panel.width,
+                regions
+                    .bottom_panel
+                    .width
+                    .saturating_sub(2 * crate::widgets::input::TEXT_INSET),
                 regions.bottom_panel.height.saturating_sub(1),
             );
         }
@@ -1290,7 +1293,9 @@ impl TuiApp {
                     terminal_content: interactive_terminal_output.unwrap_or(""),
                     terminal_running: interactive_terminal.is_some_and(|terminal| terminal.running),
                     terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
-                    terminal_cursor: interactive_terminal.map(InteractiveTerminal::cursor_position),
+                    terminal_cursor: interactive_terminal
+                        .filter(|terminal| terminal.cursor_visible())
+                        .map(InteractiveTerminal::cursor_position),
                 },
                 focused: crate::widgets::background_focused(
                     self.focus.block() == FocusBlock::BottomPanel,
@@ -1299,6 +1304,16 @@ impl TuiApp {
             },
             regions.bottom_panel,
         );
+        if let (Some(terminal), Some(area)) = (interactive_terminal, self.terminal_area) {
+            terminal.render(
+                area,
+                frame.buffer_mut(),
+                crate::widgets::background_focused(
+                    self.focus.block() == FocusBlock::BottomPanel,
+                    modal_open,
+                ),
+            );
+        }
         if self.selection.active
             && self.selection.pane == Some(crate::selection::CopyPane::Terminal)
         {
@@ -1841,6 +1856,14 @@ fn terminal_copy_rows(
     running: bool,
     shell: Option<&str>,
 ) -> Vec<String> {
+    if shell.is_some() {
+        let mut rows: Vec<_> = content.lines().map(str::to_string).collect();
+        if rows.len() > height as usize {
+            rows = rows.split_off(rows.len() - height as usize);
+        }
+        rows.resize(height as usize, String::new());
+        return rows;
+    }
     let mut rows = vec![format!(
         "Interactive shell{}",
         if running { " · running" } else { " · exited" }
@@ -2282,15 +2305,15 @@ mod tests {
     }
 
     #[test]
-    fn terminal_copy_rows_matches_panel_headers_and_scroll() {
+    fn terminal_copy_rows_matches_screen_coordinates() {
         assert_eq!(
             super::terminal_copy_rows("first\nsecond", 5, true, Some("sh")),
             vec![
-                "".to_string(),
-                "Interactive shell · running".to_string(),
-                "$ sh -il".to_string(),
                 "first".to_string(),
                 "second".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
             ]
         );
         assert_eq!(

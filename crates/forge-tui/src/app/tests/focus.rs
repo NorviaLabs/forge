@@ -12,7 +12,7 @@ async fn focus_starts_on_composer_block() {
 }
 
 #[tokio::test]
-async fn tab_from_terminal_moves_to_sidebar() {
+async fn tab_stays_in_terminal_and_shift_tab_leaves() {
     let (_dir, mut app) = focus_test_app().await;
     app.bottom_panel.open = true;
     app.focus_block(FocusBlock::BottomPanel);
@@ -21,7 +21,11 @@ async fn tab_from_terminal_moves_to_sidebar() {
         .await
         .unwrap();
 
-    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+    app.handle_key(press(KeyCode::BackTab, KeyModifiers::SHIFT))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
 }
 
 #[tokio::test]
@@ -39,6 +43,8 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+    app.focus_block(FocusBlock::Sidebar);
     assert_eq!(app.focus.block(), FocusBlock::Sidebar);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -78,6 +84,33 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
         .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Search);
     assert!(app.workspace_files.explorer.search_focused);
+}
+
+#[tokio::test]
+async fn reopening_terminal_restarts_an_exited_shell() {
+    if !crate::interactive_terminal::pty_allocation_available() {
+        return;
+    }
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_bottom_panel();
+    app.interactive_terminal
+        .as_mut()
+        .unwrap()
+        .consume_input(b"exit 0\r")
+        .unwrap();
+    for _ in 0..100 {
+        let terminal = app.interactive_terminal.as_mut().unwrap();
+        terminal.poll();
+        if !terminal.running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!app.interactive_terminal.as_ref().unwrap().running);
+    app.toggle_bottom_panel();
+    app.open_bottom_panel();
+    assert!(app.interactive_terminal.as_ref().unwrap().running);
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
 }
 
 #[tokio::test]

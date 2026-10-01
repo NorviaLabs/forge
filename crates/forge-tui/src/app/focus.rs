@@ -297,7 +297,11 @@ impl TuiApp {
 
     pub(super) fn open_bottom_panel(&mut self) {
         self.bottom_panel.open = true;
-        if self.interactive_terminal.is_none() {
+        if self
+            .interactive_terminal
+            .as_ref()
+            .is_none_or(|terminal| !terminal.running)
+        {
             match crate::interactive_terminal::InteractiveTerminal::spawn(
                 self.session_view.workspace_root(),
                 80,

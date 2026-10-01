@@ -281,7 +281,13 @@ pub fn split_areas_with_preferences(
     let available_panel_h = content_area
         .height
         .saturating_sub(fixed_h)
-        .saturating_sub(3);
+        .saturating_sub(warning_h.min(1) + u16::from(show_task_strip))
+        .saturating_sub(PANE_GAP_Y)
+        .saturating_sub(if expand_conversation {
+            TRANSCRIPT_MIN_ROWS + input_h + qh + COMPOSER_GAP_Y
+        } else {
+            3
+        });
     let panel_h = if requested_panel_h > 0 {
         requested_panel_h
             .clamp(3, available_panel_h.max(3))
@@ -594,6 +600,36 @@ mod tests {
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 32);
         assert_eq!(r.bottom_panel.height, 13);
         assert_eq!(r.input.height, 3);
+    }
+
+    #[test]
+    fn oversized_terminal_preserves_composer_and_transcript_at_small_sizes() {
+        for (width, height) in [(80, 18), (80, 24), (120, 35), (160, 45), (200, 55)] {
+            let regions = split_areas_with_preferences(
+                Rect::new(0, 0, width, height),
+                0,
+                3,
+                true,
+                0,
+                32,
+                2,
+                true,
+                0,
+                1,
+                true,
+                true,
+                PaneLayoutPreferences {
+                    bottom_panel_height_ratio: Some(0.9),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(regions.input.height, 3, "{width}x{height}");
+            assert!(
+                regions.sidebar.unwrap().height >= TRANSCRIPT_MIN_ROWS,
+                "{width}x{height}"
+            );
+            assert!(regions.bottom_panel.bottom() <= regions.footer.y);
+        }
     }
 
     #[test]
