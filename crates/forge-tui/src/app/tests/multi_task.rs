@@ -127,6 +127,35 @@ async fn empty_session_model_does_not_replace_global_model_fallback() {
 }
 
 #[tokio::test]
+async fn terminal_controls_do_not_switch_navigator_or_open_notes() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    draw_app(&mut app, 140, 40);
+    let tab = app.effective_navigator_tab();
+    app.open_bottom_panel();
+    app.input.set_text("composer draft");
+    for code in [KeyCode::Char('e'), KeyCode::Char('n'), KeyCode::Tab] {
+        app.handle_key(press(
+            code,
+            if code == KeyCode::Tab {
+                KeyModifiers::NONE
+            } else {
+                KeyModifiers::CONTROL
+            },
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+        assert_eq!(app.effective_navigator_tab(), tab);
+        assert!(app.scratchpad.is_none());
+        assert_eq!(app.input.text, "composer draft");
+    }
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn terminal_and_explorer_follow_the_session_worktree() {
     if !crate::interactive_terminal::pty_allocation_available() {
         eprintln!("skipping: this host denies PTY allocation");

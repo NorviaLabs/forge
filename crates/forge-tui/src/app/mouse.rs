@@ -1022,8 +1022,13 @@ impl TuiApp {
                     .explorer
                     .move_selection(direction * step);
             }
-            // Approval and interactive-terminal (BottomPanel) are deliberate
-            // no-ops: neither has a scroll target of its own. TaskStrip is one
+            FocusBlock::BottomPanel => {
+                if let Some(terminal) = self.interactive_terminal.as_mut() {
+                    let step = if shift { WHEEL_PAGE } else { WHEEL_NOTCH };
+                    terminal.scroll(-direction * step);
+                }
+            }
+            // Approval has no scroll target of its own. TaskStrip is one
             // too — the session navigator moves its selection on ↑↓ and takes
             // no wheel, unlike the file tree beside it.
             _ => {}

@@ -266,11 +266,18 @@ The Files explorer needs a terminal at least 116 columns wide. Below that
 `Ctrl+E` says so rather than toggling a pane that cannot be drawn.
 
 When the terminal panel is focused, it is an interactive login shell, and its
-title shows a `●` with a thicker rule so you can tell it holds the keyboard.
+title shows `> Terminal` with a thicker rule so you can tell it holds the keyboard.
 Type or paste commands directly into it; standard control keys, arrows, Tab,
 and terminal resize are forwarded to the shell. `Ctrl+Backtick`, `Esc`, or a
-submitted `exit` closes the panel without killing the shell, so reopening
+directly typed `exit` hides the panel without killing the shell, so reopening
 resumes the same session.
+Manual commands are passed through without adding status scripts to shell history.
+`Ctrl+E` and `Ctrl+N` keep their shell meanings while the panel is focused;
+`Shift+Tab` leaves panel focus. `Shift+PageUp` / `Shift+PageDown` and the mouse
+wheel browse the terminal's 1,024-line scrollback; typing returns to live output.
+In full-screen programs using the alternate screen (such as Vim), `Esc` goes to
+the program and `Ctrl+Backtick` hides the panel. If the login shell exits through
+EOF or `exit 0`, hiding and reopening the panel starts a fresh shell.
 
 When a text file is open, the workspace uses Vim-style editing. Markdown,
 structured text, HTML/XML/SVG, stylesheets, diffs, configuration files, Mermaid

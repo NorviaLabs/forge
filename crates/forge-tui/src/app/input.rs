@@ -1150,7 +1150,7 @@ impl TuiApp {
         }
         if self.focus.block() == FocusBlock::BottomPanel {
             if let Some(terminal) = self.interactive_terminal.as_mut() {
-                match terminal.consume_input(data.as_bytes()) {
+                match terminal.paste(data) {
                     Ok(true) => self.toggle_bottom_panel(),
                     Ok(false) => {}
                     Err(error) => self.set_feedback(
@@ -1505,6 +1505,34 @@ impl TuiApp {
     async fn handle_bottom_panel_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         if !self.bottom_panel.open {
             return Ok(false);
+        }
+        // Full-screen shell programs need Esc (Vim normal mode, pager menus).
+        // Ctrl+` remains the panel escape hatch while such a program is active.
+        if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+            if let Some(terminal) = self.interactive_terminal.as_mut() {
+                if terminal.alternate_screen() {
+                    if let Err(error) = terminal.consume_input(b"\x1b") {
+                        self.set_feedback(
+                            FeedbackSeverity::Error,
+                            format!("terminal input failed: {error}"),
+                        );
+                    }
+                    return Ok(true);
+                }
+            }
+        }
+        if key.modifiers == KeyModifiers::SHIFT
+            && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+        {
+            if let Some(terminal) = self.interactive_terminal.as_mut() {
+                let page = self.terminal_area.map_or(8, |area| area.height) as isize;
+                terminal.scroll(if key.code == KeyCode::PageUp {
+                    page
+                } else {
+                    -page
+                });
+            }
+            return Ok(true);
         }
         if let Some(bytes) = terminal_key_bytes(key) {
             if let Some(terminal) = self.interactive_terminal.as_mut() {
@@ -2116,6 +2144,7 @@ impl TuiApp {
 
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
         if self.supervisor.is_some()
+            && self.focus.block() != FocusBlock::BottomPanel
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && key.code == KeyCode::Char('e')
         {
@@ -2134,14 +2163,16 @@ impl TuiApp {
         }
         // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
-            let allow_repeat = matches!(
-                key.kind,
-                KeyEventKind::Repeat
-                    if matches!(
-                        key.code,
-                        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
-                    )
-            );
+            let allow_repeat = (key.kind == KeyEventKind::Repeat
+                && self.focus.block() == FocusBlock::BottomPanel)
+                || matches!(
+                    key.kind,
+                    KeyEventKind::Repeat
+                        if matches!(
+                            key.code,
+                            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+                        )
+                );
             if !allow_repeat {
                 return Ok(());
             }
@@ -2296,7 +2327,10 @@ impl TuiApp {
         // the surface below so it reaches in, and well before type-to-compose so
         // it never loses to a draft. The `:` command line above still wins, so
         // Ctrl+N cannot interrupt a half-typed `:w`.
-        if key.code == KeyCode::Char('n') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+        if key.code == KeyCode::Char('n')
+            && key.modifiers.contains(event::KeyModifiers::CONTROL)
+            && (self.focus.block() != FocusBlock::BottomPanel || self.scratchpad.is_some())
+        {
             if self.scratchpad.is_some() {
                 self.close_scratchpad();
             } else {
@@ -2349,7 +2383,9 @@ impl TuiApp {
                 }
             }
             FocusMode::Navigation => {
-                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                if key.code == KeyCode::BackTab
+                    || (key.code == KeyCode::Tab && self.focus.block() != FocusBlock::BottomPanel)
+                {
                     Box::pin(self.execute_semantic_command(SemanticCommand::CycleFocus {
                         forward: key.code != KeyCode::BackTab
                             && !key.modifiers.contains(KeyModifiers::SHIFT),
@@ -2393,17 +2429,58 @@ fn parse_editor_substitute(command: &str) -> Option<(bool, String, String, bool)
 }
 
 fn terminal_key_bytes(key: event::KeyEvent) -> Option<Vec<u8>> {
+    // Preserve terminal modifier encoding for readline and nested applications.
+    let modifier = 1
+        + u8::from(key.modifiers.contains(KeyModifiers::SHIFT))
+        + 2 * u8::from(key.modifiers.contains(KeyModifiers::ALT))
+        + 4 * u8::from(key.modifiers.contains(KeyModifiers::CONTROL));
+    let final_byte = match key.code {
+        KeyCode::Up => Some('A'),
+        KeyCode::Down => Some('B'),
+        KeyCode::Right => Some('C'),
+        KeyCode::Left => Some('D'),
+        KeyCode::Home => Some('H'),
+        KeyCode::End => Some('F'),
+        _ => None,
+    };
+    if modifier > 1 {
+        if let Some(final_byte) = final_byte {
+            return Some(format!("\x1b[1;{modifier}{final_byte}").into_bytes());
+        }
+        let number = match key.code {
+            KeyCode::Insert => Some(2),
+            KeyCode::Delete => Some(3),
+            KeyCode::PageUp => Some(5),
+            KeyCode::PageDown => Some(6),
+            _ => None,
+        };
+        if let Some(number) = number {
+            return Some(format!("\x1b[{number};{modifier}~").into_bytes());
+        }
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         if let KeyCode::Char(c) = key.code {
             let c = c.to_ascii_lowercase();
-            if c.is_ascii_lowercase() {
-                return Some(vec![c as u8 - b'a' + 1]);
+            let control = match c {
+                'a'..='z' => Some(c as u8 - b'a' + 1),
+                ' ' | '@' => Some(0),
+                '['..='_' => Some(c as u8 - b'@'),
+                _ => None,
+            };
+            if let Some(control) = control {
+                return Some(if key.modifiers.contains(KeyModifiers::ALT) {
+                    vec![0x1b, control]
+                } else {
+                    vec![control]
+                });
             }
         }
     }
     if key.modifiers.contains(KeyModifiers::ALT) {
         if let KeyCode::Char(c) = key.code {
-            return Some(vec![0x1b, c as u8]);
+            let mut bytes = vec![0x1b];
+            bytes.extend_from_slice(c.to_string().as_bytes());
+            return Some(bytes);
         }
     }
     match key.code {
@@ -2420,6 +2497,7 @@ fn terminal_key_bytes(key: event::KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Home => Some(b"\x1b[H".to_vec()),
         KeyCode::End => Some(b"\x1b[F".to_vec()),
         KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::Insert => Some(b"\x1b[2~".to_vec()),
         KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
         KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
         KeyCode::Esc => None,
@@ -2446,6 +2524,32 @@ fn map_key(key: event::KeyEvent) -> OverlayKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_keys_preserve_word_motion_and_unicode_alt_input() {
+        for (code, modifiers, expected) in [
+            (KeyCode::Left, KeyModifiers::CONTROL, "\x1b[1;5D"),
+            (KeyCode::Right, KeyModifiers::ALT, "\x1b[1;3C"),
+            (KeyCode::Delete, KeyModifiers::CONTROL, "\x1b[3;5~"),
+            (KeyCode::Char('\\'), KeyModifiers::CONTROL, "\x1c"),
+            (
+                KeyCode::Char('b'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "\x1b\x02",
+            ),
+            (
+                KeyCode::Home,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                "\x1b[1;6H",
+            ),
+            (KeyCode::Char('é'), KeyModifiers::ALT, "\x1bé"),
+        ] {
+            assert_eq!(
+                terminal_key_bytes(event::KeyEvent::new(code, modifiers)),
+                Some(expected.as_bytes().to_vec())
+            );
+        }
+    }
     use forge_core::{AgentSession, LoopConfig};
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;

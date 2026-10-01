@@ -217,7 +217,7 @@ async fn wheel_over_workspace_with_file_scrolls_source_viewer() {
 }
 
 #[tokio::test]
-async fn wheel_over_terminal_is_a_noop() {
+async fn wheel_in_terminal_does_not_scroll_conversation() {
     let (_dir, mut app) = focus_test_app().await;
     app.bottom_panel.open = true;
     app.focus_block(FocusBlock::BottomPanel);

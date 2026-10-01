@@ -1004,8 +1004,19 @@ Rules:
 - One interactive login shell per session; closing the panel never kills it.
 - Focused presentation: thick top rule + `> Terminal` + accent title — legible without colour (shape carries it too). The title keeps one cell before the rule.
 - The body shares the shared text origin (`TEXT_INSET`), like the composer and the queue strip.
-- Busy phase, activity feed lines, shell label and a painted caret render inside the panel.
-- Standard control keys, arrows, Tab, paste and resize are forwarded to the shell.
+- Once a shell exists, its emulator screen occupies the whole body: no shell
+  label or activity rows displace its coordinates. ANSI attributes and Unicode
+  cells are preserved; the caret styles its cell without erasing its character.
+- Standard control keys (including Ctrl+E and Ctrl+N), modified arrows, Tab,
+  bracketed paste and resize are forwarded to the shell. Shift+Tab leaves focus.
+  Manual submissions are not rewritten with command-status scripts; explicit
+  `!command` execution retains Forge's exit-status reporting.
+- Shift+PageUp / Shift+PageDown and the focused panel's wheel browse the existing
+  1,024-line scrollback. Typing returns to live output; history shows no caret.
+  Alternate-screen programs keep Esc; Ctrl+Backtick still hides their panel.
+- A dead shell is named in the title. Hide/reopen restarts it; ordinary hiding
+  preserves the live shell and its environment. Panel height yields to the
+  transcript and composer minimums on short terminals.
 
 ### 9.10 Status line and transient toast overlay
 

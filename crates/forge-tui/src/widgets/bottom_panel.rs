@@ -42,7 +42,12 @@ impl Widget for BottomPanel<'_> {
         // cell tall. Callers pass modal-suppressed focus (DESIGN-004).
         // The body shares the pane text origin (`TEXT_INSET`); the title keeps
         // one cell before the rule so it never touches the fill.
-        let mut title = panel::title(self.focused, false, "Terminal");
+        let label = if self.model.terminal_shell.is_some() && !self.model.terminal_running {
+            "Terminal · shell exited · hide/reopen to restart"
+        } else {
+            "Terminal"
+        };
+        let mut title = panel::title(self.focused, false, label);
         title.spans.push(Span::raw(" "));
         let block = Block::default()
             .borders(Borders::TOP)
@@ -72,20 +77,10 @@ impl Widget for BottomPanel<'_> {
         Paragraph::new(lines).scroll((scroll, 0)).render(inner, buf);
         if self.focused {
             if let Some((cursor_x, cursor_y)) = self.model.terminal_cursor {
-                let header_lines = 1 + usize::from(self.model.terminal_shell.is_some());
-                let content_lines = self.model.terminal_content.lines().count();
-                let content_skip = content_lines.saturating_sub(20);
-                let Some(content_row) = (cursor_y as usize).checked_sub(content_skip) else {
-                    return;
-                };
-                let rendered_y = inner
-                    .y
-                    .saturating_add(header_lines as u16)
-                    .saturating_add(content_row as u16)
-                    .saturating_sub(scroll);
+                let rendered_y = inner.y.saturating_add(cursor_y).saturating_sub(scroll);
                 let rendered_x = inner.x.saturating_add(cursor_x);
                 if rendered_x < inner.right() && rendered_y < inner.bottom() {
-                    theme::paint_caret(buf, rendered_x, rendered_y);
+                    buf[(rendered_x, rendered_y)].set_style(theme::caret());
                 }
             }
         }
@@ -99,6 +94,12 @@ fn terminal_lines<'a>(
     terminal_running: bool,
     terminal_shell: Option<&'a str>,
 ) -> Vec<Line<'a>> {
+    if terminal_shell.is_some() {
+        return terminal_content
+            .lines()
+            .map(|line| Line::styled(line, theme::text()))
+            .collect();
+    }
     let mut lines = vec![Line::from(vec![
         Span::styled("Interactive shell", theme::text()),
         Span::styled(
@@ -116,7 +117,7 @@ fn terminal_lines<'a>(
 
     if !terminal_content.is_empty() {
         let content = terminal_content.lines().collect::<Vec<_>>();
-        for line in content.iter().rev().take(20).rev() {
+        for line in &content {
             lines.push(Line::styled((*line).to_string(), theme::muted()));
         }
         return lines;
@@ -312,15 +313,15 @@ mod tests {
             terminal_content: "prompt\nnext",
             terminal_running: true,
             terminal_shell: Some("sh"),
-            terminal_cursor: Some((4, 1)),
+            terminal_cursor: Some((3, 1)),
         };
 
         let buffer = rendered_buffer(model, true);
         // The body shares the pane text origin; the PTY cursor is relative to it.
         let inset = crate::widgets::input::TEXT_INSET;
-        assert_eq!(buffer[(inset, 1)].symbol(), "I", "shell label origin");
-        let cursor = &buffer[(inset + 4, 4)];
-        assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
+        assert_eq!(buffer[(inset, 1)].symbol(), "p", "shell content origin");
+        let cursor = &buffer[(inset + 3, 2)];
+        assert_eq!(cursor.symbol(), "t", "caret must preserve underlying text");
         assert_eq!(cursor.style().bg, theme::caret().bg);
     }
 }
