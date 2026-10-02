@@ -20,12 +20,15 @@ struct PersistedGoal {
     turns_evaluated: u32,
     last_reason: Option<String>,
     elapsed_secs: u64,
+    #[serde(default)]
+    paused: bool,
 }
 
 /// Ceiling on automatic continuations, so a condition that can never hold
 /// cannot spin the session forever. Re-arming with `/goal` starts a fresh
 /// budget.
 const MAX_GOAL_TURNS: u32 = 50;
+const GOAL_EVALUATOR_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the evaluator decided about the condition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +58,7 @@ impl TuiApp {
             condition: condition.clone(),
             turns_evaluated: 0,
             last_reason: None,
+            paused: false,
             started_at: Instant::now(),
         });
         self.persist_goal();
@@ -108,6 +112,51 @@ impl TuiApp {
         }
     }
 
+    pub(super) fn pause_goal_command(&mut self) {
+        if self.selected_is_supervised() {
+            self.submit_session_command(forge_session::SupervisorCommand::PauseGoal {
+                session_id: self.selected_session_id,
+            });
+            return;
+        }
+        if let Some(goal) = self.goal.as_mut() {
+            goal.paused = true;
+            self.persist_goal();
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                "goal paused · /goal resume to continue",
+            );
+        } else {
+            self.set_feedback(FeedbackSeverity::Info, "No goal set");
+        }
+    }
+
+    pub(super) async fn resume_goal_command(&mut self) -> Result<(), TuiError> {
+        if self.selected_is_supervised() {
+            self.submit_session_command(forge_session::SupervisorCommand::ResumeGoal {
+                session_id: self.selected_session_id,
+            });
+            return Ok(());
+        }
+        let Some(goal) = self.goal.as_mut() else {
+            self.set_feedback(FeedbackSeverity::Info, "No goal set");
+            return Ok(());
+        };
+        if !goal.paused {
+            self.set_feedback(FeedbackSeverity::Info, "Goal is already active");
+            return Ok(());
+        }
+        goal.paused = false;
+        let condition = goal.condition.clone();
+        let reason = goal.last_reason.clone();
+        self.persist_goal();
+        self.set_feedback(FeedbackSeverity::Info, "goal resumed");
+        let prompt = reason.map_or(condition.clone(), |reason| {
+            goal_continuation_prompt(&condition, &reason)
+        });
+        Box::pin(self.dispatch_line(&prompt)).await
+    }
+
     /// Rows for the `/goal` status report.
     fn goal_report_rows(&self) -> Vec<StatusRow> {
         let Some(goal) = self.goal.as_ref() else {
@@ -121,6 +170,7 @@ impl TuiApp {
         };
         let mut rows = vec![
             StatusRow::field("Condition", goal.condition.clone()),
+            StatusRow::field("Status", if goal.paused { "Paused" } else { "Active" }),
             StatusRow::field("Elapsed", format_goal_elapsed(goal.started_at.elapsed())),
             StatusRow::field("Turns evaluated", goal.turns_evaluated.to_string()),
         ];
@@ -135,7 +185,7 @@ impl TuiApp {
     /// it is unmet. A no-op when no goal is set, another turn is already queued,
     /// or the session is waiting on the operator (approval or a question).
     pub(super) async fn advance_goal_after_turn(&mut self) -> Result<(), TuiError> {
-        if self.goal.is_none() || self.selected_is_supervised() {
+        if self.goal.as_ref().is_none_or(|goal| goal.paused) || self.selected_is_supervised() {
             return Ok(());
         }
         // A queued turn or a pending prompt runs first; the goal is judged once
@@ -159,7 +209,19 @@ impl TuiApp {
             .map(|goal| goal.condition.clone())
             .unwrap_or_default();
 
-        match self.evaluate_goal(&condition).await {
+        let identity = self
+            .goal
+            .as_ref()
+            .map(|goal| (goal.condition.clone(), goal.started_at));
+        let verdict = self.evaluate_goal(&condition).await;
+        if !self.goal.as_ref().is_some_and(|goal| {
+            identity.as_ref().is_some_and(|(condition, started_at)| {
+                goal.condition == *condition && goal.started_at == *started_at && !goal.paused
+            })
+        }) {
+            return Ok(());
+        }
+        match verdict {
             GoalVerdict::Met(reason) => {
                 self.goal = None;
                 self.remove_persisted_goal();
@@ -170,6 +232,7 @@ impl TuiApp {
             GoalVerdict::Impossible(reason) => {
                 if let Some(goal) = self.goal.as_mut() {
                     goal.last_reason = Some(reason.clone());
+                    goal.paused = true;
                 }
                 self.persist_goal();
                 self.push_toast("goal paused");
@@ -189,8 +252,10 @@ impl TuiApp {
                     None => return Ok(()),
                 };
                 if turns >= MAX_GOAL_TURNS {
-                    self.goal = None;
-                    self.remove_persisted_goal();
+                    if let Some(goal) = self.goal.as_mut() {
+                        goal.paused = true;
+                    }
+                    self.persist_goal();
                     self.push_toast("goal paused");
                     self.set_feedback(
                         FeedbackSeverity::Warn,
@@ -218,6 +283,11 @@ impl TuiApp {
                     FeedbackSeverity::Warn,
                     format!("goal paused · evaluator: {reason}"),
                 );
+                if let Some(goal) = self.goal.as_mut() {
+                    goal.last_reason = Some(reason.clone());
+                    goal.paused = true;
+                }
+                self.persist_goal();
                 self.push_activity(
                     ActivityKind::System,
                     FeedbackSeverity::Warn,
@@ -242,6 +312,7 @@ impl TuiApp {
             turns_evaluated: goal.turns_evaluated,
             last_reason: goal.last_reason.clone(),
             elapsed_secs: goal.started_at.elapsed().as_secs(),
+            paused: goal.paused,
         };
         let path = self.persisted_goal_path();
         if let Some(parent) = path.parent() {
@@ -269,10 +340,15 @@ impl TuiApp {
             condition: state.condition,
             turns_evaluated: state.turns_evaluated,
             last_reason: state.last_reason,
+            paused: state.paused,
             started_at: Instant::now()
                 .checked_sub(Duration::from_secs(state.elapsed_secs))
                 .unwrap_or_else(Instant::now),
         });
+        if let Some(goal) = self.goal.as_mut() {
+            goal.paused = true;
+        }
+        self.persist_goal();
     }
 
     /// Ask a separate, tool-less model call whether the condition holds. The
@@ -290,11 +366,16 @@ impl TuiApp {
         ));
         let model = self.session_runtime.model_client();
         let mut task = IsolatedTask::spawn(async move { model.complete(request).await });
+        let started_at = Instant::now();
         while !task.is_finished() {
             if self.cancellation.is_requested() {
                 task.abort();
                 self.cancellation.clear();
                 return GoalVerdict::Unknown("cancelled".into());
+            }
+            if started_at.elapsed() >= GOAL_EVALUATOR_TIMEOUT {
+                task.abort();
+                return GoalVerdict::Unknown("evaluator timed out".into());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

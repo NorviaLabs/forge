@@ -35,6 +35,7 @@ async fn goal_state_round_trips_through_session_storage() {
         condition: "all tests pass".into(),
         turns_evaluated: 3,
         last_reason: Some("one suite remains".into()),
+        paused: true,
         started_at: Instant::now(),
     });
     app.persist_goal();
@@ -46,6 +47,30 @@ async fn goal_state_round_trips_through_session_storage() {
     assert_eq!(goal.condition, "all tests pass");
     assert_eq!(goal.turns_evaluated, 3);
     assert_eq!(goal.last_reason.as_deref(), Some("one suite remains"));
+    assert!(goal.paused);
+}
+
+#[tokio::test]
+async fn goal_pause_and_resume_preserve_the_condition() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.goal = Some(GoalState {
+        condition: "all tests pass".into(),
+        turns_evaluated: 2,
+        last_reason: Some("one test remains".into()),
+        paused: false,
+        started_at: Instant::now(),
+    });
+
+    app.dispatch_line("/goal pause").await.unwrap();
+    assert!(app.goal.as_ref().unwrap().paused);
+    app.persist_goal();
+
+    app.dispatch_line("/goal resume").await.unwrap();
+    assert!(!app.goal.as_ref().unwrap().paused);
+    assert_eq!(
+        app.pending_turn.prompt(),
+        Some("Continue working toward the goal. Do not restate it — take the next concrete step.\n\nGoal: all tests pass\nEvaluator: one test remains")
+    );
 }
 
 #[tokio::test]
@@ -58,6 +83,7 @@ async fn goal_waits_for_a_promoted_queued_turn_before_evaluating() {
         condition: "all tests pass".into(),
         turns_evaluated: 0,
         last_reason: None,
+        paused: false,
         started_at: Instant::now(),
     });
     app.pending_turn.request_continue();
@@ -2543,6 +2569,7 @@ async fn goal_evaluator_pauses_on_an_unreadable_verdict() {
     app.drain_pending_prompt(None).await.unwrap();
 
     assert!(app.goal.is_some(), "the goal stays set");
+    assert!(app.goal.as_ref().unwrap().paused);
     assert!(
         !app.pending_turn.has_prompt(),
         "an unreadable verdict must not spin the session"
@@ -2568,6 +2595,7 @@ async fn goal_evaluator_pauses_the_goal_when_impossible() {
     app.drain_pending_prompt(None).await.unwrap();
 
     assert!(app.goal.is_some());
+    assert!(app.goal.as_ref().unwrap().paused);
     assert!(!app.pending_turn.has_prompt());
     assert!(
         app.feedback.text.contains("impossible"),

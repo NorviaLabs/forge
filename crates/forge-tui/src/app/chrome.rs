@@ -495,11 +495,21 @@ impl TuiApp {
                 forge_session::SupervisorEvent::GoalStatus {
                     session_id,
                     condition,
+                    paused,
+                    turns_evaluated,
+                    last_reason,
                 } => {
                     if session_id == self.selected_session_id {
                         match condition {
-                            Some(condition) => self
-                                .set_feedback(FeedbackSeverity::Info, format!("Goal: {condition}")),
+                            Some(condition) => {
+                                let status = if paused { "paused" } else { "active" };
+                                let mut message =
+                                    format!("Goal {status} · turn {turns_evaluated} · {condition}");
+                                if let Some(reason) = last_reason {
+                                    message.push_str(&format!(" · {reason}"));
+                                }
+                                self.set_feedback(FeedbackSeverity::Info, message);
+                            }
                             None => self.set_feedback(FeedbackSeverity::Info, "No goal set"),
                         }
                     }
