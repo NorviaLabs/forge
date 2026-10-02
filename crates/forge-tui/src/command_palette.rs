@@ -29,7 +29,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         ("/status", "Show session status and diagnostics"),
         ("/context", "Show the token budget broken down by category"),
         ("/plan", "Inspect the latest execution plan"),
-        ("/goal", "Work toward a completion condition until it holds"),
+        (
+            "/goal",
+            "Work toward a condition; use /goal pause, resume, or clear",
+        ),
         ("/effort", "Set model effort"),
         (
             "/approve-all",

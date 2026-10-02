@@ -19,6 +19,10 @@ pub enum GoalAction {
     Show,
     /// `clear` (or an alias) — drop the active goal before it resolves.
     Clear,
+    /// Pause automatic goal continuation while retaining the condition.
+    Pause,
+    /// Resume a paused goal and start another turn.
+    Resume,
     /// Any other text — the completion condition to work toward.
     Set(String),
 }
@@ -114,12 +118,12 @@ impl SlashCommand {
     /// session. Model settings are safe to change because they are read when
     /// the next model step is built; lifecycle, provider, or terminal-
     /// ownership changes wait until the turn is finished (or interrupted).
-    /// `/goal clear` and `/goal` (status) stay available — only the forms that
-    /// queue a fresh turn wait.
+    /// `/goal clear`, `/goal pause`, and `/goal` stay available — only forms
+    /// that queue a fresh turn wait.
     pub fn available_while_busy(&self) -> bool {
         match self {
             Self::Goal {
-                action: GoalAction::Set(_),
+                action: GoalAction::Set(_) | GoalAction::Resume,
             } => false,
             _ => !matches!(
                 self,
@@ -229,6 +233,22 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 action: GoalAction::Show,
             }),
             Some(word)
+                if matches!(word.to_ascii_lowercase().as_str(), "pause")
+                    && parts.next().is_none() =>
+            {
+                Ok(SlashCommand::Goal {
+                    action: GoalAction::Pause,
+                })
+            }
+            Some(word)
+                if matches!(word.to_ascii_lowercase().as_str(), "resume")
+                    && parts.next().is_none() =>
+            {
+                Ok(SlashCommand::Goal {
+                    action: GoalAction::Resume,
+                })
+            }
+            Some(word)
                 if GOAL_CLEAR_ALIASES.contains(&word.to_ascii_lowercase().as_str())
                     && parts.next().is_none() =>
             {
@@ -242,7 +262,11 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                     .split_once(char::is_whitespace)
                     .map(|(_, condition)| condition.trim())
                     .filter(|condition| !condition.is_empty())
-                    .ok_or_else(|| CommandError::Usage("/goal <condition> | /goal clear".into()))?;
+                    .ok_or_else(|| {
+                        CommandError::Usage(
+                            "/goal <condition> | /goal pause | /goal resume | /goal clear".into(),
+                        )
+                    })?;
                 Ok(SlashCommand::Goal {
                     action: GoalAction::Set(condition.to_string()),
                 })
@@ -635,6 +659,18 @@ mod tests {
                 action: GoalAction::Show
             }
         );
+        assert_eq!(
+            parse_slash("/goal pause").unwrap().unwrap(),
+            SlashCommand::Goal {
+                action: GoalAction::Pause
+            }
+        );
+        assert_eq!(
+            parse_slash("/goal resume").unwrap().unwrap(),
+            SlashCommand::Goal {
+                action: GoalAction::Resume
+            }
+        );
         // The whole tail is the condition, spaces and all.
         assert_eq!(
             parse_slash("/goal all tests in test/auth pass")
@@ -676,6 +712,14 @@ mod tests {
         .available_while_busy());
         assert!(SlashCommand::Goal {
             action: GoalAction::Clear
+        }
+        .available_while_busy());
+        assert!(SlashCommand::Goal {
+            action: GoalAction::Pause
+        }
+        .available_while_busy());
+        assert!(!SlashCommand::Goal {
+            action: GoalAction::Resume
         }
         .available_while_busy());
     }

@@ -1220,6 +1220,8 @@ pub(crate) struct GoalState {
     pub(crate) turns_evaluated: u32,
     /// The evaluator's most recent reason, for `/goal` and the verdict line.
     pub(crate) last_reason: Option<String>,
+    /// A paused goal remains visible and can be resumed explicitly.
+    pub(crate) paused: bool,
     /// When the goal was set, for the status line's elapsed time.
     pub(crate) started_at: Instant,
 }

@@ -28,6 +28,7 @@ async fn switching_tasks_carries_the_whole_view_and_leaves_a_clean_slate() {
         condition: "first task goal".into(),
         turns_evaluated: 2,
         last_reason: Some("still working".into()),
+        paused: false,
         started_at: Instant::now(),
     });
 

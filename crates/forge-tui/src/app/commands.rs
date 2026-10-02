@@ -1383,6 +1383,8 @@ impl TuiApp {
                 Ok(SlashCommand::Goal { action }) => match action {
                     GoalAction::Show => self.show_goal(),
                     GoalAction::Clear => self.clear_goal_command(),
+                    GoalAction::Pause => self.pause_goal_command(),
+                    GoalAction::Resume => self.resume_goal_command().await?,
                     GoalAction::Set(condition) => self.set_goal(condition).await?,
                 },
                 Ok(SlashCommand::Effort) => {
