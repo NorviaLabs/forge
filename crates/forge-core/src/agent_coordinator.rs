@@ -647,6 +647,56 @@ mod tests {
     }
 
     #[test]
+    fn restore_and_mailbox_operations_report_missing_agents() {
+        let (root, child, missing) = ids();
+        let coordinator = AgentCoordinator::new(root);
+        coordinator
+            .restore_child(root, child, "restored".into(), AgentStatus::Waiting, None)
+            .unwrap();
+        assert_eq!(
+            coordinator.update(missing, AgentStatus::Failed, None),
+            Err(AgentCoordinatorError::NotFound(missing))
+        );
+        assert_eq!(
+            coordinator.take_mailbox(missing),
+            Err(AgentCoordinatorError::NotFound(missing))
+        );
+        assert_eq!(
+            coordinator.restore_mailbox(missing, ["message".into()]),
+            Err(AgentCoordinatorError::NotFound(missing))
+        );
+        assert!(matches!(
+            coordinator.descendant(root, missing),
+            Err(AgentCoordinatorError::NotFound(id)) if id == missing
+        ));
+    }
+
+    #[test]
+    fn shutting_down_child_cancels_its_nested_descendants() {
+        let (root, child, grandchild) = ids();
+        let coordinator = AgentCoordinator::new(root);
+        let child_cancel = coordinator
+            .register_child(root, child, "child".into())
+            .unwrap();
+        coordinator
+            .register_child(child, grandchild, "grandchild".into())
+            .unwrap();
+        coordinator
+            .send_message(root, child, "clear on shutdown".into())
+            .unwrap();
+        coordinator.shutdown_descendants(root);
+        assert!(child_cancel.is_cancelled());
+        assert!(coordinator
+            .cancellation_token(grandchild)
+            .unwrap()
+            .is_cancelled());
+        assert_eq!(
+            coordinator.take_mailbox(child).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn shutdown_descendants_closes_retained_actor_channels() {
         let (root, child, _) = ids();
         let coordinator = AgentCoordinator::new(root);

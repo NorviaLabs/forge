@@ -140,6 +140,50 @@ mod tests {
     }
 
     #[test]
+    fn load_defaults_for_missing_malformed_or_incomplete_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let store = PaneLayoutStore::new(path.clone());
+
+        assert_eq!(store.load(), PaneLayoutPreferences::default());
+        std::fs::write(&path, "invalid = [").unwrap();
+        assert_eq!(store.load(), PaneLayoutPreferences::default());
+        std::fs::write(
+            &path,
+            "[model]\nid = 'kept'\n[tui.layout]\nfiles_width_ratio = 0.25\n",
+        )
+        .unwrap();
+        assert_eq!(
+            store.load(),
+            PaneLayoutPreferences {
+                files_width_ratio: Some(0.25),
+                ..PaneLayoutPreferences::default()
+            }
+        );
+        std::fs::write(&path, "[tui]\nlayout = 'wrong type'\n").unwrap();
+        assert_eq!(store.load(), PaneLayoutPreferences::default());
+    }
+
+    #[test]
+    fn reset_removes_only_layout_and_reports_non_table_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tui]\nlayout = { files_width_ratio = 0.2 }\nother = true\n",
+        )
+        .unwrap();
+        PaneLayoutStore::new(path.clone()).reset().unwrap();
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(saved.contains("other = true"));
+        assert!(!saved.contains("layout"));
+
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "tui = 'not a table'\n").unwrap();
+        assert!(PaneLayoutStore::new(path).reset().is_err());
+    }
+
+    #[test]
     fn save_does_not_overwrite_a_malformed_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");

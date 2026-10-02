@@ -18,6 +18,39 @@ struct GatedTool {
 }
 
 #[tokio::test]
+async fn token_usage_lines_explain_missing_provider_usage() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+    s.token_usage.model_steps = 1;
+    s.token_usage.model_calls_with_usage = 0;
+
+    let lines = s.token_usage_lines();
+
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("provider did not return usage")));
+}
+
+#[tokio::test]
+async fn setting_model_fields_keeps_the_selection_and_tool_context_synchronized() {
+    let dir = tempdir().unwrap();
+    let mut s = idle_session(dir.path()).await;
+    s.set_active_model("provider/model");
+    s.set_active_route_id("route-1");
+    s.set_reasoning_effort(Some("high".into()));
+    s.set_thinking_enabled(true);
+
+    let selection = s.model_selection();
+    assert_eq!(selection.model, "provider/model");
+    assert_eq!(selection.route_id, "route-1");
+    assert_eq!(selection.reasoning_effort.as_deref(), Some("high"));
+    assert!(selection.thinking_enabled);
+    assert!(s.thinking_enabled());
+    assert_eq!(s.reasoning_effort(), Some("high"));
+    assert_eq!(s.tool_ctx.active_model, "provider/model");
+}
+
+#[tokio::test]
 async fn a_failed_unconfined_attempt_suppresses_repeat_escalation_for_the_exact_call() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![]));

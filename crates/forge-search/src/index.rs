@@ -553,6 +553,62 @@ mod tests {
     use crate::types::GrepQueryMode;
 
     #[test]
+    fn search_files_returns_empty_for_blank_or_zero_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "unique_content\n").unwrap();
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            index.search_files("  ", 10).unwrap(),
+            MergedSearch::default()
+        );
+        assert_eq!(
+            index.search_files("unique_content", 0).unwrap(),
+            MergedSearch::default()
+        );
+    }
+
+    #[test]
+    fn file_notifications_and_open_notifications_accept_missing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("note.txt"), "before\n").unwrap();
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("note.txt"), "after_token\n").unwrap();
+        index.note_file_changed("note.txt").unwrap();
+        index.note_file_changed("missing.txt").unwrap();
+        index.note_file_opened("note.txt").unwrap();
+        index.note_file_opened("missing.txt").unwrap();
+    }
+
+    #[test]
+    fn opened_file_can_be_recorded_without_frecency_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("note.txt"), "note\n").unwrap();
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        index.note_file_opened("note.txt").unwrap();
+    }
+
+    #[test]
     fn open_without_waiting_still_serves_find_after_scan() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
