@@ -67,7 +67,7 @@ portable-pty = "0.9"
 vt100 = "0.16"
 fff-search = "0.10.1"
 fff-grep = "0.10.1"
-fff-query-parser = "0.10.1"
+fff-query-parser = "0.11.0"
 similar = "3"
 edtui = { version = "0.11.6", default-features = false }
 ratatui-toaster = "0.1"

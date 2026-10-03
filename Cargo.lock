@@ -1081,6 +1081,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e476806b7e5999639b68970054c42d38d7fa430ea60118f67a05c0dd635fbd"
 
 [[package]]
+name = "fff-query-parser"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc1aa71c8268c77b2b7d9982eeaa6aa42abb22eaaaa3b72b1b636946c72a8982"
+
+[[package]]
 name = "fff-search"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1093,7 +1099,7 @@ dependencies = [
  "dunce",
  "fff-grep",
  "fff-notify-debouncer-full",
- "fff-query-parser",
+ "fff-query-parser 0.10.6",
  "git2",
  "glidesort",
  "globset",
@@ -1363,7 +1369,7 @@ dependencies = [
 name = "forge-search"
 version = "0.1.0-beta.11"
 dependencies = [
- "fff-query-parser",
+ "fff-query-parser 0.11.0",
  "fff-search",
  "serde",
  "tempfile",
