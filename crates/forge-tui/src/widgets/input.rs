@@ -558,7 +558,7 @@ impl Widget for InputBar<'_> {
         let text_focused = self.focused;
         // The border is the composer's stateful chrome: L3 while it owns the
         // keyboard, `waiting_border` while an approval pends, warn when there
-        // is no provider to send to. Focus alone is a hue change on the box —
+        // is no provider to send to. Focus alone is a hue change on the top —
         // the block caret is the monochrome signal. Attention states
         // additionally thicken the top rule, because they change what the
         // input *does*, not merely where the keyboard is.
@@ -584,11 +584,11 @@ impl Widget for InputBar<'_> {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(rule_style)
+            .border_style(theme::composer_border_idle())
             .style(surface)
             .render(area, buf);
-        // The full box carries focus; the top edge additionally thickens for
-        // attention states, which change what the input *does*.
+        // Keep the sides and bottom neutral; the top edge carries focus and
+        // thickens for attention states, which change what the input *does*.
         let rule = rule_glyph.repeat(area.width.saturating_sub(2) as usize);
         if area.width >= 2 {
             buf.set_string(area.x + 1, area.y, &rule, rule_style);
@@ -1110,6 +1110,16 @@ mod tests {
         assert_eq!(focused_row, format!("╭{}╮", "─".repeat(46)));
         assert_eq!(waiting_row, format!("╭{}╮", "━".repeat(46)));
         assert!(!idle_row.contains('┌') && !waiting_row.contains('┏'));
+        for buffer in [&idle, &focused, &attention] {
+            for (x, y) in [(0, 2), (47, 2), (24, 4)] {
+                assert_eq!(buffer[(x, y)].fg, theme::composer_border_idle().fg.unwrap());
+            }
+        }
+        assert_eq!(
+            focused[(24, 0)].fg,
+            theme::active_panel_border().fg.unwrap()
+        );
+        assert_eq!(attention[(24, 0)].fg, theme::waiting_border().fg.unwrap());
     }
 
     #[test]
@@ -1328,9 +1338,9 @@ mod tests {
             "idle box stays neutral"
         );
         assert_eq!(
-            focused[(0, 2)].style().fg,
+            focused[(1, 0)].style().fg,
             theme::active_panel_border().fg,
-            "focus is L3, no new hue"
+            "the top rule carries the existing focus accent"
         );
         assert_eq!(focused[(0, 0)].symbol(), "╭");
     }

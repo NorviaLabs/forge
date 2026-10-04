@@ -646,18 +646,19 @@ impl TuiApp {
                     let buf = frame.buffer_mut();
                     buf[(files.x, divider_y)].set_symbol("├");
                     buf[(files.right() - 1, divider_y)].set_symbol("┤");
-                    buf[(
-                        files.x + crate::widgets::navigator::SESSIONS_TAB_WIDTH - 1,
-                        divider_y,
-                    )]
-                        .set_symbol("┴");
-                    // The list's top border repaints the divider row, so the
-                    // `+` cell's own right-edge joint is stamped here too. The
-                    // cell's left edge is the `Sessions` tab's right edge, which
-                    // the stamp above already covers.
+                    // The list repaints the bottom tab border; restore all
+                    // joints from the same geometry used to paint the tabs.
                     if let Some(cell) = self.navigator_new_session_area {
-                        let right = cell.x + cell.width.saturating_sub(1);
-                        buf[(right, divider_y)].set_symbol("┴");
+                        buf[(cell.x, divider_y)].set_symbol("┴");
+                    }
+                    for (_, rect) in crate::widgets::navigator::navigator_tab_rects(
+                        tabs_area,
+                        self.navigator_git_available(),
+                    )
+                    .into_iter()
+                    .skip(1)
+                    {
+                        buf[(rect.x, divider_y)].set_symbol("┴");
                     }
                 }
             } else {
@@ -824,6 +825,7 @@ impl TuiApp {
             session_id: self.session_view.session_id,
             transcript_revision: self.transcript_view.revision(),
             width: sidebar_width,
+            compact: compact_conversation,
             messages: visible_messages.len(),
             last_message_content: visible_messages
                 .last()

@@ -397,6 +397,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn visual_home_survives_height_only_resize() {
+        let (_d, mut app) = app().await;
+        // Keep width fixed: height changes must invalidate a complete cache.
+        for (width, height) in [(80, 40), (80, 18), (80, 40), (120, 40), (160, 50)] {
+            let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+            term.draw(|f| app.draw(f)).unwrap();
+            let text = buffer_text(&term);
+            for expected in [
+                "FORGE",
+                "model",
+                "provider",
+                "workspace",
+                "Try one of these",
+            ] {
+                assert!(
+                    text.contains(expected),
+                    "missing {expected} at {width}×{height}:\n{text}"
+                );
+            }
+            assert!(
+                !text.contains('▐'),
+                "home should fit without scrolling:\n{text}"
+            );
+            std::fs::write(format!("/tmp/forge-ui-home-{width}x{height}.txt"), &text).unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn visual_splash_disappears_after_typing() {
         let (_d, mut app) = app().await;
         app.handle_key(press(KeyCode::Char('h'))).await.unwrap();

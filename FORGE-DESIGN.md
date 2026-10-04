@@ -790,6 +790,11 @@ Rules:
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
 - The home card is the first screen only: once the operator has sent a turn it retires, never pinned above the conversation for the rest of the session.
+- In compact density the home card omits the wordmark's blank row and the
+  skills count, keeping the model, connection state, workspace and starter
+  prompts visible at 80×18. Model and provider labels elide within their row;
+  the connection state remains intact. Height-only resizes invalidate cached
+  transcript spacing when the density changes.
 - The transcript has one rounded container frame; when its content overflows the pane, a thin
   track (`│`) with a solid thumb (`▐`) marks position in the column's right
   padding, and the thumb turns into the accent `█` while the Sidebar block owns
