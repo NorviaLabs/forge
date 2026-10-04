@@ -70,7 +70,7 @@ impl TuiApp {
         match view {
             WorkspaceView::File(path) => path.is_file() || path.is_symlink(),
             // Always valid: the diff view holds no path that can go stale.
-            WorkspaceView::Diff => true,
+            WorkspaceView::Diff | WorkspaceView::GithubIssues => true,
         }
     }
 
@@ -79,7 +79,7 @@ impl TuiApp {
             WorkspaceView::File(path) => {
                 self.show_file_in_editor(path);
             }
-            WorkspaceView::Diff => {
+            WorkspaceView::Diff | WorkspaceView::GithubIssues => {
                 self.focus_block(FocusBlock::Workspace);
             }
         }
@@ -161,6 +161,13 @@ impl TuiApp {
     }
 
     pub(super) fn go_back_workspace(&mut self) {
+        if matches!(
+            self.workspace_navigation.current(),
+            Some(WorkspaceView::GithubIssues)
+        ) {
+            self.close_github_issues();
+            return;
+        }
         if self
             .editor_session
             .as_ref()

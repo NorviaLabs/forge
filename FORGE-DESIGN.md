@@ -36,7 +36,7 @@ principles:
 layout-blocks:
   - Files (explorer, hides when narrow)
   - Sidebar (persistent conversation column with the composer)
-  - Workspace (center pane — File or Diff)
+  - Workspace (center pane — File, Diff or GitHub issues)
   - BottomPanel (interactive terminal)
   - StatusBar / Footer (chrome rows)
 focus-blocks:
@@ -356,7 +356,7 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
    markers and its own search row (`Search` is a separate Tab stop nested in the
    same bordered box). `Sessions` is the multi-session list.
 2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, and the composer. It never hides; the composer lives inside it. One rounded frame contains the transcript; a thin scrollbar sits inside its right padding when the transcript overflows. Messages do not get individual frames.
-3. **Workspace** — the center pane. Its only views are `File` and `Diff` (`types.rs::WorkspaceView`); with nothing open it renders an empty-state placeholder. Conversation is deliberately *not* a workspace view.
+3. **Workspace** — the center pane. Views are `File`, `Diff`, and a nested GitHub issues view; with nothing open it renders an empty-state placeholder. Issues reuse the Git navigator for the list and the workspace for details, without hiding the conversation or introducing another column. Conversation is deliberately *not* a workspace view.
 4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
 5. **StatusBar / Footer** — chrome rows described in §9. The status line (the feedback strip, `widgets/feedback.rs`) is one of them: full width, directly above the Footer, 0 rows when there is nothing to say. It is shell chrome, not part of the conversation column.
 
@@ -509,8 +509,7 @@ surface. The old top task strip is superseded (`§11`).
   Only the first four are the list's own; the four outcomes borrow the turn's
   vocabulary so the list and the transcript cannot disagree about how a turn
   ended. Precedence is attention → queued → working → lifecycle. Rows carry the
-  label and a short qualifier; branch, worktree and ownership are never shown
-  here.
+  label and a short qualifier; branch and worktree context belong only in the expanded peek, not ordinary rows. Ownership remains internal.
 - **Selection is the bar plus the ground; the cursor cell is disclosure.**
   Selection is the accent bar in the reserved gutter plus a ground across both
   of the row's lines, and the cursor cell is `›` collapsed, `⌄` expanded — the
@@ -557,7 +556,22 @@ surface. The old top task strip is superseded (`§11`).
   collapsed column it is the only thing that still separates work in flight
   from work waiting on you.
 - The conversation sidebar stays permanent; the Workspace stays
-  `File`/`Diff`. The navigator introduces no new column.
+  `File`/`Diff`/GitHub issues. The navigator introduces no new column.
+
+#### GitHub workflow safety
+
+Repository issues are a nested Git view, not a modal. The list occupies the
+existing navigator and the selected issue, linked PR, checks and handoff preview
+occupy the workspace. Closing issues restores the previous review state.
+Network reads run off the UI thread; unknown, loading, stale and failed states
+must never look like an empty successful response. Remote text is untrusted.
+
+Starting an issue session and applying feedback require explicit submission.
+Starting an issue does not authorize pushing or creating a PR. Refreshing PR
+status is strictly read-only and never authorizes a merge. Mutating actions must
+verify the linked session, issue, repository and PR before executing. Local test
+results and remote checks remain separate evidence; check status is associated
+with the inspected commit, not a permanent session-level success badge.
 
 ## 8. Focus, Modes and Navigation
 
@@ -636,9 +650,10 @@ Workspace pane — so both route through one keymap rather than one apiece. The
 list keeps the keys it is built around, because it is the file picker: `↑`/`↓`
 move its own cursor (independently of the tree cursor, so a path changed on both
 sides stays addressable twice), `s`/`u` stage the selected side, `i` opens the
-issues overlay, and `Enter` hands the keyboard to the patch. `Esc` leaves the
-tab from either pane: list and patch are one interaction level, and it does not
-unwind level by level. Every other key belongs to the patch, whose hint row
+inline issues view, and `Enter` hands the keyboard to the patch. In issues,
+`Esc` restores the preceding Git review without recreating its selection or
+scroll; issue actions never fall through to staging or commit bindings. `Esc`
+leaves the ordinary Git review from either pane. Every other key belongs to the patch, whose hint row
 advertises the diff keymap — routing those from the list is what keeps that row
 honest, and it is why a printable key in this tab commits or switches source
 instead of quietly typing into the chat draft. Leaving the tab (`Ctrl+1`,

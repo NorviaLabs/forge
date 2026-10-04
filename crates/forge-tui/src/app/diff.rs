@@ -30,6 +30,15 @@ impl TuiApp {
     pub(super) fn apply_navigator_git_tab(&mut self, on_git: bool) {
         if on_git {
             self.open_git_view();
+        } else if matches!(
+            self.workspace_navigation.current(),
+            Some(WorkspaceView::GithubIssues)
+        ) {
+            self.close_github_issues();
+            if self.diff_view_is_open() {
+                self.git_grouped_list = false;
+                self.close_diff_view();
+            }
         } else if self.diff_view_is_open() {
             self.git_grouped_list = false;
             self.close_diff_view();

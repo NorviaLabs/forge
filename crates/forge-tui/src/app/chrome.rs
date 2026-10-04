@@ -909,6 +909,10 @@ impl TuiApp {
         // Branch state and any in-flight pull/push. Off the render path for
         // the same reason as the status poll above.
         self.poll_git_sync();
+        if self.github_view.poll(self.session_view.workspace_root()) {
+            self.github_view
+                .details(self.session_view.workspace_root().to_path_buf());
+        }
         // Ordered after `poll_git` so a completed status or patch request is
         // visible to `/diff` on the same tick it lands.
         self.pump_diff_view();
@@ -1000,6 +1004,7 @@ impl TuiApp {
                     relative_display(self.session_view.workspace_root(), path)
                 }
                 WorkspaceView::Diff => "Changes".to_string(),
+                WorkspaceView::GithubIssues => "GitHub issues".to_string(),
             })
     }
 

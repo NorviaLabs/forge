@@ -23,33 +23,24 @@ impl TuiApp {
     }
 
     pub(super) fn open_github_issues(&mut self) {
-        let workspace = self.session_view.workspace_root().to_path_buf();
-        let result = forge_workspace::github::list_open_issues(&workspace, 50);
-        match result {
-            Ok(items) => {
-                self.overlay = Some(Overlay::GithubIssues {
-                    selected: 0,
-                    filter: String::new(),
-                    items,
-                    error: None,
-                    action: 0,
-                    action_menu: false,
-                    pr_states: Default::default(),
-                })
-            }
-            Err(error) => {
-                self.overlay = Some(Overlay::GithubIssues {
-                    selected: 0,
-                    filter: String::new(),
-                    items: Vec::new(),
-                    error: Some(error.to_string()),
-                    action: 0,
-                    action_menu: false,
-                    pr_states: Default::default(),
-                })
-            }
-        }
+        self.workspace_navigation
+            .navigate_to(WorkspaceView::GithubIssues);
+        self.navigator_tab = crate::widgets::NavigatorTab::Git;
+        self.navigator_tab_explicit = true;
+        self.github_view
+            .load(self.session_view.workspace_root().to_path_buf());
+        self.focus_block(FocusBlock::Workspace);
     }
+
+    pub(super) fn close_github_issues(&mut self) {
+        self.github_view.preview = false;
+        self.github_view = Default::default();
+        self.workspace_navigation.pop_previous_valid(|view| {
+            !matches!(view, WorkspaceView::GithubIssues) && Self::workspace_view_is_valid(view)
+        });
+        self.focus_block(FocusBlock::Workspace);
+    }
+
     pub(super) fn open_session_switcher(&mut self) {
         if let Some(supervisor) = self.supervisor.as_ref() {
             let selected_session_id = self.selected_session_id;
@@ -1037,6 +1028,9 @@ impl TuiApp {
             }
             self.push_activity(ActivityKind::Slash, FeedbackSeverity::Info, slash_name);
             match cmd_res {
+                Ok(SlashCommand::Issues) => {
+                    self.open_github_issues();
+                }
                 Ok(SlashCommand::Help) => {
                     self.overlay = Some(Overlay::welcome());
                     self.set_feedback(

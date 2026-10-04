@@ -393,6 +393,29 @@ impl TuiApp {
 
     /// Select a file row in either the Files tree or grouped Git changes.
     async fn click_file_row(&mut self, row: u16, area: Rect, double: bool) -> Result<(), TuiError> {
+        if matches!(
+            self.workspace_navigation.current(),
+            Some(WorkspaceView::GithubIssues)
+        ) {
+            if self.github_view.loading || row < area.y + 2 {
+                return Ok(());
+            }
+            let local = self
+                .github_view
+                .list_start(area.height.saturating_sub(3) as usize)
+                + row.saturating_sub(area.y + 2) as usize;
+            if let Some(index) = self.github_view.visible().get(local).copied() {
+                self.github_view.selected = index;
+                self.github_view
+                    .details(self.session_view.workspace_root().to_path_buf());
+                self.focus_block(if double {
+                    FocusBlock::Workspace
+                } else {
+                    FocusBlock::Files
+                });
+            }
+            return Ok(());
+        }
         match self.effective_navigator_tab() {
             crate::widgets::NavigatorTab::Files => {
                 let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
@@ -991,6 +1014,42 @@ impl TuiApp {
             }
             // Workspace is the CHAT panel; it hosts the source viewer when a
             // file is open and the conversation otherwise.
+            FocusBlock::Workspace
+                if matches!(
+                    self.workspace_navigation.current(),
+                    Some(WorkspaceView::GithubIssues)
+                ) =>
+            {
+                self.github_view.scroll = self.github_view.scroll.saturating_add_signed(
+                    (direction * if shift { WHEEL_PAGE } else { WHEEL_NOTCH }) as i16,
+                );
+            }
+            FocusBlock::Files | FocusBlock::Search
+                if matches!(
+                    self.workspace_navigation.current(),
+                    Some(WorkspaceView::GithubIssues)
+                ) =>
+            {
+                if self.github_view.loading {
+                    return;
+                }
+                let visible = self.github_view.visible();
+                let at = visible
+                    .iter()
+                    .position(|index| *index == self.github_view.selected)
+                    .unwrap_or(0);
+                if let Some(index) = visible
+                    .get(
+                        at.saturating_add_signed(direction)
+                            .min(visible.len().saturating_sub(1)),
+                    )
+                    .copied()
+                {
+                    self.github_view.selected = index;
+                    self.github_view
+                        .details(self.session_view.workspace_root().to_path_buf());
+                }
+            }
             FocusBlock::Workspace if self.current_workspace_is_file() => {
                 self.mouse_scroll_source_viewer(direction, shift);
             }
