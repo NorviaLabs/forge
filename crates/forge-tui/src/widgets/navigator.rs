@@ -422,19 +422,15 @@ impl Widget for NavigatorTabs {
             }
         }
         if area.height >= 3 {
+            // Join every shared edge, including Files/Git in repositories.
+            for (_, rect) in navigator_tab_rects(area, self.git).into_iter().skip(1) {
+                buf[(rect.x, area.y)].set_symbol("┬");
+                buf[(rect.x, area.bottom() - 1)].set_symbol("┴");
+            }
             if let Some(cell) = new_session {
-                // The cell sits directly after the `Sessions` tab, so the
-                // shared edge is the Sessions tab's right edge; the `Files`
-                // tab starts on the cell's own right edge. Re-stamp both
-                // joints the tab corners would otherwise round off.
+                // The create cell's left edge is not a tab's left edge.
                 buf[(cell.x, area.y)].set_symbol("┬");
                 buf[(cell.x, area.y + area.height - 1)].set_symbol("┴");
-                let right = cell.x + cell.width.saturating_sub(1);
-                buf[(right, area.y)].set_symbol("┬");
-                buf[(right, area.y + area.height - 1)].set_symbol("┴");
-            } else if area.width > SESSIONS_TAB_WIDTH {
-                buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y)].set_symbol("┬");
-                buf[(area.x + SESSIONS_TAB_WIDTH - 1, area.y + area.height - 1)].set_symbol("┴");
             }
         }
     }
@@ -993,6 +989,28 @@ mod tests {
             "┴",
             "bottom joint must join the two tab frames"
         );
+    }
+
+    #[test]
+    fn repository_tabs_join_every_shared_edge() {
+        for width in [28, 37, 50] {
+            let area = Rect::new(0, 0, width, 3);
+            let mut buffer = Buffer::empty(area);
+            NavigatorTabs {
+                tab: NavigatorTab::Files,
+                needs_you: 0,
+                git: true,
+                focused: false,
+                hover: None,
+                row_stop: NavigatorRowStop::Files,
+                hover_new_session: false,
+            }
+            .render(area, &mut buffer);
+            for (_, rect) in navigator_tab_rects(area, true).into_iter().skip(1) {
+                assert_eq!(buffer[(rect.x, 0)].symbol(), "┬");
+                assert_eq!(buffer[(rect.x, 2)].symbol(), "┴");
+            }
+        }
     }
 
     /// The `+` cell is its own segment of the row: its own frame, its own

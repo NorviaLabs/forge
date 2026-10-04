@@ -458,7 +458,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         // options there are, and under-budgeting it scrolls its own top border
         // — including the title — off the pane.
         ConversationBlock::ApprovalPending(p) => render_approval_card(p, prose_width).len(),
-        ConversationBlock::Home(p) => render_home_card(p, prose_width).len(),
+        ConversationBlock::Home(p) => render_home_card(p, prose_width, false).len(),
         ConversationBlock::QuestionPending(p) => render_question_card(p, prose_width).len(),
     };
     body.saturating_add(2)
@@ -1250,7 +1250,7 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                 }
                 ConversationBlock::Home(p) => {
-                    lines.extend(render_home_card(&p, prose_width));
+                    lines.extend(render_home_card(&p, prose_width, self.opts.compact));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1790,8 +1790,8 @@ const APPROVAL_TITLE: &str = "Approval needed";
 /// generic enough to fit any repository.
 const HOME_STARTERS: &[&str] = &[
     "Explain what this project does",
-    "Find the bugs in the file I have open",
-    "Write tests for every public function",
+    "Review the error handling",
+    "Add tests for a behavior",
 ];
 
 /// Width of the label column on the home card.
@@ -1803,7 +1803,7 @@ const HOME_LABEL_WIDTH: usize = 11;
 /// `· 20 skills`, then four hundred pixels of nothing — no model, no provider,
 /// no connection state, and no suggestion of what to type. Every comparable CLI
 /// puts at least the model here.
-fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'static>> {
+fn render_home_card(p: &HomePresentation, prose_width: usize, compact: bool) -> Vec<Line<'static>> {
     let prose_width = prose_width.min(CARD_MAX_WIDTH);
     let pad = " ".repeat(MESSAGE_PADDING);
     let mut out: Vec<Line<'static>> = Vec::new();
@@ -1826,15 +1826,30 @@ fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'stati
         "FORGE",
         theme::brand().add_modifier(Modifier::BOLD),
     )]);
-    row(vec![]);
+    if !compact {
+        row(vec![]);
+    }
     row(field(
         "model",
-        vec![Span::styled(p.model.clone(), theme::text())],
+        vec![Span::styled(
+            crate::path_display::elide_middle(
+                &p.model,
+                prose_width.saturating_sub(HOME_LABEL_WIDTH),
+            ),
+            theme::text(),
+        )],
     ));
     row(field(
         "provider",
         vec![
-            Span::styled(p.provider.clone(), theme::text()),
+            Span::styled(
+                crate::path_display::elide_middle(
+                    &p.provider,
+                    prose_width
+                        .saturating_sub(HOME_LABEL_WIDTH + 2 + if p.connected { 9 } else { 13 }),
+                ),
+                theme::text(),
+            ),
             Span::raw("  "),
             if p.connected {
                 Span::styled("connected", theme::ok())
@@ -1853,13 +1868,15 @@ fn render_home_card(p: &HomePresentation, prose_width: usize) -> Vec<Line<'stati
             theme::text(),
         )],
     ));
-    row(field(
-        "skills",
-        vec![Span::styled(
-            format!("{} loaded", p.skills_loaded),
-            theme::text(),
-        )],
-    ));
+    if !compact {
+        row(field(
+            "skills",
+            vec![Span::styled(
+                format!("{} loaded", p.skills_loaded),
+                theme::text(),
+            )],
+        ));
+    }
     row(vec![]);
     row(vec![Span::styled("Try one of these", theme::muted())]);
     for starter in HOME_STARTERS {
@@ -2690,6 +2707,23 @@ mod tests {
         assert!(text.contains("~/demo"), "{text}");
         assert!(text.contains("20 loaded"), "{text}");
         assert!(text.contains(HOME_STARTERS[0]), "{text}");
+    }
+
+    #[test]
+    fn home_identity_rows_fit_long_names_in_a_narrow_pane() {
+        let p = HomePresentation {
+            model: "provider/a-model-with-a-very-long-name".into(),
+            provider: "A provider with a very long name".into(),
+            connected: false,
+            workspace: "/a/long/workspace/path/project".into(),
+            skills_loaded: 20,
+        };
+        let lines = render_home_card(&p, 36, true);
+        assert_eq!(lines.len(), 9);
+        for line in &lines[..4] {
+            assert!(line.width() <= 36 + MESSAGE_PADDING, "{line:?}");
+        }
+        assert!(lines[2].to_string().contains("not connected"));
     }
 
     #[test]
