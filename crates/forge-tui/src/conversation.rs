@@ -1790,7 +1790,7 @@ const APPROVAL_TITLE: &str = "Approval needed";
 /// generic enough to fit any repository.
 const HOME_STARTERS: &[&str] = &[
     "Explain what this project does",
-    "Review the error handling",
+    "Check this project's error handling",
     "Add tests for a behavior",
 ];
 
