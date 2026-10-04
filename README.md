@@ -120,6 +120,25 @@ per directory (children inherit). Esc during those steps quits without
 claiming setup is done. Later folders only ask for trust. Returning to a
 trusted folder opens the normal TUI.
 
+### GitHub issue workflow
+
+Use `i` from Git review or `/issues` to browse open issues without hiding the
+conversation. `←`/`→` selects an issue even when the navigator is collapsed;
+`↑`/`↓` scrolls details, `/` filters, `r` refreshes selected details, and `R`
+reloads the repository list. `Esc` restores the previous file or patch.
+
+`n` previews a new isolated issue session; `Enter` confirms it. Starting or
+completing an issue never automatically pushes, creates a PR, or merges.
+Attach the linked session and explicitly press `p` to push and create its PR.
+PR refresh is read-only. Checks show the captured PR head and refresh time;
+local passing tests do not imply passing remote checks. `l` loads bounded logs
+for the first failed GitHub Actions check; other check providers show their link.
+`a` previews concrete check/review feedback; confirmation copies it into an empty
+composer for explicit submission, preserving existing drafts.
+
+GitHub reads require `gh` and `gh auth login`, run in background workers, and
+have command deadlines and output limits. The list is limited to 100 open issues.
+
 ### Automation and benchmark runs
 
 Forge also has a frontend-independent entry point for automation. Pipe one
@@ -203,6 +222,7 @@ Useful in-app commands:
                `M` merge, `a` abort merge). In the navigator's Git tab the same keys
                work from the changed-file list, which adds `↑`/`↓` to move the list
                cursor and `i` for issues
+/issues        Browse repository issues inline; requires authenticated GitHub CLI
 /goal          Work toward a completion condition until it holds (`/goal clear` stops)
 /effort        Set model effort
 /thinking      Toggle model thinking generation

@@ -37,6 +37,7 @@ pub enum SlashCommand {
     /// Open the help overlay — the same one the empty composer's `?`
     /// shortcut opens, just reachable without knowing that shortcut exists.
     Help,
+    Issues,
     Continue,
     Fork,
     /// Start a new session from scratch, allocating its worktree — the
@@ -223,7 +224,8 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }),
         "status" => Ok(SlashCommand::Status),
         "context" | "ctx" if parts.next().is_none() => Ok(SlashCommand::Context),
-        "pr" | "issues" | "git" => Err(CommandError::Usage(
+        "issues" => Ok(SlashCommand::Issues),
+        "pr" | "git" => Err(CommandError::Usage(
             "Git and GitHub operations are driven from the navigator UI".into(),
         )),
 
@@ -314,7 +316,7 @@ mod tests {
 
     #[test]
     fn parses_github_issue_browser() {
-        assert!(parse_slash("/issues").unwrap().is_err());
+        assert_eq!(parse_slash("/issues").unwrap(), Ok(SlashCommand::Issues));
         assert!(parse_slash("/pr status 42").unwrap().is_err());
     }
 

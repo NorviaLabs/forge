@@ -90,6 +90,7 @@ pub(crate) struct SessionViewState {
     pub(crate) editor_viewport: EditorViewportState,
     pub(crate) diff_view: crate::diff_view::DiffView,
     pub(crate) git_grouped_list: bool,
+    pub(crate) github_view: super::github_view::GithubView,
     pub(crate) workspace_files: WorkspaceFilesState,
     pub(crate) file_watch: FileWatchState,
     pub(crate) bottom_panel: BottomPanelState,
@@ -156,6 +157,7 @@ impl Default for SessionViewState {
             editor_viewport: EditorViewportState { height: 24 },
             diff_view: crate::diff_view::DiffView::default(),
             git_grouped_list: false,
+            github_view: Default::default(),
             workspace_files: WorkspaceFilesState {
                 visible: true,
                 explorer: FileExplorer::new(None, forge_config::FileIconMode::Unicode),
@@ -217,12 +219,14 @@ pub(crate) enum WorkspaceView {
     // Retained as the workspace diff seam for the Git workflow redesign.
     #[allow(dead_code)]
     Diff,
+    GithubIssues,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceViewKind {
     File,
     Diff,
+    GithubIssues,
 }
 
 impl WorkspaceView {
@@ -230,6 +234,7 @@ impl WorkspaceView {
         match self {
             Self::File(_) => WorkspaceViewKind::File,
             Self::Diff => WorkspaceViewKind::Diff,
+            Self::GithubIssues => WorkspaceViewKind::GithubIssues,
         }
     }
 }
@@ -2001,6 +2006,7 @@ pub struct TuiApp {
     /// pane having to be re-opened.
     pub(crate) diff_view: crate::diff_view::DiffView,
     pub(crate) git_grouped_list: bool,
+    pub(crate) github_view: super::github_view::GithubView,
     /// VS Code's smart commit: once on (chosen via "Always" or `[tui]
     /// smart_commit`), committing with nothing staged stages everything and
     /// commits without the prompt.

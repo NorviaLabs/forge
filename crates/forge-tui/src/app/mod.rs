@@ -88,6 +88,7 @@ mod context;
 mod diff;
 mod files;
 mod focus;
+mod github_view;
 mod goal;
 mod input;
 mod input_route;

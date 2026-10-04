@@ -1750,3 +1750,42 @@ async fn git_tab_list_keeps_its_own_cursor_and_staging_keys() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&staged.stdout).trim(), "b.txt");
 }
+
+#[tokio::test]
+async fn github_issues_inline_view_preserves_diff_and_conversation() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
+    app.diff_view.scroll = 7;
+    app.open_github_issues();
+    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::GithubIssues)
+    );
+    let text = render_app_text(&mut app, 160, 40);
+    assert!(text.contains("GitHub issues"));
+    app.close_github_issues();
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::Diff)
+    );
+    assert_eq!(app.diff_view.scroll, 7);
+}
+
+#[tokio::test]
+async fn github_issues_narrow_view_remains_keyboard_accessible() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_github_issues();
+    for width in [140, 100, 80] {
+        let text = render_app_text(&mut app, width, 30);
+        assert!(text.contains("GitHub issues"), "width {width}");
+        app.focus_block(FocusBlock::Workspace);
+        app.handle_github_key(crossterm::event::KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        ))
+        .await
+        .unwrap();
+    }
+    assert_eq!(app.github_view.scroll, 3);
+}

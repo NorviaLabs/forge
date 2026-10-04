@@ -2,7 +2,6 @@
 //!
 //! Write operations belong to the task workflow, not this discovery client.
 use std::path::Path;
-use std::process::Command;
 
 use serde::Deserialize;
 
@@ -39,31 +38,22 @@ pub enum GithubError {
 /// Executes `gh` directly (never through a shell) and requests a fixed field set.
 pub fn list_open_issues(workspace: &Path, limit: u16) -> Result<Vec<Issue>, GithubError> {
     let repo = super::gh::repository(workspace)?;
-    let output = Command::new("gh")
-        .arg("issue")
-        .arg("list")
-        .arg("--repo")
-        .arg(&repo)
-        .args(["--state", "open", "--limit"])
-        .arg(limit.clamp(1, 100).to_string())
-        .args(["--json", "number,title,url,state,labels"])
-        .current_dir(workspace)
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                GithubError::MissingCli
-            } else {
-                GithubError::Command(error.to_string())
-            }
-        })?;
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        if error.contains("not logged") || error.contains("auth login") {
-            return Err(GithubError::NotAuthenticated);
-        }
-        return Err(GithubError::Command(error.trim().to_string()));
-    }
-    Ok(serde_json::from_slice(&output.stdout)?)
+    let output = super::gh::run_gh(
+        workspace,
+        [
+            "issue",
+            "list",
+            "--repo",
+            &repo,
+            "--state",
+            "open",
+            "--limit",
+            &limit.clamp(1, 100).to_string(),
+            "--json",
+            "number,title,url,state,labels",
+        ],
+    )?;
+    Ok(serde_json::from_slice(&output)?)
 }
 
 pub fn repo_from_remote(remote: &str) -> Option<String> {

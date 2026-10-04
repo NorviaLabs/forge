@@ -373,6 +373,7 @@ impl TuiApp {
             editor_viewport: std::mem::replace(&mut self.editor_viewport, blank.editor_viewport),
             diff_view: std::mem::take(&mut self.diff_view),
             git_grouped_list: self.git_grouped_list,
+            github_view: std::mem::take(&mut self.github_view),
             workspace_files: std::mem::replace(&mut self.workspace_files, blank.workspace_files),
             file_watch: std::mem::replace(&mut self.file_watch, blank.file_watch),
             bottom_panel: std::mem::take(&mut self.bottom_panel),
@@ -427,6 +428,7 @@ impl TuiApp {
         self.editor_viewport = state.editor_viewport;
         self.diff_view = state.diff_view;
         self.git_grouped_list = state.git_grouped_list;
+        self.github_view = state.github_view;
         self.workspace_files = state.workspace_files;
         self.file_watch = state.file_watch;
         self.bottom_panel = state.bottom_panel;
@@ -1794,6 +1796,15 @@ impl TuiApp {
         // a stop of its own (`FORGE-DESIGN §8.3`).
         if self.navigator_tab_row_focused {
             return self.handle_navigator_tab_row_key(key).await;
+        }
+        if matches!(
+            self.workspace_navigation.current(),
+            Some(WorkspaceView::GithubIssues)
+        ) && matches!(
+            self.focus.block(),
+            FocusBlock::Files | FocusBlock::Search | FocusBlock::Workspace
+        ) {
+            return self.handle_github_key(key).await;
         }
         // The Git tab's list and patch are one review surface: both route
         // through the same keymap. Everything else keeps its ordinary block

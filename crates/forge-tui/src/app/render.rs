@@ -147,7 +147,7 @@ impl TuiApp {
         // same horizontal geometry that the layout will paint.
         let expand_conversation = !matches!(
             self.workspace_navigation.current(),
-            Some(WorkspaceView::File(_) | WorkspaceView::Diff)
+            Some(WorkspaceView::File(_) | WorkspaceView::Diff | WorkspaceView::GithubIssues)
         );
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
@@ -485,19 +485,35 @@ impl TuiApp {
                             return None;
                         }
                         let snapshot = self.supervisor.as_ref()?.snapshots.get(&id)?;
-                        let last = snapshot
-                            .transcript
-                            .messages()
-                            .iter()
-                            .rev()
-                            .find(|message| {
-                                message.role == forge_types::MessageRole::Assistant
-                                    && !message.content.trim().is_empty()
-                            })?;
+                        let last = snapshot.transcript.messages().iter().rev().find(|message| {
+                            message.role == forge_types::MessageRole::Assistant
+                                && !message.content.trim().is_empty()
+                        });
+                        let context = format!(
+                            "branch {}\nbase {}\nworktree {}\nissue {}\n{}\n{}",
+                            if snapshot.task.branch.is_empty() {
+                                "not yet materialized"
+                            } else {
+                                &snapshot.task.branch
+                            },
+                            snapshot.task.base_sha.as_deref().unwrap_or("unknown"),
+                            snapshot.task.workspace.display(),
+                            snapshot
+                                .task
+                                .github_issue_number
+                                .map(|n| format!("#{n}"))
+                                .unwrap_or_else(|| "none".into()),
+                            if id == self.selected_session_id {
+                                self.git_sync_tag().unwrap_or_else(|| "sync unknown".into())
+                            } else {
+                                "sync: attach to inspect".into()
+                            },
+                            last.map(|m| m.content.trim()).unwrap_or("No answer yet")
+                        );
                         // Wrap to the peek's own text column, so a line is
                         // never handed to the widget already too wide for it.
                         Some(wrap_to_width(
-                            last.content.trim(),
+                            &context,
                             list_area
                                 .width
                                 .saturating_sub(crate::widgets::TEXT_COL as u16)
@@ -519,6 +535,59 @@ impl TuiApp {
                             step: self.session_row_step,
                         },
                         list_area,
+                    );
+                } else if matches!(
+                    self.workspace_navigation.current(),
+                    Some(WorkspaceView::GithubIssues)
+                ) {
+                    let visible = self.github_view.visible();
+                    let lines: Vec<Line> = std::iter::once(Line::from(format!(
+                        "Issues · / {}",
+                        self.github_view.filter
+                    )))
+                    .chain(
+                        visible
+                            .iter()
+                            .skip(
+                                self.github_view
+                                    .list_start(rows[1].height.saturating_sub(3) as usize),
+                            )
+                            .map(|index| {
+                                let issue = &self.github_view.items[*index];
+                                Line::styled(
+                                    format!(
+                                        "{} #{} {}",
+                                        if *index == self.github_view.selected {
+                                            ">"
+                                        } else {
+                                            " "
+                                        },
+                                        issue.number,
+                                        issue
+                                            .title
+                                            .chars()
+                                            .filter(|c| !c.is_control())
+                                            .collect::<String>()
+                                    ),
+                                    if *index == self.github_view.selected
+                                        && self.focus.block() == FocusBlock::Files
+                                    {
+                                        crate::theme::selected_row()
+                                    } else {
+                                        crate::theme::text()
+                                    },
+                                )
+                            }),
+                    )
+                    .collect();
+                    frame.render_widget(
+                        Paragraph::new(lines).block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(ratatui::widgets::BorderType::Rounded)
+                                .border_style(crate::theme::panel_border()),
+                        ),
+                        rows[1],
                     );
                 } else if navigator_tab == crate::widgets::NavigatorTab::Git {
                     let git_list_focused = self.focus.block() == FocusBlock::Files
@@ -1312,9 +1381,48 @@ impl TuiApp {
                         &mut self.selection,
                     );
                 }
+                Some(WorkspaceView::GithubIssues) => {
+                    let title = if self.focus.block() == FocusBlock::Workspace {
+                        "> GitHub issues"
+                    } else {
+                        "GitHub issues"
+                    };
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(ratatui::widgets::BorderType::Rounded)
+                        .title(title)
+                        .border_style(if self.focus.block() == FocusBlock::Workspace {
+                            crate::theme::active_panel_border()
+                        } else {
+                            crate::theme::panel_border()
+                        });
+                    let layout = ratatui::layout::Layout::vertical([
+                        ratatui::layout::Constraint::Min(1),
+                        ratatui::layout::Constraint::Length(2),
+                    ])
+                    .split(chat_area);
+                    frame.render_widget(
+                        Paragraph::new(self.github_view.text())
+                            .style(crate::theme::text())
+                            .wrap(ratatui::widgets::Wrap { trim: false })
+                            .scroll((self.github_view.scroll, 0))
+                            .block(block),
+                        layout[0],
+                    );
+                    frame.render_widget(
+                        Paragraph::new(
+                            "↑↓ scroll · ←→ issue · / filter · r details · R reload
+n preview task · p push + PR · l logs · a feedback · Esc back",
+                        )
+                        .style(crate::theme::metadata_style()),
+                        layout[1],
+                    );
+                }
                 Some(WorkspaceView::Diff) => {
                     // Read before the widget borrows `diff_view` mutably.
-                    let sync = self.git_sync_tag();
+                    let sync = self
+                        .git_sync_tag()
+                        .map(|tag| format!("{tag} · review → stage → commit → push → PR"));
                     let merge = self.git_merge_banner();
                     frame.render_widget(
                         crate::diff_view::DiffViewWidget {
