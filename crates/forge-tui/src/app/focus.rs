@@ -12,10 +12,9 @@ impl TuiApp {
             task_strip: true,
             search: self.workspace_files.visible,
             files: self.workspace_files.visible,
-            // No standalone preference flag — the sidebar only ever hides
-            // via the layout's own narrow-width defensive floor, which this
-            // preference-only check can't see (see render.rs's geometry-based
-            // FocusAvailability for that case).
+            workspace: self.workspace_navigation.current().is_some() || self.last_frame_width == 0,
+            // Selecting chat reveals its retained surface at narrow widths.
+            // draw() additionally checks the actual frame geometry.
             sidebar: true,
             bottom_panel: self.bottom_panel.open,
             approval: self.selected_pending_hitl().is_some()
@@ -24,9 +23,16 @@ impl TuiApp {
     }
 
     pub(super) fn normalize_focus(&mut self) {
+        match self.focus.block() {
+            FocusBlock::Sidebar | FocusBlock::Approval => {
+                self.workspace_navigation.select_conversation()
+            }
+            FocusBlock::Workspace => self.workspace_navigation.select_resource(),
+            _ => {}
+        }
         let available = self.focus_availability();
         if !available.contains(self.focus.block()) {
-            self.focus.reset_to_workspace();
+            self.focus.set_navigation(FocusBlock::Composer);
         }
         if self.source_viewer.search.open {
             self.focus.set_transient(TransientOwner::SourceSearch);
@@ -91,7 +97,7 @@ impl TuiApp {
     /// repository. A bare `stat` on the session's own root, never a subprocess,
     /// so this is safe to ask on the render path.
     pub(crate) fn navigator_git_available(&self) -> bool {
-        self.navigator_tab_row_available() && self.workspace_is_git_repository()
+        self.supervisor.is_some() && self.workspace_is_git_repository()
     }
 
     /// Move the keyboard onto the navigator's tab row (`↑` at the top of an
@@ -178,18 +184,6 @@ impl TuiApp {
         self.navigator_reply.clear();
     }
 
-    /// Keep the row's cursor on the tab a chord just switched to (`Ctrl+1` /
-    /// `Ctrl+2` / `Ctrl+E`). Without this the cursor could rest on a tab that is
-    /// no longer the one drawn as active, and `←`/`→` would then step from
-    /// somewhere other than where the eye is. The `+` stop is tab-independent,
-    /// so it is left where it is.
-    pub(super) fn retarget_navigator_row_stop(&mut self, tab: crate::widgets::NavigatorTab) {
-        if self.navigator_row_stop == crate::widgets::NavigatorRowStop::NewSession {
-            return;
-        }
-        self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
-    }
-
     /// Move the row's cursor one stop. Stops run `Sessions · + · Files` left to
     /// right and the cursor stops at each end rather than wrapping, so the
     /// movement always matches what the eye sees on the row. The `+` is skipped
@@ -259,6 +253,21 @@ impl TuiApp {
     }
 
     pub(super) fn cycle_focus_block(&mut self, forward: bool) {
+        // A Git list and its patch are one review surface. Keep their direct
+        // return path even though conversation now precedes inspection.
+        if self.git_grouped_list && self.diff_view_is_open() {
+            let next = match (self.focus.block(), forward) {
+                (FocusBlock::Files, true) => Some(FocusBlock::Workspace),
+                (FocusBlock::Workspace, false) if self.workspace_files.visible => {
+                    Some(FocusBlock::Files)
+                }
+                _ => None,
+            };
+            if let Some(next) = next {
+                self.focus_block(next);
+                return;
+            }
+        }
         let available = self.focus_availability();
         let current = FocusBlock::ORDER
             .iter()
@@ -271,6 +280,9 @@ impl TuiApp {
                 (current + FocusBlock::ORDER.len() - offset) % FocusBlock::ORDER.len()
             };
             let next = FocusBlock::ORDER[index];
+            if next == FocusBlock::Workspace && self.workspace_navigation.current().is_none() {
+                continue;
+            }
             if available.contains(next) {
                 self.focus_block(next);
                 break;

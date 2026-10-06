@@ -249,7 +249,8 @@ controls are:
 | `F1` | Open help |
 | `F3` | Open the session switcher |
 | `F4` | Open model picker |
-| `Ctrl+1` / `Ctrl+2` | Show the navigator's `Sessions` / `Files` tab (repository mode) |
+| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Show `Sessions` / `Files` / `Git` (repository mode) |
+| `F6` | Switch between conversation and the current file, diff, or issue |
 | `Ctrl+E` | Cycle navigator tabs (`Sessions` / `Files` / `Git` in a repository) |
 | `↑` at the first row, then `←` / `→` | Move onto the navigator tab row and step through `Sessions` / `+` / `Files`; `Enter` switches tab or, on `+`, starts a session (repository mode) |
 | `Ctrl+Backtick` | Toggle the terminal panel (or `/terminal`) |
@@ -282,8 +283,16 @@ connection controls remain available while a turn is running; changes apply to
 the next model step. The model can also call `view_image` on a workspace file
 when the active model accepts image input.
 
-The Files explorer needs a terminal at least 116 columns wide. Below that
-`Ctrl+E` says so rather than toggling a pane that cannot be drawn.
+Conversation is the primary surface, with a resource inspector on the right
+when there is room. The prompt spans the work surface. Below 116 columns,
+`F6` or the workspace tabs switch between conversation and the current resource,
+preserving the draft, reading position, and unsaved edits. File, session, and Git
+navigation temporarily fill the body when a persistent column cannot fit;
+`Ctrl+P` still opens file search at the 80×18 minimum.
+Below 24 rows, the terminal yields space while another surface has focus;
+`Tab` back to the panel, `Ctrl+Backtick`, or `/terminal` resume the same shell.
+
+![Conversation and file inspection at 120 columns, using an example session](.github/assets/conversation-workspace.png)
 
 When the terminal panel is focused, it is an interactive login shell, and its
 title shows `> Terminal` with a thicker rule so you can tell it holds the keyboard.

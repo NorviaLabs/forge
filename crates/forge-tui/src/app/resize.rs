@@ -86,19 +86,18 @@ impl TuiApp {
             (TaskStrip | Search | Files, Right) if self.pane_resize.files_separator.is_some() => {
                 Some((ResizeBoundary::Files, 1))
             }
-            (Workspace, Left) if self.pane_resize.files_separator.is_some() => {
-                Some((ResizeBoundary::Files, -1))
-            }
-            (Workspace, Right) if self.pane_resize.conversation_separator.is_some() => {
+            (Workspace, Left) if self.pane_resize.conversation_separator.is_some() => {
                 Some((ResizeBoundary::Conversation, -1))
             }
-            (Sidebar | Composer, Left) if self.pane_resize.conversation_separator.is_some() => {
+            (Sidebar | Composer, Right) if self.pane_resize.conversation_separator.is_some() => {
                 Some((ResizeBoundary::Conversation, 1))
             }
-            (Sidebar | Composer, Left) if self.pane_resize.files_separator.is_some() => {
+            (Workspace | Sidebar | Composer, Left)
+                if self.pane_resize.files_separator.is_some() =>
+            {
                 Some((ResizeBoundary::Files, -1))
             }
-            (Workspace, Down) if self.pane_resize.bottom_separator.is_some() => {
+            (Workspace | Sidebar, Down) if self.pane_resize.bottom_separator.is_some() => {
                 Some((ResizeBoundary::BottomPanel, -1))
             }
             (BottomPanel, Up) if self.pane_resize.bottom_separator.is_some() => {
@@ -136,6 +135,11 @@ impl TuiApp {
                 (current, content_width, 28, content_width.saturating_sub(45))
             }
             ResizeBoundary::Conversation => {
+                let conversation_start = self
+                    .pane_resize
+                    .files_separator
+                    .map(|separator| separator.x + crate::design::PANE_GAP_X)
+                    .unwrap_or(area.x + crate::design::FRAME_INSET_X);
                 let current = self
                     .pane_resize
                     .preferences
@@ -144,15 +148,18 @@ impl TuiApp {
                         self.pane_resize
                             .conversation_separator
                             .map(|separator| {
-                                f64::from(
-                                    area.right()
-                                        .saturating_sub(crate::design::FRAME_INSET_X)
-                                        .saturating_sub(separator.x + 1),
-                                ) / f64::from(content_width)
+                                f64::from(separator.x.saturating_sub(conversation_start))
+                                    / f64::from(content_width)
                             })
-                            .unwrap_or(0.25)
+                            .unwrap_or(0.6)
                     });
-                (current, content_width, 32, content_width.saturating_sub(45))
+                (
+                    current,
+                    content_width,
+                    60,
+                    area.right()
+                        .saturating_sub(crate::design::FRAME_INSET_X + conversation_start + 45),
+                )
             }
             ResizeBoundary::BottomPanel => {
                 let current = self
@@ -241,7 +248,7 @@ impl TuiApp {
         self.pane_resize.preferences = interaction.initial;
         let delta = match boundary {
             ResizeBoundary::Files => i32::from(column) - i32::from(start_column),
-            ResizeBoundary::Conversation => i32::from(start_column) - i32::from(column),
+            ResizeBoundary::Conversation => i32::from(column) - i32::from(start_column),
             ResizeBoundary::BottomPanel => i32::from(start_row) - i32::from(row),
         }
         .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;

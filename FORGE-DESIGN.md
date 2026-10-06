@@ -1,5 +1,5 @@
 ---
-version: 2.3
+version: 2.4
 status: behavioral-contract-with-changeable-defaults
 name: Forge TUI Design System
 product: Forge
@@ -34,19 +34,19 @@ principles:
   - progressive disclosure instead of permanent noise
   - the terminal font belongs to the user, not Forge
 layout-blocks:
-  - Files (explorer, hides when narrow)
-  - Sidebar (persistent conversation column with the composer)
-  - Workspace (center pane — File, Diff or GitHub issues)
-  - BottomPanel (interactive terminal)
+  - Navigator (Sessions, Files and Git; temporary full-width view when narrow)
+  - Sidebar (primary conversation, left of inspection)
+  - Workspace (right inspector — File, Diff or GitHub issues)
+  - BottomPanel / Composer (span the work surface)
   - StatusBar / Footer (chrome rows)
 focus-blocks:
-  order: [TaskStrip, Search, Files, Workspace, BottomPanel, Sidebar, Approval, Composer, Footer]
+  order: [TaskStrip, Search, Files, Sidebar, Approval, Workspace, BottomPanel, Composer, Footer]
   labels:
     TaskStrip: SESSIONS
     Search: SEARCH
     Files: FILES
-    Workspace: CHAT
-    Sidebar: SIDEBAR
+    Workspace: INSPECT
+    Sidebar: CHAT
     Approval: APPROVAL
     Composer: COMPOSER
     Footer: FOOTER
@@ -60,6 +60,7 @@ navigation:
   cycle-navigator-tabs: Ctrl+E
   navigator-tab-row: Up (first row of any navigator list, when the tab row is visible)
   go-back: Alt+Left
+  switch-workspace-pane: F6
   enter-interaction:
     - Enter
     - i
@@ -418,7 +419,7 @@ preserving legibility and the terminal-capability fallbacks in §4.
   so key claims and qualifications pop out when skimming. These tokens apply
   to prose; chrome, status, diffs, code, and the composer use their own semantic
   tokens, which may share a colour family.
-- Use uppercase for compact structural labels only — the current focus-block labels are `SESSIONS`, `SEARCH`, `FILES`, `CHAT`, `SIDEBAR`, `COMPOSER`, `FOOTER`, `PANEL`, `APPROVAL` (`types.rs::FocusBlock::label`).
+- Use uppercase for compact structural labels only — the current focus-block labels are `SESSIONS`, `SEARCH`, `FILES`, `CHAT`, `INSPECT`, `COMPOSER`, `FOOTER`, `PANEL`, `APPROVAL` (`types.rs::FocusBlock::label`).
 - Use sentence case for messages, explanations and actions.
 - Avoid decorative ASCII art inside the product chrome.
 - Current chrome combines ASCII markers (`>`, `v`, `[ ]`, `*`, `+`/`-`) with
@@ -467,18 +468,19 @@ their tradeoffs through §1.3.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ StatusBar (one row)                                       │
-│ Approve-all warning (one row, full width, when on)        │
-├────────┬───────────────────────┬─────────────────────────┤
-│        │                       │ conversation            │
-│ Files  │     Workspace         │ queue strip             │
-│ (opt.) │  (File / Diff /       │ background strip        │
-│        │   empty placeholder)  │ composer                │
-│        │                       │                         │
-├────────┴───────────────────────┴─────────────────────────┤
-│ BottomPanel (interactive terminal, 0-height when closed)  │
-├──────────────────────────────────────────────────────────┤
-│ Footer (chips + contextual hints)                         │
+│ Repository / branch · session attention                   │
+│ Approve-all warning (when on) · selected session strip    │
+├──────────┬───────────────────────────────────────────────┤
+│ Navigator│ Conversation · current resource · F6 switch    │
+│ (opt.)   ├─────────────────────────┬─────────────────────┤
+│ Sessions │ Conversation            │ Resource inspector  │
+│ Files    │ (primary, borderless)   │ File / Diff / Issues│
+│ Git      ├─────────────────────────┴─────────────────────┤
+│          │ Terminal (when open)                          │
+│          │ Queue / background tasks (when present)       │
+│          │ Composer                                      │
+├──────────┴───────────────────────────────────────────────┤
+│ Footer: model / effort · turn state / context             │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -488,9 +490,18 @@ their tradeoffs through §1.3.
    repositories, share one column (`§7.7`). `Files` is the repository explorer
    with Git status markers and its own search row (`Search` is a separate Tab
    stop nested in the same bordered box). `Sessions` is the multi-session list.
-2. **Sidebar** — the conversation column: transcript, outbound-message queue strip, background-task strip, and the composer. The current layout keeps it visible with the composer inside it. One rounded frame contains the transcript; a thin scrollbar sits inside its right padding when the transcript overflows. Messages share that frame.
-3. **Workspace** — the center pane. Views are `File`, `Diff`, and a nested GitHub issues view; with nothing open it renders an empty-state placeholder. Issues reuse the Git navigator for the list and the workspace for details. Conversation renders in the Sidebar.
-4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
+2. **Conversation** — the primary work surface, left of the resource inspector.
+   It uses the canvas without an enclosing outline; a thin scrollbar occupies
+   its right padding. Its internal focus block remains `Sidebar`, labeled `CHAT`.
+3. **Resource inspector** — the right pane for `File`, `Diff`, or GitHub issue
+   details. Its internal focus block remains `Workspace`, labeled `INSPECT`.
+   With no resource open, conversation uses the whole work surface. On narrow
+   terminals, `F6` or the workspace tabs switch between retained views.
+4. **BottomPanel** — the interactive terminal, spanning the work surface under
+   conversation and inspection. One top-rule border, thick + `> Terminal` title
+   when focused. Closing it retains the shell for reopening. The queue,
+   background tasks, and composer also span the work surface beside the
+   persistent navigator; composing does not depend on the inspector's width.
 5. **StatusBar / Footer** — chrome rows described in §9. Feedback is recorded
    in the app model and surfaced through notices and toasts; the current layout
    reserves no separate feedback/status-line row (§9.10).
@@ -501,8 +512,8 @@ The current split gives conversation and composer priority:
 
 1. Modal or approval overlay (HITL card in the transcript is itself a Tab stop).
 2. Transient input such as source search or jump-to-line.
-3. Sidebar conversation and composer.
-4. Workspace content.
+3. Conversation and composer.
+4. Resource inspection.
 5. Files.
 6. BottomPanel.
 7. Decorative or redundant metadata.
@@ -520,27 +531,32 @@ Content width is the frame width minus one outer gutter column on each side (`FR
 
 | Frame width | Behaviour |
 |---|---|
-| ≥ 116 | The Files/navigator column is eligible to appear when the other pane budgets fit (`files_fit()`) |
-| < 116 | The current layout hides Files; a direct Files request explains the size limit |
-| Resource open | Conversation keeps a sidebar allocation; the split reserves at least 44 region columns for the left workspace before any Files split |
-| No resource open | Conversation expands into the available workspace region; the Files gate still applies |
+| ≥ 116 | Conversation and inspector appear together when at least 60 + 1 + 44 work columns fit |
+| < 116, resource open | `F6` or a workspace tab shows conversation or inspection at full work width; both retain their state |
+| Resource open, ≥ 136 | A persistent navigator can also fit: at least 28 + 1 navigator columns beside the two work panes |
+| No resource open | Conversation expands; a persistent navigator is eligible from 116 columns |
+| Navigator requested without room for a persistent column | It temporarily fills the body, leaving the composer accessible; leaving navigator focus returns to the retained work view |
 
-When a resource is open, the default sidebar width is one third of the
-**content** width, clamped to 32–64 columns. It grows continuously across the
-160-column boundary instead of doubling there. Saved pane-width preferences can
-override the default within the splitter's clamps. These are region widths: borders and padding
-reduce the text width. The 44-column allocation is for the workspace, not a
-guaranteed minimum conversation text width.
+The navigator defaults to one fifth of content width, clamped to 28–32 columns.
+Conversation defaults to three fifths of the remaining body width, reserving
+at least 44 region columns for inspection and 60 for conversation. Saved width
+preferences remain effective within these floors. Region widths include any
+border and padding; conversation only has one padding column per side.
 
-Explorer-first collapse is the current compromise. The 116-column gate and
-split ratios may change when a comparison shows better access to the active
-task without clipping essential controls or losing a return path.
+This gives a file review more conversation and composer width at 120 columns.
+The tradeoff below 116 columns is an explicit view switch rather than two
+constrained text panes. `Ctrl+P`, `Ctrl+1`/`2`/`3`, and the focus cycle reveal
+temporary navigation; width alone never makes those actions unreachable.
 
 ### 7.4 Height behaviour
 
 - StatusBar consumes one identity row at every height. Footer uses up to two rows (`FOOTER_H`); its background-activity row stays blank when idle.
 - Composer input band is capped at 10 visual lines (`MAX_COMPOSER_INPUT_H`), plus top and bottom border rows — it grows within bounds and never crowds out the transcript.
 - Theme picker dock is 12 rows (`THEME_DOCK_H`), sized to show built-ins without scrolling.
+- Below 24 frame rows, an open terminal appears while `Panel` owns the keyboard
+  and yields its rows to other focused surfaces. `Tab`, `Ctrl+Backtick` or
+  `/terminal` reveal the retained shell; navigation, editing and decisions
+  remain usable at 80×18.
 - A modal leaves surrounding context visible so it reads as overlaying Forge, with the background clearly secondary.
 - Every modal title uses the shared `> Title` grammar (`theme::modal_title`) — including the workspace unsaved-changes and file-changed-on-disk conflicts. Borders keep severity colour; the marker says who owns the keyboard.
 
@@ -559,14 +575,12 @@ text keeps breathing room inside borders:
   padding (`PANE_PAD_X`), column gutter (`PANE_GAP_X`), vertical pane gap
   (`PANE_GAP_Y`).
 
-Concretely (`design.rs`): one blank column separates Files, Workspace and the
-Sidebar; no blank row separates chrome from content. No blank row separates
-transcript and composer. Border plus `PANE_PAD_X` puts text two cells
-from the pane edge. The transcript frame and its padding use the same canvas
-background as its content, avoiding a contrasting outer band.
-Composer, queue, and bottom-panel text share this origin
-(`TEXT_INSET`). The Footer uses `PANE_PAD_X` instead, within the bottom chrome
-band below the conversation column. Feedback appears through notices rather
+Concretely (`design.rs`): one blank column separates navigator, conversation,
+and inspector; no blank row separates chrome from content or transcript from
+composer. Bordered panes put text two cells from their edge. The borderless
+transcript has one column of canvas padding on each side, including its
+scrollbar. Composer, queue, and bottom-panel text use `TEXT_INSET`.
+The Footer uses `PANE_PAD_X` in the shell band. Feedback appears through notices rather
 than a separate status line (§9.10). Rounded frames use Ratatui border glyphs
 and semantic theme tokens; they do not change terminal typography.
 
@@ -708,22 +722,24 @@ task strip is recorded as a historical decision in §11.
   chrome: it splits the space `Files` already had. Its column is the explorer
   filtered to the changed files and the patch renders in the Workspace pane, so
   entering the tab opens the working-tree review and leaving it puts the pane
-  back exactly as `Esc` does. `/git` reaches the same view without the column,
-  and stays reachable below `files_fit()` where the tab bar is gone. The column
+  back exactly as `Esc` does. `Ctrl+3` reaches the same view on narrow terminals
+  through the temporary navigator. The column
   and the patch are one surface with one keymap (§8.3): the list owns
   `↑`/`↓`/`s`/`u`/`i`/`Enter` and the patch owns the diff keymap, so the hint
   row the patch draws is the truth about every key in the tab.
 - Ownership (primary/managed/attached), slots/pinning, and the
   archive/cleanup/remove split are internal — not navigator affordances.
-- Below `files_fit()` the whole navigator collapses exactly as `Files` does
-  today: the `Sessions` list falls back to a one-line status-row chip
+- When there is insufficient room for a persistent navigator, its inactive
+  column collapses. The `Sessions` list falls back to a one-line status-row chip
   (`⌄ 2 need · ⣾ 1 working`) so session attention stays visible, and the session
   switcher (`F3`, `/sessions`) keeps every session reachable. The chip carries
   the same live spinner frame as the rows it replaces, on the same tick: on a
-  collapsed column it is the only thing that still separates work in flight
-  from work waiting on you.
-- The conversation sidebar stays permanent; the Workspace stays
-  `File`/`Diff`/GitHub issues. The navigator introduces no new column.
+  collapsed column it still separates work in flight from work waiting on you.
+  Direct navigator shortcuts or cycling focus reveal a temporary full-width
+  navigator. Returning to conversation or inspection restores the retained view.
+- Conversation and inspection share the work surface. A pending approval or
+  question reveals conversation and prevents temporary navigation from covering
+  its decision card. Drafts and dirty editor buffers survive view switching.
 
 #### GitHub workflow safety
 
@@ -752,10 +768,13 @@ shortcuts, and subfocus states may change through §1.2.
 Nine spatially stable focus blocks (`types.rs::FocusBlock`), cycled by `Tab` / `Shift+Tab` through a fixed order that skips unavailable blocks:
 
 ```
-TaskStrip → Search → Files → Workspace(CHAT) → BottomPanel(PANEL) → Sidebar → Approval → Composer → Footer
+TaskStrip → Search → Files → Sidebar(CHAT) → Approval → Workspace(INSPECT) → BottomPanel(PANEL) → Composer → Footer
 ```
 
 - `Approval` enters the cycle only while a HITL request or agent question is pending.
+- `Workspace` enters the cycle only with an open resource. In Git review,
+  `Tab` from the changed-file list goes directly to the patch; `Shift+Tab`
+  returns to the list. On narrow terminals focus reveals the target view.
 - `Search` is a separate Tab stop rather than a sub-mode of Files. `Tab`
   normally cycles blocks; the terminal receives plain `Tab` for completion,
   and active composer slash suggestions use it for completion. `Shift+Tab`
@@ -767,12 +786,9 @@ TaskStrip → Search → Files → Workspace(CHAT) → BottomPanel(PANEL) → Si
   completes an active slash suggestion; `Enter` submits or queues a draft.
 - `Esc` pops exactly one interaction level.
 
-The current label vocabulary is `SESSIONS SEARCH FILES CHAT SIDEBAR COMPOSER
-FOOTER PANEL APPROVAL` (`types.rs::FocusBlock::label`). `Workspace(CHAT)` is an
-implementation label for the resource pane; the conversation itself occupies
-`Sidebar`. These names are not an ideal user-facing vocabulary by definition.
-Evaluate clearer names when users confuse the panes, and update help, hints,
-and bindings together.
+The label vocabulary is `SESSIONS SEARCH FILES CHAT INSPECT COMPOSER FOOTER
+PANEL APPROVAL` (`types.rs::FocusBlock::label`). Internal `Sidebar` means
+conversation; internal `Workspace` means resource inspection.
 
 ### 8.2 Modes
 
@@ -798,6 +814,7 @@ visible and accurately describe the next keystroke.
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |
+| Switch conversation / current resource | `F6` or click its workspace tab; retains history, draft, dirty buffer and reading position. Modals, captured inputs and the terminal retain their keys |
 | Start a draft | any printable key the active block has no binding for (`input.rs::type_to_compose`) |
 | Contextual help | `/help` |
 | Toggle the session scratchpad (running notes) | `Ctrl+N` |
@@ -868,7 +885,7 @@ keep their preview-first behavior (`i` edits), and editor focus owns its keys.
 
 Three border levels (`design.rs`, `theme::panel_border`):
 
-- **L1 — pane frame.** Every pane, focused or not, takes the same neutral
+- **L1 — pane frame.** Bordered panes, focused or not, take the same neutral
   `border` in the current design. This keeps large outlines quieter than
   content and distinguishes pane structure from the local focus accent.
 - **L2 — inset field.** The composer outline and the explorer search separator
@@ -886,14 +903,12 @@ The current active-block treatment combines at least two signals from the L3 set
 - explicit state marker where relevant (`> Terminal`, `> Conversation`)
 - caret, scrollbar thumb, or the active tab's ground at the point of interaction
 
-The current transcript has one rounded L1 frame carrying its block title
-in the shared pane grammar (`theme::pane_title`, same as the panel and diff
-header): `> Conversation` while the Sidebar block owns the keyboard, with an
-accent marker and a bold primary-text label; neutral two-space
-`  Conversation` otherwise, with a neutral border, including
-when the transcript has no overflow. Its
-scrollbar also takes a solid accent thumb while the Sidebar block owns the
-keyboard, a muted half-block otherwise. Modals suppress background focus.
+The transcript has no enclosing frame. The workspace tab row identifies
+conversation and the resource: the selected view is bold and underlined, while
+an accent `>` identifies the pane that owns the keyboard. These are separate
+signals: a selected view does not claim focus while the composer is active.
+The scrollbar takes a solid accent thumb while conversation owns the keyboard,
+a muted half-block otherwise. Modals suppress background focus.
 
 The current treatment avoids a full accent fill, which can overwhelm content
 or resemble selection. A different border, marker, or fill treatment is eligible
@@ -993,7 +1008,7 @@ Two rows (`widgets/footer.rs`); the second row is the background activity line.
 - **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — terminal/background jobs, agents/subagents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `◆` agent, `⇥` queued); the bracket is shared chrome so the chips read as a segmented strip. The row is blank when nothing is in flight, so an idle footer is unchanged. Per-item detail (command, elapsed, live subagent activity) lives in the background strip (§9.12), not the footer.
   - **A completion is an observation, not a queued prompt.** Finishing a background task does not inject a user-role prompt. The result stays in the background strip and the operator attaches it to the composer explicitly (`i` on the selected task). Only approve-all — no human in the loop — auto-continues by enqueuing the result at the next turn boundary.
 
-### 9.4 Chat transcript (sidebar)
+### 9.4 Chat transcript (primary work surface)
 
 Before the first turn, the home card identifies the model, provider/connection
 state, and workspace, then offers complete starter prompts. Prompts word-wrap
@@ -1029,10 +1044,10 @@ Rules:
   prompts visible at 80×18. Model and provider labels elide within their row;
   the connection state remains intact. Height-only resizes invalidate cached
   transcript spacing when the density changes.
-- The transcript has one rounded container frame; when its content overflows the pane, a thin
+- The transcript is borderless; when its content overflows the pane, a thin
   track (`│`) with a solid thumb (`▐`) marks position in the column's right
   padding, and the thumb turns into the accent `█` while the Sidebar block owns
-   the keyboard. No overflow, no track; focus remains visible on the frame.
+  the keyboard. No overflow, no track; focus remains visible on the workspace tab.
 - While a turn runs, the live turn line (`widgets/turn_line.rs`) names the phase and counts up from the current turn's start — including supervised sessions, where the clock is anchored on the actor's `Running` state, never on process uptime. No placeholder shimmer rows in the transcript — the pane stays empty until content arrives. Gated behind the busy debounce so instant turns never flash it.
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
@@ -1118,6 +1133,8 @@ the single plan surface.
 
 ### 9.5 Composer
 
+- Spans the work surface under conversation and inspection, including temporary
+  navigator views. It remains visible while an editor occupies the narrow body.
 - `surface` background and a full rounded outline. Side and bottom borders stay
   neutral; the top edge takes `accent` when focused and `waiting_border` while
   an approval pends ("paused" look). Only attention states thicken the top
@@ -1346,8 +1363,8 @@ user has seen or understood a result.
 ### 9.12 Background activity strip
 
 What the footer's counts-only chip deliberately omits: one row per background
-task, docked between the outbound-message queue and the composer and scoped to
-the sidebar's width (`layout.rs::regions.background`, built by
+task, docked between the outbound-message queue and the composer across
+the work surface (`layout.rs::regions.background`, built by
 `tasks_strip.rs`, drawn by `widgets/background_strip.rs`).
 
 Every rule here exists to protect something the operator is relying on.
@@ -1407,7 +1424,7 @@ second writer against a session the child still owns.
 Every rule here exists to keep the operator oriented about whose session is on
 screen.
 
-- **The frame title says whose.** `Conversation ‹ explore` names the child; the
+- **The workspace tab says whose.** `Conversation ‹ explore` names the child; the
   parent's own `Conversation` comes back with it on `←`. `‹` reads as "drilled into",
   not a path — there is no parent-task lineage to draw, and inventing one
   would be a lie. The composer hint carries the same notice
@@ -1420,7 +1437,7 @@ screen.
   never touches scroll or follow — the operator may be reading an older page.
 - **The header still describes the parent session** (workspace, branch): the
   child runs in its own worktree, so those do not match while the view is
-  open. The frame title names the child that *is* on screen.
+  open. The workspace tab names the child that *is* on screen.
 - **A replayed child carries no live activity rows.** `TurnEvent`s are not
   replayed, so the view shows the conversation without the streaming
   second-lines the owning session carries — the right trade for a view that
@@ -1549,15 +1566,15 @@ and controls remain eligible under §1.2 when a concrete task exposes a limitati
 
 | Current decision | Rationale and tradeoff | Revisit when |
 |---|---|---|
-| Conversation stays in a sidebar when a resource is open; it expands when the workspace is empty | Keep delegation available alongside inspection; sharing width can constrain reading | Long answers or file/diff inspection are easier in a task-focused, central, or temporary single-pane view |
+| Conversation is primary on the left; inspection is on the right; the composer spans both | At 120 columns the old file-review layout left roughly 44 columns for conversation and composer; the new layout allocates 70 conversation columns and 118 composer columns. Below 116, views switch explicitly | Switching cost outweighs readable full-width content during narrow review |
 | Sessions, Files, and repository Git share one navigator column | Avoid adding another content column; users switch to reach different resources | Switching cost or simultaneous session/resource monitoring outweighs the saved width |
 | No permanent Inspector with Task/Context/Runtime tabs | Keep routine metadata out of the primary workspace | Repeated context or runtime inspection lacks a discoverable, efficient route |
 | The bottom panel is an interactive terminal without Run/Diagnostics/Activity tabs | Preserve one shell surface; other results appear in their owning views | Comparing output, diagnostics, or activity requires unnecessary navigation or obscures the active task |
-| Files collapse at 116 frame columns before the conversation does | Preserve composer access in the current split; file navigation loses its column | A review- or file-focused task needs a different collapse order or an accessible temporary navigator |
+| Navigator becomes a temporary view when its persistent column cannot fit | Keep file, session and Git navigation reachable without constraining the conversation or hiding the composer | A task requires continuous navigation and content side by side at narrower widths |
 | Hints are contextual and compact rather than a permanent shortcut manual | Save content rows; users unfamiliar with bindings can lose the action's meaning | Users cannot discover the next action or learn a compressed hint without memorizing the keymap |
 | Sessions use the navigator list rather than a horizontal task strip or permanent switcher | Consolidate session attention and navigation; the list shares space with Files and Git | A session comparison or switching task demonstrates a clearer alternative with accurate ownership and state |
 | Session pinning/slots and separate archive/cleanup/remove verbs remain internal | Keep the ordinary lifecycle interaction small; advanced organization is limited | A concrete workflow needs persistent ordering or clearer lifecycle control without risking worktree loss |
-| Messages share one transcript frame instead of one box per message | Preserve content density and reading flow | A different grouping makes long conversations or approvals easier to understand without excessive chrome |
+| The transcript is borderless; workspace tabs carry view identity and focus | Recover content rows and make the answer the primary surface; the focus marker and scrollbar preserve keyboard ownership | Reading or decision cards need stronger grouping without excessive chrome |
 
 The current session list distinguishes idle, working, needs-you, queued, and
 terminal outcomes (§7.7); it is not a fixed three-state model. Alternative

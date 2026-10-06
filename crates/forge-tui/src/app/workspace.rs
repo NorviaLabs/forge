@@ -7,6 +7,20 @@
 use super::*;
 
 impl TuiApp {
+    /// Reveal the other retained pane. This changes presentation and focus,
+    /// never the navigation stack or the open editor buffer.
+    pub(super) fn switch_workspace_pane(&mut self) {
+        if self.workspace_navigation.current().is_none() {
+            return;
+        }
+        let next = if self.workspace_navigation.resource_selected() {
+            FocusBlock::Sidebar
+        } else {
+            FocusBlock::Workspace
+        };
+        self.focus_block(next);
+    }
+
     pub(super) fn current_workspace_is_file(&self) -> bool {
         matches!(
             self.workspace_navigation.current(),
@@ -30,24 +44,6 @@ impl TuiApp {
     /// a text-mutating surface is now only reachable deliberately, from the
     /// explorer itself.
     pub(super) fn toggle_files_panel(&mut self) {
-        // Below the layout's width threshold the explorer is never rendered, so
-        // toggling `visible` changes nothing on screen and focusing it parks the
-        // cursor in an invisible pane. Say why instead of doing nothing: the
-        // width requirement is otherwise undiscoverable.
-        if self.supervisor.is_none()
-            && self.last_frame_width > 0
-            && !crate::layout::files_fit(self.last_frame_width)
-        {
-            self.set_feedback(
-                FeedbackSeverity::Info,
-                format!(
-                    "Files needs a wider terminal ({} columns; this one is {}).",
-                    crate::layout::files_min_frame_width(),
-                    self.last_frame_width
-                ),
-            );
-            return;
-        }
         let already_in_files = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
 
         if self.workspace_files.visible && !already_in_files {

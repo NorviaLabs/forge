@@ -2290,33 +2290,22 @@ impl TuiApp {
         // (FORGE-DESIGN §7.7). Reserved before overlays/editor so the navigator
         // is always reachable.
         if self.supervisor.is_some() && key.modifiers.contains(event::KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('1') => {
-                    self.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-                    self.navigator_tab_explicit = true;
-                    self.focus.set_navigation(FocusBlock::TaskStrip);
-                    self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Sessions);
-                    self.apply_navigator_git_tab(false);
-                    return Ok(());
-                }
-                KeyCode::Char('2') => {
-                    self.navigator_tab = crate::widgets::NavigatorTab::Files;
-                    self.navigator_tab_explicit = true;
-                    self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Files);
-                    self.apply_navigator_git_tab(false);
-                    return Ok(());
-                }
-                // Only where the tab exists: a workspace that is not a
-                // repository keeps the chord inert rather than switching to a
-                // tab the row does not draw.
+            let tab = match key.code {
+                KeyCode::Char('1') => Some(crate::widgets::NavigatorTab::Sessions),
+                KeyCode::Char('2') => Some(crate::widgets::NavigatorTab::Files),
                 KeyCode::Char('3') if self.navigator_git_available() => {
-                    self.navigator_tab = crate::widgets::NavigatorTab::Git;
-                    self.navigator_tab_explicit = true;
-                    self.retarget_navigator_row_stop(crate::widgets::NavigatorTab::Git);
-                    self.apply_navigator_git_tab(true);
-                    return Ok(());
+                    Some(crate::widgets::NavigatorTab::Git)
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(tab) = tab {
+                let create_selected =
+                    self.navigator_row_stop == crate::widgets::NavigatorRowStop::NewSession;
+                self.select_navigator_tab_from_row(tab);
+                if create_selected {
+                    self.navigator_row_stop = crate::widgets::NavigatorRowStop::NewSession;
+                }
+                return Ok(());
             }
         }
 
@@ -2398,8 +2387,10 @@ impl TuiApp {
         if self.focus.mode() == FocusMode::Navigation
             && self.focus.block() != FocusBlock::BottomPanel
         {
-            if let Some(command @ SemanticCommand::OpenFileSearch(_)) =
-                self.semantic_command_for_global_key(key)
+            if let Some(
+                command @ (SemanticCommand::OpenFileSearch(_)
+                | SemanticCommand::SwitchWorkspacePane),
+            ) = self.semantic_command_for_global_key(key)
             {
                 Box::pin(self.execute_semantic_command(command)).await?;
                 return Ok(());

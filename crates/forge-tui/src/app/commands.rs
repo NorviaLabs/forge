@@ -365,6 +365,13 @@ impl TuiApp {
                 Some(SemanticCommand::ToggleToolDetails)
             }
             KeyCode::F(3) if key.modifiers.is_empty() => Some(SemanticCommand::OpenSessionSwitcher),
+            KeyCode::F(6)
+                if key.modifiers.is_empty()
+                    && self.workspace_navigation.current().is_some()
+                    && self.editor_command.is_none() =>
+            {
+                Some(SemanticCommand::SwitchWorkspacePane)
+            }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleFiles)
             }
@@ -704,6 +711,7 @@ impl TuiApp {
                 self.explorer_dialog.clear();
             }
             SemanticCommand::FocusComposer => self.enter_chat_composer(),
+            SemanticCommand::SwitchWorkspacePane => self.switch_workspace_pane(),
             SemanticCommand::FocusPane(block) => self.focus_block(block),
             SemanticCommand::SubmitMessage => self.submit_composer_message().await?,
             SemanticCommand::EditLastQueuedMessage => self.edit_last_queued_message().await,
@@ -712,20 +720,6 @@ impl TuiApp {
                 self.open_inline_search();
             }
             SemanticCommand::OpenFileSearch(mode) => {
-                if self.supervisor.is_none()
-                    && self.last_frame_width > 0
-                    && !crate::layout::files_fit(self.last_frame_width)
-                {
-                    self.set_feedback(
-                        FeedbackSeverity::Info,
-                        format!(
-                            "Files needs a wider terminal ({} columns; this one is {}).",
-                            crate::layout::files_min_frame_width(),
-                            self.last_frame_width,
-                        ),
-                    );
-                    return Ok(true);
-                }
                 self.select_navigator_tab_from_row(crate::widgets::NavigatorTab::Files);
                 self.leave_navigator_tab_row();
                 self.workspace_files.visible = true;

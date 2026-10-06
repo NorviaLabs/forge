@@ -13,14 +13,14 @@
 //! 2. [`PANE_PAD_X`] / [`PANE_GAP_X`] — a pane's own interior padding past its
 //!    border column, and the gutter between adjacent panes.
 //! 3. [`TEXT_INSET`](crate::widgets::input::TEXT_INSET) — the shared text origin
-//!    inside a bordered pane's padding. Composer, feedback, queue, transcript
-//!    and tree rows all resolve to it.
+//!    inside a bordered pane's padding. Composer, feedback, queue and tree rows
+//!    resolve to it; the borderless transcript uses [`PANE_PAD_X`] directly.
 //!
 //! # The border system
 //!
 //! Three levels, defined as theme accessors rather than literals:
 //!
-//! - **L1 — pane frame.** `theme::panel_border()`. Every pane, focused or not.
+//! - **L1 — pane frame.** `theme::panel_border()`. Bordered panes, focused or not.
 //!   Carries the layout's structure and never changes hue with focus.
 //! - **L2 — inset field.** `theme::composer_border_idle()` for the composer and
 //!   the explorer's search field: the same neutral step as L1, so a nested
@@ -37,7 +37,7 @@
 pub const FRAME_INSET_X: u16 = 1;
 /// Internal pane padding, each side, in addition to the border column.
 pub const PANE_PAD_X: u16 = 1;
-/// Blank column between adjacent columns (Files | Workspace | Sidebar).
+/// Blank column between navigator, conversation and inspector.
 pub const PANE_GAP_X: u16 = 1;
 /// Blank row between vertically stacked panes (left column ↔ bottom panel).
 pub const PANE_GAP_Y: u16 = 1;
@@ -83,8 +83,7 @@ pub const MODAL_SECTION_GAP_H: u16 = 1;
 pub const TREE_INDENT_W: u16 = 2;
 /// Theme bottom dock max height.
 pub const THEME_DOCK_H: u16 = 12;
-/// Files visibility gate: frame columns (preserves effective 116-col contract
-/// when removing the 95% inset).
+/// Frame-width eligibility for persistent columns; pane floors also apply.
 pub const FILES_VISIBLE_FRAME_W: u16 = 116;
 /// Minimum frame size.
 pub const MIN_FRAME_W: u16 = 80;

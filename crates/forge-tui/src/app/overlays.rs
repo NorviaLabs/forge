@@ -77,6 +77,11 @@ impl TuiApp {
         }
         text.push_str("• Ctrl+`  Toggle terminal panel\n");
         text.push_str("• F4  Open model picker\n");
+        if self.workspace_navigation.current().is_some() {
+            text.push_str(
+                "• F6  Switch between conversation and inspection without closing either\n",
+            );
+        }
         text.push_str("• F1  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
@@ -187,11 +192,17 @@ impl TuiApp {
     }
 
     pub(super) fn toggle_bottom_panel(&mut self) {
-        if self.bottom_panel.open {
+        if self.bottom_panel.open
+            && (self.terminal_area.is_some()
+                || self.focus.block() == FocusBlock::BottomPanel
+                || self.last_frame_width == 0)
+        {
             self.bottom_panel.open = false;
             self.restore_focus_after_closing(FocusBlock::BottomPanel);
             self.normalize_focus();
         } else {
+            // A compact frame can retain the shell while yielding its rows.
+            // The toggle reveals that hidden panel before it can close it.
             self.open_bottom_panel();
         }
     }

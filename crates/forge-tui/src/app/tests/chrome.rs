@@ -254,26 +254,17 @@ async fn header_status_follows_session_lifecycle() {
 }
 
 #[tokio::test]
-async fn toggling_files_on_a_narrow_terminal_explains_itself() {
-    // The explorer has a width threshold in `layout.rs`. Below it, toggling
-    // `visible` changed nothing on screen and focusing it parked the cursor in
-    // a pane that was never rendered — a silent no-op with no way to learn the
-    // requirement.
+async fn toggling_files_on_a_narrow_terminal_reveals_search() {
     let (_dir, mut app) = focus_test_app().await;
     render_app_text(&mut app, 80, 24);
     assert!(!crate::layout::files_fit(80));
 
     app.toggle_files_panel();
 
-    assert!(
-        app.feedback.text.contains("wider terminal"),
-        "expected an explanation, got {:?}",
-        app.feedback.text
-    );
-    assert!(
-        !matches!(app.focus.block(), FocusBlock::Files | FocusBlock::Search),
-        "focus must not move into a pane that cannot render"
-    );
+    render_app_text(&mut app, 80, 24);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert!(app.workspace_files.explorer.search_focused);
+    assert!(app.navigator_list_area.is_some());
 }
 
 #[tokio::test]

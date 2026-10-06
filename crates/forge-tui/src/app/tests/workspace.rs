@@ -192,7 +192,7 @@ async fn files_panel_is_open_by_default() {
 }
 
 #[tokio::test]
-async fn files_visibility_auto_collapses_and_restores_without_mutating_preference() {
+async fn narrow_files_navigation_reveals_the_pane_without_mutating_preference() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
@@ -202,10 +202,273 @@ async fn files_visibility_auto_collapses_and_restores_without_mutating_preferenc
         app.workspace_files.visible,
         "auto-collapse must not persist close"
     );
-    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
+    assert!(
+        app.navigator_list_area.is_some(),
+        "the key owner must be painted"
+    );
 
     let _wide = render_app_text(&mut app, 160, 50);
     assert!(app.workspace_files.visible);
+}
+
+#[tokio::test]
+async fn switching_workspace_panes_preserves_unsaved_work_and_reading_position() {
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    let path = dir.path().join("retry.rs");
+    fs::write(&path, "fn retry() {}\n").unwrap();
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::Assistant,
+        (0..100)
+            .map(|i| format!("History line {i}\n"))
+            .collect::<String>(),
+    ));
+    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+        .await
+        .unwrap();
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    let buffer = app.editor_session.as_ref().unwrap().serialized_text();
+    let cursor = app.editor_session.as_ref().unwrap().cursor_col();
+    app.input.set_text("Keep this unsent draft");
+    app.input.move_left();
+    let draft_cursor = app.input.cursor;
+    app.scroll_conversation_up(8);
+
+    for (width, height) in [(80, 18), (120, 40), (160, 50), (80, 18)] {
+        render_app_text(&mut app, width, height);
+        app.handle_key(press(KeyCode::F(6), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        render_app_text(&mut app, width, height);
+        assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+        assert!(
+            app.conversation_area.is_some(),
+            "conversation input must have a visible owner"
+        );
+        let reading_position = app.conversation_view.scroll;
+        app.handle_key(press(KeyCode::F(6), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        render_app_text(&mut app, width, height);
+        assert_eq!(app.focus.block(), FocusBlock::Workspace);
+        assert!(
+            app.editor_area.is_some(),
+            "editor input must have a visible owner"
+        );
+        assert_eq!(
+            app.workspace_navigation.current(),
+            Some(WorkspaceView::File(path.clone()))
+        );
+        // Pointer tabs use the same retained state as the keyboard switch.
+        for block in [FocusBlock::Sidebar, FocusBlock::Workspace] {
+            let (_, rect) = app
+                .workspace_tab_areas
+                .iter()
+                .find(|(candidate, _)| *candidate == block)
+                .copied()
+                .unwrap();
+            app.handle_mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: rect.x + 3,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            })
+            .await
+            .unwrap();
+            render_app_text(&mut app, width, height);
+            assert_eq!(app.focus.block(), block);
+        }
+        assert!(app.workspace_navigation.history().is_empty());
+        assert_eq!(app.conversation_view.scroll, reading_position);
+        assert_eq!(app.input.text, "Keep this unsent draft");
+        assert_eq!(app.input.cursor, draft_cursor);
+        let editor = app.editor_session.as_ref().unwrap();
+        assert!(editor.is_dirty());
+        assert_eq!(editor.serialized_text(), buffer);
+        assert_eq!(editor.cursor_col(), cursor);
+        assert!(
+            !app.explorer_dialog.is_open(),
+            "view switching is not a destructive exit"
+        );
+    }
+    assert_eq!(fs::read_to_string(path).unwrap(), "fn retry() {}\n");
+}
+
+#[tokio::test]
+async fn a_pending_approval_remains_reachable_over_narrow_inspection_and_navigation() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+        .await
+        .unwrap();
+    app.input.set_text("Keep this unsent draft");
+    app.bottom_panel.open = true;
+    set_pending_hitl(&mut app, direct_hitl_payload("pending", "/tmp/x"));
+    app.sync_approval_focus();
+
+    for block in [FocusBlock::Workspace, FocusBlock::Search] {
+        app.focus_block(block);
+        render_app_text(&mut app, 80, 18);
+        assert_eq!(app.focus.block(), FocusBlock::Approval);
+        assert!(app.conversation_area.is_some());
+        assert!(
+            !app.option_rects.is_empty(),
+            "the decision must be actionable"
+        );
+        assert!(app.session_view.pending_hitl.is_some());
+        assert_eq!(app.input.text, "Keep this unsent draft");
+        assert_eq!(
+            app.workspace_navigation.current(),
+            Some(WorkspaceView::File(path.clone()))
+        );
+    }
+}
+
+#[tokio::test]
+async fn narrow_file_search_is_reachable_and_returns_to_the_retained_editor() {
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 80, 18);
+    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 80, 18);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
+    assert!(app.navigator_list_area.is_some());
+    assert!(app.workspace_files.explorer.search_focused);
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::File(path.clone()))
+    );
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 80, 18);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert!(app.editor_area.is_some());
+    assert!(!app.explorer_dialog.is_open());
+}
+
+#[tokio::test]
+async fn compact_navigation_and_inspection_can_reclaim_a_retained_terminals_rows() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path))
+        .await
+        .unwrap();
+    app.bottom_panel.open = true;
+    app.input.set_text("Keep this draft");
+
+    let rendered = render_app_text(&mut app, 80, 18);
+    assert!(
+        rendered.contains("fn main()"),
+        "inspection must remain usable"
+    );
+    assert!(app.terminal_area.is_none());
+    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 80, 18);
+    assert!(app.navigator_list_area.is_some_and(|area| !area.is_empty()));
+    assert!(app.workspace_files.explorer.search_focused);
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 80, 18);
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+    assert!(app.terminal_area.is_some_and(|area| !area.is_empty()));
+    app.handle_key(press(KeyCode::BackTab, KeyModifiers::SHIFT))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 80, 18);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert!(app.editor_area.is_some());
+    assert!(app.terminal_area.is_none());
+    assert!(app.bottom_panel.open, "presentation must retain the shell");
+    assert_eq!(app.input.text, "Keep this draft");
+    app.toggle_bottom_panel();
+    render_app_text(&mut app, 80, 18);
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+    assert!(app.terminal_area.is_some());
+    app.toggle_bottom_panel();
+    assert!(!app.bottom_panel.open);
+}
+
+#[tokio::test]
+async fn workspace_switch_does_not_interrupt_a_modal_or_an_editor_command() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path))
+        .await
+        .unwrap();
+    let before = app.workspace_navigation.clone();
+    app.editor_command = Some(":w".into());
+    app.handle_key(press(KeyCode::F(6), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.editor_command.as_deref(), Some(":w"));
+    assert_eq!(app.workspace_navigation, before);
+    app.editor_command = None;
+    app.overlay = Some(Overlay::welcome());
+    app.handle_key(press(KeyCode::F(6), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_some());
+    assert_eq!(app.workspace_navigation, before);
+}
+
+#[tokio::test]
+async fn resizing_conversation_moves_its_boundary_and_cancel_restores_the_layout() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
+    app.focus_block(FocusBlock::Sidebar);
+    render_app_text(&mut app, 160, 50);
+    let initial = app.pane_resize.preferences;
+    let original_boundary = app.pane_resize.conversation_separator.unwrap();
+    app.input.set_text("Keep this draft during resizing");
+
+    app.begin_resize_mode();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 160, 50);
+    assert!(app.pane_resize.conversation_separator.unwrap().x > original_boundary.x);
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.pane_resize.preferences, initial);
+    render_app_text(&mut app, 160, 50);
+
+    assert!(app.start_mouse_resize(original_boundary.x, original_boundary.y));
+    assert!(app.drag_mouse_resize(original_boundary.x + 4, original_boundary.y));
+    render_app_text(&mut app, 160, 50);
+    assert!(app.pane_resize.conversation_separator.unwrap().x > original_boundary.x);
+    assert!(app.finish_mouse_resize());
+    assert_eq!(app.input.text, "Keep this draft during resizing");
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::Diff)
+    );
 }
 
 #[tokio::test]

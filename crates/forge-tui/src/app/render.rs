@@ -55,11 +55,18 @@ fn composer_input_height(
     area: ratatui::layout::Rect,
     show_files: bool,
     expanded_conversation: bool,
+    navigator_active: bool,
+    preferences: forge_config::PaneLayoutPreferences,
 ) -> u16 {
-    let content_width =
-        crate::layout::estimate_composer_region_width(area, show_files, expanded_conversation)
-            .saturating_sub(2 * crate::widgets::input::TEXT_INSET as usize)
-            .max(1);
+    let content_width = crate::layout::estimate_composer_region_width(
+        area,
+        show_files,
+        expanded_conversation,
+        navigator_active,
+        preferences,
+    )
+    .saturating_sub(2 * crate::widgets::input::TEXT_INSET as usize)
+    .max(1);
     // Use the same width and border budget as the rendered composer.
     input
         .visual_lines_for_width(content_width)
@@ -72,6 +79,110 @@ fn queued_messages_for_render(app: &TuiApp) -> Vec<String> {
 }
 
 impl TuiApp {
+    fn render_workspace_tabs(
+        &mut self,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        modal_open: bool,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+        let resource = self.workspace_navigation.current().map(|view| match view {
+            WorkspaceView::File(path) => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let dirty = self
+                    .editor_session
+                    .as_ref()
+                    .is_some_and(|editor| editor.is_dirty());
+                (name.into_owned(), dirty)
+            }
+            WorkspaceView::Diff => ("Git review".into(), false),
+            WorkspaceView::GithubIssues => ("GitHub issues".into(), false),
+        });
+        let hint = if resource.is_some() {
+            "F6 switch"
+        } else {
+            "Ctrl+P files · / commands"
+        };
+        let hint_width = hint.chars().count() as u16;
+        let tabs_width = area.width.saturating_sub(hint_width + 2);
+        let conversation = self
+            .child_view
+            .as_ref()
+            .map(|view| format!("Conversation ‹ {}", view.label))
+            .unwrap_or_else(|| "Conversation".into());
+        let conversation_width = if resource.is_some() && self.child_view.is_some() {
+            40.min(tabs_width / 2)
+        } else if resource.is_some() {
+            18.min(tabs_width)
+        } else {
+            tabs_width
+        };
+        let mut tabs = vec![(FocusBlock::Sidebar, conversation, false, conversation_width)];
+        if let Some((label, dirty)) = resource {
+            tabs.push((
+                FocusBlock::Workspace,
+                label,
+                dirty,
+                tabs_width.saturating_sub(conversation_width),
+            ));
+        }
+        let mut x = area.x;
+        for (block, label, dirty, width) in tabs {
+            if width < 4 {
+                continue;
+            }
+            let rect = ratatui::layout::Rect::new(x, area.y, width, 1);
+            let focused = !modal_open && self.focus.block() == block;
+            let selected =
+                (block == FocusBlock::Workspace) == self.workspace_navigation.resource_selected();
+            let label = crate::path_display::elide_middle(
+                &label
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>(),
+                width.saturating_sub(4 + u16::from(dirty) * 2) as usize,
+            );
+            let label_style = if focused || selected {
+                theme::text().add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                theme::muted()
+            };
+            let label_style = if selected {
+                label_style.add_modifier(ratatui::style::Modifier::UNDERLINED)
+            } else {
+                label_style
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        if focused { " > " } else { "   " },
+                        if focused {
+                            theme::accent_style()
+                        } else {
+                            theme::muted()
+                        },
+                    ),
+                    Span::styled(label, label_style),
+                    Span::styled(if dirty { " *" } else { "" }, theme::warn()),
+                ])),
+                rect,
+            );
+            self.workspace_tab_areas.push((block, rect));
+            x = x.saturating_add(width);
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(hint, theme::muted())),
+            ratatui::layout::Rect::new(
+                area.right().saturating_sub(hint_width),
+                area.y,
+                hint_width,
+                1,
+            ),
+        );
+    }
+
     /// Drive the live streaming preview from a test.
     ///
     /// The preview is the one part of the draw path whose cost grows with the
@@ -149,17 +260,38 @@ impl TuiApp {
             self.workspace_navigation.current(),
             Some(WorkspaceView::File(_) | WorkspaceView::Diff | WorkspaceView::GithubIssues)
         );
+        let task_mode = self.supervisor.is_some();
+        let decision_pending =
+            self.session_view.is_awaiting_approval() || self.session_view.is_awaiting_question();
+        let navigator_active = !decision_pending
+            && matches!(
+                self.focus.block(),
+                FocusBlock::TaskStrip | FocusBlock::Search | FocusBlock::Files
+            );
+        let show_files = self.workspace_files.visible || task_mode;
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else {
             composer_input_height(
                 &self.input,
                 area,
-                self.workspace_files.visible,
+                show_files,
                 expand_conversation,
+                navigator_active,
+                self.pane_resize.preferences,
             )
         };
-        let panel_h = if self.bottom_panel.open { 16 } else { 0 };
+        // At compact heights the active body needs the terminal's rows for
+        // navigation, inspection or a decision. Keep the shell open; focusing
+        // Panel reveals it again without losing its input or scroll state.
+        let panel_h = if self.bottom_panel.open
+            && (area.height >= crate::design::AIRY_MIN_ROWS
+                || self.focus.block() == FocusBlock::BottomPanel)
+        {
+            16
+        } else {
+            0
+        };
         let queued_messages = queued_messages_for_render(self);
         let queue_h = if queued_messages.is_empty() {
             0
@@ -180,10 +312,8 @@ impl TuiApp {
         // One full-width warning row directly under the status row while
         // approve-all is on. Session state, so it is never scrollable away.
         let approve_all_warning_h: u16 = u16::from(self.approve_all);
-        // An open file or `/diff` occupies the center workspace pane. Anything
-        // else (home / empty) expands conversation into that pane and there is
-        // no Workspace block to focus.
-        let task_mode = self.supervisor.is_some();
+        // An open resource occupies the inspector; otherwise conversation
+        // expands across the work surface and there is no inspector to focus.
         // The strip's height is requested before the split because `layout.rs`
         // has to clamp it against the transcript's floor, and it is built after
         // the split because only then is the height that actually fit known.
@@ -203,7 +333,7 @@ impl TuiApp {
             area,
             fb_h,
             input_h,
-            self.workspace_files.visible || task_mode,
+            show_files,
             queue_h,
             panel_h,
             hint_h,
@@ -212,23 +342,19 @@ impl TuiApp {
             approve_all_warning_h,
             expand_conversation,
             task_mode,
+            self.workspace_navigation.resource_selected() && !decision_pending,
+            navigator_active,
             self.pane_resize.preferences,
         );
         self.pane_resize.files_separator = regions
             .files
+            .filter(|files| files.right() < regions.input.x)
             .map(|files| ratatui::layout::Rect::new(files.right(), files.y, 1, files.height));
-        self.pane_resize.conversation_separator = (!expand_conversation)
+        self.pane_resize.conversation_separator = (regions.chat.width > 0)
             .then_some(regions.sidebar)
             .flatten()
             .map(|sidebar| {
-                ratatui::layout::Rect::new(
-                    sidebar.x.saturating_sub(1),
-                    sidebar.y,
-                    1,
-                    sidebar
-                        .height
-                        .max(regions.input.bottom().saturating_sub(sidebar.y)),
-                )
+                ratatui::layout::Rect::new(sidebar.right(), sidebar.y, 1, sidebar.height)
             });
         self.pane_resize.bottom_separator = (regions.bottom_panel.height > 0).then(|| {
             ratatui::layout::Rect::new(
@@ -240,12 +366,13 @@ impl TuiApp {
         });
         // Remember the rendered editor rect so mouse events (which arrive
         // between frames) can be hit-tested against it for selection.
-        self.editor_area = if self.current_workspace_is_file() {
+        self.editor_area = if self.current_workspace_is_file() && regions.chat.width > 0 {
             Some(regions.chat)
         } else {
             None
         };
         self.conversation_area = None;
+        self.workspace_tab_areas.clear();
         self.terminal_area = None;
         self.navigator_tabs_area = None;
         self.navigator_new_session_area = None;
@@ -277,10 +404,10 @@ impl TuiApp {
                 && !navigator_sessions
                 && navigator_tab != crate::widgets::NavigatorTab::Git,
             files: regions.files.is_some() && !navigator_sessions,
+            workspace: regions.chat.width > 0,
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
-            approval: self.session_view.is_awaiting_approval()
-                || self.session_view.is_awaiting_question(),
+            approval: decision_pending && regions.sidebar.is_some(),
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
@@ -292,10 +419,13 @@ impl TuiApp {
             );
         }
         if !available.contains(self.focus.block()) {
-            self.focus.reset_to_workspace();
-        }
-        if expand_conversation && self.focus.block() == FocusBlock::Workspace {
-            self.focus.set_navigation(FocusBlock::Sidebar);
+            self.focus_block(if decision_pending {
+                FocusBlock::Approval
+            } else if regions.sidebar.is_some() {
+                FocusBlock::Sidebar
+            } else {
+                FocusBlock::Composer
+            });
         }
         // The tab row holds the keyboard only while the navigator column is on
         // screen: a collapsed column (or a mode without tabs) must not leave it
@@ -304,6 +434,7 @@ impl TuiApp {
             self.navigator_tab_row_focused = false;
         }
         self.normalize_focus();
+        self.render_workspace_tabs(frame, regions.workspace_tabs, modal_open);
         let status = self.refresh_status_model_with_connected(connected);
         // When the navigator column is collapsed there is no session list on
         // screen; a one-line chip in the status row keeps sessions reachable.
@@ -799,11 +930,16 @@ impl TuiApp {
             .any(|message| message.role == forge_types::MessageRole::User);
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
-        let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);
-        let sidebar_inner_h = regions
-            .sidebar
-            .map(|r| r.height.saturating_sub(2) as usize)
-            .unwrap_or(0);
+        // Hiding a retained pane must not rebuild its history at zero width or
+        // clamp its reading position against an invisible viewport.
+        let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or_else(|| {
+            self.render_cache
+                .conversation
+                .as_ref()
+                .map(|cache| cache.key.width)
+                .unwrap_or(60)
+        });
+        let sidebar_inner_h = regions.sidebar.map(|r| r.height as usize).unwrap_or(0);
         // Follow-mode only paints the viewport plus overscan. Scrolling up
         // raises the window so earlier blocks are materialized on demand. The
         // bucket keeps each small scroll from rebuilding the transcript.
@@ -1153,37 +1289,15 @@ impl TuiApp {
         let cached_lines = Arc::clone(&cached.lines);
         let cached_complete = cached.complete;
         let plan_dock = cached.plan_dock.clone();
-        // The sidebar always shows the conversation, regardless of what the
-        // center pane shows — it's no longer one of the `WorkspaceView`
-        // options.
+        // The retained conversation is independent of the resource history.
         if let Some(sidebar) = regions.sidebar {
             let sidebar_focused = crate::widgets::background_focused(
                 self.focus.block() == FocusBlock::Sidebar,
                 modal_open,
             );
-            // One frame for the transcript, with the scrollbar in its padding.
-            // The frame stays L1 neutral; the title always names the block in
-            // the shared pane grammar (`> Conversation` focused, neutral otherwise)
-            // plus the accent scrollbar thumb (see
-            // `render_conversation_scrollbar`).
-            // A child view replaces which session is on screen, so the frame
-            // title says whose: `Conversation ‹ explore` names the child, and the
-            // parent's own title comes back with it on `←`. The `‹` reads as
-            // "drilled into" rather than a path — there is no parent-task
-            // lineage to draw, and inventing one would be a lie.
-            let chat_title = match self.child_view.as_ref() {
-                Some(view) => format!("Conversation ‹ {}", view.label),
-                None => "Conversation".to_string(),
-            };
+            // The tab row carries identity and focus. Content has no enclosing
+            // outline; the scroll indicator occupies its right padding.
             let sidebar_block = Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Rounded)
-                .border_style(theme::panel_border())
-                .title(crate::widgets::panel::title(
-                    self.focus.block() == FocusBlock::Sidebar,
-                    modal_open,
-                    &chat_title,
-                ))
                 .padding(ratatui::widgets::Padding::horizontal(
                     crate::design::PANE_PAD_X,
                 ))
@@ -1349,7 +1463,7 @@ impl TuiApp {
         // The approval decision now lives in the conversation itself (inline
         // transcript item) and the composer, so the center pane gets its full
         // height — no docked card carving out a strip at its bottom.
-        if !expand_conversation {
+        if regions.chat.width > 0 && regions.chat.height > 0 {
             let chat_area = regions.chat;
             match self.workspace_navigation.current().clone() {
                 None => {
@@ -2197,19 +2311,17 @@ fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selectio
     }
 }
 
-/// Columns available to conversation text inside the sidebar.
-///
-/// The frame and padding consume `PANE_PAD_X + 1` on each side. The scrollbar
-/// lives inside the right padding, so wrapping and selection share this measure.
+/// Columns available to conversation text inside its borderless surface.
+/// The scrollbar lives in the right padding, outside the measured text body.
 pub(crate) fn conversation_text_width(sidebar_width: u16) -> usize {
-    sidebar_width.saturating_sub(2 + 2 * crate::design::PANE_PAD_X) as usize
+    sidebar_width.saturating_sub(2 * crate::design::PANE_PAD_X) as usize
 }
 
 /// Thin scroll indicator for the conversation. Painted in the
 /// sidebar's right padding so it never overlaps transcript text, and only when
 /// the content actually overflows. `scroll_from_bottom` is the view's own
 /// offset (0 = pinned to the newest line). A focused conversation takes the
-/// solid thumb and accent track to reinforce the frame's focus marker.
+/// solid thumb and accent track to reinforce the tab's focus marker.
 fn render_conversation_scrollbar(
     sidebar: ratatui::layout::Rect,
     text_area: ratatui::layout::Rect,
@@ -2226,7 +2338,7 @@ fn render_conversation_scrollbar(
         return;
     }
     let position = max_scroll.saturating_sub((scroll_from_bottom as usize).min(max_scroll));
-    let track = ratatui::layout::Rect::new(sidebar.right() - 2, text_area.y, 1, text_area.height);
+    let track = ratatui::layout::Rect::new(sidebar.right() - 1, text_area.y, 1, text_area.height);
     let mut state = ratatui::widgets::ScrollbarState::new(total)
         .viewport_content_length(text_area.height as usize)
         .position(position);
