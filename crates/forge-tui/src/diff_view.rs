@@ -855,6 +855,7 @@ impl Widget for DiffViewWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(theme::panel_border())
             .style(theme::panel());

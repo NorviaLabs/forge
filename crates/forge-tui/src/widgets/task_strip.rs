@@ -58,15 +58,7 @@ impl Widget for TaskStrip<'_> {
         let mut spans = Vec::new();
         let mut hidden = self.overflow;
         for (position, item) in self.items.iter().enumerate() {
-            if position > 0 {
-                let separator = " · ";
-                if used + separator.len() >= area.width as usize {
-                    hidden += self.items.len().saturating_sub(position);
-                    break;
-                }
-                spans.push(Span::styled(separator, theme::border_muted()));
-                used += separator.len();
-            }
+            let separator_width = if position > 0 { 3 } else { 0 };
             let style = if item.focused && self.focused {
                 theme::focused_selection_style()
             } else if item.selected {
@@ -83,7 +75,7 @@ impl Widget for TaskStrip<'_> {
             ];
             item_spans.push(Span::styled("]", theme::border_muted()));
             let item_width = item_spans.iter().map(Span::width).sum::<usize>();
-            let remaining = (area.width as usize).saturating_sub(used);
+            let remaining = (area.width as usize).saturating_sub(used + separator_width);
             if item_width > remaining {
                 // Keep a focused item discoverable even when neighboring
                 // tasks consume the strip; its label is truncated by cell
@@ -100,15 +92,21 @@ impl Widget for TaskStrip<'_> {
                     0
                 };
                 let shown = truncate(&text, remaining.saturating_sub(reserve));
+                if position > 0 {
+                    spans.push(Span::styled(" · ", theme::border_muted()));
+                }
                 spans.push(Span::styled(shown, style));
                 hidden += self.items.len().saturating_sub(1);
                 break;
             }
-            used += item_width;
+            if position > 0 {
+                spans.push(Span::styled(" · ", theme::border_muted()));
+            }
+            used += separator_width + item_width;
             spans.extend(item_spans);
         }
         if hidden > 0 {
-            if !self.items.is_empty() {
+            if !spans.is_empty() {
                 spans.push(Span::styled(" · ", theme::border_muted()));
             }
             spans.push(Span::styled(format!("+{} more", hidden), theme::brand()));

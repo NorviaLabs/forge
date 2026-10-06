@@ -344,7 +344,9 @@ impl super::TuiApp {
             height: inner.height.saturating_sub(1),
             ..inner
         };
-        scratchpad.editor_mut().render(editor_area, buf);
+        scratchpad
+            .editor_mut()
+            .render(editor_area, buf, self.editor_command.is_none());
 
         let dirty = scratchpad.is_dirty();
         let lines = scratchpad.line_count();

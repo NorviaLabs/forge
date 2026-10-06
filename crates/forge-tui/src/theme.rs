@@ -258,6 +258,17 @@ pub fn fill(area: Rect, buf: &mut Buffer, style: Style) {
     }
 }
 
+/// Remove colours before the backend emits them: Crossterm's NO_COLOR
+/// suppression also resets attributes when colour commands change.
+pub(crate) fn strip_colors_if_disabled(buf: &mut Buffer) {
+    if crossterm::style::Colored::ansi_color_disabled_memoized() {
+        for cell in &mut buf.content {
+            cell.fg = Color::Reset;
+            cell.bg = Color::Reset;
+        }
+    }
+}
+
 pub fn canvas() -> Style {
     let p = active_palette();
     Style::default().fg(p.text).bg(p.canvas)
@@ -429,16 +440,15 @@ pub fn modal_title(label: &str) -> ratatui::text::Span<'static> {
     Span::styled(format!("> {label} "), brand())
 }
 
-/// Shared pane-title row: `> Label` in blue bold when the pane owns input,
-/// two-space-indented neutral label otherwise. The reserved marker column
-/// keeps titles aligned whether or not the pane is focused.
+/// Shared pane title: the accent marker identifies input ownership; the
+/// label stays in the content hierarchy. Reserve its marker column at rest.
 pub fn pane_title(focused: bool, label: &str) -> ratatui::text::Line<'static> {
     use ratatui::text::Span;
     if focused {
-        ratatui::text::Line::from(vec![Span::styled(
-            format!("{FOCUS_MARKER} {label}"),
-            brand(),
-        )])
+        ratatui::text::Line::from(vec![
+            Span::styled(format!("{FOCUS_MARKER} "), brand()),
+            Span::styled(label.to_string(), text().add_modifier(Modifier::BOLD)),
+        ])
     } else {
         ratatui::text::Line::from(vec![Span::styled(format!("  {label}"), text_secondary())])
     }
@@ -580,7 +590,7 @@ pub fn panel_alt() -> Style {
 }
 
 pub fn user_message() -> Style {
-    Style::default().bg(active_palette().selection)
+    Style::default().bg(active_palette().panel)
 }
 
 pub fn assistant_message() -> Style {
@@ -617,11 +627,9 @@ pub fn diff_hunk() -> Style {
 
 /// Ground behind a submitted user message.
 ///
-/// A restrained dark neutral — the theme's `selection` step — rather than an
-/// accent tint. The prompt is a *region* of the transcript, not a focus state,
-/// and a saturated full-width bar outranks the answer beneath it, which is the
-/// content the operator actually has to read (§9.4). The `You` speaker label
-/// and the block's indent carry authorship without colour.
+/// The panel ground separates the prompt from the answer without borrowing
+/// the stronger selection step. The `You` label and indent carry authorship
+/// without colour.
 pub fn user_message_style() -> Style {
     user_message().fg(active_palette().text)
 }
@@ -751,6 +759,12 @@ pub const CURSOR_GLYPH: &str = "█";
 pub const CURSOR_CELL: &str = " ";
 
 pub fn caret() -> Style {
+    if crossterm::style::Colored::ansi_color_disabled_memoized() {
+        return Style::default()
+            .fg(Color::Reset)
+            .bg(Color::Reset)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    }
     let p = active_palette();
     Style::default()
         .fg(p.panel)

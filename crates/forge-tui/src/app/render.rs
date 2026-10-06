@@ -387,6 +387,10 @@ impl TuiApp {
             );
         }
         if let Some(files) = regions.files {
+            let active_file = match self.workspace_navigation.current() {
+                Some(WorkspaceView::File(path)) => Some(path),
+                _ => None,
+            };
             let navigator_focused = self.focus.block() == FocusBlock::TaskStrip
                 && !modal_open
                 && !self.navigator_tab_row_focused;
@@ -447,8 +451,6 @@ impl TuiApp {
                             } else {
                                 task.label.clone()
                             };
-                            let state_label =
-                                task.secondary.clone().unwrap_or_else(|| "idle".into());
                             let need = task.attention;
                             let working = task.is_working();
                             // Precedence: a turn stopped for the operator
@@ -466,11 +468,8 @@ impl TuiApp {
                             } else {
                                 crate::widgets::SessionRowState::from_lifecycle(task.lifecycle)
                             };
-                            let qualifier = if need {
-                                format!("needs you · {}", relative_age(task.updated_at))
-                            } else {
-                                format!("{state_label} · {}", relative_age(task.updated_at))
-                            };
+                            let qualifier =
+                                format!("{} · {}", state.label(), relative_age(task.updated_at));
                             crate::widgets::SessionRow {
                                 state,
                                 label,
@@ -623,6 +622,7 @@ impl TuiApp {
                     frame.render_widget(
                         FileExplorerWidget {
                             explorer: &mut self.workspace_files.explorer,
+                            active_file: active_file.as_deref(),
                             show_search: true,
                             focused: crate::widgets::background_focused(
                                 matches!(
@@ -666,6 +666,7 @@ impl TuiApp {
                 frame.render_widget(
                     FileExplorerWidget {
                         explorer: &mut self.workspace_files.explorer,
+                        active_file: active_file.as_deref(),
                         show_search: true,
                         focused: crate::widgets::background_focused(
                             matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
@@ -1162,17 +1163,17 @@ impl TuiApp {
             );
             // One frame for the transcript, with the scrollbar in its padding.
             // The frame stays L1 neutral; the title always names the block in
-            // the shared pane grammar (`> Chat` focused, neutral `  Chat`
-            // otherwise) plus the accent scrollbar thumb (see
+            // the shared pane grammar (`> Conversation` focused, neutral otherwise)
+            // plus the accent scrollbar thumb (see
             // `render_conversation_scrollbar`).
             // A child view replaces which session is on screen, so the frame
-            // title says whose: `Chat ‹ explore` names the child, and the
+            // title says whose: `Conversation ‹ explore` names the child, and the
             // parent's own title comes back with it on `←`. The `‹` reads as
             // "drilled into" rather than a path — there is no parent-task
             // lineage to draw, and inventing one would be a lie.
             let chat_title = match self.child_view.as_ref() {
-                Some(view) => format!("Chat ‹ {}", view.label),
-                None => "Chat".to_string(),
+                Some(view) => format!("Conversation ‹ {}", view.label),
+                None => "Conversation".to_string(),
             };
             let sidebar_block = Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
@@ -1862,6 +1863,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         // Transient toast overlay paints last: notification only, never
         // focusable, never blocking. Positioned bottom-right by the engine.
         self.toast.render_overlay(area, frame.buffer_mut());
+        theme::strip_colors_if_disabled(frame.buffer_mut());
     }
 
     /// Inline commands+history fuzzy search, drawn in the same anchored band

@@ -8,8 +8,7 @@ pub const MIN_HEIGHT: u16 = 18;
 /// 2026 geometry: 1-column frame gutters replace the legacy 95% inset.
 /// See `crate::design::FRAME_INSET_X` and `FILES_VISIBLE_FRAME_W`.
 use crate::design::{
-    AIRY_MIN_ROWS, CHROME_GAP_Y, COMPOSER_GAP_Y, FILES_VISIBLE_FRAME_W, FRAME_INSET_X, PANE_GAP_X,
-    PANE_GAP_Y,
+    CHROME_GAP_Y, COMPOSER_GAP_Y, FILES_VISIBLE_FRAME_W, FRAME_INSET_X, PANE_GAP_X, PANE_GAP_Y,
 };
 use forge_config::PaneLayoutPreferences;
 /// Composer text rows (visual lines), capped for normal chat. The band adds
@@ -91,11 +90,7 @@ pub fn files_min_frame_width() -> u16 {
 }
 
 fn sidebar_width(content_width: u16) -> u16 {
-    if content_width >= 160 {
-        (content_width / 2).clamp(64, 88)
-    } else {
-        (content_width / 4).clamp(32, 44)
-    }
+    (content_width / 3).clamp(32, 64)
 }
 
 /// Split terminal. `feedback_h` is retained for source compatibility; no
@@ -267,7 +262,7 @@ pub fn split_areas_with_preferences(
     let show_sidebar =
         show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
     let gap_bottom = if footer_h > 0 { CHROME_GAP_Y } else { 0 };
-    let status_h = if area.height >= AIRY_MIN_ROWS { 3 } else { 1 };
+    let status_h = 1;
     let fixed_h = status_h + footer_h + fb + CHROME_GAP_Y + gap_bottom;
     let requested_panel_h = if bottom_panel_h > 0 {
         preferences

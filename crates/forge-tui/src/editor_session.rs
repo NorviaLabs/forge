@@ -551,12 +551,16 @@ impl EditorSession {
 
     /// Render only the editor surface. Forge-owned chrome stays outside this
     /// method so the edtui widget cannot change the surrounding layout.
-    pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer, show_caret: bool) {
         EditorView::new(&mut self.state)
             .theme(
                 EditorTheme::default()
                     .base(theme::text().patch(theme::panel()))
-                    .cursor_style(theme::caret())
+                    .cursor_style(if show_caret {
+                        theme::caret()
+                    } else {
+                        ratatui::style::Style::default()
+                    })
                     .selection_style(theme::selected_row())
                     .line_numbers_style(theme::muted().patch(theme::panel()))
                     .hide_status_line(),

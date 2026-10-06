@@ -420,22 +420,6 @@ fn ensure_blank_separator(out: &mut Vec<HyperlinkLine>) {
     }
 }
 
-/// Pad the output so it ends with exactly `n` blank lines. No-op when the
-/// output is empty, so a block never opens with a leading blank.
-fn ensure_blank_lines(out: &mut Vec<HyperlinkLine>, n: usize) {
-    if out.is_empty() {
-        return;
-    }
-    let existing = out
-        .iter()
-        .rev()
-        .take_while(|line| line.width() == 0)
-        .count();
-    for _ in existing..n {
-        out.push(Line::from("").into());
-    }
-}
-
 impl MdRenderer {
     fn new(width: usize, density: Density) -> Self {
         MdRenderer {
@@ -533,19 +517,11 @@ impl MdRenderer {
         match tag {
             Tag::Paragraph => {}
             Tag::Heading { level, .. } => {
-                // The editorial treatment: H1 and H2 are section *labels* —
-                // structure hue at bold weight, a hairline rule under each,
-                // label text uppercased so the spine of the answer reads at
-                // a glance (§6 allows uppercase for structural labels). H3
-                // and below stay secondary bold text. Before any of this,
-                // every level was the same bold line, so a structured answer
-                // rendered flat.
-                //
-                // Airy density gives the heading a rest before it: the
-                // preceding block's own separator is padded to two blank rows
-                // so a section break reads as a break (FORGE-DESIGN §7.5).
+                // H1/H2 use structure weight and a quiet rule; preserve the
+                // author's case. One resting row separates sections without
+                // stacking padding from adjacent blocks.
                 if self.airy() {
-                    ensure_blank_lines(&mut self.out, 2);
+                    ensure_blank_separator(&mut self.out);
                 }
                 let level = heading_rank(level);
                 self.heading_level = Some(level);
@@ -564,7 +540,7 @@ impl MdRenderer {
                 // Airy density gives a fenced block a full blank row of air
                 // on each side so it reads as its own object.
                 if self.airy() {
-                    ensure_blank_lines(&mut self.out, 2);
+                    ensure_blank_separator(&mut self.out);
                 }
                 let (fenced, language) = match kind {
                     CodeBlockKind::Fenced(info) => (true, info.to_ascii_lowercase()),
@@ -700,7 +676,7 @@ impl MdRenderer {
                     );
                 }
                 if self.airy() {
-                    ensure_blank_lines(&mut self.out, 2);
+                    ensure_blank_separator(&mut self.out);
                 } else {
                     self.blank_after_top_level_block();
                 }
@@ -819,11 +795,6 @@ impl MdRenderer {
     fn on_text(&mut self, t: String) {
         if let Some(code) = &mut self.code {
             code.body.push_str(&t);
-        } else if self.heading_level.is_some_and(|rank| rank <= 2) {
-            // Section labels are uppercased for scanability (§6 allows
-            // uppercase for structural labels). Per-char, so streaming
-            // chunks each transform independently and land identical.
-            self.push_span(t.to_uppercase());
         } else {
             self.push_span(t);
         }
@@ -850,11 +821,9 @@ impl MdRenderer {
     ///
     /// Three cases stay inert, each for its own reason. Inside an explicit
     /// link the author has already named the destination, so a URL in the
-    /// label is just text. A heading uppercases its label for scanability
-    /// (§6), which would corrupt the scheme and leave the destination pointing
-    /// at text that no longer matches it. A table cell drops its link table on
-    /// the way into the row, so an underline there would promise a click that
-    /// cannot happen.
+    /// label is just text. Headings keep the plain-label treatment for bare
+    /// URLs. A table cell drops its link table on the way into the row, so an
+    /// underline there would promise a click that cannot happen.
     fn push_span(&mut self, text: String) {
         if let Some(link) = self.current_link.clone() {
             self.push_inline(Span::styled(text, self.current_style()), Some(link));
@@ -987,11 +956,6 @@ impl MdRenderer {
         // which belongs to what comes after it, a fenced block belongs to
         // itself.
         self.out.push(Line::from("").into());
-        if self.airy() {
-            // Match the blank row added before the block, so code sits in an
-            // even band of air rather than one-sided padding.
-            self.out.push(Line::from("").into());
-        }
     }
 }
 

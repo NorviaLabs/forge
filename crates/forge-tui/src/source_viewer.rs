@@ -1428,8 +1428,26 @@ pub struct SourceViewerWidget<'a> {
 impl Widget for SourceViewerWidget<'_> {
     fn render(mut self, area: Rect, buf: &mut Buffer) {
         self.viewer.rendered_text = crate::selection::RenderedText::default();
+        let marker = if self.editor.as_deref().is_some_and(EditorSession::is_dirty) {
+            "* "
+        } else {
+            ""
+        };
+        let title = if self.viewer.rel_path.is_empty() {
+            "Editor".to_string()
+        } else {
+            format!(
+                "{marker}{}",
+                crate::path_display::elide_path(
+                    &self.viewer.rel_path,
+                    (area.width as usize).saturating_sub(6 + marker.len()),
+                )
+            )
+        };
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .title(theme::pane_title(self.focused, &title))
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(theme::panel_border())
             .style(theme::panel());
@@ -1564,11 +1582,10 @@ impl SourceViewerWidget<'_> {
             }
         }
     }
-    /// Header row in the shared pane-title grammar (`>` when this pane owns
-    /// the keyboard, two-space neutral otherwise) so File, editor and Preview
-    /// headers can never disagree about focus.
+    /// Quiet metadata below the resource title. Input ownership and the
+    /// unsaved marker stay in the frame; editing mode stays in the mode row.
     fn render_header(&self, area: Rect, buf: &mut Buffer, header: &str) {
-        Paragraph::new(theme::pane_title(self.focused, header)).render(area, buf);
+        Paragraph::new(Line::styled(header.to_string(), theme::text_secondary())).render(area, buf);
     }
 
     fn render_message(&self, area: Rect, buf: &mut Buffer, heading: &str, body: &str) {
@@ -1613,13 +1630,10 @@ impl SourceViewerWidget<'_> {
 
         let header = compose_source_header(
             &SourceHeader {
-                mode: self.viewer.mode.label(),
-                rel_path: &self.viewer.rel_path,
-                line: self.viewer.current_line + 1,
+                mode: "Read-only",
                 total,
                 language: self.viewer.language_label.as_deref(),
                 note: self.viewer.highlight_disabled.then_some("plain text"),
-                modified: false,
             },
             rows[0].width as usize,
         );
@@ -1781,35 +1795,32 @@ impl SourceViewerWidget<'_> {
             ])
             .split(area);
 
-        let (mode, current_line, total, modified) = self
+        let (mode, current_line, current_col, total) = self
             .editor
             .as_deref()
             .map(|editor| {
                 (
                     editor.mode().name().to_uppercase(),
                     editor.cursor_row(),
+                    editor.cursor_col(),
                     editor.line_count(),
-                    editor.is_dirty(),
                 )
             })
-            .map(|(mode, line, total, modified)| (mode, line, total.max(1), modified))
+            .map(|(mode, line, col, total)| (mode, line, col, total.max(1)))
             .unwrap_or_else(|| {
                 (
                     self.viewer.mode.label().to_string(),
                     self.viewer.current_line,
+                    0,
                     self.viewer.lines.len().max(1),
-                    false,
                 )
             });
         let header = compose_source_header(
             &SourceHeader {
-                mode: &mode,
-                rel_path: &self.viewer.rel_path,
-                line: current_line + 1,
+                mode: "",
                 total,
                 language: self.viewer.language_label.as_deref(),
                 note: None,
-                modified,
             },
             rows[0].width as usize,
         );
@@ -1824,7 +1835,7 @@ impl SourceViewerWidget<'_> {
             ..body
         };
         if let Some(editor) = self.editor.as_deref_mut() {
-            editor.render(body, buf);
+            editor.render(body, buf, self.focused && self.editor_command.is_none());
             // edtui's absolute-number gutter is digits + one separator cell.
             // Capture laid-out text, including edtui scrolling, tabs and wraps.
             let gutter = (editor.line_count().max(1).to_string().len() + 1) as u16;
@@ -1860,21 +1871,29 @@ impl SourceViewerWidget<'_> {
                     .map(EditorSession::search_pattern)
                     .unwrap_or_default()
             )
-        } else if mode == "INSERT" {
-            "INSERT".to_string()
-        } else if mode == "NORMAL" {
-            "NORMAL".to_string()
         } else {
-            mode
+            mode.clone()
         };
         // DESIGN-017: the mode row starts at the composer's text inset, so
         // the editor baseline and the composer baseline share a left edge.
-        Paragraph::new(Line::from(vec![
-            Span::styled(" ".repeat(TEXT_INSET as usize), status_style),
-            Span::styled(status, status_style),
-        ]))
-        .render(rows[2], buf);
-        if self.editor_command.is_some() {
+        let mut status_spans = vec![Span::raw(" ".repeat(TEXT_INSET as usize))];
+        if self.editor_command.is_some() || self.editor_message.is_some() || mode == "SEARCH" {
+            status_spans.push(Span::styled(status, status_style));
+        } else {
+            status_spans.push(Span::styled(
+                format!(" {status} "),
+                theme::panel_alt()
+                    .patch(status_style)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            let position = format!(" · Ln {}, Col {}", current_line + 1, current_col + 1);
+            let used: usize = status_spans.iter().map(Span::width).sum();
+            if used + Span::raw(&position).width() <= rows[2].width as usize {
+                status_spans.push(Span::styled(position, theme::text_secondary()));
+            }
+        }
+        Paragraph::new(Line::from(status_spans)).render(rows[2], buf);
+        if self.focused && self.editor_command.is_some() {
             let command = self.editor_command.unwrap_or_default();
             let cursor_x = rows[2].x + TEXT_INSET + 1 + command.chars().count() as u16;
             if cursor_x < rows[2].x + rows[2].width {
@@ -1912,7 +1931,6 @@ impl SourceViewerWidget<'_> {
             .as_deref()
             .map(EditorSession::revision)
             .unwrap_or(0);
-        let dirty = self.editor.as_deref().is_some_and(EditorSession::is_dirty);
         if self.viewer.preview_cache_stale(content_width, revision) {
             let text = self
                 .editor
@@ -1926,13 +1944,10 @@ impl SourceViewerWidget<'_> {
         let total = self.viewer.preview_lines.len().max(1);
         let header = compose_source_header(
             &SourceHeader {
-                mode: "PREVIEW",
-                rel_path: &self.viewer.rel_path,
-                line: self.viewer.preview_top + 1,
+                mode: "Preview",
                 total,
                 language: None,
                 note: None,
-                modified: dirty,
             },
             rows[0].width as usize,
         );
@@ -2025,49 +2040,24 @@ impl SourceViewerWidget<'_> {
     }
 }
 
-/// Compose the source header so it still says what matters in a narrow pane.
-///
-/// The header used to be built by appending, which put the unsaved-changes
-/// state last and therefore made it the first thing a `Paragraph` truncated.
-/// At 120 columns the editor pane is roughly a third of the width, so a real
-/// path plus a line counter already overflows — and the one piece of state a
-/// reader cannot recover by looking at the pane was the piece that vanished.
-///
-/// Parts are sacrificed in increasing order of importance: the plain-text
-/// note, the language, the mode tag, the directory portion of the path, then
-/// the line counter. The `*` unsaved marker is never dropped.
+/// Metadata below the file title. The frame always preserves the path and
+/// unsaved marker, independently of how much metadata fits in this row.
 struct SourceHeader<'a> {
     mode: &'a str,
-    rel_path: &'a str,
-    line: usize,
     total: usize,
     language: Option<&'a str>,
     /// Low-priority aside such as "plain text"; first to be dropped.
     note: Option<&'a str>,
-    modified: bool,
 }
 
 fn compose_source_header(header: &SourceHeader<'_>, width: usize) -> String {
     let SourceHeader {
         mode,
-        rel_path,
-        line,
         total,
         language,
         note,
-        modified,
     } = *header;
-    // DESIGN-017: the ASCII `*` is the unsaved marker (the old `●` broke the
-    // no-Unicode-chrome rule). It prefixes the exact file path and is never
-    // dropped; no trailing "modified" word — the marker already says it.
-    let marker = if modified { "* " } else { "" };
-    let basename = std::path::Path::new(rel_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(rel_path);
-    let counter = format!("line {} of {}", line, total);
-    let full = format!("{marker}{rel_path}");
-    let short = format!("{marker}{basename}");
+    let counter = format!("{total} lines");
 
     let join = |parts: &[&str]| {
         parts
@@ -2079,40 +2069,23 @@ fn compose_source_header(header: &SourceHeader<'_>, width: usize) -> String {
     };
 
     let candidates = [
-        join(&[
-            mode,
-            &full,
-            &counter,
-            language.unwrap_or(""),
-            note.unwrap_or(""),
-        ]),
-        join(&[mode, &full, &counter, language.unwrap_or("")]),
-        join(&[mode, &full, &counter]),
-        join(&[&full, &counter]),
-        join(&[&short, &counter]),
-        short.clone(),
+        join(&[mode, language.unwrap_or(""), &counter, note.unwrap_or("")]),
+        join(&[mode, language.unwrap_or(""), &counter]),
+        join(&[mode, &counter]),
+        if mode.is_empty() {
+            counter
+        } else {
+            mode.to_string()
+        },
     ];
 
     for candidate in &candidates {
-        if candidate.chars().count() <= width {
+        if Span::raw(candidate).width() <= width {
             return candidate.clone();
         }
     }
 
-    // Narrower than the filename itself: keep the marker, shorten the name.
-    let keep = width.saturating_sub(marker.chars().count());
-    let name: String = if keep == 0 {
-        String::new()
-    } else if basename.chars().count() <= keep {
-        basename.to_string()
-    } else {
-        basename
-            .chars()
-            .take(keep.saturating_sub(1))
-            .chain(std::iter::once('\u{2026}'))
-            .collect()
-    };
-    format!("{marker}{name}")
+    crate::path_display::elide_middle(candidates.last().unwrap(), width)
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 ---
-version: 2.2
+version: 2.3
 status: behavioral-contract-with-changeable-defaults
 name: Forge TUI Design System
 product: Forge
@@ -226,7 +226,8 @@ in the frontmatter are descriptive, not acceptance targets for future designs.
 
 - The accent identifies focus, interaction and navigable structure; focus must remain distinguishable from outcome state (see §5.1).
 - Yellow/amber identifies waiting, caution and human attention (`waiting_border` pauses the composer while an approval is pending).
-- Violet (`agent`) marks agent narration as a distinct voice from the user's.
+- Neutral `agent` text keeps routine narration below the answer; speaker labels
+  distinguish authorship without borrowing focus or outcome colours.
 - The developer's judgement is visually prioritised over agent narration.
 - Active block, selected row and input ownership are separate concepts.
 - The interface centres the loop: delegate, inspect, intervene, validate.
@@ -313,6 +314,11 @@ confusing mappings; it does not prove legibility or perceptual separation.
 Compare text/background contrast and the actual focus, selection, and outcome
 signals in light, dark, reduced-colour, and monochrome presentations. A palette
 that meets the numeric threshold can still fail those checks.
+
+With `NO_COLOR`, remove colours from the completed frame before backend output
+so bold, italic, and inverse attributes survive colour suppression. Keep input
+carets visible with inverse video; focus and status markers remain legible by
+shape and text.
 
 `info` and `agent` are excluded from the current diagnostic because neither
 reports an outcome. A different palette may use other hues or separation rules
@@ -426,8 +432,8 @@ Hierarchy comes from weight, token step and placement — never from size, since
 | Level | Treatment |
 |---|---|
 | Brand / application title | `theme::brand()` — bold primary |
-| Active block title | Bold + accent with the `>` marker (`> Terminal`) |
-| Inactive block title | Normal + muted, two-space indented to hold alignment |
+| Active block title | Bold primary label with an accent `>` marker (`> Terminal`) |
+| Inactive block title | Secondary text, two-space indented to hold alignment |
 | Primary content | `text_primary` — assistant response, source code |
 | Prose strong | `md_strong` + bold — key claims inside an answer |
 | Prose emphasis | `md_emph` + italic — qualifications inside an answer |
@@ -519,10 +525,10 @@ Content width is the frame width minus one outer gutter column on each side (`FR
 | Resource open | Conversation keeps a sidebar allocation; the split reserves at least 44 region columns for the left workspace before any Files split |
 | No resource open | Conversation expands into the available workspace region; the Files gate still applies |
 
-When a resource is open, the default sidebar width is half the **content** width
-clamped to 64–88 columns when that width is at least 160; otherwise it is a
-quarter clamped to 32–44. Saved pane-width preferences can override the default
-within the splitter's clamps. These are region widths: borders and padding
+When a resource is open, the default sidebar width is one third of the
+**content** width, clamped to 32–64 columns. It grows continuously across the
+160-column boundary instead of doubling there. Saved pane-width preferences can
+override the default within the splitter's clamps. These are region widths: borders and padding
 reduce the text width. The 44-column allocation is for the workspace, not a
 guaranteed minimum conversation text width.
 
@@ -532,7 +538,7 @@ task without clipping essential controls or losing a return path.
 
 ### 7.4 Height behaviour
 
-- StatusBar consumes three rows for a rounded frame at heights ≥24, otherwise one compact identity row. Footer uses up to two rows (`FOOTER_H`); its background-activity row stays blank when idle.
+- StatusBar consumes one identity row at every height. Footer uses up to two rows (`FOOTER_H`); its background-activity row stays blank when idle.
 - Composer input band is capped at 10 visual lines (`MAX_COMPOSER_INPUT_H`), plus top and bottom border rows — it grows within bounds and never crowds out the transcript.
 - Theme picker dock is 12 rows (`THEME_DOCK_H`), sized to show built-ins without scrolling.
 - A modal leaves surrounding context visible so it reads as overlaying Forge, with the background clearly secondary.
@@ -570,9 +576,10 @@ Avoid double-padding a bordered block and its inner component.
 
 The conversation has two densities (`markdown.rs::Density`):
 
-- **Airy** is the default at comfortable pane heights. It adds one blank row
-  before a section heading, one after the heading rule, one on each side of a
-  fenced code block, one between distinct tool/activity groups (rows inside a
+- **Airy** is the default at comfortable pane heights. It ensures one blank row
+  before a section heading, one after the heading rule, and one on each side of a
+  fenced code block, sharing adjacent blocks' separators rather than adding
+  another row. It adds one between distinct tool/activity groups (rows inside a
   group stay tight), and one after each `You` / `Answer` speaker label so the
   label reads as a heading rather than a prefix of its text.
 - **Compact** is the historical spacing and the fallback for short terminals.
@@ -664,7 +671,11 @@ task strip is recorded as a historical decision in §11.
   Only the first four are the list's own; the four outcomes borrow the turn's
   vocabulary so the list and the transcript cannot disagree about how a turn
   ended. Precedence is attention → queued → working → lifecycle. Rows carry the
-  label and a short qualifier; branch and worktree context belong only in the expanded peek, not ordinary rows. Ownership remains internal.
+  primary-text label and a quiet qualifier naming the same state as the glyph,
+  followed by age. A finished turn says `completed`, `failed`, `cancelled`, or
+  `interrupted` even after its runtime becomes idle. Attention adds a weight
+  step to the label. Branch and worktree context belong only in the expanded
+  peek, not ordinary rows. Ownership remains internal.
 - **Selection is the bar plus the ground; the cursor cell is disclosure.**
   Selection is the accent bar in the reserved gutter plus a ground across both
   of the row's lines, and the cursor cell is `›` collapsed, `⌄` expanded — the
@@ -860,9 +871,9 @@ Three border levels (`design.rs`, `theme::panel_border`):
 - **L1 — pane frame.** Every pane, focused or not, takes the same neutral
   `border` in the current design. This keeps large outlines quieter than
   content and distinguishes pane structure from the local focus accent.
-- **L2 — inset field.** The composer outline and the explorer's search field
-  sit at the same neutral step as L1; a nested field never reads as a second,
-  louder box.
+- **L2 — inset field.** The composer outline and the explorer search separator
+  sit at the same neutral step as L1; a field never reads as a second,
+  louder box. Explorer search has a bottom rule, leaving the query open above it.
 - **L3 — local accent.** Only the element that owns the keyboard or the
   selection: the active tab's ground, the navigator tab row's outlines while
   the row itself holds the keyboard, a focused search field's border, the
@@ -872,13 +883,14 @@ Three border levels (`design.rs`, `theme::panel_border`):
 The current active-block treatment combines at least two signals from the L3 set:
 
 - accent or bold block title
-- explicit state marker where relevant (`> Terminal`, `> Chat`)
+- explicit state marker where relevant (`> Terminal`, `> Conversation`)
 - caret, scrollbar thumb, or the active tab's ground at the point of interaction
 
 The current transcript has one rounded L1 frame carrying its block title
 in the shared pane grammar (`theme::pane_title`, same as the panel and diff
-header): `> Chat` in bold accent while the Sidebar block owns the keyboard,
-neutral two-space `  Chat` otherwise, with a neutral border, including
+header): `> Conversation` while the Sidebar block owns the keyboard, with an
+accent marker and a bold primary-text label; neutral two-space
+`  Conversation` otherwise, with a neutral border, including
 when the transcript has no overflow. Its
 scrollbar also takes a solid accent thumb while the Sidebar block owns the
 keyboard, a muted half-block otherwise. Modals suppress background focus.
@@ -945,8 +957,8 @@ output safety, and existing work remain mandatory under §4.
 
 ### 9.1 StatusBar
 
-Purpose: centered repository/branch identity (`widgets/status.rs`). At comfortable
-heights a rounded, neutral frame surrounds the row; short terminals use one row.
+Purpose: centered repository/branch identity (`widgets/status.rs`) in one quiet
+row. The workspace panes receive the rows previously spent framing this identity.
 
 Includes repository/branch (polled, TTL-cached) and the collapsed navigator's
 session-attention chip. Model, effort, lifecycle and context pressure live in
@@ -959,7 +971,9 @@ Avoid duplicating file counts, task details or provider telemetry already shown 
 - L1 frame: neutral `border` at every focus state (`theme::panel_border()`).
 - L3 accents (single-rule regions only): the bottom panel's thick top rule,
   the composer's top edge, a focused search field's border.
-- Active title: bold accent with the `>` marker, e.g. `> Terminal`; modals use `theme::modal_title`, panes `theme::pane_title`.
+- Active pane title: accent `>` marker and bold primary-text label, e.g. `> Terminal`
+  (`theme::pane_title`). Inactive titles reserve the marker column and use
+  secondary text. Modal titles remain bold accent (`theme::modal_title`).
 - Modal bodies inset `MODAL_PAD_X` (2) horizontally; a titled modal adds one top
   row. A title never touches the rule it sits on — one space separates the
   label from the fill.
@@ -991,7 +1005,8 @@ metadata and an understandable first action at the supported sizes.
 
 Hierarchy:
 
-1. User request — left-aligned gutter treatment on the neutral `selection` ground (never an accent tint: the answer below must dominate).
+1. User request — left-aligned gutter treatment on the neutral `panel` ground;
+   the `You` label carries authorship without a selection-strength band.
 2. Final assistant-facing response — tinted background, visually dominant.
 3. Approval or failure.
 4. Grouped tool activity.
@@ -1022,9 +1037,12 @@ Rules:
 - Keep zero-result searches neutral unless they block progress.
 - Keep genuine failures visible: a terminal failure renders one error-styled row in the transcript (the durable `[forge.turn_failed]` marker stays hidden — it is model-facing state), so a failed turn never reads as an empty gap.
 - Do not render a permanent progress narration stream.
-- Distinct top-level block types (paragraph, list, quote, code, table) are separated by exactly one blank line — never zero, never a stack. Each block carries its own trailing blank so the streaming split renderer sees the same separator in a settled prefix as a one-shot render. Under airy density (§7.5.1) the structural rests around headings, fenced code and the `You` / `Answer` speaker labels widen by one blank row; distinct tool/activity groups are separated by one
-blank row while rows inside one group stay tight; the rule itself never stacks
-separators.
+- Distinct top-level block types (paragraph, list, quote, code, table) share one
+  blank separator. Each block carries its trailing separator so the streaming
+  split renderer agrees with a one-shot render. Airy density (§7.5.1) adds a
+  rest after `You` / `Answer` labels and between distinct tool/activity groups;
+  heading and code rests reuse the existing separator. Intentional blank lines
+  inside code and explicit paragraph breaks remain intact.
 - **Links carry destinations out of band, never inside the text.** An `OSC 8`
   sequence is zero columns wide on screen but its bytes are characters to every
   width measurement, so a destination written into a `Span` would be measured as
@@ -1054,11 +1072,10 @@ separators.
   preview is the same prose under the same rule: it renders through the
   links-preserving renderer and marks its rows, so a link in a previewed file
   is the link it would be in an answer. **Current implementation limitations:**
-  headings uppercase their text without preserving link-column mappings, and
-  table rows discard cell destination metadata. Neither path currently exposes
-  actionable links. These are renderer limitations, not permanent exclusions:
-  preserving destination metadata through those transforms can make the links
-  eligible without relaxing destination validation.
+  bare URLs in headings retain the plain-label treatment, and table rows discard
+  cell destination metadata. These paths do not auto-link URLs. These are
+  changeable defaults and renderer limitations: preserving destination metadata
+  can make links eligible without relaxing destination validation.
 - **The click belongs to the terminal.** The current implementation emits
   the sequence only for terminals known to render it, resolved once per process
   from `TERM_PROGRAM` with any multiplexer disqualifying (`tmux` before 3.4
@@ -1074,7 +1091,7 @@ separators.
 
 Response-structure treatment (editorial): inside an answer, the *skeleton*
 is tinted so a long reply can be skimmed by shape before it is read — H1/H2
-section labels render uppercased in `structure` over a hairline
+section labels preserve the author's case in bold `structure` over a hairline
 `border_muted` rule, list markers take `structure`, and whole list blocks sit
 on the `scan_band` ground while rendered tables zebra-stripe body rows with
 `zebra_row`. Prose itself stays `text_primary` except for emphasis:
@@ -1111,8 +1128,9 @@ the single plan surface.
 
 ### 9.6 File tree
 
-- Search is an inset, three-row rounded field (`/ ` prefix plus query) at the
-  neutral L2 step. One blank resting row separates it from the first tree row,
+- Search is a two-row field (`/ ` prefix plus query, then a bottom rule carrying
+  the mode-switch hint) at the neutral L2 step. One blank resting row separates
+  it from the first tree row,
   and the whole tree sits one indent step (`LIST_INSET_X`) inside the field
   above it. Search focus colours the border and prefix and shows the caret;
   clicking the field focuses Search.
@@ -1136,10 +1154,19 @@ the single plan surface.
   it. Below the width the navigator column is laid out at the cell is dropped
   rather than drawn cramped, and it is then skipped as a cursor stop, so the
   frame and the keyboard can never disagree.
-- Selected row uses the neutral `selection` token plus a `>` pointer in a dedicated gutter column; the inactive selection loses the background entirely but keeps bold text and the pointer.
-- Active file and selected row may differ; distinguish them.
+- Selected tree row uses the neutral `selection` token plus a `▌` bar in a
+  dedicated gutter column; the inactive selection loses the background but
+  keeps bold text and the bar. Content snippets retain their `>` pointer.
+- The open file has a `•` in the ordinary tree's disclosure column and a bold
+  name, independent of the selected row. Content-search file groups keep their
+  expand/collapse marker and use the bold name. Diff and other workspace views
+  carry no open-file dot.
+  Names and the selected-path footer elide in the middle, preserving the tail
+  and reserving room for Git status.
 - Git markers come from the shared glyph set (§5.3): `M` `A` `D` `?` `!` `U`, bold and semantically coloured.
-- Directory expansion uses ASCII `>` / `v` with 2-cell indentation; the query match inside a name takes the shared `search_match` highlight (contiguous runs only — fuzzy-only matches stay plain).
+- Directory expansion uses `›` / `⌄` with 2-cell indentation; loading uses a
+  one-cell `…` so names do not shift. The query match inside a name takes the
+  shared `search_match` highlight (contiguous runs only — fuzzy-only matches stay plain).
 - A filtered-to-nothing query reports `No matches for "<query>"`; an empty repository reports `This directory is empty`. The two states are never the same line.
 - **Filename navigation and content search are separate.** `Ctrl+P` focuses
   `Search files...` with fuzzy workspace-path matching in Quick Open order.
@@ -1147,7 +1174,7 @@ the single plan surface.
   bottom border advertises `Ctrl+Shift+F content`.
 - `Ctrl+Shift+F` focuses `Find in files...`. Literal content matches use smart
   case (lowercase queries ignore case; an uppercase query is case-sensitive).
-  Results group by workspace-relative file path, with ASCII `>` / `v` disclosure
+  Results group by workspace-relative file path, with `›` / `⌄` disclosure
   and a per-file line count; indented children show muted line numbers and
   snippets using `search_match`. Selected snippets retain the neutral selection
   style with underlined matches. `←` / `→` collapse / expand a file group, Enter
@@ -1173,13 +1200,21 @@ the single plan surface.
 ### 9.7 Source viewer
 
 - Code remains the visual focus; syntax highlighting is restrained (`syntax.*` palette).
-- One blank row separates the pane title from the content, so the header reads as chrome rather than the first source line.
-- The title shows the exact file with an ASCII `*` unsaved marker that is never elided; there is no trailing "modified" word.
-- The header row follows the shared pane-title grammar (`theme::pane_title`): `>` marker in brand bold when the Workspace block owns the keyboard, neutral otherwise — the same treatment as the diff header and the transcript frame.
-- The NORMAL / INSERT mode row shares the composer's text inset so both baselines align.
+- A rounded neutral frame carries the file path, middle-elided to fit, with an
+  ASCII `*` unsaved marker outside the elision budget. There is no trailing
+  "modified" word. Its title follows `theme::pane_title`, so keyboard ownership
+  uses the same marker and label hierarchy as the conversation.
+- The inner header is quiet language, line-count and preview/read-only metadata;
+  one blank row separates it from source content when the body has room.
+- Editing mode appears once in a neutral badge on the bottom row, followed by
+  `Ln` / `Col` when they fit. Commands, search and editor messages take that row
+  directly. Its text inset matches the composer.
 - Search matches rank: active match, other matches, current line.
 - Markdown, structured text, HTML, and log files open in a read-only rendered `PREVIEW` mode; `i` enters the editable source while `:preview` re-enters preview. `:edit` remains available for leaving preview or reloading the current file, and unsaved buffers stay intact.
-- Line numbers muted; active line number accented.
+- Line numbers stay muted; the caret identifies the exact editing position.
+- The caret is painted only while the editor owns input; leaving the pane
+  preserves its position and selection without showing a second input cursor.
+  In monochrome, inverse video keeps the caret visible without a coloured ground.
 - Horizontal scrolling must not detach markers from content.
 - Binary and invalid-UTF-8 files are explicitly read-only.
 
@@ -1372,8 +1407,8 @@ second writer against a session the child still owns.
 Every rule here exists to keep the operator oriented about whose session is on
 screen.
 
-- **The frame title says whose.** `Chat ‹ explore` names the child; the
-  parent's own `Chat` comes back with it on `←`. `‹` reads as "drilled into",
+- **The frame title says whose.** `Conversation ‹ explore` names the child; the
+  parent's own `Conversation` comes back with it on `←`. `‹` reads as "drilled into",
   not a path — there is no parent-task lineage to draw, and inventing one
   would be a lie. The composer hint carries the same notice
   (`read-only · viewing explore · ← to return`), and the composer refuses input
