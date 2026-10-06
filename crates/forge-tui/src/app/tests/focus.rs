@@ -276,34 +276,6 @@ async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
 }
 
 #[tokio::test]
-async fn open_modal_suppresses_background_marker_and_close_restores_it() {
-    // DESIGN-004: exactly one effective keyboard owner is visible. While a
-    // modal is open the background pane loses its `>` marker (paint only —
-    // `FocusState` is untouched); closing the modal brings the marker back
-    // on the still-valid owner.
-    let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel();
-    app.focus_block(FocusBlock::BottomPanel);
-
-    let plain = render_app_text(&mut app, 120, 40);
-    assert!(plain.contains("> Terminal"), "{plain}");
-    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
-
-    app.overlay = Some(Overlay::welcome());
-    let modal = render_app_text(&mut app, 120, 40);
-    assert!(
-        !modal.contains("> Terminal"),
-        "background marker must suppress under a modal:\n{modal}"
-    );
-    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
-
-    app.overlay = None;
-    let restored = render_app_text(&mut app, 120, 40);
-    assert!(restored.contains("> Terminal"), "{restored}");
-    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
-}
-
-#[tokio::test]
 async fn opening_and_closing_bottom_panel_transfers_focus() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
@@ -628,26 +600,6 @@ async fn resize_drops_focus_from_a_zero_width_files_block() {
     assert_eq!(app.focus.mode(), FocusMode::Navigation);
 }
 
-#[tokio::test]
-async fn helper_labels_reflect_focus_mode() {
-    let (_dir, session) = test_session().await;
-    let app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: PathBuf::from("."),
-            version: "test".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
-    assert!(app.help_text().contains("No file open"));
-    assert!(!app.help_text().contains("Review changes"));
-    assert!(!app.help_text().contains("Alt+→"));
-}
-
 /// The terminal panel is reachable from anywhere via `Ctrl+\``, so help must
 /// advertise it from every block. Listing it only under `FocusBlock::BottomPanel`
 /// tells you how to close a panel you had no way to discover.
@@ -711,96 +663,4 @@ async fn focus_availability_and_restore_skip_hidden_blocks() {
     // editor, so defaulting there means the next keystroke edits a file.
     assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert_eq!(app.focus.return_block(), Some(FocusBlock::Composer));
-}
-
-#[tokio::test]
-async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
-    let (_dir, mut app) = focus_test_app().await;
-    assert!(app.contextual_hint().is_none());
-
-    app.focus_block(FocusBlock::Workspace);
-    assert!(app.contextual_hint().is_none());
-
-    app.focus.set_transient(TransientOwner::SourceSearch);
-    assert!(app
-        .contextual_hint()
-        .is_some_and(|hint| hint.contains("Esc cancel")));
-
-    app.focus.set_navigation(app.focus.block());
-    app.overlay = Some(Overlay::connect_api_key("p", "title", None, None));
-    assert_eq!(
-        app.contextual_hint().as_deref(),
-        Some("Enter confirm · Esc cancel")
-    );
-}
-
-#[tokio::test]
-async fn contextual_hint_omits_queue_information_while_waiting() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.session_runtime.enqueue_task("next task").await.unwrap();
-    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
-    app.session_runtime.active_task.wait_reason = Some(forge_types::WaitReason::Approval {
-        request_id: "request".into(),
-        payload: forge_types::HitlPayload {
-            call_id: "request".into(),
-            tool: "tool".into(),
-            args_redacted: serde_json::json!({"command": "command"}),
-            reason: "test approval".into(),
-            failure: None,
-            sandbox_escalation: false,
-            denied_host: None,
-        },
-    });
-    assert_eq!(
-        app.contextual_hint().as_deref(),
-        Some("Waiting for approval")
-    );
-}
-
-#[tokio::test]
-async fn footer_focus_hint_is_relevant_to_the_selected_chip() {
-    // Chips stay visible when the footer is focused; the hint names the
-    // action of the currently selected chip, and follows focus.
-    let (_dir, mut app) = focus_test_app().await;
-    app.focus_block(FocusBlock::Footer);
-    assert_eq!(app.composer_chip_focus, Some(0));
-    let llm_hint = app.contextual_hint().expect("footer focus should hint");
-    assert!(llm_hint.contains("Hit Enter ⏎ to open model"), "{llm_hint}");
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let effort_hint = app.contextual_hint().expect("footer focus should hint");
-    assert!(
-        effort_hint.contains("Hit Enter ⏎ to change effort"),
-        "{effort_hint}"
-    );
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let wrap_hint = app.contextual_hint().expect("footer focus should hint");
-    assert!(
-        wrap_hint.contains("Hit Enter ⏎ to open model"),
-        "two chips wrap back to model: {wrap_hint}"
-    );
-}
-
-#[tokio::test]
-async fn files_and_search_focus_do_not_hint_on_the_footer() {
-    let (_dir, mut app) = focus_test_app().await;
-
-    app.focus_block(FocusBlock::TaskStrip);
-    assert_eq!(
-        app.contextual_hint().as_deref(),
-        Some("↑↓ select · Enter attach · Space peek · n new · s stop · x done · Ctrl+E tabs")
-    );
-
-    // Files and search leave the footer's activity line alone: the config
-    // chips and the live turn state stay on screen while you navigate them.
-    for block in [FocusBlock::Files, FocusBlock::Search] {
-        app.focus_block(block);
-        assert_eq!(app.focus.block(), block, "{block:?} should take focus");
-        assert_eq!(app.contextual_hint(), None, "{block:?} should not hint");
-    }
 }

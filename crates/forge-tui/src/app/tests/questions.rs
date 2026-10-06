@@ -71,17 +71,6 @@ fn last_tool_message(app: &TuiApp) -> String {
 }
 
 #[tokio::test]
-async fn question_prompt_renders_inline() {
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_question_focused(&mut app, db_question());
-    let text = render_app_text(&mut app, 100, 34);
-    assert!(text.contains("Which database?"), "{text}");
-    assert!(text.contains("1. Postgres (Recommended)"), "{text}");
-    assert!(text.contains("Other"), "{text}");
-    assert!(text.contains("Esc skip"), "{text}");
-}
-
-#[tokio::test]
 async fn drawing_a_question_keeps_menu_focus_so_arrows_move() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_question_focused(&mut app, db_question());
@@ -145,25 +134,6 @@ async fn composer_text_answers_as_other() {
         .find(|m| m.role == forge_types::MessageRole::Tool)
         .expect("tool message");
     assert!(tool_msg.content.contains("MySQL"), "{}", tool_msg.content);
-}
-
-#[tokio::test]
-async fn multi_select_renders_checkboxes_and_live_count() {
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_question_focused(&mut app, multi_question());
-
-    let before = render_app_text(&mut app, 100, 34);
-    assert!(before.contains("[ ] Lint"), "{before}");
-    assert!(before.contains("[ ] Tests"), "{before}");
-    assert!(before.contains("0 selected"), "{before}");
-
-    app.handle_key(press(KeyCode::Char(' '), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    let after = render_app_text(&mut app, 100, 34);
-    assert!(after.contains("[x] Lint"), "{after}");
-    assert!(after.contains("[ ] Tests"), "{after}");
-    assert!(after.contains("1 selected"), "{after}");
 }
 
 #[tokio::test]

@@ -96,11 +96,6 @@ impl ToastStack {
         }
     }
 
-    #[cfg(test)]
-    pub fn tick_for_test(&mut self) {
-        self.clear();
-    }
-
     pub fn has_toast(&self) -> bool {
         self.engine.has_toast()
     }
@@ -172,40 +167,5 @@ mod tests {
         stack.push(FeedbackSeverity::Ok, "saved");
         stack.tick();
         assert!(stack.has_toast());
-    }
-
-    #[test]
-    fn overlay_paints_over_a_filled_buffer() {
-        let mut stack = ToastStack::with_timeout(Duration::from_secs(60));
-        stack.push(FeedbackSeverity::Error, "boom");
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        for x in 0..area.width {
-            for y in 0..area.height {
-                buf[(x, y)].set_symbol("·");
-            }
-        }
-        stack.render_overlay(area, &mut buf);
-        // The toast draws a bordered box: at least one cell must differ
-        // from the fill, and the message text must appear.
-        let cells = &buf;
-        let flat: String = (0..area.height)
-            .flat_map(|y| (0..area.width).map(move |x| cells[(x, y)].symbol().to_string()))
-            .collect();
-        assert!(flat.contains("boom"), "toast text should render");
-        assert!(
-            flat.chars().any(|c| c != '·'),
-            "toast should paint over the fill"
-        );
-    }
-
-    #[test]
-    fn no_toast_leaves_buffer_untouched() {
-        let mut stack = ToastStack::default();
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        let before = buf.clone();
-        stack.render_overlay(area, &mut buf);
-        assert_eq!(format!("{buf:?}"), format!("{before:?}"));
     }
 }

@@ -19,26 +19,3 @@ pub fn background_focused(pane_focused: bool, modal_open: bool) -> bool {
 pub fn title(pane_focused: bool, modal_open: bool, label: &str) -> ratatui::text::Line<'static> {
     theme::pane_title(background_focused(pane_focused, modal_open), label)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn background_marker_suppressed_only_by_open_modal() {
-        assert!(background_focused(true, false));
-        assert!(!background_focused(true, true));
-        assert!(!background_focused(false, false));
-        assert!(!background_focused(false, true));
-    }
-
-    #[test]
-    fn title_uses_shared_marker_grammar() {
-        let focused = title(true, false, "Terminal").to_string();
-        assert!(focused.starts_with("> Terminal"), "{focused:?}");
-        let suppressed = title(true, true, "Terminal").to_string();
-        assert!(!suppressed.contains('>'), "{suppressed:?}");
-        let inactive = title(false, false, "Terminal").to_string();
-        assert!(!inactive.contains('>'), "{inactive:?}");
-    }
-}

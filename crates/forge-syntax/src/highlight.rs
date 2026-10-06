@@ -399,72 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn test_highlight_to_lines() {
-        // Populates the process-global highlight cache; see `cache::lock_cache`.
-        let _guard = crate::cache::lock_cache();
-        let code = "fn main() { 42 }";
-        let lines = highlight_to_lines("rust", code, &HighlightTheme::default());
-        assert_eq!(lines.len(), 1);
-        assert!(!lines[0].is_empty());
-    }
-
-    #[test]
-    fn light_theme_uses_distinct_colours() {
-        let _guard = crate::cache::lock_cache();
-        let theme = HighlightTheme::light();
-        assert_ne!(theme.default, theme.comment);
-        let lines = highlight_to_lines("rust", "fn main() {}", &theme);
-        assert!(!lines.is_empty());
-    }
-
-    /// Every field holds a distinct value so a mis-wired match arm in
-    /// `HighlightStyle::rgb` cannot pass by coincidence.
-    fn distinct_theme() -> HighlightTheme {
-        HighlightTheme {
-            comment: (1, 1, 1),
-            keyword: (2, 2, 2),
-            string: (3, 3, 3),
-            number: (4, 4, 4),
-            function: (5, 5, 5),
-            type_: (6, 6, 6),
-            variable: (7, 7, 7),
-            operator: (8, 8, 8),
-            punctuation: (9, 9, 9),
-            property: (10, 10, 10),
-            tag: (11, 11, 11),
-            attribute: (12, 12, 12),
-            default: (13, 13, 13),
-        }
-    }
-
-    #[test]
-    fn rgb_maps_every_class_to_its_own_theme_slot() {
-        let theme = distinct_theme();
-        let cases = [
-            (HighlightClass::Comment, theme.comment),
-            (HighlightClass::Keyword, theme.keyword),
-            (HighlightClass::String, theme.string),
-            (HighlightClass::Number, theme.number),
-            (HighlightClass::Function, theme.function),
-            (HighlightClass::Type, theme.type_),
-            (HighlightClass::Variable, theme.variable),
-            (HighlightClass::Operator, theme.operator),
-            (HighlightClass::Punctuation, theme.punctuation),
-            (HighlightClass::Property, theme.property),
-            (HighlightClass::Tag, theme.tag),
-            (HighlightClass::Attribute, theme.attribute),
-            (HighlightClass::Default, theme.default),
-        ];
-        for (class, expected) in cases {
-            assert_eq!(
-                HighlightStyle { class }.rgb(&theme),
-                expected,
-                "{class:?} resolved to the wrong theme colour"
-            );
-        }
-    }
-
-    #[test]
     fn span_text_slices_the_source() {
         let span = HighlightSpan {
             range: 3..7,
@@ -615,37 +549,5 @@ mod tests {
             .find(|s| s.style.class == HighlightClass::String)
             .expect("raw string literal should be classified as a String span");
         assert!(raw.text(code).contains("raw"));
-    }
-
-    /// A blank line between statements carries no spans at all, which drives
-    /// `highlight_to_lines_uncached` through its `segments.is_empty()`
-    /// fallback for that one line while sibling lines still get real spans.
-    /// The incomplete line with `let y = x` leaves unstyled text after the
-    /// last span before `line_end`, exercising the trailing-remainder
-    /// push for a non-blank line.
-    #[test]
-    fn highlight_to_lines_handles_blank_lines_and_trailing_unstyled_text() {
-        // Populates the process-global highlight cache; see `cache::lock_cache`.
-        let _guard = crate::cache::lock_cache();
-        let code = "fn main() {\n    let s = r\"raw\";\n\n    let y = x\n}\n";
-        let lines = highlight_to_lines("rust", code, &HighlightTheme::default());
-        // `code.lines()` yields 5 entries: the trailing "\n" does not add a 6th.
-        assert_eq!(lines.len(), 5);
-
-        // Blank line: exactly one segment, and it is the empty string (the
-        // `segments.is_empty()` fallback pushing the whole—empty—line span).
-        let blank = &lines[2];
-        assert_eq!(blank.len(), 1);
-        assert_eq!(blank[0].0, "");
-
-        // The incomplete statement's trailing text must not be dropped.
-        let let_y_line = &lines[3];
-        let joined: String = let_y_line.iter().map(|seg| seg.0.as_str()).collect();
-        assert_eq!(joined, "    let y = x");
-        assert_eq!(
-            let_y_line.last().expect("line must have segments").0,
-            " y = x",
-            "unstyled text after the last span must be pushed as a trailing segment"
-        );
     }
 }

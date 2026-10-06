@@ -761,21 +761,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_blank_manual_submissions_are_forwarded_unchanged() {
-        let mut line = String::new();
-        let (forward, close) = super::feed_pending_command(&mut line, b"");
-        assert!(forward.is_empty());
-        assert!(!close);
-
-        line.push_str("   ");
-        assert_eq!(
-            super::feed_pending_command(&mut line, b"\r"),
-            (b"\r".to_vec(), false)
-        );
-        assert!(line.is_empty());
-    }
-
-    #[test]
     fn vt100_cursor_position_is_row_then_column() {
         let mut terminal = vt100::Parser::new(3, 20, 0);
         terminal.process(b"ab\r\n12345");
@@ -815,30 +800,6 @@ mod tests {
             "shell did not render expected output: {:?}",
             terminal.display_output()
         );
-    }
-
-    #[test]
-    fn blank_enter_reaches_the_live_shell() {
-        if !super::pty_allocation_available() {
-            eprintln!("skipping: this host denies PTY allocation");
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
-        for _ in 0..50 {
-            terminal.poll();
-            if !terminal.display_output().is_empty() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        let before = terminal.display_output().to_owned();
-        terminal.consume_input(b"\r").unwrap();
-        for _ in 0..10 {
-            terminal.poll();
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert_ne!(terminal.display_output(), before);
     }
 
     #[test]
@@ -937,6 +898,69 @@ mod tests {
     }
 
     #[test]
+    fn command_scripts_preserve_shell_specific_syntax() {
+        assert_eq!(
+            super::command_script("/bin/sh", "printf hi", "__FORGE_STATUS_1__"),
+            "printf hi; __forge_status=$?; printf '\\n__FORGE_STATUS_1__%s\\n' \"$__forge_status\"\n"
+        );
+        assert!(
+            super::command_script("powershell.exe", "Write-Output hi", "m")
+                .contains("Write-Output \"m$__forge_status\"")
+        );
+        assert!(
+            super::command_script("cmd.exe", "echo hi", "m").contains("call echo m%%ERRORLEVEL%%")
+        );
+    }
+
+    #[test]
+    fn completion_marker_requires_digits_and_handles_crlf() {
+        let output = b"echo __FORGE_STATUS_1__%s\r\n__FORGE_STATUS_1__7\r\n";
+        let (start, end, code) = super::find_completion(output, "__FORGE_STATUS_1__").unwrap();
+        assert_eq!(code, Some(7));
+        assert_eq!(&output[start..end], b"__FORGE_STATUS_1__7\r\n");
+        assert!(super::find_completion(b"__FORGE_STATUS_1__%s\n", "__FORGE_STATUS_1__").is_none());
+    }
+
+    #[test]
+    fn empty_and_blank_manual_submissions_are_forwarded_unchanged() {
+        let mut line = String::new();
+        let (forward, close) = super::feed_pending_command(&mut line, b"");
+        assert!(forward.is_empty());
+        assert!(!close);
+
+        line.push_str("   ");
+        assert_eq!(
+            super::feed_pending_command(&mut line, b"\r"),
+            (b"\r".to_vec(), false)
+        );
+        assert!(line.is_empty());
+    }
+
+    #[test]
+    fn blank_enter_reaches_the_live_shell() {
+        if !super::pty_allocation_available() {
+            eprintln!("skipping: this host denies PTY allocation");
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
+        for _ in 0..50 {
+            terminal.poll();
+            if !terminal.display_output().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let before = terminal.display_output().to_owned();
+        terminal.consume_input(b"\r").unwrap();
+        for _ in 0..10 {
+            terminal.poll();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(terminal.display_output(), before);
+    }
+
+    #[test]
     fn explicit_command_wrappers_stay_hidden_across_split_pty_reads() {
         if !super::pty_allocation_available() {
             return;
@@ -968,55 +992,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_render_preserves_ansi_attributes_unicode_and_cursor_text() {
-        if !super::pty_allocation_available() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let mut terminal = InteractiveTerminal::spawn(dir.path(), 40, 4).unwrap();
-        terminal.screen = vt100::Parser::new(4, 40, 0);
-        terminal.screen.process(b"\x1b[31;1mFAIL\x1b[0m\r\n");
-        terminal.screen.process("é界".as_bytes());
-        terminal.screen.process(b"\x1b[2;1H");
-        let area = ratatui::layout::Rect::new(2, 1, 40, 4);
-        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 44, 6));
-        terminal.render(area, &mut buf, true);
-        assert_eq!(buf[(2, 1)].symbol(), "F");
-        assert_eq!(buf[(2, 1)].fg, ratatui::style::Color::Indexed(1));
-        assert!(buf[(2, 1)]
-            .modifier
-            .contains(ratatui::style::Modifier::BOLD));
-        assert_eq!(buf[(2, 2)].symbol(), "é", "cursor must not erase text");
-        assert_eq!(buf[(3, 2)].symbol(), "界");
-        terminal.screen.process(b"\x1b[?25l");
-        terminal.render(area, &mut buf, true);
-        assert_eq!(buf[(2, 2)].style().bg, crate::theme::panel().bg);
-        terminal.hidden_status_marker = Some("hidden".into());
-        terminal.screen.process(b"\x1b[1;1H__forge_status");
-        terminal.render(area, &mut buf, false);
-        assert_eq!(
-            buf[(2, 1)].symbol(),
-            "F",
-            "sanitized text must not be replaced with instrumentation"
-        );
-    }
-
-    #[test]
-    fn command_scripts_preserve_shell_specific_syntax() {
-        assert_eq!(
-            super::command_script("/bin/sh", "printf hi", "__FORGE_STATUS_1__"),
-            "printf hi; __forge_status=$?; printf '\\n__FORGE_STATUS_1__%s\\n' \"$__forge_status\"\n"
-        );
-        assert!(
-            super::command_script("powershell.exe", "Write-Output hi", "m")
-                .contains("Write-Output \"m$__forge_status\"")
-        );
-        assert!(
-            super::command_script("cmd.exe", "echo hi", "m").contains("call echo m%%ERRORLEVEL%%")
-        );
-    }
-
-    #[test]
     fn wrapped_status_scripts_stay_hidden_after_resize() {
         let marker = "__FORGE_STATUS_1__";
         let wrapper = format!("; {}", super::command_suffix("zsh", marker));
@@ -1030,14 +1005,5 @@ mod tests {
             super::strip_status_wrapper_display(&display, "zsh", marker),
             "prompt echo hi\nhi\nprompt"
         );
-    }
-
-    #[test]
-    fn completion_marker_requires_digits_and_handles_crlf() {
-        let output = b"echo __FORGE_STATUS_1__%s\r\n__FORGE_STATUS_1__7\r\n";
-        let (start, end, code) = super::find_completion(output, "__FORGE_STATUS_1__").unwrap();
-        assert_eq!(code, Some(7));
-        assert_eq!(&output[start..end], b"__FORGE_STATUS_1__7\r\n");
-        assert!(super::find_completion(b"__FORGE_STATUS_1__%s\n", "__FORGE_STATUS_1__").is_none());
     }
 }

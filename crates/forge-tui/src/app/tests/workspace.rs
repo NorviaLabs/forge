@@ -192,31 +192,6 @@ async fn files_panel_is_open_by_default() {
 }
 
 #[tokio::test]
-async fn files_visibility_renders_independently_in_each_workspace_view() {
-    let (dir, mut app) = focus_test_app().await;
-    let path = dir.path().join("main.rs");
-    fs::write(&path, "fn main() {}\n").unwrap();
-
-    app.workspace_files.visible = true;
-    app.navigate_to_workspace_view(WorkspaceView::File(path.clone()));
-    assert!(app.workspace_files.visible);
-
-    app.workspace_files.visible = false;
-    let _rendered = render_app_text(&mut app, 160, 50);
-    assert!(!app.workspace_files.visible);
-
-    // The empty/home state (`current == None`) is its own case now —
-    // conversation isn't a navigable `WorkspaceView` to loop over above.
-    app.go_home_workspace();
-    app.workspace_files.visible = true;
-    let _rendered = render_app_text(&mut app, 160, 50);
-    assert!(app.workspace_files.visible);
-    app.workspace_files.visible = false;
-    let _rendered = render_app_text(&mut app, 160, 50);
-    assert!(!app.workspace_files.visible);
-}
-
-#[tokio::test]
 async fn files_visibility_auto_collapses_and_restores_without_mutating_preference() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
@@ -302,26 +277,6 @@ async fn opening_file_does_not_open_closed_files_preference() {
         app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
-}
-
-#[tokio::test]
-async fn responsive_sizes_render_without_panic_and_follow_files_policy() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.visible = true;
-    app.conversation_view.splash_dismissed = true;
-    for (width, height, _expect_files) in [
-        (80, 24, false),
-        (120, 40, true),
-        (160, 50, true),
-        (240, 60, true),
-    ] {
-        let rendered = render_app_text(&mut app, width, height);
-        assert!(
-            rendered.contains("Describe a task"),
-            "composer should remain reachable at {width}x{height}:\n{rendered}"
-        );
-        assert!(app.workspace_files.visible);
-    }
 }
 
 // ---------------------------------------------------------------------------

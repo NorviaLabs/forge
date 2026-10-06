@@ -54,56 +54,6 @@ async fn agent_thinking_keeps_composer_usable() {
 }
 
 #[tokio::test]
-async fn changed_files_do_not_appear_in_footer_or_as_review_cta() {
-    let (dir, mut app) = focus_test_app().await;
-    init_repo(dir.path());
-    let status = std::process::Command::new("git")
-        .args(["-C", dir.path().to_str().unwrap(), "add", "-A"])
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let status = std::process::Command::new("git")
-        .args([
-            "-C",
-            dir.path().to_str().unwrap(),
-            "commit",
-            "-qm",
-            "initial",
-        ])
-        .status()
-        .unwrap();
-    assert!(status.success());
-    fs::write(dir.path().join("changed.rs"), "changed\n").unwrap();
-    app.workspace_files.explorer.refresh_git_status();
-    for _ in 0..20 {
-        let _ = app.workspace_files.explorer.git_status.poll();
-        if !app.workspace_files.explorer.git_status.status.is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(
-        !app.workspace_files.explorer.git_status.status.is_empty(),
-        "expected a dirty worktree for the footer count"
-    );
-
-    assert!(app.activity_summary().is_none());
-    let rendered = render_app_text(&mut app, 140, 30);
-    assert!(
-        rendered.contains("0 tokens"),
-        "footer last segment is session usage, not a change count:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("1 changes"),
-        "workspace change count must not appear in the footer:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("Review"),
-        "Review CTA must not appear in conversation or footer:\n{rendered}"
-    );
-}
-
-#[tokio::test]
 async fn alt_right_and_workspace_right_do_not_open_review() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files

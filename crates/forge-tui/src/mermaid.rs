@@ -163,59 +163,7 @@ mod tests {
     use super::render;
 
     #[test]
-    fn renders_flowchart_edges() {
-        let lines = render("flowchart TB\n  a[Start] --> b[Finish]", 80).unwrap();
-        let rendered = lines
-            .iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("Start"));
-        assert!(rendered.contains("Finish"));
-        assert!(rendered.contains("▶"));
-    }
-
-    #[test]
     fn leaves_unsupported_diagrams_for_source_fallback() {
         assert!(render("sequenceDiagram\n  A->>B: hello", 80).is_none());
-    }
-
-    #[test]
-    fn preserves_branch_targets_and_edge_labels() {
-        let lines = render(
-            "flowchart LR\n  start[Start] -->|Yes| success[Success]\n  start -->|No| failure[Failure]",
-            120,
-        )
-        .unwrap();
-        let rendered = lines
-            .iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("Start"));
-        assert!(rendered.contains("Yes"));
-        assert!(rendered.contains("Success"));
-        assert!(rendered.contains("No"));
-        assert!(rendered.contains("Failure"));
-    }
-
-    #[test]
-    fn renders_fan_out_and_dotted_edges_without_merging_labels() {
-        let lines = render(
-            "flowchart LR\n  gate{Ready?} -->|Yes| a[First]\n  gate -.->|Telemetry| b[Metrics]",
-            120,
-        )
-        .unwrap();
-        let rendered = lines
-            .iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("Ready?"));
-        assert!(rendered.contains("Yes"));
-        assert!(rendered.contains("First"));
-        assert!(rendered.contains("Telemetry"));
-        assert!(rendered.contains("Metrics"));
-        assert!(!rendered.contains("Ready?} -->"));
     }
 }

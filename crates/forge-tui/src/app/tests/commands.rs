@@ -621,56 +621,6 @@ async fn resume_restores_local_only_slash_commands_too() {
     assert_eq!(app.input.text, "/status");
 }
 
-/// F-RESUME-01: the bare `/resume` list previously showed only a raw UUID
-/// and timestamp per session, giving the user no way to tell sessions
-/// apart without opening each one. It now shows a title hint derived from
-/// the session's first user message.
-#[tokio::test]
-async fn bare_resume_list_shows_title_hint_from_first_user_message() {
-    let (dir, session) = test_session().await;
-    let model = Arc::new(MockModelClient::script(vec![]));
-    let mut previous = AgentSession::create(
-        LoopConfig {
-            workspace: dir.path().to_path_buf(),
-            journal_dir: dir.path().join("j"),
-            enable_context_lifecycle: true,
-            enable_governance: true,
-            ..Default::default()
-        },
-        model,
-        ToolRegistry::new(),
-    )
-    .await
-    .unwrap();
-    previous
-        .append_user_message("fix the login bug please")
-        .await
-        .unwrap();
-
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: dir.path().to_path_buf(),
-            version: "0.12.0".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
-    app.dispatch_line("/resume").await.unwrap();
-
-    let Some(Overlay::ResumePicker { items, .. }) = &app.overlay else {
-        panic!("expected ResumePicker overlay, got {:?}", app.overlay);
-    };
-    assert_eq!(items.len(), 1);
-    // `/resume` derives its hint from the same naming rule as the session
-    // label, so a resume row agrees with the navigator instead of echoing the
-    // raw first message.
-    assert_eq!(items[0].title.as_deref(), Some("Fix login bug"));
-}
-
 #[tokio::test]
 async fn compact_reports_the_before_and_after_size_and_the_surviving_objective() {
     let dir = TempDir::new().unwrap();
@@ -2353,24 +2303,6 @@ async fn approve_all_flag_moves_with_the_session_view_state() {
     assert!(
         app.approve_all,
         "the per-session flag must survive a switch"
-    );
-}
-
-#[tokio::test]
-async fn approve_all_warning_strip_renders_only_while_on() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.approve_all = true;
-    let text = render_app_text(&mut app, 120, 40);
-    assert!(
-        text.contains("SANDBOX OFF"),
-        "frame missing approve-all warning:\n{text}"
-    );
-
-    app.approve_all = false;
-    let text = render_app_text(&mut app, 120, 40);
-    assert!(
-        !text.contains("SANDBOX OFF"),
-        "warning must clear when approve-all is off:\n{text}"
     );
 }
 

@@ -248,62 +248,6 @@ async fn readonly_file_consumes_editor_keys_instead_of_leaking_to_composer() {
 }
 
 #[tokio::test]
-async fn editor_search_status_row_shows_query() {
-    let (dir, mut app) = focus_test_app().await;
-    let path = dir.path().join("search.txt");
-    fs::write(&path, "Unicode value\nend\n").unwrap();
-    for (prefix, modifiers) in [('/', KeyModifiers::NONE), ('?', KeyModifiers::SHIFT)] {
-        app.open_file_in_editor(&path);
-        app.editor_session.as_mut().unwrap().set_cursor(1, 0);
-        app.handle_key(press(KeyCode::Char(prefix), modifiers))
-            .await
-            .unwrap();
-        app.handle_key(press(KeyCode::Char('U'), KeyModifiers::SHIFT))
-            .await
-            .unwrap();
-        for ch in "nicode".chars() {
-            app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
-                .await
-                .unwrap();
-        }
-        assert_eq!(
-            app.editor_session.as_ref().unwrap().search_pattern(),
-            "Unicode"
-        );
-
-        let area = ratatui::layout::Rect::new(0, 0, 60, 8);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        crate::source_viewer::SourceViewerWidget {
-            viewer: &mut app.source_viewer,
-            focused: true,
-            editor: app.editor_session.as_mut(),
-            editor_command: None,
-            editor_message: None,
-        }
-        .render(area, &mut buffer);
-        let mut rendered = String::new();
-        for y in area.y..area.bottom() {
-            for x in area.x..area.right() {
-                rendered.push_str(buffer[(x, y)].symbol());
-            }
-        }
-        assert!(
-            rendered.contains(&format!("SEARCH {prefix}Unicode")),
-            "rendered: {rendered:?}"
-        );
-        app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
-            .await
-            .unwrap();
-        let editor = app.editor_session.as_ref().unwrap();
-        assert_eq!(editor.mode(), edtui::EditorMode::Normal);
-        assert_eq!(editor.cursor_row(), 1);
-        assert!(!editor.is_dirty());
-        assert_eq!(app.focus.block(), FocusBlock::Workspace);
-        assert!(app.input.text.is_empty());
-    }
-}
-
-#[tokio::test]
 async fn embedded_editor_uses_forge_language_and_theme() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");

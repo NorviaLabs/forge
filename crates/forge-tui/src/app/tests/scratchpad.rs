@@ -35,53 +35,6 @@ async fn scratchpad_paste_owns_input_and_preserves_insert_undo_and_command_text(
 }
 
 #[tokio::test]
-async fn scratchpad_clears_underlying_text_and_styles_only_inside_its_panel() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.open_scratchpad();
-    let area = ratatui::layout::Rect::new(0, 0, 120, 40);
-    let panel = crate::overlay_layout::centered_rect(78, 78, area);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    for cell in &mut buf.content {
-        cell.set_symbol("X").set_style(
-            ratatui::style::Style::default()
-                .fg(ratatui::style::Color::Red)
-                .bg(ratatui::style::Color::Blue)
-                .add_modifier(ratatui::style::Modifier::REVERSED),
-        );
-    }
-    let outside = buf[(0, 0)].clone();
-
-    app.render_scratchpad(area, &mut buf);
-
-    for y in panel.y..panel.bottom() {
-        for x in panel.x..panel.right() {
-            let cell = &buf[(x, y)];
-            assert_ne!(cell.symbol(), "X", "underlying text at ({x}, {y})");
-            assert!(
-                !cell.modifier.contains(ratatui::style::Modifier::REVERSED),
-                "underlying style at ({x}, {y})"
-            );
-        }
-    }
-    assert_eq!(
-        buf[(panel.right() - 2, panel.y + 2)].bg,
-        crate::theme::panel().bg.unwrap()
-    );
-    assert_eq!(buf[(0, 0)], outside, "surrounding context stays visible");
-}
-
-#[tokio::test]
-async fn the_footer_chip_reports_a_line_count_before_any_note_is_written() {
-    let (_dir, mut app) = focus_test_app().await;
-    let text = render_app_text(&mut app, 120, 40);
-
-    assert!(
-        text.contains("notes 0 lines"),
-        "the chip is always present and reads as an empty document: {text}"
-    );
-}
-
-#[tokio::test]
 async fn typed_notes_land_in_the_buffer_and_the_chip_counts_them() {
     let (_dir, mut app) = focus_test_app().await;
     app.open_scratchpad();

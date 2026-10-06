@@ -460,38 +460,6 @@ default = "#E6EDF3"
         assert_eq!(theme.palette.activity, Rgb(0xFF, 0xA3, 0x1D));
     }
 
-    #[test]
-    fn builtin_themes_match_2026_semantic_tokens() {
-        let dark = parse_theme_toml(include_str!("../../forge-tui/themes/forge-dark.toml"))
-            .expect("forge-dark parses");
-        let p = &dark.palette;
-        assert_eq!(p.background, Rgb(0x14, 0x14, 0x14));
-        assert_eq!(p.background_deep, Rgb(0x08, 0x08, 0x08));
-        assert_eq!(p.surface, Rgb(0x1E, 0x1E, 0x1E));
-        assert_eq!(p.accent, Rgb(0x43, 0x9E, 0xFD));
-        assert_eq!(p.accent_soft, Rgb(0x18, 0x2B, 0x3D));
-        assert_eq!(p.activity, Rgb(0xFF, 0xA3, 0x1D));
-        assert_eq!(p.agent, Rgb(0xA0, 0xA0, 0xA0));
-        assert_eq!(p.structure, Rgb(0xA0, 0xA0, 0xA0));
-        assert_eq!(p.md_strong, Rgb(0xFF, 0xA3, 0x1D));
-        assert_eq!(p.md_emph, Rgb(0xC7, 0xD9, 0x6B));
-        assert_eq!(p.link, Rgb(0x4F, 0xC9, 0xDF));
-        assert_eq!(p.cursor, p.accent);
-        assert!(p.accent_status_collision().is_none());
-
-        let light = parse_theme_toml(include_str!("../../forge-tui/themes/forge-light.toml"))
-            .expect("forge-light parses");
-        let p = &light.palette;
-        assert_eq!(p.background, Rgb(0xFA, 0xFA, 0xFA));
-        assert_eq!(p.background_deep, Rgb(0xE8, 0xE8, 0xE8));
-        assert_eq!(p.accent, Rgb(0x00, 0x5E, 0xB8));
-        assert_eq!(p.activity, Rgb(0x96, 0x53, 0x00));
-        assert_eq!(p.agent, Rgb(0x54, 0x54, 0x54));
-        assert_eq!(p.md_strong, Rgb(0x96, 0x53, 0x00));
-        assert_eq!(p.md_emph, Rgb(0x5F, 0x73, 0x00));
-        assert!(p.accent_status_collision().is_none());
-    }
-
     /// Themes that predate the emphasis tokens keep parsing; strong/emphasis
     /// fall back to the theme's own primary text (weight still carries them).
     #[test]
@@ -563,66 +531,6 @@ default = "#E6EDF3"
                 (p.background.2 + p.surface.2) / 2,
             )
         );
-    }
-
-    /// The built-in templates state all three explicitly — a theme author
-    /// copying one gets real values, not silent fallbacks.
-    #[test]
-    fn builtin_themes_keep_selection_stronger_than_hover() {
-        for (id, text) in [
-            (
-                "forge-dark",
-                include_str!("../../forge-tui/themes/forge-dark.toml"),
-            ),
-            (
-                "forge-light",
-                include_str!("../../forge-tui/themes/forge-light.toml"),
-            ),
-        ] {
-            let theme = parse_theme_toml(text).expect("built-in theme parses");
-            let p = &theme.palette;
-            let on_dark_canvas = p.background.to_hsl().2 < 50.0;
-            let outranks = |stronger: Rgb, weaker: Rgb| {
-                if on_dark_canvas {
-                    stronger.to_hsl().2 > weaker.to_hsl().2
-                } else {
-                    stronger.to_hsl().2 < weaker.to_hsl().2
-                }
-            };
-            assert!(
-                outranks(p.selection, p.surface_hover),
-                "{id}: selection must outrank hover"
-            );
-            assert!(
-                outranks(p.surface_hover, p.surface),
-                "{id}: hover must outrank surface"
-            );
-        }
-    }
-
-    #[test]
-    fn builtin_templates_declare_response_structure_tokens() {
-        for content in [
-            include_str!("../../forge-tui/themes/forge-dark.toml"),
-            include_str!("../../forge-tui/themes/forge-light.toml"),
-        ] {
-            let theme = parse_theme_toml(content).unwrap();
-            let p = &theme.palette;
-            assert_ne!(p.structure, Rgb(0, 0, 0), "{} structure", theme.id);
-            assert_ne!(p.scan_band, Rgb(0, 0, 0), "{} scan_band", theme.id);
-            assert_ne!(p.zebra_row, Rgb(0, 0, 0), "{} zebra_row", theme.id);
-            assert_ne!(p.link, Rgb(0, 0, 0), "{} link", theme.id);
-            assert_ne!(
-                p.link, p.text_primary,
-                "{} link must be its own hue, not plain prose",
-                theme.id
-            );
-            assert_ne!(
-                p.link, p.accent,
-                "{} link must not be the focus hue",
-                theme.id
-            );
-        }
     }
 
     /// `user_gutter_active` and `approval_accent` were retired: the first

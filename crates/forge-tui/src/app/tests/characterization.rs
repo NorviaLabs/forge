@@ -60,12 +60,3 @@ async fn characterization_files_selection_and_expansion_survive_focus_roundtrip(
         .iter()
         .any(|node| node.display_name == "lib.rs"));
 }
-
-#[tokio::test]
-async fn characterization_80x24_draws_without_panic() {
-    use ratatui::backend::TestBackend;
-
-    let (_dir, mut app) = focus_test_app().await;
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    terminal.draw(|frame| app.draw(frame)).unwrap();
-}

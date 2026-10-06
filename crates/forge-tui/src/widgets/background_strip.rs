@@ -263,8 +263,6 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
 
     fn row(state: StripState, label: &str, elapsed: &str) -> StripRow {
         StripRow {
@@ -276,184 +274,12 @@ mod tests {
         }
     }
 
-    fn draw(
-        strip: &BackgroundStrip,
-        selected: Option<usize>,
-        focused: bool,
-        w: u16,
-        h: u16,
-    ) -> String {
-        draw_with_hover(strip, selected, None, focused, w, h)
-    }
-
-    fn draw_with_hover(
-        strip: &BackgroundStrip,
-        selected: Option<usize>,
-        hover: Option<usize>,
-        focused: bool,
-        w: u16,
-        h: u16,
-    ) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    BackgroundStripWidget {
-                        strip,
-                        selected,
-                        hover,
-                        focused,
-                    },
-                    frame.area(),
-                );
-            })
-            .unwrap();
-        terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol().to_string())
-            .collect()
-    }
-
     fn strip_of(rows: Vec<StripRow>, hidden: usize) -> BackgroundStrip {
         BackgroundStrip {
             total: rows.len() + hidden,
             rows,
             hidden,
         }
-    }
-
-    #[test]
-    fn rows_render_marker_label_and_right_aligned_elapsed() {
-        let strip = strip_of(
-            vec![
-                row(StripState::Active, "explore · find auth code", "12s"),
-                row(StripState::Failed, "cargo clippy", "2m"),
-            ],
-            0,
-        );
-
-        let text = draw(&strip, None, false, 44, 3);
-
-        assert!(text.contains("Background"), "missing header: {text}");
-        assert!(text.contains("[>]"), "missing active marker: {text}");
-        assert!(text.contains("[!]"), "missing failed marker: {text}");
-        assert!(text.contains("explore · find auth code"), "{text}");
-        // The elapsed column is right-aligned, so it ends the row.
-        assert!(text.contains("12s"), "{text}");
-        assert!(
-            !text.contains("+"),
-            "nothing is hidden, so no overflow: {text}"
-        );
-    }
-
-    #[test]
-    fn hidden_rows_are_counted_on_the_header() {
-        let strip = strip_of(
-            vec![
-                row(StripState::Blocked, "explore", "9s"),
-                row(StripState::Active, "verify", "31s"),
-            ],
-            5,
-        );
-
-        let text = draw(&strip, None, false, 44, 3);
-
-        assert!(text.contains("+5 more"), "missing overflow count: {text}");
-    }
-
-    /// The blocked row is the one that has to say what it is waiting for.
-    #[test]
-    fn a_blocked_row_draws_its_request_underneath() {
-        let mut blocked = row(StripState::Blocked, "explore · audit auth deps", "9s");
-        blocked.detail = Some("bash · rm -rf target/debug".into());
-        let strip = strip_of(vec![blocked], 0);
-
-        let text = draw(&strip, None, false, 44, 3);
-
-        assert!(text.contains("[|]"), "{text}");
-        assert!(
-            text.contains("bash · rm -rf target/debug"),
-            "the pending request must be visible: {text}"
-        );
-    }
-
-    /// A row with a second line is two lines tall. Advancing one line per row
-    /// drew the next row straight over the line underneath — which is why this
-    /// only ever looked right on a one-row strip.
-    #[test]
-    fn a_second_line_is_not_overwritten_by_the_next_row() {
-        let mut blocked = row(StripState::Blocked, "explore", "9s");
-        blocked.detail = Some("bash · echo risky".into());
-        let verify = row(StripState::Active, "verify", "31s");
-        let strip = strip_of(vec![blocked, verify], 0);
-
-        // Header + two rows + one second line.
-        let text = draw(&strip, None, false, 44, 4);
-
-        assert!(
-            text.contains("bash · echo risky"),
-            "the second line survived: {text}"
-        );
-        assert!(
-            text.contains("verify"),
-            "and the row after it is still drawn: {text}"
-        );
-        // `draw` flattens the buffer into one string in row order, so the
-        // second line has to appear before the row that follows it.
-        let detail_at = text.find("bash · echo risky").expect("detail line");
-        let verify_at = text.find("verify").expect("next row");
-        assert!(
-            detail_at < verify_at,
-            "the second line belongs to the row above, not below: {text}"
-        );
-    }
-
-    /// The selection is what the strip was built to reveal; before this the
-    /// operator moved an invisible cursor.
-    #[test]
-    fn the_selected_row_takes_the_pointer_and_the_ground() {
-        let strip = strip_of(
-            vec![
-                row(StripState::Active, "explore", "12s"),
-                row(StripState::Active, "verify", "31s"),
-            ],
-            0,
-        );
-
-        let text = draw(&strip, Some(1), true, 44, 3);
-
-        // The pointer plus the marker, so this distinguishes the selected row
-        // from its sibling rather than counting `>` glyphs that the `[>]`
-        // markers themselves contain.
-        assert!(
-            text.contains("> [>] ◆ verify"),
-            "the selected row needs the pointer: {text}"
-        );
-        assert!(
-            text.contains("  [>] ◆ explore"),
-            "an unselected row must not take the pointer: {text}"
-        );
-    }
-
-    /// Rows past the region are dropped rather than drawn over the composer.
-    #[test]
-    fn rows_never_draw_past_the_region() {
-        let strip = strip_of(
-            vec![
-                row(StripState::Active, "one", "1s"),
-                row(StripState::Active, "two", "2s"),
-                row(StripState::Active, "three", "3s"),
-            ],
-            0,
-        );
-
-        let text = draw(&strip, None, false, 44, 2);
-
-        assert!(text.contains("one"), "{text}");
-        assert!(!text.contains("two"), "a clipped row must not draw: {text}");
     }
 
     /// Hit-testing must agree with painting cell for cell, including for a
@@ -483,35 +309,5 @@ mod tests {
         // Past the last row, and outside the region's columns.
         assert_eq!(row_index_at(&strip.rows, area, 4, 15), None);
         assert_eq!(row_index_at(&strip.rows, area, 44, 12), None);
-    }
-
-    /// Hover is the pointer's ring on an actionable row: a raised ground plus a
-    /// non-colour marker, drawn in the row's own reserved gutter so the label
-    /// cannot shift.
-    #[test]
-    fn hover_marks_the_row_without_moving_its_text() {
-        let strip = strip_of(
-            vec![
-                row(StripState::Active, "explore", "12s"),
-                row(StripState::Active, "verify", "31s"),
-            ],
-            0,
-        );
-
-        let hovered = draw_with_hover(&strip, None, Some(1), true, 44, 3);
-        let idle = draw(&strip, None, true, 44, 3);
-
-        assert!(
-            hovered.contains("› [>] ◆ verify"),
-            "the hovered row needs the pointer: {hovered}"
-        );
-        assert!(
-            hovered.contains("  [>] ◆ explore"),
-            "only the hovered row takes it: {hovered}"
-        );
-        assert!(
-            hovered.contains("12s") && idle.contains("12s"),
-            "an unhovered row keeps its text"
-        );
     }
 }

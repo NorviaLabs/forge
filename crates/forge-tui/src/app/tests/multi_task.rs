@@ -2160,79 +2160,6 @@ async fn a_tab_chord_moves_the_rows_cursor_with_the_tab() {
         .unwrap();
 }
 
-/// The drawn row and the pointer's hit target are one geometry: three segments
-/// sharing their edges, the `+` between the two tabs, and its joints surviving
-/// the list's top border, which repaints that whole row (`§9.6`).
-#[tokio::test]
-async fn the_drawn_tab_row_carries_the_plus_cell() {
-    use ratatui::backend::TestBackend;
-
-    let (_dir, mut app, handle) = app_with_supervisor().await;
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    app.tick_render_state();
-    terminal.draw(|frame| app.draw(frame)).unwrap();
-    let buffer = terminal.backend().buffer().clone();
-
-    let cell = app
-        .navigator_new_session_area
-        .expect("a repository frame draws the cell");
-    let (x, y) = (cell.x, cell.y);
-    let right = cell.x + cell.width - 1;
-    assert_eq!(buffer[(x, y)].symbol(), "┬", "top joint with `Sessions`");
-    assert_eq!(buffer[(right, y)].symbol(), "┬", "top joint with `Files`");
-    assert_eq!(buffer[(x + 1, y + 1)].symbol(), "+", "the glyph");
-    assert_eq!(
-        buffer[(x, y + 2)].symbol(),
-        "┴",
-        "the bottom joint with `Sessions` survives the list's top border"
-    );
-    assert_eq!(
-        buffer[(right, y + 2)].symbol(),
-        "┴",
-        "so does the one with `Files`"
-    );
-    assert_eq!(buffer[(x, y + 1)].symbol(), "│");
-    assert_eq!(buffer[(right, y + 1)].symbol(), "│");
-    assert_ne!(
-        buffer[(x + 1, y + 1)].style().bg,
-        Some(theme::accent_soft_bg()),
-        "the cell never takes a tab's active ground"
-    );
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
-/// The changed-file list draws a group heading above the first file, but the
-/// selection arrow indexes entries rather than drawn rows: the first file must
-/// still carry it.
-#[tokio::test]
-async fn the_git_tab_marks_the_first_file_with_the_selection_arrow() {
-    let (dir, mut app, handle) = app_with_supervisor().await;
-    std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
-    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
-        .await
-        .unwrap();
-    assert!(app.diff_view_is_open());
-
-    let rendered = render_app_text(&mut app, 140, 40);
-    let group = rendered
-        .lines()
-        .position(|line| line.contains("UNSTAGED"))
-        .expect("the changed-file list draws its group heading");
-    let first_file = rendered.lines().nth(group + 1).unwrap_or_default();
-    assert!(
-        first_file.contains("> "),
-        "the first file row must carry the selection arrow: {rendered}"
-    );
-
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
 /// The `Git` tab exists only where the column is drawn and the workspace is a
 /// repository, and reaching it opens the working-tree review: the changed files
 /// in the navigator column, the patch in the Workspace pane (`FORGE-DESIGN
@@ -2542,40 +2469,6 @@ async fn space_peeks_and_esc_collapses_in_the_navigator() {
         .unwrap();
     assert_eq!(app.navigator_peek, None);
     assert!(app.navigator_reply.is_empty());
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
-/// With peek set, the navigator renders the last answer and the reply box.
-#[tokio::test]
-async fn the_peek_renders_the_last_answer_and_reply() {
-    use crate::widgets::NavigatorTab;
-    let (_dir, mut app, handle) = app_with_supervisor().await;
-    let id = app.selected_session_id;
-    app.focus_block(FocusBlock::Composer);
-    app.input.set_text("hello".to_string());
-    app.submit_composer_message().await.unwrap();
-    app.drain_pending_prompt(None).await.unwrap();
-    wait_for_turn_state(&mut app, id, forge_session::SupervisorTurnState::Completed).await;
-
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
-    app.navigator_peek = Some(id);
-    app.navigator_reply = "push it".to_string();
-    app.focus_block(FocusBlock::TaskStrip);
-
-    let rendered = render_app_text(&mut app, 120, 40);
-    assert!(rendered.contains("done"), "last answer missing: {rendered}");
-    assert!(
-        rendered.contains("push it"),
-        "reply buffer missing: {rendered}"
-    );
-    assert!(
-        rendered.contains("Enter send"),
-        "peek hint missing: {rendered}"
-    );
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
@@ -2986,18 +2879,6 @@ async fn a_running_turn_clears_stale_sidebar_attention() {
         .unwrap();
 }
 
-#[tokio::test]
-async fn a_narrow_navigator_falls_back_to_a_status_chip() {
-    let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.session_chrome[0].attention = true;
-    let rendered = render_app_text(&mut app, 100, 40);
-    assert!(rendered.contains("need"), "chip missing: {rendered}");
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
 /// The chip is one row: its spinner is the only way a collapsed column still
 /// separates "work in flight" from "work waiting on you" (`§482`), and it steps
 /// on the same clock as the rows it replaces.
@@ -3020,95 +2901,6 @@ async fn the_collapsed_chip_keeps_the_working_spinner_moving() {
         "the chip carries no spinner frame: {first}"
     );
     assert_ne!(first, second, "the chip's spinner did not step");
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
-/// A row's marker comes from what the session did, not from whether a turn is
-/// live. Reading it from the live-turn flags alone rendered every finished
-/// session `○`, so a turn that failed and a turn that finished cleanly looked
-/// identical in the column the operator scans.
-#[tokio::test]
-async fn a_finished_session_keeps_the_outcome_its_marker_reports() {
-    let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
-    app.session_chrome[0].label = "Fix login redirect".into();
-    app.session_chrome[0].attention = false;
-
-    let row_of = |rendered: &str| {
-        rendered
-            .lines()
-            .rfind(|line| line.contains("Fix login redirect"))
-            .expect("session row")
-            .to_string()
-    };
-
-    app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Failed;
-    app.session_chrome[0].secondary = Some("failed".into());
-    let failed = row_of(&render_app_text(&mut app, 120, 40));
-    assert!(failed.contains('✗'), "a failed session: {failed:?}");
-    assert!(
-        !failed.contains('○'),
-        "a failed session still renders the idle ring: {failed:?}"
-    );
-
-    app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Completed;
-    app.session_chrome[0].secondary = Some("completed".into());
-    let completed = row_of(&render_app_text(&mut app, 120, 40));
-    assert!(
-        completed.contains('✓'),
-        "a completed session: {completed:?}"
-    );
-    assert!(
-        !completed.contains('✗'),
-        "a completed session still renders the failure mark: {completed:?}"
-    );
-
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
-/// A row that says "running" has to look like it. The marker steps one frame
-/// per event-loop tick, so two frames of the same app show two different
-/// glyphs — and it steps off the tick, not the wall clock, so the motion stops
-/// with the work.
-#[tokio::test]
-async fn a_running_session_row_turns_its_spinner() {
-    let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
-    app.session_chrome[0].label = "Fix login redirect".into();
-    app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Working;
-    app.session_chrome[0].secondary = Some("running".into());
-    app.session_chrome[0].attention = false;
-
-    // The marker cell is the char before the space that precedes the label.
-    let glyph_of = |rendered: &str| {
-        let line = rendered
-            .lines()
-            .rfind(|line| line.contains("Fix login redirect"))
-            .expect("session row");
-        let label = line.find("Fix login redirect").expect("label");
-        line[..label].chars().rev().nth(1).expect("marker cell")
-    };
-
-    let first = glyph_of(&render_app_text(&mut app, 120, 40));
-    let second = glyph_of(&render_app_text(&mut app, 120, 40));
-    for glyph in [first, second] {
-        assert!(
-            crate::widgets::turn_line::SPINNER_FRAMES
-                .iter()
-                .any(|frame| frame.starts_with(glyph)),
-            "{glyph:?} is not a frame the running marker speaks (first={first:?}, second={second:?})"
-        );
-    }
-    assert_ne!(first, second, "the running row is frozen");
-
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

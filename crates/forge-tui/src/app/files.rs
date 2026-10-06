@@ -366,11 +366,6 @@ impl TuiApp {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn open_file_view_for_test(&mut self, path: &Path) {
-        self.open_file_in_editor(path);
-    }
-
     fn file_ops(&self) -> Result<WorkspaceFileOps, FileOperationError> {
         WorkspaceFileOps::new(self.session_view.workspace_root())
     }

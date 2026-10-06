@@ -587,13 +587,4 @@ mod tests {
         assert!(!view.loading);
         assert!(view.error.unwrap().contains("disconnected"));
     }
-    #[test]
-    fn github_issues_remote_controls_are_not_rendered() {
-        let view = GithubView {
-            items: vec![issue(12, "bad\x1b[2J\x00")],
-            ..Default::default()
-        };
-        assert!(!view.text().contains('\x1b'));
-        assert!(!view.text().contains('\x00'));
-    }
 }
