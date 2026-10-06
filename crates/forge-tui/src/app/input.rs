@@ -1700,9 +1700,10 @@ impl TuiApp {
     /// changed-file list (`Files`) and the patch (`Workspace`). Both panes route
     /// through here so the tab reads as one surface instead of two keymaps.
     ///
-    /// The list keeps the keys it is built around — `↑`/`↓` move its cursor (it
-    /// is the file picker), `s`/`u` stage the selected side, `i` opens issues,
-    /// `Enter` hands the keyboard to the patch — and `Esc` leaves the tab.
+    /// The focused list keeps its picker keys: `↑`/`↓` move its cursor and
+    /// `Enter` hands the keyboard to the patch. The focused patch keeps its
+    /// scrolling keys. Both panes share `s`/`u` to stage the selected side,
+    /// `i` to open issues, and `Esc` to leave the tab.
     /// Every other key belongs to the patch, whose hint row advertises the diff
     /// keymap; routing those to `handle_diff_key` is what keeps that row honest
     /// instead of typing the keystroke into the chat draft.
@@ -1740,7 +1741,14 @@ impl TuiApp {
                 // The list has its own cursor; move it independently of paths so
                 // a file with both staged and unstaged changes stays addressable
                 // twice.
-                KeyCode::Up | KeyCode::Down => {
+                KeyCode::Up | KeyCode::Down if self.focus.block() == FocusBlock::Files => {
+                    if key.code == KeyCode::Up
+                        && self.diff_view.selected == 0
+                        && self.navigator_tab_row_available()
+                    {
+                        self.focus_navigator_tab_row();
+                        return Ok(Some(true));
+                    }
                     let delta: isize = if key.code == KeyCode::Up { -1 } else { 1 };
                     let count = self.diff_view.entries.len();
                     if count > 0 {

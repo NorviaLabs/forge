@@ -1744,7 +1744,7 @@ fn short_consequence(help: &str) -> String {
 /// Title in the approval card's top border.
 const APPROVAL_TITLE: &str = "Approval needed";
 
-/// Starter prompts on the first screen. Concrete enough to be worth pressing,
+/// Starter prompts on the first screen. Concrete enough to be worth trying,
 /// generic enough to fit any repository.
 const HOME_STARTERS: &[&str] = &[
     "Explain what this project does",
@@ -1753,7 +1753,7 @@ const HOME_STARTERS: &[&str] = &[
 ];
 
 /// Width of the label column on the home card.
-const HOME_LABEL_WIDTH: usize = 11;
+const HOME_LABEL_WIDTH: usize = 10;
 
 /// The first screen.
 ///
@@ -1780,11 +1780,11 @@ fn render_home_card(p: &HomePresentation, prose_width: usize, compact: bool) -> 
         spans
     };
 
-    row(vec![Span::styled(
-        "FORGE",
-        theme::brand().add_modifier(Modifier::BOLD),
-    )]);
     if !compact {
+        row(vec![Span::styled(
+            "FORGE",
+            theme::brand().add_modifier(Modifier::BOLD),
+        )]);
         row(vec![]);
     }
     row(field(
@@ -1804,11 +1804,11 @@ fn render_home_card(p: &HomePresentation, prose_width: usize, compact: bool) -> 
                 crate::path_display::elide_middle(
                     &p.provider,
                     prose_width
-                        .saturating_sub(HOME_LABEL_WIDTH + 2 + if p.connected { 9 } else { 13 }),
+                        .saturating_sub(HOME_LABEL_WIDTH + 1 + if p.connected { 9 } else { 13 }),
                 ),
                 theme::text(),
             ),
-            Span::raw("  "),
+            Span::raw(" "),
             if p.connected {
                 Span::styled("connected", theme::ok())
             } else {
@@ -1835,13 +1835,30 @@ fn render_home_card(p: &HomePresentation, prose_width: usize, compact: bool) -> 
             )],
         ));
     }
-    row(vec![]);
-    row(vec![Span::styled("Try one of these", theme::muted())]);
-    for starter in HOME_STARTERS {
-        row(vec![
-            Span::styled("    ", theme::accent_style()),
-            Span::styled((*starter).to_string(), theme::text_secondary()),
-        ]);
+    if !compact {
+        row(vec![]);
+    }
+    let starter_width = prose_width.saturating_sub(4).max(1);
+    let starters = if compact && HOME_STARTERS.iter().any(|s| s.len() > starter_width) {
+        &HOME_STARTERS[..1]
+    } else {
+        HOME_STARTERS
+    };
+    row(vec![Span::styled(
+        if starters.len() == 1 {
+            "Try this"
+        } else {
+            "Try one of these"
+        },
+        theme::muted(),
+    )]);
+    for starter in starters {
+        for (index, line) in wrap(starter, starter_width).into_iter().enumerate() {
+            row(vec![
+                Span::styled(if index == 0 { "  - " } else { "    " }, theme::muted()),
+                Span::styled(line, theme::text_secondary()),
+            ]);
+        }
     }
     out
 }

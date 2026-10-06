@@ -259,7 +259,8 @@ pub fn fill(area: Rect, buf: &mut Buffer, style: Style) {
 }
 
 pub fn canvas() -> Style {
-    Style::default().bg(active_palette().canvas)
+    let p = active_palette();
+    Style::default().fg(p.text).bg(p.canvas)
 }
 
 /// Blend a color toward a translucent overlay tone, approximating a

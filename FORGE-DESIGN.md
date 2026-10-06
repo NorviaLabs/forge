@@ -1,6 +1,6 @@
 ---
-version: 2.1
-status: reconciled-with-code
+version: 2.2
+status: behavioral-contract-with-changeable-defaults
 name: Forge TUI Design System
 product: Forge
 platform: terminal-ui
@@ -9,8 +9,8 @@ summary: >-
   A terminal-native design system for Forge, an open human-agent development
   workspace. It combines calm workspace hierarchy, developer-first monospace
   clarity, restrained semantic status language, and per-theme accent identity
-  governed by one hard invariant: focus colour and outcome colour never share
-  a hue.
+  governed by behavioral invariants: keyboard ownership is clear, state is
+  truthful, work is protected, and focus remains distinguishable from outcomes.
 inspiration:
   warp:
     role: workspace hierarchy, warm dark surfaces, hairline depth, restraint
@@ -56,8 +56,9 @@ navigation:
   previous-block: Shift+Tab
   sessions-tab: Ctrl+1
   files-tab: Ctrl+2
-  toggle-navigator-tab: Ctrl+E
-  navigator-tab-row: Up (at the first row of either tab's list)
+  git-tab: Ctrl+3 (repositories only)
+  cycle-navigator-tabs: Ctrl+E
+  navigator-tab-row: Up (first row of any navigator list, when the tab row is visible)
   go-back: Alt+Left
   enter-interaction:
     - Enter
@@ -82,22 +83,97 @@ Forge is an open, terminal-native workspace for delegating development work to a
 
 The design should feel like a serious development instrument, not a chatbot placed inside a terminal and not a dashboard squeezed into character cells.
 
-This document describes Forge's TUI presentation language as implemented in `crates/forge-tui`. Where this document and the code disagree, the code wins — file an issue or fix this doc in the same PR.
+This document defines the behavior Forge must protect and records the current
+TUI defaults in `crates/forge-tui`. Code establishes what a build does today;
+it does not establish which interface best serves the user. When code and this
+document disagree, identify whether the implementation, the reference, or the
+design decision needs to change, and resolve that discrepancy in the same PR.
 
-## 1.1 Contract Authority
+## 1.1 Behavioral invariants, presentation defaults, and history
 
-The implemented interaction contract is authoritative for runtime behavior and screen structure. This document defines presentation rules only.
+Every design statement belongs to one of three categories:
 
-Superseded structural rules that must NOT be reintroduced:
+| Category | Authority | How it changes |
+|---|---|---|
+| **Mandatory behavioral invariant** | §4 and the safety guarantees it identifies in component and session behavior | Preserve it while changing the interface. A presentation experiment cannot waive input ownership, truthful state, or work protection. |
+| **Changeable presentation default** | The frontmatter mappings and the current treatments in §§2–10: layout, dimensions, focus signals, glyphs, colours, labels, bindings, and timing | Revise it through §1.2 when evidence supports a better experience. Update the implementation and its reference together. |
+| **Historical decision or implementation limitation** | §11 and explicitly identified constraints in component descriptions | Record the rationale and a reason to revisit it. An earlier rejection or missing renderer feature does not prohibit a new solution. |
 
-- A permanent Chat/Editor/Diff tab bar as the primary workspace model. Conversation is *not* a center-pane view; it lives permanently in the sidebar (`crates/forge-tui/src/app/types.rs`, `WorkspaceView`).
-- A permanent right-hand Inspector with Task/Context/Runtime tabs. No such block exists.
-- Bottom-panel tabs (Run / Diagnostics / Terminal / Activity). The bottom panel is the interactive terminal; busy-phase and activity lines render inside it.
-- A permanent shortcut footer or manual on every screen. The footer shows contextual hints plus two configuration chips.
-- Duplicate status ownership across header, footer, sidebar and workspace.
-- Any rule implying Forge controls the terminal font family, size, line height, ligatures, or other font-rendering properties.
+Prescriptive wording in a component reference describes the current default
+unless it protects a §4 invariant. Exact cell counts, palette values, focus
+cycles, and pane arrangements do not become correctness requirements merely
+because they are implemented. Requirements about command authorization,
+sanitized terminal output, unsaved work, session identity, and safe cleanup
+remain mandatory wherever they appear.
+
+The component references describe shipped behavior. A proposed design must be
+identified as proposed until it is implemented and verified. Reading this
+document must never lead a contributor to advertise a feature or binding that
+the current build does not provide.
+
+## 1.2 Evaluating and changing a default
+
+Use the smallest comparison that can answer the design question:
+
+1. **Name the user task and observed problem.** Record the terminal size,
+   workflow, and relevant state. Distinguish an observed difficulty from a
+   hypothesis or a personal preference.
+2. **Describe the alternative and its tradeoff.** Identify the defaults it
+   changes and the §4 invariants it must preserve. Structural alternatives,
+   including central conversation views, inspectors, tabs, and task-specific
+   layouts, are eligible for evaluation.
+3. **Choose success criteria before comparing.** Use relevant measures from
+   §1.3 and compare the current and proposed interface on the same tasks.
+   Record regressions as well as improvements.
+4. **Validate at the scope of the change.** A local style change needs a focused
+   visual and interaction check. A new layout or navigation model needs the
+   affected workflows, responsive states, themes, and input paths checked.
+   Preserve safe cancellation, return paths, and existing drafts and buffers.
+5. **Record the decision with the change.** Put the problem, evidence, tradeoff,
+   and validation in the PR. Update the affected references; record structural
+   changes or revised rationale in §11. If the evidence is inconclusive, keep
+   the alternative identified as experimental rather than declaring it an
+   improvement.
+
+Changing a default is ordinary design work. It does not require a separate
+approval ceremony solely because it departs from the current layout. Runtime
+approvals for destructive or external actions remain governed by their own
+authorization boundaries.
+
+## 1.3 Evidence of a better experience
+
+Choose measures that reflect the problem being solved; do not require every
+measure for every change or invent user-study results from a developer smoke
+check.
+
+| Aspect | Evidence to compare |
+|---|---|
+| Task completion | Ability and time to delegate, inspect a file or patch, switch sessions, and resolve an approval without losing work or context |
+| Navigation effort | Keystrokes, focus transitions, backtracking, and whether the next action is discoverable without memorized shortcuts |
+| Error prevention and recovery | Accidental drafts or actions, wrong-session actions, refusal clarity, cancellation, and restoration of selection, scroll, and unsaved buffers |
+| Reading and information access | Visible useful content, clipped or hidden critical state, command/error inspection, and readability of prose, code, and diffs |
+| Accessibility | Legibility in light, dark, reduced-colour, and monochrome presentation; visible keyboard ownership; a usable fallback when terminal capabilities are absent |
+| Responsiveness | Input latency, streaming readability, resize behavior, and whether background work interrupts navigation or moves the reader |
+
+For structural changes, exercise representative delegation, inspection, and
+intervention tasks at `80×18`, `120×40`, and `160×50`, plus the sizes around any
+changed breakpoint. Include long paths and model names, overflowing content,
+pending approvals, running work, and unsaved state where relevant. Compare
+keyboard and mouse paths when both are affected. Use before/after terminal
+captures or rendered artifacts with reproducible steps; a green build alone
+does not prove a better experience.
+
+Keep targeted tests for behavioral guarantees and performance. Validate
+appearance through terminal inspection and reviewable captures; do not restore
+UI, styling, or layout unit tests to freeze a particular palette, spacing, or
+screen arrangement. Cite current verification rather than claiming a visual
+rule is enforced by a test that no longer exists.
 
 ## 2. Design Character
+
+These qualities guide judgment. They do not prescribe a particular number of
+panes, a density setting, or a resemblance to another product. Prefer the
+treatment that makes the user's current task clearer, and assess it using §1.3.
 
 Forge should feel:
 
@@ -118,6 +194,9 @@ Forge should not feel:
 - modal without making the current mode visible
 
 ## 3. Source Synthesis
+
+These references explain the current visual direction. The inspiration weights
+in the frontmatter are descriptive, not acceptance targets for future designs.
 
 ### Borrow from Warp
 
@@ -145,7 +224,7 @@ Forge should not feel:
 
 ### Keep distinctly Forge
 
-- The accent identifies focus, interaction and navigable structure — and it must stay hue-separated from every outcome colour (see §5.3).
+- The accent identifies focus, interaction and navigable structure; focus must remain distinguishable from outcome state (see §5.1).
 - Yellow/amber identifies waiting, caution and human attention (`waiting_border` pauses the composer while an approval is pending).
 - Violet (`agent`) marks agent narration as a distinct voice from the user's.
 - The developer's judgement is visually prioritised over agent narration.
@@ -159,18 +238,28 @@ These are not optional styling preferences. They are correctness requirements.
 1. **Exactly one effective keyboard owner exists at a time.**
 2. **The visually active block matches the actual event owner** (`focus.rs::normalize_focus`).
 3. **Selected content and focused content are visually distinct.**
-4. **Input, transient and blocked states are distinguishable** without colour alone, and one state keeps one shape across surfaces (`§5.3`): `running` is the braille spinner wherever it appears, never a second family.
-5. **A displayed shortcut always invokes a reachable command in the current context** (hints degrade by dropping verbs, then pairs — never by advertising dead keys).
-6. **Hidden or unavailable blocks cannot retain focus**; Tab cycles only available blocks.
+4. **Input, transient, running, and blocked states are distinguishable** without colour alone. A state has a consistent meaning across surfaces; its exact glyph and animation are presentation defaults (§5.3).
+5. **An advertised action is reachable in the current context.** Its label and consequence match what it does; an unavailable action is identified as such. Hint compression must preserve a discoverable way to learn the action.
+6. **Hidden or unavailable blocks cannot retain focus.** Navigation reaches the available controls and provides a clear way to leave captured input.
 7. **Colour never provides the only indication of state.**
 8. **Approvals and failures outrank routine activity.**
 9. **Raw model reasoning is not ordinary chat content.**
-10. **The primary workflow remains usable at the enforced minimum of 80 × 18** (`layout.rs::MIN_WIDTH` / `MIN_HEIGHT`). Below that Forge refuses to render rather than drawing a broken screen.
-11. **Focus has to survive losing colour:** focus markers use shape as well as hue — the `>` title marker, the block caret, the accent scrollbar thumb, the composer's attention-thickened top edge (see the bottom panel's plain/thick rule swap).
+10. **Supported terminal sizes preserve access to the primary task, critical state, and necessary controls.** The current supported minimum is `80×18` (`layout.rs::MIN_WIDTH` / `MIN_HEIGHT`); smaller terminals receive an actionable size message. A revised minimum or collapse strategy needs explicit validation under §1.3.
+11. **Keyboard ownership remains visible without colour.** Shape, weight, wording, or a caret must identify the active control. The current title markers and local accents are examples, not mandatory implementations.
+12. **Work and reading position survive ordinary navigation.** Preserve drafts, unsaved buffers, selections, and scroll where applicable. Destructive actions require an explicit decision with visible consequences; resizing or switching a view cannot silently discard work.
+13. **The user can identify the session and resource an action affects.** Local results, remote checks, stale data, and unknown state remain distinct; changing a view cannot silently redirect an action to another session.
+14. **Authorization and output safety survive presentation changes.** A read or preview does not authorize a write, push, merge, or unconfined retry. Untrusted text and link destinations must be sanitized, secrets redacted, and session/worktree cleanup must protect uncommitted work (§12).
+15. **Terminal capability limits have usable fallbacks.** No critical action or state requires a particular font, mouse reporting, hyperlink support, animation, or true colour. Forge does not claim to control the user's terminal font settings.
 
 ## 5. Colour System
 
-Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), not fixed hex values. Every theme supplies the full token set:
+The following tokens and treatments describe the current defaults. Themes
+use semantic tokens (`forge-config::ThemePalette`) so colours can change
+without changing the meaning of state or keyboard ownership. Token mappings,
+hues, and decoration may evolve under §1.2; the readability and non-colour
+signals required by §4 remain mandatory.
+
+Every theme supplies the full token set:
 
 | Token | Role |
 |---|---|
@@ -186,6 +275,7 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `text_muted` | Timestamps, inactive hints, empty-state explanation |
 | `accent` | Focus, navigation, caret, active structure |
 | `accent_soft` | Low-emphasis accent fills |
+| `activity` | Work in progress and active-work emphasis |
 | `agent` | Agent narration voice |
 | `success` / `warning` / `error` / `info` | Outcome and state semantics |
 | `diff_add` / `diff_remove` | Diff line treatments |
@@ -202,25 +292,42 @@ Colours are semantic tokens defined per theme (`forge-config::ThemePalette`), no
 | `link` | Actionable prose link hue (the `info` family in the built-ins) |
 | `syntax.*` | Code highlighting palette |
 
-Do not use shadows. Ratatui depth comes from border weight, contrast and placement.
+The current design expresses depth through border weight, contrast, and
+placement rather than shadows. An alternative treatment needs to justify its
+content cost and preserve legibility.
 
 Do not render large bodies of important text using dim styling; terminal dim support varies and may harm readability.
 
-### 5.1 The accent/status invariant
+### 5.1 Distinguishable focus and outcome state
 
-The single hardest rule in this system (`ACCENT_STATUS_MIN_HUE_DISTANCE`, asserted over built-ins in tests):
+The behavioral requirement is that focus and outcome state remain distinguishable,
+including without colour. The current palette diagnostic uses
+`ACCENT_STATUS_MIN_HUE_DISTANCE`:
 
-> **The accent must sit at least 60° of hue away from `success`, `warning` and `error`.**
+> Default palette guideline: keep the accent at least 60° of hue away from
+> `success`, `warning`, and `error`.
 
-The accent answers *"where am I and what will my next keystroke touch"*; the outcome colours answer *"what happened"*. A theme that renders both in the same hue cannot say both at once — the focused border starts reading as status. `info` and `agent` are deliberately excluded from the check: neither reports an outcome, so both belong near the accent's own arc.
+The accent answers *"where am I and what will my next keystroke touch"*; outcome
+colours answer *"what happened"*. The diagnostic warns about potentially
+confusing mappings; it does not prove legibility or perceptual separation.
+Compare text/background contrast and the actual focus, selection, and outcome
+signals in light, dark, reduced-colour, and monochrome presentations. A palette
+that meets the numeric threshold can still fail those checks.
 
-Forge Dark's comment on its own palette is the model for how to reason about new themes: *"the brand green lives in the ground, not in the signal"* — every neutral is green-tinted while the accent is deliberately not green.
+`info` and `agent` are excluded from the current diagnostic because neither
+reports an outcome. A different palette may use other hues or separation rules
+when evidence supports them; update the diagnostic and its guidance together
+rather than leaving a warning that contradicts the accepted design.
+
+The current built-ins use neutral grey grounds and blue focus accents. Describe
+new palettes from their token values and rendered behavior; an older theme's
+identity notes are historical context, not a requirement to preserve its hues.
 
 ### 5.2 Semantic roles
 
 | Role | Token | Meaning |
 |---|---|---|
-| Accent | `accent` | Focus, navigation, active structure, links |
+| Accent | `accent` | Focus, navigation, active structure |
 | Warning | `warning` | Waiting for user, caution, approval needed |
 | Success | `success` | Verified success, passing validation, clean completion |
 | Error | `error` | Failure, destructive consequence, blocked state |
@@ -247,24 +354,26 @@ Rules:
 | Indicator | Meaning |
 |---|---|
 | `[ ]` | Pending / queued |
-| `[>]` | Active work (the only orange **state marker**; never focus, selection, or completed success. `md_strong` shares the orange family but is prose emphasis, not state.) |
+| `[>]` | Active work (orange in the current themes; prose emphasis may share the family, while its text and weight carry a different meaning) |
 | `[✓]` | Complete (neutral in history; green only for a confirmed successful result glyph) |
 | `[!]` | Failed |
 | `[-]` | Cancelled |
 | `[?]` | Warning / needs attention |
-| `[|]` | Blocked |
+| `[\|]` | Blocked |
 
 Git status is single letters from the same module: `M` `A` `D` `?` `!` `U` (modified / added / deleted / untracked / ignored / conflicted), bold and semantically coloured. The `✓` tick lives inside the `[✓]` completion marker as well as reviewed files and status-bar outcomes; `✗` only for a failed status outcome. Animation is restrained and never changes layout width.
 
-**One glyph means *running*, on every surface that shows it.** The braille
-spinner `⣾⣽⣻⢿⡿⣟⣯⣷` (`widgets/turn_line.rs::SPINNER_FRAMES`) is the whole
-family: the live turn line, the navigator's session rows (one step per row, so
-a column of running sessions does not read as one metronome), and the collapsed
-navigator's chip. Every frame is one cell wide, so motion never shifts a label.
-No quarter-circle family (`◐◓◑◒`) exists anywhere in the TUI, and the footer's
-lifecycle is a state *word* with a fixed-width `●` whose brightness pulses —
-it is not a rotating glyph. Nothing else may introduce a second running
-indicator.
+**Running has a consistent meaning across surfaces.** The current live turn
+line, navigator session rows, and collapsed navigator chip share the braille
+spinner `⣾⣽⣻⢿⡿⣟⣯⣷` (`widgets/turn_line.rs::SPINNER_FRAMES`). Each frame
+occupies one cell, so animation never shifts a label. The footer instead names
+the lifecycle beside a fixed-width `●` that pulses in brightness, and its
+background chips use static category/state glyphs (§9.3).
+
+Those treatments are defaults. A replacement must preserve recognizable state,
+stable geometry, and a static or textual fallback when animation or glyph
+coverage is unavailable. Introducing a different symbol must not make running
+look like waiting, completion, or keyboard focus.
 
 ### 5.4 Limited-colour fallback
 
@@ -274,7 +383,7 @@ Every semantic state must include a textual or symbolic cue:
 - Git: single letters (`M` `A` `D` `?` `!` `U`)
 - Success: `[✓]` (green only for a confirmed result) or `✓` for reviewed/status outcomes
 - Failure: `[!]` or `✗` for a failed status outcome
-- Focus: stronger/thicker border plus the `>` title marker
+- Focus: a visible title marker, caret, or other non-colour ownership signal; border weight may reinforce it
 - Selection: neutral background plus the `>` pointer, never tint alone
 
 Themes map onto ANSI fallbacks for terminals without true colour.
@@ -282,11 +391,14 @@ Themes map onto ANSI fallbacks for terminals without true colour.
 ## 6. Typography and Text Treatment
 
 Forge inherits the user's terminal font. Never bundle or require a font.
+The hierarchy, casing, emphasis colours, and hint treatment below are current
+defaults. Changes may improve readability or discoverability under §1.2 while
+preserving legibility and the terminal-capability fallbacks in §4.
 
 ### Rules
 
 - Use monospace throughout.
-- Forge may only use terminal attributes: bold, dim, underline, foreground and background.
+- Forge uses terminal attributes: bold, dim, underline, italic, foreground and background.
 - Use bold sparingly: active labels, headings, consequences, status glyphs.
 - Use underline for links or explicit selected actions only. An underline on
   its own never says "link": a link carries the `link` hue, which is what
@@ -297,12 +409,17 @@ Forge inherits the user's terminal font. Never bundle or require a font.
   when the modifier is dropped.
 - Model prose emphasis takes colour: `**strong**` is `md_strong` (orange) at
   bold weight and `*emphasis*` is `md_emph` (greenish yellow) at italic weight,
-  so key claims and qualifications pop out when skimming. These hues never
-  appear in chrome, status glyphs, diffs, code, or the composer.
-- Use uppercase for compact structural labels only — the focus-block titles are exactly `SEARCH`, `FILES`, `CHAT`, `SIDEBAR`, `COMPOSER`, `FOOTER`, `PANEL`, `APPROVAL` (`types.rs::FocusBlock::label`).
+  so key claims and qualifications pop out when skimming. These tokens apply
+  to prose; chrome, status, diffs, code, and the composer use their own semantic
+  tokens, which may share a colour family.
+- Use uppercase for compact structural labels only — the current focus-block labels are `SESSIONS`, `SEARCH`, `FILES`, `CHAT`, `SIDEBAR`, `COMPOSER`, `FOOTER`, `PANEL`, `APPROVAL` (`types.rs::FocusBlock::label`).
 - Use sentence case for messages, explanations and actions.
 - Avoid decorative ASCII art inside the product chrome.
-- Chrome glyphs are ASCII first (`>`, `v`, `[ ]`, `*`, `+`/`-`): tree markers, state markers and counts never depend on Unicode coverage. Arrows survive only inside key hints (`↑↓←→`, `⇧`, `⏎`), `·` joins hint pairs, and the block caret keeps its cell — all carrying meaning that is also spelled out in adjacent words.
+- Current chrome combines ASCII markers (`>`, `v`, `[ ]`, `*`, `+`/`-`) with
+  Unicode disclosure, lifecycle, and hint glyphs (`›`, `⌄`, `↑↓←→`, `⇧`, `⏎`).
+  Labels and alternate cues must keep critical state and actions understandable
+  when glyph coverage is incomplete (§4.15). Glyph choice is a default, not a
+  requirement to reproduce a particular symbol family.
 
 Hierarchy comes from weight, token step and placement — never from size, since terminal font size belongs to the user.
 
@@ -320,16 +437,27 @@ Hierarchy comes from weight, token step and placement — never from size, since
 
 ### Hint grammar
 
-All key hints use one grammar (`hints.rs`): `key verb` pairs joined by ` · `, keys bold, verbs sentence case. Under width pressure hints degrade by first dropping verbs (bare keys), then dropping trailing pairs. Hints never wrap — a hint that reflows breaks its container's height budget.
+Current key hints use one grammar (`hints.rs`): `key verb` pairs joined by ` · `,
+keys bold, verbs sentence case. The shared renderer drops verbs before trailing
+pairs under width pressure and keeps the row unwrapped. The Git patch footer
+instead drops secondary pairs first, keeping `? keys` and `Esc close` labeled
+and reserving a gap before branch/status metadata (§9.8). Bare keys save space
+but lose meaning for a user who has not learned them. Evaluate fewer labeled
+actions, expanded help, or a different hint budget when comprehension suffers.
+Preserve reachable actions and truthful bindings; exact compression order and
+row height are defaults.
 
 ```text
 Enter confirm · Esc cancel
 ↑↓ select · Enter confirm · Esc skip
 ```
 
-## 7. Layout Model
+## 7. Current Layout Defaults
 
-Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
+The current layout is implemented in `crates/forge-tui/src/layout.rs`. Its
+regions (`LayoutRegions`) are an implementation reference, not a restriction
+on future screen structure. Alternative layouts must satisfy §4 and demonstrate
+their tradeoffs through §1.3.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -344,23 +472,26 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
 ├────────┴───────────────────────┴─────────────────────────┤
 │ BottomPanel (interactive terminal, 0-height when closed)  │
 ├──────────────────────────────────────────────────────────┤
-│ Status line (0–1, full width, directly above the Footer)  │
 │ Footer (chips + contextual hints)                         │
 └──────────────────────────────────────────────────────────┘
 ```
 
 ### 7.1 Blocks
 
-1. **Navigator** — the left column. Two tabs, `Sessions` and `Files`, sharing
-   one column (`§7.7`). `Files` is the repository explorer with Git status
-   markers and its own search row (`Search` is a separate Tab stop nested in the
-   same bordered box). `Sessions` is the multi-session list.
-2. **Sidebar** — the persistent conversation column: transcript, outbound-message queue strip, background-task strip, and the composer. It never hides; the composer lives inside it. One rounded frame contains the transcript; a thin scrollbar sits inside its right padding when the transcript overflows. Messages do not get individual frames.
-3. **Workspace** — the center pane. Views are `File`, `Diff`, and a nested GitHub issues view; with nothing open it renders an empty-state placeholder. Issues reuse the Git navigator for the list and the workspace for details, without hiding the conversation or introducing another column. Conversation is deliberately *not* a workspace view.
+1. **Navigator** — the left column. `Sessions` and `Files`, plus `Git` in
+   repositories, share one column (`§7.7`). `Files` is the repository explorer
+   with Git status markers and its own search row (`Search` is a separate Tab
+   stop nested in the same bordered box). `Sessions` is the multi-session list.
+2. **Sidebar** — the conversation column: transcript, outbound-message queue strip, background-task strip, and the composer. The current layout keeps it visible with the composer inside it. One rounded frame contains the transcript; a thin scrollbar sits inside its right padding when the transcript overflows. Messages share that frame.
+3. **Workspace** — the center pane. Views are `File`, `Diff`, and a nested GitHub issues view; with nothing open it renders an empty-state placeholder. Issues reuse the Git navigator for the list and the workspace for details. Conversation renders in the Sidebar.
 4. **BottomPanel** — the interactive terminal. One top-rule border, thick + `> Terminal` title when focused. Closing it does not kill the shell; reopening resumes the same session. Busy phase and activity feed lines render inside the panel.
-5. **StatusBar / Footer** — chrome rows described in §9. The status line (the feedback strip, `widgets/feedback.rs`) is one of them: full width, directly above the Footer, 0 rows when there is nothing to say. It is shell chrome, not part of the conversation column.
+5. **StatusBar / Footer** — chrome rows described in §9. Feedback is recorded
+   in the app model and surfaced through notices and toasts; the current layout
+   reserves no separate feedback/status-line row (§9.10).
 
-### 7.2 Spatial priority
+### 7.2 Current spatial priority and alternatives
+
+The current split gives conversation and composer priority:
 
 1. Modal or approval overlay (HITL card in the transcript is itself a Tab stop).
 2. Transient input such as source search or jump-to-line.
@@ -370,20 +501,34 @@ Implemented in `crates/forge-tui/src/layout.rs`. Regions (`LayoutRegions`):
 6. BottomPanel.
 7. Decorative or redundant metadata.
 
+The invariant is access to the active task, necessary controls, and critical
+state. Conversation-first is a default, not a permanent ranking of delegation
+above inspection. Evaluate file- or review-focused layouts, user-controlled
+pane sizing, temporary single-pane views, and alternate collapse strategies
+when they make the current task easier. A collapsed pane needs a discoverable
+return path; hidden content must not strand an approval, draft, or unsaved file.
+
 ### 7.3 Width behaviour in terminal columns
 
 Content width is the frame width minus one outer gutter column on each side (`FRAME_INSET_X`).
 
 | Frame width | Behaviour |
 |---|---|
-| ≥ 116 | Files visible alongside sidebar and workspace (`files_fit()`) |
-| < 116 | Files hide entirely; `Ctrl+E` explains instead of toggling |
-| any | Sidebar never hides — worst-case floor keeps it at 40 columns of content |
-| any | Conversation never falls below 44 columns while the workspace is visible |
+| ≥ 116 | The Files/navigator column is eligible to appear when the other pane budgets fit (`files_fit()`) |
+| < 116 | The current layout hides Files; a direct Files request explains the size limit |
+| Resource open | Conversation keeps a sidebar allocation; the split reserves at least 44 region columns for the left workspace before any Files split |
+| No resource open | Conversation expands into the available workspace region; the Files gate still applies |
 
-Sidebar width: half the content width clamped to 64–88 columns at ≥160; otherwise a quarter clamped to 32–44.
+When a resource is open, the default sidebar width is half the **content** width
+clamped to 64–88 columns when that width is at least 160; otherwise it is a
+quarter clamped to 32–44. Saved pane-width preferences can override the default
+within the splitter's clamps. These are region widths: borders and padding
+reduce the text width. The 44-column allocation is for the workspace, not a
+guaranteed minimum conversation text width.
 
-Explorer-first collapse is deliberate: the composer (in the sidebar) outranks the tree.
+Explorer-first collapse is the current compromise. The 116-column gate and
+split ratios may change when a comparison shows better access to the active
+task without clipping essential controls or losing a return path.
 
 ### 7.4 Height behaviour
 
@@ -393,15 +538,20 @@ Explorer-first collapse is deliberate: the composer (in the sidebar) outranks th
 - A modal leaves surrounding context visible so it reads as overlaying Forge, with the background clearly secondary.
 - Every modal title uses the shared `> Title` grammar (`theme::modal_title`) — including the workspace unsaved-changes and file-changed-on-disk conflicts. Borders keep severity colour; the marker says who owns the keyboard.
 
+These row budgets are current defaults. Evaluate them against visible useful
+content, editable input, and discoverable controls at the supported sizes;
+decorative chrome and picker previews should yield before the active task.
+
 ### 7.5 Cell spacing
 
 Use a compact cell-based scale so the shell reads as one application while
 text keeps breathing room inside borders:
 
-- `0`: chrome gap (`CHROME_GAP_Y`); pane borders separate chrome from content.
+- `0`: chrome gap (`CHROME_GAP_Y`) and transcript ↔ composer gap
+  (`COMPOSER_GAP_Y`); pane borders separate these regions.
 - `1`: standard inline gap, outer frame gutter (`FRAME_INSET_X`), interior
   padding (`PANE_PAD_X`), column gutter (`PANE_GAP_X`), vertical pane gap
-  (`PANE_GAP_Y`), and transcript ↔ composer gap (`COMPOSER_GAP_Y`).
+  (`PANE_GAP_Y`).
 
 Concretely (`design.rs`): one blank column separates Files, Workspace and the
 Sidebar; no blank row separates chrome from content. No blank row separates
@@ -409,11 +559,10 @@ transcript and composer. Border plus `PANE_PAD_X` puts text two cells
 from the pane edge. The transcript frame and its padding use the same canvas
 background as its content, avoiding a contrasting outer band.
 Composer, queue, and bottom-panel text share this origin
-(`TEXT_INSET`). The status line and the Footer share `PANE_PAD_X` instead —
-they occupy one shell band at the bottom, below the conversation column, and
-line up with each other rather than with the panes above them. Rounded frames
-use Ratatui border glyphs and semantic theme tokens; they do not emulate pixel
-shadows or change terminal typography.
+(`TEXT_INSET`). The Footer uses `PANE_PAD_X` instead, within the bottom chrome
+band below the conversation column. Feedback appears through notices rather
+than a separate status line (§9.10). Rounded frames use Ratatui border glyphs
+and semantic theme tokens; they do not change terminal typography.
 
 Avoid double-padding a bordered block and its inner component.
 
@@ -439,43 +588,48 @@ settled prefix, exactly as a width change does. Both densities keep the "one
 blank line between distinct block types" rule from §9.4; airy only widens the
 structural rests, it never stacks separators.
 
-### 7.6 Responsive Presentation
+### 7.6 Responsive validation
 
-- Preserve the sidebar (conversation + composer) first.
-- Preserve critical status or current action.
-- Collapse Files before anything else.
+- Preserve access to the user's current task and its next action.
+- Keep approvals, failures, unsaved state, and session identity accessible.
+- Give collapsed panes a discoverable way to reopen or reach their content.
 - Remove secondary metadata before removing primary content.
 - Truncate paths visually without mutating stored values.
 
-Verify layouts at least at these sizes (tests pin `80×18`):
+Inspect layouts at least at these sizes, following §1.3:
 
 - `80×18` (enforced minimum)
 - `120×40`
 - `160×50`
 
-### 7.7 Navigator — Sessions and Files
+Also exercise sizes immediately around changed breakpoints and resize while
+input, selection, scroll, and unsaved state are active. Record before/after
+captures and interaction results. The dimensions are a baseline for review;
+they do not establish that the active task remains usable on their own.
 
-The left column is a two-tab **navigator**; it is the single multi-session
-surface. The old top task strip is superseded (`§11`).
+### 7.7 Navigator — Sessions, Files, and Git
 
-- Tabs: `Sessions` and `Files`, switched in repository mode with `Ctrl+1` /
-  `Ctrl+2`, or flipped with `Ctrl+E` (`input.rs`, `workspace.rs`). Neither
-  `Tab` (unconditional block cycling) nor `Enter` (which attaches the selected
-  session) switches tabs. They never show side by side: the layout already
-  carries three content columns (navigator | Workspace | conversation) and
-  cannot afford a fourth, and `Files` is the first thing to collapse (`§7.3`).
+The current left column is a **navigator** with `Sessions` and `Files`, plus
+`Git` in repositories. It is the main multi-session surface. The earlier top
+task strip is recorded as a historical decision in §11.
+
+- Tabs: `Ctrl+1` / `Ctrl+2` / `Ctrl+3` select `Sessions` / `Files` / `Git`
+  in repository mode; `Ctrl+E` cycles available tabs (`input.rs`, `workspace.rs`).
+  `Tab` cycles focus blocks, with the input exceptions in §8.1. The current
+  navigator shows one tab's content at a time to avoid adding a fourth content
+  column. A different arrangement can be evaluated under §1.2.
 - **The named tabs identify the active pane.** Do not repeat `SESSIONS` /
   `FILES` / `GIT` or a title focus marker above the tab row. The persistent
   session strip renders session names only, including below `files_fit()`
   where the tab row is hidden; its selected and focused session styling stays
   distinct.
-- The tab row is reachable from the keyboard: `↑` at the first row of either
-  tab's list moves onto the row, where `←` / `→` walk its stops left to right —
-  `Sessions`, `+`, `Files` — `Enter` activates the stop the cursor rests on,
-  `↓` / `Esc` step back into the pane the active tab shows, and every other key
+- The tab row is reachable from the keyboard: `↑` at the first row of the
+  active navigator list moves onto the visible row, where `←` / `→` walk its stops left to right —
+  `Sessions`, `+`, `Files`, and `Git` when available — `Enter` activates the stop the cursor rests on,
+  `↑` / `↓` / `Esc` step back into the pane the active tab shows, and every other key
   is inert on the row. The row is a sub-focus of the column, never a `Tab` stop
   (`§8.3`).
-- The row's `+` cell creates a session. It is **not** a third tab: it never
+- The row's `+` cell creates a session. It is **not** a tab: it never
   takes the active tab's ground, and the row's cursor is the only thing that
   marks it, so the tab bar keeps showing which tab is active (`§9.6`). It runs
   the same prompt-less create as `n` in the list and `/new` in the composer, so
@@ -484,7 +638,8 @@ surface. The old top task strip is superseded (`§11`).
   right edge, immediately left of `Files` — so the create verb reads as acting
   on sessions rather than on the row at large or on `Files`, which is the one
   thing that was ambiguous when it sat at the row's far right. It stays
-  reachable from either tab without switching tabs, and clickable. Its three
+  keyboard-reachable from any navigator tab without switching tabs and is
+  clickable whenever visible. Its three
   columns come from the `Files` tab — the only elastic box on the row — so on
   navigators narrow enough for the need badge to fit, the badge needs three
   more columns before it reappears beside the cell.
@@ -516,8 +671,9 @@ surface. The old top task strip is superseded (`§11`).
   same two glyphs the `+` cell's row uses for `§9.6`. While the navigator owns
   the keyboard the ground is the neutral `selection` step; when the block loses
   the keyboard the row keeps the bar and a weight step and gives up the ground
-  (`§8.5`). A selected row therefore never takes an accent wash (`§8.4`), and
-  hover keeps its raised ground and its `›` and never takes the bar (`§8.6`).
+  (`§8.5`). In the current treatment a selected row has no accent wash
+  (`§8.4`); hover uses its raised ground and `›`, without the selection bar
+  (`§8.6`).
   `Enter` attaches, `Space` peeks and replies inline, `n` creates a session and
   opens its composer (the session is named from the first prompt submitted in
   that composer), `s` stops, `c` continues, `x` archives and cleans
@@ -573,7 +729,12 @@ verify the linked session, issue, repository and PR before executing. Local test
 results and remote checks remain separate evidence; check status is associated
 with the inspected commit, not a permanent session-level success badge.
 
-## 8. Focus, Modes and Navigation
+## 8. Current Focus and Navigation Defaults
+
+The current event model below is a reference for compatibility and discoverability.
+The required behavior is clear ownership, reachable actions, safe routing, and
+recoverable navigation (§4). The number and order of focus blocks, labels,
+shortcuts, and subfocus states may change through §1.2.
 
 ### 8.1 Blocks and cycle
 
@@ -584,7 +745,10 @@ TaskStrip → Search → Files → Workspace(CHAT) → BottomPanel(PANEL) → Si
 ```
 
 - `Approval` enters the cycle only while a HITL request or agent question is pending.
-- `Search` is a real Tab stop of its own so Tab has one consistent meaning everywhere instead of toggling a sub-mode inside Files.
+- `Search` is a separate Tab stop rather than a sub-mode of Files. `Tab`
+  normally cycles blocks; the terminal receives plain `Tab` for completion,
+  and active composer slash suggestions use it for completion. `Shift+Tab`
+  leaves the terminal block (§8.3).
 - Opening an interactive block focuses it; closing a block restores the previous valid owner, falling back to the Composer (never the Workspace, which is a modal editor).
 - A handled event never falls through to another block.
 - Model activity does not capture pane navigation: `Tab` / `Shift+Tab` still
@@ -592,7 +756,12 @@ TaskStrip → Search → Files → Workspace(CHAT) → BottomPanel(PANEL) → Si
   completes an active slash suggestion; `Enter` submits or queues a draft.
 - `Esc` pops exactly one interaction level.
 
-The canonical label vocabulary is `SESSIONS SEARCH FILES CHAT SIDEBAR COMPOSER FOOTER PANEL APPROVAL` (`types.rs::FocusBlock::label`). Labels identify the active block in help and status contexts; panes themselves carry `>` title rows, not label tags.
+The current label vocabulary is `SESSIONS SEARCH FILES CHAT SIDEBAR COMPOSER
+FOOTER PANEL APPROVAL` (`types.rs::FocusBlock::label`). `Workspace(CHAT)` is an
+implementation label for the resource pane; the conversation itself occupies
+`Sidebar`. These names are not an ideal user-facing vocabulary by definition.
+Evaluate clearer names when users confuse the panes, and update help, hints,
+and bindings together.
 
 ### 8.2 Modes
 
@@ -601,7 +770,11 @@ The canonical label vocabulary is `SESSIONS SEARCH FILES CHAT SIDEBAR COMPOSER F
 - **Navigation** — block-level keys apply.
 - **Transient(owner)** — a captured input field owns keys: `SourceSearch` or `JumpToLine`.
 
-Text entry in the Composer or editor is expressed by which block is focused, not by a mode overlay. There is no persistent mode chip; where ambiguity could exist, the block title carries a marker (e.g. `> Terminal` with a thick rule).
+The current design expresses text entry through the focused block and local
+editor state, without a persistent global mode chip. A title marker or caret
+communicates ownership. If that is insufficient for a task, a clearer mode
+indicator or a simpler interaction model may replace it; ownership must stay
+visible and accurately describe the next keystroke.
 
 ### 8.3 Navigation grammar
 
@@ -610,7 +783,7 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 | Next visible block | `Tab` (while the `Panel` block holds the keyboard, plain `Tab` goes to its shell) |
 | Previous visible block | `Shift+Tab` |
 | Navigator tabs `Sessions` / `Files` / `Git` (repository mode) | `Ctrl+1` / `Ctrl+2` / `Ctrl+3`; `Ctrl+E` cycles all available tabs (`Sessions` → `Files` → `Git` → `Sessions`). The Git tab separates staged and unstaged changes; paths changed on both sides appear in both groups, and untracked files are unstaged. `Ctrl+3` is inert outside a repository |
-| Navigator tab row (repository mode) | `↑` at the first row of either tab's list; `←` / `→` walk `Sessions` · `+` · `Files` · `Git`, halting at each end, `Enter` activates the stop, `↓` / `Esc` step back into the pane |
+| Navigator tab row | `↑` at the first row of the active navigator list when the row is visible; `←` / `→` walk the available `Sessions` · `+` · `Files` · `Git` stops, halting at each end, `Enter` activates the stop, `↑` / `↓` / `Esc` step back into the pane |
 | Enter interaction | `Enter` or `i` where appropriate |
 | Leave one interaction level | `Esc` |
 | Go back through workspace history | `Alt+←` |
@@ -618,13 +791,17 @@ Text entry in the Composer or editor is expressed by which block is focused, not
 | Contextual help | `/help` |
 | Toggle the session scratchpad (running notes) | `Ctrl+N` |
 
-Type-to-chat is the rule for every block except `Panel`: an unconsumed
-printable key starts a message, because with no local meaning that is the only
-reading it has. The block's own bindings are matched first, so a displayed
-shortcut never loses to a draft, and focus moves with the character — the block
-that renders the keyboard is always the block that owns it. `Panel` is the one
-exception: its PTY takes every byte the panel does not claim, so a shell command
-typed there can never become a draft the next `Enter` submits to the model.
+Type-to-chat is the current fallback outside `Panel`: an unconsumed printable
+key starts a draft and moves focus to the composer. Local bindings are matched
+first. This saves a focus transition but can surprise a user who expected to
+search or navigate. Evaluate accidental drafts and discoverability before
+extending it; an explicit compose action or another fallback is eligible under
+§1.2. Preserve the existing draft when changing the behavior.
+
+The mandatory routing boundary is that shell input must not become a model
+prompt, editor input must not escape its owner, and a handled shortcut must not
+also enter text or act on a second control. The current Panel routes unclaimed
+bytes to its PTY.
 
 No block switches tabs on `←` / `→` while its pane holds the keyboard. Plain
 arrows keep their in-block meaning: the session cursor in `Sessions` (`←`/`→`
@@ -634,23 +811,31 @@ behaviour), and pass-through to its shell in `Panel`. In the file view a plain
 `←` is the same history-back as `Alt+←`. Modified arrows never switch tabs.
 
 The one place `←` / `→` switch tabs is the tab row itself, reached with plain
-`↑` at the first row. The row is a sub-focus of the navigator column rather
-than a block: `Tab` / `Shift+Tab` still cycle blocks from it (it is never a Tab
-stop), only `←` / `→` / `Enter` / `↓` / `Esc` are bound on it, and the pane
+`↑` at the first row of the active navigator list. The row is a sub-focus of the
+navigator column rather than a block: `Tab` / `Shift+Tab` still cycle blocks
+from it (it is never a Tab stop), only `←` / `→` / `Enter` / `↑` / `↓` / `Esc`
+are bound on it, and the pane
 under it paints as unfocused while it is up. `←` / `→` move between the row's
-three stops and halt at each end rather than wrapping, so the movement always
+available stops (`Sessions`, `+`, `Files`, and repository-only `Git`) and halt
+at each end rather than wrapping, so the movement always
 matches the row as drawn; `Enter` activates the stop under the cursor — a tab
 steps back into its pane, the `+` cell creates a session. Resting on `+` moves
 nothing else: the active tab keeps its ground and `focus.block()` keeps the
 pane on screen, so the row never covers a key owner that is not drawn.
 
+In Git review, `↑` reaches the tab row only while the changed-file list owns
+the keyboard. Patch focus keeps `↑` / `↓` as scrolling keys, and an open diff
+search retains input ownership. Entering and leaving the tab row preserves the
+draft, selected path/side, and patch reading position.
+
 The **Git tab** is the one tab whose surface spans two blocks — the
 changed-file list in the navigator column (`Files`) and the patch in the
-Workspace pane — so both route through one keymap rather than one apiece. The
-list keeps the keys it is built around, because it is the file picker: `↑`/`↓`
+Workspace pane — so both route shared review actions through one keymap. The
+focused list keeps the keys it is built around, because it is the file picker: `↑`/`↓`
 move its own cursor (independently of the tree cursor, so a path changed on both
 sides stays addressable twice), `s`/`u` stage the selected side, `i` opens the
-inline issues view, and `Enter` hands the keyboard to the patch. In issues,
+inline issues view, and `Enter` hands the keyboard to the patch. The focused
+patch scrolls with `↑`/`↓` without changing the selected file. In issues,
 `Esc` restores the preceding Git review without recreating its selection or
 scroll; issue actions never fall through to staging or commit bindings. `Esc`
 leaves the ordinary Git review from either pane. Every other key belongs to the patch, whose hint row
@@ -673,8 +858,8 @@ keep their preview-first behavior (`i` edits), and editor focus owns its keys.
 Three border levels (`design.rs`, `theme::panel_border`):
 
 - **L1 — pane frame.** Every pane, focused or not, takes the same neutral
-  `border`. A box that changes hue when it takes the keyboard turns the whole
-  layout into a status display, so panes never take accent borders.
+  `border` in the current design. This keeps large outlines quieter than
+  content and distinguishes pane structure from the local focus accent.
 - **L2 — inset field.** The composer outline and the explorer's search field
   sit at the same neutral step as L1; a nested field never reads as a second,
   louder box.
@@ -684,26 +869,30 @@ Three border levels (`design.rs`, `theme::panel_border`):
   composer's top edge, a pane's `>` title marker, the scrollbar thumb. Thick
   rules survive only where the region is a single rule (the bottom panel).
 
-The active block must use at least two signals from the L3 set:
+The current active-block treatment combines at least two signals from the L3 set:
 
 - accent or bold block title
 - explicit state marker where relevant (`> Terminal`, `> Chat`)
 - caret, scrollbar thumb, or the active tab's ground at the point of interaction
 
-The transcript has one rounded L1 frame that always carries its block title
+The current transcript has one rounded L1 frame carrying its block title
 in the shared pane grammar (`theme::pane_title`, same as the panel and diff
 header): `> Chat` in bold accent while the Sidebar block owns the keyboard,
-neutral two-space `  Chat` otherwise (never an accent border), including
+neutral two-space `  Chat` otherwise, with a neutral border, including
 when the transcript has no overflow. Its
 scrollbar also takes a solid accent thumb while the Sidebar block owns the
 keyboard, a muted half-block otherwise. Modals suppress background focus.
 
-Do not fill the entire active block with accent colour. Focus is structural, not a selection rectangle.
+The current treatment avoids a full accent fill, which can overwhelm content
+or resemble selection. A different border, marker, or fill treatment is eligible
+when it improves ownership recognition without confusing focus with selection
+or outcome state. At least one effective ownership signal must survive loss
+of colour.
 
 ### 8.5 Selected tab versus focused block
 
-- **Block focus** is shown by local L3 markers and the block title, never by
-  the pane outline.
+- **Block focus** currently uses local L3 markers and the block title while
+  the pane outline stays neutral. Alternative treatments follow §8.4.
 - **Selection** (a row, a list item, a diff entry) is shown inside the block.
 - A selection inside an inactive block stays visible but muted, and never implies keyboard ownership.
 
@@ -730,7 +919,29 @@ Mouse is a second input for the same grammar, never a separate mode. Clicking mo
   backing editor; Shift+wheel invokes one page movement.
 - **Hover** (when the terminal reports motion) is the pointer's focus ring, and only actionable surfaces take it: session rows, file-tree rows, footer chips, approval options, navigator tabs, queued-message rows, background-task rows, and overlay list rows. It combines a raised `surface_hover` ground with one non-colour signal — a leading `›` marker in the row's reserved marker cell and/or a weight step — so clickability is never colour-only; the marker cell is pre-reserved, so hover never shifts text (`§7.7`). It never moves keyboard focus and never changes layout. Terminals that do not report motion simply show no hover. Precedence stays focused block > selected row > hover: `selection` is the strongest neutral ground in both built-in themes (`selection` outranks `surface_hover`), so hover never impersonates keyboard ownership or a selection; rows that cannot be acted on never take hover.
 
-## 9. Component Specifications
+### 8.7 Discoverability and recovery
+
+Evaluate whether a user can identify the active session/resource, find the next
+action, understand its consequence, and return to their work without knowing
+the keymap in advance. Keyboard efficiency and learnability are separate
+criteria; fewer keystrokes do not compensate for an action that cannot be found.
+
+Under width pressure, preserve a meaningful next action or an obvious route to
+its explanation. Avoid compressing every action into unexplained keys. Contextual
+help, direct navigation, persistent hints, and alternate focus cycles are eligible
+when a task comparison justifies their space and interaction cost. New controls
+must work through the same authorization and state paths as existing ones.
+
+Closing a modal, changing tabs, or leaving a temporary view should return the
+user to a valid owner and preserve the draft, selection, and reading position.
+Validate those return paths along with the forward action.
+
+## 9. Current Component Defaults and Safeguards
+
+Dimensions, placements, colours, exact glyphs, and component anatomy in this
+section describe the current implementation. They can evolve under §1.2.
+Requirements that protect truthful state, input ownership, authorization,
+output safety, and existing work remain mandatory under §4.
 
 ### 9.1 StatusBar
 
@@ -759,16 +970,24 @@ Avoid duplicating file counts, task details or provider telemetry already shown 
 Two rows (`widgets/footer.rs`); the second row is the background activity line.
 
 - **Row 0 — configuration and turn state.** Configuration chips on the left, live activity on the right.
-  - **Chips:** model (`provider/model`, prefix-stripped for display) and reasoning effort. They are an ordinary Tab stop (`Footer` block): `←`/`→` picks a chip, `Enter` opens the picker. `Enter` still sends from the composer.
+  - **Chips:** model (`provider/model`, prefix-stripped for display) and reasoning effort, with an optional notes chip for the scratchpad. They share the `Footer` focus block: `←`/`→` selects a configuration chip, `Enter` opens its picker. `Enter` still sends from the composer.
   - **Lifecycle:** turn state glyph plus short detail qualifier, styled secondary — severity lives in the glyph, never duplicated in colour.
   - **Context pressure:** a word, not a meter — `context` / `context high` / `context full`, coloured ok/warn/error at the 70% and 90% thresholds. (The old nine-cell shade-bar was removed: at typical single-digit percentages it read as stipple texture.)
   - **Hints:** the §6 hint grammar. Blocking dialogs take over the whole row; the footer's own per-chip hint and the task strip's session hint share the row with the chips. Focusing any other block — files, search, the panes — leaves the activity line alone.
-  - **Working meter:** the lifecycle is a state *word* (`running`, `waiting`, `failed`) with one fixed-width `●` beside it, whose brightness pulses bright/dim once per event-loop tick while a turn runs (`throbber-widgets-tui` state, forge styling). The glyph row is byte-identical on every frame, so the pulse never moves a column. (This line used to claim a quarter-circle `◐◓◑◒` meter — no such rotation exists in Forge, and the braille spinner family is the only running indicator; see §5.3.)
+  - **Working meter:** the lifecycle is a state *word* (`running`, `waiting`, `failed`) with one fixed-width `●` beside it, whose brightness pulses bright/dim while a turn runs (`throbber-widgets-tui` state, forge styling). The pulse changes brightness without moving a column; the state word remains meaningful without animation (§5.3).
   - When an approval pends, the row dims — it must not look interactive.
 - **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — terminal/background jobs, agents/subagents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `◆` agent, `⇥` queued); the bracket is shared chrome so the chips read as a segmented strip. The row is blank when nothing is in flight, so an idle footer is unchanged. Per-item detail (command, elapsed, live subagent activity) lives in the background strip (§9.12), not the footer.
   - **A completion is an observation, not a queued prompt.** Finishing a background task does not inject a user-role prompt. The result stays in the background strip and the operator attaches it to the composer explicitly (`i` on the selected task). Only approve-all — no human in the loop — auto-continues by enqueuing the result at the next turn boundary.
 
 ### 9.4 Chat transcript (sidebar)
+
+Before the first turn, the home card identifies the model, provider/connection
+state, and workspace, then offers complete starter prompts. Prompts word-wrap
+with a hanging bullet rather than clipping at the pane edge. Compact mode
+omits the wordmark, skills count, and extra blank rows; a narrow compact pane
+offers one complete starter instead of spending its reading budget on three
+wrapped suggestions. These are current defaults, evaluated for readable
+metadata and an understandable first action at the supported sizes.
 
 Hierarchy:
 
@@ -834,17 +1053,22 @@ separators.
   without widening what may be emitted. The workspace Editor tab's Markdown
   preview is the same prose under the same rule: it renders through the
   links-preserving renderer and marks its rows, so a link in a previewed file
-  is the link it would be in an answer. Out of scope on purpose — a heading
-  uppercases its label (a destination there would point at text that no longer
-  matches it), and a table cell drops its link table on the way into the row
-  (an underline there would promise a click that cannot happen).
-- **The click belongs to the terminal, so it is never advertised.** Forge emits
+  is the link it would be in an answer. **Current implementation limitations:**
+  headings uppercase their text without preserving link-column mappings, and
+  table rows discard cell destination metadata. Neither path currently exposes
+  actionable links. These are renderer limitations, not permanent exclusions:
+  preserving destination metadata through those transforms can make the links
+  eligible without relaxing destination validation.
+- **The click belongs to the terminal.** The current implementation emits
   the sequence only for terminals known to render it, resolved once per process
   from `TERM_PROGRAM` with any multiplexer disqualifying (`tmux` before 3.4
   cannot forward hyperlinks, and `TERM_PROGRAM` names the outer terminal inside
   one either way). On anything else the underline stays and nothing else
   happens, which is why no hint row names a click: §4.5 forbids advertising a
-  binding the current context cannot reach.
+  binding the current context cannot reach. The blanket multiplexer exclusion
+  is a current capability-detection limitation. A verified capability check or
+  an actionable in-app fallback may improve access without promising unsupported
+  terminal behavior or admitting unsafe destinations.
 - Lists, quotes, tables and fenced code share the prose left edge; only the code rail sits inside the block, never the whole block inset past its neighbours. A plan's explanation is separated from its `Plan · N of M done` header by one blank.
 - Do not surround every message with a full-width box.
 
@@ -862,13 +1086,15 @@ and outcome colours stay reserved for result state.
 Implementation: `crates/forge-tui/src/conversation.rs`.
 
 Planning checklists use the lifecycle grammar: `[ ]` pending, `[>]` active
-(orange, bold — the only orange element), `[✓]` completed in neutral muted.
+(orange and bold in the current themes), `[✓]` completed in neutral muted.
 The active task has bold text; other tasks are muted. Wrapped text aligns
 after the checkbox. The heading reports completed tasks, and the pinned
 summary retains the count and current task when the checklist scrolls away.
 Completion reflects the agent's reported plan status; tool evidence remains
-below each step. Nesting stays flat: deeper levels need a transcript schema
-change, so the renderer locks one level rather than inventing hierarchy. Only
+below each step. **Current implementation limitation:** nesting stays flat
+because the transcript schema supplies one level. A schema and renderer change
+may support hierarchy when the task warrants it; the UI must not invent parent
+relationships that the data does not contain. Only
 the newest checklist renders: a superseded revision is removed, never recorded
 as a second `Plan updated · N of M done` line beside it, so the checklist is
 the single plan surface.
@@ -881,7 +1107,7 @@ the single plan surface.
   rule — focus alone is a hue change, with the block caret as the monochrome
   signal. Waiting outranks focus colour.
 - Multi-line growth bounded by `MAX_COMPOSER_INPUT_H`.
-- Outbound messages queue below the input as a strip; `Ctrl+↑`/`Ctrl+↓` move the selection, `Ctrl+Backspace` cancels one.
+- Outbound messages queue above the composer as a strip; `Ctrl+↑`/`Ctrl+↓` move the selection, `Ctrl+Backspace` cancels one.
 
 ### 9.6 File tree
 
@@ -897,8 +1123,8 @@ the single plan surface.
   and bold weight; no tab is underlined and no tab carries a marker glyph, so the
   label stays centred in its tab in every state. The tab bar shows which tab
   is active, not which block owns the keyboard — with one exception: while the
-  row itself holds the keyboard (`↑` at the first row of either tab's list,
-  `§8.3`), both outlines step to the L3 accent so the row reads as the thing
+  row itself holds the keyboard (`↑` at the first row of a navigator list,
+  `§8.3`), the tab outlines step to the L3 accent so the row reads as the thing
   being driven. The active tab keeps its ground and hue in that state, so the
   focus signal never stands in for the active-tab signal.
 - The row's `+` cell shares the `Sessions` tab's right edge and the `Files`
@@ -941,7 +1167,7 @@ the single plan surface.
   keystroke retries the open.
 - Gitignored paths are out of scope for Files search, matching what the `grep`
   tool sees. `.git` and `target` were the only exclusions before this change.
-- Do not clear the visible tree during a Git-only refresh (pinned by test — FORGE-DESIGN invariant).
+- Preserve the visible tree and its navigation state during a Git-only refresh (§4.12).
 - Empty, loading, unavailable and failed states must be distinct.
 
 ### 9.7 Source viewer
@@ -978,6 +1204,12 @@ Rules:
 - Prefer foreground/gutter markers over large background fills per changed line.
 - The header names the selected file as the pane title (`> …`), with ASCII `+N -M` counts and the `N of M` position; the marker column comes off the elision budget so counts never clip.
 - Reviewed files carry the `✓` tick; counts stay ASCII even in narrow panes.
+- The hint row keeps labeled `? keys` and `Esc close` available. Under width
+  pressure it drops secondary pairs before their verbs and elides a long
+  branch/status tag to preserve those two actions. Hunk and file navigation
+  remain visible when they fit; the full keymap stays reachable through `?`.
+  A two-column gap separates hints from metadata. Routine workflow narration
+  does not consume this action budget.
 - Stale diff state must be explicit; binary/untracked/conflicted states must be truthful.
 - `/diff` holds no content state itself — the pane reads live diff state so refreshes update in place.
 - Three sources, cycled by `d` in the order the questions are asked: the
@@ -1024,11 +1256,11 @@ Rules:
   conflicted path, `s` stages the saved resolution, `c` commits the merge, and
   only the destructive exit is new — `a` aborts, and only behind a confirmation.
 - These keys act from the Git tab's changed-file list as well as the patch
-  (`FORGE-DESIGN §8.3`). `↑`/`↓` and `s`/`u` stay with the list, which is the
-  file picker and advertises them on its own rows; `Esc` closes the tab from
-  either pane. Everything else below belongs to the review, not the block that
-  happens to hold the keyboard — the pane draws one hint row for the tab, so one
-  keymap has to back it.
+  (`FORGE-DESIGN §8.3`). With list focus, `↑`/`↓` move the file cursor and `↑`
+  at the first row reaches the navigator tabs. With patch focus, `↑`/`↓` scroll
+  the patch. `s`/`u` stage the selected side and `Esc` closes the tab from either
+  pane. Shared review actions use the same keymap; an open search keeps its own
+  input rather than triggering an action underneath it.
 
 ### 9.9 Terminal (BottomPanel)
 
@@ -1051,22 +1283,24 @@ Rules:
 
 ### 9.10 Status line and transient toast overlay
 
-**Status line** (`widgets/feedback.rs`) — one full-width row directly above the
-Footer, 0 rows when empty. It is shell chrome, never part of the conversation
-column: a message appearing or expiring cannot shift the transcript, which is
-what it used to do when it was the first row of the sidebar's stack. It holds
-the latest-status role for the whole shell — file saves, refusals like `No file
-open to save`, connection notices — and expires 7s after it was last written.
-It pads to `PANE_PAD_X`, the origin it shares with the Footer beneath it.
+**Feedback state** (`widgets/feedback.rs`) — the app retains the latest message
+and severity for compatibility, but the current draw path and layout reserve
+zero rows for a separate status line. Setting feedback shows a toast rather
+than inserting a row that moves the transcript. A separate status line is an
+earlier presentation decision, not a currently displayed surface.
 
-**Transient toast** — success and error notices additionally surface as a
-positioned toast (`ratatui-toaster`, `widgets/toasts.rs`), bottom-right,
-auto-expiring after 2s. Notification only: never focusable, never blocking.
+**Transient toast** — notices surface through `ratatui-toaster`
+(`widgets/toasts.rs`), currently at the top-right and auto-expiring after 2s.
+Toasts do not take focus or block input. Notices from another session use the
+overlay without replacing the watched session's feedback state
+(`SupervisorEvent::Attention`).
 
-The toast is the interruption, the status line is the record. A notice about a
-session that is *not* the one being watched goes to the toast alone
-(`SupervisorEvent::Attention`), so one turn completing never paints the same
-words on both surfaces at once.
+Position, duration, and whether a persistent notice surface is useful are
+changeable defaults. The behavioral requirement is that an unresolved failure,
+approval, or destructive consequence remains accessible after a transient
+notice disappears (§4). Evaluate missed notices and access to their details
+when changing notification behavior; a two-second toast is not proof that a
+user has seen or understood a result.
 
 ### 9.11 Approve-all warning strip
 
@@ -1177,8 +1411,8 @@ by `[tui] notify = auto | bell | osc9 | both | off`.
 - **Text is sanitized, not trusted.** Labels come from the model, and an
   embedded `ESC` or `BEL` would terminate the OSC 9 sequence early and leave
   the remainder to be read as terminal commands.
-- The in-app toast and status line still fire while focused. The terminal
-  notification and the in-app notice answer different questions.
+- In-app notices and the background strip remain available while focused.
+  Terminal notifications reach the operator outside Forge.
 
 ### 9.15 Quit-all confirm
 Quitting Forge has always stopped every session — process exit retires every
@@ -1186,7 +1420,7 @@ actor, so the sessions the operator is not looking at die with the one they
 are. What was missing was the bill: neither `Ctrl+D` nor `/quit` said how many
 turns, queued prompts, pending approvals, or unsaved buffers went with it.
 
-- **Raised by the quit gate**, one path shared by `Ctrl+D`, `/quit` on the
+- **Raised by the quit gate**, one path shared by an uncaptured `Ctrl+D`, `/quit` on the
   primary session, and the exit that follows a resolved unsaved-changes
   dialog. `/quit` in any other session view stays a per-session close, so the
   dialog exists in exactly one place.
@@ -1209,9 +1443,11 @@ turns, queued prompts, pending approvals, or unsaved buffers went with it.
   `danger` once any session view holds unsaved changes. Counts come from the
   supervisor's roster, never from the focused view, so the numbers describe
   every session rather than the visible one.
-- **Progress is the status line, not a second dialog.** While the sweep runs
-  the message counts down against the roster (`closing 3 sessions…`). The same
-  flag suppresses the per-session "removed with unsaved editor changes"
+- **Progress currently lives in compatibility state.** While the sweep runs,
+  `status_state.message` counts down against the roster (`closing 3 sessions…`).
+  The current layout does not paint that state as a separate status line
+  (§9.10); exposing visible progress is eligible for improvement under §1.2.
+  The quitting flag suppresses the per-session "removed with unsaved editor changes"
   warnings, which the confirm has already accounted for and which would
   otherwise fire once per session on the way out.
 - **Exit is not negotiable, and failure is not silent.** The process leaves
@@ -1224,7 +1460,7 @@ turns, queued prompts, pending approvals, or unsaved buffers went with it.
   seen `Ctrl+C again to quit` and insisted; interposing a dialog there would
   fight the one binding whose whole purpose is to stop asking.
 
-## 10. Theme Policy
+## 10. Current Theme Defaults and Behavioral Guarantees
 
 Built-in themes ship as TOML in `crates/forge-tui/themes/` and compile into the binary:
 
@@ -1240,41 +1476,76 @@ Users drop custom `.toml` themes into `~/.config/forge/themes/` or `.forge/theme
 Rules:
 
 - Themes are semantic token mappings against the full `ThemePalette`, not arbitrary plugin formats.
-- Palette invariants (including the §5.1 accent/status hue distance) are asserted over the built-in set in tests.
+- The canvas supplies foreground and background colours together, so raw
+  chrome text inherits the active palette rather than the terminal's unpaired
+  foreground.
+- Palette diagnostics use the current §5.1 hue guideline. Validate built-in and changed themes for readability, distinguishable state, and non-colour signals under §1.3; do not assume removed styling tests still enforce these properties.
 - Bare `/theme` opens a bottom dock: `↑↓` live-previews against the real UI, `Enter` confirms, `Esc` restores the previous theme. `/theme <id>` applies immediately.
 - Theme choice must not change runtime semantics, navigation, persistence or command availability.
 - Theme policy applies to conversation presentation, chrome, activity and code rendering — never to terminal font selection.
 
-### Forge Dark identity notes
+### Current built-in palette choices
 
-Forge Dark is the reference implementation of the system's philosophy:
+These values describe the shipped TOML palettes, not constraints on their
+future evolution:
 
-- All neutrals are green-tinted — the brand lives in the ground, not in signals.
-- Accent is periwinkle blue (`#8FA4D6`), placed at 222° precisely because it is the widest arc clear of success (119°), warning (39°), error (6°) and agent violet (274°).
-- Agent narration gets its own violet voice (`agent`), distinct from both the user's text and every outcome colour.
-- `tag` is deliberately unsaturated: low-emphasis labels must not read as a hue with meaning.
-- `md_strong` shares the activity orange family (36°), and `md_emph` is a
-  yellow-green at 70° — clear of warning (45°) and success (141°). Both are
-  prose-only and fall back to `text_primary` in themes that omit them.
+| Role | Forge Dark | Forge Light |
+|---|---|---|
+| Canvas / panel | `#141414` / `#1E1E1E` | `#FAFAFA` / `#F0F0F0` |
+| Primary / secondary text | `#EBEBEB` / `#A0A0A0` | `#202020` / `#545454` |
+| Focus accent | `#439EFD` | `#005EB8` |
+| Success / warning / error | `#5BDB87` / `#E6C66A` / `#F26D78` | `#18723B` / `#795B00` / `#B52C42` |
+| Activity / strong prose | `#FFA31D` | `#965300` |
+| Emphasized prose / links | `#C7D96B` / `#4FC9DF` | `#5F7300` / `#00606E` |
 
-New themes should document their hue arithmetic the same way in their TOML comments.
+`agent`, `tag`, and `structure` share the secondary neutral in both built-ins;
+agent narration also uses italic styling. Prose emphasis tokens apply inside
+model answers, not chrome, status, or code, and fall back to `text_primary` in
+themes that omit them.
 
-## 11. Explicitly Superseded Structural Rules
+New themes should document their token choices and relevant legibility evidence.
+Hue arithmetic can explain a choice, but does not establish usability by itself.
 
-These older assumptions are wrong for the shipped architecture and must not be reintroduced:
+## 11. Historical Decisions and Reasons to Revisit Them
 
-- Chat is not a center-pane view or a mode tab — it is the permanent sidebar.
-- There is no Inspector block and no Task/Context/Runtime tabs.
-- The bottom panel has no Run/Diagnostics/Activity tabs — it is the terminal.
-- The workspace does not offer a Run view; runs happen in the terminal panel.
-- Files visibility is not owned by a workspace tab; it collapses on width alone.
-- The shell is not organized around a permanent shortcut manual.
-- The transcript does not need a box for every message.
-- The application must not imply that terminal typography can be configured from inside Forge.
-- There is no horizontal task strip above the workspace, and no separate modal session switcher with its own keymap and five-group taxonomy. Multi-session lives in the navigator (`§7.7`): one vertical list, three states, one keymap.
-- Pinning/slots are not a user-facing affordance, and archive/cleanup/remove are not three separate verbs.
+This record describes the current direction and its documented rationale.
+It does not claim that each choice won a usability comparison. Earlier layouts
+and controls remain eligible under §1.2 when a concrete task exposes a limitation.
+
+| Current decision | Rationale and tradeoff | Revisit when |
+|---|---|---|
+| Conversation stays in a sidebar when a resource is open; it expands when the workspace is empty | Keep delegation available alongside inspection; sharing width can constrain reading | Long answers or file/diff inspection are easier in a task-focused, central, or temporary single-pane view |
+| Sessions, Files, and repository Git share one navigator column | Avoid adding another content column; users switch to reach different resources | Switching cost or simultaneous session/resource monitoring outweighs the saved width |
+| No permanent Inspector with Task/Context/Runtime tabs | Keep routine metadata out of the primary workspace | Repeated context or runtime inspection lacks a discoverable, efficient route |
+| The bottom panel is an interactive terminal without Run/Diagnostics/Activity tabs | Preserve one shell surface; other results appear in their owning views | Comparing output, diagnostics, or activity requires unnecessary navigation or obscures the active task |
+| Files collapse at 116 frame columns before the conversation does | Preserve composer access in the current split; file navigation loses its column | A review- or file-focused task needs a different collapse order or an accessible temporary navigator |
+| Hints are contextual and compact rather than a permanent shortcut manual | Save content rows; users unfamiliar with bindings can lose the action's meaning | Users cannot discover the next action or learn a compressed hint without memorizing the keymap |
+| Sessions use the navigator list rather than a horizontal task strip or permanent switcher | Consolidate session attention and navigation; the list shares space with Files and Git | A session comparison or switching task demonstrates a clearer alternative with accurate ownership and state |
+| Session pinning/slots and separate archive/cleanup/remove verbs remain internal | Keep the ordinary lifecycle interaction small; advanced organization is limited | A concrete workflow needs persistent ordering or clearer lifecycle control without risking worktree loss |
+| Messages share one transcript frame instead of one box per message | Preserve content density and reading flow | A different grouping makes long conversations or approvals easier to understand without excessive chrome |
+
+The current session list distinguishes idle, working, needs-you, queued, and
+terminal outcomes (§7.7); it is not a fixed three-state model. Alternative
+structures must preserve the information needed to act on those states.
+
+Implementation limitations are also eligible for work: heading/table links,
+terminal hyperlink capability detection, and nested plans are recorded in §9.4.
+Do not convert a missing schema or renderer feature into a permanent UX ban.
+Terminal font ownership remains a capability boundary (§4.15), regardless of
+the layout chosen.
+
+When a decision changes, replace its current-default description and retain a
+short record of the problem, comparison, tradeoff, and reason for the new choice.
+Use concrete evidence from the associated change; do not present a new default
+as shipped until its implementation is verified.
 
 ## 12. Session Worktrees
+
+The lifecycle details below describe the current implementation. Work
+protection, correct session identity, explicit destructive decisions, and
+cleanup only after writers have stopped are mandatory guarantees (§4).
+Branch naming and the presentation of lifecycle actions can evolve without
+weakening those guarantees.
 
 Managed (new) sessions run in their own worktree per session, created from the
 initiating worktree's committed `HEAD`.
