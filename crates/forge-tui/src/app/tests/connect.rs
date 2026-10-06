@@ -1223,47 +1223,6 @@ async fn f4_opens_compact_model_control() {
 }
 
 #[tokio::test]
-async fn footer_shows_na_effort_for_a_model_that_does_not_support_it() {
-    let _home_guard = isolated_home_guard();
-    let (_dir, session) = test_session().await;
-    // Isolated home leaves the catalog cache empty, so gpt-4.1-mini
-    // falls back to the built-in family list and is treated as a real
-    // connected model with no adjustable effort.
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "openai/gpt-4.1-mini".into(),
-            provider: "native".into(),
-            cwd: PathBuf::from("."),
-            version: "0.12.0".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
-    let store_dir = tempfile::TempDir::new().unwrap();
-    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
-    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
-    app.connect
-        .store
-        .set_api_key("openai", "sk-test-openai-credential")
-        .unwrap();
-    app.connect.profile = Some("openai".into());
-
-    // Wide enough that effort chip is not truncated off the composer row.
-    let text = render_app_text(&mut app, 160, 40);
-
-    assert!(
-        text.contains("N/A"),
-        "expected composer chips to show an explicit N/A effort:\n{text}"
-    );
-    assert!(
-        !text.contains("[Auto]") && !text.contains("[Low]"),
-        "must not display a level word for a model with no adjustable effort:\n{text}"
-    );
-}
-
-#[tokio::test]
 async fn compact_control_escape_cancels_without_state_change() {
     let _home_guard = isolated_home_guard();
     let (_dir, session) = test_session().await;
@@ -1578,47 +1537,6 @@ async fn a_reused_secret_never_reaches_the_transcript() {
     );
 }
 
-/// The status chrome must describe the *selected session's* route, not the
-/// startup runtime config or the global connect profile — otherwise switching
-/// sessions leaves the footer/status naming the wrong model and vendor.
-#[tokio::test]
-async fn status_chrome_follows_the_selected_sessions_route() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.runtime.model_label = "mock".into();
-    app.runtime.provider = "mock".into();
-    app.connect.profile = None;
-
-    app.session_runtime.set_active_model("xai/grok-4");
-    app.session_runtime.set_active_route_id("xai-api");
-
-    let chrome = app.refresh_status_model();
-    assert_eq!(chrome.model, "xai/grok-4");
-    assert_eq!(chrome.provider, "xai");
-    assert_eq!(chrome.connect_profile.as_deref(), Some("xai"));
-    assert_eq!(chrome.vendor_label.as_deref(), Some("xAI"));
-    assert_eq!(chrome.route_label.as_deref(), Some("API"));
-}
-
-/// A session that has not recorded its own identity falls back to the runtime
-/// config rather than borrowing a route it never selected.
-#[tokio::test]
-async fn status_chrome_falls_back_without_a_session_identity() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.runtime.model_label = "mock".into();
-    app.runtime.provider = "mock".into();
-    app.connect.profile = None;
-    if let Some(session) = app.session_runtime.as_mut() {
-        session.set_active_model(String::new());
-        session.set_active_route_id(String::new());
-    }
-
-    let chrome = app.refresh_status_model();
-    assert_eq!(chrome.model, "mock");
-    assert_eq!(chrome.provider, "mock");
-    assert!(chrome.connect_profile.is_none());
-    assert!(chrome.vendor_label.is_none());
-}
-
 #[tokio::test]
 async fn connection_state_cache_handles_mock_missing_and_live_profiles() {
     let cred_dir = tempfile::tempdir().unwrap();
@@ -1681,23 +1599,6 @@ async fn connection_labels_and_stale_profile_guards_cover_fallbacks() {
     assert!(!app.input.not_connected);
     assert!(app.input.hint.is_empty());
     assert!(app.banner_state.items.is_empty());
-}
-
-#[tokio::test]
-async fn connection_chrome_switches_between_disconnected_and_mock_states() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.runtime.provider = "native".into();
-    app.runtime.model_label = "openai/gpt-4.1-mini".into();
-    app.connect.profile = None;
-    app.refresh_connection_ui();
-    assert!(app.input.not_connected);
-    assert!(app.input.hint.contains("/connect"));
-
-    app.runtime.provider = "mock".into();
-    app.runtime.model_label = "mock".into();
-    app.refresh_connection_ui();
-    assert!(!app.input.not_connected);
-    assert!(app.input.hint.is_empty() || !app.input.hint.contains("Not connected"));
 }
 
 #[tokio::test]

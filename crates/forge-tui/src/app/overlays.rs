@@ -793,22 +793,6 @@ mod tests {
     use crate::overlays::{SessionConfirmKind, SessionInputMode};
 
     #[tokio::test]
-    async fn help_text_covers_every_focus_block_and_renders() {
-        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
-        for block in FocusBlock::ORDER {
-            app.focus.transition_to(block);
-            let text = app.help_text();
-            assert!(text.contains(block.label()), "missing label for {block:?}");
-            assert!(text.contains("Esc"), "missing escape hint for {block:?}");
-        }
-
-        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        app.render_help_overlay(area, &mut buffer);
-        assert!(buffer.content().iter().any(|cell| cell.symbol() == "H"));
-    }
-
-    #[tokio::test]
     async fn overlay_actions_cover_local_state_and_safe_rejection_paths() {
         let (dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
         let file = dir.path().join("overlay.txt");

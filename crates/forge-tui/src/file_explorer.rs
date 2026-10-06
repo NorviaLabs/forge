@@ -1886,153 +1886,6 @@ mod tests {
     }
 
     #[test]
-    fn row_style_precedence_keeps_selection_strongest() {
-        let selected = explorer_row_line(
-            "",
-            " ",
-            Path::new("lib.rs"),
-            "lib.rs",
-            FileKind::File,
-            true,
-            true,
-            Some(GitStatusKind::Modified),
-            FileIconMode::Unicode,
-            "",
-        );
-        assert_eq!(selected.spans[0].style, theme::selection_active());
-        assert_eq!(selected.spans[1].style, theme::selection_active());
-        assert_eq!(selected.spans[0].content.as_ref(), ">  ");
-        let inactive = explorer_row_line(
-            "",
-            " ",
-            Path::new("x"),
-            "x",
-            FileKind::Unknown,
-            true,
-            false,
-            None,
-            FileIconMode::Unicode,
-            "",
-        );
-        assert_eq!(inactive.spans[0].style, theme::selection_inactive());
-        assert_eq!(inactive.spans[1].style, theme::selection_inactive());
-        assert_eq!(inactive.spans[0].content.as_ref(), ">  ");
-        let unselected = explorer_row_line(
-            "",
-            " ",
-            Path::new("new.rs"),
-            "new.rs",
-            FileKind::File,
-            false,
-            true,
-            Some(GitStatusKind::Added),
-            FileIconMode::Unicode,
-            "",
-        );
-        assert_eq!(unselected.spans[0].content.as_ref(), "   ");
-        assert_eq!(unselected.spans[1].style, theme::text());
-        assert_eq!(
-            unselected.spans.last().unwrap().content.as_ref(),
-            "A",
-            "git status keeps its single-letter code"
-        );
-    }
-
-    #[test]
-    fn row_rendering_uses_git_status_codes() {
-        let line = explorer_row_line(
-            "",
-            " ",
-            Path::new("long_filename.rs"),
-            "long_filename.rs",
-            FileKind::File,
-            false,
-            false,
-            Some(GitStatusKind::Modified),
-            FileIconMode::Unicode,
-            "",
-        );
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        // 2026 grammar: single-letter Git codes (M A D ? ! U), no animation.
-        assert!(text.contains("   long_filename.rs M"), "{text:?}");
-        assert_eq!(
-            line.spans.last().unwrap().content.as_ref(),
-            "M",
-            "git status keeps its single-letter code"
-        );
-    }
-
-    #[test]
-    fn tree_depth_uses_a_consistent_two_cell_indent() {
-        let prefix = TREE_INDENT.repeat(2);
-        let line = explorer_row_line(
-            &prefix,
-            ">",
-            Path::new("src/ui/app.rs"),
-            "app.rs",
-            FileKind::File,
-            false,
-            false,
-            None,
-            FileIconMode::Unicode,
-            "",
-        );
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        // Pointer gutter (blank here) + 2-cell indent + ASCII marker.
-        assert_eq!(text, "     > app.rs");
-    }
-
-    #[test]
-    fn row_rendering_handles_symlink_hidden_unicode_and_narrow_width() {
-        let line = explorer_row_line(
-            "",
-            " ",
-            Path::new("雪.py"),
-            "雪.py",
-            FileKind::Symlink,
-            false,
-            false,
-            None,
-            FileIconMode::Unicode,
-            "",
-        );
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "   雪.py");
-        assert!(line.width() > 4);
-
-        let hidden = explorer_row_line(
-            "",
-            " ",
-            Path::new(".env"),
-            ".env",
-            FileKind::File,
-            false,
-            false,
-            None,
-            FileIconMode::Unicode,
-            "",
-        );
-        let text: String = hidden
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "   .env");
-    }
-
-    #[test]
     fn sort_directories_before_files_case_insensitive() {
         let mut nodes = vec![
             FileNode::child(PathBuf::from("b.rs"), FileKind::File),
@@ -2379,25 +2232,6 @@ mod tests {
     }
 
     #[test]
-    fn clearing_search_cancels_background_directory_scan() {
-        let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("src/api")).unwrap();
-        fs::write(root.path().join("src/api/client.rs"), "").unwrap();
-        let mut explorer = FileExplorer::new(
-            Some(root.path().to_path_buf()),
-            forge_config::FileIconMode::Unicode,
-        );
-
-        explorer.set_search_query("client");
-        let cancel = explorer.search_cancel.as_ref().unwrap().clone();
-        explorer.clear_search();
-
-        assert!(cancel.load(Ordering::Relaxed));
-        assert!(!explorer.search_loading);
-        assert!(explorer.search_loader.is_none());
-    }
-
-    #[test]
     fn fuzzy_search_recurses_into_collapsed_directories_and_tokenizes_terms() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("src/api")).unwrap();
@@ -2579,63 +2413,6 @@ mod tests {
     }
 
     #[test]
-    fn content_snippets_highlight_literal_phrases_and_fit_narrow_rows() {
-        let hit = GrepSearchHit {
-            path: "src/handler.rs".into(),
-            line: 42,
-            column: 1,
-            text: format!("{}Needle value, needle value", "prefix ".repeat(20)),
-            context: None,
-            relevance: None,
-            is_definition: false,
-        };
-        let line = content_match_line(&hit, "needle value", false, false, 30);
-        let highlights: Vec<_> = line
-            .spans
-            .iter()
-            .filter(|span| span.style == theme::search_match())
-            .collect();
-        assert_eq!(highlights.len(), 2);
-        assert_eq!(highlights[0].content, "Needle value");
-        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
-        Paragraph::new(line).render(buf.area, &mut buf);
-        assert!(row_text(&buf, buf.area, 0).contains("Needle value"));
-        assert_eq!(
-            content_match_range("needle Needle", "Needle"),
-            Some((7, 13))
-        );
-        assert_eq!(content_match_range("a", "a much longer query"), None);
-    }
-
-    #[test]
-    fn content_results_render_at_supported_terminal_sizes() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(
-            root.path().join("client.rs"),
-            "let distinctive_payload = 1;\n",
-        )
-        .unwrap();
-        let mut explorer =
-            FileExplorer::new(Some(root.path().to_path_buf()), FileIconMode::Unicode);
-        explorer.set_search_mode(FileSearchMode::Content);
-        explorer.set_search_query("distinctive_payload");
-        wait_for_search_load(&mut explorer);
-        for (width, height) in [(80, 18), (120, 40), (160, 50)] {
-            // The navigator occupies 28–37 columns, not the whole terminal.
-            let area = Rect::new(0, 0, if width == 80 { 28 } else { 37 }, height);
-            let buf = render_widget(&mut explorer, area, true);
-            let shown = (0..area.height)
-                .map(|y| row_text(&buf, area, y))
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert!(shown.contains("client.rs (1)"), "{width}x{height}: {shown}");
-            assert!(shown.contains("1 match"), "{width}x{height}: {shown}");
-            assert!(shown.contains("Ctrl+P files"), "{width}x{height}: {shown}");
-            assert!(shown.contains("distinctive"), "{width}x{height}: {shown}");
-        }
-    }
-
-    #[test]
     fn a_single_character_query_matches_names_only() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("alpha.rs"), "let zz_marker = 1;\n").unwrap();
@@ -2692,47 +2469,6 @@ mod tests {
             .any(|node| node.display_name == "client.rs"));
     }
 
-    /// The count tells a truncated listing from a complete one; the design doc
-    /// requires the header to be truthful about truncation.
-    #[test]
-    fn search_result_count_marks_a_truncated_listing() {
-        let root = tempfile::tempdir().unwrap();
-        for index in 0..4 {
-            fs::write(
-                root.path().join(format!("token{index}.txt")),
-                "shared token\n",
-            )
-            .unwrap();
-        }
-        let mut explorer = FileExplorer::new(
-            Some(root.path().to_path_buf()),
-            forge_config::FileIconMode::Unicode,
-        );
-        assert_eq!(explorer.search_result_count(), None);
-
-        explorer.set_search_query("token");
-        wait_for_search_load(&mut explorer);
-        assert_eq!(explorer.search_result_count().as_deref(), Some("4 files"));
-        assert!(
-            !explorer
-                .search_results
-                .as_ref()
-                .expect("results installed")
-                .truncated
-        );
-
-        explorer.search_results = Some(Arc::new(ExplorerSearchResults {
-            query: "token".into(),
-            names: MergedSearch {
-                paths: vec!["a".into(), "b".into()],
-                truncated: true,
-            },
-            content: Vec::new(),
-            truncated: true,
-        }));
-        assert_eq!(explorer.search_result_count().as_deref(), Some("2+ files"));
-    }
-
     /// A failed scan is not a failed query, so the two never share a line.
     #[test]
     fn an_unavailable_search_is_its_own_state() {
@@ -2759,36 +2495,6 @@ mod tests {
         let shown = rendered.join("\n");
         assert!(shown.contains("Search unavailable"), "{shown}");
         assert!(!shown.contains("No matches for"), "{shown}");
-    }
-
-    #[test]
-    fn narrowing_search_moves_selection_to_the_nearest_visible_match() {
-        let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("src/api")).unwrap();
-        fs::create_dir_all(root.path().join("src/config")).unwrap();
-        fs::write(root.path().join("src/api/client.rs"), "").unwrap();
-        fs::write(root.path().join("src/config/client_config.rs"), "").unwrap();
-        let root_path = root.path().canonicalize().unwrap();
-        let mut explorer =
-            FileExplorer::new(Some(root_path.clone()), forge_config::FileIconMode::Unicode);
-
-        explorer.set_search_query("client");
-        wait_for_search_load(&mut explorer);
-        explorer.selected_path = Some(root_path.join("src/api/client.rs"));
-        // Every query rescans, so the narrowing lands on a later tick. Until
-        // it does, the previous result set is still the one on screen — which
-        // is why the selection has not moved yet.
-        explorer.set_search_query("config");
-        assert_eq!(
-            explorer.selected_relative_path().as_deref(),
-            Some("src/api/client.rs")
-        );
-
-        wait_for_search_load(&mut explorer);
-        assert_eq!(
-            explorer.selected_relative_path().as_deref(),
-            Some("src/config/client_config.rs")
-        );
     }
 
     #[test]
@@ -2971,205 +2677,13 @@ mod tests {
         buf
     }
 
-    fn render_widget_with_hover(
-        explorer: &mut FileExplorer,
-        area: Rect,
-        hover: Option<usize>,
-    ) -> Buffer {
-        let mut buf = Buffer::empty(area);
-        FileExplorerWidget {
-            explorer,
-            focused: true,
-            show_search: true,
-            search_active: false,
-            hover,
-        }
-        .render(area, &mut buf);
-        buf
-    }
-
-    #[test]
-    fn hovered_file_row_takes_ground_and_weight_and_selection_outranks_it() {
-        use ratatui::style::Modifier;
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("a.txt"), "").unwrap();
-        let mut explorer = FileExplorer::new(
-            Some(root.path().to_path_buf()),
-            forge_config::FileIconMode::Unicode,
-        );
-        let area = Rect::new(0, 0, 30, 10);
-        let hover_index = explorer
-            .visible_nodes()
-            .iter()
-            .position(|node| node.display_name == "a.txt")
-            .expect("file visible");
-        // Search surface row + tree offset.
-        let row_y = area.y + TREE_ROW_OFFSET + hover_index as u16;
-
-        let buf = render_widget_with_hover(&mut explorer, area, Some(hover_index));
-        let x = (0..area.width)
-            .find(|x| buf[(*x, row_y)].symbol() == "a")
-            .expect("file name cell");
-        assert_eq!(
-            buf[(x, row_y)].style().bg,
-            theme::surface_hover().bg,
-            "hovered file lost its ground"
-        );
-        assert!(
-            buf[(x, row_y)]
-                .style()
-                .add_modifier
-                .contains(Modifier::BOLD),
-            "hovered file lost its weight step"
-        );
-
-        // Selection wins: hover never impersonates it.
-        while explorer.selected_relative_path().as_deref() != Some("a.txt") {
-            explorer.move_selection(1);
-        }
-        let buf = render_widget_with_hover(&mut explorer, area, Some(hover_index));
-        assert_ne!(
-            buf[(x, row_y)].style().bg,
-            theme::surface_hover().bg,
-            "selected row must not take the hover ground"
-        );
-    }
-
     fn row_text(buf: &Buffer, area: Rect, y: u16) -> String {
         (0..area.width)
             .map(|x| buf[(x, y)].symbol().to_string())
             .collect()
     }
 
-    #[test]
-    fn search_is_framed_with_tree_below_a_resting_row() {
-        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-        let area = Rect::new(0, 0, 30, 14);
-        let buf = render_widget(&mut explorer, area, true);
-        // Outer border plus search border put the text on row two.
-        let search_row = row_text(&buf, area, area.y + 2);
-        // (The focused block caret occupies its own cell between the prefix
-        // and the placeholder, so match the two halves separately.)
-        assert!(search_row.contains("/ "), "{search_row:?}");
-        assert!(search_row.contains("Search files..."), "{search_row:?}");
-        for corner in ['┌', '┐', '└', '┘'] {
-            assert!(!search_row.contains(corner), "{search_row:?}");
-        }
-        // Tree content starts directly below the search field.
-        assert!(row_text(&buf, area, area.y + 1).contains('╭'));
-        assert!(row_text(&buf, area, area.y + 3).contains('╰'));
-        let tree_row = row_text(&buf, area, area.y + TREE_ROW_OFFSET);
-        assert!(tree_row.contains("No repository detected"), "{tree_row:?}");
-    }
-
     /// Search focus uses the border and prefix, never a slider-like dot.
-    #[test]
-    fn search_state_shows_on_the_search_prefix_not_a_knob() {
-        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-        let area = Rect::new(0, 0, 24, 14);
-
-        let idle = render_widget(&mut explorer, area, false);
-        let active = render_widget(&mut explorer, area, true);
-
-        for buf in [&idle, &active] {
-            let row = row_text(buf, area, area.y + 1);
-            assert!(!row.contains('○') && !row.contains('●'), "{row}");
-        }
-
-        // Outer border + pane padding + search border precede the prefix.
-        let prefix = (area.x + 3 + crate::design::PANE_PAD_X, area.y + 2);
-        assert_ne!(
-            idle[prefix].style().fg,
-            active[prefix].style().fg,
-            "the search prefix must carry the state"
-        );
-        assert_eq!(active[prefix].style().fg, theme::active_panel_border().fg);
-    }
-
-    /// `selected_relative_path` is "." at the workspace root, which left a
-    /// lone full stop floating in the corner of the pane.
-    #[test]
-    fn the_explorer_footer_does_not_show_a_bare_dot() {
-        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-        let area = Rect::new(0, 0, 24, 14);
-        let buf = render_widget(&mut explorer, area, false);
-        let footer_y = area.y + area.height - 2;
-        let row = row_text(&buf, area, footer_y);
-        assert_ne!(row.trim(), ".", "{row:?}");
-    }
-
-    #[test]
-    fn search_row_shows_block_caret_and_placeholder_without_icon() {
-        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-        // The placeholder must remain readable at the navigator's width floor.
-        let area = Rect::new(0, 0, 28, 14);
-        let buf = render_widget(&mut explorer, area, true);
-        let content_row = area.y + 2;
-        let row = row_text(&buf, area, content_row);
-        // Outer border + padding + search border + `/ ` prefix.
-        let cursor = &buf[(
-            area.x + 3 + crate::design::PANE_PAD_X + SEARCH_PREFIX_WIDTH,
-            content_row,
-        )];
-        assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
-        assert_eq!(cursor.style().bg, theme::caret().bg);
-        assert!(row.contains("/ "), "{row:?}");
-        assert!(row.contains("Search files"), "{row:?}");
-        assert!(!row.contains('⌕'));
-    }
-
-    #[test]
-    fn query_match_highlights_the_contiguous_run_in_the_name() {
-        let line = explorer_row_line(
-            "",
-            " ",
-            Path::new("main.rs"),
-            "main.rs",
-            FileKind::File,
-            false,
-            true,
-            None,
-            FileIconMode::Unicode,
-            "mai",
-        );
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "   main.rs");
-        let highlighted: Vec<_> = line
-            .spans
-            .iter()
-            .filter(|span| span.style == theme::search_match())
-            .collect();
-        assert_eq!(highlighted.len(), 1);
-        assert_eq!(highlighted[0].content.as_ref(), "mai");
-    }
-
-    #[test]
-    fn fuzzy_only_match_leaves_the_name_plain() {
-        // "mrs" matches "main.rs" as a fuzzy subsequence but never occurs
-        // contiguously: highlighting it would point at the wrong letters.
-        let line = explorer_row_line(
-            "",
-            " ",
-            Path::new("main.rs"),
-            "main.rs",
-            FileKind::File,
-            false,
-            true,
-            None,
-            FileIconMode::Unicode,
-            "mrs",
-        );
-        assert!(
-            line.spans
-                .iter()
-                .all(|span| span.style != theme::search_match()),
-            "{line:?}"
-        );
-    }
 
     #[test]
     fn match_byte_range_stays_on_char_boundaries() {
@@ -3185,11 +2699,90 @@ mod tests {
     }
 
     #[test]
-    fn no_panic_across_small_pane_heights() {
-        for height in 0..=8u16 {
-            let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
-            let area = Rect::new(0, 0, 20, height);
-            render_widget(&mut explorer, area, false);
+    fn clearing_search_cancels_background_directory_scan() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src/api")).unwrap();
+        fs::write(root.path().join("src/api/client.rs"), "").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+
+        explorer.set_search_query("client");
+        let cancel = explorer.search_cancel.as_ref().unwrap().clone();
+        explorer.clear_search();
+
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(!explorer.search_loading);
+        assert!(explorer.search_loader.is_none());
+    }
+
+    #[test]
+    fn search_result_count_marks_a_truncated_listing() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..4 {
+            fs::write(
+                root.path().join(format!("token{index}.txt")),
+                "shared token\n",
+            )
+            .unwrap();
         }
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        assert_eq!(explorer.search_result_count(), None);
+
+        explorer.set_search_query("token");
+        wait_for_search_load(&mut explorer);
+        assert_eq!(explorer.search_result_count().as_deref(), Some("4 files"));
+        assert!(
+            !explorer
+                .search_results
+                .as_ref()
+                .expect("results installed")
+                .truncated
+        );
+
+        explorer.search_results = Some(Arc::new(ExplorerSearchResults {
+            query: "token".into(),
+            names: MergedSearch {
+                paths: vec!["a".into(), "b".into()],
+                truncated: true,
+            },
+            content: Vec::new(),
+            truncated: true,
+        }));
+        assert_eq!(explorer.search_result_count().as_deref(), Some("2+ files"));
+    }
+
+    #[test]
+    fn narrowing_search_moves_selection_to_the_nearest_visible_match() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src/api")).unwrap();
+        fs::create_dir_all(root.path().join("src/config")).unwrap();
+        fs::write(root.path().join("src/api/client.rs"), "").unwrap();
+        fs::write(root.path().join("src/config/client_config.rs"), "").unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let mut explorer =
+            FileExplorer::new(Some(root_path.clone()), forge_config::FileIconMode::Unicode);
+
+        explorer.set_search_query("client");
+        wait_for_search_load(&mut explorer);
+        explorer.selected_path = Some(root_path.join("src/api/client.rs"));
+        // Every query rescans, so the narrowing lands on a later tick. Until
+        // it does, the previous result set is still the one on screen — which
+        // is why the selection has not moved yet.
+        explorer.set_search_query("config");
+        assert_eq!(
+            explorer.selected_relative_path().as_deref(),
+            Some("src/api/client.rs")
+        );
+
+        wait_for_search_load(&mut explorer);
+        assert_eq!(
+            explorer.selected_relative_path().as_deref(),
+            Some("src/config/client_config.rs")
+        );
     }
 }

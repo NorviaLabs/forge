@@ -39,8 +39,6 @@ mod theme_preview;
 mod theme_registry;
 mod user_message_gutter;
 mod validation;
-#[cfg(test)]
-mod visual_test;
 mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};

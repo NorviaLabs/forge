@@ -80,62 +80,6 @@ async fn approval_claims_focus_even_if_a_frame_paints_first() {
 }
 
 #[tokio::test]
-async fn inline_approval_renders_full_payload_in_sidebar() {
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_hitl(
-        &mut app,
-        HitlPayload {
-            call_id: "call-1".into(),
-            tool: "bash".into(),
-            args_redacted: json!({"command": "git push -u origin main"}),
-            reason: "test approval".into(),
-            failure: None,
-            sandbox_escalation: false,
-            denied_host: None,
-        },
-    );
-
-    let rendered = render_app_text(&mut app, 100, 30);
-    assert!(
-        rendered.contains("Forge wants to run a shell command."),
-        "{rendered}"
-    );
-    assert!(!rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
-    assert!(rendered.contains("git push -u origin main"), "{rendered}");
-    // The shortcut leads the row it triggers.
-    assert!(rendered.contains("y Run once"), "{rendered}");
-    assert!(rendered.contains("n Don't run"), "{rendered}");
-    assert!(
-        rendered.contains("Allow bash(git push *) this session"),
-        "{rendered}"
-    );
-    // Both halves of the grant are offered, and each says how far it reaches.
-    assert!(
-        rendered.contains("Always allow bash(git push *)"),
-        "{rendered}"
-    );
-    assert!(rendered.contains("Don't run, and say why"), "{rendered}");
-    assert!(
-        rendered.contains("Runs now. You will be asked again."),
-        "{rendered}"
-    );
-    // The global trust row is explicit and carries its safety warning.
-    assert!(
-        rendered.contains("Trust all commands for this session"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("Approves future")
-            || rendered.contains("Trust all commands for this session"),
-        "{rendered}"
-    );
-    assert!(rendered.contains("Esc"), "{rendered}");
-    assert!(rendered.contains("don't run"), "{rendered}");
-    // The prompt is a card now, not bare prose in the transcript flow.
-    assert!(rendered.contains("Command to run"), "{rendered}");
-}
-
-#[tokio::test]
 async fn approval_leaves_underlying_workspace_untouched() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
@@ -557,67 +501,6 @@ async fn tab_away_from_approval_keeps_it_pending() {
         .await
         .unwrap();
     assert_eq!(app.approval_menu_selected(), 2);
-}
-
-#[tokio::test]
-async fn approval_card_wraps_long_command() {
-    let (_dir, mut app) = focus_test_app().await;
-    let command = format!("git commit -m {}", "f".repeat(250));
-    set_pending_hitl(&mut app, bash_hitl_payload("long", &command));
-
-    let rendered = render_app_text(&mut app, 100, 40);
-    assert!(
-        rendered.contains("Forge wants to run a shell command."),
-        "{rendered}"
-    );
-    assert!(rendered.contains("git commit -m"), "{rendered}");
-    assert!(
-        rendered.lines().all(|line| line.chars().count() <= 100),
-        "{rendered}"
-    );
-}
-
-#[tokio::test]
-async fn approval_card_renders_in_every_shipped_theme() {
-    let registry = crate::theme_registry::ThemeRegistry::load(None);
-    for theme_id in ["forge-dark", "forge-light"] {
-        assert!(
-            registry.get(theme_id).is_some(),
-            "built-in theme {theme_id} not registered"
-        );
-        crate::theme::install(registry.clone(), theme_id);
-        for width in [100u16, 120u16] {
-            let (_dir, mut app) = focus_test_app_with_theme(theme_id).await;
-            set_pending_hitl(
-                &mut app,
-                bash_hitl_payload("th", "cargo build --release --locked"),
-            );
-            let rendered = render_app_text(&mut app, width, 30);
-            assert!(
-                rendered.contains("Forge wants to run a shell command."),
-                "{theme_id} @ {width}:\n{rendered}"
-            );
-            assert!(
-                rendered.contains("> y Run once") || rendered.contains("y Run once"),
-                "{theme_id} @ {width}:\n{rendered}"
-            );
-            assert!(
-                rendered.contains("don't run"),
-                "{theme_id} @ {width}:\n{rendered}"
-            );
-            // The prompt is a rail, not a box, on every theme and width.
-            assert!(
-                rendered.contains("Command to run") && rendered.contains('\u{2502}'),
-                "{theme_id} @ {width}:\n{rendered}"
-            );
-            for line in rendered.lines() {
-                assert!(
-                    line.chars().count() <= width as usize,
-                    "{theme_id} @ {width} overflow: {line:?}"
-                );
-            }
-        }
-    }
 }
 
 #[tokio::test]

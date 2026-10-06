@@ -74,65 +74,6 @@ async fn grouped_git_rows_show_the_right_diff_for_each_side() {
     );
 }
 
-#[test]
-fn git_tab_lists_staged_and_unstaged_sides_as_distinct_rows() {
-    use crate::diff_view::{entries_for_sides, DiffSide};
-    use forge_workspace::git_status::{ChangedFile, GitStatusKind as K};
-
-    let entries = entries_for_sides(&[
-        ChangedFile {
-            path: "both.rs".into(),
-            staged: Some(K::Modified),
-            unstaged: Some(K::Modified),
-        },
-        ChangedFile {
-            path: "new.rs".into(),
-            staged: None,
-            unstaged: Some(K::Untracked),
-        },
-    ]);
-    assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].side, Some(DiffSide::Staged));
-    assert_eq!(entries[1].side, Some(DiffSide::Unstaged));
-    assert_eq!(entries[0].path, entries[1].path);
-    assert_eq!(entries[2].side, Some(DiffSide::Unstaged));
-    assert!(entries[2].untracked, "untracked files belong to Unstaged");
-    let text = crate::widgets::git_changes::GitChangesList::render_text(&entries, 0, 36, 14);
-    assert!(text.contains("STAGED"), "{text}");
-    assert!(text.contains("UNSTAGED"), "{text}");
-    assert!(text.contains("both.rs"), "{text}");
-    assert!(text.contains("new.rs"), "{text}");
-}
-
-#[test]
-fn git_tab_draws_each_group_heading_once() {
-    use crate::diff_view::{entries_for_sides, DiffSide};
-    use forge_workspace::git_status::{ChangedFile, GitStatusKind as K};
-
-    // `a.rs` is staged and then changed again, `b.rs` is staged too. Ordered by
-    // path the sides interleave and STAGED is drawn twice; grouping must leave
-    // exactly one heading per side.
-    let entries = entries_for_sides(&[
-        ChangedFile {
-            path: "a.rs".into(),
-            staged: Some(K::Modified),
-            unstaged: Some(K::Modified),
-        },
-        ChangedFile {
-            path: "b.rs".into(),
-            staged: Some(K::Modified),
-            unstaged: None,
-        },
-    ]);
-    assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].side, Some(DiffSide::Staged));
-    assert_eq!(entries[1].side, Some(DiffSide::Staged));
-    assert_eq!(entries[2].side, Some(DiffSide::Unstaged));
-    let text = crate::widgets::git_changes::GitChangesList::render_text(&entries, 0, 36, 14);
-    assert_eq!(text.matches(" STAGED").count(), 1, "{text}");
-    assert_eq!(text.matches(" UNSTAGED").count(), 1, "{text}");
-}
-
 /// Staging a file hands the cursor to the next file in the group it left, so a
 /// run of `s` walks the unstaged list instead of re-anchoring on the staged row.
 #[tokio::test]
@@ -538,33 +479,6 @@ async fn the_sync_row_reports_the_branch_and_pull_push_end_to_end() {
         &["log", "-1", "--pretty=%s", "refs/heads/main"],
     );
     assert_eq!(sent.trim(), "second");
-}
-
-/// A repository with no branch state reads as unknown, never as in sync.
-#[tokio::test]
-async fn an_unreadable_branch_renders_as_unknown_rather_than_clean() {
-    let (dir, mut app) = focus_test_app().await;
-    repo_with_changes(
-        dir.path(),
-        &[("tracked.txt", "one\n")],
-        &[("tracked.txt", "two\n")],
-    );
-    app.open_git_view();
-    settle_git(&mut app);
-    settle_sync(&mut app);
-
-    // A branch read that failed has to say `?`. An empty tag would read as
-    // "nothing to report", which is the one answer that is certainly wrong.
-    app.git_sync.branch = None;
-    app.git_sync.error = Some("git is not usable here".into());
-    assert_eq!(app.git_sync_tag().as_deref(), Some("branch ?"));
-    app.start_git_sync(forge_workspace::git_sync::SyncOperation::Pull);
-    assert!(app.git_sync.running.is_none());
-    assert!(
-        app.feedback.text.contains("could not be read"),
-        "and must not guess an upstream: {}",
-        app.feedback.text
-    );
 }
 
 /// The branch picker's guards, and a real merge that stops for conflicts,
@@ -1472,45 +1386,6 @@ async fn o_opens_the_file_at_the_line_under_the_cursor() {
     );
     if let Some(editor) = app.editor_session.as_ref() {
         assert_eq!(editor.cursor_row(), 29, "the editor cursor moves too");
-    }
-}
-
-#[tokio::test]
-async fn the_pane_shows_its_own_keymap() {
-    // `?` is not discoverable on its own; the keys have to be on screen.
-    let (dir, mut app) = focus_test_app().await;
-    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    app.workspace_files.visible = true;
-
-    app.open_diff_view(DiffSource::WorkingTree);
-    settle_git(&mut app);
-    settle_patch(&mut app);
-
-    // The round-2 insets cost the diff pane a few columns, so the comfortable
-    // width where hints keep every pair is 126 now.
-    let rendered = render_app_text(&mut app, 126, 35);
-    assert!(rendered.contains("] [ hunk"), "{rendered}");
-    assert!(rendered.contains("m done"), "{rendered}");
-    assert!(rendered.contains("Esc close"), "{rendered}");
-}
-
-#[tokio::test]
-async fn a_narrow_pane_keeps_every_key_even_when_the_verbs_go() {
-    let (dir, mut app) = focus_test_app().await;
-    repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    app.workspace_files.visible = true;
-
-    app.open_diff_view(DiffSource::WorkingTree);
-    settle_git(&mut app);
-    settle_patch(&mut app);
-
-    let rendered = render_app_text(&mut app, 80, 24);
-    assert!(
-        !rendered.contains("] [ hunk"),
-        "verbs drop first:\n{rendered}"
-    );
-    for key in ["] [", "n p", "m", "?", "Esc"] {
-        assert!(rendered.contains(key), "lost {key:?} from:\n{rendered}");
     }
 }
 

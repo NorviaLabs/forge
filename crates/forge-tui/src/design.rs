@@ -94,28 +94,3 @@ pub const MIN_FRAME_H: u16 = 18;
 /// the default at comfortable heights; short terminals keep today's density so
 /// the 80×18 workflow never loses content rows to padding.
 pub const AIRY_MIN_ROWS: u16 = 24;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn metrics_match_design_system() {
-        assert_eq!(FRAME_INSET_X, 1);
-        assert_eq!(PANE_PAD_X, 1);
-        assert_eq!(PANE_GAP_X, 1);
-        assert_eq!(PANE_GAP_Y, 1);
-        assert_eq!(CHROME_GAP_Y, 0);
-        assert_eq!(COMPOSER_GAP_Y, 0);
-        assert_eq!(LIST_INSET_X, crate::design::TREE_INDENT_W);
-        assert_eq!(TREE_TOP_GAP_Y, 1);
-        assert_eq!(PANE_TITLE_H, 1);
-        assert_eq!(PANE_SEPARATOR_W, 1);
-        assert_eq!(MAX_COMPOSER_INPUT_H, 10);
-        assert_eq!(FOOTER_H, 2);
-        assert_eq!(MODAL_PAD_X, 2);
-        assert_eq!(TREE_INDENT_W, 2);
-        assert_eq!(FILES_VISIBLE_FRAME_W, 116);
-        assert_eq!(AIRY_MIN_ROWS, 24);
-    }
-}

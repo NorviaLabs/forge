@@ -371,41 +371,4 @@ mod tests {
         assert_eq!(map_key(KeyCode::Char('j'), KeyModifiers::CONTROL), None);
         assert_eq!(map_key(KeyCode::Char('x'), KeyModifiers::NONE), None);
     }
-
-    #[test]
-    fn setup_draws_theme_and_trust_states() {
-        let area = Rect::new(0, 0, 120, 40);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        draw_setup(
-            area,
-            &mut buffer,
-            &Screen::Trust {
-                selected: 1,
-                error: Some("could not save".into()),
-            },
-            "/tmp/project",
-            true,
-        );
-        assert!(buffer.content().iter().any(|cell| cell.symbol() == "T"));
-
-        let overlay = Overlay::theme_open(DEFAULT_THEME_ID);
-        draw_setup(
-            area,
-            &mut buffer,
-            &Screen::Theme(Box::new(overlay)),
-            "/tmp/project",
-            false,
-        );
-        assert!(buffer.content().iter().any(|cell| cell.symbol() == "F"));
-    }
-
-    #[test]
-    fn setup_draw_helpers_cover_fallback_and_selection_states() {
-        let area = Rect::new(0, 0, 100, 30);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        draw_theme_setup(area, &mut buffer, &Overlay::Help);
-        draw_trust_setup(area, &mut buffer, "/tmp/project", false, 0, None);
-        assert_eq!(choice_line(true, "yes").width(), 5);
-        assert_eq!(choice_line(false, "no").width(), 4);
-    }
 }

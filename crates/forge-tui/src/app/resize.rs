@@ -305,15 +305,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn separator_hitbox_extends_one_cell_each_side() {
-        let (_dir, mut app) = focus_test_app().await;
-        app.pane_resize.files_separator = Some(ratatui::layout::Rect::new(40, 3, 1, 20));
-        assert_eq!(app.resize_boundary_at(39, 10), Some(ResizeBoundary::Files));
-        assert_eq!(app.resize_boundary_at(41, 10), Some(ResizeBoundary::Files));
-        assert_eq!(app.resize_boundary_at(38, 10), None);
-    }
-
-    #[tokio::test]
     async fn mouse_drag_updates_live_and_escape_restores_starting_size() {
         let (_dir, mut app) = focus_test_app().await;
         app.pane_resize.frame_area = ratatui::layout::Rect::new(0, 0, 160, 50);

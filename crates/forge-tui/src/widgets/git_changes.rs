@@ -59,33 +59,6 @@ impl GitChangesList<'_> {
             .min(rows.len().saturating_sub(height));
         Self::file_index_at(entries, start + visible_row)
     }
-
-    #[cfg(test)]
-    pub fn render_text(entries: &[DiffEntry], selected: usize, width: u16, height: u16) -> String {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    GitChangesList {
-                        entries,
-                        selected,
-                        focused: true,
-                        hover: None,
-                    },
-                    frame.area(),
-                );
-            })
-            .unwrap();
-        terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>()
-    }
 }
 
 impl Widget for GitChangesList<'_> {

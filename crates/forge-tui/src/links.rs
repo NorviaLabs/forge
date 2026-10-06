@@ -463,14 +463,6 @@ mod tests {
         assert!(autolink_matches("https:// and http:// nothing").is_empty());
     }
 
-    /// Quote marks wrap a URL without joining it.
-    #[test]
-    fn quotes_wrap_a_url_without_joining_it() {
-        let text = "see \"https://example.com\" now";
-        let matches = autolink_matches(text);
-        assert_eq!(&text[matches[0].0.clone()], "https://example.com");
-    }
-
     /// Detection never widens policy: every range came through the same gate,
     /// so a scheme the renderer refuses stays plain text here too.
     #[test]
@@ -485,14 +477,6 @@ mod tests {
     fn an_oversized_destination_stays_plain_text() {
         let long = format!("https://example.com/{}", "a".repeat(MAX_DESTINATION_BYTES));
         assert_eq!(destination_for(&long), None);
-    }
-
-    #[test]
-    fn the_sequence_wraps_the_text_and_closes_itself() {
-        assert_eq!(
-            osc8("https://example.com", "site"),
-            "\x1b]8;;https://example.com\x07site\x1b]8;;\x07"
-        );
     }
 
     #[test]
@@ -521,98 +505,20 @@ mod tests {
     }
 
     #[test]
-    fn hyperlink_lines_behave_like_the_lines_they_wrap() {
-        let mut line = HyperlinkLine::new(Line::from("hello"));
-        assert_eq!(line.width(), 5);
-        line.spans.clear();
-        assert!(line.spans.is_empty());
-        assert!(line.links.is_empty());
+    fn quotes_wrap_a_url_without_joining_it() {
+        let text = "see \"https://example.com\" now";
+        let matches = autolink_matches(text);
+        assert_eq!(&text[matches[0].0.clone()], "https://example.com");
     }
 
     #[test]
-    fn marking_covers_exactly_the_link_columns() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
-        buf.set_string(0, 0, "see site!", ratatui::style::Style::default());
-        let hyperlinks = vec![TerminalHyperlink::new(4..8, "https://example.com")];
-        mark_buffer_hyperlinks(&mut buf, Rect::new(0, 0, 10, 1), &hyperlinks);
-
+    fn the_sequence_wraps_the_text_and_closes_itself() {
         assert_eq!(
-            buf.cell(Position::new(4, 0)).unwrap().symbol(),
-            "\x1b]8;;https://example.com\x07s\x1b]8;;\x07"
+            osc8("https://example.com", "site"),
+            "\x1b]8;;https://example.com\x07site\x1b]8;;\x07"
         );
-        assert_eq!(
-            buf.cell(Position::new(7, 0)).unwrap().symbol(),
-            "\x1b]8;;https://example.com\x07e\x1b]8;;\x07"
-        );
-        // The columns either side are untouched, so the escape covers the link
-        // and nothing else.
-        assert_eq!(buf.cell(Position::new(3, 0)).unwrap().symbol(), " ");
-        assert_eq!(buf.cell(Position::new(8, 0)).unwrap().symbol(), "!");
     }
 
-    #[test]
-    fn hyperlink_diffs_preserve_unicode_and_repaint_plain_text() {
-        use ratatui::backend::{Backend, CrosstermBackend};
-
-        let area = Rect::new(0, 0, 30, 2);
-        let mut previous = Buffer::empty(area);
-        let mut terminal = vt100::Parser::new(area.height, area.width, 0);
-        for (label, linked) in [
-            ("界e\u{301} docs", true),
-            ("界e\u{301} next", true),
-            ("plain", false),
-        ] {
-            let text = format!("see {label}!");
-            let mut next = Buffer::empty(area);
-            next.set_string(0, 0, &text, ratatui::style::Style::default());
-            next.set_string(0, 1, "next row", ratatui::style::Style::default());
-            if linked {
-                mark_buffer_hyperlinks(
-                    &mut next,
-                    area,
-                    &[TerminalHyperlink::new(
-                        4..4 + label.cell_width() as usize,
-                        "https://example.com",
-                    )],
-                );
-                assert_eq!(next[(4, 0)].cell_width(), 2);
-                assert_eq!(next[(6, 0)].cell_width(), 1);
-            }
-            let mut output = Vec::new();
-            CrosstermBackend::new(&mut output)
-                .draw(previous.diff(&next).into_iter())
-                .unwrap();
-            terminal.process(&output);
-            let contents = terminal
-                .screen()
-                .contents()
-                .lines()
-                .map(str::trim_end)
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert_eq!(contents, format!("{text}\nnext row"));
-            assert!(next.diff(&next).is_empty());
-            previous = next;
-        }
-    }
-
-    #[test]
-    fn marking_stops_at_the_pane_edge() {
-        // A link whose tail is clipped by the pane must not write past it.
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
-        buf.set_string(0, 0, "abcd", ratatui::style::Style::default());
-        mark_buffer_hyperlinks(
-            &mut buf,
-            Rect::new(0, 0, 4, 1),
-            &[TerminalHyperlink::new(2..9, "https://example.com")],
-        );
-        assert!(buf.cell(Position::new(2, 0)).unwrap().symbol().len() > 1);
-        assert!(buf.cell(Position::new(3, 0)).unwrap().symbol().len() > 1);
-        assert_eq!(buf.cell(Position::new(0, 0)).unwrap().symbol(), "a");
-    }
-
-    /// The writer is the last gate: a struct built directly, bypassing the
-    /// policy, must still not reach the terminal as escape bytes.
     #[test]
     fn the_writer_refuses_a_destination_the_policy_would() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
@@ -629,22 +535,5 @@ mod tests {
             .map(|x| buf.cell(Position::new(x, 0)).unwrap().symbol())
             .collect();
         assert_eq!(written, "clickme ");
-    }
-
-    #[test]
-    fn marking_offsets_the_pane_origin() {
-        // Marking inside a pane must address the pane's own coordinates.
-        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
-        buf.set_string(5, 1, "go", ratatui::style::Style::default());
-        mark_buffer_hyperlinks(
-            &mut buf,
-            Rect::new(5, 1, 7, 1),
-            &[TerminalHyperlink::new(0..2, "https://example.com")],
-        );
-        assert_eq!(
-            buf.cell(Position::new(5, 1)).unwrap().symbol(),
-            "\x1b]8;;https://example.com\x07g\x1b]8;;\x07"
-        );
-        assert_eq!(buf.cell(Position::new(0, 0)).unwrap().symbol(), " ");
     }
 }

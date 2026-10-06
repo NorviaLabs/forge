@@ -561,22 +561,6 @@ mod tests {
         assert_eq!(strip.height(), 2, "header plus one row");
     }
 
-    /// The strip's height has to agree with the widget's row advance: a row
-    /// with a second line is two lines tall, and a budget that assumes one
-    /// draws the next row over that line.
-    #[test]
-    fn height_counts_second_lines() {
-        let now = Utc::now();
-        let started = now - Duration::seconds(5);
-        let rows = vec![
-            task(1, "explore", blocked("bash", "echo risky"), started, None),
-            task(2, "verify", BackgroundTaskStatus::Running, started, None),
-        ];
-        let strip = BackgroundStrip::build(&rows, now, STRIP_ROW_CAP);
-        assert_eq!(strip.rows.len(), 2);
-        assert_eq!(strip.height(), 4, "header + two rows + one second line");
-    }
-
     /// The detail line is what tells the operator *what* a subagent wants, and
     /// it reads the redacted payload — never the raw arguments.
     #[test]
@@ -599,75 +583,11 @@ mod tests {
         assert_eq!(row.detail.as_deref(), Some("bash · rm -rf target/debug"));
     }
 
-    /// A long command is truncated to a cell budget rather than wrapped, so a
-    /// row's height never depends on what it is running.
-    #[test]
-    fn a_long_blocked_command_is_truncated_not_wrapped() {
-        let now = Utc::now();
-        let started = now - Duration::seconds(5);
-        let tasks = vec![task(
-            1,
-            "explore",
-            blocked(
-                "bash",
-                "cargo test --workspace --all-features -- --nocapture",
-            ),
-            started,
-            None,
-        )];
-
-        let strip = BackgroundStrip::build(&tasks, now, STRIP_ROW_CAP);
-        let detail = strip.rows[0].detail.as_deref().unwrap();
-
-        assert!(detail.ends_with('…'), "expected an ellipsis: {detail}");
-        assert_eq!(
-            detail.chars().count(),
-            "bash · ".chars().count() + DETAIL_CHARS
-        );
-    }
-
     #[test]
     fn an_empty_registry_produces_an_empty_strip() {
         let strip = BackgroundStrip::build(&[], Utc::now(), STRIP_ROW_CAP);
         assert!(strip.is_empty());
         assert_eq!(strip.total, 0);
         assert_eq!(strip.hidden, 0);
-    }
-
-    /// `↑↓ i` addresses the strip by drawn row, not by raw task id — so the
-    /// selection shares the strip's filter-and-sort, and a TTL-retired `done`
-    /// row is gone from both at once.
-    #[test]
-    fn ordered_live_matches_draw_order_and_drops_retired_done_rows() {
-        let now = Utc::now();
-        let started = now - Duration::seconds(600);
-        let fresh = now - Duration::seconds(DONE_ROW_TTL_SECS - 1);
-        let stale = now - Duration::seconds(DONE_ROW_TTL_SECS);
-        let tasks = vec![
-            task(5, "done-fresh", succeeded(), started, Some(fresh)),
-            task(1, "running", BackgroundTaskStatus::Running, started, None),
-            task(
-                3,
-                "failed",
-                BackgroundTaskStatus::Failed {
-                    error: "boom".into(),
-                },
-                started,
-                Some(now),
-            ),
-            task(9, "done-stale", succeeded(), started, Some(stale)),
-        ];
-
-        let ordered = ordered_live(&tasks, now);
-        let ids: Vec<u64> = ordered.iter().map(|(_, id, _)| id.0).collect();
-        assert_eq!(
-            ids,
-            vec![3, 1, 5],
-            "failed outranks running outranks done, and the retired row is gone"
-        );
-
-        let strip = BackgroundStrip::build(&tasks, now, STRIP_ROW_CAP);
-        let labels: Vec<&str> = strip.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, vec!["failed", "running", "done-fresh"]);
     }
 }

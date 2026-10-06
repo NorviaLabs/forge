@@ -1552,11 +1552,6 @@ impl ToastState {
         self.stack.clear();
     }
 
-    #[cfg(test)]
-    pub(crate) fn expire_for_test(&mut self) {
-        self.stack.tick_for_test();
-    }
-
     pub(crate) fn render_overlay(
         &mut self,
         frame_area: ratatui::layout::Rect,

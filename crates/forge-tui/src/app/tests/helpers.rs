@@ -271,17 +271,6 @@ pub(crate) fn draw_app(app: &mut TuiApp, width: u16, height: u16) {
     terminal.draw(|frame| app.draw(frame)).unwrap();
 }
 
-pub(crate) fn assert_buffer_fully_themed(buf: &ratatui::buffer::Buffer) {
-    use ratatui::style::Color;
-    for y in 0..buf.area().height {
-        for x in 0..buf.area().width {
-            let bg = buf[(x, y)].style().bg;
-            assert!(bg.is_some(), "unpainted cell at {x},{y}");
-            assert_ne!(bg, Some(Color::Black), "terminal-default black at {x},{y}");
-        }
-    }
-}
-
 pub(crate) fn direct_hitl_payload(call_id: &str, path: &str) -> HitlPayload {
     HitlPayload {
         call_id: call_id.into(),

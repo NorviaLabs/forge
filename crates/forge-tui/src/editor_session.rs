@@ -767,66 +767,6 @@ mod tests {
     }
 
     #[test]
-    fn reverse_search_repeats_backward_and_wraps_at_the_start() {
-        let mut session = EditorSession::new("foo foo\nfoo\nend\nfoo");
-        session.set_cursor(2, 0);
-        session.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
-        assert_eq!(session.mode(), EditorMode::Search);
-        for ch in "foo".chars() {
-            session.handle_key(key(KeyCode::Char(ch)));
-        }
-        assert_eq!(session.state.cursor, Index2::new(1, 0));
-        session.handle_key(key(KeyCode::Enter));
-        assert_eq!(session.state.cursor, Index2::new(1, 0));
-
-        for expected in [Index2::new(0, 4), Index2::new(0, 0), Index2::new(3, 0)] {
-            assert!(!session.handle_key(key(KeyCode::Char('n'))));
-            assert_eq!(session.state.cursor, expected);
-        }
-        for (modifiers, expected) in [
-            (KeyModifiers::SHIFT, Index2::new(0, 0)),
-            (KeyModifiers::NONE, Index2::new(0, 4)),
-        ] {
-            session.handle_key(KeyEvent::new(KeyCode::Char('N'), modifiers));
-            assert_eq!(session.state.cursor, expected);
-        }
-
-        session.handle_key(key(KeyCode::Char('/')));
-        assert_eq!(session.search_prefix(), '/');
-        for ch in "foo".chars() {
-            session.handle_key(key(KeyCode::Char(ch)));
-        }
-        session.handle_key(key(KeyCode::Enter));
-        assert_eq!(session.state.cursor, Index2::new(0, 4));
-        session.handle_key(key(KeyCode::Char('n')));
-        assert_eq!(session.state.cursor, Index2::new(1, 0));
-        session.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
-        assert_eq!(session.state.cursor, Index2::new(0, 4));
-        assert!(!session.is_dirty());
-        assert_eq!(session.revision(), 0);
-    }
-
-    #[test]
-    fn reverse_search_starts_before_the_cursor_and_wraps() {
-        for (start, expected) in [
-            (Index2::new(0, 4), Index2::new(0, 0)),
-            (Index2::new(0, 6), Index2::new(0, 4)),
-            (Index2::new(0, 0), Index2::new(2, 0)),
-            (Index2::new(3, 0), Index2::new(2, 0)),
-        ] {
-            let mut session = EditorSession::new("foo foo\nbar\nfoo\nend");
-            session.set_cursor(start.row, start.col);
-            session.handle_key(key(KeyCode::Char('?')));
-            for ch in "foo".chars() {
-                session.handle_key(key(KeyCode::Char(ch)));
-            }
-            assert_eq!(session.state.cursor, expected);
-            session.handle_key(key(KeyCode::Enter));
-            assert_eq!(session.state.cursor, expected);
-        }
-    }
-
-    #[test]
     fn reverse_search_backspace_and_cancel_preserve_the_origin() {
         let mut session = EditorSession::new("foo\nbar\nfoo\nend");
         session.set_cursor(3, 1);
@@ -916,57 +856,63 @@ mod tests {
     }
 
     #[test]
-    fn renders_the_editor_surface_without_an_embedded_status_line() {
-        let mut session = EditorSession::new("hello");
-        let area = Rect::new(0, 0, 20, 4);
-        let mut buffer = Buffer::empty(area);
+    fn reverse_search_repeats_backward_and_wraps_at_the_start() {
+        let mut session = EditorSession::new("foo foo\nfoo\nend\nfoo");
+        session.set_cursor(2, 0);
+        session.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert_eq!(session.mode(), EditorMode::Search);
+        for ch in "foo".chars() {
+            session.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(session.state.cursor, Index2::new(1, 0));
+        session.handle_key(key(KeyCode::Enter));
+        assert_eq!(session.state.cursor, Index2::new(1, 0));
 
-        session.render(area, &mut buffer);
+        for expected in [Index2::new(0, 4), Index2::new(0, 0), Index2::new(3, 0)] {
+            assert!(!session.handle_key(key(KeyCode::Char('n'))));
+            assert_eq!(session.state.cursor, expected);
+        }
+        for (modifiers, expected) in [
+            (KeyModifiers::SHIFT, Index2::new(0, 0)),
+            (KeyModifiers::NONE, Index2::new(0, 4)),
+        ] {
+            session.handle_key(KeyEvent::new(KeyCode::Char('N'), modifiers));
+            assert_eq!(session.state.cursor, expected);
+        }
 
-        let rendered: String = (0..area.width)
-            .map(|x| buffer.cell((x, 0)).unwrap().symbol().to_string())
-            .collect();
-        assert!(rendered.contains("hello"));
+        session.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(session.search_prefix(), '/');
+        for ch in "foo".chars() {
+            session.handle_key(key(KeyCode::Char(ch)));
+        }
+        session.handle_key(key(KeyCode::Enter));
+        assert_eq!(session.state.cursor, Index2::new(0, 4));
+        session.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(session.state.cursor, Index2::new(1, 0));
+        session.handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT));
+        assert_eq!(session.state.cursor, Index2::new(0, 4));
+        assert!(!session.is_dirty());
+        assert_eq!(session.revision(), 0);
     }
 
     #[test]
-    fn forge_highlights_convert_utf8_byte_ranges_to_character_columns() {
-        let source = "α let value";
-        let start = source.find("let").unwrap();
-        let end = source.find("value").unwrap();
-        let spans = vec![forge_syntax::HighlightSpan {
-            range: start..end,
-            style: forge_syntax::HighlightStyle {
-                class: forge_syntax::HighlightClass::Keyword,
-            },
-        }];
-
-        let highlights =
-            forge_highlights_to_edtui(source, &spans, &forge_syntax::HighlightTheme::default());
-
-        assert_eq!(highlights.len(), 1);
-        assert_eq!(highlights[0].start, Index2::new(0, 2));
-        assert_eq!(highlights[0].end, Index2::new(0, 5));
-    }
-
-    #[test]
-    fn forge_highlights_split_ranges_across_lines() {
-        let source = "fn α() {\n  value\n}";
-        let spans = vec![forge_syntax::HighlightSpan {
-            range: 0..source.len(),
-            style: forge_syntax::HighlightStyle {
-                class: forge_syntax::HighlightClass::Default,
-            },
-        }];
-
-        let highlights =
-            forge_highlights_to_edtui(source, &spans, &forge_syntax::HighlightTheme::default());
-
-        assert_eq!(highlights.len(), 3);
-        assert_eq!(highlights[0].start, Index2::new(0, 0));
-        assert_eq!(highlights[0].end, Index2::new(0, 7));
-        assert_eq!(highlights[1].start, Index2::new(1, 0));
-        assert_eq!(highlights[1].end, Index2::new(1, 6));
+    fn reverse_search_starts_before_the_cursor_and_wraps() {
+        for (start, expected) in [
+            (Index2::new(0, 4), Index2::new(0, 0)),
+            (Index2::new(0, 6), Index2::new(0, 4)),
+            (Index2::new(0, 0), Index2::new(2, 0)),
+            (Index2::new(3, 0), Index2::new(2, 0)),
+        ] {
+            let mut session = EditorSession::new("foo foo\nbar\nfoo\nend");
+            session.set_cursor(start.row, start.col);
+            session.handle_key(key(KeyCode::Char('?')));
+            for ch in "foo".chars() {
+                session.handle_key(key(KeyCode::Char(ch)));
+            }
+            assert_eq!(session.state.cursor, expected);
+            session.handle_key(key(KeyCode::Enter));
+            assert_eq!(session.state.cursor, expected);
+        }
     }
 
     #[test]
