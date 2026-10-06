@@ -1455,7 +1455,7 @@ fn sort_nodes(nodes: &mut [FileNode]) {
 fn explorer_row_line(
     prefix: &str,
     marker: &str,
-    _path: &Path,
+    active_file: bool,
     name: &str,
     kind: FileKind,
     selected: bool,
@@ -1463,6 +1463,7 @@ fn explorer_row_line(
     status: Option<GitStatusKind>,
     _icon_mode: FileIconMode,
     query: &str,
+    width: usize,
 ) -> Line<'static> {
     let selection_style = selected.then(|| {
         if panel_focused {
@@ -1472,25 +1473,38 @@ fn explorer_row_line(
         }
     });
     let chrome_style = selection_style.unwrap_or_else(theme::muted);
-    let name_style = selection_style.unwrap_or_else(|| match kind {
+    let mut name_style = selection_style.unwrap_or_else(|| match kind {
         FileKind::Directory => theme::directory(),
         FileKind::Symlink => theme::symlink(),
         FileKind::File | FileKind::Unknown => theme::text(),
     });
-    // The leading column is the selection pointer: `>` on the selected row,
-    // blank elsewhere, so the tree never shifts and selection never depends
-    // on background tint alone.
-    let pointer = if selected { ">" } else { " " };
+    if active_file {
+        name_style = name_style.add_modifier(ratatui::style::Modifier::BOLD);
+    }
+    // The selection bar is distinct from folder disclosure and the open
+    // file's dot. Moving through the tree cannot obscure which file is open.
+    let pointer = if selected { "▌" } else { " " };
+    // Content-search file groups still need their expand/collapse marker.
+    let marker = if active_file && marker == " " {
+        "•"
+    } else {
+        marker
+    };
     let mut spans = vec![Span::styled(
         format!("{pointer}{prefix}{marker} "),
         chrome_style,
     )];
+    let chrome_width = spans.iter().map(Span::width).sum::<usize>();
+    let name = crate::path_display::elide_middle(
+        name,
+        width.saturating_sub(chrome_width + if status.is_some() { 2 } else { 0 }),
+    );
     // Selection wins over everything; otherwise the first query token found
     // as a contiguous (case-insensitive) run in the name is highlighted.
     if selection_style.is_some() || query.trim().is_empty() {
-        spans.push(Span::styled(name.to_string(), name_style));
+        spans.push(Span::styled(name, name_style));
     } else {
-        spans.extend(highlight_name_spans(name, query, name_style));
+        spans.extend(highlight_name_spans(&name, query, name_style));
     }
     if let Some(status) = status {
         let mut glyph = status_indicator_now(Status::from(status));
@@ -1567,7 +1581,7 @@ fn match_byte_range_case_insensitive(haystack: &str, needle: &str) -> Option<(us
 }
 
 /// Search box, one blank resting row, then the tree.
-const SEARCH_ROW_HEIGHT: u16 = 3;
+const SEARCH_ROW_HEIGHT: u16 = 2;
 /// Display width of the `/ ` search affordance prefix.
 const SEARCH_PREFIX_WIDTH: u16 = 2;
 /// Vertical origin of the tree inside the explorer's inner rectangle: the
@@ -1583,10 +1597,13 @@ pub(crate) const TREE_ROW_OFFSET: u16 = 1 + TREE_TOP_OFFSET;
 pub struct FileExplorerWidget<'a> {
     pub explorer: &'a mut FileExplorer,
     pub focused: bool,
+    /// The resource currently open in the workspace, independent of the
+    /// explorer's navigation cursor. Diff and other views pass no file.
+    pub active_file: Option<&'a Path>,
     pub show_search: bool,
     /// Whether `FocusBlock::Search` (not just `Files`) is the active block —
-    /// finer-grained than `focused`, which is true for either. Drives the
-    /// solid/hollow state of the focus-indicator dot on the rule.
+    /// finer-grained than `focused`, which is true for either. Accents the
+    /// search prefix and separator while the query owns input.
     pub search_active: bool,
     /// Visible node index under the pointer (hover), if any. Hover never
     /// moves focus or selection; it only tints the row.
@@ -1654,15 +1671,15 @@ impl Widget for FileExplorerWidget<'_> {
                     let selected = selected_index == Some(self.explorer.scroll + offset);
                     let marker = if content_mode && node.content_match.is_none() {
                         if node.expanded {
-                            "v"
+                            "⌄"
                         } else {
-                            ">"
+                            "›"
                         }
                     } else {
                         match node.kind {
-                            FileKind::Directory if node.loading => "...",
-                            FileKind::Directory if node.expanded => "v",
-                            FileKind::Directory => ">",
+                            FileKind::Directory if node.loading => "…",
+                            FileKind::Directory if node.expanded => "⌄",
+                            FileKind::Directory => "›",
                             FileKind::File | FileKind::Symlink | FileKind::Unknown => " ",
                         }
                     };
@@ -1699,7 +1716,7 @@ impl Widget for FileExplorerWidget<'_> {
                         explorer_row_line(
                             &prefix,
                             marker,
-                            &node.path,
+                            self.active_file == Some(node.path.as_path()),
                             &group_name,
                             node.kind,
                             selected,
@@ -1707,6 +1724,7 @@ impl Widget for FileExplorerWidget<'_> {
                             status,
                             self.explorer.icon_mode,
                             if content_mode { "" } else { &query },
+                            inner.width.saturating_sub(TREE_LEAD_INSET) as usize,
                         )
                     };
                     // Hover is a pointer affordance: raised ground plus a
@@ -1760,8 +1778,7 @@ impl Widget for FileExplorerWidget<'_> {
         if self.show_search && inner.height >= TREE_TOP_OFFSET {
             let search_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_ROW_HEIGHT);
             let search_block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Rounded)
+                .borders(Borders::BOTTOM)
                 .padding(Padding::horizontal(1))
                 .title_bottom(Line::from(crate::hints::hint_spans(
                     if content_mode {
@@ -1863,8 +1880,11 @@ impl Widget for FileExplorerWidget<'_> {
                 _ => String::new(),
             };
             let footer_y = inner.y + inner.height.saturating_sub(1);
-            Paragraph::new(Line::styled(selected, theme::muted()))
-                .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
+            Paragraph::new(Line::styled(
+                crate::path_display::elide_path(&selected, inner.width as usize),
+                theme::muted(),
+            ))
+            .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
         }
     }
 }
@@ -2353,6 +2373,7 @@ mod tests {
             FileExplorerWidget {
                 explorer: &mut explorer,
                 focused,
+                active_file: None,
                 show_search: true,
                 search_active: false,
                 hover: None,
@@ -2669,6 +2690,7 @@ mod tests {
         FileExplorerWidget {
             explorer,
             focused: true,
+            active_file: None,
             show_search: true,
             search_active,
             hover: None,

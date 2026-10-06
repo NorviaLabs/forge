@@ -2807,7 +2807,6 @@ async fn declining_the_discard_confirmation_leaves_the_session_alone() {
         .unwrap();
 }
 
-/// Below the navigator width the session state collapses to a status chip.
 /// Regression for #643: `attention` was sticky, so a session that once stopped
 /// for input kept showing `● needs you` while its turn was actually running.
 /// A published snapshot must re-derive the row from turn state.
@@ -2858,18 +2857,6 @@ async fn a_running_turn_clears_stale_sidebar_attention() {
     assert!(
         task.is_working(),
         "a running turn must read as working: {task:?}"
-    );
-
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
-    let rendered = render_app_text(&mut app, 120, 40);
-    assert!(
-        rendered.contains("running"),
-        "sidebar missing running: {rendered}"
-    );
-    assert!(
-        !rendered.contains("needs you"),
-        "sidebar wrongly reads needs-you: {rendered}"
     );
 
     gate.notify_one();

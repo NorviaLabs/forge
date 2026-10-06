@@ -95,6 +95,21 @@ pub enum SessionRowState {
 }
 
 impl SessionRowState {
+    /// The qualifier names the same state as the marker, including finished
+    /// turns whose runtime has returned to idle.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Waiting => "needs you",
+            Self::Queued => "queued",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
     /// Map the session's lifecycle. Unknown future lifecycles read as
     /// `Interrupted` — never as idle or working, which would claim a runtime
     /// Forge cannot confirm.
@@ -513,10 +528,10 @@ impl Widget for SessionList<'_> {
             } else {
                 Span::raw(" ")
             };
-            let label_style = if row.state.needs_you() && !row.selected {
-                theme::text()
+            let label_style = if row.state.needs_you() {
+                theme::text().add_modifier(Modifier::BOLD)
             } else {
-                theme::text_secondary()
+                theme::text()
             };
             let label_style = if row.selected {
                 // The viewed session stays the loudest label in the column even
