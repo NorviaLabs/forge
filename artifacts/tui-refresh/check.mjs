@@ -15,7 +15,28 @@ await mkdir(screenshots, { recursive: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1200 }, deviceScaleFactor: 1 });
   page.on('pageerror', error => errors.push(error.message));
-  if (process.argv.includes('--references')) {
+  if (process.argv.includes('--spacing')) {
+    const before = process.argv[process.argv.indexOf('--spacing') + 1];
+    assert.ok(before, 'Pass the original proposal HTML after --spacing');
+    const cases = [['home', '120x40'], ['review', '120x40'], ['sessions', '80x18']];
+    const shots = [];
+    for (const [label, file] of [['Before', before], ['After', join(root, 'index.html')]]) {
+      await page.goto(pathToFileURL(file).href);
+      await page.evaluate(() => { window.ForgeStudy.state.motion = false; });
+      for (const [scene, size] of cases) {
+        await page.selectOption('#size', size);
+        await page.evaluate(scene => window.ForgeStudy.setScene(scene), scene);
+        shots.push({label, scene, size, png: (await page.locator('.window').screenshot()).toString('base64')});
+      }
+    }
+    const comparison = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Forge spacing review</title><style>*{box-sizing:border-box}body{margin:0;padding:40px;background:#101113;color:#edf0f5;font-family:-apple-system,BlinkMacSystemFont,sans-serif}main{max-width:1800px;margin:auto}h1{font-size:32px;margin:8px 0 16px;letter-spacing:-1px}p{color:#b5becb;font-size:13px;line-height:1.7}a{color:#9bc9e1}h2{font-size:16px;margin:32px 0 16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:24px}.label{font:12px monospace;margin-bottom:8px;color:#b5becb}img{display:block;width:100%;border:1px solid #414b59;border-radius:8px}footer{margin-top:32px;color:#b5becb;font-size:12px}@media(max-width:900px){body{padding:16px}.pair{grid-template-columns:1fr}}</style></head><body><main><p>FORGE / SPACING REVIEW</p><h1>Keep related content together.</h1><p>Original proposal on the left, revised spacing on the right. Both use the same terminal dimensions and example content.</p>${cases.map(([scene,size],i)=>`<section><h2>${scene === 'home' ? 'Start: task entry beside its starters' : scene === 'review' ? 'Review: shared gutters and one-row block separation' : 'Sessions: seven example states fit at the minimum size'} · ${size}</h2><div class="pair">${[shots[i],shots[cases.length+i]].map(s=>`<article><div class="label">${s.label}</div><img src="data:image/png;base64,${s.png}" alt="${s.label} spacing for ${s.scene} at ${s.size}"></article>`).join('')}</div></section>`).join('')}<footer><a href="index.html">Open the interactive proposal</a> · <a href="review.md#spacing-review">Spacing decisions</a></footer></main></body></html>`;
+    await writeFile(join(root, 'spacing-comparison.html'), comparison);
+    await page.setViewportSize({width: 1920, height: 900});
+    await page.goto(pathToFileURL(join(root, 'spacing-comparison.html')).href);
+    await page.screenshot({path: join(root, 'spacing-comparison.png'), fullPage: true});
+    assert.deepEqual(errors, []);
+    console.log('Rendered spacing comparison at matching terminal dimensions.');
+  } else if (process.argv.includes('--references')) {
     for (const [name, url] of [['reasonix-official-site', 'https://reasonix.io/'], ['deepseek-official-site', 'https://www.deepseek.com/harness/']]) {
       for (let attempt = 0; ; attempt++) {
         try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 }); break; }
@@ -71,33 +92,47 @@ try {
     const states = ['home', 'plan', 'working', 'review', 'approval', 'sessions', 'palette', 'terminal', 'error'];
     const dimensions = ['120x40', '160x50', '80x24', '80x18'];
     const snapshots = [];
+    const controls = async () => page.evaluate(() => {
+      const grid = window.ForgeStudy.grid(), draft = document.getElementById('draft'), screen = document.getElementById('screen').getBoundingClientRect();
+      const rect = draft.getBoundingClientRect(), cellX = screen.width / grid.cols, cellY = screen.height / grid.rows;
+      return {cols: grid.cols, rows: grid.rows, text: grid.cells.map(row => row.map(c => c.ch).join('')).join('\n'), hits: window.ForgeStudy.hits(), input: draft.style.display === 'none' ? null : {x: (rect.left-screen.left)/cellX, y: (rect.top-screen.top)/cellY, w: rect.width/cellX, h: rect.height/cellY}};
+    });
+    const accessible = (details, scene, size) => {
+      assert.equal(details.cols + 'x' + details.rows, size);
+      assert.ok(details.hits.every(h => h.x >= 0 && h.y >= 0 && h.x + h.w <= details.cols && h.y + h.h <= details.rows), `${scene} ${size}: action outside frame`);
+      if(details.input){
+        const d=details.input;
+        assert.ok(d.y+d.h <= details.rows-2+0.01, `${scene} ${size}: prompt spills into footer`);
+        assert.ok(details.hits.every(h => h.x+h.w<=d.x+0.01 || h.x>=d.x+d.w-0.01 || h.y+h.h<=d.y+0.01 || h.y>=d.y+d.h-0.01), `${scene} ${size}: action overlaps editable prompt`);
+      }
+      if(scene==='approval'){
+        assert.ok(details.text.includes('cargo test -p forge-model --locked retry'));
+        assert.ok(details.text.includes('Don’t run') && details.text.includes('Allow once'));
+        assert.ok(details.hits.filter(h=>h.action.startsWith('approval:')).every(h=>h.y+h.h<=details.rows-4), 'Decision remains above input and footer');
+      }
+      if(['palette','model','files','help'].includes(scene))assert.ok(!details.hits.some(h=>h.action.startsWith('file:')||h.action.startsWith('scene:')), 'Picker blocks background navigation controls');
+    };
     for (const theme of ['dark', 'light', 'mono']) {
       await page.selectOption('#theme', theme);
       for (const size of dimensions) {
         await page.selectOption('#size', size);
         for (const scene of states) {
           await page.evaluate(scene => window.ForgeStudy.setScene(scene), scene);
-          const details = await page.evaluate(() => {
-            const grid = window.ForgeStudy.grid();
-            return { rows: grid.rows, cols: grid.cols, text: grid.cells.map(row => row.map(c => c.ch).join('')).join('\n'), focus: window.ForgeStudy.state.focus, hits: window.ForgeStudy.hits() };
-          });
-          assert.equal(details.cols + 'x' + details.rows, size);
+          const details = await controls();
+          accessible(details, scene, size);
           assert.ok(details.text.includes('FORGE'));
-          assert.ok(details.hits.every(h => h.x >= 0 && h.y >= 0 && h.x + h.w <= details.cols && h.y + h.h <= details.rows), `${scene} ${size}: hit region outside frame`);
           assert.ok(details.text.includes('OpenAI'));
           if (scene === 'approval') {
-            assert.equal(details.focus, 'approval');
-            assert.ok(details.text.includes('Don’t run') && details.text.includes('Allow once'));
-            assert.ok(details.text.includes('cargo test -p forge-model --locked retry'));
+            assert.equal(await page.evaluate(() => window.ForgeStudy.state.focus), 'approval');
             assert.ok(details.text.includes('Paused'));
           }
           if (scene === 'error') assert.ok(details.text.includes('Retry this turn'));
           if (theme === 'dark' && size === '120x40') {
             await page.locator('.window').screenshot({ path: join(screenshots, `${scene}-dark-120x40.png`) });
-            const svg = await page.evaluate(() => new XMLSerializer().serializeToString(document.getElementById('screen')));
+            const svg = await page.evaluate(() => window.ForgeStudy.exportSvg().text());
             snapshots.push({ scene, svg });
           }
-          if (['review', 'approval', 'sessions'].includes(scene) && ['80x18', '160x50'].includes(size) && theme === 'dark') {
+          if (['home', 'review', 'approval', 'sessions', 'palette', 'terminal'].includes(scene) && ['80x18', '160x50'].includes(size) && theme === 'dark') {
             await page.locator('.window').screenshot({ path: join(screenshots, `${scene}-dark-${size}.png`) });
           }
           if (scene === 'review' && size === '120x40' && theme === 'light') {
@@ -107,8 +142,30 @@ try {
       }
     }
     await page.selectOption('#theme', 'dark');
+    const neighborhoods = ['80x20', '80x21', '80x27', '80x28', '80x29', '115x40', '116x40', '135x40', '136x40'];
+    for(const size of neighborhoods){
+      await page.evaluate(size => { const [cols,rows]=size.split('x').map(Number);Object.assign(window.ForgeStudy.state,{cols,rows}); },size);
+      for(const scene of states){
+        await page.evaluate(scene => window.ForgeStudy.setScene(scene),scene);
+        accessible(await controls(),scene,size);
+      }
+    }
+    for(const size of ['80x18','80x28','120x40']){
+      await page.evaluate(size => { const [cols,rows]=size.split('x').map(Number);Object.assign(window.ForgeStudy.state,{cols,rows}); },size);
+      for(const scene of ['model','files','help']){
+        await page.evaluate(scene => window.ForgeStudy.setScene(scene),scene);
+        accessible(await controls(),scene,size);
+        if(size!=='80x28')await page.locator('.window').screenshot({path:join(screenshots, `${scene}-dark-${size}.png`)});
+      }
+    }
     await page.selectOption('#size', '80x18');
+    await page.evaluate(() => window.ForgeStudy.setScene('sessions'));
+    assert.ok((await controls()).text.includes('Audit session cleanup'), 'All seven sample sessions remain reachable at the minimum size');
     await page.evaluate(() => window.ForgeStudy.setScene('review'));
+    assert.ok((await controls()).text.includes('19 local tests passed'), 'Compact review retains validation evidence');
+    await page.evaluate(() => { window.ForgeStudy.state.model='gpt-6.1-sol-with-a-long-deployment-name';window.ForgeStudy.setScene('approval'); });
+    assert.ok((await controls()).text.includes('[?] Waiting for you'), 'Long model labels preserve the decision state');
+    await page.evaluate(() => { window.ForgeStudy.state.model='gpt-6.1-sol';window.ForgeStudy.setScene('review'); });
     await page.locator('#draft').fill('Also cover exhausted retries with a regression test.');
     await page.locator('#terminal').focus();
     await page.keyboard.press('F6');
@@ -159,7 +216,9 @@ try {
     const svgExport = await exportPromise;
     const exportPath = join(screenshots, 'review-export.svg');
     await svgExport.saveAs(exportPath);
-    assert.ok((await readFile(exportPath, 'utf8')).includes('xmlns="http://www.w3.org/2000/svg"'));
+    const exportedSvg = await readFile(exportPath, 'utf8');
+    assert.ok(exportedSvg.includes('xmlns="http://www.w3.org/2000/svg"'));
+    assert.ok(exportedSvg.includes('Also cover exhausted retries'), 'Exports must include the visible draft');
     const pngPromise = page.waitForEvent('download');
     await page.click('#save-png');
     const pngExport = await pngPromise;
@@ -199,8 +258,8 @@ try {
     await page.goto(pathToFileURL(join(root, 'contact-sheet.html')).href);
     await page.screenshot({ path: join(root, 'contact-sheet.png'), fullPage: true });
     assert.deepEqual(errors, []);
-    await writeFile(join(root, 'validation.json'), JSON.stringify({ checked: '2026-10-06', renders: states.length * dimensions.length * 3, states, dimensions, themes: ['dark', 'light', 'mono'], interactions: ['draft survives view switch and resize', 'default approval declines', 'explicit allow resumes', 'command query opens terminal', 'terminal returns to saved prompt', 'Ctrl+P opens files', 'file choice opens source', 'horizontal code panning', 'session peek and return', 'SVG and PNG export', 'actual before captures exist at each preset', 'OS reduced motion disables animation', 'walkthrough waits at approval', 'walkthrough resumes only after explicit choice'], browserErrors: errors }, null, 2) + '\n');
-    console.log('PASS: 108 state/size/theme renders, draft retention, explicit approvals, command routing, before captures, reduced motion. Screenshots saved.');
+    await writeFile(join(root, 'validation.json'), JSON.stringify({ checked: '2026-10-06', renders: states.length * dimensions.length * 3, spacingRenders: states.length*neighborhoods.length+9, neighborhoods, states, dimensions, themes: ['dark', 'light', 'mono'], interactions: ['draft survives view switch and resize', 'default approval declines', 'explicit allow resumes', 'command query opens terminal', 'terminal returns to saved prompt', 'Ctrl+P opens files', 'file choice opens source', 'horizontal code panning', 'session peek and return', 'SVG and PNG export includes visible draft', 'actual before captures exist at each preset', 'OS reduced motion disables animation', 'walkthrough waits at approval', 'walkthrough resumes only after explicit choice', 'interactive content stays clear of editable prompt and footer', 'compact review retains validation evidence', 'minimum session view retains all seven examples', 'long model label preserves decision state'], browserErrors: errors }, null, 2) + '\n');
+    console.log('PASS: 108 state/size/theme renders, 90 breakpoint/picker renders, prompt clearance, retained drafts, explicit approvals, exports and reduced motion. Screenshots saved.');
   }
 } finally {
   await browser.close();

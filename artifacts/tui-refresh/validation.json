@@ -1,6 +1,18 @@
 {
   "checked": "2026-10-06",
   "renders": 108,
+  "spacingRenders": 90,
+  "neighborhoods": [
+    "80x20",
+    "80x21",
+    "80x27",
+    "80x28",
+    "80x29",
+    "115x40",
+    "116x40",
+    "135x40",
+    "136x40"
+  ],
   "states": [
     "home",
     "plan",
@@ -33,11 +45,15 @@
     "file choice opens source",
     "horizontal code panning",
     "session peek and return",
-    "SVG and PNG export",
+    "SVG and PNG export includes visible draft",
     "actual before captures exist at each preset",
     "OS reduced motion disables animation",
     "walkthrough waits at approval",
-    "walkthrough resumes only after explicit choice"
+    "walkthrough resumes only after explicit choice",
+    "interactive content stays clear of editable prompt and footer",
+    "compact review retains validation evidence",
+    "minimum session view retains all seven examples",
+    "long model label preserves decision state"
   ],
   "browserErrors": []
 }

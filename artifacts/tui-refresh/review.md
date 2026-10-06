@@ -2,7 +2,7 @@
 
 Open [the interactive study](index.html). Use the state tabs, size and theme selectors, and **Play walkthrough**. The walkthrough stops at the decision; selecting **Allow once** resumes it. **Current home** shows captured Forge cells at the same terminal preset. SVG and PNG exports save the visible state.
 
-[Nine-screen overview](contact-sheet.png) · [Motion walkthrough](motion.webm) · [Full study preview](overview.png) · [Individual screens](screens/) · [Validation results](validation.json)
+[Nine-screen overview](contact-sheet.png) · [Spacing before / after](spacing-comparison.html) · [Motion walkthrough](motion.webm) · [Full study preview](overview.png) · [Individual screens](screens/) · [Validation results](validation.json)
 
 This is a proposed interface and local interaction simulation. The task, patch, timings, context use, session roster, and test results in the proposal are illustrative. They are not results from executing an agent task. Forge's Rust implementation and design contract have not been changed.
 
@@ -54,7 +54,9 @@ Product screens use one monospace size and a literal cell grid. Presentation zoo
 
 - One header row for repository/branch and session attention; one neutral rule.
 - One text-tab row naming conversation and the resource. A `>` marker identifies keyboard ownership independently of selection.
-- The composer spans the working surface. Its surface and top rule identify the input boundary, with no enclosing nested box.
+- During a task, the composer spans the working surface. On the start screen it joins the heading and starters in a centered task group, capped at 84 columns. Its surface and top rule identify the input boundary, with no enclosing nested box.
+- Prose and inspector metadata share a two-column inner inset. Focus, disclosure, and outcome markers use explicit leading columns rather than adding a second layer of pane padding.
+- One blank row separates distinct transcript blocks. Speaker labels and their body, list items, and grouped command output stay together.
 - Two footer rows show contextual actions and model/lifecycle state. Neither reserves an empty background strip while idle.
 - Routine activity stays neutral. Warning means a human decision; success labels require evidence in the actual implementation. Prose remains the primary foreground.
 
@@ -63,9 +65,26 @@ Product screens use one monospace size and a literal cell grid. Presentation zoo
 | 160×50 | 24-column navigator; remaining work surface split approximately 60/40 between chat and inspector | Persistent navigation is possible without narrowing the prompt. |
 | 120×40 | Chat and inspector; navigator on demand | Inspector has less width than a full-screen source view; horizontal panning is available. |
 | 80×24 | Retained chat or inspector, reached with F6 | Compact transcript and no permanent navigator. |
-| 80×18 | One primary body view; composer and necessary actions remain | One starter; compact checklist; complete command and approval options; session list scrolls to the selection. |
+| 80×18 | One primary body view; composer and necessary actions remain | One starter; compact checklist; complete command and approval options; all seven example sessions fit. Longer lists would scroll to the selection. |
 
 Actual implementation should decide breakpoints from pane minimums rather than these four presets. The prototype uses current review eligibility at 116 columns and a proposed 24-column navigator from 136. Validate the breakpoint neighborhoods before changing production layout.
+
+### Spacing review
+
+The [before / after comparison](spacing-comparison.html) ([PNG](spacing-comparison.png)) uses the original proposal at `c3f14bab` and this revision, with matching terminal dimensions and example content. It is a comparison of proposal versions; **Current home** remains the separate installed-Forge reference.
+
+| Surface | Issue in the first proposal | Revised treatment |
+| --- | --- | --- |
+| Start | The welcome text, starters, and bottom prompt were separated by a large gap and used different left edges. | One centered task group; heading, prompt text, starters, and local hints share their text origin. The prompt sits directly below the heading and configuration, followed by the starters. |
+| Conversation | Prompt text, activity, answer, and file rows had different insets. Two- and three-row rests separated short related blocks. | Two-column inner inset; one blank row between distinct blocks; labels and their content stay together. Tight lists remain consecutive. |
+| Inspector | The title and metadata started at different columns, and the hunk header added another empty row before code. | Align title, metadata, and hunk text; keep line numbers and signs in fixed columns; show code immediately after the hunk. Horizontal panning retains the full source. |
+| Approval | A tall fixed card and a gap above it separated the command from the explanation and decision. Hints repeated inside the card and footer. | The card follows its context and sizes to the wrapped explanation and choices. Exact command, workspace, consequence, and both choices remain visible. One authoritative footer gives the decision bindings. |
+| Compact workspace | A three-row prompt and a spare row above it consumed two useful body rows at the minimum size. | Two-row prompt and no extra body-to-prompt spacer below 28 frame rows. The 80×18 example retains its test result and shows seven session entries, compared with five before. |
+| Sessions and shell | Session hints repeated in the body. The shell was detached from the answer by a large vertical gap. | Contextual footer hints; session rows use available body height; shell output follows its explanation with one blank row. |
+| Pickers and footer | Menus used a fixed height and sat low in the frame. Some hint widths reserved more space than the adjacent metadata needed. | Menus size to their result count and center within the body, keeping the header and input area clear. Footer labels reserve their actual widths and leave a gap before hints or model text. |
+| Study page | Presentation padding used several unrelated pixel values. | Eight-pixel steps for section padding, headings, and preview captions, with four/eight-pixel gaps for controls. This scale applies to the surrounding HTML study; product spacing remains character cells. |
+
+Short terminals remove padding and repeated hints before removing the command, decision, editable prompt, or validation evidence. The start group's surrounding empty canvas is intentional; related content stays together without stretching rows to fill the window. These choices improve the proposal's consistency and content budget; they do not establish a measured usability gain or change Forge's runtime layout.
 
 ### Color and effects
 
@@ -99,7 +118,9 @@ Use the existing UI tick; redraw only changed regions in production. Do not add 
 
 `node artifacts/tui-refresh/check.mjs --video` records the motion sequence. The recorded keyboard selection is a simulated human action; the interactive walkthrough itself never approves automatically. `--references` refreshes the two official page screenshots and requires network access.
 
-The browser check covers 108 combinations: nine principal states × four terminal presets × dark/light/mono. It verifies frame sizes, contained hit regions, complete minimum-size approval content, keyboard decision behavior, retained drafts through view switches and resizing, command routing, terminal-to-composer return, file selection and horizontal panning, session peek and return, SVG/PNG exports, original captures at each preset, reduced-motion initialization, and browser exceptions. A clock-controlled walkthrough check confirms it stays at approval until an explicit choice and then reaches review. Screenshots of all nine states, light review, and compact/large review, approval, and sessions are retained. Visual inspection corrected light-mode seams and code elision. These are prototype checks, not verification of an implemented Ratatui refresh or a user study.
+`node artifacts/tui-refresh/check.mjs --spacing PATH` renders the comparison using an original proposal HTML file and the current version. The delivered comparison used the original HTML saved before this spacing pass. SVG/PNG exports also include the visible draft or placeholder, so the gallery shows the complete input composition.
+
+The browser check covers 108 combinations: nine principal states × four terminal presets × dark/light/mono. Another 90 renders cover the sizes around starter-count, density, inspector, and navigator changes, plus compact and comfortable file/model/help menus. Checks verify contained actions, clearance around editable input and footer, complete minimum-size approval content, visible compact validation evidence, the seven example sessions, and preservation of decision state with a long model label. Interaction checks cover keyboard decisions, drafts through view switches and resizing, command routing, shell-to-composer return, file selection and panning, session peek and return, SVG/PNG exports including the draft, original captures, reduced motion, and browser exceptions. A clock-controlled walkthrough check confirms it stays at approval until an explicit choice and then reaches review. Updated screenshots and the motion sequence are retained. These are prototype checks, not verification of an implemented Ratatui refresh or a user study.
 
 Before implementation, compare the current and proposed versions on these tasks at the same terminal sizes:
 
