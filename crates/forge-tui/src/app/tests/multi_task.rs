@@ -2160,8 +2160,8 @@ async fn a_tab_chord_moves_the_rows_cursor_with_the_tab() {
         .unwrap();
 }
 
-/// The `Git` tab exists only where the column is drawn and the workspace is a
-/// repository, and reaching it opens the working-tree review: the changed files
+/// The `Git` tab exists in a repository, including with a collapsed navigator.
+/// Reaching it reveals the working-tree review: the changed files
 /// in the navigator column, the patch in the Workspace pane (`FORGE-DESIGN
 /// §7.7`).
 #[tokio::test]
@@ -2188,15 +2188,18 @@ async fn the_git_tab_reviews_the_working_tree_and_only_exists_in_a_repository() 
     assert!(rendered.contains("STAGED"), "{rendered}");
     assert!(rendered.contains("UNSTAGED"), "{rendered}");
 
-    // Hiding the column takes the tab with it, and the chord goes inert rather
-    // than switching to a tab the row no longer draws.
+    // A collapsed navigator remains reachable through its direct shortcut.
     app.workspace_files.visible = false;
-    assert!(!app.navigator_git_available());
-    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    assert!(app.navigator_git_available());
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
     app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_ne!(app.effective_navigator_tab(), NavigatorTab::Git);
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
+    assert!(app.workspace_files.visible);
+    render_app_text(&mut app, 80, 18);
+    assert!(app.navigator_list_area.is_some());
+    assert_eq!(app.focus.block(), FocusBlock::Files);
 
     handle
         .command(forge_session::SupervisorCommand::Shutdown)

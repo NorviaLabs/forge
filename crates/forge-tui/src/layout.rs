@@ -26,46 +26,38 @@ pub struct LayoutRegions {
     /// Persistent task/session strip. Zero-height for legacy layout callers
     /// that have not opted into repository task mode.
     pub task_strip: Rect,
-    /// Center pane: File/Diff/Run content, or an empty-state placeholder.
+    /// Conversation/resource switcher above the work surface.
+    pub workspace_tabs: Rect,
+    /// Resource inspector: File, Diff or GitHub issues.
     pub chat: Rect,
     pub files: Option<Rect>,
-    /// Persistent conversation sidebar. Unlike `files`, this doesn't hide at
-    /// narrow widths — the composer lives inside it, so it always gets a
-    /// column (see `SIDEBAR_MIN_CONTENT_WIDTH`).
+    /// Primary conversation surface. On narrow terminals the inspector and
+    /// navigator can temporarily occupy this surface without closing it.
     pub sidebar: Option<Rect>,
-    /// Contextual bottom panel, docked under `files`+`chat` only — never
-    /// under `sidebar`. 0-height when closed or space is tight.
+    /// Terminal under the conversation and inspector, beside the navigator.
     pub bottom_panel: Rect,
     /// Phase 10 / TUI-08 — 0-height when empty. A full-width chrome row
     /// directly above the footer: the status line belongs to the shell, not
     /// inside the conversation column, where it used to push the transcript
     /// up and down by a row every time a message appeared and expired.
     pub feedback: Rect,
-    /// Outbound message queue. 0-height when empty.
-    /// Scoped to `sidebar`'s width.
+    /// Outbound message queue across the work surface. 0-height when empty.
     pub queue: Rect,
-    /// Background-task strip, docked above the composer. Scoped to
-    /// `sidebar`'s width. 0-height when the sidebar itself is hidden.
+    /// Background-task strip across the work surface, above the composer.
     pub background: Rect,
-    /// Composer. Scoped to `sidebar`'s width, docked at its bottom.
+    /// Composer spans the work surface, including in inspection/navigation.
     pub input: Rect,
     pub footer: Rect,
 }
 
-/// Frame-column gate for Files visibility (2026 contract: 116).
-/// Higher than `SIDEBAR_MIN_CONTENT_WIDTH` so the explorer is the first
-/// thing to go as the terminal narrows. Previously a 110 content-column
-/// threshold applied after the 95% inset (effective 116 frame columns);
-/// the inset is gone but the frame gate is preserved byte-for-byte.
+/// Frame-column gate for persistent columns. Narrow navigation uses the
+/// entire work surface temporarily instead of becoming unreachable.
 const FILES_WIDTH_THRESHOLD: u16 = FILES_VISIBLE_FRAME_W;
-/// The transcript's floor. It is the only `Min` in the sidebar's stack, so
-/// this is what every other strip there is measured against.
+/// Reserve useful content above the composer as optional strips grow.
 const TRANSCRIPT_MIN_ROWS: u16 = 3;
-/// Minimum chat/files width the sidebar must leave behind. The sidebar
-/// itself doesn't hide on narrow-width precedence like `files` does — the
-/// composer lives inside it — so this is only a defensive floor against
-/// negative-width arithmetic on pathologically narrow terminals.
-const SIDEBAR_MIN_CONTENT_WIDTH: u16 = 44;
+/// Floors for simultaneous conversation and resource inspection.
+const RESOURCE_MIN_WIDTH: u16 = 44;
+const CONVERSATION_MIN_WIDTH: u16 = 60;
 
 fn content_width(area: Rect) -> u16 {
     content_width_for(area.width)
@@ -75,22 +67,48 @@ fn content_width_for(frame_width: u16) -> u16 {
     frame_width.saturating_sub(FRAME_INSET_X * 2)
 }
 
-/// Whether the file explorer can be rendered at this terminal width.
-///
-/// Frame-column gate (116). Shares [`FILES_WIDTH_THRESHOLD`] with
-/// `split_areas_ex` so a caller asking "will this show?" can never disagree
-/// with what the layout actually does.
+/// Whether the frame is eligible for persistent side-by-side columns.
+/// Individual pane budgets can still require a temporary navigation view.
 pub fn files_fit(frame_width: u16) -> bool {
     frame_width >= FILES_WIDTH_THRESHOLD
 }
 
-/// Narrowest terminal that can show the explorer, for user-facing messages.
-pub fn files_min_frame_width() -> u16 {
-    FILES_WIDTH_THRESHOLD
-}
-
-fn sidebar_width(content_width: u16) -> u16 {
-    (content_width / 3).clamp(32, 64)
+/// Keep geometry and composer measurement on the same horizontal budgets.
+/// A requested navigator becomes the work surface when a persistent column
+/// would squeeze either the conversation or the inspector below its floor.
+fn workspace_columns(
+    area: Rect,
+    frame_width: u16,
+    show_files: bool,
+    resource_open: bool,
+    navigator_active: bool,
+    preferences: PaneLayoutPreferences,
+) -> (Option<Rect>, Rect, bool) {
+    let work_min = if resource_open {
+        CONVERSATION_MIN_WIDTH + PANE_GAP_X + RESOURCE_MIN_WIDTH
+    } else {
+        CONVERSATION_MIN_WIDTH
+    };
+    let persistent =
+        show_files && files_fit(frame_width) && area.width >= 28 + PANE_GAP_X + work_min;
+    if persistent {
+        let file_width = preferences
+            .files_width_ratio
+            .map(|ratio| (f64::from(area.width) * ratio).round() as u16)
+            .unwrap_or((area.width / 5).clamp(28, 32))
+            .clamp(28, area.width.saturating_sub(work_min + PANE_GAP_X));
+        let columns = Layout::horizontal([
+            Constraint::Length(file_width),
+            Constraint::Length(PANE_GAP_X),
+            Constraint::Min(work_min),
+        ])
+        .split(area);
+        (Some(columns[0]), columns[2], false)
+    } else if show_files && navigator_active {
+        (Some(area), area, true)
+    } else {
+        (None, area, false)
+    }
 }
 
 /// Split terminal. `feedback_h` is retained for source compatibility; no
@@ -181,6 +199,8 @@ pub fn split_areas_with_chrome(
         warning_h,
         false,
         false,
+        false,
+        false,
         PaneLayoutPreferences::default(),
     )
 }
@@ -212,6 +232,8 @@ pub fn split_areas_with_expanded_conversation(
         warning_h,
         true,
         false,
+        false,
+        false,
         PaneLayoutPreferences::default(),
     )
 }
@@ -230,6 +252,8 @@ pub fn split_areas_with_preferences(
     warning_h: u16,
     expand_conversation: bool,
     show_task_strip: bool,
+    resource_selected: bool,
+    navigator_active: bool,
     preferences: PaneLayoutPreferences,
 ) -> LayoutRegions {
     let content_width = content_width(area);
@@ -244,23 +268,7 @@ pub fn split_areas_with_preferences(
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
     let footer_h = footer_h.min(2);
-    let default_sidebar_width = sidebar_width(content_area.width);
-    let sidebar_max = if show_files && area.width >= FILES_WIDTH_THRESHOLD {
-        content_area
-            .width
-            .saturating_sub(28 + PANE_GAP_X + 44 + PANE_GAP_X)
-    } else {
-        content_area
-            .width
-            .saturating_sub(SIDEBAR_MIN_CONTENT_WIDTH + PANE_GAP_X)
-    };
-    let sidebar_width = preferences
-        .conversation_width_ratio
-        .map(|ratio| (f64::from(content_area.width) * ratio).round() as u16)
-        .unwrap_or(default_sidebar_width)
-        .clamp(32, sidebar_max.max(32));
-    let show_sidebar =
-        show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
+    let resource_open = !expand_conversation;
     let gap_bottom = if footer_h > 0 { CHROME_GAP_Y } else { 0 };
     let status_h = 1;
     let fixed_h = status_h + footer_h + fb + CHROME_GAP_Y + gap_bottom;
@@ -278,11 +286,7 @@ pub fn split_areas_with_preferences(
         .saturating_sub(fixed_h)
         .saturating_sub(warning_h.min(1) + u16::from(show_task_strip))
         .saturating_sub(PANE_GAP_Y)
-        .saturating_sub(if expand_conversation {
-            TRANSCRIPT_MIN_ROWS + input_h + qh + COMPOSER_GAP_Y
-        } else {
-            3
-        });
+        .saturating_sub(1 + TRANSCRIPT_MIN_ROWS + input_h + qh + COMPOSER_GAP_Y);
     let panel_h = if requested_panel_h > 0 {
         requested_panel_h
             .clamp(3, available_panel_h.max(3))
@@ -291,10 +295,8 @@ pub fn split_areas_with_preferences(
         0
     };
 
-    // Top-level vertical stack: status / approve-all warning / task strip /
-    // gutter / main / gutter / status line / footer. `queue`, `background`
-    // and `input` do not live here — they're scoped to the sidebar's own
-    // width, split below.
+    // Shell chrome surrounds the work surface. Queue, background and input
+    // share the work surface width, split below the conversation/inspector.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -315,126 +317,78 @@ pub fn split_areas_with_preferences(
     let feedback = rows[6];
     let footer = rows[7];
 
-    // main row: [left column (files+chat+bottom_panel), gutter, sidebar]
-    let (left_area, sidebar) = if show_sidebar && !expand_conversation {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(44),
-                Constraint::Length(PANE_GAP_X),
-                Constraint::Length(sidebar_width),
-            ])
-            .split(main);
-        (columns[0], Some(columns[2]))
-    } else {
-        (main, None)
-    };
-
-    // left column: [files+chat, gutter, bottom_panel] — bottom panel spans
-    // this column's full width, never the sidebar's.
-    let left_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if panel_h > 0 {
-            [
-                Constraint::Min(3),
-                Constraint::Length(PANE_GAP_Y),
-                Constraint::Length(panel_h),
-            ]
-        } else {
-            [
-                Constraint::Min(3),
-                Constraint::Length(0),
-                Constraint::Length(0),
-            ]
-        })
-        .split(left_area);
-    let top = left_rows[0];
-    let bottom_panel = left_rows[2];
-
-    let show_files =
-        show_files && area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + PANE_GAP_X + 44;
-    let default_file_width = (content_area.width / 4).clamp(28, 37);
-    let file_width = preferences
-        .files_width_ratio
-        .map(|ratio| (f64::from(content_area.width) * ratio).round() as u16)
-        .unwrap_or(default_file_width)
-        .clamp(28, top.width.saturating_sub(44 + PANE_GAP_X).max(28));
-    let (files, chat) = if show_files {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(file_width),
-                Constraint::Length(PANE_GAP_X),
-                Constraint::Min(44),
-            ])
-            .split(top);
+    let (mut files, work, navigator_overlay) = workspace_columns(
+        main,
+        area.width,
+        show_files,
+        resource_open,
+        navigator_active,
+        preferences,
+    );
+    let tabs_h = u16::from(!navigator_overlay);
+    let input_h = input_h.min(
+        work.height
+            .saturating_sub(
+                tabs_h + qh + panel_h + u16::from(panel_h > 0) * PANE_GAP_Y + TRANSCRIPT_MIN_ROWS,
+            )
+            .max(3),
+    );
+    let bg_h = bg_h.min(
+        work.height
+            .saturating_sub(tabs_h + qh + input_h + panel_h + PANE_GAP_Y + TRANSCRIPT_MIN_ROWS),
+    );
+    let work_rows = Layout::vertical([
+        Constraint::Length(tabs_h),
+        Constraint::Min(TRANSCRIPT_MIN_ROWS),
+        Constraint::Length(if panel_h > 0 { PANE_GAP_Y } else { 0 }),
+        Constraint::Length(panel_h),
+        Constraint::Length(qh),
+        Constraint::Length(bg_h),
+        Constraint::Length(COMPOSER_GAP_Y),
+        Constraint::Length(input_h),
+    ])
+    .split(work);
+    let workspace_tabs = work_rows[0];
+    let body = work_rows[1];
+    let bottom_panel = work_rows[3];
+    let queue = work_rows[4];
+    let background = work_rows[5];
+    let input = work_rows[7];
+    let zero = Rect::new(body.x, body.y, 0, 0);
+    let (sidebar, chat) = if navigator_overlay {
+        files = Some(body);
+        (None, zero)
+    } else if resource_open
+        && files_fit(area.width)
+        && body.width >= CONVERSATION_MIN_WIDTH + PANE_GAP_X + RESOURCE_MIN_WIDTH
+        && show_sidebar
+    {
+        let conversation_width = preferences
+            .conversation_width_ratio
+            .map(|ratio| (f64::from(content_area.width) * ratio).round() as u16)
+            .unwrap_or(body.width * 3 / 5)
+            .clamp(
+                CONVERSATION_MIN_WIDTH,
+                body.width - PANE_GAP_X - RESOURCE_MIN_WIDTH,
+            );
+        let columns = Layout::horizontal([
+            Constraint::Length(conversation_width),
+            Constraint::Length(PANE_GAP_X),
+            Constraint::Min(RESOURCE_MIN_WIDTH),
+        ])
+        .split(body);
         (Some(columns[0]), columns[2])
+    } else if resource_open && resource_selected {
+        (None, body)
     } else {
-        (None, top)
-    };
-
-    let (files, chat, sidebar) = if expand_conversation && show_sidebar {
-        let (files, conversation) = if show_files {
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(file_width),
-                    Constraint::Length(PANE_GAP_X),
-                    Constraint::Min(44),
-                ])
-                .split(top);
-            (Some(columns[0]), columns[2])
-        } else {
-            (None, top)
-        };
-        (
-            files,
-            Rect::new(conversation.x, conversation.y, 0, 0),
-            Some(conversation),
-        )
-    } else {
-        (files, chat, sidebar)
-    };
-
-    // sidebar: [transcript, queue, background, gutter, input]. The status line
-    // used to be a row in here; it now sits in the shell band above the footer,
-    // so a status message no longer takes a row from the conversation.
-    let (sidebar, queue, background, input) = if let Some(sb) = sidebar {
-        // The background strip yields before the transcript does. It is the
-        // only strip here whose height the caller asks for rather than derives,
-        // so it is the one that has to be clamped against the transcript's
-        // `Min(3)` floor — otherwise the constraint solver would honour the
-        // strip first and shrink the conversation instead.
-        let bg_h = bg_h.min(
-            sb.height
-                .saturating_sub(qh + COMPOSER_GAP_Y + input_h)
-                .saturating_sub(TRANSCRIPT_MIN_ROWS),
-        );
-        let sidebar_rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(TRANSCRIPT_MIN_ROWS),
-                Constraint::Length(qh),
-                Constraint::Length(bg_h),
-                Constraint::Length(COMPOSER_GAP_Y), // gutter above the composer
-                Constraint::Length(input_h),
-            ])
-            .split(sb);
-        (
-            Some(sidebar_rows[0]),
-            sidebar_rows[1],
-            sidebar_rows[2],
-            sidebar_rows[4],
-        )
-    } else {
-        let zero = Rect::new(main.x, main.y, 0, 0);
-        (None, zero, zero, zero)
+        (show_sidebar.then_some(body), zero)
     };
 
     LayoutRegions {
         status,
         approve_all_warning,
         task_strip,
+        workspace_tabs,
         chat,
         files,
         sidebar,
@@ -447,10 +401,10 @@ pub fn split_areas_with_preferences(
     }
 }
 
-/// Estimate the sidebar composer width before the layout split runs.
+/// Estimate the composer width before the layout split runs.
 #[allow(dead_code)]
 pub fn estimate_composer_content_width(area: Rect) -> usize {
-    estimate_composer_region_width(area, false, false)
+    estimate_composer_region_width(area, false, true, false, PaneLayoutPreferences::default())
 }
 
 /// Estimate the width of the region containing the composer before vertical
@@ -459,21 +413,18 @@ pub fn estimate_composer_region_width(
     area: Rect,
     show_files: bool,
     expanded_conversation: bool,
+    navigator_active: bool,
+    preferences: PaneLayoutPreferences,
 ) -> usize {
-    let width = content_width(area);
-    if expanded_conversation {
-        let file_width = (width / 4).clamp(28, 37);
-        if show_files && area.width >= FILES_WIDTH_THRESHOLD && width >= file_width + 44 {
-            width
-                .saturating_sub(file_width)
-                .saturating_sub(PANE_GAP_X)
-                .max(1) as usize
-        } else {
-            width.max(1) as usize
-        }
-    } else {
-        sidebar_width(width).max(1) as usize
-    }
+    let (_, work, _) = workspace_columns(
+        Rect::new(area.x, area.y, content_width(area), area.height),
+        area.width,
+        show_files,
+        !expanded_conversation,
+        navigator_active,
+        preferences,
+    );
+    work.width.max(1) as usize
 }
 
 /// Whether the frame is below the size the layout is built for.

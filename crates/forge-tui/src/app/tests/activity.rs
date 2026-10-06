@@ -20,19 +20,30 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
     app.stream.preview = "partial answer".into();
     // The event loop lets the preview through; this test renders directly.
     app.stream.reveal_everything_for_tests();
-    let rendered = render_app_text(&mut app, 100, 30);
+    let rendered = render_app_text(&mut app, 120, 40);
 
     assert_eq!(app.workspace_navigation, before);
     assert_eq!(
         app.workspace_navigation.current(),
-        Some(WorkspaceView::File(path))
+        Some(WorkspaceView::File(path.clone()))
     );
     assert!(rendered.contains("fn main()"), "{rendered}");
-    // The sidebar always shows the conversation now, regardless of what the
-    // center pane displays — streaming preview text is expected here.
+    // Both panes remain available while streaming; a narrow inspector never
+    // gets displaced by model activity. Switching back is the user's action.
     assert!(
         rendered.contains("partial answer"),
-        "Sidebar should keep streaming visible while File view is primary:\n{rendered}"
+        "Streaming should stay visible beside inspection:\n{rendered}"
+    );
+    render_app_text(&mut app, 80, 18);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    app.handle_key(press(KeyCode::F(6), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let rendered = render_app_text(&mut app, 80, 18);
+    assert!(rendered.contains("partial answer"), "{rendered}");
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::File(path))
     );
 }
 

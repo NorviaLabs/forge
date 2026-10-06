@@ -245,11 +245,26 @@ impl WorkspaceView {
 pub(crate) struct WorkspaceNavigation {
     current: Option<WorkspaceView>,
     history: Vec<WorkspaceView>,
+    /// Which pane occupies the work surface when the terminal cannot fit both.
+    /// Keeping this with navigation preserves it across session switches.
+    resource_selected: bool,
 }
 
 impl WorkspaceNavigation {
     pub(crate) fn current(&self) -> Option<WorkspaceView> {
         self.current.clone()
+    }
+
+    pub(crate) fn resource_selected(&self) -> bool {
+        self.resource_selected && self.current.is_some()
+    }
+
+    pub(crate) fn select_conversation(&mut self) {
+        self.resource_selected = false;
+    }
+
+    pub(crate) fn select_resource(&mut self) {
+        self.resource_selected = self.current.is_some();
     }
 
     #[cfg(test)]
@@ -258,6 +273,7 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn push_view(&mut self, view: WorkspaceView) {
+        self.resource_selected = true;
         if self.current.as_ref() == Some(&view) {
             return;
         }
@@ -272,6 +288,7 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn replace_view(&mut self, view: WorkspaceView) {
+        self.resource_selected = true;
         self.current = Some(view);
     }
 
@@ -284,6 +301,7 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn home(&mut self) {
+        self.resource_selected = false;
         self.history.clear();
         self.current = None;
     }
@@ -294,11 +312,13 @@ impl WorkspaceNavigation {
     ) -> Option<WorkspaceView> {
         while let Some(candidate) = self.history.pop() {
             if is_valid(&candidate) {
+                self.resource_selected = true;
                 self.current = Some(candidate.clone());
                 return Some(candidate);
             }
         }
         self.current = None;
+        self.resource_selected = false;
         None
     }
 }
@@ -516,8 +536,8 @@ impl FocusBlock {
             Self::TaskStrip => "SESSIONS",
             Self::Search => "SEARCH",
             Self::Files => "FILES",
-            Self::Workspace => "CHAT",
-            Self::Sidebar => "SIDEBAR",
+            Self::Workspace => "INSPECT",
+            Self::Sidebar => "CHAT",
             Self::Composer => "COMPOSER",
             Self::Footer => "FOOTER",
             Self::BottomPanel => "PANEL",
@@ -527,30 +547,16 @@ impl FocusBlock {
 }
 
 impl FocusBlock {
-    // The cycle follows the layout's own columns left to right, then top to
-    // bottom inside each one: the navigator (Sessions, Search, Files), the
-    // centre column (Workspace, then the terminal panel docked beneath it),
-    // and the sidebar column (transcript, approval card, composer). Footer is
-    // chrome and comes last, so the wrap back to Sessions reads as a restart
-    // at the top left.
-    //
-    // Panel sits next to Workspace because the layout docks it under
-    // `files`+`chat` only — never under the sidebar — making it the centre
-    // column's second band rather than chrome, and keeping it off the wrap
-    // edge. Sidebar stays directly before Composer because they are one
-    // column; the approval card is reachable there while a decision is
-    // pending. Conditional blocks (Panel when closed, Approval while a
-    // decision pends) must stay inside their own group, so the number of Tab
-    // presses between always-available blocks never changes with the panel's
-    // open state.
+    // Navigator, conversation/decision, inspector, terminal, composer, footer.
+    // On a narrow terminal, entering a pane reveals its retained view.
     pub(crate) const ORDER: [Self; 9] = [
         Self::TaskStrip,
         Self::Search,
         Self::Files,
-        Self::Workspace,
-        Self::BottomPanel,
         Self::Sidebar,
         Self::Approval,
+        Self::Workspace,
+        Self::BottomPanel,
         Self::Composer,
         Self::Footer,
     ];
@@ -731,6 +737,7 @@ pub(crate) enum SemanticCommand {
     ToggleFiles,
     CloseOverlay,
     FocusComposer,
+    SwitchWorkspacePane,
     FocusPane(FocusBlock),
     SubmitMessage,
     EditLastQueuedMessage,
@@ -900,6 +907,7 @@ pub(crate) struct FocusAvailability {
     pub(crate) task_strip: bool,
     pub(crate) search: bool,
     pub(crate) files: bool,
+    pub(crate) workspace: bool,
     pub(crate) sidebar: bool,
     pub(crate) bottom_panel: bool,
     pub(crate) approval: bool,
@@ -911,7 +919,7 @@ impl FocusAvailability {
             FocusBlock::TaskStrip => self.task_strip,
             FocusBlock::Search => self.search,
             FocusBlock::Files => self.files,
-            FocusBlock::Workspace => true,
+            FocusBlock::Workspace => self.workspace,
             FocusBlock::Sidebar => self.sidebar,
             FocusBlock::Composer => true,
             FocusBlock::Footer => true,
@@ -2071,6 +2079,7 @@ pub struct TuiApp {
     /// Open right-click context menu, if any.
     pub(crate) context_menu: Option<crate::selection::ContextMenu>,
     pub(crate) conversation_area: Option<ratatui::layout::Rect>,
+    pub(crate) workspace_tab_areas: Vec<(FocusBlock, ratatui::layout::Rect)>,
     pub(crate) conversation_rows: Vec<String>,
     pub(crate) conversation_all_rows: Vec<String>,
     pub(crate) conversation_copy_top: usize,

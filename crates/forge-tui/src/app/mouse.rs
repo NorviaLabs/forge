@@ -124,6 +124,14 @@ impl TuiApp {
         if self.pointer_blocked() {
             return Ok(());
         }
+        if let Some((block, _)) = self
+            .workspace_tab_areas
+            .iter()
+            .find(|(_, area)| cell_inside(*area, col, row))
+        {
+            self.focus_block(*block);
+            return Ok(());
+        }
         // The `+` cell is checked before the tab row: it shares the `Sessions`
         // tab's right edge and the `Files` tab's left edge, so the tab branch
         // would otherwise claim the click as a tab switch.

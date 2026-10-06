@@ -25,12 +25,13 @@ async fn tab_stays_in_terminal_and_shift_tab_leaves() {
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
 }
 
 #[tokio::test]
 async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     let (_dir, mut app) = focus_test_app().await;
+    app.workspace_navigation.push_view(WorkspaceView::Diff);
     app.focus_block(FocusBlock::Workspace);
     app.workspace_files.visible = true;
     app.bottom_panel.open = true;
@@ -49,7 +50,8 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    app.focus_block(FocusBlock::Composer);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -71,7 +73,7 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
 
     app.normalize_focus();
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
@@ -120,6 +122,7 @@ async fn busy_tab_navigation_preserves_the_composer_draft() {
         .append_user_message("working")
         .await
         .unwrap();
+    render_app_text(&mut app, 120, 40);
     for phase in [
         BusyPhase::Model,
         BusyPhase::Tool {
@@ -250,14 +253,14 @@ async fn f3_no_longer_focuses_the_footer() {
 #[tokio::test]
 async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
     let (_dir, mut app) = focus_test_app().await;
-    app.focus_block(FocusBlock::Workspace);
+    app.workspace_navigation.push_view(WorkspaceView::Diff);
+    app.focus_block(FocusBlock::Sidebar);
 
-    // Sidebar sits between Workspace and Composer — they're the same
-    // physical column post-sidebar layout (composer docked below it).
+    // The conversation precedes its inspector; the shared composer follows.
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
 
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -267,12 +270,12 @@ async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
 
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
 }
 
 #[tokio::test]
@@ -588,7 +591,7 @@ async fn overlay_precedes_block_navigation() {
 }
 
 #[tokio::test]
-async fn resize_drops_focus_from_a_zero_width_files_block() {
+async fn narrow_files_focus_has_a_visible_navigation_surface() {
     use ratatui::backend::TestBackend;
 
     let (_dir, mut app) = focus_test_app().await;
@@ -596,7 +599,8 @@ async fn resize_drops_focus_from_a_zero_width_files_block() {
     app.focus_block(FocusBlock::Files);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
+    assert!(app.navigator_list_area.is_some());
     assert_eq!(app.focus.mode(), FocusMode::Navigation);
 }
 

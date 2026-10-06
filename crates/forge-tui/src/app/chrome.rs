@@ -28,8 +28,7 @@ impl TuiApp {
     pub(crate) fn effective_navigator_tab(&self) -> crate::widgets::NavigatorTab {
         if self.navigator_tab_explicit {
             // An explicit `Git` only stands while the tab exists: leaving the
-            // repository (or hiding the column) must not leave the row with no
-            // tab drawn as active.
+            // repository must not leave the row with no tab drawn as active.
             if self.navigator_tab == crate::widgets::NavigatorTab::Git
                 && !self.navigator_git_available()
             {
