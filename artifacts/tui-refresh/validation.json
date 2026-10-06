@@ -1,0 +1,43 @@
+{
+  "checked": "2026-10-06",
+  "renders": 108,
+  "states": [
+    "home",
+    "plan",
+    "working",
+    "review",
+    "approval",
+    "sessions",
+    "palette",
+    "terminal",
+    "error"
+  ],
+  "dimensions": [
+    "120x40",
+    "160x50",
+    "80x24",
+    "80x18"
+  ],
+  "themes": [
+    "dark",
+    "light",
+    "mono"
+  ],
+  "interactions": [
+    "draft survives view switch and resize",
+    "default approval declines",
+    "explicit allow resumes",
+    "command query opens terminal",
+    "terminal returns to saved prompt",
+    "Ctrl+P opens files",
+    "file choice opens source",
+    "horizontal code panning",
+    "session peek and return",
+    "SVG and PNG export",
+    "actual before captures exist at each preset",
+    "OS reduced motion disables animation",
+    "walkthrough waits at approval",
+    "walkthrough resumes only after explicit choice"
+  ],
+  "browserErrors": []
+}

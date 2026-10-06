@@ -1,0 +1,40 @@
+                           ⌂ /private/tmp/forge-refresh-audit  ·  ./No commits yet on master
+ [[1m master[0m]
+ ╭──────────┬─┬─────┬───────╮    [1;4mConversation[0m                                                 Ctrl+P files · / commands
+ │ Sessions │+│[1mFiles[0m│  Git  │
+ ├──────────┴─┴─────┴───────┤
+ │  / Search files...       │
+ │ [1mCtrl+Shift+F[0m content──── │
+ │                          │
+ │   [1m▌⌄ forge-refresh-audit[0m │
+ │      › [1m.forge[0m            │
+ │                          │
+ │                          │
+ │                   ┌[1m> Select a model · 7/7 [0m─────────────────────────────────────────────────────┐
+ │                   │                                                                            │
+ │                   │  ⌕ [1;7m [0mType to filter models…                                                 │
+ │                   │                                                                            │
+ │                   │  [1mMODEL[0m                            [1mPROVIDER[0m               [1mSOURCE / ACCOUNT[0m  │
+ │                   │                                                                            │
+ │                   │    gpt-5.6-luna                   OpenAI · ChatGPT       cloud             │
+ │                   │    gpt-5.6-sol                    OpenAI · ChatGPT       cloud             │
+ │                   │    gpt-5.6-terra                  OpenAI · ChatGPT       cloud             │
+ │                   │    gpt-6-astra                    OpenAI · ChatGPT       cloud             │
+ │                   │    gpt-6-luna                     OpenAI · ChatGPT       cloud             │
+ │                   │    gpt-6-sol                      OpenAI · ChatGPT       cloud             │
+ │                   │  [1m> gpt-6.1-sol                    OpenAI · ChatGPT       current         [0m  │
+ │                   │  Active: OpenAI · ChatGPT / openai-codex/gpt-6.1-sol / Auto                │
+ │                   │  [1m↑↓[0m move · [1mEnter[0m select · [1mEsc[0m close                                        │
+ │                   └────────────────────────────────────────────────────────────────────────────┘
+ │                          │
+ │                          │
+ │                          │
+ │                          │
+ │                          │
+ │                          │
+ │                          │
+ │                          │ ╭───────────────────────────────────────────────────────────────────────────────────────╮
+ │                          │ │ Reply, or describe the next task…                                                     │
+ ╰──────────────────────────╯ ╰───────────────────────────────────────────────────────────────────────────────────────╯
+  ● OpenAI/gpt-6.1-sol │ [1mAuto[0m │ notes 0 lines                                       [1mready[0m   ·  context 1%  ·  0 tokens
+

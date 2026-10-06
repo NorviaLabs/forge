@@ -1,0 +1,2 @@
+# Terminal captures preserve blank rows up to the recorded viewport height.
+evidence/*.ansi whitespace=-blank-at-eof
