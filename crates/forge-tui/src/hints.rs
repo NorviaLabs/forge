@@ -123,11 +123,10 @@ pub const BROWSE: &[Hint] = &[
     ("Esc", "close"),
 ];
 pub const SCROLL_BACK_CLOSE: &[Hint] = &[("↑↓", "scroll"), ("←", "back"), ("Esc", "close")];
-/// `/diff`. There are thirteen bindings; this row holds five, chosen so the
-/// verbs still fit at the width the patch pane actually gets with all three
-/// panes open (~50 columns). Everything else — `/` search, `o` open, `v`
-/// split, `s`/`u` stage, `d` source, the scroll keys — lives behind `?`,
-/// which is why `?` never leaves this row.
+/// Full `/diff` hints. The widget drops secondary pairs under width pressure
+/// while preserving `? keys` and `Esc close`; the full keymap lives behind `?`.
+/// Branch/status metadata is elided before either of those actions loses its
+/// label.
 pub const DIFF: &[Hint] = &[
     ("] [", "hunk"),
     ("n p", "file"),

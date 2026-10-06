@@ -919,12 +919,28 @@ impl Widget for DiffViewWidget<'_> {
                     (Some(sync), false) => format!("{sync} · {layout}"),
                     (None, _) => layout.to_string(),
                 };
-                let budget = inner.width as usize - tag.chars().count().min(inner.width as usize);
-                Paragraph::new(Line::from(crate::hints::hint_spans(
-                    crate::hints::DIFF,
-                    budget,
-                )))
-                .render(hints, buf);
+                // Keep help and escape readable before spending columns on
+                // secondary shortcuts or a long branch/status tag.
+                let pairs = crate::hints::DIFF;
+                let essential = &pairs[pairs.len() - 2..];
+                let essential_width = Span::raw(crate::hints::hint_text(essential)).width();
+                let tag = crate::path_display::elide_middle(
+                    &tag,
+                    (inner.width as usize).saturating_sub(essential_width + 2),
+                );
+                let budget = (inner.width as usize)
+                    .saturating_sub(Span::raw(&tag).width() + if tag.is_empty() { 0 } else { 2 });
+                let visible_pairs = (0..=pairs.len() - essential.len())
+                    .rev()
+                    .find_map(|take| {
+                        let mut candidate = pairs[..take].to_vec();
+                        candidate.extend_from_slice(essential);
+                        (Span::raw(crate::hints::hint_text(&candidate)).width() <= budget)
+                            .then_some(candidate)
+                    })
+                    .unwrap_or_else(|| essential.to_vec());
+                Paragraph::new(Line::from(crate::hints::hint_spans(&visible_pairs, budget)))
+                    .render(hints, buf);
                 if !tag.is_empty() {
                     Paragraph::new(Line::from(Span::styled(
                         tag.to_string(),

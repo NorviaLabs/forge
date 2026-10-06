@@ -288,15 +288,25 @@ impl TuiApp {
         }
         let root = self.session_view.workspace_root().to_path_buf();
         // Grouped Git rows carry their own side, so the same path can show
-        // index and worktree patches independently.
-        let selected_side = self.diff_view.selected_entry().and_then(|entry| entry.side);
+        // index and worktree patches independently. Untracked files need a
+        // synthetic add diff; legacy working-tree review compares with HEAD.
         let staged = selected_side == Some(crate::diff_view::DiffSide::Staged)
             || (selected_side.is_none() && self.diff_view.source == DiffSource::Staged);
+        let untracked = self
+            .diff_view
+            .selected_entry()
+            .is_some_and(|entry| entry.untracked);
+        let combined = untracked || selected_side.is_none();
         let cached = if staged {
             self.workspace_files
                 .explorer
                 .git_status
                 .get_staged_diff(&path)
+        } else if combined {
+            self.workspace_files
+                .explorer
+                .git_status
+                .get_combined_diff(&path)
         } else {
             self.workspace_files
                 .explorer
@@ -305,10 +315,6 @@ impl TuiApp {
         };
         match cached {
             Some(Ok(text)) => {
-                let untracked = self
-                    .diff_view
-                    .selected_entry()
-                    .is_some_and(|entry| entry.untracked);
                 let parsed = parse_file_diff(path.clone(), &text, untracked);
                 self.diff_view
                     .set_patch(revision, path, Patch::from_file_diff(&parsed));
@@ -322,6 +328,11 @@ impl TuiApp {
                         .explorer
                         .git_status
                         .request_staged_diff(root, path);
+                } else if combined {
+                    self.workspace_files
+                        .explorer
+                        .git_status
+                        .request_combined_diff(root, path);
                 } else {
                     self.workspace_files
                         .explorer

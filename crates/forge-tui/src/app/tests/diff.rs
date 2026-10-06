@@ -1102,6 +1102,56 @@ async fn diff_lists_modified_and_untracked_files_in_a_session_that_edited_nothin
 }
 
 #[tokio::test]
+async fn untracked_file_contents_load_in_git_and_working_tree_review() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(
+        dir.path(),
+        &[("tracked.txt", "baseline\n")],
+        &[("new.txt", "first new line\nsecond new line\n")],
+    );
+
+    for grouped in [true, false] {
+        if grouped {
+            app.navigator_tab = crate::widgets::NavigatorTab::Git;
+            app.open_git_view();
+        } else {
+            app.open_diff_view(DiffSource::WorkingTree);
+        }
+        settle_git(&mut app);
+        app.diff_view.select_path(std::path::Path::new("new.txt"));
+        settle_patch(&mut app);
+        let PatchState::Ready(patch) = &app.diff_view.patch else {
+            panic!("untracked file patch loads");
+        };
+        assert_eq!(patch.added, 2, "all untracked contents are additions");
+        assert_eq!(patch.removed, 0);
+        assert!(patch.lines.iter().any(|line| line == "+first new line"));
+        assert!(patch.lines.iter().any(|line| line == "+second new line"));
+    }
+}
+
+#[tokio::test]
+async fn working_tree_review_includes_staged_and_unstaged_changes_against_head() {
+    let (dir, mut app) = focus_test_app().await;
+    repo_with_changes(dir.path(), &[("tracked.txt", "baseline\n")], &[]);
+    std::fs::write(dir.path().join("tracked.txt"), "staged\n").unwrap();
+    git_run(dir.path(), &["add", "tracked.txt"]);
+    std::fs::write(dir.path().join("tracked.txt"), "staged\nunstaged\n").unwrap();
+
+    app.open_diff_view(DiffSource::WorkingTree);
+    settle_git(&mut app);
+    settle_patch(&mut app);
+    let PatchState::Ready(patch) = &app.diff_view.patch else {
+        panic!("working tree patch loads");
+    };
+    assert_eq!(patch.added, 2);
+    assert_eq!(patch.removed, 1);
+    for line in ["-baseline", "+staged", "+unstaged"] {
+        assert!(patch.lines.iter().any(|actual| actual == line), "{line}");
+    }
+}
+
+#[tokio::test]
 async fn reopening_diff_refreshes_external_changes_before_listing_files() {
     let (dir, mut app) = focus_test_app().await;
     repo_with_changes(
@@ -1624,6 +1674,93 @@ async fn git_tab_list_keeps_its_own_cursor_and_staging_keys() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&staged.stdout).trim(), "b.txt");
+}
+
+#[tokio::test]
+async fn git_review_arrows_follow_the_keyboard_owner_and_preserve_the_draft() {
+    use crate::widgets::{NavigatorRowStop, NavigatorTab};
+
+    let (dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    std::fs::write(dir.path().join(".gitignore"), ".forge/\nj\nj-*\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "original\n").unwrap();
+    git_run(dir.path(), &["add", ".gitignore", "b.txt"]);
+    git_run(dir.path(), &["commit", "-q", "-m", "ignore runtime state"]);
+    std::fs::write(dir.path().join("a.txt"), "changed\n".repeat(80)).unwrap();
+    std::fs::write(dir.path().join("b.txt"), "new\n".repeat(80)).unwrap();
+    app.select_navigator_tab_from_row(NavigatorTab::Git);
+    settle_git(&mut app);
+    assert_eq!(
+        app.diff_view.entries.len(),
+        2,
+        "only fixture files are changed"
+    );
+    app.input.set_text("unfinished review question");
+
+    app.diff_view.select(1);
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.diff_view.selected, 0, "the list cursor moves first");
+    assert!(!app.navigator_tab_row_focused);
+
+    settle_patch(&mut app);
+    app.diff_view.scroll = 3;
+    let path = app.diff_view.selected_path().unwrap().to_path_buf();
+    let side = app.diff_view.selected_entry().unwrap().side;
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.navigator_tab_row_focused);
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Git);
+    assert_eq!(app.diff_view.selected_path(), Some(path.as_path()));
+    assert_eq!(app.diff_view.selected_entry().unwrap().side, side);
+    assert_eq!(app.diff_view.scroll, 3);
+
+    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        app.overlay.is_none(),
+        "tab-row input must not start a commit"
+    );
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.navigator_tab_row_focused);
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
+    assert_eq!(app.diff_view.scroll, 3);
+
+    app.diff_view.select(1);
+    settle_patch(&mut app);
+    app.diff_view.scroll = 3;
+    app.focus_block(FocusBlock::Workspace);
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.diff_view.selected, 1,
+        "patch arrows must not change files"
+    );
+    assert_eq!(app.diff_view.scroll, 2, "the focused patch scrolls");
+    assert!(!app.navigator_tab_row_focused);
+    assert_eq!(app.input.text, "unfinished review question");
+
+    app.diff_view.open_search();
+    app.focus_block(FocusBlock::Files);
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        !app.navigator_tab_row_focused,
+        "search retains input ownership"
+    );
+    assert_eq!(app.input.text, "unfinished review question");
+
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

@@ -94,9 +94,9 @@ impl TuiApp {
         self.navigator_tab_row_available() && self.workspace_is_git_repository()
     }
 
-    /// Move the keyboard onto the navigator's tab row (`↑` at the top of either
-    /// tab's list). The pane keeps `focus.block()`, so `Tab` still cycles from
-    /// it, but it paints as unfocused while the row is up.
+    /// Move the keyboard onto the navigator's tab row (`↑` at the top of an
+    /// available tab's list). The pane keeps `focus.block()`, so `Tab` still
+    /// cycles from it, but it paints as unfocused while the row is up.
     pub(super) fn focus_navigator_tab_row(&mut self) {
         if !self.navigator_tab_row_available() {
             return;
@@ -113,7 +113,7 @@ impl TuiApp {
         self.normalize_focus();
     }
 
-    /// Step back down into the pane the row sits above (`Enter`, `↓`, `Esc`).
+    /// Step back into the pane the row sits above (`Enter`, `↑`, `↓`, `Esc`).
     pub(super) fn leave_navigator_tab_row(&mut self) {
         self.navigator_tab_row_focused = false;
         self.normalize_focus();
