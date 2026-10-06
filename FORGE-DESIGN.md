@@ -315,6 +315,11 @@ Compare text/background contrast and the actual focus, selection, and outcome
 signals in light, dark, reduced-colour, and monochrome presentations. A palette
 that meets the numeric threshold can still fail those checks.
 
+With `NO_COLOR`, remove colours from the completed frame before backend output
+so bold, italic, and inverse attributes survive colour suppression. Keep input
+carets visible with inverse video; focus and status markers remain legible by
+shape and text.
+
 `info` and `agent` are excluded from the current diagnostic because neither
 reports an outcome. A different palette may use other hues or separation rules
 when evidence supports them; update the diagnostic and its guidance together
@@ -1209,6 +1214,7 @@ the single plan surface.
 - Line numbers stay muted; the caret identifies the exact editing position.
 - The caret is painted only while the editor owns input; leaving the pane
   preserves its position and selection without showing a second input cursor.
+  In monochrome, inverse video keeps the caret visible without a coloured ground.
 - Horizontal scrolling must not detach markers from content.
 - Binary and invalid-UTF-8 files are explicitly read-only.
 

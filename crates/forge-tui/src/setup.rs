@@ -88,7 +88,10 @@ fn run_setup_loop(
     };
 
     loop {
-        terminal.draw(|f| draw_setup(f.area(), f.buffer_mut(), &screen, &display, wide))?;
+        terminal.draw(|f| {
+            draw_setup(f.area(), f.buffer_mut(), &screen, &display, wide);
+            theme::strip_colors_if_disabled(f.buffer_mut());
+        })?;
         if !event::poll(Duration::from_millis(200))? {
             continue;
         }

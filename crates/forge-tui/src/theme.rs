@@ -258,6 +258,17 @@ pub fn fill(area: Rect, buf: &mut Buffer, style: Style) {
     }
 }
 
+/// Remove colours before the backend emits them: Crossterm's NO_COLOR
+/// suppression also resets attributes when colour commands change.
+pub(crate) fn strip_colors_if_disabled(buf: &mut Buffer) {
+    if crossterm::style::Colored::ansi_color_disabled_memoized() {
+        for cell in &mut buf.content {
+            cell.fg = Color::Reset;
+            cell.bg = Color::Reset;
+        }
+    }
+}
+
 pub fn canvas() -> Style {
     let p = active_palette();
     Style::default().fg(p.text).bg(p.canvas)
@@ -748,6 +759,12 @@ pub const CURSOR_GLYPH: &str = "█";
 pub const CURSOR_CELL: &str = " ";
 
 pub fn caret() -> Style {
+    if crossterm::style::Colored::ansi_color_disabled_memoized() {
+        return Style::default()
+            .fg(Color::Reset)
+            .bg(Color::Reset)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    }
     let p = active_palette();
     Style::default()
         .fg(p.panel)

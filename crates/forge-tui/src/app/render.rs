@@ -1863,6 +1863,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         // Transient toast overlay paints last: notification only, never
         // focusable, never blocking. Positioned bottom-right by the engine.
         self.toast.render_overlay(area, frame.buffer_mut());
+        theme::strip_colors_if_disabled(frame.buffer_mut());
     }
 
     /// Inline commands+history fuzzy search, drawn in the same anchored band

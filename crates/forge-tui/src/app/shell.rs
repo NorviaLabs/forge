@@ -1100,6 +1100,7 @@ fn draw_provider_model_setup(app: &mut TuiApp, frame: &mut ratatui::Frame) {
             card,
         );
     }
+    crate::theme::strip_colors_if_disabled(frame.buffer_mut());
 }
 
 async fn run_startup_preflight(
