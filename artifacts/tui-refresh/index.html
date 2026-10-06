@@ -34,8 +34,8 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
     <a href="#reference-review">6 reference products ↗</a>
   </header>
   <section class="hero">
-    <div><div class="eyebrow">Proposed experience · 06 October 2026</div><h1>Forge, refined.</h1><p>A quieter conversation, a sharper code review, and a clear place to act.<br>Explore nine states of the same terminal workspace.</p></div>
-    <button class="play" id="play" type="button">▶ Play walkthrough</button>
+    <div><div class="eyebrow">Proposed experience · 06 October 2026</div><h1>Forge, refined.</h1><p>A quieter conversation, a sharper code review, and a clear place to act.<br>Explore the workspace, background jobs, queued prompts, and subagents.</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="play" id="play" type="button">▶ Play walkthrough</button><button class="play" id="play-flows" type="button">▶ Background flows</button></div>
   </section>
   <div class="controls" aria-label="Prototype controls">
     <nav class="scenes" aria-label="Experience states" id="scenes"></nav>
@@ -54,9 +54,11 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
     </div>
   </section>
   <div class="below-frame"><span id="interaction-note" aria-live="polite">Click a changed file to inspect it. F6 switches panes.</span><span id="fidelity">Character-cell layout · sample task and results</span><div class="export"><button id="save-svg" type="button">↓ SVG</button><button id="save-png" type="button">↓ PNG</button></div></div>
+  <div id="flow-controls" style="display:none;padding-bottom:16px"><span class="tiny">Sample controls</span> <button class="ref-button" id="finish-job" type="button">Finish sample tests</button> <button class="ref-button" id="interrupt-agent" type="button">Interrupt sample agent</button> <button class="ref-button" id="reset-flows" type="button">Reset flow examples</button></div>
   <section class="description" id="description" aria-label="Design decisions"></section>
   <section class="notes" aria-label="Research and design specification">
     <details><summary>Spacing review · shared gutters and compact row budgets</summary><div class="notes-content"><p>Two-column inner insets align prose and inspector metadata. One blank row separates distinct blocks; labels, list items, and grouped output stay together. Short terminals use a two-row prompt. The start state groups its heading, task entry, and starters within an 84-column maximum, centered in the work area.</p><p>Approval choices follow their exact command and explanation. Session and terminal views remove repeated hints and detached content. Command menus size to their results and sit within the working body. Study sections follow an eight-pixel rhythm, with tighter four/eight-pixel gaps for controls.</p><p><a href="spacing-comparison.html">Open the before / after spacing comparison ↗</a> · <a href="review.md#spacing-review">Read the spacing review</a></p></div></details>
+    <details><summary>Background work · jobs, queue, and subagent ownership</summary><div class="notes-content"><p>The dock, count chips, and dedicated views keep queued prompts, shell jobs, and subagents distinct. Completed output appends only through an explicit result action. Read-only child inspection names its owner and workspace; a child decision resolves only that invocation. Stopping names one task and keeps siblings and retained work visible.</p><p>Try the <strong>Background flows</strong> walkthrough, or use the sample controls to finish a job and interrupt an agent. The walkthrough waits at child approval. Queue cancellation, editing the last pending prompt, partial-result insertion, and compact layouts are interactive examples.</p><p><a href="background-flows.html">Open the background flow gallery ↗</a> · <a href="background-flows.webm">Watch the background walkthrough</a> · <a href="review.md#background-jobs-queue-and-subagent-flows">Read the flow decisions and current source behavior</a></p></div></details>
     <details><summary>What changes in Forge</summary><div class="notes-content">
       <p><strong>One consistent workspace.</strong> Repository and session identity move onto one left-aligned header. Quiet text tabs replace nested tab boxes. The task, activity, and inspector text share a two-column inner inset. The prompt’s top rule and caret identify focus. On the start screen, a centered task group keeps the prompt next to three complete starter tasks; the prompt spans the working surface during a task.</p>
       <p><strong>Information appears where it helps.</strong> Routine reads and successful commands collapse into a neutral activity summary. Exact commands remain one action away. Changes open in the existing inspector. Failures and pending decisions stay visible. Session attention remains in the header even when the navigator is hidden.</p>
@@ -101,22 +103,51 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
     light:{bg:'#f6f7f9',surface:'#ebeff4',raised:'#e2e8f0',selection:'#d7e0eb',border:'#a1adbc',text:'#202936',secondary:'#47576a',muted:'#586a80',focus:'#255caa',activity:'#80511b',success:'#246040',warning:'#745100',error:'#a52d43',link:'#205d7a',add:'#246040',remove:'#a52d43',addBg:'#e1ede4',removeBg:'#f1e2e6'},
     mono:{bg:'#171717',surface:'#202020',raised:'#2b2b2b',selection:'#3b3b3b',border:'#777777',text:'#f3f3f3',secondary:'#c3c3c3',muted:'#aaaaaa',focus:'#ffffff',activity:'#dddddd',success:'#f3f3f3',warning:'#eeeeee',error:'#eeeeee',link:'#f3f3f3',add:'#eeeeee',remove:'#eeeeee',addBg:'#252525',removeBg:'#303030'}
   };
-  const sceneNames={home:'Start',plan:'Plan',working:'Working',review:'Review',approval:'Approval',sessions:'Sessions',palette:'Commands',terminal:'Terminal',error:'Recovery'};
+  const sceneNames={home:'Start',plan:'Plan',working:'Working',review:'Review',approval:'Approval',background:'Jobs',queue:'Queue',agents:'Agents',job:'Job output',agent:'Agent peek','agent-approval':'Agent decision',stop:'Stop task',sessions:'Sessions',palette:'Commands',terminal:'Terminal',error:'Recovery'};
   const copy={
     home:[['A useful first frame','The task is the main entry point. A centered task group keeps the prompt and complete starter tasks together. The connected provider remains visible.'],['Navigation on demand','An empty file tree no longer dominates the start state. Existing shortcuts still reach sessions, files, and Git.'],['A single text scale','Hierarchy comes from alignment, weight, and surface contrast. No font changes are required in the user’s terminal.']],
     plan:[['A readable current step','One checklist, one active task, and evidence below it. Completed steps remain neutral; tool results carry their own status.'],['A plan is a report','The checklist does not grant permission to write or execute. Approvals retain a separate decision surface.'],['Less persistent chrome','Plan detail belongs in the conversation. Its compact summary can stay visible when the checklist scrolls away.']],
     working:[['Activity has a rhythm','A fixed-width spinner and a short phase label show liveness. Routine reads are grouped into one expandable row.'],['The answer leads','Response text takes the primary color. Tool narration stays secondary without hiding commands or outcomes.'],['Keep steering available','The prompt remains usable during work. Enter queues the example follow-up; navigation does not interrupt the turn.']],
     review:[['Conversation and code','The answer explains the change; the adjacent inspector shows its evidence. Both share one full-width prompt.'],['Diffs keep their semantics','Line numbers, hunk labels, and +/− signs retain meaning in monochrome. Selected files and keyboard focus look different.'],['Small terminals retain both','At 80 columns, F6 switches chat and diff without losing the draft or selected file. No miniature unreadable split.']],
     approval:[['A clear decision','Show the exact command, workspace, and consequence together. Routine output recedes while the decision owns the keyboard.'],['Consent stays specific','“Allow once” applies to this invocation. “Don’t run” is the proposed default; the walkthrough waits for an explicit choice.'],['Attention stays steady','A brief arrival highlight settles into a static warning rule. The paused prompt never looks ready to accept a model request.']],
+    background:[['Attention before activity','Failed jobs remain visible above running and completed work. Stable task identities keep the selection on the same job when states change.'],['A job has an owner','The selected command, workspace, exit status, and elapsed time stay together. A shell job opens its output; it has no child session.'],['A deliberate handoff','A finished result appends to the parent draft only when you choose “Insert result”. Completion itself never creates a queued prompt.']],
+    queue:[['An ordered next step','Numbered follow-ups belong to Retry connection and wait for the current turn. The draft remains editable while the queue is inspected.'],['Cancel the selected prompt','Ctrl+↑/↓ selects a pending message. Ctrl+Backspace removes exactly that message and keeps its siblings and the running turn.'],['Edit the last queued message','The existing ↑ action returns the last queued message to an empty composer. The proposal does not imply arbitrary reordering or priority execution.']],
+    agents:[['Named work, visible ownership','Each subagent shows its task, state, and workspace. Needs-you comes first; running, finished, and stopped work stay distinct.'],['Inspect without a second writer','Enter or → opens a read-only child transcript. The parent header remains the parent; the workspace tab and view identify the child.'],['Preserve unfinished work','Stopping affects the selected child. A retained checkout and uncommitted changes remain visible; result insertion never implies integration.']],
+    job:[['Output is evidence','Command, workspace, exit code, and output form one reading surface. Finished elapsed time freezes at the recorded duration.'],['Append, then review','Insert result preserves the existing parent draft and does not submit it. The queued-prompt count stays unchanged.'],['Keep failure inspectable','A failed command retains its output. There is no automatic retry, dismissal, or fabricated success.']],
+    agent:[['Whose transcript is this?','The tab, task name, workspace, and read-only notice identify the child. Its owner remains the running subagent.'],['A distinct decision path','Review a pending command in the child’s workspace, answer that invocation, then return to the same read-only view.'],['Return with your place intact','← or Esc restores the parent view, selected task, and draft. Completed findings can be appended explicitly to the parent prompt.']],
+    'agent-approval':[['Consent belongs to this child','The exact command, audit-auth owner, branch, and worktree are visible together. This decision cannot approve a sibling or the parent.'],['A paused, named invocation','The decision owns input. Don’t run is selected first; both choices resolve only this sample request.'],['Return to inspection','After either choice, the read-only child view returns. The parent draft and queue survive the decision.']],
+    stop:[['Stop one named task','The command or child, its workspace, and the consequence are visible before cancellation. “Keep running” is the proposed default.'],['Preserve the siblings','Stopping the selected task leaves other jobs, agents, and queued prompts unchanged. This adds a confirmation to Forge’s existing x action.'],['Keep the work visible','A cancelled task retains its output and any checkout. Uncommitted work remains explicitly marked, without suggesting cleanup or integration.']],
     sessions:[['State before decoration','Needs-you, working, queued, and terminal outcomes keep distinct words and symbols. No state depends on color alone.'],['Clear session ownership','The selected task’s preview identifies its branch and next action. Switching sessions preserves the composer draft in this simulation.'],['Make intervention reachable','A background request opens that session’s decision surface. A count in the header keeps attention reachable when the navigator collapses.']],
     palette:[['Searchable existing actions','Slash commands and descriptions sit together. Commands keep Forge’s current vocabulary and actual shortcuts.'],['No focus ambiguity','The command menu owns its query and selection. Esc closes it and restores the prior prompt and view.'],['Keyboard and mouse agree','Arrow keys move the same selection a click selects. Enter or a second click activates it.']],
     terminal:[['A shell is a shell','One retained terminal, one keyboard owner, and visible command output. Shell input stays separate from the model prompt.'],['Evidence stays nearby','The answer and test output share the workspace. Success labels identify local example tests, not remote CI.'],['Protect the reading budget','At 80×18, the terminal becomes the main view while focused. Shift+Tab returns to the saved prompt.']],
     error:[['Failure is a durable state','A concise failure names what stopped and preserves the next action. It does not disappear with a transient toast.'],['Keep the work','The patch, draft, and selected file remain available. Recovery does not reset the workspace.'],['A deliberate retry','Retry happens through an explicit user action. No spinning waiting state and no invented success after an interruption.']]
   };
-  const S={scene:'review',cols:120,rows:40,theme:'dark',motion:!matchMedia('(prefers-reduced-motion: reduce)').matches,focus:'composer',view:'chat',nav:'files',file:0,diffScroll:0,diffCol:0,sourceMode:false,model:'gpt-6.1-sol',session:0,peek:false,attachedSession:0,details:false,approval:0,paletteIndex:0,query:'',draft:'',drafts:{},shellDraft:'',reference:null,tick:0,start:performance.now(),playing:false,playTimer:null,notice:'',previous:'review',lastPrompt:'Add bounded retries for transient provider errors.',denied:false,submitted:'',streaming:false};
+  const S={scene:'review',cols:120,rows:40,theme:'dark',motion:!matchMedia('(prefers-reduced-motion: reduce)').matches,focus:'composer',view:'chat',nav:'files',file:0,diffScroll:0,diffCol:0,sourceMode:false,model:'gpt-6.1-sol',session:0,peek:false,attachedSession:0,details:false,approval:0,paletteIndex:0,query:'',draft:'',drafts:{},shellDraft:'',reference:null,tick:0,start:performance.now(),playing:false,playTimer:null,notice:'',previous:'review',lastPrompt:'Add bounded retries for transient provider errors.',denied:false,streaming:false};
   const sessions=[['[?]','Retry connection','needs you · command approval','warning'],['[>]','Trace goal persistence','working · reading source','activity'],['[ ]','Add retry coverage','queued · 1 prompt','secondary'],['[✓]','Fix compact layout','completed · tests passed','success'],['[!]','Check provider routing','failed · provider unavailable','error'],['[-]','Compare model catalogs','cancelled · stopped by you','secondary'],['[|]','Audit session cleanup','retained · cleanup blocked','warning']];
-  const initialScene=new URLSearchParams(location.search).get('scene');if(sceneNames[initialScene])S.scene=initialScene;
-  const commands=[['/diff','Inspect changes in this workspace','Ctrl+3','review'],['/sessions','Switch sessions and answer requests','Ctrl+1','sessions'],['/model','Choose provider, model, and effort','','model'],['/theme','Change terminal appearance','','theme'],['/terminal','Open the retained session shell','Ctrl+`','terminal'],['/help','View Forge commands and bindings','','help'],['/new','Start a new session','','home'],['/resume','Reopen a saved session','','sessions']];
+  Object.assign(S,{backgroundOn:false,tasks:[],queue:[],queueId:null,nextQueue:4,jobId:21,agentId:31,stripId:31,primaryBusy:false,taskReturn:'background',flowOrigin:'working',stopTaskId:22,choice:0,flowTour:false});
+  const flowScenes=['background','queue','agents','job','agent','agent-approval','stop'];
+  const taskStates={blocked:['[|]','Needs you','warning'],failed:['[!]','Failed','error'],running:['[>]','Running','activity'],queued:['[ ]','Queued','secondary'],done:['[✓]','Completed','success'],cancelled:['[-]','Cancelled','secondary']};
+  function resetFlows(){
+    S.backgroundOn=true;S.primaryBusy=false;S.jobId=21;S.agentId=31;S.stripId=31;S.queueId='q1';S.nextQueue=4;
+    S.queue=[{id:'q1',text:'Add regression coverage for exhausted retries.'},{id:'q2',text:'Check cancellation while waiting for backoff.'},{id:'q3',text:'Explain the retry policy and its limits.'}];
+    S.tasks=[
+      {id:21,kind:'job',label:'Provider smoke check',status:'failed',elapsed:'4.1s',command:'cargo test -p forge-model --locked smoke',workspace:'/projects/forge',exit:7,summary:'Provider fixture unavailable · exit 7',output:['running 3 tests','test smoke::provider_route ... FAILED','error: provider fixture unavailable','test result: FAILED. 2 passed; 1 failed','process exited with code 7']},
+      {id:22,kind:'job',label:'Retry tests',status:'running',elapsed:'18s',command:'cargo test -p forge-model --locked retry',workspace:'/projects/forge',summary:'Running targeted retry tests',output:['running 19 tests','test retry::bounded_attempts ... ok','test retry::terminal_errors ... ok','test retry::exhausted_retries ... running']},
+      {id:23,kind:'job',label:'Format check',status:'queued',elapsed:'—',command:'cargo fmt --all -- --check',workspace:'/projects/forge',summary:'Waiting to start',output:['Command queued; no output yet.']},
+      {id:24,kind:'job',label:'Transport diagnostics',status:'done',elapsed:'6.2s',command:'cargo test -p forge-model --locked transport',workspace:'/projects/forge',exit:0,summary:'7 local tests passed · exit 0',output:['running 7 tests','test transport::timeout ... ok','test transport::disconnect ... ok','test result: ok. 7 passed; 0 failed','process exited with code 0']},
+      {id:31,kind:'agent',label:'audit-auth',status:'blocked',elapsed:'32s',mode:'write',branch:'agent/audit-auth',workspace:'/projects/forge-worktrees/audit-auth',command:'cargo test -p forge-connect --locked oauth',summary:'Test OAuth refresh error handling',activity:'Needs dependency network access',result:'',retained:true},
+      {id:32,kind:'agent',label:'trace-retry',status:'running',elapsed:'14s',mode:'read-only',branch:'fix/connection-retry',workspace:'/projects/forge',summary:'Inspect retry limit boundaries',activity:'Reading transient-error handling',result:''},
+      {id:33,kind:'agent',label:'coverage',status:'done',elapsed:'21s',mode:'read-only',branch:'fix/connection-retry',workspace:'/projects/forge',summary:'Review edge-case coverage',result:'Found 3 missing cases: cancellation, exhausted retries, and server retry hints.'},
+      {id:34,kind:'agent',label:'fix-cache',status:'cancelled',elapsed:'9.8s',mode:'write',branch:'agent/fix-cache',workspace:'/projects/forge-worktrees/fix-cache',summary:'Check cache invalidation',result:'Stopped before validation. 1 changed file is retained.',retained:true,dirty:true}
+    ];
+  }
+  function ensureFlow(){if(!S.backgroundOn)resetFlows();}
+  function flowVisible(){return flowScenes.includes(S.scene)||(S.scene==='working'&&S.backgroundOn);}
+  function task(id){return S.tasks.find(t=>t.id===Number(id));}
+  function orderedTasks(kind){const rank=['blocked','failed','running','queued','done','cancelled'];return S.tasks.filter(t=>!kind||t.kind===kind).sort((a,b)=>rank.indexOf(a.status)-rank.indexOf(b.status)||a.id-b.id);}
+  function taskMeta(t){const meta=taskStates[t.status];return t.status==='running'&&S.motion&&!['agent','agent-approval'].includes(S.scene)?['['+spinner()+']',meta[1],meta[2]]:meta;}
+  const initialScene=new URLSearchParams(location.search).get('scene');if(sceneNames[initialScene])S.scene=initialScene;if(flowScenes.includes(S.scene))ensureFlow();
+  const commands=[['/diff','Inspect changes in this workspace','Ctrl+3','review'],['/tasks','Inspect background jobs and subagents','','background'],['/sessions','Switch sessions and answer requests','Ctrl+1','sessions'],['/model','Choose provider, model, and effort','','model'],['/theme','Change terminal appearance','','theme'],['/terminal','Open the retained session shell','Ctrl+`','terminal'],['/help','View Forge commands and bindings','','help'],['/new','Start a new session','','home'],['/resume','Reopen a saved session','','sessions']];
   let lastGrid=null, hits=[], layout=null;
   const escape = value => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   class Grid {
@@ -129,39 +160,85 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
   }
   function hit(x,y,w,h,action,label){hits.push({x,y,w,h,action,label});}
   function short(text,width){if(text.length<=width)return text;const first=Math.max(4,Math.floor((width-1)*.45));return text.slice(0,first)+'…'+text.slice(-(width-first-1));}
+  function preview(text,width){return text.length<=width?text:text.slice(0,Math.max(0,width-1))+'…';}
   function spinner(){return S.motion?'⣾⣽⣻⢿⡿⣟⣯⣷'[S.tick%8]:'>';}
   function owner(name,label){return (S.focus===name?'> ':'  ')+label;}
+  function draftLines(width,value=S.draft){
+    const lines=[];for(const paragraph of value.split('\n')){let remaining=paragraph;while(remaining.length>width){const breakAt=remaining.lastIndexOf(' ',width),cut=breakAt>0?breakAt:width;lines.push(remaining.slice(0,cut));remaining=remaining.slice(cut).replace(/^ /,'');}lines.push(remaining);}return lines;
+  }
   function makeLayout(){
-    const compact=S.rows<28,review=S.scene==='review',nav=review&&S.cols>=136?24:0,composerH=compact?2:3;
-    let wx=nav?nav+2:2,ww=S.cols-wx-2,cy=S.rows-2-composerH;
-    const top=4,bottom=cy-1,homeCount=S.rows<21?1:3;
-    let homeTop=top;
+    const compact=S.rows<28,review=S.scene==='review',nav=review&&S.cols>=136?24:0;let composerH=compact?2:3;
+    let wx=nav?nav+2:2,ww=S.cols-wx-2;
+    if(!['home','approval','agent','agent-approval','stop'].includes(S.scene))composerH=Math.max(composerH,Math.min(compact?3:4,draftLines(ww-7).length)+1);
+    let cy=S.rows-2-composerH;
+    const top=4,homeCount=S.rows<21?1:3;let homeTop=top;
     if(S.scene==='home'){
       const width=Math.min(84,ww);wx+=Math.floor((ww-width)/2);ww=width;
       homeTop=top+Math.max(0,Math.floor((cy-top-(compact?7+homeCount:15))/2));cy=homeTop+4;
     }
+    const queueH=S.scene==='working'&&S.queue.length?(compact?2:1+Math.min(3,S.queue.length)):0;
+    const backgroundH=S.scene==='working'&&S.backgroundOn&&S.tasks.length?(compact?2:5):0;
+    const dockTop=cy-queueH-backgroundH,bottom=(S.scene==='working'?dockTop:cy)-1;
     const split=review&&S.cols>=116,chatW=split?Math.floor((ww-1)*.60):ww;
-    return {compact,nav,wx,ww,tx:wx+2,tw:ww-4,chatW,dx:wx+chatW+1,dw:ww-chatW-1,top,bottom,cy,composerH,homeTop,homeCount};
+    return {compact,nav,wx,ww,tx:wx+2,tw:ww-4,chatW,dx:wx+chatW+1,dw:ww-chatW-1,top,bottom,cy,composerH,homeTop,homeCount,queueH,backgroundH,dockTop};
   }
-  function header(g,L){g.put(2,0,'FORGE','text',true);g.put(10,0,'forge','secondary');g.put(17,0,'/','border');g.put(19,0,S.scene==='home'?'main':['fix/connection-retry','fix/goal-persistence','test/retry-coverage','fix/compact-layout','fix/provider-routing','research/model-catalog','fix/session-cleanup'][S.attachedSession],'secondary');const attention=S.scene==='sessions'?'2 need you · 1 working':S.scene==='approval'?'[?] needs your decision':S.scene==='home'?'Ctrl+1 sessions':'1 need · 1 working · Ctrl+1';g.put(S.cols-attention.length-2,0,attention,S.scene==='approval'?'warning':'muted');hit(S.cols-attention.length-3,0,attention.length+1,1,'scene:sessions','Open sessions');g.rule(2,1,S.cols-4);if(S.scene==='home'){g.put(2,2,'  New session','secondary');g.put(S.cols-26,2,'/ commands · F3 sessions','muted');return;}g.put(L.wx,2,owner('chat','Conversation'),'text',S.focus==='chat');hit(L.wx,2,17,1,'view:chat','Focus conversation');if(S.scene==='review'){const x=L.wx+20;g.put(x,2,owner('diff','Changes (2)'),'text',S.focus==='diff');hit(x,2,17,1,'view:diff','Focus changes');g.put(S.cols-17,2,'F6 switch panes','muted');}else{g.put(L.wx+21,2,short(S.scene==='sessions'?'Sessions':'Retry connection',S.cols-L.wx-45),'secondary');g.put(S.cols-14,2,'/ commands','muted');}if(L.nav){g.put(2,2,owner('files',S.nav==='git'?'Git   Files':'Files   Git'),'secondary',S.focus==='files');hit(2,2,5,1,'nav:files','Open files');hit(10,2,4,1,'nav:git','Open Git changes');}}
+  function header(g,L){
+    g.put(2,0,'FORGE','text',true);g.put(10,0,'forge','secondary');g.put(17,0,'/','border');
+    const branch=S.scene==='home'?'main':['fix/connection-retry','fix/goal-persistence','test/retry-coverage','fix/compact-layout','fix/provider-routing','research/model-catalog','fix/session-cleanup'][S.attachedSession];
+    const attention=flowVisible()?'Parent · Retry connection':S.scene==='sessions'?'2 need you · 1 working':S.scene==='approval'?'[?] needs your decision':S.scene==='home'?'Ctrl+1 sessions':'1 need · 1 working · Ctrl+1';
+    g.put(19,0,short(branch,S.cols-attention.length-23),'secondary',false,S.cols-attention.length-23);
+    g.put(S.cols-attention.length-2,0,attention,S.scene==='approval'?'warning':'muted');hit(S.cols-attention.length-3,0,attention.length+1,1,'scene:sessions','Open sessions');g.rule(2,1,S.cols-4);
+    if(S.scene==='home'){g.put(2,2,'  New session','secondary');g.put(S.cols-26,2,'/ commands · F3 sessions','muted');return;}
+    if(flowVisible()){
+      if(S.scene==='agent'||S.scene==='agent-approval'){const t=task(S.agentId);g.put(L.wx,2,(S.scene==='agent-approval'?'  ':'> ')+'Conversation ‹ '+t.label+' · read-only','text',S.scene!=='agent-approval',L.tw);g.put(S.cols-12,2,S.scene==='agent-approval'?'Esc return':'← return','muted');hit(S.cols-13,2,11,1,'flow-back','Return to parent view');return;}
+      const tabs=[['working','Conversation'],['background','Jobs ('+S.tasks.filter(t=>t.kind==='job').length+')'],['agents','Agents ('+S.tasks.filter(t=>t.kind==='agent').length+')'],['queue','Queue ('+S.queue.length+')']];let x=L.wx;
+      for(const [scene,label] of tabs){const selected=S.scene===scene||(scene==='background'&&S.scene==='job');g.put(x,2,(selected?'> ':'  ')+label,selected?'text':'secondary',selected);hit(x,2,label.length+2,1,'scene:'+scene,'Open '+label);x+=label.length+4;}return;
+    }
+    g.put(L.wx,2,owner('chat','Conversation'),'text',S.focus==='chat');hit(L.wx,2,17,1,'view:chat','Focus conversation');
+    if(S.scene==='review'){const x=L.wx+20;g.put(x,2,owner('diff','Changes (2)'),'text',S.focus==='diff');hit(x,2,17,1,'view:diff','Focus changes');g.put(S.cols-17,2,'F6 switch panes','muted');}
+    else{g.put(L.wx+21,2,short(S.scene==='sessions'?'Sessions':'Retry connection',S.cols-L.wx-45),'secondary');g.put(S.cols-14,2,'/ commands','muted');}
+    if(L.nav){g.put(2,2,owner('files',S.nav==='git'?'Git   Files':'Files   Git'),'secondary',S.focus==='files');hit(2,2,5,1,'nav:files','Open files');hit(10,2,4,1,'nav:git','Open Git changes');}
+  }
   function footer(g,L){
-    const busy=S.scene==='working',wait=S.scene==='approval',failed=S.scene==='error';
-    const state=busy?`${spinner()} Working · ${18+Math.floor((performance.now()-S.start)/1000)}s`:wait?'[?] Waiting for you':failed?(S.denied?'[?] Paused':'[!] Interrupted'):'[ ] Ready';
+    const busy=S.scene==='working'||flowVisible()&&S.primaryBusy,wait=S.scene==='approval'||S.scene==='agent-approval',failed=S.scene==='error';
+    const state=wait?'[?] Waiting for you':busy?`${spinner()} Working · ${18+Math.floor((performance.now()-S.start)/1000)}s`:failed?(S.denied?'[?] Paused':'[!] Interrupted'):'[ ] Ready';
     const right=S.cols-state.length-2,left='OpenAI / '+S.model+' · Auto'+(S.cols>=116?' · connected':'');
-    g.put(2,S.rows-1,short(left,right-4),'secondary',false,right-4);
-    g.put(right,S.rows-1,state,wait?'warning':failed?(S.denied?'warning':'error'):busy?'activity':'muted');
+    g.put(2,S.rows-2,short(left,right-4),'secondary',false,right-4);g.put(right,S.rows-2,state,wait?'warning':failed?(S.denied?'warning':'error'):busy?'activity':'muted');
+    if(flowVisible()&&!['agent-approval','stop'].includes(S.scene)){
+      let x=2;const groups=[['job','⟳ jobs','background'],['agent','◆ agents','agents']];
+      for(const [kind,label,scene] of groups){const group=S.tasks.filter(t=>t.kind===kind),need=group.filter(t=>t.status==='blocked').length,fail=group.filter(t=>t.status==='failed').length;const text='['+label+' '+group.length+(need?' · '+need+' need':'')+(fail?' · '+fail+' fail':'')+']';g.put(x,S.rows-1,text,need?'warning':fail?'error':'secondary');hit(x,S.rows-1,text.length,1,'scene:'+scene,'Inspect '+label.slice(2));x+=text.length+1;}
+      const q='[⇥ queue '+S.queue.length+']';g.put(x,S.rows-1,q,'secondary');hit(x,S.rows-1,q.length,1,'scene:queue','Inspect queued prompts');
+      if(S.cols>=116&&S.notice)g.put(x+q.length+3,S.rows-1,short(S.notice,S.cols-x-q.length-5),'muted',false,S.cols-x-q.length-5);return;
+    }
     const context=S.scene==='home'?'context 1%':'context 24%',contextX=S.cols-context.length-2;
-    const hint=S.notice||(S.focus==='diff'?'↑↓ scroll · ? keys · Esc close':S.focus==='terminal'?'Shift+Tab leave shell · Ctrl+` hide':S.focus==='sessions'?`↑↓ select · Enter attach · Space ${S.peek?'list':'peek'} · Esc return`:S.focus==='files'?'↑↓ select · Enter inspect · Tab focus':S.scene==='help'?'↑↓ browse · Esc return':['palette','model','files'].includes(S.scene)?'↑↓ choose · Enter open · Esc return':S.scene==='approval'?'↑↓ choose · Enter confirm · Esc don’t run':'Enter '+(busy?'queue':'send')+' · / commands · Tab focus');
-    g.put(2,S.rows-2,short(hint,contextX-4),'muted',false,contextX-4);
-    g.put(contextX,S.rows-2,context,'muted');
+    const hint=S.notice||(S.scene==='agent-approval'?'↑↓ choose · Enter confirm · Esc return':S.scene==='stop'?'↑↓ choose · Enter confirm · Esc keep task':S.focus==='diff'?'↑↓ scroll · ? keys · Esc close':S.focus==='terminal'?'Shift+Tab leave shell · Ctrl+` hide':S.focus==='sessions'?`↑↓ select · Enter attach · Space ${S.peek?'list':'peek'} · Esc return`:S.focus==='files'?'↑↓ select · Enter inspect · Tab focus':S.scene==='help'?'↑↓ browse · Esc return':['palette','model','files'].includes(S.scene)?'↑↓ choose · Enter open · Esc return':S.scene==='approval'?'↑↓ choose · Enter confirm · Esc don’t run':'Enter '+(busy?'queue':'send')+' · / commands · Tab focus');
+    g.put(2,S.rows-1,short(hint,contextX-4),'muted',false,contextX-4);g.put(contextX,S.rows-1,context,'muted');
   }
   function composer(g,L){
-    const wait=S.scene==='approval',focused=S.focus==='composer'&&!wait;
+    const wait=['approval','agent-approval','stop'].includes(S.scene),readOnly=S.scene==='agent',focused=S.focus==='composer'&&!wait&&!readOnly;
     g.fill(L.wx,L.cy,L.ww,L.composerH,'surface');g.rule(L.wx,L.cy,L.ww,wait?'warning':focused?'focus':'border');
-    g.put(L.wx+1,L.cy+1,wait?'[?]':focused?'>':'›',wait?'warning':focused?'focus':'secondary',true);
-    if(wait)g.put(L.wx+5,L.cy+1,'Paused · resolve this command above','secondary');
+    g.put(L.wx+1,L.cy+1,wait?'[?]':readOnly?'[|]':focused?'>':'›',wait?'warning':focused?'focus':'secondary',true);
+    if(wait)g.put(L.wx+5,L.cy+1,S.scene==='stop'?'Parent draft retained · confirm this task above':'Paused · resolve this command above','secondary',false,L.ww-7);
+    if(readOnly)g.put(L.wx+5,L.cy+1,'Read-only · parent draft retained · ← / Esc return','secondary',false,L.ww-7);
     if(S.scene==='terminal'&&S.focus==='terminal')g.put(L.wx+5,L.cy+1,'Model prompt retained · Shift+Tab to return','muted');
-    if(S.submitted&&S.scene==='working')g.put(L.tx,L.cy-1,'[ ] Queued: '+short(S.submitted,L.tw-14),'secondary',false,L.tw);
+  }
+  function clearArea(g,x,y,w,h,bg='bg'){for(let r=y;r<y+h;r++)g.put(x,r,' '.repeat(w),'text',false,w);g.fill(x,y,w,h,bg);}
+  function dock(g,L){
+    if(!L.queueH&&!L.backgroundH)return;let y=L.dockTop;
+    clearArea(g,L.wx,y,L.ww,L.queueH+L.backgroundH);
+    if(L.queueH){
+      g.put(L.tx,y,'⇥ Queued · '+S.queue.length+' · Ctrl+↑↓ select · Ctrl+Backspace cancel','secondary',false,L.tw);hit(L.tx,y,L.tw,1,'scene:queue','Open full queue');
+      const selected=Math.max(0,S.queue.findIndex(q=>q.id===S.queueId)),capacity=L.queueH-1,start=Math.max(0,selected-capacity+1);
+      S.queue.slice(start,start+capacity).forEach((q,i)=>{const row=y+1+i;if(q.id===S.queueId)g.fill(L.tx,row,L.tw,1,'selection');g.put(L.tx,row,(q.id===S.queueId?'> ':'  ')+(start+i+1)+'. '+short(q.text,L.tw-5),'secondary',false,L.tw);hit(L.tx,row,L.tw,1,'queue-select:'+q.id,'Select queued prompt '+(start+i+1));});y+=L.queueH;
+    }
+    if(L.backgroundH){
+      const list=orderedTasks(),capacity=L.backgroundH-1,shown=Math.min(list.length,L.compact?1:3),index=Math.max(0,list.findIndex(t=>t.id===S.stripId)),start=Math.max(0,index-shown+1);
+      g.put(L.tx,y,'Background · '+list.length,'secondary',true);g.put(L.wx+L.ww-14,y,'+'+(list.length-shown)+' more','muted');hit(L.tx,y,L.tw,1,'scene:agents','Inspect all background activity');
+      let row=y+1;for(const t of list.slice(start,start+shown)){
+        const [mark,,color]=taskMeta(t),elapsed=t.elapsed;g.put(L.tx,row,(t.id===S.stripId?'> ':'  ')+mark+' '+(t.kind==='agent'?'◆ ':'⟳ ')+t.label+(t.status==='blocked'?' · needs you':''),color,false,L.tw-elapsed.length-2);g.put(L.wx+L.ww-elapsed.length-2,row,elapsed,'muted');hit(L.tx,row,L.tw,1,'strip-select:'+t.id,'Select '+t.label);row++;
+        if(!L.compact&&t.status==='blocked'&&row<y+1+capacity){g.put(L.tx+7,row,short(t.command,L.tw-7),'warning',false,L.tw-7);row++;}
+      }
+    }
   }
   function home(g,L){
     const x=L.wx+5,w=L.ww-7,y=L.homeTop;
@@ -178,7 +255,7 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
     return g.text(L.tx,y+1,S.lastPrompt,w-4,'text')+1;
   }
   function activity(g,L,y,w=L.chatW){
-    const detail=S.scene==='working'?'Read 4 files · running targeted tests':'4 reads · 2 edits · 1 test command';
+    const detail=S.scene==='working'?(S.backgroundOn?'4 reads · 4 subagents · retry tests running':'Read 4 files · running targeted tests'):'4 reads · 2 edits · 1 test command';
     g.put(L.tx,y,(S.details?'⌄':'›')+' '+detail,'secondary',false,w-4);hit(L.tx,y,w-4,1,'activity','Expand exact tool commands');
     if(!S.details)return y+2;
     const rows=['[✓] Read crates/forge-model/src/native/…','[✓] Edit retry.rs +18 −4','[✓] Edit retry_tests.rs +31 −0',S.scene==='working'?`[${spinner()}] cargo test -p forge-model --locked retry`:'[✓] cargo test -p forge-model --locked retry'];
@@ -213,7 +290,7 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
       y=g.text(x,y,words,w);
       if(y+1<=L.bottom)g.put(x,y+1,S.scene==='working'?`${spinner()} Running retry tests`:'[✓] 19 local tests passed · exit 0',S.scene==='working'?'activity':'success',false,w);return;
     }
-    let y=activity(g,L,prompt(g,L),L.chatW);g.put(x,y++,'Forge','text',true,w);
+    let y=activity(g,L,prompt(g,L),L.chatW);if(S.scene==='working'&&S.backgroundOn){g.put(x,y,'› Delegated 4 subagents · 1 pending decision','secondary',false,w);hit(x,y,w,1,'scene:agents','Inspect delegated subagents');y+=2;}g.put(x,y++,'Forge','text',true,w);
     const answer=S.scene==='working'?'The retry boundary is isolated in the provider transport. Transient failures now use bounded backoff; terminal errors return immediately.':'Added bounded retries at the provider boundary. Transient failures back off; terminal errors still return immediately.';
     const text=S.scene==='working'&&S.streaming?answer.slice(0,Math.min(answer.length,24+Math.floor((performance.now()-S.start)/110)*7)):answer;
     y=g.text(x,y,text,w)+1;g.put(x,y++,'Changes','secondary',true,w);
@@ -303,6 +380,92 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
       g.put(px,end+1,'> '+(S.session===0?'Open pending decision':'Attach this session'),'focus',true,pw);hit(px,end+1,pw,1,'attach','Attach selected session');
     }
   }
+  function taskPreview(g,x,y,w,t,compact=false){
+    const [mark,state,color]=taskMeta(t);g.put(x,y,t.label,'text',true,w);g.put(x,y+1,mark+' '+state+' · '+t.elapsed+(t.exit!==undefined?' · exit '+t.exit:''),color,false,w);
+    let row=y+3;
+    if(t.kind==='job')row=g.text(x,row,t.command,w,'text',true)+1;
+    else{row=g.text(x,row,t.summary,w,'text')+1;g.put(x,row++,t.mode+' · '+(t.status==='blocked'?'pending command':t.status==='running'?t.activity:t.result),'secondary',false,w);row++;}
+    row=g.text(x,row,'Workspace: '+t.workspace,w,'secondary');
+    if(t.branch)g.put(x,row++,'Branch: '+t.branch,'secondary',false,w);
+    if(t.dirty){row++;row=g.text(x,row,'[|] Checkout retained · uncommitted work blocks cleanup',w,'warning');}
+    if(!compact){row+=2;g.put(x,row,'› '+(t.kind==='job'?'Inspect command output':'Open read-only transcript'),'focus',true,w);hit(x,row,w,1,'open-task:'+t.id,'Inspect '+t.label);row++;
+      if(t.status==='blocked'){g.put(x,row,'› Review pending command','warning',true,w);hit(x,row,w,1,'child-decision:'+t.id,'Review '+t.label+' approval');}
+      else if(['done','failed'].includes(t.status)){g.put(x,row,'› Insert result into parent draft','text',true,w);hit(x,row,w,1,'insert-result:'+t.id,'Append '+t.label+' result');}
+      else if(t.status==='running'||t.status==='queued'){g.put(x,row,'› Stop this task…','secondary',false,w);hit(x,row,w,1,'stop-task:'+t.id,'Review cancellation of '+t.label);}
+    }
+  }
+  function taskList(g,L,kind){
+    const x=L.tx,w=L.tw,list=orderedTasks(kind),selected=kind==='agent'?S.agentId:S.jobId,split=S.cols>=116,listW=split?38:L.ww;
+    const title=kind==='agent'?'Subagents':'Background jobs';g.put(x,L.top,title+' · '+list.length,'text',true,listW-4);
+    g.put(x,L.top+1,split?'↑↓ select · Enter inspect':kind==='agent'?'↑↓ select · → peek · a/d review request · x stop':'↑↓ select · Enter output · i insert result · x stop','muted',false,listW-4);
+    const first=L.top+3,step=L.compact?(S.rows<21?1:2):3,capacity=Math.min(list.length,Math.max(1,Math.floor((L.bottom-first+1)/step)));
+    const index=Math.max(0,list.findIndex(t=>t.id===selected)),start=Math.max(0,index-capacity+1);
+    list.slice(start,start+capacity).forEach((t,i)=>{const row=first+i*step,[mark,state,color]=taskMeta(t),chosen=t.id===selected;
+      if(chosen)g.fill(L.wx+1,row,listW-2,step===1?1:2,S.focus===kind?'selection':'surface');
+      g.put(L.wx+1,row,chosen?'>':' ','focus',true);g.put(x+1,row,mark,color);g.put(x+5,row,short(t.label,listW-9),'text',chosen,listW-9);
+      if(step>1)g.put(x+5,row+1,preview(state+' · '+(t.status==='running'&&t.kind==='agent'?t.activity:t.status==='blocked'?'command approval':t.elapsed),listW-9),'secondary',false,listW-9);
+      hit(L.wx+1,row,listW-2,step===1?1:2,'task-select:'+t.id,'Select '+t.label);
+    });
+    const t=task(selected);
+    if(split){const divider=L.wx+listW;for(let y=3;y<=L.bottom;y++)g.put(divider,y,'│','border');taskPreview(g,divider+3,L.top,L.ww-listW-5,t);}
+    else{const y=first+capacity*step+1;if(y+2<=L.bottom){g.put(x,y,short(t.status==='blocked'?t.command:t.summary,w),t.status==='blocked'?'warning':'secondary',false,w);const label=t.status==='blocked'?'Review '+t.label+' command':'Open '+(kind==='agent'?'read-only transcript':'command output');g.put(x,y+2,'› '+label,'focus',true,w);hit(x,y+2,w,1,t.status==='blocked'?'child-decision:'+t.id:'open-task:'+t.id,label);}}
+  }
+  function queueView(g,L){
+    const x=L.tx,w=L.tw;g.put(x,L.top,'Queued prompts · '+S.queue.length+' · Retry connection','text',true,w);
+    g.put(x,L.top+1,'Ctrl+↑↓ select · Ctrl+Backspace cancel · ↑ edit last','muted',false,w);
+    if(!S.queue.length){g.put(x,L.top+3,'The queue is empty. The current turn keeps running.','secondary',false,w);g.put(x,L.top+5,'Type a follow-up below. Enter adds it to this session.','text',false,w);return;}
+    const first=L.top+3,step=L.compact?(S.rows<21?1:2):3,capacity=Math.min(3,Math.floor((L.bottom-first-2)/step)),selected=Math.max(0,S.queue.findIndex(q=>q.id===S.queueId)),start=Math.max(0,selected-capacity+1);
+    S.queue.slice(start,start+capacity).forEach((q,i)=>{const y=first+i*step,chosen=q.id===S.queueId;if(chosen)g.fill(L.wx+1,y,L.ww-2,step===1?1:2,'selection');g.put(L.wx+1,y,chosen?'>':' ','focus',true);g.put(x+1,y,String(start+i+1).padStart(2,'0'),'secondary');g.put(x+5,y,short(q.text,w-5),'text',chosen,w-5);if(step>1)g.put(x+5,y+1,(start+i===0?'Next after this turn':'After prompt '+(start+i))+' · pending','muted',false,w-4);hit(L.wx+1,y,L.ww-2,step===1?1:2,'queue-select:'+q.id,'Select prompt '+(start+i+1));});
+    let y=first+capacity*step+1;
+    if(y<=L.bottom){const hidden=S.queue.length-capacity;g.put(x,y,hidden?'+'+hidden+' more · selection scrolls the queue':'Pending prompts run in order at turn boundaries.','secondary',false,w);y+=2;}
+    if(y<=L.bottom){const label='Cancel selected prompt '+(selected+1);g.put(x,y,'› '+label,'secondary',false,w);hit(x,y,w,1,'queue-cancel',label);y++;}
+    if(!L.compact&&y+1<=L.bottom){g.put(x,y+1,'↑ Edit last queued prompt in an empty composer','secondary',false,w);hit(x,y+1,w,1,'queue-edit-last','Edit the last queued prompt');}
+    if(S.notice&&L.bottom>y+2)g.put(x,y+3,short(S.notice,w),'secondary',false,w);
+  }
+  function jobView(g,L){
+    const t=task(S.jobId),[mark,state,color]=taskMeta(t),x=L.tx,w=L.tw;
+    g.put(x,L.top,t.label+' · '+mark+' '+state,'text',true,w);g.put(x,L.top+1,'Owner: Retry connection · '+t.elapsed+(t.exit!==undefined?' · exit '+t.exit:''),'secondary',false,w);
+    g.put(x,L.top+3,t.command,'text',true,w);g.put(x,L.top+4,'cwd: '+t.workspace,'secondary',false,w);
+    const y=L.top+(L.compact?5:7),actions=L.bottom-1;
+    clearArea(g,L.wx,y,L.ww,Math.max(0,actions-y),'surface');t.output.slice(L.compact?-Math.max(1,actions-y):0,L.compact?undefined:Math.max(0,actions-y)).forEach((line,i)=>g.put(x,y+i,short(line,w),line.includes('FAILED')||line.startsWith('error:')?'error':line.includes('test result: ok')?'success':'secondary',false,w));
+    if(['done','failed'].includes(t.status)){g.put(x,actions,'› Insert result into parent draft','focus',true,w);hit(x,actions,w,1,'insert-result:'+t.id,'Append result without submitting');}
+    else{g.put(x,actions,'› Stop '+t.label+'…','secondary',false,w);hit(x,actions,w,1,'stop-task:'+t.id,'Review stopping '+t.label);}
+    g.put(x,L.bottom,'Esc return · output retained · i inserts only finished results','muted',false,w);
+  }
+  function agentView(g,L){
+    const t=task(S.agentId),[mark,state,color]=taskMeta(t),x=L.tx,w=L.tw;
+    g.put(x,L.top,t.label+' · '+mark+' '+state+' · '+t.elapsed,'text',true,w);
+    g.put(x,L.top+1,'Read-only · owned by '+t.label+' · ← / Esc return','secondary',false,w);
+    g.put(x,L.top+2,'Workspace: '+t.workspace,'secondary',false,w);let y=L.top+4;
+    if(!L.compact){g.put(x,L.top+3,'Branch: '+t.branch+' · '+t.mode,'secondary',false,w);g.put(x,y++,'You','secondary',true,w);y=g.text(x,y,t.summary,w,'text')+1;}
+    g.put(x,y++,t.label,'text',true,w);
+    const words=t.status==='blocked'?'The OAuth refresh path is isolated. I need permission to fetch dependencies for its tests.':t.status==='running'?'Transient errors are bounded by MAX_ATTEMPTS. I’m checking cancellation at the backoff boundary.':t.result||'The task was stopped. The checkout and existing work remain available.';
+    y=g.text(x,y,words,w)+1;
+    if(t.resolution)g.put(x,Math.min(L.bottom-2,y+2),t.resolution+' · '+t.label+' only','secondary',false,w);
+    if(!L.compact&&t.status==='blocked'){g.put(x,y++,'[|] Command pending · '+t.command,'warning',false,w);g.put(x,y+1,'This view replays the child journal. The parent remains Retry connection.','muted',false,w);}
+    const actionY=L.compact?L.bottom:Math.min(L.bottom-2,y+4);
+    if(t.status==='blocked'){g.put(x,actionY,'› Review '+t.label+' command','warning',true,w);hit(x,actionY,w,1,'child-decision:'+t.id,'Review this child’s pending invocation');}
+    else if(['done','failed'].includes(t.status)){g.put(x,actionY,t.status==='failed'?'› Insert partial result into parent draft':'› Insert findings into parent draft','focus',true,w);hit(x,actionY,w,1,'insert-result:'+t.id,'Append completed findings');}
+    else if(t.status==='cancelled')g.put(x,actionY,t.dirty?'[|] Checkout retained · 1 changed file · cleanup blocked':'[-] Stopped · checkout retained','warning',false,w);
+    else{g.put(x,actionY,'› Stop '+t.label+'…','secondary',false,w);hit(x,actionY,w,1,'stop-task:'+t.id,'Review stopping '+t.label);}
+  }
+  function childApproval(g,L){
+    const t=task(S.agentId),x=L.tx,w=L.tw;g.rule(L.wx,L.top,L.ww,'warning');g.put(x,L.top,'> Approval · '+t.label,'warning',true,w);
+    g.put(x,L.top+1,'Child: '+t.label+' · branch: '+t.branch,'secondary',false,w);
+    g.put(x,L.top+3,t.command,'text',true,w);g.put(x,L.top+4,'cwd: '+t.workspace,'secondary',false,w);
+    let y=L.top+6;
+    if(!L.compact)y=g.text(x,y,'This child requests dependency network access for this exact invocation. Its permission is separate from the parent and every sibling.',w,'secondary')+1;
+    else g.put(x,L.top+5,'Dependency network access · this invocation only','secondary',false,w);
+    ['Don’t run','Allow once'].forEach((label,i)=>{if(S.choice===i)g.fill(L.wx+1,y+i,L.ww-2,1,'selection');g.put(x,y+i,(S.choice===i?'> ':'  ')+label,'text',S.choice===i,w);hit(L.wx+1,y+i,L.ww-2,1,'child-choice:'+i,label+' for '+t.label);});
+    hits=hits.filter(h=>h.action.startsWith('child-choice:'));
+  }
+  function stopView(g,L){
+    const t=task(S.stopTaskId),x=L.tx,w=L.tw;g.rule(L.wx,L.top,L.ww,'warning');g.put(x,L.top,'> Stop '+t.label+'?','warning',true,w);
+    g.put(x,L.top+2,'Owner: '+(t.kind==='agent'?t.label+' · subagent':'Retry connection · shell job'),'secondary',false,w);g.put(x,L.top+3,'cwd: '+t.workspace,'secondary',false,w);
+    let y=g.text(x,L.top+5,'Stops this task. Output'+(t.retained?' and its checkout':'')+' stay available. Siblings and queued prompts keep their state.',w,'text')+1;
+    [t.status==='blocked'?'Keep waiting':'Keep running','Stop this task'].forEach((label,i)=>{if(S.choice===i)g.fill(L.wx+1,y+i,L.ww-2,1,'selection');g.put(x,y+i,(S.choice===i?'> ':'  ')+label,'text',S.choice===i,w);hit(L.wx+1,y+i,L.ww-2,1,'stop-choice:'+i,label);});
+    hits=hits.filter(h=>h.action.startsWith('stop-choice:'));
+  }
   function palette(g,L,kind='commands'){
     const w=Math.min(88,S.cols-8),x=Math.floor((S.cols-w)/2);
     const title=kind==='commands'?'> Commands':kind==='files'?'> Open file':kind==='help'?'> Keyboard help':'> Choose model';
@@ -334,15 +497,67 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
     g.put(x,row,S.denied?'› Describe another way to validate':'› Retry this turn','text',true,w);hit(x,row,w,1,S.denied?'focus:composer':'retry',S.denied?'Return to prompt':'Retry example turn');
     if(!L.compact){g.put(x,row+2,'Last confirmed result: 2 files changed','secondary',false,w);g.put(x,row+3,'No remote CI result available. No commit created.','muted',false,w);}
   }
-  function build(){const p=palettes[S.theme],g=new Grid(S.cols,S.rows,p),L=makeLayout();hits=[];layout=L;if(S.reference){const data=window.FORGE_REFERENCES?.[S.reference];if(data){data.slice(0,S.rows).forEach((row,y)=>row.slice(0,S.cols).forEach((cell,x)=>Object.assign(g.cells[y][x],{ch:cell[0],fg:cell[1],bg:cell[2],bold:cell[3]})));}return g;}header(g,L);navigator(g,L);if(S.scene==='home')home(g,L);else if(S.scene==='plan')plan(g,L);else if(S.scene==='review'){if(S.cols>=116||S.view==='chat')conversation(g,L);if(S.cols>=116||S.view==='diff')diff(g,L);}else if(S.scene==='working')conversation(g,L);else if(S.scene==='approval')approval(g,L);else if(S.scene==='sessions')sessionView(g,L);else if(['palette','model','files','help'].includes(S.scene)){conversation(g,L);palette(g,L,S.scene==='model'?'model':S.scene==='files'?'files':S.scene==='help'?'help':'commands');}else if(S.scene==='terminal')terminalView(g,L);else recovery(g,L);composer(g,L);footer(g,L);return g;}
+  function build(){
+    const p=palettes[S.theme],g=new Grid(S.cols,S.rows,p),L=makeLayout();hits=[];layout=L;
+    if(S.reference){const data=window.FORGE_REFERENCES?.[S.reference];if(data)data.slice(0,S.rows).forEach((row,y)=>row.slice(0,S.cols).forEach((cell,x)=>Object.assign(g.cells[y][x],{ch:cell[0],fg:cell[1],bg:cell[2],bold:cell[3]})));return g;}
+    header(g,L);navigator(g,L);
+    if(S.scene==='home')home(g,L);else if(S.scene==='plan')plan(g,L);
+    else if(S.scene==='review'){if(S.cols>=116||S.view==='chat')conversation(g,L);if(S.cols>=116||S.view==='diff')diff(g,L);}
+    else if(S.scene==='working'){conversation(g,L);dock(g,L);}
+    else if(S.scene==='approval')approval(g,L);else if(S.scene==='sessions')sessionView(g,L);
+    else if(S.scene==='background'||S.scene==='agents')taskList(g,L,S.scene==='agents'?'agent':'job');
+    else if(S.scene==='queue')queueView(g,L);else if(S.scene==='job')jobView(g,L);else if(S.scene==='agent')agentView(g,L);
+    else if(S.scene==='agent-approval')childApproval(g,L);else if(S.scene==='stop')stopView(g,L);
+    else if(['palette','model','files','help'].includes(S.scene)){conversation(g,L);palette(g,L,S.scene==='model'?'model':S.scene==='files'?'files':S.scene==='help'?'help':'commands');}
+    else if(S.scene==='terminal')terminalView(g,L);else recovery(g,L);
+    composer(g,L);footer(g,L);return g;
+  }
   function svgBody(g){let body=`<title id="screen-title">Forge ${escape(sceneNames[S.scene]||S.scene)} concept, ${S.cols} columns by ${S.rows} rows</title><desc id="screen-description">${escape(S.reference?'Actual installed terminal capture.':copy[S.scene]?.map(c=>c[1]).join(' ')||'Model picker concept.')}</desc>`;for(let y=0;y<g.rows;y++){let start=0;while(start<g.cols){const c=g.cells[y][start];let end=start+1;while(end<g.cols&&g.cells[y][end].bg===c.bg)end++;body+=`<rect x="${start*CELL}" y="${y*LINE}" width="${(end-start)*CELL}" height="${LINE}" fill="${c.bg}"/>`;start=end;}}
     for(let y=0;y<g.rows;y++){let start=0;while(start<g.cols){const c=g.cells[y][start];let end=start+1;while(end<g.cols&&g.cells[y][end].fg===c.fg&&g.cells[y][end].bold===c.bold)end++;const text=g.cells[y].slice(start,end).map(t=>t.ch).join('');if(text.trim())body+=`<text xml:space="preserve" x="${start*CELL}" y="${y*LINE+14.5}" fill="${c.fg}" font-weight="${c.bold?650:400}" textLength="${(end-start)*CELL}" lengthAdjust="spacingAndGlyphs">${escape(text)}</text>`;start=end;}}
     body+=hits.map(h=>`<g role="button" tabindex="-1" aria-label="${escape(h.label)}" data-action="${escape(h.action)}"><rect class="hit" x="${h.x*CELL}" y="${h.y*LINE}" width="${h.w*CELL}" height="${h.h*LINE}"/><title>${escape(h.label)}</title></g>`).join('');return body;}
-  function positionDraft(){const L=layout,svg=$('screen'),box=svg.getBoundingClientRect(),scale=box.width/(S.cols*CELL),d=$('draft');d.style.left=((L.wx+5)*CELL*scale)+'px';d.style.top=((L.cy+1)*LINE*scale)+'px';d.style.width=((L.ww-7)*CELL*scale)+'px';d.style.height=(LINE*scale)+'px';d.style.lineHeight=(LINE*scale)+'px';d.style.fontSize=(14*scale)+'px';d.style.color=palettes[S.theme].text;d.style.caretColor=palettes[S.theme].focus;d.style.display=S.reference||S.scene==='approval'||S.focus==='terminal'||['palette','model','files','help'].includes(S.scene)?'none':'';d.disabled=!!S.reference||S.scene==='approval';d.value=S.draft;}
+  function positionDraft(){
+    const L=layout,svg=$('screen'),box=svg.getBoundingClientRect(),scale=box.width/(S.cols*CELL),d=$('draft');
+    d.style.left=((L.wx+5)*CELL*scale)+'px';d.style.top=((L.cy+1)*LINE*scale)+'px';d.style.width=((L.ww-7)*CELL*scale)+'px';d.style.height=((L.composerH-1)*LINE*scale)+'px';d.style.lineHeight=(LINE*scale)+'px';d.style.fontSize=(14*scale)+'px';d.style.color=palettes[S.theme].text;d.style.caretColor=palettes[S.theme].focus;
+    const blocked=['approval','agent','agent-approval','stop','palette','model','files','help'].includes(S.scene);
+    d.style.display=S.reference||blocked||S.focus==='terminal'?'none':'';d.disabled=!!S.reference||blocked;d.value=S.draft;
+    d.placeholder=flowVisible()?'Follow-up for Retry connection · Enter '+(S.primaryBusy||S.scene==='working'?'queues':'sends'):'Ask Forge to work on a task…';
+    d.setAttribute('aria-label',flowVisible()?'Parent prompt for Retry connection':'Task prompt');
+  }
   function render(){if(S.focus==='files'&&!makeLayout().nav)S.focus='composer';const g=build();lastGrid=g;$('screen').setAttribute('viewBox',`0 0 ${S.cols*CELL} ${S.rows*LINE}`);$('screen').innerHTML=svgBody(g);$('terminal').style.background=S.reference?'#141414':palettes[S.theme].bg;positionDraft();}
-  function explain(){const descriptions=copy[S.scene]||copy.palette;$('description').innerHTML=descriptions.map((c,i)=>`<article><h2><span class="label">0${i+1}</span>${escape(c[0])}</h2><p>${escape(c[1])}</p></article>`).join('');$('window-title').textContent=(S.reference?'Installed capture — '+S.reference:(S.scene==='home'?'forge — main':'forge — '+['fix/connection-retry','fix/goal-persistence','test/retry-coverage','fix/compact-layout','fix/provider-routing','research/model-catalog','fix/session-cleanup'][S.attachedSession]))+` — ${S.cols} × ${S.rows}`;$('window-tag').textContent=S.reference?'ACTUAL CAPTURE':'SIMULATED TASK';$('before').setAttribute('aria-pressed',!!S.reference);$('before').textContent=S.reference?'Return to proposal':'Current home';$('theme').disabled=!!S.reference;document.querySelectorAll('[data-scene]').forEach(b=>b.setAttribute('aria-pressed',!S.reference&&b.dataset.scene===S.scene));$('fidelity').textContent=S.reference?'Actual captured cells · installed binary · dark theme':'Character-cell layout · sample task and results';const notes={home:'Click a starter prompt or type a task. Enter starts the example turn.',plan:'The checklist reports progress; it does not grant permission.',working:'Click the activity row for exact commands. Enter queues a follow-up.',review:'Click a changed file to inspect it. F6 switches panes.',approval:'Choose with ↑↓ and Enter. The walkthrough waits for your decision.',sessions:'Select a session; Enter attaches it. Esc restores the prior view.',palette:'Type to filter commands. ↑↓ selects; Enter runs; Esc returns.',terminal:'Shell owns the keyboard. Shift+Tab returns to the retained prompt.',error:'Retry the example or inspect the retained changes.'};$('interaction-note').textContent=S.reference?'Read-only capture. Return to the proposal to explore interactions.':notes[S.scene]||notes.palette;}
-  function stop(){S.playing=false;clearTimeout(S.playTimer);$('play').textContent='▶ Play walkthrough';}
-  function setScene(scene,fromDemo=false){if(!fromDemo)stop();S.reference=null;if(!['palette','model','files','help'].includes(S.scene))S.previous=S.scene;S.scene=scene;S.peek=false;S.view='chat';S.focus=scene==='approval'?'approval':scene==='sessions'?'sessions':['palette','model','files','help'].includes(scene)?'palette':scene==='terminal'?'terminal':'composer';S.approval=0;S.query='';S.paletteIndex=0;S.notice='';S.start=performance.now();S.streaming=fromDemo&&scene==='working';explain();render();}
+  function explain(){const descriptions=copy[S.scene]||copy.palette;$('description').innerHTML=descriptions.map((c,i)=>`<article><h2><span class="label">0${i+1}</span>${escape(c[0])}</h2><p>${escape(c[1])}</p></article>`).join('');$('window-title').textContent=(S.reference?'Installed capture — '+S.reference:(S.scene==='home'?'forge — main':'forge — '+['fix/connection-retry','fix/goal-persistence','test/retry-coverage','fix/compact-layout','fix/provider-routing','research/model-catalog','fix/session-cleanup'][S.attachedSession]))+` — ${S.cols} × ${S.rows}`;$('window-tag').textContent=S.reference?'ACTUAL CAPTURE':'SIMULATED TASK';$('before').setAttribute('aria-pressed',!!S.reference);$('before').textContent=S.reference?'Return to proposal':'Current home';$('theme').disabled=!!S.reference;document.querySelectorAll('[data-scene]').forEach(b=>b.setAttribute('aria-pressed',!S.reference&&b.dataset.scene===S.scene));$('fidelity').textContent=S.reference?'Actual captured cells · installed binary · dark theme':'Character-cell layout · sample task and results';const notes={home:'Click a starter prompt or type a task. Enter starts the example turn.',plan:'The checklist reports progress; it does not grant permission.',working:'Click the activity row for exact commands. Enter queues a follow-up.',review:'Click a changed file to inspect it. F6 switches panes.',approval:'Choose with ↑↓ and Enter. The walkthrough waits for your decision.',sessions:'Select a session; Enter attaches it. Esc restores the prior view.',palette:'Type to filter commands. ↑↓ selects; Enter runs; Esc returns.',terminal:'Shell owns the keyboard. Shift+Tab returns to the retained prompt.',error:'Retry the example or inspect the retained changes.'};Object.assign(notes,{background:'↑↓ selects a job. Enter opens output; i appends a finished result.',queue:'Ctrl+↑↓ selects; Ctrl+Backspace cancels one prompt. The draft stays editable.',agents:'Select a child. → peeks read-only; a/d opens its named decision; x reviews stopping.',job:'Inspect the command and output. Insert result appends to the parent draft.',agent:'This is read-only. ← / Esc restores the parent view and its draft.','agent-approval':'This command belongs to the named child. ↑↓ and Enter decide only this invocation.',stop:'Keep running is selected first. Stopping affects only the named task.'});$('interaction-note').textContent=S.reference?'Read-only capture. Return to the proposal to explore interactions.':S.notice||notes[S.scene]||notes.palette;$('flow-controls').style.display=!S.reference&&flowVisible()?'block':'none';$('finish-job').disabled=task(22)?.status!=='running';$('interrupt-agent').disabled=task(32)?.status!=='running';}
+  function stop(){S.playing=false;S.flowTour=false;clearTimeout(S.playTimer);$('play').textContent='▶ Play walkthrough';$('play-flows').textContent='▶ Background flows';}
+  function setScene(scene,fromDemo=false){
+    if(!fromDemo)stop();S.reference=null;
+    if(flowScenes.includes(scene)){
+      ensureFlow();if(!flowScenes.includes(S.scene)){S.flowOrigin=S.scene;S.flowOriginView=S.view;S.flowOriginFocus=S.focus;S.flowOriginSession=S.attachedSession;if(S.attachedSession!==0){S.drafts[S.attachedSession]=S.draft;S.attachedSession=0;S.draft=S.drafts[0]||'';}}
+      if(scene==='job'&&S.scene!=='job')S.taskReturn='background';
+      if(scene==='agent'&&!['agent','agent-approval'].includes(S.scene))S.taskReturn='agents';
+      if(scene==='queue')S.primaryBusy=true;
+      if(scene==='agent-approval'&&task(S.agentId).status!=='blocked')scene='agent';
+    }
+    if(scene==='working')S.primaryBusy=true;if(scene==='review')S.primaryBusy=false;
+    if(!['palette','model','files','help'].includes(S.scene))S.previous=S.scene;
+    S.scene=scene;S.peek=false;S.view='chat';S.focus=scene==='approval'?'approval':scene==='sessions'?'sessions':['palette','model','files','help'].includes(scene)?'palette':scene==='terminal'?'terminal':scene==='background'?'job':scene==='agents'?'agent':scene==='queue'?'queue':['job','agent','agent-approval','stop'].includes(scene)?'task':'composer';
+    S.approval=0;S.choice=0;S.query='';S.paletteIndex=0;S.notice='';S.start=performance.now();S.streaming=fromDemo&&scene==='working';explain();render();
+  }
+  function openTask(id){const t=task(id);if(!t)return;const origin=S.scene;S[t.kind==='agent'?'agentId':'jobId']=t.id;setScene(t.kind==='agent'?'agent':'job');S.taskReturn=['working','background','agents'].includes(origin)?origin:t.kind==='agent'?'agents':'background';render();}
+  function flowBack(){const destination=S.scene==='agent-approval'?'agent':S.scene==='stop'?S.stopReturn:S.scene==='agent'||S.scene==='job'?S.taskReturn:S.flowOrigin;setScene(destination||'working');if(!flowScenes.includes(destination)){if(S.flowOriginSession!==undefined&&S.attachedSession!==S.flowOriginSession){S.drafts[S.attachedSession]=S.draft;S.attachedSession=S.flowOriginSession;S.draft=S.drafts[S.attachedSession]||'';}S.view=S.flowOriginView||'chat';S.focus=S.flowOriginFocus||'composer';render();explain();}}
+  function selectTask(id,strip=false){const t=task(id);if(!t)return;const field=strip?'stripId':t.kind==='agent'?'agentId':'jobId';if(S[field]===t.id&&S.focus===(strip?'background':t.kind)){openTask(t.id);return;}S[field]=t.id;S.focus=strip?'background':t.kind;S.notice='';render();}
+  function moveQueue(delta){if(!S.queue.length)return;const index=Math.max(0,S.queue.findIndex(q=>q.id===S.queueId));S.queueId=S.queue[Math.max(0,Math.min(S.queue.length-1,index+delta))].id;render();}
+  function cancelQueue(){const index=S.queue.findIndex(q=>q.id===S.queueId);if(index<0){S.notice='Queue is empty · parent draft retained';render();explain();return;}const removed=S.queue.splice(index,1)[0];S.queueId=S.queue[Math.min(index,S.queue.length-1)]?.id||null;S.notice='Cancelled prompt '+(index+1)+' · '+S.queue.length+' left';S.lastCancelled=removed.text;render();explain();}
+  function editLastQueue(){if(S.draft){S.notice='Keep or clear the current draft before editing the last queued prompt';render();return;}const item=S.queue.pop();if(!item)return;S.draft=item.text;S.queueId=S.queue.at(-1)?.id||null;S.focus='composer';S.notice='Last queued prompt returned to draft · Enter queues it again';render();$('draft').focus();}
+  function insertResult(id){
+    const t=task(id);if(!t||!['done','failed','cancelled'].includes(t.status)){S.notice='This task has no finished result to insert';render();return;}
+    const result=t.kind==='agent'?t.result:t.summary;S.draft+=(S.draft?'\n':'')+'['+t.label+'] '+result;
+    setScene(S.primaryBusy?'working':'review');S.notice='Appended '+t.label+' result · review before sending';S.focus='composer';render();explain();$('draft').focus();
+  }
+  function reviewChild(id){const t=task(id);if(t?.kind!=='agent'||t.status!=='blocked'){S.notice='The selected task has no pending approval';render();return;}S.agentId=t.id;setScene('agent-approval',S.playing);}
+  function decideChild(allow){const t=task(S.agentId);if(t.status!=='blocked')return;t.status='running';t.resolution=allow?'Allowed this invocation':'Declined this invocation';t.activity=allow?'Running OAuth refresh tests':'Continuing after command denial';const tour=S.flowTour;setScene('agent',tour);S.notice=t.resolution+' · '+t.label+' only';render();explain();if(tour)stop();}
+  function reviewStop(id){const t=task(id);if(!t||!['running','queued','blocked'].includes(t.status)){S.notice='Task already finished · retained for inspection';render();return;}S.stopTaskId=t.id;S.stopReturn=S.scene;setScene('stop');}
+  function decideStop(stopTask){const t=task(S.stopTaskId),destination=S.stopReturn||'background';if(stopTask&&['running','queued','blocked'].includes(t.status)){t.status='cancelled';t.result='Stopped by you. Existing output'+(t.retained?' and checkout':'')+' retained.';}setScene(destination);S.notice=stopTask?'Stopped '+t.label+' only · other work continues':'Kept '+t.label+' active';render();explain();}
+  function finishExample(){ensureFlow();const t=task(22);if(t.status!=='running')return;t.status='done';t.elapsed='20.4s';t.exit=0;t.summary='19 local tests passed · exit 0';t.output=['running 19 tests','test retry::bounded_attempts ... ok','test retry::terminal_errors ... ok','test result: ok. 19 passed; 0 failed','process exited with code 0'];S.notice='Retry tests completed · result ready to inspect';render();explain();}
+
+  function interruptExample(){ensureFlow();const t=task(32);if(t.status!=='running')return;t.status='failed';t.elapsed='16.2s';t.result='Provider disconnected before validation. Retry bounds were located; cancellation remains unchecked.';S.notice='trace-retry interrupted · partial findings retained';render();explain();}
   function selectedCommands(){const q=S.query.toLowerCase().replace(/^\//,'');const rank=c=>c[0].slice(1).startsWith(q)?0:c[0].includes(q)?1:2;return commands.filter(c=>c.join(' ').toLowerCase().includes(q)).sort((a,b)=>rank(a)-rank(b));}
   function runCommand(){
     if(S.scene==='help')return;
@@ -352,9 +567,36 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
     if(dest==='theme'){S.theme=S.theme==='dark'?'light':'dark';$('theme').value=S.theme;setScene(S.previous);}else setScene(dest);
   }
   function decide(allow){S.denied=!allow;if(!allow){setScene('error');return;}const continueDemo=S.playing;setScene('working',continueDemo);S.notice='Allowed this invocation · running example tests';render();if(continueDemo)S.playTimer=setTimeout(()=>{setScene('review',true);stop();},4500);}
-  function act(action){const [verb,value]=action.split(':');if(S.reference)return;if(verb==='scene')setScene(value);else if(verb==='focus'){S.focus=value;render();if(value==='composer')$('draft').focus();}else if(verb==='view'){S.view=value;S.focus=value;render();}else if(verb==='file'){S.file=Number(value);S.sourceMode=false;S.diffScroll=0;S.diffCol=0;if(S.scene!=='review')setScene('review');S.view='diff';S.focus='diff';render();}else if(verb==='activity'){S.details=!S.details;render();}else if(verb==='approval'){if(S.approval===Number(value))decide(Number(value)===1);else{S.approval=Number(value);render();}}else if(verb==='session'){S.peek=false;S.session=Number(value);S.focus='sessions';render();}else if(verb==='attach'){S.drafts[S.attachedSession]=S.draft;S.attachedSession=S.session;S.draft=S.drafts[S.attachedSession]||'';setScene(S.session===0?'approval':S.session===1?'working':S.session===4?'error':'review');}else if(verb==='command'){if(S.paletteIndex===Number(value))runCommand();else{S.paletteIndex=Number(value);render();}}else if(verb==='starter'){S.lastPrompt=['Explain the architecture of this project.','Review the changes in this workspace.','Find and fix a failing test.'][Number(value)];S.draft=S.lastPrompt;render();$('draft').focus();}else if(verb==='retry'){S.denied=false;setScene('working');}else if(verb==='nav'){S.nav=value;S.focus='files';render();}}
+  function act(action){const [verb,value]=action.split(':');if(S.reference)return;
+    const flowAction={
+      'task-select':()=>selectTask(value),'strip-select':()=>selectTask(value,true),'open-task':()=>openTask(value),
+      'queue-select':()=>{S.queueId=value;S.focus='queue';render();},'queue-cancel':cancelQueue,'queue-edit-last':editLastQueue,
+      'insert-result':()=>insertResult(value),'child-decision':()=>reviewChild(value),'flow-back':flowBack,'stop-task':()=>reviewStop(value),
+      'child-choice':()=>{if(S.choice===Number(value))decideChild(Number(value)===1);else{S.choice=Number(value);render();}},
+      'stop-choice':()=>{if(S.choice===Number(value))decideStop(Number(value)===1);else{S.choice=Number(value);render();}}
+    };if(flowAction[verb]){flowAction[verb]();return;}if(verb==='scene')setScene(value);else if(verb==='focus'){S.focus=value;render();if(value==='composer')$('draft').focus();}else if(verb==='view'){S.view=value;S.focus=value;render();}else if(verb==='file'){S.file=Number(value);S.sourceMode=false;S.diffScroll=0;S.diffCol=0;if(S.scene!=='review')setScene('review');S.view='diff';S.focus='diff';render();}else if(verb==='activity'){S.details=!S.details;render();}else if(verb==='approval'){if(S.approval===Number(value))decide(Number(value)===1);else{S.approval=Number(value);render();}}else if(verb==='session'){S.peek=false;S.session=Number(value);S.focus='sessions';render();}else if(verb==='attach'){S.drafts[S.attachedSession]=S.draft;S.attachedSession=S.session;S.draft=S.drafts[S.attachedSession]||'';setScene(S.session===0?'approval':S.session===1?'working':S.session===4?'error':'review');}else if(verb==='command'){if(S.paletteIndex===Number(value))runCommand();else{S.paletteIndex=Number(value);render();}}else if(verb==='starter'){S.lastPrompt=['Explain the architecture of this project.','Review the changes in this workspace.','Find and fix a failing test.'][Number(value)];S.draft=S.lastPrompt;render();$('draft').focus();}else if(verb==='retry'){S.denied=false;setScene('working');}else if(verb==='nav'){S.nav=value;S.focus='files';render();}}
   function handleKey(e){
     if(S.reference)return;const key=e.key;
+    if(['agent-approval','stop'].includes(S.scene)){
+      e.preventDefault();if(key==='ArrowUp'||key==='ArrowDown'){S.choice=1-S.choice;render();}
+      else if(key==='Enter'){if(S.scene==='stop')decideStop(S.choice===1);else decideChild(S.choice===1);}
+      else if(key==='Escape'){if(S.scene==='stop')decideStop(false);else flowBack();}return;
+    }
+    if((e.ctrlKey||e.metaKey)&&['ArrowUp','ArrowDown','Backspace'].includes(key)&&!(S.scene==='terminal'&&S.focus==='terminal')){e.preventDefault();if(key==='Backspace')cancelQueue();else moveQueue(key==='ArrowDown'?1:-1);return;}
+    if(S.scene==='agent'){
+      e.preventDefault();if(key==='Escape'||key==='ArrowLeft')flowBack();else if(key==='a'||key==='d')reviewChild(S.agentId);else if(key==='i')insertResult(S.agentId);else if(key==='x')reviewStop(S.agentId);return;
+    }
+    if(flowVisible()&&['job','agent','task','background','queue'].includes(S.focus)){
+      if(key==='Escape'){e.preventDefault();flowBack();return;}
+      if(S.scene==='queue'&&['ArrowUp','ArrowDown'].includes(key)){e.preventDefault();moveQueue(key==='ArrowDown'?1:-1);return;}
+      const list=S.focus==='background'?orderedTasks():orderedTasks(S.scene==='agents'?'agent':'job'),field=S.focus==='background'?'stripId':S.scene==='agents'?'agentId':'jobId',t=task(S[field]);
+      if(['background','agents','job','working'].includes(S.scene)){
+        if(key==='ArrowUp'||key==='ArrowDown'){e.preventDefault();const index=Math.max(0,list.findIndex(t=>t.id===S[field]));S[field]=list[Math.max(0,Math.min(list.length-1,index+(key==='ArrowDown'?1:-1)))].id;render();return;}
+        if(key==='Enter'||key==='ArrowRight'){e.preventDefault();if(key==='ArrowRight'&&t.kind==='job'){S.notice='Shell jobs have command output, no child session · Enter opens output';render();}else openTask(t.id);return;}
+        if(['i','x','a','d'].includes(key)){e.preventDefault();if(key==='i')insertResult(t.id);else if(key==='x')reviewStop(t.id);else reviewChild(t.id);return;}
+      }
+    }
+    if(flowVisible()&&S.focus==='composer'&&key==='ArrowUp'&&!S.draft&&S.queue.length){e.preventDefault();editLastQueue();return;}
     if(S.scene==='terminal'&&S.focus==='terminal'){
       if(key==='Tab'&&e.shiftKey){e.preventDefault();S.focus='composer';render();$('draft').focus();}
       else if((e.ctrlKey||e.metaKey)&&key==='`'){e.preventDefault();setScene(S.previous);}
@@ -388,8 +630,8 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
     if(S.focus==='files'&&['ArrowUp','ArrowDown','Enter'].includes(key)){e.preventDefault();if(key==='Enter')act('file:'+S.file);else{S.file=1-S.file;render();}return;}
     if(S.scene==='sessions'&&S.focus==='sessions'&&(key==='ArrowUp'||key==='ArrowDown')){e.preventDefault();S.session=Math.max(0,Math.min(sessions.length-1,S.session+(key==='ArrowDown'?1:-1)));render();return;}
     if(S.scene==='sessions'&&S.focus==='sessions'&&key==='Enter'){e.preventDefault();act('attach');return;}
-    if(key==='Tab'){e.preventDefault();const owners=S.scene==='terminal'?['terminal','composer']:S.scene==='review'?(layout.nav?['files','chat','diff','composer']:['chat','diff','composer']):S.scene==='sessions'?['sessions','composer']:['chat','composer'];let i=owners.indexOf(S.focus);S.focus=owners[(i+(e.shiftKey?-1:1)+owners.length)%owners.length];render();if(S.focus==='composer')$('draft').focus();else $('terminal').focus();return;}
-    if(key==='Enter'&&S.focus==='composer'&&!e.shiftKey){e.preventDefault();const draft=S.draft.trim();if(draft.startsWith('/')){const item=commands.find(c=>c[0]===draft.split(' ')[0]);if(item){S.query=draft;S.scene='palette';S.paletteIndex=0;runCommand();return;}}if(S.scene==='working'){S.submitted=draft||'Keep the patch focused.';S.draft='';render();return;}S.lastPrompt=draft||S.lastPrompt;S.draft='';setScene('working');return;}
+    if(key==='Tab'){e.preventDefault();const owners=S.scene==='terminal'?['terminal','composer']:S.scene==='review'?(layout.nav?['files','chat','diff','composer']:['chat','diff','composer']):S.scene==='sessions'?['sessions','composer']:S.scene==='queue'?['queue','composer']:['background','agents','job'].includes(S.scene)?[S.scene==='agents'?'agent':'job','composer']:S.scene==='working'&&S.backgroundOn?['chat','background','composer']:['chat','composer'];let i=owners.indexOf(S.focus);S.focus=owners[(i+(e.shiftKey?-1:1)+owners.length)%owners.length];render();if(S.focus==='composer')$('draft').focus();else $('terminal').focus();return;}
+    if(key==='Enter'&&S.focus==='composer'&&!e.shiftKey){e.preventDefault();const draft=S.draft.trim();if(draft.startsWith('/')){const item=commands.find(c=>c[0]===draft.split(' ')[0]);if(item){S.query=draft;S.scene='palette';S.paletteIndex=0;runCommand();return;}}if(S.scene==='working'||flowVisible()&&S.primaryBusy){const item={id:'q'+S.nextQueue++,text:draft||'Keep the patch focused.'};S.queue.push(item);S.queueId=item.id;S.draft='';S.notice='Queued prompt '+S.queue.length+' for Retry connection';render();return;}S.lastPrompt=draft||S.lastPrompt;S.draft='';setScene('working');return;}
     if(e.target!==$('draft')&&S.focus!=='terminal'&&key.length===1&&!e.ctrlKey&&!e.metaKey){e.preventDefault();if(key==='/'){setScene('palette');$('terminal').focus();}else{S.focus='composer';S.draft+=key;render();$('draft').focus();}}
   }
   $('scenes').innerHTML=Object.entries(sceneNames).map(([key,name])=>`<button type="button" data-scene="${key}" aria-pressed="${key===S.scene}">${name}</button>`).join('');
@@ -397,7 +639,7 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
   $('screen').addEventListener('click',e=>{const hitTarget=e.target.closest('[data-action]');if(hitTarget){$('terminal').focus();act(hitTarget.dataset.action);}});
   $('terminal').addEventListener('keydown',handleKey);
   $('draft').addEventListener('focus',()=>{if(S.focus!=='composer'){S.focus='composer';render();}});
-  $('draft').addEventListener('input',e=>{S.draft=e.target.value;if(S.draft==='/'){S.draft='';setScene('palette');$('terminal').focus();}});
+  $('draft').addEventListener('input',e=>{S.draft=e.target.value;render();if(S.draft==='/'){S.draft='';setScene('palette');$('terminal').focus();}});
   $('size').addEventListener('change',()=>{[S.cols,S.rows]=$('size').value.split('x').map(Number);if(S.reference)S.reference='forge-home-'+$('size').value;explain();render();});
   $('theme').addEventListener('change',()=>{S.theme=$('theme').value;render();});
   function motionUI(){$('motion').setAttribute('aria-pressed',S.motion);$('motion').textContent=S.motion?'Motion on':'Motion off';}
@@ -405,23 +647,31 @@ html.recording .study{padding:0;width:1080px;max-width:none}html.recording .stud
   $('before').addEventListener('click',()=>{stop();S.reference=S.reference?null:'forge-home-'+$('size').value;explain();render();});
   document.querySelectorAll('[data-reference]').forEach(b=>b.addEventListener('click',()=>{stop();S.cols=120;S.rows=40;$('size').value='120x40';S.reference=b.dataset.reference;explain();render();document.querySelector('.window').scrollIntoView({block:'start'});}));
   $('play').addEventListener('click',()=>{if(S.playing){stop();return;}S.playing=true;$('play').textContent='■ Stop walkthrough';setScene('home',true);S.playTimer=setTimeout(()=>{setScene('plan',true);S.playTimer=setTimeout(()=>{setScene('working',true);S.playTimer=setTimeout(()=>{setScene('approval',true);$('play').textContent='■ Waiting for your decision';},5200);},3200);},2400);});
+  $('reset-flows').addEventListener('click',()=>{stop();resetFlows();S.notice='Flow examples reset · parent draft retained';render();explain();});
+  $('finish-job').addEventListener('click',finishExample);$('interrupt-agent').addEventListener('click',interruptExample);
+  $('play-flows').addEventListener('click',()=>{
+    if(S.playing){stop();return;}resetFlows();S.flowTour=true;S.playing=true;$('play-flows').textContent='■ Stop background flows';setScene('working',true);
+    const steps=[()=>setScene('queue',true),()=>{setScene('background',true);S.jobId=22;render();},()=>{finishExample();setScene('job',true);S.jobId=22;render();},()=>setScene('agents',true),()=>setScene('agent',true),()=>{setScene('agent-approval',true);$('play-flows').textContent='■ Waiting for child decision';}];
+    let index=0;const advance=()=>{steps[index++]();if(index<steps.length)S.playTimer=setTimeout(advance,2800);};S.playTimer=setTimeout(advance,2800);
+  });
   function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   function exportSvg(){
     const svg=$('screen').cloneNode(true);svg.setAttribute('width',S.cols*CELL);svg.setAttribute('height',S.rows*LINE);
     const style=document.createElementNS('http://www.w3.org/2000/svg','style');style.textContent='text{font-family:Menlo,Consolas,monospace;font-size:14px;white-space:pre}rect{shape-rendering:crispEdges}.hit{fill-opacity:0}';svg.insertBefore(style,svg.firstChild);
     if($('draft').style.display!=='none'){
-      const line=Array.from((S.draft||$('draft').placeholder).split('\n')[0]).slice(0,layout.ww-7).join('');
-      const text=document.createElementNS('http://www.w3.org/2000/svg','text');text.setAttribute('x',(layout.wx+5)*CELL);text.setAttribute('y',(layout.cy+1)*LINE+14.5);
-      text.setAttribute('fill',S.draft?palettes[S.theme].text:getComputedStyle($('draft'),'::placeholder').color);text.setAttribute('textLength',line.length*CELL);text.setAttribute('lengthAdjust','spacingAndGlyphs');text.textContent=line;svg.appendChild(text);
+      draftLines(layout.ww-7,S.draft||$('draft').placeholder).slice(0,layout.composerH-1).forEach((line,i)=>{
+        const text=document.createElementNS('http://www.w3.org/2000/svg','text');text.setAttribute('x',(layout.wx+5)*CELL);text.setAttribute('y',(layout.cy+1+i)*LINE+14.5);
+        text.setAttribute('fill',S.draft?palettes[S.theme].text:getComputedStyle($('draft'),'::placeholder').color);text.setAttribute('textLength',line.length*CELL);text.setAttribute('lengthAdjust','spacingAndGlyphs');text.textContent=line;svg.appendChild(text);
+      });
     }
     return new Blob([new XMLSerializer().serializeToString(svg)],{type:'image/svg+xml'});
   }
   $('save-svg').addEventListener('click',()=>download(exportSvg(),`forge-${S.scene}-${S.cols}x${S.rows}.svg`));
   $('save-png').addEventListener('click',()=>{const blob=exportSvg(),url=URL.createObjectURL(blob),img=new Image();img.onload=()=>{const canvas=document.createElement('canvas');canvas.width=S.cols*CELL*2;canvas.height=S.rows*LINE*2;canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);canvas.toBlob(b=>{if(b)download(b,`forge-${S.scene}-${S.cols}x${S.rows}.png`);URL.revokeObjectURL(url);});};img.onerror=()=>URL.revokeObjectURL(url);img.src=url;});
   new ResizeObserver(positionDraft).observe($('terminal'));
-  setInterval(()=>{if(document.hidden||S.reference)return;if(S.motion&&(S.scene==='working'||(S.scene==='approval'&&performance.now()-S.start<375))){S.tick++;render();}},125);
-  window.ForgeStudy={state:S,setScene,render,act,grid:()=>lastGrid,hits:()=>hits,stop,exportSvg};
-  motionUI();explain();render();
+  setInterval(()=>{if(document.hidden||S.reference)return;if(S.motion&&(S.scene==='working'||S.scene==='agent'&&S.primaryBusy||flowVisible()&&S.scene!=='agent'&&!['agent-approval','stop'].includes(S.scene)&&S.tasks.some(t=>t.status==='running')||(S.scene==='approval'&&performance.now()-S.start<375))){S.tick++;render();}},125);
+  window.ForgeStudy={state:S,setScene,render,act,resetFlows,finishExample,interruptExample,grid:()=>lastGrid,hits:()=>hits,stop,exportSvg};
+  motionUI();if(initialScene)setScene(S.scene);else{explain();render();}
 })();
 </script>
 </body>
