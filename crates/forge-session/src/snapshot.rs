@@ -178,10 +178,17 @@ impl SessionDetailsSnapshot {
 
 /// Background presentation data, with no cancellation token or shared mutable state.
 #[derive(Debug, Clone)]
+pub struct ShellExecutionSnapshot {
+    pub cwd: PathBuf,
+    pub output: forge_tools::ShellOutputSnapshot,
+}
+
+#[derive(Debug, Clone)]
 pub struct BackgroundTaskSnapshot {
     pub id: forge_types::BackgroundTaskId,
     pub label: String,
     pub kind: forge_core::BackgroundTaskKind,
+    pub shell: Option<ShellExecutionSnapshot>,
     pub status: forge_core::BackgroundTaskStatus,
     pub child_session_id: Option<SessionId>,
     pub latest_message: Option<String>,
@@ -201,6 +208,10 @@ impl BackgroundTaskSnapshot {
             id: task.id,
             label: task.label.clone(),
             kind: task.kind.clone(),
+            shell: task.shell.as_ref().map(|shell| ShellExecutionSnapshot {
+                cwd: shell.cwd.clone(),
+                output: shell.output.snapshot(),
+            }),
             status: task.status.clone(),
             child_session_id: task.child_session_id,
             latest_message: task
@@ -425,6 +436,7 @@ mod tests {
                 command: "cargo clippy --all-targets".into(),
             },
             label: "cargo clippy --all-targets".into(),
+            shell: None,
             status: forge_core::BackgroundTaskStatus::Succeeded {
                 summary: "clean".into(),
             },
@@ -456,6 +468,7 @@ mod tests {
                 prompt: "find auth code".into(),
             },
             label: "explore".into(),
+            shell: None,
             status: forge_core::BackgroundTaskStatus::Running,
             started_at: Utc::now(),
             finished_at: None,

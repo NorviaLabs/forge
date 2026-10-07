@@ -37,6 +37,13 @@ pub enum Overlay {
         filter: crate::tasks_strip::TaskFilter,
         scroll: usize,
     },
+    TaskStop {
+        owner: uuid::Uuid,
+        task: Box<forge_session::BackgroundTaskSnapshot>,
+        scroll: usize,
+        stop: bool,
+        return_view: Option<(crate::tasks_strip::TaskFilter, usize)>,
+    },
     GithubIssues {
         selected: usize,
         filter: String,
@@ -2301,7 +2308,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
-            Overlay::Tasks { .. } => OverlayAction::None,
+            Overlay::Tasks { .. } | Overlay::TaskStop { .. } => OverlayAction::None,
             Overlay::GitCommitSuggest { selected } => match *selected {
                 0 => OverlayAction::GitCommitAll { remember: false },
                 1 => OverlayAction::GitCommitAll { remember: true },
@@ -3126,7 +3133,7 @@ impl Widget for OverlayWidget<'_> {
                 Paragraph::new(status_report_lines(rows, inner.width as usize)).render(inner, buf);
             }
             // The app renders this from live owner-scoped snapshots.
-            Overlay::Tasks { .. } => {}
+            Overlay::Tasks { .. } | Overlay::TaskStop { .. } => {}
             Overlay::GithubIssues {
                 selected,
                 filter,

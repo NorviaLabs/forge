@@ -26,7 +26,7 @@ pub use control::{
 pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
 pub use snapshot::{
     replayed_transcript, BackgroundTaskSnapshot, SessionDetailsSnapshot, SessionSnapshot,
-    TranscriptSnapshot,
+    ShellExecutionSnapshot, TranscriptSnapshot,
 };
 pub use supervisor::{
     QueuedPromptId, RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError,

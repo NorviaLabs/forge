@@ -40,7 +40,10 @@ impl TuiApp {
             self.handle_mouse_context_menu(&event);
             return Ok(());
         }
-        if !self.explorer_dialog.is_open() && self.handle_tasks_view_mouse(event).await? {
+        if !self.explorer_dialog.is_open()
+            && (self.handle_task_stop_mouse(event).await?
+                || self.handle_tasks_view_mouse(event).await?)
+        {
             return Ok(());
         }
 

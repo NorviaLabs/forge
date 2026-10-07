@@ -1103,6 +1103,13 @@ pub(crate) struct TaskViewPaintState {
     pub(crate) tabs: Vec<(crate::tasks_strip::TaskFilter, ratatui::layout::Rect)>,
 }
 
+pub(crate) struct TaskStopPaint {
+    pub(crate) owner: uuid::Uuid,
+    pub(crate) id: forge_types::BackgroundTaskId,
+    pub(crate) started_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) choices: [ratatui::layout::Rect; 2],
+}
+
 impl TaskSelectionState {
     pub(crate) fn queue(&self, owner: uuid::Uuid) -> Option<forge_session::QueuedPromptId> {
         self.queue
@@ -2116,6 +2123,11 @@ pub struct TuiApp {
     pub(crate) background_area: Option<ratatui::layout::Rect>,
     pub(crate) dock_paint: DockPaintState,
     pub(crate) task_view_paint: TaskViewPaintState,
+    pub(crate) task_stop_paint: Option<TaskStopPaint>,
+    pub(crate) dismissed_background: std::collections::HashMap<
+        uuid::Uuid,
+        std::collections::HashSet<forge_types::BackgroundTaskId>,
+    >,
     /// Hovered background-task index (pointer motion; never moves the
     /// selection).
     pub(crate) hover_background: Option<usize>,

@@ -118,6 +118,15 @@ impl TuiApp {
             KeyCode::BackTab => self.open_tasks_view(Some(filter.next(true))),
             KeyCode::PageUp if plain => self.scroll_task_details(-8),
             KeyCode::PageDown if plain => self.scroll_task_details(8),
+            KeyCode::Home | KeyCode::End if plain => {
+                if let Some(Overlay::Tasks { scroll, .. }) = self.overlay.as_mut() {
+                    *scroll = if key.code == KeyCode::Home {
+                        0
+                    } else {
+                        usize::MAX
+                    };
+                }
+            }
             KeyCode::Up | KeyCode::Down
                 if filter == TaskFilter::Queue && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
@@ -235,11 +244,54 @@ impl TuiApp {
         } else {
             tasks.len()
         };
-        let height = if count == 0 {
-            7
+        let selected = if filter == TaskFilter::Queue {
+            let id = self.task_selection.queue(owner);
+            queue.iter().position(|item| Some(item.id) == id)
         } else {
-            (count.min(6) + 13) as u16
+            let id = self.task_selection.task(owner);
+            tasks.iter().position(|task| Some(task.id) == id)
         };
+        let details = if let Some(index) = selected {
+            if filter == TaskFilter::Queue {
+                let id = match queue[index].id {
+                    forge_session::QueuedPromptId::Durable(id) => format!("Prompt #{id}"),
+                    forge_session::QueuedPromptId::Session(id) => {
+                        format!("Queued message #{}", id.0)
+                    }
+                };
+                format!(
+                    "{id} · {} of {count}\n{}\n\nParent: {owner}\nFIFO · starts at a turn boundary",
+                    index + 1,
+                    queue[index].text
+                )
+            } else {
+                let task = &tasks[index];
+                match &task.kind {
+                    forge_core::BackgroundTaskKind::Shell { .. } => format!(
+                        "{} of {count} · Parent: {owner}\n{}",
+                        index + 1,
+                        super::turn::shell_execution_text(task),
+                    ),
+                    forge_core::BackgroundTaskKind::Subagent { role, .. } => format!(
+                        "Task #{} · {} · {} of {count}\nParent: {owner}\nAgent: {role}",
+                        task.id.0,
+                        super::turn::background_task_state(&task.status),
+                        index + 1,
+                    ),
+                }
+            }
+        } else {
+            format!(
+                "No {} for this parent session.",
+                filter.label().to_lowercase()
+            )
+        };
+        let width = crate::overlays::centered_content_rect(area, 96, 7, 32)
+            .width
+            .saturating_sub(2 + 2 * crate::design::MODAL_PAD_X);
+        let detail_lines = literal_lines(&details, width, theme::text());
+        let height =
+            6 + count.min(6) as u16 + u16::from(count > 0) + detail_lines.len().min(14) as u16;
         let r = crate::overlays::centered_content_rect(area, 96, height, 32);
         Clear.render(r, buf);
         theme::fill(r, buf, theme::panel());
@@ -315,13 +367,6 @@ impl TuiApp {
             inner.width,
         );
         let body = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 4);
-        let selected = if filter == TaskFilter::Queue {
-            let id = self.task_selection.queue(owner);
-            queue.iter().position(|item| Some(item.id) == id)
-        } else {
-            let id = self.task_selection.task(owner);
-            tasks.iter().position(|task| Some(task.id) == id)
-        };
         let row_cap = if area.height < 28 { 2 } else { 6 };
         let visible = count.min(row_cap).min((body.height / 2).max(1) as usize);
         let start = selected
@@ -375,53 +420,6 @@ impl TuiApp {
             buf.set_line(rect.x, rect.y, &line, rect.width);
             self.task_view_paint.rows.push((target, rect));
         }
-        let details = if let Some(index) = selected {
-            if filter == TaskFilter::Queue {
-                let id = match queue[index].id {
-                    forge_session::QueuedPromptId::Durable(id) => {
-                        format!("Prompt #{id}")
-                    }
-                    forge_session::QueuedPromptId::Session(id) => {
-                        format!("Queued message #{}", id.0)
-                    }
-                };
-                format!(
-                    "{id} · {} of {count}\n{}\n\nParent: {owner}\nFIFO · starts at a turn boundary",
-                    index + 1,
-                    queue[index].text
-                )
-            } else {
-                let task = &tasks[index];
-                let state = match task.status {
-                    forge_core::BackgroundTaskStatus::Queued => "Queued",
-                    forge_core::BackgroundTaskStatus::Running => "Running",
-                    forge_core::BackgroundTaskStatus::WaitingForApproval { .. } => {
-                        "Waiting for approval"
-                    }
-                    forge_core::BackgroundTaskStatus::Succeeded { .. } => "Succeeded",
-                    forge_core::BackgroundTaskStatus::Failed { .. } => "Failed",
-                    forge_core::BackgroundTaskStatus::Cancelled => "Cancelled",
-                };
-                let invocation = match &task.kind {
-                    forge_core::BackgroundTaskKind::Shell { command } => {
-                        format!("Command:\n{command}")
-                    }
-                    forge_core::BackgroundTaskKind::Subagent { role, .. } => {
-                        format!("Agent: {role}")
-                    }
-                };
-                format!(
-                    "Task #{} · {state} · {} of {count}\nParent: {owner}\n{invocation}",
-                    task.id.0,
-                    index + 1
-                )
-            }
-        } else {
-            format!(
-                "No {} for this parent session.",
-                filter.label().to_lowercase()
-            )
-        };
         let details_area = Rect::new(
             body.x,
             body.y + visible as u16 + u16::from(visible > 0),
@@ -429,30 +427,38 @@ impl TuiApp {
             body.height
                 .saturating_sub(visible as u16 + u16::from(visible > 0)),
         );
-        let lines = literal_lines(&details, details_area.width, theme::text());
-        let scroll = scroll.min(lines.len().saturating_sub(details_area.height as usize));
+        let scroll = scroll.min(
+            detail_lines
+                .len()
+                .saturating_sub(details_area.height as usize),
+        );
         if let Some(Overlay::Tasks { scroll: stored, .. }) = self.overlay.as_mut() {
             *stored = scroll;
         }
-        Paragraph::new(lines)
-            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
-            .render(details_area, buf);
+        Paragraph::new(
+            detail_lines
+                .into_iter()
+                .skip(scroll)
+                .take(details_area.height as usize)
+                .collect::<Vec<_>>(),
+        )
+        .render(details_area, buf);
         let hints = if count == 0 {
             ["Tab filter · Shift+Tab previous filter", "Esc return"]
         } else if filter == TaskFilter::Queue {
             [
                 "Tab filter · Ctrl+↑/↓ select · Ctrl+Backspace cancel",
-                "↑ edit last · PgUp/PgDn details · Esc return",
+                "↑ edit last · PgUp/PgDn/Home/End details · Esc return",
             ]
         } else if filter == TaskFilter::Jobs {
             [
-                "Tab filter · ↑↓ select · i insert · x cancel",
-                "PgUp/PgDn details · Esc return",
+                "Tab filter · ↑↓ select · i insert · x stop/dismiss",
+                "PgUp/PgDn/Home/End details · Esc return",
             ]
         } else {
             [
-                "Tab filter · ↑↓ select · → child · i insert · x cancel",
-                "PgUp/PgDn details · Esc return",
+                "Tab filter · ↑↓ select · → child · i insert · x stop/dismiss",
+                "PgUp/PgDn/Home/End details · Esc return",
             ]
         };
         for (offset, hint) in hints.into_iter().enumerate() {
