@@ -1115,7 +1115,12 @@ impl TuiApp {
         // a workspace to ask about, the generic prompt otherwise — and
         // overriding that would throw away context the launcher had and this
         // does not.
-        if self.transcript_view.messages().is_empty() {
+        if self
+            .transcript_view
+            .messages()
+            .iter()
+            .all(|message| message.role == forge_types::MessageRole::System)
+        {
             return;
         }
         if self.input.hint != crate::app::types::COMPOSER_WORKING {

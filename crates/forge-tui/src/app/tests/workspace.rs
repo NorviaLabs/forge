@@ -5,6 +5,77 @@
 use super::prelude::*;
 
 #[tokio::test]
+async fn first_task_remains_reachable_beside_requested_navigation() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("Retain the first requirement.");
+    app.focus_block(FocusBlock::Files);
+    draw_app(&mut app, 120, 40);
+    assert!(app.navigator_list_area.is_some());
+    assert!(!app.start_prompt_rows.is_empty());
+    draw_app(&mut app, 80, 18);
+    assert!(app.navigator_list_area.is_some());
+    assert_eq!(app.focus.block(), FocusBlock::Files);
+    assert_eq!(app.input.text, "Retain the first requirement.");
+}
+
+#[tokio::test]
+async fn system_context_keeps_the_start_placeholder_until_a_visible_turn() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.hint = COMPOSER_OPENER.into();
+    app.sync_composer_placeholder();
+    assert_eq!(app.input.hint, COMPOSER_OPENER);
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "Inspect this project."));
+    draw_app(&mut app, 80, 18);
+    app.sync_composer_placeholder();
+    assert_eq!(app.input.hint, COMPOSER_WORKING);
+}
+
+#[tokio::test]
+async fn starter_choice_preserves_the_draft_without_submitting() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("Keep the original requirement.");
+    app.focus_block(FocusBlock::Composer);
+    draw_app(&mut app, 120, 40);
+    app.focus_block(FocusBlock::Sidebar);
+    draw_app(&mut app, 120, 40);
+    assert!(
+        !app.start_prompt_rows.is_empty(),
+        "starter actions must be reachable before the first turn"
+    );
+    app.handle_key(event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.input.text,
+        "Keep the original requirement.\nReview the changes in this workspace"
+    );
+    assert!(!app.pending_turn.has_prompt());
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+}
+
+#[tokio::test]
+async fn resized_start_draft_retains_text_and_a_reachable_caret() {
+    let (_dir, mut app) = focus_test_app().await;
+    let draft = "Keep this complete requirement and the Unicode path λ/東京.rs.\n".repeat(8);
+    app.input.set_text(draft.clone());
+    app.focus_block(FocusBlock::Composer);
+    for (width, height) in [(160, 50), (80, 18), (120, 40), (80, 24)] {
+        draw_app(&mut app, width, height);
+        let area = app.composer_area.expect("visible prompt");
+        let cursor = crate::widgets::input::composer_cursor_position(&app.input, area, None)
+            .expect("retained caret remains visible");
+        assert!(area.contains(cursor.into()));
+        assert_eq!(app.input.text, draft);
+        assert!(app.focus_availability().contains(app.focus.block()));
+    }
+}
+
+#[tokio::test]
 async fn workspace_navigation_starts_empty_at_home() {
     let (_dir, app) = focus_test_app().await;
 

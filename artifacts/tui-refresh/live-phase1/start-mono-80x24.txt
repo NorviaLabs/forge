@@ -1,0 +1,23 @@
+   FORGE · ⌂ /private/tmp/forge-ui-live/mono  ·  ./No commits yet on master*
+
+
+
+
+   What would you like to work on?
+   Describe a task, or choose a starting point.
+
+ ──────────────────────────────────────────────────────────────────────────────
+    Describe a task…
+
+   Starting points
+   › Explain the architecture of this project
+   › Review the changes in this workspace
+   › Find and fix a failing test
+
+   / commands · Ctrl+P files · Tab navigate
+
+
+
+
+
+   ● OpenAI/gpt-6.1-sol │ Auto                          ready   ·  context 1%

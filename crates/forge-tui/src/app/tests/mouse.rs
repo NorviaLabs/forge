@@ -475,6 +475,28 @@ async fn click_focuses_the_block_under_the_pointer() {
 }
 
 #[tokio::test]
+async fn start_prompt_hover_and_click_preserve_the_draft_without_submitting() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("Keep this draft.");
+    render_app_text(&mut app, 120, 40);
+    let (index, row) = app.start_prompt_rows[1];
+    let focus = app.focus.block();
+    app.handle_mouse(moved(row.x + 3, row.y)).await.unwrap();
+    assert_eq!(app.hover_start_prompt, Some(index));
+    assert_eq!(app.focus.block(), focus);
+    app.handle_mouse(left_click(row.x + 3, row.y))
+        .await
+        .unwrap();
+    assert!(app.input.text.starts_with("Keep this draft.\n"));
+    assert!(app
+        .input
+        .text
+        .contains(crate::widgets::start::STARTERS[index]));
+    assert!(!app.pending_turn.has_prompt());
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+}
+
+#[tokio::test]
 async fn click_navigator_tab_switches_between_sessions_and_files() {
     let (_dir, mut app) = focus_test_app().await;
     app.navigator_tabs_area = Some(ratatui::layout::Rect::new(0, 0, 40, 1));

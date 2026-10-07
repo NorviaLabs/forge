@@ -533,11 +533,12 @@ Content width is the frame width minus one outer gutter column on each side (`FR
 |---|---|
 | ≥ 116 | Conversation and inspector appear together when at least 60 + 1 + 44 work columns fit |
 | < 116, resource open | `F6` or a workspace tab shows conversation or inspection at full work width; both retain their state |
-| Resource open, ≥ 136 | A persistent navigator can also fit: at least 28 + 1 navigator columns beside the two work panes |
+| Resource open, ≥ 132 | A persistent navigator can also fit: at least 24 + 1 navigator columns beside the two work panes |
 | No resource open | Conversation expands; a persistent navigator is eligible from 116 columns |
 | Navigator requested without room for a persistent column | It temporarily fills the body, leaving the composer accessible; leaving navigator focus returns to the retained work view |
 
-The navigator defaults to one fifth of content width, clamped to 28–32 columns.
+The navigator defaults to 24 columns, growing with an explicit saved width
+preference when the remaining panes still meet their floors.
 Conversation defaults to three fifths of the remaining body width, reserving
 at least 44 region columns for inspection and 60 for conversation. Saved width
 preferences remain effective within these floors. Region widths include any
@@ -551,7 +552,9 @@ temporary navigation; width alone never makes those actions unreachable.
 ### 7.4 Height behaviour
 
 - StatusBar consumes one identity row at every height. Footer uses up to two rows (`FOOTER_H`); its background-activity row stays blank when idle.
-- Composer input band is capped at 10 visual lines (`MAX_COMPOSER_INPUT_H`), plus top and bottom border rows — it grows within bounds and never crowds out the transcript.
+- Composer input is capped at four visual rows, or three below 28 frame rows,
+  plus one top rule. Empty input uses one row at compact heights and two at
+  comfortable heights. Longer drafts scroll without discarding stored text.
 - Theme picker dock is 12 rows (`THEME_DOCK_H`), sized to show built-ins without scrolling.
 - Below 24 frame rows, an open terminal appears while `Panel` owns the keyboard
   and yields its rows to other focused surfaces. `Tab`, `Ctrl+Backtick` or
@@ -578,9 +581,10 @@ text keeps breathing room inside borders:
 Concretely (`design.rs`): one blank column separates navigator, conversation,
 and inspector; no blank row separates chrome from content or transcript from
 composer. Bordered panes put text two cells from their edge. The borderless
-transcript has one column of canvas padding on each side, including its
-scrollbar. Composer, queue, and bottom-panel text use `TEXT_INSET`.
-The Footer uses `PANE_PAD_X` in the shell band. Feedback appears through notices rather
+transcript's own two-column inset is not wrapped in another layer of pane
+padding; its scrollbar occupies the right edge. Composer, queue, and
+bottom-panel text use `TEXT_INSET`.
+The Footer uses the same two-column origin. Feedback appears through notices rather
 than a separate status line (§9.10). Rounded frames use Ratatui border glyphs
 and semantic theme tokens; they do not change terminal typography.
 
@@ -972,7 +976,7 @@ output safety, and existing work remain mandatory under §4.
 
 ### 9.1 StatusBar
 
-Purpose: centered repository/branch identity (`widgets/status.rs`) in one quiet
+Purpose: left-aligned brand and repository/branch identity (`widgets/status.rs`) in one quiet
 row. The workspace panes receive the rows previously spent framing this identity.
 
 Includes repository/branch (polled, TTL-cached) and the collapsed navigator's
@@ -999,7 +1003,8 @@ Avoid duplicating file counts, task details or provider telemetry already shown 
 Two rows (`widgets/footer.rs`); the second row is the background activity line.
 
 - **Row 0 — configuration and turn state.** Configuration chips on the left, live activity on the right.
-  - **Chips:** model (`provider/model`, prefix-stripped for display) and reasoning effort, with an optional notes chip for the scratchpad. They share the `Footer` focus block: `←`/`→` selects a configuration chip, `Enter` opens its picker. `Enter` still sends from the composer.
+  - **Chips:** model (`provider/model`, prefix-stripped for display) and reasoning effort, with an optional notes chip for a nonempty or unsaved scratchpad. Reserve its width before fitting the model so the chip and lifecycle do not collide. They share the `Footer` focus block: `←`/`→` selects a configuration chip, `Enter` opens its picker. `Enter` still sends from the composer.
+  - **Connection:** a disconnected provider has a textual qualifier beside its model so the state survives monochrome. Empty token totals stay hidden until usage is reported.
   - **Lifecycle:** turn state glyph plus short detail qualifier, styled secondary — severity lives in the glyph, never duplicated in colour.
   - **Context pressure:** a word, not a meter — `context` / `context high` / `context full`, coloured ok/warn/error at the 70% and 90% thresholds. (The old nine-cell shade-bar was removed: at typical single-digit percentages it read as stipple texture.)
   - **Hints:** the §6 hint grammar. Blocking dialogs take over the whole row; the footer's own per-chip hint and the task strip's session hint share the row with the chips. Focusing any other block — files, search, the panes — leaves the activity line alone.
@@ -1010,13 +1015,14 @@ Two rows (`widgets/footer.rs`); the second row is the background activity line.
 
 ### 9.4 Chat transcript (primary work surface)
 
-Before the first turn, the home card identifies the model, provider/connection
-state, and workspace, then offers complete starter prompts. Prompts word-wrap
-with a hanging bullet rather than clipping at the pane edge. Compact mode
-omits the wordmark, skills count, and extra blank rows; a narrow compact pane
-offers one complete starter instead of spending its reading budget on three
-wrapped suggestions. These are current defaults, evaluated for readable
-metadata and an understandable first action at the supported sizes.
+Before the first turn, a centered task group joins the heading, editable
+prompt, complete starter prompts, and local hints. The group is capped at 84
+columns; terminals below 24 rows show one starter, larger terminals show three.
+Model/connection and lifecycle information remains in the footer and workspace
+identity in the header. The start hides empty navigation until requested.
+Typing retains the task composition until submission. Sidebar owns starter
+selection (`↑↓`, `Enter`); selecting or clicking a starter appends to the draft
+and returns focus to Composer without submitting it.
 
 Hierarchy:
 
@@ -1038,12 +1044,9 @@ Rules:
 - Tool calls use concise verbs: `Read 4 files`, `Ran cargo test`.
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
-- The home card is the first screen only: once the operator has sent a turn it retires, never pinned above the conversation for the rest of the session.
-- In compact density the home card omits the wordmark's blank row and the
-  skills count, keeping the model, connection state, workspace and starter
-  prompts visible at 80×18. Model and provider labels elide within their row;
-  the connection state remains intact. Height-only resizes invalidate cached
-  transcript spacing when the density changes.
+- The centered start is the first screen only; submitting a turn reveals the
+  conversation. Navigation and inspection keep the retained draft.
+- Height-only resizes invalidate cached transcript spacing when density changes.
 - The transcript is borderless; when its content overflows the pane, a thin
   track (`│`) with a solid thumb (`▐`) marks position in the column's right
   padding, and the thumb turns into the accent `█` while the Sidebar block owns
@@ -1135,12 +1138,14 @@ the single plan surface.
 
 - Spans the work surface under conversation and inspection, including temporary
   navigator views. It remains visible while an editor occupies the narrow body.
-- `surface` background and a full rounded outline. Side and bottom borders stay
-  neutral; the top edge takes `accent` when focused and `waiting_border` while
+- `surface` background and one top rule, without an enclosing outline. The
+  top edge takes `accent` when focused and `waiting_border` while
   an approval pends ("paused" look). Only attention states thicken the top
   rule — focus alone is a hue change, with the block caret as the monochrome
   signal. Waiting outranks focus colour.
-- Multi-line growth bounded by `MAX_COMPOSER_INPUT_H`.
+- Multi-line growth uses three input rows at compact heights and four at
+  comfortable heights. Complete drafts and pending paste payloads survive
+  visual scrolling and resizing.
 - Outbound messages queue above the composer as a strip; `Ctrl+↑`/`Ctrl+↓` move the selection, `Ctrl+Backspace` cancels one.
 
 ### 9.6 File tree
@@ -1543,11 +1548,12 @@ future evolution:
 
 | Role | Forge Dark | Forge Light |
 |---|---|---|
-| Canvas / panel | `#141414` / `#1E1E1E` | `#FAFAFA` / `#F0F0F0` |
-| Primary / secondary text | `#EBEBEB` / `#A0A0A0` | `#202020` / `#545454` |
-| Focus accent | `#439EFD` | `#005EB8` |
-| Success / warning / error | `#5BDB87` / `#E6C66A` / `#F26D78` | `#18723B` / `#795B00` / `#B52C42` |
-| Activity / strong prose | `#FFA31D` | `#965300` |
+| Canvas / panel | `#14171B` / `#1D2229` | `#F6F7F9` / `#EBEFF4` |
+| Primary / secondary text | `#EDF0F5` / `#B5BECB` | `#202936` / `#47576A` |
+| Focus accent | `#86B5FF` | `#255CAA` |
+| Success / warning / error | `#9BD1AD` / `#F3C575` / `#EE94A0` | `#246040` / `#745100` / `#A52D43` |
+| Activity | `#E5BB80` | `#80511B` |
+| Strong prose | `#FFA31D` | `#965300` |
 | Emphasized prose / links | `#C7D96B` / `#4FC9DF` | `#5F7300` / `#00606E` |
 
 `agent`, `tag`, and `structure` share the secondary neutral in both built-ins;

@@ -188,17 +188,14 @@ pub struct SessionRow {
 }
 
 /// Width shared by tab painting and pointer routing.
-pub(crate) const SESSIONS_TAB_WIDTH: u16 = 12;
+pub(crate) const SESSIONS_TAB_WIDTH: u16 = 10;
 
 /// Width of the navigator row's `+` cell: one border column either side of the
 /// single glyph cell.
 pub(crate) const NEW_SESSION_CELL_WIDTH: u16 = 3;
 
-/// The navigator column is laid out at 28–37 columns (`layout.rs`), so the `+`
-/// cell always fits in a real frame. This floor only keeps a degenerate test
-/// geometry from squeezing the `Files` tab, where the cell is then dropped
-/// rather than drawn cramped.
-pub(crate) const MIN_NEW_SESSION_ROW_WIDTH: u16 = 28;
+/// Keep creation reachable at the navigator's normal minimum width.
+pub(crate) const MIN_NEW_SESSION_ROW_WIDTH: u16 = crate::design::NAVIGATOR_MIN_WIDTH;
 
 /// The `+` cell's rect on the navigator tab row, or `None` when the row cannot
 /// carry it. The cell sits directly beside the `Sessions` tab, sharing its
@@ -247,7 +244,7 @@ pub(crate) fn navigator_tab_rects(area: Rect, git: bool) -> Vec<(NavigatorTab, R
     }
     // `Files` and `Git` share one edge column, the way the `Sessions` tab and
     // the `+` cell do, so the row keeps reading as one strip.
-    let files_width = remaining / 2;
+    let files_width = remaining.div_ceil(2);
     let git_x = start + files_width.saturating_sub(1);
     vec![
         (NavigatorTab::Sessions, sessions),
@@ -376,7 +373,7 @@ impl Widget for NavigatorTabs {
             let label_x = inner.x + inner.width.saturating_sub(label_width) / 2;
             buf.set_string(label_x, inner.y, &label, label_style);
             if index == 1 && self.tab != NavigatorTab::Sessions && self.needs_you > 0 {
-                // The Sessions tab (12 wide, 8-cell label) cannot hold a
+                // The Sessions tab (10 wide, 8-cell label) cannot hold a
                 // badge beside its label, so the wide Files tab hosts it —
                 // shown whenever the session list's own need states are out
                 // of sight, which is also true while the Git tab is up.

@@ -470,8 +470,10 @@ impl Widget for StatusBar<'_> {
         } else {
             area
         };
-        // Centered single block: ⌂ path  ·  ./branch — identity only,
-        // full window width, changes only on project/branch switch.
+        let inset = crate::design::COMPOSER_PAD_X.min(area.width / 2);
+        let area = Rect::new(area.x + inset, area.y, area.width - inset * 2, area.height);
+        // Brand and workspace share the text origin; changing work does not
+        // move the identity across the header.
         let width = area.width as usize;
         let chip = self.sessions_chip.unwrap_or("");
         let reserved = if chip.is_empty() {
@@ -485,13 +487,18 @@ impl Widget for StatusBar<'_> {
         // A session chip reserves its own space first, so it always fits.
         let content = self
             .model
-            .identity_line_within(width.saturating_sub(reserved));
-        let content_width = content.chars().count();
+            .identity_line_within(width.saturating_sub(reserved + 8));
 
         theme::fill(area, buf, theme::status_bar());
-        let pad = (width.saturating_sub(content_width + reserved)) / 2;
-        let padded = format!("{}{}", " ".repeat(pad), content);
-        buf.set_line(area.x, area.y, &Line::from(padded), area.width);
+        let line = Line::from(vec![
+            Span::styled(
+                "FORGE",
+                theme::text_secondary().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · ", theme::muted()),
+            Span::styled(content, theme::text_secondary()),
+        ]);
+        buf.set_line(area.x, area.y, &line, area.width);
         if !chip.is_empty() {
             let x = area.x + (width - chip.chars().count() - 1) as u16;
             buf.set_string(x, area.y, chip, theme::warn());

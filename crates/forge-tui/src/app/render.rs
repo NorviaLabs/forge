@@ -57,21 +57,32 @@ fn composer_input_height(
     expanded_conversation: bool,
     navigator_active: bool,
     preferences: forge_config::PaneLayoutPreferences,
+    start: bool,
 ) -> u16 {
-    let content_width = crate::layout::estimate_composer_region_width(
+    let composer_width = crate::layout::estimate_composer_region_width(
         area,
         show_files,
         expanded_conversation,
         navigator_active,
         preferences,
-    )
+    );
+    let content_width = if start {
+        composer_width.min(crate::design::HOME_MAX_WIDTH as usize)
+    } else {
+        composer_width
+    }
     .saturating_sub(2 * crate::widgets::input::TEXT_INSET as usize)
     .max(1);
     // Use the same width and border budget as the rendered composer.
-    input
-        .visual_lines_for_width(content_width)
-        .min(crate::layout::MAX_COMPOSER_INPUT_H)
-        + crate::design::COMPOSER_BORDER_H
+    let compact = area.height < crate::design::COMPACT_FRAME_H;
+    input.visual_lines_for_width(content_width).clamp(
+        if compact { 1 } else { 2 },
+        if compact {
+            crate::design::COMPACT_COMPOSER_INPUT_H
+        } else {
+            crate::layout::MAX_COMPOSER_INPUT_H
+        },
+    ) + crate::design::COMPOSER_BORDER_H
 }
 
 fn queued_messages_for_render(app: &TuiApp) -> Vec<String> {
@@ -79,6 +90,13 @@ fn queued_messages_for_render(app: &TuiApp) -> Vec<String> {
 }
 
 impl TuiApp {
+    pub(super) fn use_start_prompt(&mut self, index: usize) {
+        if let Some(prompt) = crate::widgets::start::STARTERS.get(index) {
+            self.input.append_paste(prompt);
+            self.enter_chat_composer();
+        }
+    }
+
     fn render_workspace_tabs(
         &mut self,
         frame: &mut ratatui::Frame,
@@ -268,7 +286,22 @@ impl TuiApp {
                 self.focus.block(),
                 FocusBlock::TaskStrip | FocusBlock::Search | FocusBlock::Files
             );
-        let show_files = self.workspace_files.visible || task_mode;
+        let show_start = expand_conversation
+            && !decision_pending
+            && !self.bottom_panel.open
+            && self.child_view.is_none()
+            && self
+                .transcript_view
+                .messages()
+                .iter()
+                .all(|message| message.role == forge_types::MessageRole::System)
+            && !self.busy_state.is_active()
+            && !self.pending_turn.has_prompt()
+            && !self.pending_turn.continue_requested()
+            && self.selected_queue_messages().is_empty()
+            && self.selected_background_tasks().is_empty();
+        let show_files = (self.workspace_files.visible || task_mode)
+            && (!show_start || navigator_active || self.navigator_tab_explicit);
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else {
@@ -279,6 +312,7 @@ impl TuiApp {
                 expand_conversation,
                 navigator_active,
                 self.pane_resize.preferences,
+                show_start,
             )
         };
         // At compact heights the active body needs the terminal's rows for
@@ -329,7 +363,7 @@ impl TuiApp {
         } else {
             strip_live.height()
         };
-        let regions = split_areas_with_preferences(
+        let mut regions = split_areas_with_preferences(
             area,
             fb_h,
             input_h,
@@ -341,11 +375,27 @@ impl TuiApp {
             background_h,
             approve_all_warning_h,
             expand_conversation,
-            task_mode,
+            task_mode && !show_start,
             self.workspace_navigation.resource_selected() && !decision_pending,
             navigator_active,
             self.pane_resize.preferences,
         );
+        let start_group = (show_start && !theme_picking && regions.sidebar.is_some()).then(|| {
+            let body = ratatui::layout::Rect::new(
+                regions.input.x,
+                regions.workspace_tabs.y,
+                regions.input.width,
+                regions
+                    .input
+                    .bottom()
+                    .saturating_sub(regions.workspace_tabs.y),
+            );
+            let group = crate::widgets::start::StartGroup::new(body, input_h, area.height);
+            regions.input = group.input;
+            regions.sidebar = None;
+            regions.workspace_tabs.height = 0;
+            group
+        });
         self.pane_resize.files_separator = regions
             .files
             .filter(|files| files.right() < regions.input.x)
@@ -385,6 +435,7 @@ impl TuiApp {
         self.option_rects.clear();
         self.overlay_rows.borrow_mut().clear();
         self.conversation_rows.clear();
+        self.start_prompt_rows.clear();
         self.terminal_rows.clear();
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
@@ -399,13 +450,14 @@ impl TuiApp {
         let navigator_sessions =
             task_mode && navigator_tab == crate::widgets::NavigatorTab::Sessions;
         let available = FocusAvailability {
-            task_strip: true,
+            task_strip: regions.task_strip.height > 0
+                || (navigator_sessions && regions.files.is_some()),
             search: regions.files.is_some()
                 && !navigator_sessions
                 && navigator_tab != crate::widgets::NavigatorTab::Git,
             files: regions.files.is_some() && !navigator_sessions,
             workspace: regions.chat.width > 0,
-            sidebar: regions.sidebar.is_some(),
+            sidebar: regions.sidebar.is_some() || start_group.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
             approval: decision_pending && regions.sidebar.is_some(),
         };
@@ -1297,11 +1349,7 @@ impl TuiApp {
             );
             // The tab row carries identity and focus. Content has no enclosing
             // outline; the scroll indicator occupies its right padding.
-            let sidebar_block = Block::default()
-                .padding(ratatui::widgets::Padding::horizontal(
-                    crate::design::PANE_PAD_X,
-                ))
-                .style(theme::canvas());
+            let sidebar_block = Block::default().style(theme::canvas());
             let conversation_area = sidebar_block.inner(sidebar);
             self.conversation_area = Some(conversation_area);
             let bottom_padding = if self.session_view.is_awaiting_approval() {
@@ -1827,6 +1875,16 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         // Only three focusable footer controls now (which-LLM, effort, mode).
         if let Some(idx) = self.composer_chip_focus {
             self.composer_chip_focus = Some(idx.min(1));
+        }
+        if let Some(group) = start_group.as_ref() {
+            self.start_prompt_selected = self.start_prompt_selected.min(group.starters - 1);
+            self.start_prompt_rows = group.render(
+                frame.buffer_mut(),
+                connected,
+                self.start_prompt_selected,
+                !modal_open && self.focus.block() == FocusBlock::Sidebar,
+                self.hover_start_prompt,
+            );
         }
         if theme_picking {
             self.composer_area = None;

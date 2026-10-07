@@ -124,6 +124,14 @@ impl TuiApp {
         if self.pointer_blocked() {
             return Ok(());
         }
+        if let Some((index, _)) = self
+            .start_prompt_rows
+            .iter()
+            .find(|(_, area)| cell_inside(*area, col, row))
+        {
+            self.use_start_prompt(*index);
+            return Ok(());
+        }
         if let Some((block, _)) = self
             .workspace_tab_areas
             .iter()
@@ -473,6 +481,7 @@ impl TuiApp {
     /// never starts a selection. Terminals that do not report motion simply
     /// never send `Moved`; the highlight is then never triggered.
     fn mouse_hover(&mut self, col: u16, row: u16) {
+        self.hover_start_prompt = None;
         self.hover_session = None;
         self.hover_file = None;
         self.hover_chip = None;
@@ -485,6 +494,11 @@ impl TuiApp {
         if self.pointer_blocked() {
             return;
         }
+        self.hover_start_prompt = self
+            .start_prompt_rows
+            .iter()
+            .find(|(_, area)| cell_inside(*area, col, row))
+            .map(|(index, _)| *index);
         if let Some(area) = self.queue_area {
             let messages = self.selected_queue_messages();
             self.hover_queue = crate::widgets::queued_messages::message_index_at(

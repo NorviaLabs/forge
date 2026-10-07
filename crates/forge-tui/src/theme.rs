@@ -999,8 +999,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".forge").join("themes");
         std::fs::create_dir_all(&themes).unwrap();
-        let mut content = include_str!("../themes/forge-dark.toml").to_string();
-        content = content.replace("accent = \"#439EFD\"", "accent = \"#FF0000\"");
+        let original_accent = ThemeRegistry::builtin()
+            .palette(THEME_FORGE_DARK)
+            .unwrap()
+            .accent;
+        let content = include_str!("../themes/forge-dark.toml").replace(
+            &format!("accent = \"{original_accent}\""),
+            "accent = \"#FF0000\"",
+        );
         std::fs::write(themes.join("forge-dark.toml"), content).unwrap();
         install(ThemeRegistry::load(Some(dir.path())), THEME_FORGE_DARK);
         assert_eq!(palette(THEME_FORGE_DARK).accent, Color::Rgb(255, 0, 0));
@@ -1023,9 +1029,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".forge").join("themes");
         std::fs::create_dir_all(&themes).unwrap();
-        let content = include_str!("../themes/forge-dark.toml")
-            .to_string()
-            .replace("accent = \"#439EFD\"", "accent = \"#FF0000\"");
+        let original_accent = ThemeRegistry::builtin()
+            .palette(THEME_FORGE_DARK)
+            .unwrap()
+            .accent;
+        let content = include_str!("../themes/forge-dark.toml").replace(
+            &format!("accent = \"{original_accent}\""),
+            "accent = \"#FF0000\"",
+        );
         std::fs::write(themes.join("forge-dark.toml"), content).unwrap();
         install(ThemeRegistry::load(Some(dir.path())), THEME_FORGE_DARK);
 

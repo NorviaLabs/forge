@@ -87,7 +87,7 @@ pub struct FooterModel {
     pub hover_chip: Option<usize>,
     /// Session scratchpad state for the third chip. `None` hides the chip
     /// entirely; `Some` shows a line count, and the word `unsaved` when the
-    /// buffer has edits since the last write.
+    /// buffer has edits since the last write. An empty saved buffer is hidden.
     pub scratchpad: Option<ScratchpadChip>,
 }
 
@@ -188,7 +188,7 @@ fn running_dot_style(
 /// to the terminal border. Matches `PANE_PAD_X`; the round-2 inset costs the
 /// 78-col MIN_WIDTH floor two columns, so a long provider/model label keeps
 /// its vendor dropped and middle-truncates the model id instead of clipping.
-const PAD: u16 = crate::design::PANE_PAD_X;
+const PAD: u16 = crate::design::COMPOSER_PAD_X;
 
 /// Columns the model id needs to stay recognisable once middle-truncated
 /// (e.g. `…-luna`). Below this the footer drops the token unit label rather
@@ -375,9 +375,28 @@ impl Widget for FooterBar<'_> {
 
         // ---- left: configuration chips (which-LLM, effort) ----
         let dim = m.dimmed;
+        let connection = if m.llm_connected {
+            ""
+        } else {
+            " · disconnected"
+        };
         let config_chrome = 2 // dot + " " before the model label
-            + 1 + 1 + 1; // " │ " separator before effort
+            + 1 + 1 + 1 // " │ " separator before effort
+            + connection.chars().count();
         let effort_chars = m.effort_label.chars().count() as u16;
+        let notes_label = m
+            .scratchpad
+            .filter(|chip| chip.lines > 0 || chip.dirty)
+            .map(|chip| {
+                format!(
+                    "notes {}{}",
+                    chip.lines,
+                    if chip.dirty { " · unsaved" } else { "" }
+                )
+            });
+        let notes_chars = notes_label
+            .as_ref()
+            .map_or(0, |label| label.chars().count() as u16 + 3);
 
         // ---- right: live activity, or the custom hint when one is set ----
         use ratatui::text::Span;
@@ -387,7 +406,7 @@ impl Widget for FooterBar<'_> {
             // stays fully visible; the unit label drops before anything on
             // the left. Take the labeled form only when the chips and a
             // still-recognisable model id survive it.
-            let min_left = config_chrome as u16 + effort_chars + MIN_MODEL_CHARS;
+            let min_left = config_chrome as u16 + effort_chars + notes_chars + MIN_MODEL_CHARS;
             let fits = |line: &ratatui::text::Line<'static>| {
                 area.width
                     .saturating_sub(line.width() as u16)
@@ -420,10 +439,10 @@ impl Widget for FooterBar<'_> {
 
         let left_budget = area.width.saturating_sub(right_w).saturating_sub(1);
         let model_max = left_budget
-            .saturating_sub(config_chrome as u16 + effort_chars)
+            .saturating_sub(config_chrome as u16 + effort_chars + notes_chars)
             .min(left_budget);
         let llm_label = fit_model_label(&m.llm_label, model_max as usize);
-        let llm_label_w = llm_label.chars().count() as u16;
+        let llm_label_w = llm_label.chars().count() as u16 + connection.chars().count() as u16;
 
         let mut left: Vec<Span<'static>> = Vec::new();
         let dot_style = if dim {
@@ -459,6 +478,10 @@ impl Widget for FooterBar<'_> {
                 llm_style
             },
         ));
+        left.push(Span::styled(
+            connection,
+            if dim { theme::dim() } else { theme::warn() },
+        ));
         left.push(Span::raw(" "));
         left.push(Span::styled("│", theme::border_muted()));
         left.push(Span::raw(" "));
@@ -486,7 +509,7 @@ impl Widget for FooterBar<'_> {
         // secondary weight, no new visual class for one feature. The count is a
         // word (`9 lines`), never a meter, and unsaved state is spelled out so
         // colour never travels alone.
-        let notes_range = m.scratchpad.map(|chip| {
+        let notes_range = notes_label.map(|label| {
             left.push(Span::raw(" "));
             left.push(Span::styled("\u{2502}", theme::border_muted()));
             left.push(Span::raw(" "));
@@ -505,19 +528,15 @@ impl Widget for FooterBar<'_> {
             } else {
                 base
             };
-            let mut label = format!("notes {} lines", chip.lines);
-            let mut width = label.chars().count() as u16;
-            left.push(Span::styled(label.clone(), style));
-            if chip.dirty {
-                left.push(Span::raw(" "));
-                label = "\u{25cf} unsaved".into();
-                width = label.chars().count() as u16;
-                left.push(Span::styled(
-                    label,
-                    theme::warn().add_modifier(Modifier::BOLD),
-                ));
-                width += 1;
-            }
+            let width = label.chars().count() as u16;
+            left.push(Span::styled(
+                label,
+                if m.scratchpad.is_some_and(|chip| chip.dirty) {
+                    theme::warn().add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                },
+            ));
             (notes_x, notes_x + width)
         });
 
@@ -600,19 +619,23 @@ impl FooterBar<'_> {
                 format!("{:.0}%", m.ctx_pct * 100.0),
                 ctx_bar_style(m.ctx_pct),
             ),
-            Span::raw("  "),
-            Span::styled("·", theme::dim()),
-            Span::raw("  "),
         ]);
-        right.push(Span::styled(
-            format_footer_usage_slot(
-                m.prompt_tokens,
-                m.completion_tokens,
-                m.prompt_cache_reads,
-                labeled_usage,
-            ),
-            theme::text_secondary(),
-        ));
+        if m.prompt_tokens > 0 || m.completion_tokens > 0 || m.prompt_cache_reads > 0 {
+            right.extend([
+                Span::raw("  "),
+                Span::styled("·", theme::dim()),
+                Span::raw("  "),
+            ]);
+            right.push(Span::styled(
+                format_footer_usage_slot(
+                    m.prompt_tokens,
+                    m.completion_tokens,
+                    m.prompt_cache_reads,
+                    labeled_usage,
+                ),
+                theme::text_secondary(),
+            ));
+        }
         if dim {
             for span in right.iter_mut() {
                 span.style = theme::dim();

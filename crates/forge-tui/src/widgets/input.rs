@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 use std::ops::Range;
 
 #[derive(Debug, Clone, Default)]
@@ -72,6 +72,18 @@ impl InputModel {
         } else {
             self.insert_str(&pasted);
         }
+    }
+
+    /// Deliberate handoff appends to the retained draft, regardless of caret.
+    pub fn append_paste(&mut self, pasted: &str) {
+        if pasted.trim().is_empty() {
+            return;
+        }
+        self.cursor = self.text.len();
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.insert_newline();
+        }
+        self.insert_paste(pasted);
     }
 
     pub fn backspace(&mut self) {
@@ -425,10 +437,8 @@ fn visual_row_col(model: &InputModel, width: u16, offset: usize) -> (u16, u16, u
     (0, 0, total_rows)
 }
 
-/// Left inset before composer text. Matches a bordered pane's text origin
-/// (one border column + `PANE_PAD_X`) so the composer and the transcript
-/// above it share a left edge.
-pub(crate) const TEXT_INSET: u16 = crate::design::PANE_PAD_X + 1;
+/// Shared two-column text origin for the composer, transcript and dock.
+pub(crate) const TEXT_INSET: u16 = crate::design::COMPOSER_PAD_X;
 
 /// Composer geometry derived from `model`/`area`/`attachment` — no styling.
 /// Shared by [`InputBar::render`] and [`composer_cursor_position`] so the two
@@ -437,7 +447,7 @@ struct ComposerGeometry {
     text_area: Rect,
 }
 
-/// Top border offset; total chrome height also includes the bottom border.
+/// The only composer chrome is its top rule.
 pub(crate) const COMPOSER_RULE_H: u16 = 1;
 
 fn composer_geometry(
@@ -445,7 +455,7 @@ fn composer_geometry(
     area: Rect,
     attachment: Option<&str>,
 ) -> Option<ComposerGeometry> {
-    // Share the transcript's text origin and reserve both border rows.
+    // Share the transcript's text origin and reserve the top rule.
     let text_w = area.width.saturating_sub(TEXT_INSET * 2);
     let text_h = area.height.saturating_sub(crate::design::COMPOSER_BORDER_H);
     if text_w == 0 || text_h == 0 {
@@ -581,20 +591,14 @@ impl Widget for InputBar<'_> {
         } else {
             theme::composer_surface()
         };
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(theme::composer_border_idle())
-            .style(surface)
-            .render(area, buf);
-        // Keep the sides and bottom neutral; the top edge carries focus and
-        // thickens for attention states, which change what the input *does*.
-        let rule = rule_glyph.repeat(area.width.saturating_sub(2) as usize);
-        if area.width >= 2 {
-            buf.set_string(area.x + 1, area.y, &rule, rule_style);
-            buf[(area.x, area.y)].set_style(rule_style);
-            buf[(area.right() - 1, area.y)].set_style(rule_style);
-        }
+        Block::default().style(surface).render(area, buf);
+        // Focus lives on one local rule rather than an enclosing rectangle.
+        buf.set_string(
+            area.x,
+            area.y,
+            rule_glyph.repeat(area.width as usize),
+            rule_style,
+        );
         let text_zone = Rect::new(
             area.x,
             area.y.saturating_add(COMPOSER_RULE_H),
@@ -671,6 +675,29 @@ impl Widget for InputBar<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_handoff_keeps_draft_and_expands_pending_pastes() {
+        let payload = "source ".repeat(200);
+        let mut input = InputModel::default();
+        input.insert_paste(&payload);
+        input.cursor = 0;
+        input.append_paste("Inspect this result before sending.");
+        assert_eq!(
+            input.take(),
+            format!("{payload}\nInspect this result before sending.")
+        );
+    }
+
+    #[test]
+    fn empty_handoff_does_not_move_or_replace_the_draft() {
+        let mut input = InputModel::default();
+        input.insert_paste("existing draft");
+        input.cursor = 3;
+        input.append_paste("  \n");
+        assert_eq!(input.text, "existing draft");
+        assert_eq!(input.cursor, 3);
+    }
 
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
