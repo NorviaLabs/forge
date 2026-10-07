@@ -9,6 +9,7 @@ use crate::widgets::status::TurnLifecycle;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 /// Which footer control (if any) is focused for keyboard/mouse activation.
@@ -30,16 +31,19 @@ pub struct FooterActivity {
     pub jobs_failed: usize,
     /// Jobs blocked on an operator decision (subagent approvals).
     pub jobs_need: usize,
-    /// Shell/terminal jobs that finished successfully or were cancelled.
+    /// Shell/terminal jobs that finished successfully.
     pub jobs_done: usize,
+    pub jobs_cancelled: usize,
     /// Agents/subagents queued or running.
     pub agents_active: usize,
     /// Subagents blocked on an operator decision.
     pub agents_need: usize,
     /// Subagents that ended in failure.
     pub agents_failed: usize,
-    /// Subagents that finished successfully or were cancelled.
+    /// Subagents that finished successfully.
     pub agents_done: usize,
+    pub agents_cancelled: usize,
+    pub queued: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -198,30 +202,74 @@ const MIN_MODEL_CHARS: u16 = 6;
 /// Build the second-row activity line from live counts (design A3). Returns
 /// `None` when nothing is running so the reserved row stays blank.
 fn activity_chips(a: &FooterActivity) -> Option<ratatui::text::Line<'static>> {
-    use ratatui::text::Span;
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    push_count_chip(
-        &mut spans,
-        "⟳",
-        "jobs",
-        a.jobs_active,
-        a.jobs_need,
-        a.jobs_failed,
-        a.jobs_done,
-    );
-    push_count_chip(
-        &mut spans,
-        "◆",
-        "agents",
-        a.agents_active,
-        a.agents_need,
-        a.agents_failed,
-        a.agents_done,
-    );
-    if spans.is_empty() {
-        return None;
+    let mut spans = Vec::new();
+    for (_, line) in activity_parts(a) {
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+        spans.extend(line.spans);
     }
-    Some(ratatui::text::Line::from(spans))
+    (!spans.is_empty()).then(|| Line::from(spans))
+}
+
+fn activity_parts(a: &FooterActivity) -> Vec<(crate::tasks_strip::TaskFilter, Line<'static>)> {
+    use crate::tasks_strip::TaskFilter;
+    let mut parts = Vec::new();
+    for (filter, glyph, noun, active, need, failed, done) in [
+        (
+            TaskFilter::Jobs,
+            "⟳",
+            "jobs",
+            a.jobs_active,
+            a.jobs_need,
+            a.jobs_failed,
+            (a.jobs_done, a.jobs_cancelled),
+        ),
+        (
+            TaskFilter::Agents,
+            "◆",
+            "agents",
+            a.agents_active,
+            a.agents_need,
+            a.agents_failed,
+            (a.agents_done, a.agents_cancelled),
+        ),
+    ] {
+        let mut spans = Vec::new();
+        push_count_chip(&mut spans, glyph, noun, active, need, failed, done);
+        if !spans.is_empty() {
+            parts.push((filter, Line::from(spans)));
+        }
+    }
+    if a.queued > 0 {
+        parts.push((
+            TaskFilter::Queue,
+            Line::styled(format!("[⇥ queue {}]", a.queued), theme::metadata_style()),
+        ));
+    }
+    parts
+}
+
+/// The same measured parts drive drawing and pointer targets.
+pub(crate) fn activity_chip_regions(
+    a: &FooterActivity,
+    area: Rect,
+) -> Vec<(crate::tasks_strip::TaskFilter, Rect)> {
+    if area.height < 2 {
+        return Vec::new();
+    }
+    let mut x = area.x.saturating_add(PAD.min(area.width));
+    let end = area.right().saturating_sub(PAD);
+    let mut regions = Vec::new();
+    for (filter, line) in activity_parts(a) {
+        if x >= end {
+            break;
+        }
+        let width = (line.width().min(u16::MAX as usize) as u16).min(end - x);
+        regions.push((filter, Rect::new(x, area.y + 1, width, 1)));
+        x = x.saturating_add(width).saturating_add(1);
+    }
+    regions
 }
 
 /// One `[glyph noun N · qualifiers]` chip. The glyph and colour carry state;
@@ -234,16 +282,21 @@ fn push_count_chip(
     active: usize,
     need: usize,
     failed: usize,
-    done: usize,
+    outcomes: (usize, usize),
 ) {
     use ratatui::text::Span;
+    let (done, cancelled) = outcomes;
+    let total = active + failed + done + cancelled;
     let (glyph, label, style) = if active > 0 {
-        let mut label = format!("{noun} {active}");
+        let mut label = format!("{noun} {total}");
         if need > 0 {
             label.push_str(&format!(" · {need} need"));
         }
         if failed > 0 {
             label.push_str(&format!(" · {failed} failed"));
+        }
+        if cancelled > 0 {
+            label.push_str(&format!(" · {cancelled} cancelled"));
         }
         let style = if need > 0 {
             theme::warn()
@@ -254,7 +307,17 @@ fn push_count_chip(
         };
         (glyph, label, style)
     } else if failed > 0 {
-        ("✕", format!("{noun} {failed} failed"), theme::danger())
+        (
+            "✕",
+            format!("{noun} {total} · {failed} failed"),
+            theme::danger(),
+        )
+    } else if cancelled > 0 {
+        (
+            "■",
+            format!("{noun} {total} · {cancelled} cancelled"),
+            theme::dim(),
+        )
     } else if done > 0 {
         ("✓", format!("{noun} {done} done"), theme::ok())
     } else {
@@ -741,6 +804,24 @@ fn truncate_middle(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_work_is_counted_and_never_reported_as_success() {
+        let activity = FooterActivity {
+            jobs_cancelled: 2,
+            agents_active: 1,
+            agents_done: 2,
+            agents_cancelled: 1,
+            queued: 3,
+            ..Default::default()
+        };
+        let parts = activity_parts(&activity);
+        let jobs = parts[0].1.to_string();
+        assert!(jobs.contains("jobs 2") && jobs.contains("2 cancelled"));
+        assert!(!jobs.contains("done") && !jobs.contains('✓'));
+        assert!(parts[1].1.to_string().contains("agents 4"));
+        assert!(parts[2].1.to_string().contains("queue 3"));
+    }
 
     #[test]
     fn compact_token_count_uses_k_and_m() {

@@ -433,7 +433,7 @@ impl TuiApp {
         match self.session_runtime.enqueue_task(&line).await {
             Ok(_item) => {
                 let n = self.selected_queue_messages().len();
-                self.task_selection.ensure_queue();
+                self.clamp_queue_selection();
                 self.push_toast(format!("queued #{n}"));
                 self.set_feedback(
                     FeedbackSeverity::Info,
@@ -540,17 +540,25 @@ impl TuiApp {
 
     /// Cancel a queued message by 0-based visible-position index.
     async fn cancel_queued_at(&mut self, index: usize) {
+        let Some(item) = self.selected_queue_items().get(index).cloned() else {
+            self.set_feedback(FeedbackSeverity::Warn, "queued message no longer available");
+            return;
+        };
         if self.selected_is_supervised() {
             self.submit_session_command(forge_session::SupervisorCommand::CancelQueuedPrompt {
                 session_id: self.selected_session_id,
                 one_based: index + 1,
+                expected_queue_id: Some(item.id),
             });
             self.poll_supervisor_events();
             self.clamp_queue_selection();
             return;
         }
         let one_based = index + 1;
-        match self.session_runtime.cancel_queued_at(one_based).await {
+        let forge_session::QueuedPromptId::Session(id) = item.id else {
+            return;
+        };
+        match self.session_runtime.cancel_queued_item(id).await {
             Ok(Some(item)) => {
                 let preview: String = item.text.chars().take(48).collect();
                 self.push_toast(format!("cancelled #{one_based}"));
@@ -578,42 +586,73 @@ impl TuiApp {
     }
 
     pub(super) fn clamp_queue_selection(&mut self) {
-        self.task_selection
-            .clamp_queue(self.selected_queue_messages().len());
+        let items = self.selected_queue_items();
+        if items.is_empty() {
+            self.task_selection.clear_queue();
+        } else if self
+            .task_selection
+            .queue(self.selected_session_id)
+            .is_none()
+        {
+            self.task_selection
+                .select_queue(self.selected_session_id, items[0].id);
+        }
     }
 
     pub(super) fn move_queue_selection(&mut self, delta: i32) {
+        let items = self.selected_queue_items();
+        if items.is_empty() {
+            self.task_selection.clear_queue();
+            return;
+        }
+        let current = self.selected_queue_index().unwrap_or(0) as i64;
+        let next = (current + i64::from(delta)).rem_euclid(items.len() as i64) as usize;
         self.task_selection
-            .move_queue(self.selected_queue_messages().len(), delta);
+            .select_queue(self.selected_session_id, items[next].id);
     }
 
     pub(super) async fn cancel_selected_queue(&mut self) {
-        let Some(idx) = self.task_selection.queue() else {
-            self.set_feedback(FeedbackSeverity::Warn, "queue empty");
+        let Some(idx) = self.selected_queue_index() else {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "selected prompt was promoted or removed",
+            );
             return;
         };
         self.cancel_queued_at(idx).await;
     }
 
     pub(super) async fn edit_last_queued_message(&mut self) {
+        if !self.input.text.is_empty() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "finish or clear your draft before editing queued text",
+            );
+            return;
+        }
+        let items = self.selected_queue_items();
+        let Some(item) = items.last() else {
+            return;
+        };
         if self.selected_is_supervised() {
-            let messages = self.selected_queue_messages();
-            if let Some(text) = messages.last() {
-                self.submit_session_command_tracked(
-                    forge_session::SupervisorCommand::CancelQueuedPrompt {
-                        session_id: self.selected_session_id,
-                        one_based: messages.len(),
-                    },
-                    CommandFollowUp::EditQueuedMessage { text: text.clone() },
-                );
-            }
+            self.focus.transition_to(FocusBlock::Composer);
+            self.submit_session_command_tracked(
+                forge_session::SupervisorCommand::CancelQueuedPrompt {
+                    session_id: self.selected_session_id,
+                    one_based: items.len(),
+                    expected_queue_id: Some(item.id),
+                },
+                CommandFollowUp::EditQueuedMessage {
+                    session_id: self.selected_session_id,
+                    text: item.text.clone(),
+                },
+            );
             return;
         }
-        let len = self.selected_queue_messages().len();
-        if len == 0 {
+        let forge_session::QueuedPromptId::Session(id) = item.id else {
             return;
-        }
-        match self.session_runtime.cancel_queued_at(len).await {
+        };
+        match self.session_runtime.cancel_queued_item(id).await {
             Ok(Some(item)) => {
                 self.input.set_text(item.text);
                 self.focus.transition_to(FocusBlock::Composer);
@@ -705,32 +744,46 @@ impl TuiApp {
 
     fn clamp_tasks_selection(&mut self) {
         let now = chrono::Utc::now();
-        let len = crate::tasks_strip::ordered_live(&self.selected_background_tasks(), now).len();
-        self.task_selection.clamp_tasks(len);
+        let tasks = self.selected_background_tasks();
+        let ordered = crate::tasks_strip::ordered_live(&tasks, now);
+        if ordered.is_empty() {
+            self.task_selection.clear_tasks();
+        } else if self.task_selection.task(self.selected_session_id).is_none() {
+            self.task_selection
+                .select_task(self.selected_session_id, ordered[0].1);
+        }
     }
 
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
         let now = chrono::Utc::now();
-        let len = crate::tasks_strip::ordered_live(&self.selected_background_tasks(), now).len();
-        self.task_selection.move_tasks(len, delta);
+        let tasks = self.selected_background_tasks();
+        let ordered = crate::tasks_strip::ordered_live(&tasks, now);
+        if ordered.is_empty() {
+            self.task_selection.clear_tasks();
+            return;
+        }
+        let id = self.task_selection.task(self.selected_session_id);
+        let current = ordered
+            .iter()
+            .position(|(_, task, _)| Some(*task) == id)
+            .unwrap_or(0) as i64;
+        let next = (current + i64::from(delta)).rem_euclid(ordered.len() as i64) as usize;
+        self.task_selection
+            .select_task(self.selected_session_id, ordered[next].1);
     }
 
     /// Cancel the background task at the currently selected row. Rows follow
     /// the strip's draw order (state rank, then id), not raw id ascending.
     pub(super) async fn cancel_selected_task(&mut self) {
-        let Some(idx) = self.task_selection.task() else {
+        let Some(id) = self.task_selection.task(self.selected_session_id) else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
         let tasks = self.selected_background_tasks();
-        let now = chrono::Utc::now();
-        let Some(id) = crate::tasks_strip::ordered_live(&tasks, now)
-            .get(idx)
-            .map(|(_, id, _)| *id)
-        else {
+        if !tasks.iter().any(|task| task.id == id) {
             self.clamp_tasks_selection();
             return;
-        };
+        }
         if self.selected_is_supervised() {
             self.submit_session_command(forge_session::SupervisorCommand::CancelBackgroundTask {
                 session_id: self.selected_session_id,
@@ -764,14 +817,12 @@ impl TuiApp {
             );
             return;
         }
-        let Some(idx) = self.task_selection.task() else {
+        let Some(id) = self.task_selection.task(self.selected_session_id) else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
         let tasks = self.selected_background_tasks();
-        let ordered_now = chrono::Utc::now();
-        let ordered = crate::tasks_strip::ordered_live(&tasks, ordered_now);
-        let Some(task) = ordered.get(idx).map(|(_, _, task)| (*task).clone()) else {
+        let Some(task) = tasks.iter().find(|task| task.id == id).cloned() else {
             self.clamp_tasks_selection();
             return;
         };
@@ -886,14 +937,12 @@ impl TuiApp {
     /// can't detect, which is exactly why `resolve_subagent_hitl` reports
     /// success/failure rather than being fire-and-forget.
     pub(super) fn resolve_selected_task_hitl(&mut self, decision: HitlDecision) {
-        let Some(idx) = self.task_selection.task() else {
+        let Some(id) = self.task_selection.task(self.selected_session_id) else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
         let tasks = self.selected_background_tasks();
-        let ordered_now = chrono::Utc::now();
-        let ordered = crate::tasks_strip::ordered_live(&tasks, ordered_now);
-        let Some(task) = ordered.get(idx).map(|(_, _, task)| (*task).clone()) else {
+        let Some(task) = tasks.iter().find(|task| task.id == id).cloned() else {
             return;
         };
         let id = task.id;
@@ -939,14 +988,12 @@ impl TuiApp {
     /// that retired on its TTL is gone from the strip and has nothing to
     /// attach, so `i` clamps the selection to what is still drawn.
     pub(super) fn attach_selected_task(&mut self) {
-        let Some(idx) = self.task_selection.task() else {
+        let Some(id) = self.task_selection.task(self.selected_session_id) else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
         let tasks = self.selected_background_tasks();
-        let ordered_now = chrono::Utc::now();
-        let ordered = crate::tasks_strip::ordered_live(&tasks, ordered_now);
-        let Some(task) = ordered.get(idx).map(|(_, _, task)| (*task).clone()) else {
+        let Some(task) = tasks.iter().find(|task| task.id == id).cloned() else {
             self.clamp_tasks_selection();
             return;
         };

@@ -24,7 +24,7 @@ try {
       for (const state of await options('state')) {
         await page.selectOption('#state', state);
         assert.ok(await page.locator('#after canvas').isVisible(), `${state} ${theme} ${size}: capture missing`);
-        if (['start', 'review', 'source', 'approval', 'details', 'recovery', 'help', 'commands', 'files', 'sessions', 'models', 'terminal'].includes(state) && ['80x18', '120x40'].includes(size)) {
+        if (['start', 'review', 'source', 'approval', 'details', 'recovery', 'help', 'commands', 'files', 'sessions', 'models', 'terminal', 'dock', 'queue', 'jobs', 'agents'].includes(state) && ['80x18', '120x40'].includes(size)) {
           await page.locator('.pair').screenshot({ path: join(out, `${state}-${theme}-${size}.png`) });
         }
         checked++;

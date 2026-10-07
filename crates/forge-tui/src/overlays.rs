@@ -32,8 +32,10 @@ pub enum Overlay {
         title: String,
         rows: Vec<StatusRow>,
     },
-    TaskBoard {
-        columns: [Vec<crate::tasks_strip::StripRow>; 4],
+    Tasks {
+        owner: uuid::Uuid,
+        filter: crate::tasks_strip::TaskFilter,
+        scroll: usize,
     },
     GithubIssues {
         selected: usize,
@@ -2299,7 +2301,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
-            Overlay::TaskBoard { .. } => OverlayAction::Close,
+            Overlay::Tasks { .. } => OverlayAction::None,
             Overlay::GitCommitSuggest { selected } => match *selected {
                 0 => OverlayAction::GitCommitAll { remember: false },
                 1 => OverlayAction::GitCommitAll { remember: true },
@@ -3123,50 +3125,8 @@ impl Widget for OverlayWidget<'_> {
                 block.render(r, buf);
                 Paragraph::new(status_report_lines(rows, inner.width as usize)).render(inner, buf);
             }
-            Overlay::TaskBoard { columns } => {
-                let r = centered_capped_rect(area, 76, 32);
-                clear_modal(r, buf);
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::border())
-                    .style(theme::panel())
-                    .title(theme::modal_title("Task board · Esc to close"));
-                let inner = block.inner(r);
-                block.render(r, buf);
-                let widths = ratatui::layout::Layout::default()
-                    .direction(ratatui::layout::Direction::Horizontal)
-                    .constraints([Constraint::Percentage(25); 4])
-                    .split(inner);
-                for (index, (title, rows)) in ["Blocked", "In progress", "Done", "Stopped"]
-                    .iter()
-                    .zip(columns.iter())
-                    .enumerate()
-                {
-                    let mut lines = vec![Line::styled(*title, theme::heading())];
-                    for row in rows {
-                        lines.push(Line::from(format!(
-                            "{} {} {}",
-                            row.marker(),
-                            row.glyph(),
-                            row.label
-                        )));
-                        if let Some(detail) = &row.detail {
-                            lines.push(Line::styled(format!("  {detail}"), theme::muted()));
-                        }
-                    }
-                    if rows.is_empty() {
-                        lines.push(Line::styled("—", theme::muted()));
-                    }
-                    Paragraph::new(lines)
-                        .wrap(ratatui::widgets::Wrap { trim: true })
-                        .block(
-                            Block::default()
-                                .borders(Borders::RIGHT)
-                                .border_style(theme::border_muted()),
-                        )
-                        .render(widths[index], buf);
-                }
-            }
+            // The app renders this from live owner-scoped snapshots.
+            Overlay::Tasks { .. } => {}
             Overlay::GithubIssues {
                 selected,
                 filter,

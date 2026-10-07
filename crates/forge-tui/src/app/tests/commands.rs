@@ -6,6 +6,161 @@ use super::prelude::*;
 use crate::HistoryStore;
 use forge_connect::PreferenceStore;
 
+fn complete_queued_edit(app: &mut TuiApp, owner: uuid::Uuid, text: &str, succeeded: bool) {
+    let (sender, reply) = tokio::sync::oneshot::channel();
+    app.pending_command_completions
+        .push(PendingCommandCompletion {
+            reply,
+            follow_up: CommandFollowUp::EditQueuedMessage {
+                session_id: owner,
+                text: text.into(),
+            },
+        });
+    sender
+        .send(if succeeded {
+            Ok(())
+        } else {
+            Err("already promoted".into())
+        })
+        .unwrap();
+    app.poll_pending_commands();
+}
+
+#[tokio::test]
+async fn queued_edit_never_cancels_when_the_composer_has_a_draft() {
+    let (_dir, mut app) = focus_test_app().await;
+    let queued = app
+        .session_runtime
+        .enqueue_task("queued λ/東京")
+        .await
+        .unwrap();
+    app.input.set_text("retained draft");
+    app.input.cursor = 4;
+    app.edit_last_queued_message().await;
+    assert_eq!(app.input.text, "retained draft");
+    assert_eq!(app.input.cursor, 4);
+    assert_eq!(
+        app.session_runtime.queue().peek_next_queued().unwrap().id,
+        queued.id
+    );
+}
+
+#[tokio::test]
+async fn queued_edit_acknowledgment_retains_new_typing_and_its_caret() {
+    let (_dir, mut app) = focus_test_app().await;
+    let owner = app.selected_session_id;
+    app.input.set_text("new draft λ/東京");
+    app.input.cursor = 4;
+    let focus = app.focus.block();
+    complete_queued_edit(&mut app, owner, "returned queued text", true);
+    assert_eq!(app.input.text, "new draft λ/東京\nreturned queued text");
+    assert_eq!(app.input.cursor, 4);
+    assert_eq!(app.focus.block(), focus);
+}
+
+#[tokio::test]
+async fn queued_edit_acknowledgment_does_not_take_focus_from_later_inspection() {
+    let (dir, mut app) = focus_test_app().await;
+    let owner = app.selected_session_id;
+    let path = dir.path().join("inspected.txt");
+    fs::write(&path, "Retained inspection\n").unwrap();
+    app.open_file_in_editor(&path);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    complete_queued_edit(&mut app, owner, "returned queued text", true);
+    assert_eq!(app.input.text, "returned queued text");
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert!(app.editor_session.is_some());
+    assert_eq!(fs::read_to_string(path).unwrap(), "Retained inspection\n");
+}
+
+#[tokio::test]
+async fn queued_edit_acknowledgment_stays_with_its_parent_after_switching() {
+    let (_dir, mut app) = focus_test_app().await;
+    let origin = uuid::Uuid::new_v4();
+    let mut parked = SessionViewState::default();
+    parked.input.set_text("parent A draft");
+    parked.input.cursor = 3;
+    app.session_view_states.insert(origin, parked);
+    app.input.set_text("parent B draft");
+    app.input.cursor = 2;
+    let focus = app.focus.block();
+    complete_queued_edit(&mut app, origin, "A queued text", true);
+    assert_eq!(app.input.text, "parent B draft");
+    assert_eq!(app.input.cursor, 2);
+    assert_eq!(app.focus.block(), focus);
+    let parent = app.session_view_states.get(&origin).unwrap();
+    assert_eq!(parent.input.text, "parent A draft\nA queued text");
+    assert_eq!(parent.input.cursor, 3);
+}
+
+#[tokio::test]
+async fn a_failed_queue_edit_acknowledgment_does_not_load_promoted_text() {
+    let (_dir, mut app) = focus_test_app().await;
+    let owner = app.selected_session_id;
+    app.input.set_text("new draft");
+    complete_queued_edit(&mut app, owner, "already running", false);
+    assert_eq!(app.input.text, "new draft");
+}
+
+#[tokio::test]
+async fn a_promoted_queue_selection_cannot_cancel_the_next_prompt() {
+    let (_dir, mut app) = focus_test_app().await;
+    let first = app.session_runtime.enqueue_task("first").await.unwrap();
+    let second = app.session_runtime.enqueue_task("second").await.unwrap();
+    app.task_selection.select_queue(
+        app.selected_session_id,
+        forge_session::QueuedPromptId::Session(first.id),
+    );
+    assert!(app
+        .session_runtime
+        .promote_next_queued()
+        .await
+        .unwrap()
+        .is_some());
+    app.cancel_selected_queue().await;
+    assert_eq!(
+        app.session_runtime.queue().peek_next_queued().unwrap().id,
+        second.id
+    );
+}
+
+#[tokio::test]
+async fn task_filters_refresh_queue_counts_without_losing_the_retained_parent_view() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::User,
+        "Retained parent paragraph.\n\n".repeat(50),
+    ));
+    app.session_runtime
+        .enqueue_task("first λ/東京")
+        .await
+        .unwrap();
+    app.input.set_text("Keep this draft");
+    app.input.cursor = 4;
+    app.conversation_view.scroll = 7;
+    app.conversation_view.follow = false;
+    render_app_text(&mut app, 80, 18);
+    app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Queue));
+    let first = render_app_text(&mut app, 80, 18);
+    assert!(first.contains("Queue 1"));
+    app.session_runtime.enqueue_task("second").await.unwrap();
+    let second = render_app_text(&mut app, 80, 18);
+    assert!(second.contains("Queue 2"));
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let jobs = render_app_text(&mut app, 80, 18);
+    assert!(jobs.contains("No jobs for this parent session"));
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert_eq!(app.input.text, "Keep this draft");
+    assert_eq!(app.input.cursor, 4);
+    assert_eq!(app.conversation_view.scroll, 7);
+    assert!(!app.conversation_view.follow);
+}
+
 #[tokio::test]
 async fn compact_help_scrolls_without_moving_the_retained_view_or_draft() {
     let (_dir, mut app) = focus_test_app().await;

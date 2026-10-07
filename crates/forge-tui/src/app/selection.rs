@@ -221,6 +221,13 @@ impl TuiApp {
     }
 
     pub(crate) fn selected_queue_messages(&self) -> Vec<String> {
+        self.selected_queue_items()
+            .into_iter()
+            .map(|item| item.text)
+            .collect()
+    }
+
+    pub(crate) fn selected_queue_items(&self) -> Vec<QueuedPrompt> {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
                 .session_runtime
@@ -229,25 +236,41 @@ impl TuiApp {
                     session
                         .queue()
                         .visible()
-                        .map(|item| item.text.clone())
+                        .map(|item| QueuedPrompt {
+                            id: forge_session::QueuedPromptId::Session(item.id),
+                            text: item.text.clone(),
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
             SelectedRuntime::Supervised(_) => self
                 .selected_snapshot()
                 .map(|snapshot| {
-                    let mut queued: Vec<String> = snapshot
+                    let mut queued: Vec<QueuedPrompt> = snapshot
                         .queued_prompts
                         .iter()
-                        .map(|(_, text)| text.clone())
+                        .map(|(id, text)| QueuedPrompt {
+                            id: forge_session::QueuedPromptId::Durable(*id),
+                            text: text.clone(),
+                        })
                         .collect();
                     if let Some(details) = snapshot.details.as_ref() {
-                        queued.extend(details.queue.iter().map(|item| item.text.clone()));
+                        queued.extend(details.queue.iter().map(|item| QueuedPrompt {
+                            id: forge_session::QueuedPromptId::Session(item.id),
+                            text: item.text.clone(),
+                        }));
                     }
                     queued
                 })
                 .unwrap_or_default(),
         }
+    }
+
+    pub(crate) fn selected_queue_index(&self) -> Option<usize> {
+        let id = self.task_selection.queue(self.selected_session_id)?;
+        self.selected_queue_items()
+            .iter()
+            .position(|item| item.id == id)
     }
 
     pub(crate) fn selected_background_tasks(&self) -> Vec<forge_session::BackgroundTaskSnapshot> {

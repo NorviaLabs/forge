@@ -1421,25 +1421,7 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Architecture) => self.open_architecture_review(),
                 Ok(SlashCommand::Tasks) => {
-                    let strip = crate::tasks_strip::BackgroundStrip::build(
-                        &self.selected_background_tasks(),
-                        chrono::Utc::now(),
-                        usize::MAX,
-                    );
-                    let mut columns: [Vec<crate::tasks_strip::StripRow>; 4] =
-                        std::array::from_fn(|_| Vec::new());
-                    for row in strip.rows {
-                        let column = match row.state {
-                            crate::tasks_strip::StripState::Blocked
-                            | crate::tasks_strip::StripState::Failed => 0,
-                            crate::tasks_strip::StripState::Active
-                            | crate::tasks_strip::StripState::Queued => 1,
-                            crate::tasks_strip::StripState::Done => 2,
-                            crate::tasks_strip::StripState::Cancelled => 3,
-                        };
-                        columns[column].push(row);
-                    }
-                    self.overlay = Some(Overlay::TaskBoard { columns });
+                    self.open_tasks_view(None);
                 }
                 Ok(SlashCommand::Resize) => self.begin_resize_mode(),
                 Ok(SlashCommand::ResizeReset) => self.reset_pane_layout(),

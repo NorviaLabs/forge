@@ -23,18 +23,20 @@ fn footer_activity(tasks: &[forge_session::BackgroundTaskSnapshot]) -> FooterAct
     use forge_core::{BackgroundTaskKind, BackgroundTaskStatus};
     let mut activity = FooterActivity::default();
     for task in tasks {
-        let (active, need, failed, done) = match task.kind {
+        let (active, need, failed, done, cancelled) = match task.kind {
             BackgroundTaskKind::Shell { .. } => (
                 &mut activity.jobs_active,
                 &mut activity.jobs_need,
                 &mut activity.jobs_failed,
                 &mut activity.jobs_done,
+                &mut activity.jobs_cancelled,
             ),
             BackgroundTaskKind::Subagent { .. } => (
                 &mut activity.agents_active,
                 &mut activity.agents_need,
                 &mut activity.agents_failed,
                 &mut activity.agents_done,
+                &mut activity.agents_cancelled,
             ),
         };
         match task.status {
@@ -44,7 +46,8 @@ fn footer_activity(tasks: &[forge_session::BackgroundTaskSnapshot]) -> FooterAct
                 *need += 1;
             }
             BackgroundTaskStatus::Failed { .. } => *failed += 1,
-            BackgroundTaskStatus::Succeeded { .. } | BackgroundTaskStatus::Cancelled => *done += 1,
+            BackgroundTaskStatus::Succeeded { .. } => *done += 1,
+            BackgroundTaskStatus::Cancelled => *cancelled += 1,
         }
     }
     activity
@@ -83,10 +86,6 @@ fn composer_input_height(
             crate::layout::MAX_COMPOSER_INPUT_H
         },
     ) + crate::design::COMPOSER_BORDER_H
-}
-
-fn queued_messages_for_render(app: &TuiApp) -> Vec<String> {
-    app.selected_queue_messages()
 }
 
 impl TuiApp {
@@ -329,12 +328,31 @@ impl TuiApp {
         } else {
             0
         };
-        let queued_messages = queued_messages_for_render(self);
+        let (queued_ids, queued_messages): (Vec<_>, Vec<_>) = self
+            .selected_queue_items()
+            .into_iter()
+            .map(|item| (item.id, item.text))
+            .unzip();
+        let compact_dock = area.height < 28;
+        let queue_cap = if compact_dock { 1 } else { 3 };
+        let current_queue_id = self.task_selection.queue(self.selected_session_id);
+        if !queued_ids.iter().any(|id| Some(*id) == current_queue_id) {
+            if let Some(id) = queued_ids.first() {
+                self.task_selection
+                    .select_queue(self.selected_session_id, *id);
+            } else {
+                self.task_selection.clear_queue();
+            }
+        }
+        let queue_selected = queued_ids
+            .iter()
+            .position(|id| Some(*id) == self.task_selection.queue(self.selected_session_id));
         let queue_h = if queued_messages.is_empty() {
             0
         } else {
-            (queued_messages.len().min(4) as u16).saturating_add(1)
+            1 + queued_messages.len().min(queue_cap) as u16
         };
+        let background_tasks = self.selected_background_tasks();
         let contextual_hint = self.contextual_hint();
         // The event-loop tick refreshes this cache; drawing only reads it.
         let connected = self.provider_connected_cached();
@@ -345,7 +363,8 @@ impl TuiApp {
         // DESIGN-012: the footer is a single content row with no separator.
         // The focused footer's hint shares that row (replacing the
         // right-side activity while focused), never adds another.
-        let hint_h: u16 = crate::design::FOOTER_H;
+        let hint_h = crate::design::FOOTER_H
+            + u16::from(!queued_messages.is_empty() || !background_tasks.is_empty());
         // One full-width warning row directly under the status row while
         // approve-all is on. Session state, so it is never scrollable away.
         let approve_all_warning_h: u16 = u16::from(self.approve_all);
@@ -354,12 +373,29 @@ impl TuiApp {
         // The strip's height is requested before the split because `layout.rs`
         // has to clamp it against the transcript's floor, and it is built after
         // the split because only then is the height that actually fit known.
-        let background_tasks = self.selected_background_tasks();
         let strip_now = chrono::Utc::now();
-        let strip_live = tasks_strip::BackgroundStrip::build(
+        let ordered = tasks_strip::ordered_live(&background_tasks, strip_now);
+        let selected = self.task_selection.task(self.selected_session_id);
+        if !matches!(self.overlay, Some(Overlay::Tasks { .. }))
+            && !ordered.iter().any(|(_, id, _)| Some(*id) == selected)
+        {
+            if let Some((_, id, _)) = ordered.first() {
+                self.task_selection
+                    .select_task(self.selected_session_id, *id);
+            } else {
+                self.task_selection.clear_tasks();
+            }
+        }
+        let strip_live = tasks_strip::BackgroundStrip::window(
             &background_tasks,
             strip_now,
-            tasks_strip::STRIP_ROW_CAP,
+            if compact_dock {
+                1
+            } else {
+                tasks_strip::STRIP_ROW_CAP
+            },
+            if compact_dock { 2 } else { 5 },
+            self.task_selection.task(self.selected_session_id),
         );
         let background_h = if strip_live.is_empty() {
             0
@@ -433,6 +469,10 @@ impl TuiApp {
         self.task_strip_area = None;
         self.footer_area = None;
         self.background_area = None;
+        self.dock_paint = DockPaintState {
+            owner: self.selected_session_id,
+            ..Default::default()
+        };
         self.slash_popup_rows.clear();
         self.inline_search_rows.clear();
         self.option_rects.clear();
@@ -1196,11 +1236,13 @@ impl TuiApp {
             frame.render_widget(
                 QueuedMessages {
                     messages: &queued_messages,
-                    selected: self.task_selection.queue(),
+                    selected: queue_selected,
                     hover: self.hover_queue,
                 },
                 regions.queue,
             );
+            self.dock_paint.queue_ids = queued_ids;
+            self.dock_paint.queue_selected = queue_selected;
         } else {
             self.queue_area = None;
         }
@@ -1208,13 +1250,22 @@ impl TuiApp {
         // The background strip. Only drawn when the layout gave it room: a
         // zero-height region means the transcript needed it more.
         if regions.background.height > 1 {
-            let visible = (regions.background.height - 1) as usize;
-            let strip = tasks_strip::BackgroundStrip::build(&background_tasks, strip_now, visible);
+            self.dock_paint.background = tasks_strip::BackgroundStrip::window(
+                &background_tasks,
+                strip_now,
+                if compact_dock {
+                    1
+                } else {
+                    tasks_strip::STRIP_ROW_CAP
+                },
+                regions.background.height,
+                self.task_selection.task(self.selected_session_id),
+            );
             self.background_area = Some(regions.background);
             frame.render_widget(
                 BackgroundStripWidget {
-                    strip: &strip,
-                    selected: self.task_selection.task(),
+                    strip: &self.dock_paint.background,
+                    selected: self.task_selection.task(self.selected_session_id),
                     hover: self.hover_background,
                     focused: self.focus.block() == FocusBlock::Sidebar,
                 },
@@ -2000,11 +2051,16 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             prompt_tokens: self.session_view.prompt_tokens,
             completion_tokens: self.session_view.completion_tokens,
             prompt_cache_reads: self.session_view.prompt_cache_hits,
-            activity: footer_activity(&self.selected_background_tasks()),
+            activity: FooterActivity {
+                queued: queued_messages.len(),
+                ..footer_activity(&background_tasks)
+            },
             hover_chip: self.hover_chip,
             scratchpad: scratchpad_chip,
         };
         self.footer_area = Some(regions.footer);
+        self.dock_paint.chips =
+            crate::widgets::footer::activity_chip_regions(&footer.activity, regions.footer);
         let footer_chip_sink = std::cell::RefCell::new(None);
         frame.render_widget(
             FooterBar {
@@ -2022,6 +2078,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
+                Overlay::Tasks { .. } => self.render_tasks_view(area, frame.buffer_mut()),
                 // Theme dock already replaced the composer band above.
                 Overlay::Theme { .. } => {}
                 _ => frame.render_widget(

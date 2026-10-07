@@ -368,7 +368,9 @@ impl TuiApp {
         {
             return Some("Ctrl+↑↓ select queued · Ctrl+Backspace remove".into());
         }
-        if self.focus.block() == FocusBlock::Sidebar && self.task_selection.task().is_some() {
+        if self.focus.block() == FocusBlock::Sidebar
+            && self.task_selection.task(self.selected_session_id).is_some()
+        {
             return Some("↑↓ select · i attach · a approve · d deny · x stop".into());
         }
         match self.focus.mode() {

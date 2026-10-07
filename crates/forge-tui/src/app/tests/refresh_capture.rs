@@ -3,6 +3,52 @@
 
 use super::prelude::*;
 
+async fn seed_refresh_tasks(app: &mut TuiApp) {
+    for position in 1..=6 {
+        app.session_runtime
+            .enqueue_task(&format!("Follow-up {position}: inspect retry handling in λ/東京.rs before changing the retained patch."))
+            .await
+            .unwrap();
+    }
+    let mut ids = Vec::new();
+    for (command, label) in [
+        ("printf 'Actual fixture output λ/東京\\n'", "Output fixture"),
+        (
+            "printf 'Actual failure output\\n'; exit 7",
+            "Nonzero fixture",
+        ),
+        ("sleep 30", "Cancelled fixture"),
+    ] {
+        ids.push(
+            app.session_runtime
+                .spawn_background_shell(command.into(), label.into())
+                .await
+                .unwrap(),
+        );
+    }
+    assert!(app.session_runtime.cancel_background_task(ids[2]));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        app.poll_background_tasks().await.unwrap();
+        if ids.iter().all(|id| {
+            app.session_runtime
+                .background()
+                .get(*id)
+                .unwrap()
+                .status
+                .is_terminal()
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native task fixtures did not finish"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    app.toast.clear();
+}
+
 #[tokio::test]
 #[ignore = "manual native terminal walkthrough; use --nocapture --test-threads=1"]
 async fn walk_refresh_ui() {
@@ -14,6 +60,15 @@ async fn walk_refresh_ui() {
     app.pane_resize = PaneResizeState::new(forge_config::PaneLayoutStore::new(
         fixture.path().join("pane-layout.toml"),
     ));
+    if std::env::var_os("FORGE_NATIVE_TASKS").is_some() {
+        init_repo(fixture.path());
+        app.session_runtime.messages.push(Message::new(
+            MessageRole::User,
+            "Native task inspection fixture; model responses are mocked.",
+        ));
+        seed_refresh_tasks(&mut app).await;
+        app.input.set_text("Retained parent draft λ/東京.rs.");
+    }
     super::super::shell::run_refresh_fixture(app).await.unwrap();
 }
 
@@ -39,7 +94,7 @@ fn capture_refresh_frames() {
         };
         crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), theme);
         for (width, height) in [(80, 18), (80, 24), (120, 40), (160, 50)] {
-            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal"] {
+            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal", "dock", "queue", "jobs", "agents"] {
                 let (fixture, mut app) = focus_test_app_with_theme(theme).await;
                 init_repo(fixture.path());
                 app.focus_block(FocusBlock::Composer);
@@ -50,6 +105,16 @@ fn capture_refresh_frames() {
                     ));
                 }
                 match state {
+                    "dock" | "queue" | "jobs" | "agents" => {
+                        seed_refresh_tasks(&mut app).await;
+                        app.input.set_text("Retained parent draft λ/東京.rs.");
+                        match state {
+                            "queue" => app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Queue)),
+                            "jobs" => app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Jobs)),
+                            "agents" => app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Agents)),
+                            _ => {},
+                        }
+                    }
                     "plan" => {
                         let mut message = Message::new(MessageRole::Assistant, "");
                         message.tool_calls.push(forge_types::ToolCall {
@@ -231,7 +296,7 @@ fn capture_refresh_frames() {
     )
     .unwrap();
     eprintln!(
-        "Captured 180 production frames with mock fixtures in {}",
+        "Captured 228 production frames with mock fixtures in {}",
         out.display()
     );
         });

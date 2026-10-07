@@ -40,6 +40,9 @@ impl TuiApp {
             self.handle_mouse_context_menu(&event);
             return Ok(());
         }
+        if !self.explorer_dialog.is_open() && self.handle_tasks_view_mouse(event).await? {
+            return Ok(());
+        }
 
         match event.kind {
             MouseEventKind::ScrollUp => {
@@ -120,6 +123,21 @@ impl TuiApp {
         if let Some(hit) = self.overlay_row_at(col, row) {
             self.click_overlay_row(hit, double).await?;
             return Ok(());
+        }
+        if self.overlay.is_none()
+            && !self.explorer_dialog.is_open()
+            && !matches!(self.focus.mode(), FocusMode::Transient(_))
+            && self.dock_paint.owner == self.selected_session_id
+        {
+            if let Some((filter, _)) = self
+                .dock_paint
+                .chips
+                .iter()
+                .find(|(_, area)| cell_inside(*area, col, row))
+            {
+                self.open_tasks_view(Some(*filter));
+                return Ok(());
+            }
         }
         if self.pointer_blocked() {
             return Ok(());
@@ -281,22 +299,25 @@ impl TuiApp {
     /// the selected one, so there is no non-destructive act a second click
     /// could perform.
     fn click_queue_row(&mut self, col: u16, row: u16, area: Rect) {
-        let len = self.selected_queue_messages().len();
+        if self.dock_paint.owner != self.selected_session_id {
+            return;
+        }
+        let len = self.dock_paint.queue_ids.len();
         if let Some(index) = crate::widgets::queued_messages::message_index_at(
             len,
-            self.task_selection.queue(),
+            self.dock_paint.queue_selected,
             area,
             col,
             row,
         ) {
-            self.task_selection.select_queue(index);
+            self.task_selection
+                .select_queue(self.selected_session_id, self.dock_paint.queue_ids[index]);
         }
     }
 
     /// A click on a background-task row selects it and takes the keyboard,
-    /// matching the strip's own grammar. A double click attaches the task's
-    /// session — the non-destructive "open it" verb, and the same move a
-    /// double click makes on a session row.
+    /// matching the strip's own grammar. A double click opens the matching
+    /// live task filter without inserting a result or resolving a request.
     async fn click_background_row(
         &mut self,
         col: u16,
@@ -305,26 +326,29 @@ impl TuiApp {
         double: bool,
     ) -> Result<(), TuiError> {
         self.focus_block(FocusBlock::Sidebar);
-        let rows = self.painted_background_rows(area.height.saturating_sub(1) as usize);
-        if let Some(index) = crate::widgets::background_strip::row_index_at(&rows, area, col, row) {
-            self.task_selection.select_task(index);
+        if self.dock_paint.owner != self.selected_session_id {
+            return Ok(());
+        }
+        if let Some(index) = crate::widgets::background_strip::row_index_at(
+            &self.dock_paint.background.rows,
+            area,
+            col,
+            row,
+        ) {
+            self.task_selection.select_task(
+                self.selected_session_id,
+                self.dock_paint.background.rows[index].id,
+            );
             if double {
-                self.execute_semantic_command(SemanticCommand::AttachSelectedBackgroundTask)
-                    .await?;
+                let filter = if self.dock_paint.background.rows[index].subagent {
+                    crate::tasks_strip::TaskFilter::Agents
+                } else {
+                    crate::tasks_strip::TaskFilter::Jobs
+                };
+                self.open_tasks_view(Some(filter));
             }
         }
         Ok(())
-    }
-
-    /// The background-strip rows exactly as the renderer built them, so a row
-    /// index from hit-testing addresses the row the operator sees.
-    fn painted_background_rows(&self, visible: usize) -> Vec<crate::tasks_strip::StripRow> {
-        crate::tasks_strip::BackgroundStrip::build(
-            &self.selected_background_tasks(),
-            chrono::Utc::now(),
-            visible,
-        )
-        .rows
     }
 
     /// Use the editor's native viewport mapping. Transformed previews
@@ -500,10 +524,9 @@ impl TuiApp {
             .find(|(_, area)| cell_inside(*area, col, row))
             .map(|(index, _)| *index);
         if let Some(area) = self.queue_area {
-            let messages = self.selected_queue_messages();
             self.hover_queue = crate::widgets::queued_messages::message_index_at(
-                messages.len(),
-                self.task_selection.queue(),
+                self.dock_paint.queue_ids.len(),
+                self.dock_paint.queue_selected,
                 area,
                 col,
                 row,
@@ -511,7 +534,7 @@ impl TuiApp {
         }
         if let Some(area) = self.background_area {
             self.hover_background = crate::widgets::background_strip::row_index_at(
-                &self.painted_background_rows(area.height.saturating_sub(1) as usize),
+                &self.dock_paint.background.rows,
                 area,
                 col,
                 row,

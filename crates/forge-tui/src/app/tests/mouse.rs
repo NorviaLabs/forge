@@ -967,15 +967,16 @@ async fn click_on_a_queued_message_row_selects_it() {
         .unwrap()
         .queued_prompts = vec![(1, "first".into()), (2, "second".into())];
     assert_eq!(app.selected_queue_messages().len(), 2, "fixture");
-    app.background_area = Some(ratatui::layout::Rect::new(0, 40, 40, 4));
-    // Row 0 is the strip's header; the two messages follow it.
-    app.queue_area = Some(ratatui::layout::Rect::new(0, 30, 40, 3));
     app.focus_block(FocusBlock::Composer);
+    render_app_text(&mut app, 120, 40);
+    let area = app.queue_area.expect("painted prompt queue");
 
-    app.handle_mouse(left_click(6, 32)).await.unwrap();
+    app.handle_mouse(left_click(area.x + 2, area.y + 2))
+        .await
+        .unwrap();
 
     assert_eq!(
-        app.task_selection.queue(),
+        app.selected_queue_index(),
         Some(1),
         "the clicked row becomes the one Ctrl+Backspace acts on"
     );
@@ -983,6 +984,40 @@ async fn click_on_a_queued_message_row_selects_it() {
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_queue_count_chip_opens_its_live_view_over_an_approval_and_keeps_the_draft() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .enqueue_task("queued text")
+        .await
+        .unwrap();
+    app.input.set_text("Retained draft λ/東京");
+    set_pending_hitl(&mut app, direct_hitl_payload("pending", "file.txt"));
+    app.sync_approval_focus();
+    render_app_text(&mut app, 120, 40);
+    let (_, area) = app
+        .dock_paint
+        .chips
+        .iter()
+        .find(|(filter, _)| *filter == crate::tasks_strip::TaskFilter::Queue)
+        .copied()
+        .expect("painted queue count");
+    app.handle_mouse(left_click(area.x, area.y)).await.unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::Tasks {
+            filter: crate::tasks_strip::TaskFilter::Queue,
+            ..
+        })
+    ));
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.input.text, "Retained draft λ/東京");
+    assert!(app.selected_pending_hitl().is_some());
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
 }
 
 /// A click inside the background-activity strip is claimed by the strip and

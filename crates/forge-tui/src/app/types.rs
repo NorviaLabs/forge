@@ -1065,81 +1065,71 @@ pub(crate) struct WorkspaceFilesState {
     pub(crate) explorer: FileExplorer,
 }
 
-/// Owns selections for durable queued messages and background tasks.
-///
-/// The TUI may change the list beneath these cursors at any time, so bounds
-/// maintenance belongs with the cursors rather than being duplicated by each
-/// command handler.
+#[derive(Debug, Clone)]
+pub(crate) struct QueuedPrompt {
+    pub(crate) id: forge_session::QueuedPromptId,
+    pub(crate) text: String,
+}
+
+/// Selection names the owner and resource; row positions are frame data.
 #[derive(Default)]
 pub(crate) struct TaskSelectionState {
-    queue: Option<usize>,
-    tasks: Option<usize>,
+    queue: Option<(uuid::Uuid, forge_session::QueuedPromptId)>,
+    tasks: Option<(uuid::Uuid, forge_types::BackgroundTaskId)>,
+}
+
+/// Mouse routing uses the identities actually painted, even if a tick
+/// reordered the live snapshot before the click arrived.
+#[derive(Default)]
+pub(crate) struct DockPaintState {
+    pub(crate) owner: uuid::Uuid,
+    pub(crate) queue_ids: Vec<forge_session::QueuedPromptId>,
+    pub(crate) queue_selected: Option<usize>,
+    pub(crate) background: crate::tasks_strip::BackgroundStrip,
+    pub(crate) chips: Vec<(crate::tasks_strip::TaskFilter, ratatui::layout::Rect)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TaskViewTarget {
+    Prompt(forge_session::QueuedPromptId),
+    Task(forge_types::BackgroundTaskId),
+}
+
+#[derive(Default)]
+pub(crate) struct TaskViewPaintState {
+    pub(crate) owner: uuid::Uuid,
+    pub(crate) filter: crate::tasks_strip::TaskFilter,
+    pub(crate) rows: Vec<(TaskViewTarget, ratatui::layout::Rect)>,
+    pub(crate) tabs: Vec<(crate::tasks_strip::TaskFilter, ratatui::layout::Rect)>,
 }
 
 impl TaskSelectionState {
-    pub(crate) fn queue(&self) -> Option<usize> {
+    pub(crate) fn queue(&self, owner: uuid::Uuid) -> Option<forge_session::QueuedPromptId> {
         self.queue
+            .filter(|(parent, _)| *parent == owner)
+            .map(|(_, id)| id)
     }
 
-    pub(crate) fn task(&self) -> Option<usize> {
+    pub(crate) fn task(&self, owner: uuid::Uuid) -> Option<forge_types::BackgroundTaskId> {
         self.tasks
+            .filter(|(parent, _)| *parent == owner)
+            .map(|(_, id)| id)
     }
 
     pub(crate) fn clear_queue(&mut self) {
         self.queue = None;
     }
 
-    pub(crate) fn ensure_queue(&mut self) {
-        if self.queue.is_none() {
-            self.queue = Some(0);
-        }
+    pub(crate) fn select_queue(&mut self, owner: uuid::Uuid, id: forge_session::QueuedPromptId) {
+        self.queue = Some((owner, id));
     }
 
-    /// Point the queue cursor at a specific row. Pointer hit-testing already
-    /// bounds the index, so this only records it.
-    pub(crate) fn select_queue(&mut self, index: usize) {
-        self.queue = Some(index);
+    pub(crate) fn select_task(&mut self, owner: uuid::Uuid, id: forge_types::BackgroundTaskId) {
+        self.tasks = Some((owner, id));
     }
 
-    /// Point the background-task cursor at a specific row.
-    pub(crate) fn select_task(&mut self, index: usize) {
-        self.tasks = Some(index);
-    }
-
-    pub(crate) fn clamp_queue(&mut self, len: usize) {
-        self.queue = match (len, self.queue) {
-            (0, _) => None,
-            (_, Some(index)) if index < len => Some(index),
-            (_, Some(_)) => Some(len - 1),
-            (_, None) => Some(0),
-        };
-    }
-
-    pub(crate) fn move_queue(&mut self, len: usize, delta: i32) {
-        if len == 0 {
-            self.queue = None;
-            return;
-        }
-        let current = self.queue.unwrap_or(0) as i32;
-        self.queue = Some((current + delta).rem_euclid(len as i32) as usize);
-    }
-
-    pub(crate) fn clamp_tasks(&mut self, len: usize) {
-        self.tasks = match (len, self.tasks) {
-            (0, _) => None,
-            (_, Some(index)) if index < len => Some(index),
-            (_, Some(_)) => Some(len - 1),
-            (_, None) => Some(0),
-        };
-    }
-
-    pub(crate) fn move_tasks(&mut self, len: usize, delta: i32) {
-        if len == 0 {
-            self.tasks = None;
-            return;
-        }
-        let current = self.tasks.unwrap_or(0) as i32;
-        self.tasks = Some((current + delta).rem_euclid(len as i32) as usize);
+    pub(crate) fn clear_tasks(&mut self) {
+        self.tasks = None;
     }
 }
 
@@ -1863,7 +1853,10 @@ pub(crate) enum CommandFollowUp {
     QuitAll,
     /// Load a canceled queued message back into the composer, but only once
     /// the supervisor confirms it left the queue.
-    EditQueuedMessage { text: String },
+    EditQueuedMessage {
+        session_id: uuid::Uuid,
+        text: String,
+    },
     /// Hand the cursor to a just-created session's composer, so the operator
     /// can type the first prompt that names it.
     ///
@@ -2121,6 +2114,8 @@ pub struct TuiApp {
     pub(crate) queue_area: Option<ratatui::layout::Rect>,
     /// Background-activity strip rect from the last draw.
     pub(crate) background_area: Option<ratatui::layout::Rect>,
+    pub(crate) dock_paint: DockPaintState,
+    pub(crate) task_view_paint: TaskViewPaintState,
     /// Hovered background-task index (pointer motion; never moves the
     /// selection).
     pub(crate) hover_background: Option<usize>,
