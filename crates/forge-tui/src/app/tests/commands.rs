@@ -7,6 +7,50 @@ use crate::HistoryStore;
 use forge_connect::PreferenceStore;
 
 #[tokio::test]
+async fn compact_help_scrolls_without_moving_the_retained_view_or_draft() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::User,
+        "Retained transcript paragraph.\n\n".repeat(50),
+    ));
+    app.input.set_text("Keep this draft λ/東京.rs.");
+    app.focus_block(FocusBlock::Sidebar);
+    app.conversation_view.scroll = 7;
+    app.conversation_view.follow = false;
+    render_app_text(&mut app, 80, 18);
+    app.selection.start_in(
+        crate::selection::CopyPane::Conversation,
+        crate::selection::Cell { row: 3, col: 2 },
+    );
+    app.selection
+        .update(crate::selection::Cell { row: 3, col: 7 });
+    app.selection.finish("Retained selection".into());
+    let selection = app.selection.rect();
+    app.overlay = Some(Overlay::Help);
+    render_app_text(&mut app, 80, 18);
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let end = render_app_text(&mut app, 80, 18);
+    assert!(app.help_scroll > 0);
+    assert!(end.contains("Esc close"), "{end}");
+    app.handle_key(press(KeyCode::Home, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.help_scroll, 0);
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(app.input.text, "Keep this draft λ/東京.rs.");
+    assert_eq!(app.conversation_view.scroll, 7);
+    assert!(!app.conversation_view.follow);
+    assert_eq!(app.selection.rect(), selection);
+    assert_eq!(app.selection.text, "Retained selection");
+}
+
+#[tokio::test]
 async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");
@@ -744,6 +788,8 @@ async fn compact_request_guards_busy_pending_and_waiting_states() {
     app.pending_interaction.request_hitl_decision(
         forge_types::HitlDecision::Deny,
         crate::app::types::ApprovalGrant::Once,
+        app.selected_session_id,
+        "context-reset-guard".into(),
     );
     app.queue_context_reset();
     assert!(app.feedback.text.contains("busy"));

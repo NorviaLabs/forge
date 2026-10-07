@@ -40,6 +40,7 @@ enum Screen {
     Theme(Box<Overlay>),
     Trust {
         selected: usize,
+        scroll: usize,
         error: Option<String>,
     },
 }
@@ -83,13 +84,14 @@ fn run_setup_loop(
     } else {
         Screen::Trust {
             selected: 0,
+            scroll: 0,
             error: None,
         }
     };
 
     loop {
         terminal.draw(|f| {
-            draw_setup(f.area(), f.buffer_mut(), &screen, &display, wide);
+            draw_setup(f.area(), f.buffer_mut(), &mut screen, &display, wide);
             theme::strip_colors_if_disabled(f.buffer_mut());
         })?;
         if !event::poll(Duration::from_millis(200))? {
@@ -100,6 +102,20 @@ fn run_setup_loop(
         };
         if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
             continue;
+        }
+        if let Screen::Trust { scroll, .. } = &mut screen {
+            let page = usize::from(terminal.size()?.height.saturating_sub(10).max(1));
+            match key.code {
+                KeyCode::PageUp => {
+                    *scroll = scroll.saturating_sub(page);
+                    continue;
+                }
+                KeyCode::PageDown => {
+                    *scroll = scroll.saturating_add(page);
+                    continue;
+                }
+                _ => {}
+            }
         }
         let Some(mapped) = map_key(key.code, key.modifiers) else {
             continue;
@@ -116,6 +132,7 @@ fn run_setup_loop(
                     if request.run_trust {
                         screen = Screen::Trust {
                             selected: 0,
+                            scroll: 0,
                             error: None,
                         };
                     } else {
@@ -124,7 +141,9 @@ fn run_setup_loop(
                 }
                 _ => {}
             },
-            Screen::Trust { selected, error } => match mapped {
+            Screen::Trust {
+                selected, error, ..
+            } => match mapped {
                 Key::Esc => return Ok(SetupResult::Canceled),
                 Key::Up | Key::Down => *selected = 1 - *selected,
                 Key::Char('y') => *selected = 0,
@@ -176,16 +195,26 @@ fn is_wide_root(path: &Path) -> bool {
 fn draw_setup(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
-    screen: &Screen,
+    screen: &mut Screen,
     display: &str,
     wide: bool,
 ) {
     theme::fill(area, buf, theme::canvas());
     match screen {
         Screen::Theme(overlay) => draw_theme_setup(area, buf, overlay),
-        Screen::Trust { selected, error } => {
-            draw_trust_setup(area, buf, display, wide, *selected, error.as_deref())
-        }
+        Screen::Trust {
+            selected,
+            scroll,
+            error,
+        } => draw_trust_setup(
+            area,
+            buf,
+            display,
+            wide,
+            *selected,
+            scroll,
+            error.as_deref(),
+        ),
     }
 }
 
@@ -239,67 +268,89 @@ fn draw_trust_setup(
     display: &str,
     wide: bool,
     selected: usize,
+    scroll: &mut usize,
     error: Option<&str>,
 ) {
-    let mut lines = vec![
-        Line::from(Span::styled("Trust this folder?", theme::brand())),
-        Line::from(""),
-        Line::from(Span::styled("Accessing workspace:", theme::muted())),
-        Line::from(Span::styled(
-            crate::path_display::elide_path(display, TRUST_PATH_WIDTH),
-            theme::text(),
-        )),
-        Line::from(""),
-        Line::from(
-            "Forge may read, edit, and run tools with this folder as the working directory.",
-        ),
-        Line::from("Every current and future subdirectory is trusted without asking again."),
-        Line::from("Sibling folders and git worktrees next to this path are not trusted."),
-    ];
+    let width = area.width.saturating_sub(4).min(TRUST_CARD_WIDTH);
+    let text_width = width.saturating_sub(6).max(2);
+    let mut lines = vec![Line::styled("Workspace", theme::muted())];
+    lines.extend(crate::decision::literal_lines(
+        display,
+        text_width,
+        theme::text(),
+    ));
+    lines.push(Line::from(""));
+    for text in [
+        "Forge may read, edit, and run tools with this folder as the working directory.",
+        "Every current and future subdirectory is trusted without asking again.",
+        "Sibling folders and git worktrees next to this path are not trusted.",
+    ] {
+        lines.extend(
+            forge_transcript::wrap(text, usize::from(text_width))
+                .into_iter()
+                .map(|line| Line::styled(line, theme::text())),
+        );
+    }
     if wide {
-        lines.push(Line::from(Span::styled(
+        lines.extend(crate::decision::literal_lines(
             "Confirming this path trusts every project you later create under it.",
+            text_width,
             theme::warn(),
-        )));
+        ));
     }
-    lines.push(Line::from(""));
-    lines.push(choice_line(selected == 0, "Yes, I trust this folder"));
-    lines.push(choice_line(selected == 1, "No, exit"));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{}  ·  no project files written if you leave",
-            crate::hints::hint_text(crate::hints::TRUST)
-        ),
-        theme::muted(),
-    )));
-    if let Some(error) = error {
-        lines.push(Line::from(Span::styled(error, theme::error_callout())));
+    let errors = error
+        .map(|error| crate::decision::literal_lines(error, text_width, theme::error_callout()))
+        .unwrap_or_default();
+    if !errors.is_empty() {
+        lines.push(Line::from(""));
+        lines.extend(errors);
     }
-    // Sized to what it holds, with a column of inset on each side. It used to
-    // take 70% of the height whatever it contained — twenty-eight rows for ten
-    // rows of content — with text flush against the border.
-    let height = (lines.len() as u16).saturating_add(4);
+    let controls_height = 4 + u16::from(error.is_some());
+    let height = (lines.len() as u16).saturating_add(controls_height + 2);
     let r = crate::overlays::centered_content_rect(area, TRUST_CARD_WIDTH, height, area.height);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border())
+        .style(theme::panel())
+        .padding(ratatui::widgets::Padding::horizontal(2))
+        .title(Span::styled(" Trust this folder? ", theme::brand()));
+    let inner = block.inner(r);
+    block.render(r, buf);
+    let controls_height = controls_height.min(inner.height.saturating_sub(1));
+    let body = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height - controls_height,
+    );
+    *scroll = (*scroll).min(lines.len().saturating_sub(body.height as usize));
     Paragraph::new(lines)
-        .wrap(ratatui::widgets::Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border())
-                .style(theme::panel())
-                .padding(ratatui::widgets::Padding::new(2, 2, 1, 1))
-                .title(Span::styled(" Trust ", theme::brand())),
-        )
-        .render(r, buf);
+        .scroll(((*scroll).min(u16::MAX as usize) as u16, 0))
+        .render(body, buf);
+    let controls = Rect::new(inner.x, body.bottom(), inner.width, controls_height);
+    let mut choices = vec![
+        choice_line(selected == 0, "Yes, I trust this folder"),
+        choice_line(selected == 1, "No, exit"),
+        Line::styled(
+            format!(
+                "{} · PgUp/PgDn details",
+                crate::hints::hint_text(crate::hints::TRUST)
+            ),
+            theme::muted(),
+        ),
+        Line::styled("No project files written if you leave", theme::muted()),
+    ];
+    if error.is_some() {
+        choices.push(Line::styled(
+            "Trust was not saved · PgUp/PgDn details",
+            theme::error_callout(),
+        ));
+    }
+    Paragraph::new(choices).render(controls, buf);
 }
 
 /// Widest the trust card is allowed to draw.
 const TRUST_CARD_WIDTH: u16 = 84;
-
-/// Columns the workspace path may take before it is elided. Without this the
-/// path wrapped and left a fragment (`2`) alone on the next line.
-const TRUST_PATH_WIDTH: usize = 76;
 
 fn choice_line(on: bool, label: &str) -> Line<'static> {
     if on {
@@ -373,5 +424,42 @@ mod tests {
         );
         assert_eq!(map_key(KeyCode::Char('j'), KeyModifiers::CONTROL), None);
         assert_eq!(map_key(KeyCode::Char('x'), KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn long_trust_details_keep_both_decisions_and_save_errors_reachable() {
+        let area = Rect::new(0, 0, 80, 18);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let mut scroll = usize::MAX;
+        draw_trust_setup(
+            area,
+            &mut buf,
+            &format!("/workspace/東京/{}", "very-long-directory/".repeat(15)),
+            true,
+            1,
+            &mut scroll,
+            Some("Could not save trust decision; check permissions and try again."),
+        );
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Yes, I trust this folder"));
+        assert!(text.contains("No, exit"));
+        assert!(text.contains("Could not save trust decision"));
+        assert!(text.contains("PgUp/PgDn"));
+        assert!(scroll > 0 && scroll < usize::MAX);
+        let long_error = format!("{}\nComplete error evidence", "save failure ".repeat(100));
+        scroll = usize::MAX;
+        draw_trust_setup(
+            area,
+            &mut buf,
+            "/workspace/東京",
+            false,
+            1,
+            &mut scroll,
+            Some(&long_error),
+        );
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Complete error evidence"));
+        assert!(text.contains("Yes, I trust this folder") && text.contains("No, exit"));
+        assert!(text.contains("Trust was not saved"));
     }
 }

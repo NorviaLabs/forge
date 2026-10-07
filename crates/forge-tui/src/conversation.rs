@@ -247,11 +247,17 @@ pub(super) fn render_numbered_diff(
             _ => theme::diff_context(),
         };
         let gutter = format!(
-            "  {old:>number_width$} {new:>number_width$} │ {} ",
+            "{old:>number_width$} {new:>number_width$} │ {} ",
             line.marker
         );
         let row_width = gutter.chars().count() + line.content.chars().count();
-        let mut spans = vec![Span::styled(gutter, line_style)];
+        let mut spans = vec![
+            Span::styled(
+                format!("{old:>number_width$} {new:>number_width$} │ "),
+                theme::metadata_style(),
+            ),
+            Span::styled(format!("{} ", line.marker), line_style),
+        ];
 
         if let Some(Some(parts)) = highlighted.as_ref().map(|lines| lines.get(code_index)) {
             for (text, rgb, bold, italic) in parts {
@@ -952,9 +958,6 @@ impl ConversationRenderInternals for ConversationModel {
                         format!("{}You", " ".repeat(MESSAGE_PADDING)),
                         theme::text().add_modifier(Modifier::BOLD),
                     )));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                     let theme_id = crate::theme::active();
                     let prefix_width = MESSAGE_PADDING;
                     let user_lines = user_message_gutter::render_user_message_lines(
@@ -1011,9 +1014,6 @@ impl ConversationRenderInternals for ConversationModel {
                             format!("{}Answer", " ".repeat(MESSAGE_PADDING)),
                             theme::text().add_modifier(Modifier::BOLD),
                         )));
-                        if gap {
-                            lines.push(Line::from(""));
-                        }
                     }
                     lines.extend(render_assistant_answer(
                         &p.text,

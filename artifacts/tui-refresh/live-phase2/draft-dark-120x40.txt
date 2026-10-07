@@ -1,0 +1,39 @@
+   FORGE · ⌂ /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpyr4fv2
+
+
+
+
+
+
+
+
+
+
+
+
+                    What would you like to work on?
+                    Describe a task, or choose a starting point.
+
+                  ────────────────────────────────────────────────────────────────────────────────────
+                    Retained native draft λ/東京.rs.
+
+
+                    Starting points
+                    › Explain the architecture of this project
+                    › Review the changes in this workspace
+                    › Find and fix a failing test
+
+                    / commands · Ctrl+P files · Tab navigate
+
+
+
+
+
+
+
+
+
+
+
+
+   ● model/mock │ N/A                                                                           ready   ·  context 0%

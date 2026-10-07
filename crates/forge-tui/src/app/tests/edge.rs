@@ -94,7 +94,21 @@ async fn failed_turn_ends_in_failed_lifecycle() {
         },
     );
 
+    let file = dir.path().join("retained.rs");
+    fs::write(&file, "fn retained_patch() {}\n").unwrap();
+    app.open_file_in_editor(&file);
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    let unsaved = app.editor_session.as_ref().unwrap().serialized_text();
+    let view = app.workspace_navigation.clone();
     app.dispatch_line("fail").await.unwrap();
+    app.input.set_text("Retained follow-up draft λ/東京.rs.");
     app.drain_pending_prompt(None).await.unwrap();
 
     assert_eq!(
@@ -102,6 +116,26 @@ async fn failed_turn_ends_in_failed_lifecycle() {
         forge_types::TaskLifecycle::Failed
     );
     assert!(app.overlay.is_none());
+    assert_eq!(app.input.text, "Retained follow-up draft λ/東京.rs.");
+    assert_eq!(app.workspace_navigation, view);
+    assert_eq!(
+        fs::read_to_string(file).unwrap(),
+        "fn retained_patch() {}\n"
+    );
+    let editor = app.editor_session.as_ref().unwrap();
+    assert!(editor.is_dirty());
+    assert_eq!(editor.serialized_text(), unsaved);
+    assert!(
+        !app.pending_turn.continue_requested(),
+        "a terminal failure requires explicit retry"
+    );
+    app.toast.clear();
+    app.focus_block(FocusBlock::Sidebar);
+    let screen = render_app_text(&mut app, 80, 18);
+    assert!(
+        screen.contains("Bad Request"),
+        "failure must remain accessible after the toast ends: {screen}"
+    );
 }
 
 // Regression test for the "permanently stuck Working" bug found in the

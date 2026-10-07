@@ -2314,7 +2314,10 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.selected_pending_question().is_some() && self.handle_question_menu_key(key).await? {
+        if self.overlay.is_none()
+            && self.selected_pending_question().is_some()
+            && self.handle_question_menu_key(key).await?
+        {
             return Ok(());
         }
 
@@ -2345,6 +2348,35 @@ impl TuiApp {
         }
 
         if let Some(ref mut ov) = self.overlay {
+            if matches!(ov, Overlay::Help) && key.modifiers.is_empty() {
+                match key.code {
+                    KeyCode::Up => {
+                        self.help_scroll = self.help_scroll.saturating_sub(1);
+                        return Ok(());
+                    }
+                    KeyCode::Down => {
+                        self.help_scroll = self.help_scroll.saturating_add(1);
+                        return Ok(());
+                    }
+                    KeyCode::PageUp => {
+                        self.help_scroll = self.help_scroll.saturating_sub(8);
+                        return Ok(());
+                    }
+                    KeyCode::PageDown => {
+                        self.help_scroll = self.help_scroll.saturating_add(8);
+                        return Ok(());
+                    }
+                    KeyCode::Home => {
+                        self.help_scroll = 0;
+                        return Ok(());
+                    }
+                    KeyCode::End => {
+                        self.help_scroll = usize::MAX;
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
             let ok = map_key(key);
             let action = handle_overlay_key(ov, ok);
             self.apply_overlay_action(action).await?;

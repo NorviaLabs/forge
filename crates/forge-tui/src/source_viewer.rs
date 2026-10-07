@@ -1440,14 +1440,16 @@ impl Widget for SourceViewerWidget<'_> {
                 "{marker}{}",
                 crate::path_display::elide_path(
                     &self.viewer.rel_path,
-                    (area.width as usize).saturating_sub(6 + marker.len()),
+                    (area.width as usize).saturating_sub(7 + marker.len()),
                 )
             )
         };
+        let mut title = theme::pane_title(self.focused, &title);
+        title.spans.insert(0, Span::raw(" "));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .title(theme::pane_title(self.focused, &title))
+            .title(title)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(theme::panel_border())
             .style(theme::panel());

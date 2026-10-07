@@ -43,7 +43,7 @@ label{display:inline-block;margin:8px 12px 16px 0}canvas{display:block;max-width
 </style><h1>Forge — compiled UI captures</h1>
 <p>Real Ratatui draw output with disposable mock session fixtures. Appearance and keyboard-to-buffer timing evidence; these captures do not prove live provider or task execution. Font: representative system monospace.</p>
 <label>State <select id="state"></select></label><label>Size <select id="size"></select></label><label>Theme <select id="theme"></select></label>
-<div class="pair"><section id="before"><h2>Main baseline</h2><canvas></canvas></section><section id="after"><h2>Refresh</h2><canvas></canvas></section></div>
+<div class="pair"><section id="before"><h2>Previous build</h2><canvas></canvas></section><section id="after"><h2>Refresh</h2><canvas></canvas></section></div>
 <script>const frames=${JSON.stringify(data).replaceAll('<', '\\u003c')};
 const names=Object.keys(frames.after), state=document.querySelector('#state'), size=document.querySelector('#size'), theme=document.querySelector('#theme');
 const parts=names.map(name=>name.split('-'));

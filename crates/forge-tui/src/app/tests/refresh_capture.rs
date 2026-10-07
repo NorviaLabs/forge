@@ -3,6 +3,20 @@
 
 use super::prelude::*;
 
+#[tokio::test]
+#[ignore = "manual native terminal walkthrough; use --nocapture --test-threads=1"]
+async fn walk_refresh_ui() {
+    let theme = std::env::var("FORGE_NATIVE_THEME").unwrap_or_else(|_| "forge-dark".into());
+    let (fixture, mut app) = focus_test_app_with_theme(&theme).await;
+    crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), &theme);
+    app.connect.preferences =
+        forge_connect::PreferenceStore::new(fixture.path().join("preferences.json"));
+    app.pane_resize = PaneResizeState::new(forge_config::PaneLayoutStore::new(
+        fixture.path().join("pane-layout.toml"),
+    ));
+    super::super::shell::run_refresh_fixture(app).await.unwrap();
+}
+
 #[test]
 #[ignore = "manual review capture; set FORGE_RENDER_DUMP_DIR"]
 fn capture_refresh_frames() {
@@ -25,7 +39,7 @@ fn capture_refresh_frames() {
         };
         crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), theme);
         for (width, height) in [(80, 18), (80, 24), (120, 40), (160, 50)] {
-            for state in ["start", "draft", "working", "review", "approval"] {
+            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal"] {
                 let (fixture, mut app) = focus_test_app_with_theme(theme).await;
                 init_repo(fixture.path());
                 app.focus_block(FocusBlock::Composer);
@@ -36,6 +50,22 @@ fn capture_refresh_frames() {
                     ));
                 }
                 match state {
+                    "plan" => {
+                        let mut message = Message::new(MessageRole::Assistant, "");
+                        message.tool_calls.push(forge_types::ToolCall {
+                            id: "capture-plan".into(), name: "update_plan".into(),
+                            arguments: json!({"explanation":"Track the work; checklist status does not verify tests.","plan":[
+                                {"step":"Inspect retry handling", "status":"completed"},
+                                {"step":"Preserve the original error", "status":"in_progress"},
+                                {"step":"Run focused validation", "status":"pending"}
+                            ]}),
+                        });
+                        app.session_runtime.messages.push(message);
+                        let mut result = Message::new(MessageRole::Tool, "Plan updated.");
+                        result.tool_call_id = Some("capture-plan".into());
+                        result.name = Some("update_plan".into());
+                        app.session_runtime.messages.push(result);
+                    }
                     "draft" => app.input.set_text(
                         "Preserve the original error and the Unicode path λ/東京.rs.\n".repeat(8),
                     ),
@@ -86,6 +116,69 @@ fn capture_refresh_frames() {
                             },
                         );
                         app.sync_approval_focus();
+                    }
+                    "details" => {
+                        set_pending_hitl(&mut app, HitlPayload {
+                            call_id: "capture-literal-request".into(), tool: "bash".into(),
+                            args_redacted: json!({"command":format!("printf  '%s\\n' '{}'", "longtoken-λ東京".repeat(40)), "cwd": fixture.path().join("workspace λ/東京").display().to_string()}),
+                            reason: "Inspect the exact invocation before allowing it.".into(),
+                            failure: Some("Retained sandbox failure; no retry has been approved.".into()),
+                            sandbox_escalation: true, denied_host: None,
+                        });
+                        app.sync_approval_focus();
+                        app.input.set_text("Retained draft λ/東京.rs.");
+                    }
+                    "source" => {
+                        let path = fixture.path().join("retry.rs");
+                        fs::write(&path, "// Preserve the original error.\nfn retry_limit() -> usize { 3 }\n").unwrap();
+                        app.open_file_in_editor(&path);
+                    }
+                    "recovery" => {
+                        app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Failed;
+                        app.session_runtime.messages.push(Message::new(MessageRole::Assistant, "The patch is retained. Validation has not run."));
+                        app.input.set_text("Review the retained patch before retrying.");
+                        app.report_error("Provider disconnected during the response.\nReview the retained work, then use /continue to retry explicitly.");
+                        app.toast.clear();
+                    }
+                    "help" => app.overlay = Some(Overlay::Help),
+                    "commands" => app.input.set_text("/"),
+                    "files" => app.overlay = Some(Overlay::FileExplorer {
+                        cwd: fixture.path().display().to_string(), selected: 1, error: None,
+                        items: vec![
+                            FileExplorerItem { name: "src".into(), path: "src".into(), is_dir: true },
+                            FileExplorerItem { name: "retry.rs".into(), path: "retry.rs".into(), is_dir: false },
+                        ],
+                    }),
+                    "sessions" => app.overlay = Some(Overlay::SessionSwitcher {
+                        selected: 0, filter: String::new(), items: vec![
+                            SessionSwitcherItem { session_id: "capture-session-a".into(), label: "Retry handling".into(), branch: "feat/retry".into(), workspace: fixture.path().display().to_string(), state: "waiting".into(), attention: true, group: SessionSwitcherGroup::NeedsYou, managed: false, cleanup: SessionSwitcherCleanup::ReadOnly },
+                            SessionSwitcherItem { session_id: "capture-session-b".into(), label: "Documentation".into(), branch: "feat/docs".into(), workspace: fixture.path().display().to_string(), state: "idle".into(), attention: false, group: SessionSwitcherGroup::Idle, managed: false, cleanup: SessionSwitcherCleanup::ReadOnly },
+                        ],
+                    }),
+                    "models" => app.overlay = Some(Overlay::connect_model_open(
+                        Vec::new(), vec![
+                            crate::overlays::ModelItem { provider: "mock".into(), model: "review-model".into(), profile_id: None, source: forge_connect::CatalogSource::Configured, route_label: "Capture fixture".into() },
+                            crate::overlays::ModelItem { provider: "mock".into(), model: "fast-model".into(), profile_id: None, source: forge_connect::CatalogSource::Configured, route_label: "Capture fixture".into() },
+                        ], None, "review-model", ReasoningEffort::default(), ConnectModelColumn::Models,
+                    )),
+                    "terminal" => {
+                        app.input.set_text("Retained model draft λ.");
+                        app.open_bottom_panel();
+                        let terminal = app.interactive_terminal.as_mut().expect("native PTY capture");
+                        terminal.start_command("printf 'Terminal output λ/東京\\n'").unwrap();
+                        let deadline = Instant::now() + Duration::from_secs(3);
+                        loop {
+                            let terminal = app.interactive_terminal.as_mut().unwrap();
+                            terminal.poll();
+                            if let Some(completed) = terminal.take_command_completion() {
+                                assert_eq!(completed.exit_code, Some(0));
+                                assert!(terminal.display_output().contains("Terminal output λ/東京"));
+                                break;
+                            }
+                            assert!(Instant::now() < deadline, "terminal capture output did not arrive");
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                        app.toast.clear();
                     }
                     _ => {}
                 }
@@ -138,7 +231,7 @@ fn capture_refresh_frames() {
     )
     .unwrap();
     eprintln!(
-        "Captured 60 production frames with mock fixtures in {}",
+        "Captured 180 production frames with mock fixtures in {}",
         out.display()
     );
         });

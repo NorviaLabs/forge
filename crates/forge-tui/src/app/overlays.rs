@@ -9,37 +9,52 @@ use crate::design::MODAL_PAD_X;
 
 impl TuiApp {
     pub(super) fn render_help_overlay(
-        &self,
+        &mut self,
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        let r = {
-            // Cell-capped instead of percentage-sized: at 80x24 a 64%-by-58%
-            // box is a 51x13 letterbox that clips the help text and collides
-            // with the underlying pane borders. Cap in cells with a 2-cell
-            // margin so the frame stays inside the screen at any size.
-            let width = area.width.saturating_sub(4).clamp(1, 76);
-            let height = area.height.saturating_sub(4).clamp(1, 46);
-            ratatui::layout::Rect::new(
-                area.x + area.width.saturating_sub(width) / 2,
-                area.y + area.height.saturating_sub(height) / 2,
-                width,
-                height,
-            )
-        };
+        let text = self.help_text();
+        let width = area.width.saturating_sub(4).clamp(1, 76);
+        let paragraph = Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: true });
+        let lines = paragraph.line_count(width.saturating_sub(2 + 2 * MODAL_PAD_X));
+        let r = crate::overlays::centered_content_rect(
+            area,
+            76,
+            (lines + 3).min(u16::MAX as usize) as u16,
+            46,
+        );
         ratatui::widgets::Clear.render(r, buf);
         crate::theme::fill(r, buf, crate::theme::panel());
-        Paragraph::new(self.help_text())
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::brand())
-                    .style(theme::panel())
-                    .padding(ratatui::widgets::Padding::horizontal(MODAL_PAD_X))
-                    .title(crate::theme::modal_title("Help")),
-            )
-            .render(r, buf);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::brand())
+            .style(theme::panel())
+            .padding(ratatui::widgets::Padding::horizontal(MODAL_PAD_X))
+            .title(crate::theme::modal_title("Help"));
+        let inner = block.inner(r);
+        block.render(r, buf);
+        let body = ratatui::layout::Rect {
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
+        self.help_scroll = self
+            .help_scroll
+            .min(lines.saturating_sub(body.height as usize));
+        paragraph
+            .scroll((self.help_scroll.min(u16::MAX as usize) as u16, 0))
+            .render(body, buf);
+        Paragraph::new(Line::styled(
+            "↑↓ / PgUp/PgDn scroll · Esc close",
+            theme::metadata_style(),
+        ))
+        .render(
+            ratatui::layout::Rect {
+                y: body.bottom(),
+                height: 1,
+                ..inner
+            },
+            buf,
+        );
     }
 
     pub(super) fn help_text(&self) -> String {

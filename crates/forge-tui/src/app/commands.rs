@@ -742,10 +742,11 @@ impl TuiApp {
                 }
             }
             SemanticCommand::OpenHelp => {
+                self.help_scroll = 0;
                 self.overlay = Some(Overlay::welcome());
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    "Help · press Enter to get started or Esc to dismiss",
+                    "Help · PgUp/PgDn scroll · Esc close",
                 );
             }
             SemanticCommand::SelectEntry(path) => {
@@ -953,6 +954,7 @@ impl TuiApp {
             if on && self.selected_pending_hitl().is_some() {
                 self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
                     session_id: self.selected_session_id,
+                    expected_call_id: None,
                     decision: forge_types::HitlDecision::Approve,
                     actor: "tui-approve-all".into(),
                     feedback: None,
@@ -965,9 +967,13 @@ impl TuiApp {
             let trusted = forge_config::is_trusted(self.session_view.workspace_root());
             self.session_runtime.set_workspace_trusted(trusted);
             self.session_runtime.set_approve_all(on);
-            if on && self.selected_pending_hitl().is_some() {
-                self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
+            if let Some(payload) = self.selected_pending_hitl().filter(|_| on).cloned() {
+                self.pending_interaction.request_hitl_decision(
+                    HitlDecision::Approve,
+                    ApprovalGrant::Once,
+                    self.selected_session_id,
+                    payload.call_id,
+                );
             }
         }
         self.approve_all = on;
@@ -1044,10 +1050,11 @@ impl TuiApp {
                     self.open_github_issues();
                 }
                 Ok(SlashCommand::Help) => {
+                    self.help_scroll = 0;
                     self.overlay = Some(Overlay::welcome());
                     self.set_feedback(
                         FeedbackSeverity::Info,
-                        "Help · press Enter to get started or Esc to dismiss",
+                        "Help · PgUp/PgDn scroll · Esc close",
                     );
                 }
                 Ok(SlashCommand::Continue) => {

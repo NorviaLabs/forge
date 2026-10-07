@@ -1,0 +1,17 @@
+   FORGE · ⌂ /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpyr4fv2
+
+  ┌> Help ───────────────────────────────────────────────────────────────────┐
+  │  Forge is an AI coding agent for your terminal.                          │
+  │                                                                          │
+  │  Active: COMPOSER · No file open                                         │
+ ─│                                                                          │─
+  │  Global                                                                  │
+  │  • Tab / Shift+Tab  Move between visible blocks                          │
+  │  • Ctrl+E  Cycle navigator tabs (Sessions / Files / Git in a             │
+  │  repository)                                                             │
+  │  • Ctrl+P  Find a file by name                                           │
+  │  • Ctrl+Shift+F  Find text in files                                      │
+  │  • Ctrl+`  Toggle terminal panel                                         │
+  │  ↑↓ / PgUp/PgDn scroll · Esc close                                       │
+  └──────────────────────────────────────────────────────────────────────────┘
+   ● model/mock │ N/A                                   ready   ·  context 0%

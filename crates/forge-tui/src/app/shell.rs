@@ -1225,6 +1225,12 @@ async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSum
     result.map(|_| summary)
 }
 
+/// Opt-in native review uses the production loop with isolated fixture state.
+#[cfg(test)]
+pub(super) async fn run_refresh_fixture(app: TuiApp) -> Result<ExitSummary, TuiError> {
+    run_tui_app_inner(app, TuiLaunch::default()).await
+}
+
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut TuiApp,

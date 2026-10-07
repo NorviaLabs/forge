@@ -52,16 +52,6 @@ impl FeedbackModel {
 /// Map raw errors to operator-facing copy (TUI-08).
 pub fn classify_operator_error(raw: &str) -> String {
     let lower = raw.to_ascii_lowercase();
-    if lower.contains("validation")
-        || lower.contains("schema")
-        || lower.contains("invalid tool")
-        || lower.contains("invalid argument")
-    {
-        let trimmed: String = raw.chars().take(200).collect();
-        return format!(
-            "Correcting an invalid tool request: {trimmed}. No command was executed and no files were changed."
-        );
-    }
     if lower.contains("429") || lower.contains("rate limit") || lower.contains("rate_limit") {
         return "Model error: rate limited (HTTP 429). Wait and retry, or /model.".into();
     }
@@ -79,19 +69,37 @@ pub fn classify_operator_error(raw: &str) -> String {
         || lower.contains("fixture token")
         || lower.contains("fixture-")
     {
-        return "Model error: authentication failed. Run /connect xai and finish real OAuth \
-(not fixture), or set XAI_API_KEY."
+        return "Model error: authentication failed. Run /connect to review this provider's credentials."
             .into();
+    }
+    if lower.contains("validation")
+        || lower.contains("schema")
+        || lower.contains("invalid tool")
+        || lower.contains("invalid argument")
+    {
+        let detail = error_detail(raw);
+        return format!("Invalid tool request: {detail}\nReview the request before retrying.");
     }
     if lower.contains("timeout") || lower.contains("timed out") {
         return "Model error: request timed out. Retry or check the provider endpoint.".into();
     }
-    let trimmed: String = raw.chars().take(200).collect();
-    if trimmed.is_empty() {
+    let detail = error_detail(raw);
+    if detail.is_empty() {
         "Operation failed.".into()
     } else {
-        format!("Model error: {trimmed}")
+        format!("Operation failed: {detail}")
     }
+}
+
+/// Retain inspectable, bounded details in the transcript after the toast ends.
+/// Known credential errors above deliberately omit their raw payload.
+fn error_detail(raw: &str) -> String {
+    let mut chars = raw.chars();
+    let mut detail: String = chars.by_ref().take(4096).collect();
+    if chars.next().is_some() {
+        detail.push_str("\n[Error details truncated]");
+    }
+    crate::decision::visible_text(&detail)
 }
 
 #[cfg(test)]
@@ -117,8 +125,9 @@ mod tests {
     #[test]
     fn classify_validation() {
         let message = classify_operator_error("schema validation failed: path is required");
-        assert!(message.contains("invalid tool request"));
-        assert!(message.contains("No command was executed"));
+        assert!(message.contains("Invalid tool request"));
+        assert!(message.contains("Review the request"));
+        assert!(!message.contains("no files were changed"));
     }
 
     #[test]
@@ -147,5 +156,21 @@ mod tests {
         assert!(classify_operator_error("request timed out").contains("timed out"));
         assert_eq!(classify_operator_error(""), "Operation failed.");
         assert!(classify_operator_error("boom").contains("boom"));
+    }
+
+    #[test]
+    fn error_details_keep_the_tail_and_show_control_characters_without_execution() {
+        let message = classify_operator_error(&format!(
+            "{}\nuseful tail\u{1b}[2J",
+            "failure detail ".repeat(30)
+        ));
+        assert!(message.contains("useful tail"));
+        assert!(!message.contains('\u{1b}'));
+        assert!(message.contains("\\u{1b}"));
+        assert!(classify_operator_error(&"λ".repeat(5000)).contains("[Error details truncated]"));
+        assert!(!classify_operator_error("401 api_key=secret sk-private").contains("secret"));
+        assert!(
+            !classify_operator_error("schema invalid api_key=secret sk-private").contains("secret")
+        );
     }
 }

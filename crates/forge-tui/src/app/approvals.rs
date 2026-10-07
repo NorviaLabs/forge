@@ -67,6 +67,7 @@ struct ApprovalMenuState {
     /// `call_id` of the pending payload this menu was built for.
     call_id: Option<String>,
     selected: usize,
+    scroll: usize,
 }
 
 /// All session-scoped approval state. Its fields intentionally remain private:
@@ -86,6 +87,10 @@ pub(crate) struct ApprovalSessionState {
     /// approval stays pending until it arrives — nothing is decided by
     /// selecting the row alone.
     awaiting_denial_note: Option<String>,
+    /// The decision has its own scroll, so inspecting it never replaces the
+    /// parent's retained reading position.
+    reading_before: Option<(u16, bool)>,
+    presented_call_id: Option<String>,
 }
 
 /// Consequence shown for the deny-with-note row, and the only place it is
@@ -170,6 +175,179 @@ fn readable_remember_subject(call: &forge_types::ToolCall) -> String {
 }
 
 impl TuiApp {
+    /// A focused request uses the conversation's space, with details scrolling
+    /// independently above the always-reachable decision controls.
+    pub(super) fn render_approval_surface(
+        &mut self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+        let Some(payload) = self.selected_pending_hitl().cloned() else {
+            return;
+        };
+        ratatui::widgets::Clear.render(area, buf);
+        self.approval_session.presented_call_id = Some(payload.call_id.clone());
+        self.sync_approval_menu();
+        let request = ApprovalOverlayState::request_view(
+            &payload,
+            self.session_view.workspace_root().display().to_string(),
+        );
+        let rows = self.approval_menu_rows();
+        let selected = self
+            .approval_menu_selected()
+            .min(rows.len().saturating_sub(1));
+        let block = Block::default()
+            .style(theme::panel())
+            .borders(ratatui::widgets::Borders::TOP)
+            .border_style(theme::waiting_border())
+            .padding(ratatui::widgets::Padding::horizontal(2))
+            .title(Span::styled(" > Approval ", theme::warn()));
+        let inner = block.inner(area);
+        block.render(area, buf);
+        let width = inner.width.max(2);
+        let mut details = crate::decision::literal_lines(
+            &format!(
+                "Owner: {} · request {}",
+                self.selected_session_label(),
+                payload.call_id
+            ),
+            width,
+            theme::metadata_style(),
+        );
+        details.push(Line::styled(
+            format!("{} invocation", request.tool),
+            theme::text().add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        details.extend(crate::decision::literal_lines(
+            &request.command,
+            width,
+            theme::text(),
+        ));
+        details.push(Line::from(""));
+        details.extend(crate::decision::literal_lines(
+            &format!("Working directory: {}", request.cwd),
+            width,
+            theme::metadata_style(),
+        ));
+        if !request.env_delta.is_empty() && request.env_delta != "none" {
+            details.extend(crate::decision::literal_lines(
+                &format!("Environment: {}", request.env_delta),
+                width,
+                theme::metadata_style(),
+            ));
+        }
+        for (label, text) in [
+            ("Request", request.question.as_deref()),
+            ("Reason", request.reason.as_deref()),
+            ("Failure", request.failure.as_deref()),
+        ] {
+            if let Some(text) = text {
+                details.extend(crate::decision::literal_lines(
+                    &format!("{label}: {text}"),
+                    width,
+                    theme::warn(),
+                ));
+            }
+        }
+        details.extend(crate::decision::literal_lines(
+            if payload.sandbox_escalation {
+                "If approved: retries this command outside the filesystem sandbox. This explicit approval can run destructive commands."
+            } else {
+                crate::overlays::hitl_risk_summary(&payload.tool, &payload.args_redacted)
+            },
+            width,
+            theme::warn(),
+        ));
+        let help = rows
+            .get(selected)
+            .and_then(|row| row.help.as_deref())
+            .unwrap_or("");
+        let help_lines = crate::decision::literal_lines(help, width, theme::metadata_style());
+        if let Some(row) = rows.get(selected) {
+            details.push(Line::from(""));
+            details.extend(crate::decision::literal_lines(
+                &format!("Selected choice: {}", row.label),
+                width,
+                theme::text(),
+            ));
+            details.extend(help_lines.iter().cloned());
+        }
+        let max_options = if area.height < 18 { 2 } else { rows.len() };
+        let visible = rows
+            .len()
+            .min(max_options)
+            .min(inner.height.saturating_sub(5) as usize)
+            .max(1);
+        let help_height = help_lines.len().min(2) as u16;
+        let controls_height =
+            (visible as u16 + help_height + 2).min(inner.height.saturating_sub(1));
+        let body = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(controls_height),
+        );
+        let max_scroll = details.len().saturating_sub(body.height as usize);
+        self.approval_session.menu.scroll = self.approval_session.menu.scroll.min(max_scroll);
+        Paragraph::new(details)
+            .scroll((
+                self.approval_session.menu.scroll.min(u16::MAX as usize) as u16,
+                0,
+            ))
+            .render(body, buf);
+        let start = selected
+            .saturating_sub(visible / 2)
+            .min(rows.len().saturating_sub(visible));
+        let mut controls = vec![Line::styled(
+            format!(
+                "Choices {}–{} of {} · ↑↓ select",
+                start + 1,
+                (start + visible).min(rows.len()),
+                rows.len()
+            ),
+            theme::metadata_style(),
+        )];
+        self.option_rects.clear();
+        for (index, row) in rows.iter().enumerate().skip(start).take(visible) {
+            let style = if index == selected {
+                theme::focused_selection_style()
+            } else if self.hover_option == Some(index) {
+                theme::text().patch(theme::surface_hover())
+            } else {
+                theme::text()
+            };
+            controls.push(Line::styled(
+                format!(
+                    "{} [{}] {}",
+                    if index == selected { ">" } else { " " },
+                    row.key.as_deref().unwrap_or(""),
+                    crate::decision::visible_text(&row.label)
+                ),
+                style,
+            ));
+            self.option_rects.push((
+                index,
+                Rect::new(
+                    inner.x,
+                    body.bottom() + (index - start) as u16 + 1,
+                    inner.width,
+                    1,
+                ),
+            ));
+        }
+        controls.extend(help_lines.into_iter().take(help_height as usize));
+        controls.push(Line::styled(
+            "Enter decide · Esc don't run · PgUp/PgDn details · Tab leave",
+            theme::metadata_style(),
+        ));
+        Paragraph::new(controls).render(
+            Rect::new(inner.x, body.bottom(), inner.width, controls_height),
+            buf,
+        );
+    }
+
     pub(super) fn approval_menu_selected(&self) -> usize {
         self.approval_session.menu.selected
     }
@@ -218,6 +396,7 @@ impl TuiApp {
                     self.approval_session.menu = ApprovalMenuState {
                         call_id: Some(payload.call_id.clone()),
                         selected: 0,
+                        scroll: 0,
                     };
                 }
                 let n = self.approval_menu_kinds().len();
@@ -236,14 +415,20 @@ impl TuiApp {
     pub(super) fn sync_approval_focus(&mut self) {
         let Some(payload) = self.selected_pending_hitl() else {
             self.approval_session.focus_claimed_for = None;
+            if let Some((scroll, follow)) = self.approval_session.reading_before.take() {
+                self.conversation_view.scroll = scroll;
+                self.conversation_view.follow = follow;
+            }
             return;
         };
         if self.approval_session.focus_claimed_for.as_deref() == Some(payload.call_id.as_str()) {
             return;
         }
         self.approval_session.focus_claimed_for = Some(payload.call_id.clone());
+        self.approval_session
+            .reading_before
+            .get_or_insert((self.conversation_view.scroll, self.conversation_view.follow));
         self.focus_block(FocusBlock::Approval);
-        self.conversation_view.follow = true;
     }
 
     fn approval_menu_kinds(&self) -> Vec<ApprovalMenuKind> {
@@ -252,28 +437,31 @@ impl TuiApp {
         };
         if payload.denied_host.is_some() {
             return vec![
+                ApprovalMenuKind::Deny,
                 ApprovalMenuKind::AllowPatternAlways,
                 ApprovalMenuKind::AllowPattern,
                 ApprovalMenuKind::ApproveAll,
-                ApprovalMenuKind::Deny,
                 ApprovalMenuKind::DenyWithNote,
             ];
         }
         if payload.sandbox_escalation {
             return vec![
+                ApprovalMenuKind::Deny,
                 ApprovalMenuKind::AllowOnce,
                 ApprovalMenuKind::ApproveAll,
-                ApprovalMenuKind::Deny,
                 ApprovalMenuKind::DenyWithNote,
             ];
         }
         let approval = self.approval_state_for_payload(payload);
-        let mut kinds = vec![ApprovalMenuKind::AllowOnce, ApprovalMenuKind::ApproveAll];
+        let mut kinds = vec![
+            ApprovalMenuKind::Deny,
+            ApprovalMenuKind::AllowOnce,
+            ApprovalMenuKind::ApproveAll,
+        ];
         if approval.pattern_allow_eligible {
             kinds.push(ApprovalMenuKind::AllowPattern);
             kinds.push(ApprovalMenuKind::AllowPatternAlways);
         }
-        kinds.push(ApprovalMenuKind::Deny);
         kinds.push(ApprovalMenuKind::DenyWithNote);
         kinds
     }
@@ -411,14 +599,46 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<bool, TuiError> {
-        if self.selected_pending_hitl().is_none() {
+        if self.overlay.is_some() || self.selected_pending_hitl().is_none() {
             return Ok(false);
         }
         if self.focus.block() != FocusBlock::Approval {
             return Ok(false);
         }
+        let confirms = key.modifiers.is_empty()
+            && match key.code {
+                KeyCode::Enter | KeyCode::Esc => true,
+                KeyCode::Char(c) => ApprovalMenuKind::from_shortcut(c).is_some(),
+                _ => false,
+            };
+        if (confirms && self.approval_session.presented_call_id.is_none())
+            || self
+                .approval_session
+                .presented_call_id
+                .as_deref()
+                .is_some_and(|call_id| {
+                    self.selected_pending_hitl()
+                        .is_none_or(|payload| payload.call_id != call_id)
+                })
+        {
+            self.sync_approval_menu();
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "review the current approval request before deciding",
+            );
+            return Ok(true);
+        }
         self.sync_approval_menu();
         match key.code {
+            KeyCode::PageUp | KeyCode::PageDown if key.modifiers.is_empty() => {
+                let page = self.conversation_page_rows().saturating_sub(6).max(1) as usize;
+                self.approval_session.menu.scroll = if key.code == KeyCode::PageUp {
+                    self.approval_session.menu.scroll.saturating_sub(page)
+                } else {
+                    self.approval_session.menu.scroll.saturating_add(page)
+                };
+                Ok(true)
+            }
             KeyCode::Up if key.modifiers.is_empty() => {
                 let n = self.approval_menu_kinds().len().max(1);
                 self.approval_session.menu.selected =
@@ -531,10 +751,17 @@ impl TuiApp {
     }
 
     fn queue_approval_line(&mut self, action: ApprovalMenuKind) {
+        let Some(payload) = self.selected_pending_hitl().cloned() else {
+            return;
+        };
         match action {
             ApprovalMenuKind::AllowOnce => {
-                self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
+                self.pending_interaction.request_hitl_decision(
+                    HitlDecision::Approve,
+                    ApprovalGrant::Once,
+                    self.selected_session_id,
+                    payload.call_id.clone(),
+                );
             }
             ApprovalMenuKind::ApproveAll => {
                 if !forge_config::is_trusted(self.session_view.workspace_root()) {
@@ -545,8 +772,12 @@ impl TuiApp {
                     return;
                 }
                 self.set_approve_all(true);
-                self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
+                self.pending_interaction.request_hitl_decision(
+                    HitlDecision::Approve,
+                    ApprovalGrant::Once,
+                    self.selected_session_id,
+                    payload.call_id.clone(),
+                );
             }
             ApprovalMenuKind::AllowPattern | ApprovalMenuKind::AllowPatternAlways => {
                 let Some(payload) = self.selected_pending_hitl().cloned() else {
@@ -566,12 +797,20 @@ impl TuiApp {
                 } else {
                     ApprovalGrant::Session
                 };
-                self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Approve, grant);
+                self.pending_interaction.request_hitl_decision(
+                    HitlDecision::Approve,
+                    grant,
+                    self.selected_session_id,
+                    payload.call_id.clone(),
+                );
             }
             ApprovalMenuKind::Deny => {
-                self.pending_interaction
-                    .request_hitl_decision(HitlDecision::Deny, ApprovalGrant::Once);
+                self.pending_interaction.request_hitl_decision(
+                    HitlDecision::Deny,
+                    ApprovalGrant::Once,
+                    self.selected_session_id,
+                    payload.call_id.clone(),
+                );
             }
             // Nothing is decided yet: the refusal waits for the note, so the
             // operator can still change their mind by clearing the composer.
@@ -621,7 +860,25 @@ impl TuiApp {
         &mut self,
         note: &str,
     ) -> Result<(), TuiError> {
-        self.approval_session.awaiting_denial_note = None;
+        let expected_call_id = self
+            .approval_session
+            .awaiting_denial_note
+            .take()
+            .or_else(|| {
+                self.selected_pending_hitl()
+                    .map(|payload| payload.call_id.clone())
+            });
+        if expected_call_id.is_none()
+            || self
+                .selected_pending_hitl()
+                .is_none_or(|payload| Some(&payload.call_id) != expected_call_id.as_ref())
+        {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "approval request changed; review the current request",
+            );
+            return Ok(());
+        }
         let note = note.trim();
         let feedback = (!note.is_empty()).then_some(note);
         match self.selected_runtime() {
@@ -633,6 +890,7 @@ impl TuiApp {
             SelectedRuntime::Supervised(session_id) => {
                 self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
                     session_id,
+                    expected_call_id,
                     decision: HitlDecision::Deny,
                     actor: "tui".into(),
                     feedback: feedback.map(str::to_string),
@@ -653,9 +911,22 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let Some((decision, grant)) = self.pending_interaction.take_hitl_decision() else {
+        let Some((decision, grant, session_id, call_id)) =
+            self.pending_interaction.take_hitl_decision()
+        else {
             return Ok(());
         };
+        if self.selected_session_id != session_id
+            || self
+                .selected_pending_hitl()
+                .is_none_or(|payload| payload.call_id != call_id)
+        {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "approval request changed; review the current request",
+            );
+            return Ok(());
+        }
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
@@ -755,6 +1026,7 @@ impl TuiApp {
             }
             self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
                 session_id,
+                expected_call_id: Some(payload.call_id.clone()),
                 decision,
                 actor: "tui".into(),
                 feedback: None,
@@ -973,8 +1245,12 @@ impl TuiApp {
         if !identity_allowed {
             return Ok(());
         }
-        self.pending_interaction
-            .request_hitl_decision(HitlDecision::Approve, ApprovalGrant::Once);
+        self.pending_interaction.request_hitl_decision(
+            HitlDecision::Approve,
+            ApprovalGrant::Once,
+            self.selected_session_id,
+            payload.call_id.clone(),
+        );
         let label = identity
             .map(|identity| identity.label())
             .unwrap_or(payload.tool);
