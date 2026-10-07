@@ -1,0 +1,18 @@
+   FORGE · ⌂ /var/folders/rn/…/T/.tmpSdOLgw  ·  ./No commits yet on main*
+    Conversation ‹ Audit retries                      Ctrl+P files · / commands
+ C┌> Stop agent ─────────────────────────────────────────────────────────────┐
+ M│  Parent: c887b041-597c-4db1-b317-8d16590bef5c                            │
+ W│  agent #1: Audit retries                                                 │
+ /│  State: Waiting for approval                                             │c
+ B│                                                                          │
+ f│  Agent #1: Audit retries                                                 │
+ ←│  State: Waiting for approval                                             │
+  │  Child: 7450e31d-4e2e-479a-8e28-419ddf3e1d70                             │
+  │  Mode: Writer                                                            │
+  │  Workspace: /private/var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.t  │
+  │  > Keep waiting                                                          │
+ >│    Stop agent                                                            │
+ ─│  ←→ choose · Enter decide · PgUp/PgDn details · Esc return               │─
+  └──────────────────────────────────────────────────────────────────────────┘
+   ● OpenCode/deepseek-v4.1-flash │ Auto                ready   ·  context 1%
+   [◆ agents 3 · 3 need] [⇥ queue 6]

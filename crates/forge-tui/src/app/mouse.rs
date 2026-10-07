@@ -41,7 +41,8 @@ impl TuiApp {
             return Ok(());
         }
         if !self.explorer_dialog.is_open()
-            && (self.handle_task_stop_mouse(event).await?
+            && (self.handle_child_approval_mouse(event).await?
+                || self.handle_task_stop_mouse(event).await?
                 || self.handle_tasks_view_mouse(event).await?)
         {
             return Ok(());

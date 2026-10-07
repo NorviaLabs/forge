@@ -349,9 +349,20 @@ pub enum SupervisorCommand {
         session_id: SessionId,
         task_id: BackgroundTaskId,
     },
+    CancelBackgroundRun {
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        run_id: forge_core::BackgroundRunId,
+    },
     ResolveBackgroundApproval {
         session_id: SessionId,
         task_id: BackgroundTaskId,
+        decision: HitlDecision,
+    },
+    ResolveBackgroundRequest {
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        request: Box<forge_core::BackgroundApprovalRequest>,
         decision: HitlDecision,
     },
     GrantEgressHost {
@@ -2608,6 +2619,43 @@ async fn execute_command(
             let locked = task_actor.session.try_lock();
             if let Ok(mut session) = locked {
                 session.poll_background_tasks().await?;
+                refresh_actor(&state, &task_actor, &session).await?;
+            }
+        }
+        SupervisorCommand::CancelBackgroundRun {
+            session_id,
+            task_id,
+            run_id,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            if !task_actor.background_control.cancel_run(task_id, run_id) {
+                return Err(RepositorySupervisorError::Command(
+                    "background execution changed or finished · nothing stopped".into(),
+                ));
+            }
+            let locked = task_actor.session.try_lock();
+            if let Ok(mut session) = locked {
+                session.poll_background_tasks().await?;
+                refresh_actor(&state, &task_actor, &session).await?;
+            }
+        }
+        SupervisorCommand::ResolveBackgroundRequest {
+            session_id,
+            task_id,
+            request,
+            decision,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            if !task_actor
+                .background_control
+                .resolve_request(task_id, &request, decision)
+            {
+                return Err(RepositorySupervisorError::Command(
+                    "child request changed or was answered · inspect its current request".into(),
+                ));
+            }
+            let locked = task_actor.session.try_lock();
+            if let Ok(session) = locked {
                 refresh_actor(&state, &task_actor, &session).await?;
             }
         }
@@ -5895,6 +5943,42 @@ mod tests {
         }
         let approval = approval.expect("background approval stalled behind A's turn");
         assert!(approval.is_err());
+        for command in [
+            SupervisorCommand::CancelBackgroundRun {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+                run_id: forge_core::BackgroundRunId::new_v4(),
+            },
+            SupervisorCommand::ResolveBackgroundRequest {
+                session_id: id_a,
+                task_id: BackgroundTaskId(999),
+                request: Box::new(forge_core::BackgroundApprovalRequest {
+                    id: SessionId::new_v4(),
+                    run_id: forge_core::BackgroundRunId::new_v4(),
+                    child_session_id: SessionId::new_v4(),
+                    payload: forge_types::HitlPayload {
+                        call_id: "scoped".into(),
+                        tool: "bash".into(),
+                        args_redacted: serde_json::json!({"command": "true"}),
+                        reason: "test".into(),
+                        failure: None,
+                        sandbox_escalation: false,
+                        denied_host: None,
+                    },
+                }),
+                decision: HitlDecision::Approve,
+            },
+        ] {
+            let scoped =
+                tokio::time::timeout(std::time::Duration::from_secs(3), handle.command(command))
+                    .await;
+            if scoped.is_err() {
+                release.notify_waiters();
+            }
+            assert!(scoped
+                .expect("scoped background control stalled behind A's turn")
+                .is_err());
+        }
         assert_eq!(
             supervisor.snapshot(id_a).await.unwrap().task.turn_state,
             SupervisorTurnState::Running,
@@ -7732,6 +7816,30 @@ mod tests {
             SupervisorCommand::ResolveBackgroundApproval {
                 session_id: id,
                 task_id: BackgroundTaskId(1),
+                decision: HitlDecision::Deny,
+            },
+            SupervisorCommand::CancelBackgroundRun {
+                session_id: id,
+                task_id: BackgroundTaskId(1),
+                run_id: forge_core::BackgroundRunId::new_v4(),
+            },
+            SupervisorCommand::ResolveBackgroundRequest {
+                session_id: id,
+                task_id: BackgroundTaskId(1),
+                request: Box::new(forge_core::BackgroundApprovalRequest {
+                    id: SessionId::new_v4(),
+                    run_id: forge_core::BackgroundRunId::new_v4(),
+                    child_session_id: id,
+                    payload: forge_types::HitlPayload {
+                        call_id: "scoped".into(),
+                        tool: "bash".into(),
+                        args_redacted: serde_json::json!({"command": "true"}),
+                        reason: "test".into(),
+                        failure: None,
+                        sandbox_escalation: false,
+                        denied_host: None,
+                    },
+                }),
                 decision: HitlDecision::Deny,
             },
             SupervisorCommand::GrantEgressHost {

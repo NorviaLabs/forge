@@ -102,9 +102,24 @@ impl RenderedText {
 
     /// Invalidate screen-anchored selections before painting changed cells.
     pub fn validate_selection(&self, old: &Self, pane: CopyPane, sel: &mut MouseSelection) {
-        if sel.pane == Some(pane) && sel.is_active() && self != old {
+        if sel.pane == Some(pane)
+            && sel.is_active()
+            && (self.revision != old.revision || !self.same_cells(old))
+        {
             sel.clear();
         }
+    }
+
+    /// Focus and theme attributes do not change text coordinates.
+    pub(crate) fn same_cells(&self, other: &Self) -> bool {
+        self.area == other.area
+            && self.rows.len() == other.rows.len()
+            && self.rows.iter().zip(&other.rows).all(|(a, b)| {
+                a.len() == b.len()
+                    && a.iter().zip(b).all(|((ax, aw, ac), (bx, bw, bc))| {
+                        ax == bx && aw == bw && ac.symbol() == bc.symbol()
+                    })
+            })
     }
 }
 

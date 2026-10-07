@@ -4,6 +4,85 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+/// Named stop and approval dialogs share measured details and pinned choices.
+pub(crate) fn choice_surface(
+    area: ratatui::layout::Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    title: &str,
+    text: &str,
+    scroll: &mut usize,
+    choices: [&str; 2],
+    selected: usize,
+) -> Option<[ratatui::layout::Rect; 2]> {
+    use crate::{design::MODAL_PAD_X, overlays::centered_content_rect, theme};
+    use ratatui::layout::Rect;
+    use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget};
+
+    let width = centered_content_rect(area, 84, 7, 24)
+        .width
+        .saturating_sub(2 + 2 * MODAL_PAD_X);
+    let lines = literal_lines(text, width, theme::text());
+    let r = centered_content_rect(area, 84, lines.len().min(19) as u16 + 5, 24);
+    Clear.render(r, buf);
+    theme::fill(r, buf, theme::panel());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border())
+        .style(theme::panel())
+        .padding(Padding::horizontal(MODAL_PAD_X))
+        .title(theme::modal_title(title));
+    let inner = block.inner(r);
+    block.render(r, buf);
+    if inner.height < 4 {
+        return None;
+    }
+    let body = Rect::new(inner.x, inner.y, inner.width, inner.height - 3);
+    *scroll = (*scroll).min(lines.len().saturating_sub(body.height as usize));
+    Paragraph::new(
+        lines
+            .into_iter()
+            .skip(*scroll)
+            .take(body.height as usize)
+            .collect::<Vec<_>>(),
+    )
+    .render(body, buf);
+    let rects = [
+        Rect::new(inner.x, inner.bottom() - 3, inner.width, 1),
+        Rect::new(inner.x, inner.bottom() - 2, inner.width, 1),
+    ];
+    for (index, (label, rect)) in choices.into_iter().zip(rects).enumerate() {
+        let style = if selected == index {
+            theme::focused_selection_style()
+        } else if index == 1 {
+            theme::warn()
+        } else {
+            theme::metadata_style()
+        };
+        if selected == index {
+            theme::fill(rect, buf, style);
+        }
+        buf.set_line(
+            rect.x,
+            rect.y,
+            &Line::styled(
+                format!("{} {label}", if selected == index { ">" } else { " " }),
+                style,
+            ),
+            rect.width,
+        );
+    }
+    buf.set_line(
+        inner.x,
+        inner.bottom() - 1,
+        &Line::styled(
+            "←→ choose · Enter decide · PgUp/PgDn details · Esc return",
+            theme::metadata_style(),
+        ),
+        inner.width,
+    );
+    Some(rects)
+}
+
 pub(crate) fn visible_text(text: &str) -> String {
     let mut visible = String::new();
     for c in text.chars() {
@@ -16,6 +95,19 @@ pub(crate) fn visible_text(text: &str) -> String {
         }
     }
     visible
+}
+
+pub(crate) fn bounded_text(text: &str, max_bytes: usize) -> String {
+    let text = visible_text(text);
+    let mut output = String::new();
+    for grapheme in Span::raw(&text).styled_graphemes(Style::default()) {
+        if output.len() + grapheme.symbol.len() > max_bytes {
+            output.push_str("\n[findings truncated]");
+            break;
+        }
+        output.push_str(grapheme.symbol);
+    }
+    output
 }
 
 pub(crate) fn literal_lines(text: &str, width: u16, style: Style) -> Vec<Line<'static>> {

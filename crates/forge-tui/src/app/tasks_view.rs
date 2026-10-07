@@ -168,8 +168,12 @@ impl TuiApp {
                 );
             }
             KeyCode::Char('i') if filter != TaskFilter::Queue && plain => {
+                self.close_child_session();
                 self.dismiss_overlay();
-                self.attach_selected_task();
+                self.attach_selected_task().await;
+            }
+            KeyCode::Char('a') | KeyCode::Char('d') if filter == TaskFilter::Agents && plain => {
+                self.open_selected_child_decision();
             }
             KeyCode::Char('x') if filter != TaskFilter::Queue && plain => {
                 self.cancel_selected_task().await
@@ -272,11 +276,10 @@ impl TuiApp {
                         index + 1,
                         super::turn::shell_execution_text(task),
                     ),
-                    forge_core::BackgroundTaskKind::Subagent { role, .. } => format!(
-                        "Task #{} · {} · {} of {count}\nParent: {owner}\nAgent: {role}",
-                        task.id.0,
-                        super::turn::background_task_state(&task.status),
+                    forge_core::BackgroundTaskKind::Subagent { .. } => format!(
+                        "{} of {count} · Parent: {owner}\n{}",
                         index + 1,
+                        super::turn::child_execution_text(task)
                     ),
                 }
             }
@@ -458,7 +461,7 @@ impl TuiApp {
         } else {
             [
                 "Tab filter · ↑↓ select · → child · i insert · x stop/dismiss",
-                "PgUp/PgDn/Home/End details · Esc return",
+                "a/d decision · PgUp/PgDn/Home/End details · Esc return",
             ]
         };
         for (offset, hint) in hints.into_iter().enumerate() {

@@ -14,8 +14,12 @@ use chrono::{DateTime, Utc};
 use forge_types::{BackgroundTaskId, HitlDecision, HitlPayload, SessionId, TaskId};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::{AgentSession, LoopError};
+
+/// Execution identity exposed without requiring a frontend UUID dependency.
+pub type BackgroundRunId = Uuid;
 
 /// What kind of work a background task represents.
 #[derive(Debug, Clone)]
@@ -86,14 +90,58 @@ pub struct BackgroundShellExecution {
 }
 
 #[derive(Debug, Clone)]
+pub struct BackgroundChildExecution {
+    /// Recorded scheduling mode; a resumed child may have no recorded mode.
+    pub mode: Option<forge_tools::AgentMode>,
+    pub workspace: PathBuf,
+    pub branch: Option<String>,
+}
+
+/// One immutable request published by the child that owns it. The nonce
+/// distinguishes consecutive requests even when a provider repeats call IDs.
+#[derive(Debug, Clone)]
+pub struct BackgroundApprovalRequest {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub child_session_id: SessionId,
+    pub payload: HitlPayload,
+}
+
+impl BackgroundApprovalRequest {
+    pub fn matches(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.run_id == other.run_id
+            && self.child_session_id == other.child_session_id
+            && self.payload == other.payload
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct BackgroundApprovalReply {
+    pub request_id: Uuid,
+    pub decision: HitlDecision,
+}
+
+#[derive(Debug)]
+struct BackgroundApprovalControl {
+    run_id: Uuid,
+    pending: Arc<Mutex<Option<BackgroundApprovalRequest>>>,
+    sender: UnboundedSender<BackgroundApprovalReply>,
+}
+
+#[derive(Debug, Clone)]
 pub struct BackgroundTaskHandle {
     pub id: BackgroundTaskId,
+    /// New whenever the same display slot receives a new execution token.
+    pub run_id: Uuid,
     /// The foreground `TaskId` that was active when this background task
     /// was spawned — informational lineage, not a lifecycle dependency.
     pub parent_task_id: TaskId,
     pub kind: BackgroundTaskKind,
     /// Launch-time cwd and real bounded output; absent on restored tasks.
     pub shell: Option<BackgroundShellExecution>,
+    pub child: Option<BackgroundChildExecution>,
+    pub pending_approval: Arc<Mutex<Option<BackgroundApprovalRequest>>>,
     pub label: String,
     pub status: BackgroundTaskStatus,
     pub started_at: DateTime<Utc>,
@@ -136,18 +184,23 @@ pub struct BackgroundTaskHandle {
 /// signalling through this map reaches the same task the registry tracks.
 #[derive(Debug, Default)]
 pub struct BackgroundControl {
-    cancels: Mutex<HashMap<BackgroundTaskId, CancellationToken>>,
-    subagent_hitl: Mutex<HashMap<BackgroundTaskId, UnboundedSender<HitlDecision>>>,
+    cancels: Mutex<HashMap<BackgroundTaskId, (Uuid, CancellationToken)>>,
+    subagent_hitl: Mutex<HashMap<BackgroundTaskId, BackgroundApprovalControl>>,
 }
 
 impl BackgroundControl {
     /// Mirror a task's cancellation token so it can be signalled without the
     /// session lock. Called when a slot is created or its token replaced.
-    pub(crate) fn track_cancel(&self, id: BackgroundTaskId, cancel: CancellationToken) {
+    pub(crate) fn track_cancel(
+        &self,
+        id: BackgroundTaskId,
+        run_id: Uuid,
+        cancel: CancellationToken,
+    ) {
         self.cancels
             .lock()
             .expect("background cancel lock poisoned")
-            .insert(id, cancel);
+            .insert(id, (run_id, cancel));
     }
 
     /// Forget every control handle for a task that is no longer live.
@@ -169,7 +222,7 @@ impl BackgroundControl {
             .expect("background cancel lock poisoned")
             .get(&id)
         {
-            Some(token) => {
+            Some((_, token)) => {
                 token.cancel();
                 true
             }
@@ -177,12 +230,41 @@ impl BackgroundControl {
         }
     }
 
+    /// Stop only the execution that the operator inspected. Replacing a
+    /// token or restoring a slot cannot redirect an in-flight confirmation.
+    pub fn cancel_run(&self, id: BackgroundTaskId, expected_run: Uuid) -> bool {
+        let cancels = self
+            .cancels
+            .lock()
+            .expect("background cancel lock poisoned");
+        match cancels.get(&id) {
+            Some((run_id, token)) if *run_id == expected_run => {
+                token.cancel();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Mirror a subagent's decision sender while it can still be answered.
-    pub(crate) fn track_hitl(&self, id: BackgroundTaskId, tx: UnboundedSender<HitlDecision>) {
+    pub(crate) fn track_hitl(
+        &self,
+        id: BackgroundTaskId,
+        run_id: Uuid,
+        pending: Arc<Mutex<Option<BackgroundApprovalRequest>>>,
+        sender: UnboundedSender<BackgroundApprovalReply>,
+    ) {
         self.subagent_hitl
             .lock()
             .expect("subagent hitl lock poisoned")
-            .insert(id, tx);
+            .insert(
+                id,
+                BackgroundApprovalControl {
+                    run_id,
+                    pending,
+                    sender,
+                },
+            );
     }
 
     pub(crate) fn forget_hitl(&self, id: BackgroundTaskId) {
@@ -202,15 +284,61 @@ impl BackgroundControl {
     /// Route an approve/deny decision without the session lock. Returns
     /// `false` if the task isn't a subagent currently waiting on one.
     pub fn resolve_hitl(&self, id: BackgroundTaskId, decision: HitlDecision) -> bool {
-        match self
+        let request = self
             .subagent_hitl
             .lock()
             .expect("subagent hitl lock poisoned")
             .get(&id)
+            .and_then(|control| {
+                control
+                    .pending
+                    .lock()
+                    .expect("child approval lock poisoned")
+                    .clone()
+            });
+        request.is_some_and(|request| self.resolve_request(id, &request, decision))
+    }
+
+    /// Validate at the mutable producer control, independently of stale
+    /// parent snapshots and without waiting for the parent's session lock.
+    pub fn resolve_request(
+        &self,
+        id: BackgroundTaskId,
+        expected: &BackgroundApprovalRequest,
+        decision: HitlDecision,
+    ) -> bool {
+        let controls = self
+            .subagent_hitl
+            .lock()
+            .expect("subagent hitl lock poisoned");
+        let Some(control) = controls
+            .get(&id)
+            .filter(|control| control.run_id == expected.run_id)
+        else {
+            return false;
+        };
+        let mut pending = control
+            .pending
+            .lock()
+            .expect("child approval lock poisoned");
+        if !pending
+            .as_ref()
+            .is_some_and(|request| request.matches(expected))
         {
-            Some(tx) => tx.send(decision).is_ok(),
-            None => false,
+            return false;
         }
+        if control
+            .sender
+            .send(BackgroundApprovalReply {
+                request_id: expected.id,
+                decision,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        *pending = None;
+        true
     }
 }
 
@@ -270,14 +398,18 @@ impl BackgroundTaskRegistry {
     ) -> BackgroundTaskId {
         let id = BackgroundTaskId(self.next_id);
         self.next_id += 1;
-        self.control.track_cancel(id, cancel.clone());
+        let run_id = Uuid::new_v4();
+        self.control.track_cancel(id, run_id, cancel.clone());
         self.tasks.insert(
             id,
             BackgroundTaskHandle {
                 id,
+                run_id,
                 parent_task_id,
                 kind,
                 shell: None,
+                child: None,
+                pending_approval: Arc::new(Mutex::new(None)),
                 label: label.into(),
                 status: BackgroundTaskStatus::Queued,
                 started_at: Utc::now(),
@@ -315,14 +447,18 @@ impl BackgroundTaskRegistry {
         child_session_id: Option<SessionId>,
     ) -> BackgroundTaskId {
         self.next_id = self.next_id.max(id.0 + 1);
-        self.control.track_cancel(id, cancel.clone());
+        let run_id = Uuid::new_v4();
+        self.control.track_cancel(id, run_id, cancel.clone());
         self.tasks.insert(
             id,
             BackgroundTaskHandle {
                 id,
+                run_id,
                 parent_task_id,
                 kind,
                 shell: None,
+                child: None,
+                pending_approval: Arc::new(Mutex::new(None)),
                 label: label.into(),
                 status: BackgroundTaskStatus::Queued,
                 started_at: Utc::now(),
@@ -344,12 +480,41 @@ impl BackgroundTaskRegistry {
         }
     }
 
+    pub(crate) fn set_child_execution(
+        &mut self,
+        id: BackgroundTaskId,
+        child: BackgroundChildExecution,
+    ) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.child = Some(child);
+        }
+    }
+
+    pub(crate) fn set_pending_approval_cell(
+        &mut self,
+        id: BackgroundTaskId,
+        pending: Arc<Mutex<Option<BackgroundApprovalRequest>>>,
+    ) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.pending_approval = pending;
+        }
+    }
+
     /// Record where a subagent's worktree lives, for display (Tasks tab)
     /// and manual post-hoc review — no automated merge-back.
     pub fn set_worktree(&mut self, id: BackgroundTaskId, path: PathBuf, branch: String) {
+        self.set_worktree_record(id, path, Some(branch));
+    }
+
+    pub(crate) fn set_worktree_record(
+        &mut self,
+        id: BackgroundTaskId,
+        path: PathBuf,
+        branch: Option<String>,
+    ) {
         if let Some(task) = self.tasks.get_mut(&id) {
             task.worktree_path = Some(path);
-            task.worktree_branch = Some(branch);
+            task.worktree_branch = branch;
         }
     }
 
@@ -394,8 +559,9 @@ impl BackgroundTaskRegistry {
     }
 
     pub fn replace_cancel_token(&mut self, id: BackgroundTaskId, cancel: CancellationToken) {
-        self.control.track_cancel(id, cancel.clone());
         if let Some(task) = self.tasks.get_mut(&id) {
+            task.run_id = Uuid::new_v4();
+            self.control.track_cancel(id, task.run_id, cancel.clone());
             task.cancel = cancel;
         }
     }
@@ -765,17 +931,25 @@ impl AgentSession {
         // same checkout must be reported once, or cleanup would try to remove
         // it twice.
         for (session_id, retained) in &self.tasks.retained_subagents {
-            if worktrees
-                .iter()
-                .any(|worktree| worktree.path == retained.workspace)
+            let Some(record) = retained.worktree.as_ref() else {
+                continue;
+            };
+            if self.tasks.background.list().any(|task| {
+                task.child_session_id == Some(*session_id) && !task.status.is_terminal()
+            }) || !self
+                .coordinator
+                .descendant(self.session_id, *session_id)
+                .is_ok_and(|child| child.status.is_terminal())
             {
                 continue;
             }
-            worktrees.push(DescendantWorktree {
-                session_id: *session_id,
-                path: retained.workspace.clone(),
-                branch: None,
-            });
+            if worktrees
+                .iter()
+                .any(|worktree| worktree.path == record.path)
+            {
+                continue;
+            }
+            worktrees.push(record.clone());
         }
         // Deterministic order so callers and tests never depend on registry or
         // hash-map iteration order.
@@ -1010,17 +1184,90 @@ mod tests {
     fn control_signals_cancel_and_hitl_without_a_session() {
         let control = BackgroundControl::default();
         let cancel = CancellationToken::new();
-        control.track_cancel(BackgroundTaskId(1), cancel.clone());
+        control.track_cancel(BackgroundTaskId(1), Uuid::new_v4(), cancel.clone());
         assert!(control.cancel(BackgroundTaskId(1)));
         assert!(cancel.is_cancelled());
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        control.track_hitl(BackgroundTaskId(2), tx);
+        let request = BackgroundApprovalRequest {
+            id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            child_session_id: SessionId::new_v4(),
+            payload: HitlPayload {
+                call_id: "same-call".into(),
+                tool: "bash".into(),
+                args_redacted: serde_json::json!({"command":"printf approved"}),
+                reason: "test request".into(),
+                failure: None,
+                sandbox_escalation: false,
+                denied_host: None,
+            },
+        };
+        control.track_hitl(
+            BackgroundTaskId(2),
+            request.run_id,
+            Arc::new(Mutex::new(Some(request.clone()))),
+            tx,
+        );
         assert!(control.resolve_hitl(BackgroundTaskId(2), HitlDecision::Approve));
-        assert!(matches!(rx.try_recv(), Ok(HitlDecision::Approve)));
+        let reply = rx.try_recv().unwrap();
+        assert_eq!(reply.request_id, request.id);
+        assert!(matches!(reply.decision, HitlDecision::Approve));
 
         control.forget(BackgroundTaskId(1));
         assert!(!control.cancel(BackgroundTaskId(1)));
+    }
+
+    #[test]
+    fn scoped_controls_reject_a_replaced_run_and_a_repeated_call_id() {
+        let control = BackgroundControl::default();
+        let id = BackgroundTaskId(1);
+        let old_run = Uuid::new_v4();
+        let new_run = Uuid::new_v4();
+        let token = CancellationToken::new();
+        control.track_cancel(id, new_run, token.clone());
+        assert!(!control.cancel_run(id, old_run));
+        assert!(!token.is_cancelled());
+        assert!(control.cancel_run(id, new_run));
+
+        let request = BackgroundApprovalRequest {
+            id: Uuid::new_v4(),
+            run_id: new_run,
+            child_session_id: SessionId::new_v4(),
+            payload: HitlPayload {
+                call_id: "provider-repeated-id".into(),
+                tool: "bash".into(),
+                args_redacted: serde_json::json!({"command":"printf current"}),
+                reason: "current request".into(),
+                failure: None,
+                sandbox_escalation: false,
+                denied_host: None,
+            },
+        };
+        let pending = Arc::new(Mutex::new(Some(request.clone())));
+        let (sender, mut replies) = tokio::sync::mpsc::unbounded_channel();
+        control.track_hitl(id, new_run, pending.clone(), sender);
+        let mut previous = request.clone();
+        previous.id = Uuid::new_v4();
+        assert!(!control.resolve_request(id, &previous, HitlDecision::Approve));
+        let mut wrong_body = request.clone();
+        wrong_body.payload.args_redacted = serde_json::json!({"command":"printf different"});
+        assert!(!control.resolve_request(id, &wrong_body, HitlDecision::Approve));
+        let mut wrong_child = request.clone();
+        wrong_child.child_session_id = SessionId::new_v4();
+        assert!(!control.resolve_request(id, &wrong_child, HitlDecision::Approve));
+        let mut wrong_run = request.clone();
+        wrong_run.run_id = old_run;
+        assert!(!control.resolve_request(id, &wrong_run, HitlDecision::Approve));
+        assert!(replies.try_recv().is_err());
+        assert!(pending.lock().unwrap().is_some());
+        assert!(control.resolve_request(id, &request, HitlDecision::Deny));
+        let reply = replies.try_recv().unwrap();
+        assert_eq!(reply.request_id, request.id);
+        assert!(matches!(reply.decision, HitlDecision::Deny));
+        assert!(pending.lock().unwrap().is_none());
+        assert!(!control.resolve_request(id, &request, HitlDecision::Approve));
+        assert!(replies.try_recv().is_err());
     }
 
     mod session_tests {

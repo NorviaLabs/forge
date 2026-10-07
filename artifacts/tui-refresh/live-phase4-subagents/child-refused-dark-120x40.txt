@@ -1,0 +1,40 @@
+   FORGE · ⌂ /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpSdOLgw  ·  ./No commits yet on main*
+ ╭──────────────────────╮  > Conversation ‹ Independent sibling                               Ctrl+P files · / commands
+ │  / Search files...   │
+ │ Ctrl+Shift+F──────── │
+ │                      │   You
+ │   ▌⌄ .tmpSdOLgw      │   Inspect retry handling in λ/東京.rs. Fixture only; no validation claim.
+ │      › .forge        │     Hidden fixture reasoning; exclude from result handoff.
+ │      › j             │   Answer
+ │                      │   Mock provider finding from sibling: retry handling needs review. This is partial and
+ │                      │   unverified.
+ │                      │
+ │                      │   The child journal is read-only in this view.
+ │                      │   ▸   Shell
+ │                      │   $ printf 'Actual disposable child command: sibling λ/東京\n' · skipped · denied
+ │                      │   Answer
+ │                      │   done
+ │                      │ Read-only inspection · Parent: c887b041-597c-4db1-b317-8d16590bef5c
+ │                      │ Agent #3: Independent sibling
+ │                      │ State: Failed
+ │                      │ Child: d0b09072-9f87-4abd-9039-349bb306df8c
+ │                      │ Mode: Read-only
+ │                      │ Workspace: /private/var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpSdOLgw
+ │                      │ Branch: main
+ │                      │ ← parent · a/d decision · i insert result · x stop
+ │                      │
+ │                      │   Queue · 6 · +3 more · /tasks inspect
+ │                      │   > 1. Retained parent follow-up 1
+ │                      │     2. Retained parent follow-up 2
+ │                      │     3. Retained parent follow-up 3
+ │                      │   Background · 3 ────────────────────────────────────────────────────────────────────────────
+ │                      │ > [!] ◆ Independent sibling                                                             905s
+ │                      │   [✓] ◆ Read-only reviewer                                                              872s
+ │                      │   [-] ◆ Audit retries                                                                   787s
+ │                      │ ─────────────────────────────────────────────────────────────────────────────────────────────
+ │                      │   Retained parent draft λ/東京.rs.
+ │                      │   Partial findings from Audit retries · cancelled · unverified
+ │                      │   Mock provider finding from writer: retry handling needs review. This is partial and
+ ╰──────────────────────╯   unverified.The child journal is read-only in this view.
+                                                                 ↑↓ select · i insert · a/d inspect decision · x stop
+   [✕ agents 3 · 1 failed] [⇥ queue 6]

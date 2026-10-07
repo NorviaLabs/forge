@@ -183,6 +183,8 @@ impl TuiApp {
                 follow: true,
                 context_reset_snapshot: None,
                 splash_dismissed: false,
+                restore_top: None,
+                restore_lines: None,
             },
             render_cache: RenderCacheState::default(),
             repo_header_state: RepoHeaderState {
@@ -219,6 +221,7 @@ impl TuiApp {
             dock_paint: DockPaintState::default(),
             task_view_paint: TaskViewPaintState::default(),
             task_stop_paint: None,
+            child_approval_paint: None,
             dismissed_background: std::collections::HashMap::new(),
             hover_background: None,
             slash_popup_rows: Vec::new(),
@@ -427,6 +430,8 @@ impl TuiApp {
                 follow: true,
                 context_reset_snapshot: None,
                 splash_dismissed: false,
+                restore_top: None,
+                restore_lines: None,
             },
             render_cache: RenderCacheState::default(),
             repo_header_state: RepoHeaderState {
@@ -463,6 +468,7 @@ impl TuiApp {
             dock_paint: DockPaintState::default(),
             task_view_paint: TaskViewPaintState::default(),
             task_stop_paint: None,
+            child_approval_paint: None,
             dismissed_background: std::collections::HashMap::new(),
             hover_background: None,
             slash_popup_rows: Vec::new(),

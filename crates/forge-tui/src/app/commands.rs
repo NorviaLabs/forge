@@ -569,11 +569,8 @@ impl TuiApp {
             KeyCode::Char('x') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelSelectedBackgroundTask)
             }
-            KeyCode::Char('a') if key.modifiers.is_empty() => {
-                Some(SemanticCommand::ApproveSelectedBackgroundTask)
-            }
-            KeyCode::Char('d') if key.modifiers.is_empty() => {
-                Some(SemanticCommand::DenySelectedBackgroundTask)
+            KeyCode::Char('a') | KeyCode::Char('d') if key.modifiers.is_empty() => {
+                Some(SemanticCommand::OpenSelectedChildDecision)
             }
             KeyCode::Char('i') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::AttachSelectedBackgroundTask)
@@ -882,13 +879,8 @@ impl TuiApp {
             }
             SemanticCommand::CancelSelectedBackgroundTask => self.cancel_selected_task().await,
             SemanticCommand::OpenSelectedChildSession => self.open_selected_child_session().await,
-            SemanticCommand::ApproveSelectedBackgroundTask => {
-                self.resolve_selected_task_hitl(HitlDecision::Approve)
-            }
-            SemanticCommand::DenySelectedBackgroundTask => {
-                self.resolve_selected_task_hitl(HitlDecision::Deny)
-            }
-            SemanticCommand::AttachSelectedBackgroundTask => self.attach_selected_task(),
+            SemanticCommand::OpenSelectedChildDecision => self.open_selected_child_decision(),
+            SemanticCommand::AttachSelectedBackgroundTask => self.attach_selected_task().await,
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy_state.is_active() {
                     if self.cancellation.is_requested() {
@@ -1952,11 +1944,11 @@ mod tests {
             ),
             (
                 key(KeyCode::Char('a'), NONE),
-                SemanticCommand::ApproveSelectedBackgroundTask,
+                SemanticCommand::OpenSelectedChildDecision,
             ),
             (
                 key(KeyCode::Char('d'), NONE),
-                SemanticCommand::DenySelectedBackgroundTask,
+                SemanticCommand::OpenSelectedChildDecision,
             ),
         ] {
             assert_eq!(

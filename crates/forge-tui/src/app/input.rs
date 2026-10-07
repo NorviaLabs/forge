@@ -355,6 +355,7 @@ impl TuiApp {
     /// buffers (an open editor, a rendered stream preview) and guarantees the
     /// two tasks never share a live copy of anything.
     pub(super) fn take_session_view_state(&mut self) -> SessionViewState {
+        self.close_child_session();
         let blank = SessionViewState::default();
         SessionViewState {
             input: std::mem::replace(&mut self.input, blank.input),
@@ -1193,6 +1194,13 @@ impl TuiApp {
         }
         match self.focus.mode() {
             FocusMode::Navigation if self.focus.block() == FocusBlock::Composer => {
+                if self.child_view.is_some() {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "read-only view · ← to return to your session",
+                    );
+                    return;
+                }
                 self.input.history_browse = false;
                 self.input.insert_paste(data);
                 self.clamp_slash_suggest();
@@ -1255,6 +1263,13 @@ impl TuiApp {
     }
 
     pub(super) async fn submit_composer_message(&mut self) -> Result<(), TuiError> {
+        if self.child_view.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "read-only view · ← to return to your session",
+            );
+            return Ok(());
+        }
         // A pending approval normally rejects composer input as stale
         // (`classify_input`). The one exception is a note the operator was
         // explicitly asked for by picking "Don't run, and say why" — it is an
@@ -1932,6 +1947,19 @@ impl TuiApp {
     }
 
     async fn type_to_compose(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        if self.child_view.is_some() {
+            if matches!(key.code, KeyCode::Char(_))
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "read-only view · ← to return to your session",
+                );
+            }
+            return Ok(false);
+        }
         // While an approval is pending the composer is not the answer input;
         // typing must neither move focus off the approval card nor accumulate
         // text behind the waiting state.
@@ -2029,6 +2057,9 @@ impl TuiApp {
     }
 
     async fn handle_chat_composer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        if self.child_view.is_some() {
+            return Ok(false);
+        }
         if self.inline_search.is_some() {
             return Ok(self.handle_inline_search_key(key));
         }
@@ -2349,7 +2380,10 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.handle_task_stop_key(key).await? || self.handle_tasks_view_key(key).await? {
+        if self.handle_child_approval_key(key).await?
+            || self.handle_task_stop_key(key).await?
+            || self.handle_tasks_view_key(key).await?
+        {
             return Ok(());
         }
 

@@ -34,13 +34,15 @@ use forge_governance::AclPolicy;
 use forge_storage::RuntimeStorage;
 use forge_tools::ToolContext;
 use forge_types::{
-    BackgroundTaskId, HitlDecision, Message, MessageRole, ModelStreamEvent, SessionId,
-    TaskLifecycle,
+    BackgroundTaskId, Message, MessageRole, ModelStreamEvent, SessionId, TaskLifecycle,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_coordinator::AgentCommand;
-use crate::background::{BackgroundTaskKind, BackgroundTaskOutcome, BackgroundTaskStatus};
+use crate::background::{
+    BackgroundApprovalReply, BackgroundApprovalRequest, BackgroundChildExecution,
+    BackgroundTaskKind, BackgroundTaskOutcome, BackgroundTaskStatus,
+};
 use crate::persistence::SessionPersistence;
 use crate::task_runtime::SubagentRuntime;
 use crate::turn_state::TurnState;
@@ -378,8 +380,18 @@ impl AgentSession {
         let runtime = Arc::new(SubagentRuntime {
             result_sink: Arc::new(std::sync::Mutex::new(None)),
             latest_message: Arc::new(std::sync::Mutex::new(None)),
+            run_id: Mutex::new(uuid::Uuid::new_v4()),
+            pending_approval: Arc::new(Mutex::new(None)),
         });
-        let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
+        let metadata = BackgroundChildExecution {
+            mode: None,
+            workspace: child.workspace_root().to_path_buf(),
+            branch: None,
+        };
+        self.tasks
+            .background
+            .set_child_execution(task.id, metadata.clone());
+        let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<BackgroundApprovalReply>();
         self.tasks.retained_subagents.insert(
             child_session_id,
             crate::task_runtime::RetainedSubagent {
@@ -387,6 +399,12 @@ impl AgentSession {
                 workspace: child.workspace_root().to_path_buf(),
                 runtime: runtime.clone(),
                 hitl_sender: hitl_tx,
+                child: metadata,
+                worktree: Some(crate::DescendantWorktree {
+                    session_id: child_session_id,
+                    path: child.workspace_root().to_path_buf(),
+                    branch: None,
+                }),
             },
         );
         spawn_subagent_actor(
@@ -414,12 +432,16 @@ impl AgentSession {
             .descendant(self.session_id, target)
             .map_err(|error| LoopError::Other(error.to_string()))?;
         if !snapshot.status.is_terminal() {
-            return Ok(None);
+            return Err(LoopError::Other(
+                crate::agent_coordinator::AgentCoordinatorError::Busy(target).to_string(),
+            ));
         }
         let label = retained.label.clone();
         let workspace = retained.workspace.clone();
         let runtime = retained.runtime.clone();
         let hitl_sender = retained.hitl_sender.clone();
+        let metadata = retained.child.clone();
+        let worktree = retained.worktree.clone();
         let cancel = CancellationToken::new();
         let task_id = self.tasks.background.spawn_slot(
             BackgroundTaskKind::Subagent {
@@ -434,6 +456,19 @@ impl AgentSession {
         self.tasks
             .background
             .set_auto_continue_on_completion(task_id, self.approve_all);
+        let run_id = self
+            .tasks
+            .background
+            .get(task_id)
+            .expect("new followup slot")
+            .run_id;
+        *runtime.run_id.lock().unwrap() = run_id;
+        self.tasks
+            .background
+            .set_child_execution(task_id, metadata.clone());
+        self.tasks
+            .background
+            .set_pending_approval_cell(task_id, runtime.pending_approval.clone());
         self.journal
             .append_background_task_started_with_parent(
                 self.session_id,
@@ -447,22 +482,22 @@ impl AgentSession {
         self.journal
             .append_subagent_spawned(self.session_id, task_id, target, &label, &workspace)
             .await?;
-        let branch = workspace
-            .file_name()
-            .map(|name| format!("forge/subagent/{}", name.to_string_lossy()))
-            .unwrap_or_else(|| format!("forge/subagent/{label}"));
-        self.tasks
-            .background
-            .set_worktree(task_id, workspace, branch);
+        if let Some(worktree) = worktree {
+            self.tasks
+                .background
+                .set_worktree_record(task_id, worktree.path, worktree.branch);
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         *runtime.result_sink.lock().unwrap() = Some(tx);
         self.tasks
             .background
             .set_latest_message_cell(task_id, runtime.latest_message.clone());
-        self.tasks
-            .background
-            .control()
-            .track_hitl(task_id, hitl_sender);
+        self.tasks.background.control().track_hitl(
+            task_id,
+            run_id,
+            runtime.pending_approval.clone(),
+            hitl_sender,
+        );
         self.tasks
             .receivers
             .insert(task_id, std::sync::Mutex::new(rx));
@@ -618,7 +653,7 @@ impl AgentSession {
         }
 
         let child = match self
-            .create_child(child_session_id, child_workspace, cancel, &spec)
+            .create_child(child_session_id, child_workspace.clone(), cancel, &spec)
             .await
         {
             Ok(child) => child,
@@ -638,6 +673,23 @@ impl AgentSession {
         };
 
         self.tasks.background.mark_running(task_id);
+        let metadata = BackgroundChildExecution {
+            mode: Some(spec.mode),
+            workspace: child_workspace.clone(),
+            branch: worktree
+                .as_ref()
+                .map(|worktree| worktree.branch.clone())
+                .or_else(|| {
+                    forge_storage::list_worktree_records(&repo_root)
+                        .ok()?
+                        .into_iter()
+                        .find(|record| record.path == child_workspace)?
+                        .branch
+                }),
+        };
+        self.tasks
+            .background
+            .set_child_execution(task_id, metadata.clone());
         if let Some(worktree) = &worktree {
             self.tasks.background.set_worktree(
                 task_id,
@@ -652,12 +704,39 @@ impl AgentSession {
             .unwrap_or_default();
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let task = self.tasks.background.get(task_id).expect("new child slot");
+        let run_id = task.run_id;
+        let pending_approval = task.pending_approval.clone();
         let runtime = Arc::new(SubagentRuntime {
             result_sink: Arc::new(std::sync::Mutex::new(Some(tx))),
             latest_message,
+            run_id: Mutex::new(run_id),
+            pending_approval: pending_approval.clone(),
         });
-        let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
-        self.tasks.background.control().track_hitl(task_id, hitl_tx);
+        let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<BackgroundApprovalReply>();
+        self.tasks.background.control().track_hitl(
+            task_id,
+            run_id,
+            pending_approval,
+            hitl_tx.clone(),
+        );
+        // Reuse the retained actor path for both fresh and replayed children.
+        // Every explicit follow-up gets its own output receiver and run binding.
+        self.tasks.retained_subagents.insert(
+            child_session_id,
+            crate::task_runtime::RetainedSubagent {
+                label: spec.role.clone(),
+                workspace: child_workspace,
+                runtime: runtime.clone(),
+                hitl_sender: hitl_tx,
+                child: metadata,
+                worktree: worktree.as_ref().map(|worktree| crate::DescendantWorktree {
+                    session_id: child_session_id,
+                    path: worktree.path.clone(),
+                    branch: Some(worktree.branch.clone()),
+                }),
+            },
+        );
         let prompt = spec.prompt.clone();
         spawn_subagent_actor(
             child,
@@ -721,7 +800,7 @@ fn spawn_subagent_actor(
     resume_turn: bool,
     child_session_id: SessionId,
     runtime: Arc<SubagentRuntime>,
-    mut hitl_rx: tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
+    mut hitl_rx: tokio::sync::mpsc::UnboundedReceiver<BackgroundApprovalReply>,
     coordinator: AgentCoordinator,
     writer_gate: Option<Arc<Semaphore>>,
 ) -> Result<(), LoopError> {
@@ -734,10 +813,17 @@ fn spawn_subagent_actor(
             None => None,
         };
         let mut child = child;
-        let result = if let Some(prompt) = initial_prompt {
-            Some(child.run_user_message(&prompt).await)
-        } else if resume_turn {
-            Some(child.run_agent_turns(None).await)
+        let result = if initial_prompt.is_some() || resume_turn {
+            let probe = ActivityProbe::start(runtime.latest_message.clone());
+            let result = if let Some(prompt) = initial_prompt {
+                child
+                    .run_user_message_with_stream(&prompt, Some(probe.sender()))
+                    .await
+            } else {
+                child.run_agent_turns(Some(probe.sender())).await
+            };
+            probe.finish();
+            Some(result)
         } else {
             None
         };
@@ -886,7 +972,7 @@ async fn drive_subagent(
     mut result: Result<forge_types::ModelResponse, LoopError>,
     child_session_id: SessionId,
     runtime: Arc<SubagentRuntime>,
-    hitl_rx: &mut tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
+    hitl_rx: &mut tokio::sync::mpsc::UnboundedReceiver<BackgroundApprovalReply>,
     coordinator: AgentCoordinator,
 ) -> AgentSession {
     let cancel_token = child
@@ -950,41 +1036,52 @@ async fn resume_subagent_after_hitl(
     result: &mut Result<forge_types::ModelResponse, LoopError>,
     child_session_id: SessionId,
     runtime: &SubagentRuntime,
-    hitl_rx: &mut tokio::sync::mpsc::UnboundedReceiver<HitlDecision>,
+    hitl_rx: &mut tokio::sync::mpsc::UnboundedReceiver<BackgroundApprovalReply>,
     coordinator: &AgentCoordinator,
     cancel_token: &CancellationToken,
 ) {
-    while child.active_task.lifecycle == TaskLifecycle::Waiting {
+    'waiting: while child.active_task.lifecycle == TaskLifecycle::Waiting {
         let Some(payload) = child.pending_hitl().cloned() else {
             break;
         };
         let _ = coordinator.update(child_session_id, AgentStatus::Waiting, None);
+        let request = BackgroundApprovalRequest {
+            id: uuid::Uuid::new_v4(),
+            run_id: *runtime.run_id.lock().unwrap(),
+            child_session_id,
+            payload: payload.clone(),
+        };
+        *runtime.pending_approval.lock().unwrap() = Some(request.clone());
         if let Some(tx) = runtime.result_sink.lock().unwrap().clone() {
             let _ = tx.send(BackgroundTaskOutcome::WaitingForApproval(payload));
         }
 
-        tokio::select! {
-            decision = hitl_rx.recv() => match decision {
-                Some(decision) => {
-                    if let Err(error) = child.resolve_hitl(decision, "subagent-approval").await {
-                        *result = Err(error);
-                        break;
-                    }
-                    let probe = ActivityProbe::start(runtime.latest_message.clone());
-                    *result = child.run_agent_turns(Some(probe.sender())).await;
-                    probe.finish();
-                    snapshot_subagent(child, runtime);
-                    if child.active_task.lifecycle == TaskLifecycle::Working {
-                        let _ = coordinator.update(child_session_id, AgentStatus::Running, None);
-                    }
-                }
-                // Sender dropped (parent session gone) — the caller reconciles
-                // any remaining in-progress lifecycle to Cancelled.
-                None => break,
-            },
-            _ = cancel_token.cancelled() => break,
+        let decision = loop {
+            tokio::select! {
+                decision = hitl_rx.recv() => match decision {
+                    Some(reply) if reply.request_id == request.id => break reply.decision,
+                    Some(_) => continue,
+                    // Sender dropped (parent session gone) — the caller reconciles
+                    // any remaining in-progress lifecycle to Cancelled.
+                    None => break 'waiting,
+                },
+                _ = cancel_token.cancelled() => break 'waiting,
+            }
+        };
+        *runtime.pending_approval.lock().unwrap() = None;
+        if let Err(error) = child.resolve_hitl(decision, "subagent-approval").await {
+            *result = Err(error);
+            break;
+        }
+        let probe = ActivityProbe::start(runtime.latest_message.clone());
+        *result = child.run_agent_turns(Some(probe.sender())).await;
+        probe.finish();
+        snapshot_subagent(child, runtime);
+        if child.active_task.lifecycle == TaskLifecycle::Working {
+            let _ = coordinator.update(child_session_id, AgentStatus::Running, None);
         }
     }
+    *runtime.pending_approval.lock().unwrap() = None;
 }
 
 fn subagent_background_status(
@@ -1173,6 +1270,57 @@ mod tests {
             usage: None,
             thinking: None,
         }
+    }
+
+    #[tokio::test]
+    async fn read_only_child_and_followup_report_actual_workspace_without_cleanup_ownership() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path()).await;
+        let mut session = session_with_script(
+            dir.path(),
+            vec![
+                text_response("first finding"),
+                text_response("follow-up finding"),
+            ],
+        )
+        .await;
+        let id = session
+            .spawn_subagent(SubagentSpec {
+                role: "reader".into(),
+                prompt: "inspect".into(),
+                mode: AgentMode::ReadOnly,
+                tool_allowlist: None,
+            })
+            .await
+            .unwrap();
+        wait_terminal(&mut session, id).await;
+        let task = session.background().get(id).unwrap();
+        let metadata = task.child.as_ref().unwrap();
+        assert!(matches!(metadata.mode, Some(AgentMode::ReadOnly)));
+        assert_eq!(metadata.branch.as_deref(), Some("main"));
+        assert_eq!(
+            metadata.workspace.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+        assert!(task.worktree_path.is_none());
+        let child = task.child_session_id.unwrap();
+        let old_run = task.run_id;
+        assert!(session.descendant_worktrees().is_empty());
+        let next = session
+            .followup_retained_subagent(child, "inspect again".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(next, id);
+        assert_ne!(session.background().get(next).unwrap().run_id, old_run);
+        assert!(!session.background_control().cancel_run(next, old_run));
+        assert!(session.descendant_worktrees().is_empty());
+        assert!(matches!(
+            wait_terminal(&mut session, next).await,
+            BackgroundTaskStatus::Succeeded { .. }
+        ));
+        assert!(session.descendant_worktrees().is_empty());
+        assert!(dir.path().join("a.txt").exists());
     }
 
     async fn wait_terminal(
