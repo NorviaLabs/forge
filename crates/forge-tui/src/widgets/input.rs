@@ -86,6 +86,18 @@ impl InputModel {
         self.insert_paste(pasted);
     }
 
+    /// An explicit result handoff remains editable and visible in the draft.
+    pub fn append_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.cursor = self.text.len();
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.insert_newline();
+        }
+        self.insert_str(&normalize_pasted_text(text));
+    }
+
     pub fn backspace(&mut self) {
         if self.cursor == 0 {
             return;
@@ -697,6 +709,19 @@ mod tests {
         input.append_paste("  \n");
         assert_eq!(input.text, "existing draft");
         assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn append_result_keeps_pending_pastes_and_leaves_long_evidence_editable() {
+        let payload = "source ".repeat(200);
+        let result = "evidence ✓ ".repeat(200);
+        let mut input = InputModel::default();
+        input.insert_paste(&payload);
+        input.cursor = 0;
+        input.append_text(&result);
+        assert!(input.text.ends_with(&result));
+        assert_eq!(input.cursor, input.text.len());
+        assert_eq!(input.take(), format!("{payload}\n{result}"));
     }
 
     use ratatui::backend::TestBackend;

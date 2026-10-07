@@ -39,6 +39,20 @@ async fn wait_for_task_status(
     panic!("task {id:?} never reached the expected status");
 }
 
+async fn confirm_named_stop(app: &mut TuiApp) {
+    let text = render_app_text(app, 80, 18);
+    assert!(
+        text.contains("Keep running") || text.contains("Keep waiting"),
+        "{text}"
+    );
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn task_selection_remains_on_the_named_job_when_a_sibling_finishes() {
     let (_dir, mut app) = focus_test_app().await;
@@ -64,6 +78,7 @@ async fn task_selection_remains_on_the_named_job_when_a_sibling_finishes() {
         Some(selected)
     );
     app.cancel_selected_task().await;
+    confirm_named_stop(&mut app).await;
     wait_for_task_status(&mut app, selected, |status| {
         matches!(status, forge_core::BackgroundTaskStatus::Cancelled)
     })
@@ -493,6 +508,8 @@ async fn sidebar_down_then_cancel_targets_the_selected_row() {
         .await
         .unwrap();
 
+    confirm_named_stop(&mut app).await;
+
     // `cancel()` only flips the task's `CancellationToken` — the status
     // transition to `Cancelled` happens asynchronously once the spawned job
     // reacts and `poll_background_tasks` drains the result.
@@ -617,5 +634,234 @@ async fn attach_is_a_no_op_for_a_running_task() {
         app.status_state.message.contains("hasn't finished"),
         "{:?}",
         app.status_state.message
+    );
+}
+
+#[tokio::test]
+async fn jobs_stop_defaults_to_keep_and_confirms_the_original_named_task() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("parent draft λ");
+    app.input.cursor = 3;
+    let queued = app
+        .session_runtime
+        .enqueue_task("next prompt")
+        .await
+        .unwrap();
+    let first = app
+        .session_runtime
+        .spawn_background_shell("printf 'partial ✓\\n'; sleep 30".into(), "first".into())
+        .await
+        .unwrap();
+    let second = app
+        .session_runtime
+        .spawn_background_shell("sleep 30".into(), "sibling".into())
+        .await
+        .unwrap();
+    app.task_selection
+        .select_task(app.selected_session_id, first);
+    app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Jobs));
+    app.cancel_selected_task().await;
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::TaskStop { stop: false, .. })
+    ));
+    render_app_text(&mut app, 80, 18);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::Tasks { .. })));
+    assert!(!app
+        .session_runtime
+        .background()
+        .get(first)
+        .unwrap()
+        .cancel
+        .is_cancelled());
+    assert_eq!(app.input.text, "parent draft λ");
+    assert_eq!(app.input.cursor, 3);
+
+    let capture = app
+        .session_runtime
+        .background()
+        .get(first)
+        .unwrap()
+        .shell
+        .as_ref()
+        .unwrap()
+        .output
+        .clone();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while capture.snapshot().stdout.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    app.cancel_selected_task().await;
+    // A row reorder or later selection cannot redirect the captured target.
+    app.task_selection
+        .select_task(app.selected_session_id, second);
+    confirm_named_stop(&mut app).await;
+    wait_for_task_status(&mut app, first, |s| s.is_terminal()).await;
+    assert_eq!(
+        app.session_runtime.background().get(first).unwrap().status,
+        forge_core::BackgroundTaskStatus::Cancelled
+    );
+    assert!(!app
+        .session_runtime
+        .background()
+        .get(second)
+        .unwrap()
+        .cancel
+        .is_cancelled());
+    assert_eq!(
+        app.session_runtime.queue().peek_next_queued().unwrap().id,
+        queued.id
+    );
+    assert_eq!(app.input.text, "parent draft λ");
+    assert_eq!(app.input.cursor, 3);
+    app.task_selection
+        .select_task(app.selected_session_id, first);
+    app.dismiss_overlay();
+    app.attach_selected_task();
+    assert!(app.input.text.starts_with("parent draft λ\nJob #"));
+    assert!(app
+        .input
+        .text
+        .contains("Partial output · cancelled\nstdout:\npartial ✓"));
+    assert!(app.input.text.contains("Exit code: not observed"));
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    assert_eq!(app.session_runtime.queue().len(), 1);
+    app.session_runtime.cancel_background_task(second);
+    wait_for_task_status(&mut app, second, |s| s.is_terminal()).await;
+}
+
+#[tokio::test]
+async fn jobs_stop_requires_a_painted_owner_and_rechecks_completion() {
+    let (_dir, mut app) = focus_test_app().await;
+    let id = app
+        .session_runtime
+        .spawn_background_shell("sleep 0.2".into(), "finishing".into())
+        .await
+        .unwrap();
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.cancel_selected_task().await;
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app
+        .session_runtime
+        .background()
+        .get(id)
+        .unwrap()
+        .cancel
+        .is_cancelled());
+    render_app_text(&mut app, 80, 18);
+    wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert!(app.feedback.text.contains("nothing stopped"));
+    assert!(!app
+        .session_runtime
+        .background()
+        .get(id)
+        .unwrap()
+        .cancel
+        .is_cancelled());
+}
+
+#[tokio::test]
+async fn jobs_completion_is_observational_and_retained_output_is_reachable_after_dismissal() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("draft 東京");
+    app.input.cursor = 2;
+    app.focus_block(FocusBlock::Sidebar);
+    let id = app.session_runtime.spawn_background_shell("printf '\\033[31m\\342\\200\\256unsafe\\033[0m\\n'; i=0; while [ $i -lt 100 ]; do printf 'line %s\\n' $i; i=$((i+1)); done; printf 'final output\\n'; exit 7".into(), "output".into()).await.unwrap();
+    wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
+    assert_eq!(app.input.text, "draft 東京");
+    assert_eq!(app.input.cursor, 2);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert!(app.overlay.is_none());
+    assert!(app.session_runtime.queue().is_empty());
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.cancel_selected_task().await;
+    let tasks = app.selected_background_tasks();
+    assert!(app
+        .ordered_dock_tasks(&tasks, chrono::Utc::now())
+        .is_empty());
+    assert!(app.session_runtime.background().get(id).is_some());
+    app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Jobs));
+    let first = render_app_text(&mut app, 80, 18);
+    assert!(first.contains("output"));
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let end = render_app_text(&mut app, 80, 18);
+    assert!(end.contains("final output"), "{end}");
+    assert!(end.contains("Esc return"));
+    app.handle_key(press(KeyCode::Home, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.input.text.starts_with("draft 東京\nJob #"));
+    assert!(app.input.text.contains("Exit code: 7"));
+    assert!(app.input.text.contains("final output"));
+    assert!(!app.input.text.contains('\u{1b}'));
+    assert!(!app.input.text.contains('\u{202e}'));
+    assert_eq!(app.input.cursor, app.input.text.len());
+    assert!(app.session_runtime.queue().is_empty());
+    assert!(app.overlay.is_none());
+}
+
+#[tokio::test]
+async fn jobs_stop_mouse_acts_on_the_painted_target_and_parent_change_refuses_action() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (_dir, mut app) = focus_test_app().await;
+    let id = app
+        .session_runtime
+        .spawn_background_shell("sleep 30".into(), "named".into())
+        .await
+        .unwrap();
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.cancel_selected_task().await;
+    render_app_text(&mut app, 80, 18);
+    let stop = app.task_stop_paint.as_ref().unwrap().choices[1];
+    let parent = app.selected_session_id;
+    app.selected_session_id = uuid::Uuid::new_v4();
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: stop.x,
+        row: stop.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    assert!(!app
+        .session_runtime
+        .background()
+        .get(id)
+        .unwrap()
+        .cancel
+        .is_cancelled());
+    app.selected_session_id = parent;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: stop.x,
+        row: stop.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
+    assert_eq!(
+        app.session_runtime.background().get(id).unwrap().status,
+        forge_core::BackgroundTaskStatus::Cancelled
     );
 }

@@ -2349,7 +2349,7 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.handle_tasks_view_key(key).await? {
+        if self.handle_task_stop_key(key).await? || self.handle_tasks_view_key(key).await? {
             return Ok(());
         }
 

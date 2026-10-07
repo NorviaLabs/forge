@@ -1,5 +1,5 @@
 ---
-version: 2.5
+version: 2.6
 status: behavioral-contract-with-changeable-defaults
 name: Forge TUI Design System
 product: Forge
@@ -1452,12 +1452,35 @@ Every rule here exists to protect something the operator is relying on.
 
 `/tasks` and footer count chips open a live, parent-scoped Jobs / Agents /
 Queue view. `Tab` / `Shift+Tab` change the filter, existing selection keys move
-within it, and `PgUp` / `PgDn` or the wheel inspect full details above pinned
+within it, and `PgUp` / `PgDn`, `Home` / `End` or the wheel inspect full details above pinned
 controls. Empty collections use a short empty-state card. Jobs explain that
 they have no child session. Successful tasks expire from the dock after
 60 seconds but remain inspectable while retained in the registry. Returning
 preserves the parent's draft, caret and reading state. Opening a filter or
 clicking a count never inserts a result or resolves a request.
+
+Jobs show the exact command, parent owner, launch cwd, actual process exit
+code and output from the executor's own readers. Each stream retains its
+first 32 KiB for inspection, with a truncation notice, while the tool's
+existing output budget stays unchanged. Controls and bidi formatting are
+shown literally. Running output appears only after real bytes arrive;
+cancelled jobs retain those bytes as partial output. Missing launch metadata
+or an unobserved exit is stated explicitly. Restored tasks may show their
+retained summary or failure without inventing execution metadata.
+
+`i` explicitly appends an available result to the owning parent's draft and
+places the caret at the end. Inserted evidence stays visible and editable in
+the bounded, scrolling composer; the draft, attachments and queue survive.
+Normal completion does not insert, submit, enqueue or change focus.
+
+`x` on active work opens a named stop surface. It captures the parent and
+task identity, defaults to Keep running (Keep waiting for blocked work), and
+keeps choices pinned below independently scrollable details. Opening or
+dismissing it never stops work. Confirmation requires the painted target and
+rechecks its current lifecycle; a finished or changed target is refused.
+Stopping retains available evidence. `x` on a terminal task hides only its
+dock row; `/tasks` and retained execution evidence remain available, and no
+checkout is removed.
 
 ### 9.13 Child session view
 

@@ -17,7 +17,10 @@ async fn seed_refresh_tasks(app: &mut TuiApp) {
             "printf 'Actual failure output\\n'; exit 7",
             "Nonzero fixture",
         ),
-        ("sleep 30", "Cancelled fixture"),
+        (
+            "printf 'Captured before cancellation λ/東京\\n'; sleep 30",
+            "Cancelled fixture",
+        ),
     ] {
         ids.push(
             app.session_runtime
@@ -26,6 +29,23 @@ async fn seed_refresh_tasks(app: &mut TuiApp) {
                 .unwrap(),
         );
     }
+    let capture = app
+        .session_runtime
+        .background()
+        .get(ids[2])
+        .unwrap()
+        .shell
+        .as_ref()
+        .unwrap()
+        .output
+        .clone();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while capture.snapshot().stdout.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert!(app.session_runtime.cancel_background_task(ids[2]));
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -60,7 +80,9 @@ async fn walk_refresh_ui() {
     app.pane_resize = PaneResizeState::new(forge_config::PaneLayoutStore::new(
         fixture.path().join("pane-layout.toml"),
     ));
-    if std::env::var_os("FORGE_NATIVE_TASKS").is_some() {
+    if std::env::var_os("FORGE_NATIVE_TASKS").is_some()
+        || std::env::var_os("FORGE_NATIVE_JOBS").is_some()
+    {
         init_repo(fixture.path());
         app.session_runtime.messages.push(Message::new(
             MessageRole::User,
@@ -68,6 +90,17 @@ async fn walk_refresh_ui() {
         ));
         seed_refresh_tasks(&mut app).await;
         app.input.set_text("Retained parent draft λ/東京.rs.");
+        if std::env::var_os("FORGE_NATIVE_JOBS").is_some() {
+            let id = app
+                .session_runtime
+                .spawn_background_shell(
+                    "printf 'Live native output ✓\\n'; sleep 3600".into(),
+                    "Native running job".into(),
+                )
+                .await
+                .unwrap();
+            app.task_selection.select_task(app.selected_session_id, id);
+        }
     }
     super::super::shell::run_refresh_fixture(app).await.unwrap();
 }
@@ -94,7 +127,7 @@ fn capture_refresh_frames() {
         };
         crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), theme);
         for (width, height) in [(80, 18), (80, 24), (120, 40), (160, 50)] {
-            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal", "dock", "queue", "jobs", "agents"] {
+            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal", "dock", "queue", "jobs", "agents", "jobstop", "joboutput", "jobpartial", "jobinsert"] {
                 let (fixture, mut app) = focus_test_app_with_theme(theme).await;
                 init_repo(fixture.path());
                 app.focus_block(FocusBlock::Composer);
@@ -105,9 +138,33 @@ fn capture_refresh_frames() {
                     ));
                 }
                 match state {
-                    "dock" | "queue" | "jobs" | "agents" => {
+                    "dock" | "queue" | "jobs" | "agents" | "jobstop" | "joboutput" | "jobpartial" | "jobinsert" => {
                         seed_refresh_tasks(&mut app).await;
                         app.input.set_text("Retained parent draft λ/東京.rs.");
+                        if ["jobpartial", "jobinsert"].contains(&state) {
+                            let label = if state == "jobpartial" { "Cancelled fixture" } else { "Output fixture" };
+                            let id = app.session_runtime.background().list().find(|task| task.label == label).unwrap().id;
+                            app.task_selection.select_task(app.selected_session_id, id);
+                            app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Jobs));
+                            if state == "jobinsert" {
+                                app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE)).await.unwrap();
+                            }
+                        } else if ["jobstop", "joboutput"].contains(&state) {
+                            let command = if state == "jobstop" { "printf 'Captured live output ✓\\n'; sleep 3600" } else { "printf 'Actual long output λ/東京\\n'; i=0; while [ $i -lt 100 ]; do printf 'line %s\\n' $i; i=$((i+1)); done; printf 'End of captured output\\n'; exit 7" };
+                            let id = app.session_runtime.spawn_background_shell(command.into(), "Evidence fixture".into()).await.unwrap();
+                            let deadline = Instant::now() + Duration::from_secs(3);
+                            loop {
+                                app.poll_background_tasks().await.unwrap();
+                                let task = app.session_runtime.background().get(id).unwrap();
+                                if (state == "jobstop" && !task.shell.as_ref().unwrap().output.snapshot().stdout.is_empty()) || (state == "joboutput" && task.status.is_terminal()) { break; }
+                                assert!(Instant::now() < deadline, "job evidence did not arrive");
+                                tokio::time::sleep(Duration::from_millis(5)).await;
+                            }
+                            app.task_selection.select_task(app.selected_session_id, id);
+                            app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Jobs));
+                            if state == "jobstop" { app.cancel_selected_task().await; }
+                            if state == "joboutput" { app.handle_key(press(KeyCode::End, KeyModifiers::NONE)).await.unwrap(); }
+                        }
                         match state {
                             "queue" => app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Queue)),
                             "jobs" => app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Jobs)),
@@ -286,6 +343,9 @@ fn capture_refresh_frames() {
                     samples.sort_unstable();
                     timings.push(json!({"state":state,"samples":100,"median_us":samples[50],"p95_us":samples[95]}));
                 }
+                let active: Vec<_> = app.session_runtime.background().list().filter(|task| !task.status.is_terminal()).map(|task| task.id).collect();
+                for id in active { app.session_runtime.cancel_background_task(id); }
+                app.session_runtime.retire_resources().await.unwrap();
             }
         }
     }
@@ -296,7 +356,7 @@ fn capture_refresh_frames() {
     )
     .unwrap();
     eprintln!(
-        "Captured 228 production frames with mock fixtures in {}",
+        "Captured 276 production frames with mock fixtures in {}",
         out.display()
     );
         });

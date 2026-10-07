@@ -226,8 +226,12 @@ impl BackgroundStrip {
         row_cap: usize,
         line_budget: u16,
         selected: Option<BackgroundTaskId>,
+        dismissed: Option<&std::collections::HashSet<BackgroundTaskId>>,
     ) -> Self {
-        let live = ordered_live(tasks, now);
+        let mut live = ordered_live(tasks, now);
+        live.retain(|(_, id, task)| {
+            !(task.status.is_terminal() && dismissed.is_some_and(|ids| ids.contains(id)))
+        });
         let total = live.len();
         let visible = total
             .min(row_cap)
@@ -407,6 +411,7 @@ mod tests {
                 role: label.into(),
                 prompt: "do the thing".into(),
             },
+            shell: None,
             status,
             child_session_id: None,
             latest_message: None,
@@ -681,13 +686,13 @@ mod tests {
             .map(|id| task(id, "waiting", blocked("bash", "printf '東京'"), now, None))
             .collect();
         let selected = BackgroundTaskId(8);
-        let compact = BackgroundStrip::window(&tasks, now, 3, 2, Some(selected));
+        let compact = BackgroundStrip::window(&tasks, now, 3, 2, Some(selected), None);
         assert_eq!(compact.rows.len(), 1);
         assert_eq!(compact.rows[0].id, selected);
         assert_eq!(compact.hidden, 7);
         assert!(compact.rows[0].detail.is_none());
         assert!(compact.height() <= 2);
-        let comfortable = BackgroundStrip::window(&tasks, now, 3, 5, Some(selected));
+        let comfortable = BackgroundStrip::window(&tasks, now, 3, 5, Some(selected), None);
         assert_eq!(comfortable.rows.last().unwrap().id, selected);
         assert_eq!(
             comfortable

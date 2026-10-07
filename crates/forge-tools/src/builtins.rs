@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
@@ -385,7 +386,7 @@ pub async fn run_shell_command_with_egress(
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, None, true).await
+    run_shell_command_inner(command, workspace_root, egress, None, true, None).await
 }
 
 pub async fn run_shell_command_with_egress_and_temp(
@@ -394,7 +395,7 @@ pub async fn run_shell_command_with_egress_and_temp(
     egress: Option<&crate::sandbox::EgressGrant>,
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, session_tmp, true).await
+    run_shell_command_inner(command, workspace_root, egress, session_tmp, true, None).await
 }
 
 /// Run `command` with no sandbox at all — filesystem and network unconfined.
@@ -405,7 +406,75 @@ pub async fn run_shell_command_unconfined(
     workspace_root: &Path,
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, None, session_tmp, false).await
+    run_shell_command_inner(command, workspace_root, None, session_tmp, false, None).await
+}
+
+/// Bounded execution evidence from the same readers that collect tool output.
+/// Cloning a snapshot shares its bytes; a later read updates a separate copy.
+#[derive(Debug, Clone, Default)]
+pub struct ShellOutputSnapshot {
+    pub started: bool,
+    pub exited: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: Arc<Vec<u8>>,
+    pub stderr: Arc<Vec<u8>>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct ShellOutputCapture(Mutex<ShellOutputSnapshot>);
+
+impl ShellOutputCapture {
+    pub fn snapshot(&self) -> ShellOutputSnapshot {
+        self.0.lock().expect("shell output lock poisoned").clone()
+    }
+
+    fn started(&self) {
+        self.0.lock().expect("shell output lock poisoned").started = true;
+    }
+
+    fn exited(&self, exit_code: Option<i32>) {
+        let mut state = self.0.lock().expect("shell output lock poisoned");
+        state.exited = true;
+        state.exit_code = exit_code;
+    }
+
+    fn append(&self, stderr: bool, bytes: &[u8]) {
+        // Keep draining after this display budget; the existing model-facing
+        // output budget and executor behavior stay unchanged.
+        const DISPLAY_BYTES_PER_STREAM: usize = 32 * 1024;
+        let mut state = self.0.lock().expect("shell output lock poisoned");
+        let output = if stderr {
+            &mut state.stderr
+        } else {
+            &mut state.stdout
+        };
+        let keep = bytes.len().min(DISPLAY_BYTES_PER_STREAM - output.len());
+        if keep > 0 {
+            Arc::make_mut(output).extend_from_slice(&bytes[..keep]);
+        }
+        state.truncated |= keep < bytes.len();
+    }
+}
+
+/// Observe a shell job without changing its sandbox, grant or completion path.
+pub async fn run_shell_command_observed(
+    command: &str,
+    workspace_root: &Path,
+    egress: Option<&crate::sandbox::EgressGrant>,
+    session_tmp: Option<&Path>,
+    unconfined: bool,
+    capture: Arc<ShellOutputCapture>,
+) -> Result<ToolOutput, ToolError> {
+    run_shell_command_inner(
+        command,
+        workspace_root,
+        egress,
+        session_tmp,
+        !unconfined,
+        Some(capture),
+    )
+    .await
 }
 
 async fn run_shell_command_inner(
@@ -414,6 +483,7 @@ async fn run_shell_command_inner(
     egress: Option<&crate::sandbox::EgressGrant>,
     session_tmp: Option<&Path>,
     confined: bool,
+    capture: Option<Arc<ShellOutputCapture>>,
 ) -> Result<ToolOutput, ToolError> {
     // Do not use a login shell: `bash -l` sources profile files, which can
     // re-export credentials after the explicit removals below.
@@ -529,7 +599,10 @@ async fn run_shell_command_inner(
     // Dropping this future (turn cancel, background cancel) drops the guard
     // and kills the whole shell tree, not just the sandbox wrapper or shell.
     let mut process_group = ProcessGroupGuard::new(child.id().map(|pid| pid as i32));
-    let (status, stdout, stderr) = match collect_bounded_output(&mut child).await {
+    if let Some(capture) = capture.as_ref() {
+        capture.started();
+    }
+    let (status, stdout, stderr) = match collect_bounded_output(&mut child, capture.clone()).await {
         Ok(captured) => {
             // The leader is reaped; stop guarding the (possibly recycled) pgid.
             process_group.disarm();
@@ -538,6 +611,9 @@ async fn run_shell_command_inner(
         // Armed guard drops here and reaps the tree the failure left behind.
         Err(error) => return Err(error),
     };
+    if let Some(capture) = capture.as_ref() {
+        capture.exited(status.code());
+    }
     let mut content = String::from_utf8_lossy(&stdout).into_owned();
     let err = String::from_utf8_lossy(&stderr);
     if !err.is_empty() {
@@ -596,13 +672,20 @@ async fn run_shell_command_inner(
 
 const MAX_CAPTURED_COMMAND_BYTES: usize = 512 * 1024;
 
-async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Vec<u8>> {
+async fn read_bounded<R: AsyncRead + Unpin>(
+    mut reader: R,
+    capture: Option<Arc<ShellOutputCapture>>,
+    stderr: bool,
+) -> std::io::Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut buffer = [0_u8; 8192];
     loop {
         let count = reader.read(&mut buffer).await?;
         if count == 0 {
             return Ok(output);
+        }
+        if let Some(capture) = capture.as_ref() {
+            capture.append(stderr, &buffer[..count]);
         }
         if output.len() < MAX_CAPTURED_COMMAND_BYTES {
             let remaining = MAX_CAPTURED_COMMAND_BYTES - output.len();
@@ -613,6 +696,7 @@ async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Ve
 
 async fn collect_bounded_output(
     child: &mut tokio::process::Child,
+    capture: Option<Arc<ShellOutputCapture>>,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), ToolError> {
     let stdout = child
         .stdout
@@ -622,8 +706,8 @@ async fn collect_bounded_output(
         .stderr
         .take()
         .ok_or_else(|| ToolError::Execution("missing command stderr".into()))?;
-    let stdout_task = tokio::spawn(read_bounded(stdout));
-    let stderr_task = tokio::spawn(read_bounded(stderr));
+    let stdout_task = tokio::spawn(read_bounded(stdout, capture.clone(), false));
+    let stderr_task = tokio::spawn(read_bounded(stderr, capture, true));
     let status = child.wait().await?;
     let stdout = stdout_task
         .await
@@ -667,6 +751,7 @@ itself, never to git hooks)."
             ctx.egress.as_deref(),
             ctx.session_tmp.as_deref().map(|temp| temp.path()),
             !ctx.unconfined_shell,
+            None,
         )
         .await
     }
@@ -1772,6 +1857,42 @@ mod tests {
     use crate::validation::validate_args;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn observed_shell_retains_bounded_bytes_and_actual_exit_without_changing_tool_output() {
+        let dir = tempdir().unwrap();
+        let capture = Arc::new(ShellOutputCapture::default());
+        let output = run_shell_command_observed(
+            "printf '%040000d' 0; printf 'stderr ✓\\n' >&2; exit 7",
+            dir.path(),
+            None,
+            None,
+            true,
+            capture.clone(),
+        )
+        .await
+        .unwrap();
+        let snapshot = capture.snapshot();
+        assert!(snapshot.started && snapshot.exited);
+        assert_eq!(snapshot.exit_code, Some(7));
+        assert_eq!(snapshot.stdout.len(), 32 * 1024);
+        assert_eq!(&snapshot.stderr[..], "stderr ✓\n".as_bytes());
+        assert!(snapshot.truncated);
+        assert!(output.is_error);
+        assert_eq!(output.exit_code, Some(7));
+        assert!(output.content.len() > snapshot.stdout.len());
+        assert!(Arc::ptr_eq(&snapshot.stdout, &capture.snapshot().stdout));
+    }
+
+    #[test]
+    fn observed_shell_snapshots_keep_their_bytes_when_the_reader_advances() {
+        let capture = ShellOutputCapture::default();
+        capture.append(false, b"first");
+        let first = capture.snapshot();
+        capture.append(false, b" second");
+        assert_eq!(&first.stdout[..], b"first");
+        assert_eq!(&capture.snapshot().stdout[..], b"first second");
+    }
 
     #[tokio::test]
     async fn bash_tool_uses_private_session_temp() {

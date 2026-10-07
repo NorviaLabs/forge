@@ -80,12 +80,20 @@ impl BackgroundTaskStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct BackgroundShellExecution {
+    pub cwd: PathBuf,
+    pub output: Arc<forge_tools::ShellOutputCapture>,
+}
+
+#[derive(Debug, Clone)]
 pub struct BackgroundTaskHandle {
     pub id: BackgroundTaskId,
     /// The foreground `TaskId` that was active when this background task
     /// was spawned — informational lineage, not a lifecycle dependency.
     pub parent_task_id: TaskId,
     pub kind: BackgroundTaskKind,
+    /// Launch-time cwd and real bounded output; absent on restored tasks.
+    pub shell: Option<BackgroundShellExecution>,
     pub label: String,
     pub status: BackgroundTaskStatus,
     pub started_at: DateTime<Utc>,
@@ -269,6 +277,7 @@ impl BackgroundTaskRegistry {
                 id,
                 parent_task_id,
                 kind,
+                shell: None,
                 label: label.into(),
                 status: BackgroundTaskStatus::Queued,
                 started_at: Utc::now(),
@@ -313,6 +322,7 @@ impl BackgroundTaskRegistry {
                 id,
                 parent_task_id,
                 kind,
+                shell: None,
                 label: label.into(),
                 status: BackgroundTaskStatus::Queued,
                 started_at: Utc::now(),
@@ -491,6 +501,7 @@ async fn run_shell_job(
     egress: Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>>,
     session_tmp: Option<std::sync::Arc<forge_tools::SessionTempDir>>,
     unconfined: bool,
+    capture: Arc<forge_tools::ShellOutputCapture>,
 ) -> BackgroundTaskOutcome {
     // Backgrounded work gets the same network the foreground has. It was
     // calling the grantless variant, so a background `cargo build` was confined
@@ -502,17 +513,15 @@ async fn run_shell_job(
     // match, or a sandbox denial here would raise an approval prompt the mode
     // is meant to remove.
     let tmp = session_tmp.as_deref().map(|temp| temp.path());
-    let result = if unconfined {
-        forge_tools::run_shell_command_unconfined(&command, &workspace_root, tmp).await
-    } else {
-        forge_tools::run_shell_command_with_egress_and_temp(
-            &command,
-            &workspace_root,
-            egress.as_deref(),
-            tmp,
-        )
-        .await
-    };
+    let result = forge_tools::run_shell_command_observed(
+        &command,
+        &workspace_root,
+        egress.as_deref(),
+        tmp,
+        unconfined,
+        capture,
+    )
+    .await;
     match result {
         Ok(out) => BackgroundTaskOutcome::Shell {
             output: out.content,
@@ -520,7 +529,7 @@ async fn run_shell_job(
             exit_code: out.exit_code,
         },
         Err(e) => BackgroundTaskOutcome::Shell {
-            output: format!("failed to start background command: {e}"),
+            output: format!("background command failed: {e}"),
             is_error: true,
             exit_code: None,
         },
@@ -638,12 +647,22 @@ impl AgentSession {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let workspace_root = self.tool_ctx.workspace_root.clone();
+        let capture = Arc::new(forge_tools::ShellOutputCapture::default());
+        self.tasks
+            .background
+            .tasks
+            .get_mut(&id)
+            .expect("new shell slot")
+            .shell = Some(BackgroundShellExecution {
+            cwd: workspace_root.clone(),
+            output: Arc::clone(&capture),
+        });
         let egress = self.tool_ctx.egress.clone();
         let session_tmp = self.tool_ctx.session_tmp.clone();
         let unconfined = self.approve_all;
         tokio::spawn(async move {
             let outcome = tokio::select! {
-                outcome = run_shell_job(command, workspace_root, egress, session_tmp, unconfined) => outcome,
+                outcome = run_shell_job(command, workspace_root, egress, session_tmp, unconfined, capture) => outcome,
                 // Dropping the job future on cancel drops the shell spawn's
                 // process-group guard, which kills the whole tree — not just
                 // the direct child — so no side effect runs after cancel.
@@ -1080,6 +1099,12 @@ mod tests {
             // A completion is an observation, not an operator-typed prompt:
             // nothing is queued unless approve-all removes the human.
             assert_eq!(s.queue().len(), 0);
+            let shell = s.background().get(id).unwrap().shell.as_ref().unwrap();
+            assert_eq!(shell.cwd, dir.path());
+            let output = shell.output.snapshot();
+            assert_eq!(output.exit_code, Some(0));
+            assert!(output.exited);
+            assert_eq!(&output.stdout[..], b"hello-from-bg\n");
         }
 
         #[tokio::test]
@@ -1125,6 +1150,78 @@ mod tests {
 
             let status = wait_terminal(&mut s, id).await;
             assert!(matches!(status, super::BackgroundTaskStatus::Failed { .. }));
+            assert_eq!(
+                s.background()
+                    .get(id)
+                    .unwrap()
+                    .shell
+                    .as_ref()
+                    .unwrap()
+                    .output
+                    .snapshot()
+                    .exit_code,
+                Some(3)
+            );
+        }
+
+        #[tokio::test]
+        async fn cancelling_one_shell_retains_its_partial_output_and_other_work() {
+            let dir = tempdir().unwrap();
+            let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
+            s.set_approve_all(false);
+            s.enqueue_task("retained prompt").await.unwrap();
+            let sibling = s
+                .spawn_background_shell("sleep 30".into(), "sibling".into())
+                .await
+                .unwrap();
+            let id = s
+                .spawn_background_shell(
+                    "printf 'partial ✓\\n'; printf 'warning\\n' >&2; sleep 30; printf 'late\\n'"
+                        .into(),
+                    "selected".into(),
+                )
+                .await
+                .unwrap();
+            let capture = s
+                .background()
+                .get(id)
+                .unwrap()
+                .shell
+                .as_ref()
+                .unwrap()
+                .output
+                .clone();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while {
+                    let output = capture.snapshot();
+                    output.stdout.is_empty() || output.stderr.is_empty()
+                } {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let before = capture.snapshot();
+            assert!(s.cancel_background_task(id));
+            assert_eq!(
+                wait_terminal(&mut s, id).await,
+                super::BackgroundTaskStatus::Cancelled
+            );
+            let after = capture.snapshot();
+            assert_eq!(&before.stdout[..], "partial ✓\n".as_bytes());
+            assert_eq!(after.stdout, before.stdout);
+            assert_eq!(after.stderr, before.stderr);
+            assert!(!after.exited);
+            assert_eq!(after.exit_code, None);
+            assert_eq!(
+                s.background().get(sibling).unwrap().status,
+                super::BackgroundTaskStatus::Running
+            );
+            assert_eq!(s.queue().len(), 1);
+            assert!(s.cancel_background_task(sibling));
+            wait_terminal(&mut s, sibling).await;
         }
 
         #[tokio::test]

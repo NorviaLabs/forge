@@ -1,0 +1,18 @@
+   FORGE · ⌂ /var/folders/rn/…/T/.tmpsjPULu  ·  ./No commits yet on main*
+    Conversation                                      Ctrl+P files · / commands
+  ┌> Stop job ───────────────────────────────────────────────────────────────┐
+  │  Parent: 5cba6d9c-b940-44fe-9603-a353c6669da9                            │
+  │  job #4: Native running job                                              │
+  │  State: Running                                                          │
+  │                                                                          │
+  │  Exact command:                                                          │
+  │  printf 'Live native output ✓\n'; sleep 3600                             │
+  │  Launch cwd: /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpsjPUL  │
+  │  u                                                                       │
+  │                                                                          │
+  │  > Keep running                                                          │
+ >│    Stop job                                                              │
+ ─│  ←→ choose · Enter decide · PgUp/PgDn details · Esc return               │─
+  └──────────────────────────────────────────────────────────────────────────┘
+   ● model/mock │ N/A                                   ready   ·  context 0%
+   [⟳ jobs 4 · 1 failed · 1 cancelled] [⇥ queue 6]

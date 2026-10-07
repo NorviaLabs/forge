@@ -22,11 +22,128 @@ const MAX_STREAM_EVENTS_PER_TICK: usize = 256;
 /// Running tasks have no result to attach; `latest_message` is a live status
 /// snapshot, not a completion.
 fn background_task_result_text(task: &forge_session::BackgroundTaskSnapshot) -> Option<String> {
+    if task.shell.is_some() {
+        if !task.status.is_terminal() {
+            return None;
+        }
+        if matches!(task.status, forge_core::BackgroundTaskStatus::Cancelled)
+            && task.shell.as_ref().is_some_and(|shell| {
+                shell.output.stdout.is_empty() && shell.output.stderr.is_empty()
+            })
+        {
+            return None;
+        }
+        return Some(shell_execution_text(task));
+    }
     match &task.status {
         forge_core::BackgroundTaskStatus::Succeeded { summary } => Some(summary.clone()),
         forge_core::BackgroundTaskStatus::Failed { error } => Some(error.clone()),
         _ => None,
     }
+}
+
+pub(super) fn background_task_state(status: &forge_core::BackgroundTaskStatus) -> &'static str {
+    use forge_core::BackgroundTaskStatus;
+    match status {
+        BackgroundTaskStatus::Queued => "Queued",
+        BackgroundTaskStatus::Running => "Running",
+        BackgroundTaskStatus::WaitingForApproval { .. } => "Waiting for approval",
+        BackgroundTaskStatus::Succeeded { .. } => "Succeeded",
+        BackgroundTaskStatus::Failed { .. } => "Failed",
+        BackgroundTaskStatus::Cancelled => "Cancelled",
+    }
+}
+
+pub(super) fn shell_execution_text(task: &forge_session::BackgroundTaskSnapshot) -> String {
+    let command = match &task.kind {
+        forge_core::BackgroundTaskKind::Shell { command }
+            if task.shell.is_none() && command.is_empty() =>
+        {
+            "unavailable"
+        }
+        forge_core::BackgroundTaskKind::Shell { command } => command.as_str(),
+        _ => return String::new(),
+    };
+    let elapsed = crate::tasks_strip::row_for(
+        task,
+        chrono::Utc::now(),
+        crate::tasks_strip::StripState::of(&task.status),
+    )
+    .elapsed;
+    let mut text = format!(
+        "Job #{} · {} · {elapsed}\nCommand:\n{command}\n",
+        task.id.0,
+        background_task_state(&task.status)
+    );
+    let Some(shell) = task.shell.as_ref() else {
+        text.push_str("Launch cwd: unavailable\nExit code: unavailable\n");
+        match &task.status {
+            forge_core::BackgroundTaskStatus::Succeeded { summary } => text.push_str(&format!(
+                "Retained result · execution metadata unavailable:\n{}",
+                crate::decision::preview(summary, 32 * 1024)
+            )),
+            forge_core::BackgroundTaskStatus::Failed { error } => text.push_str(&format!(
+                "Retained failure · execution metadata unavailable:\n{}",
+                crate::decision::preview(error, 32 * 1024)
+            )),
+            _ => text.push_str("Output: unavailable"),
+        }
+        return text;
+    };
+    text.push_str(&format!("Launch cwd: {}\n", shell.cwd.display()));
+    let output = &shell.output;
+    let exit = if output.exited {
+        output
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "no code reported".into())
+    } else if task.status.is_terminal() {
+        "not observed".into()
+    } else {
+        "pending".into()
+    };
+    text.push_str(&format!("Exit code: {exit}\n"));
+    if !output.started {
+        text.push_str(if task.status.is_terminal() {
+            "Output: process did not start\n"
+        } else {
+            "Output: waiting for process\n"
+        });
+    } else if output.stdout.is_empty() && output.stderr.is_empty() {
+        text.push_str("Output: no bytes received\n");
+    } else {
+        text.push_str(
+            if matches!(task.status, forge_core::BackgroundTaskStatus::Cancelled) {
+                "Partial output · cancelled\n"
+            } else {
+                "Output\n"
+            },
+        );
+        if !output.stdout.is_empty() {
+            text.push_str(&format!(
+                "stdout:\n{}\n",
+                String::from_utf8_lossy(&output.stdout)
+            ));
+        }
+        if !output.stderr.is_empty() {
+            text.push_str(&format!(
+                "stderr:\n{}\n",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    if output.truncated {
+        text.push_str("Output truncated · first 32 KiB retained per stream\n");
+    }
+    if let forge_core::BackgroundTaskStatus::Failed { error } = &task.status {
+        if output.exit_code.is_none() || output.exit_code == Some(0) {
+            text.push_str(&format!(
+                "Failure: {}\n",
+                crate::decision::preview(error, 4096)
+            ));
+        }
+    }
+    text.trim_end().to_string()
 }
 
 /// The operator-facing name of a background task.
@@ -745,7 +862,7 @@ impl TuiApp {
     fn clamp_tasks_selection(&mut self) {
         let now = chrono::Utc::now();
         let tasks = self.selected_background_tasks();
-        let ordered = crate::tasks_strip::ordered_live(&tasks, now);
+        let ordered = self.ordered_dock_tasks(&tasks, now);
         if ordered.is_empty() {
             self.task_selection.clear_tasks();
         } else if self.task_selection.task(self.selected_session_id).is_none() {
@@ -757,7 +874,7 @@ impl TuiApp {
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
         let now = chrono::Utc::now();
         let tasks = self.selected_background_tasks();
-        let ordered = crate::tasks_strip::ordered_live(&tasks, now);
+        let ordered = self.ordered_dock_tasks(&tasks, now);
         if ordered.is_empty() {
             self.task_selection.clear_tasks();
             return;
@@ -772,36 +889,62 @@ impl TuiApp {
             .select_task(self.selected_session_id, ordered[next].1);
     }
 
-    /// Cancel the background task at the currently selected row. Rows follow
-    /// the strip's draw order (state rank, then id), not raw id ascending.
+    pub(super) fn ordered_dock_tasks<'a>(
+        &self,
+        tasks: &'a [forge_session::BackgroundTaskSnapshot],
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<(
+        crate::tasks_strip::StripState,
+        forge_types::BackgroundTaskId,
+        &'a forge_session::BackgroundTaskSnapshot,
+    )> {
+        let dismissed = self.dismissed_background.get(&self.selected_session_id);
+        crate::tasks_strip::ordered_live(tasks, now)
+            .into_iter()
+            .filter(|(_, id, task)| {
+                !(task.status.is_terminal() && dismissed.is_some_and(|ids| ids.contains(id)))
+            })
+            .collect()
+    }
+
+    /// Active work requires a named decision; terminal evidence is only
+    /// hidden from the dock and remains in the registry and live task view.
     pub(super) async fn cancel_selected_task(&mut self) {
         let Some(id) = self.task_selection.task(self.selected_session_id) else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
         let tasks = self.selected_background_tasks();
-        if !tasks.iter().any(|task| task.id == id) {
+        let Some(task) = tasks.iter().find(|task| task.id == id).cloned() else {
             self.clamp_tasks_selection();
             return;
-        }
-        if self.selected_is_supervised() {
-            self.submit_session_command(forge_session::SupervisorCommand::CancelBackgroundTask {
-                session_id: self.selected_session_id,
-                task_id: id,
-            });
+        };
+        if task.status.is_terminal() {
+            self.dismissed_background
+                .entry(self.selected_session_id)
+                .or_default()
+                .insert(id);
+            if !matches!(self.overlay, Some(Overlay::Tasks { .. })) {
+                self.task_selection.clear_tasks();
+            }
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                "hidden from dock · /tasks retains the result",
+            );
             return;
         }
-        if self.session_runtime.cancel_background_task(id) {
-            self.set_feedback(FeedbackSeverity::Ok, format!("cancelling task #{}", id.0));
-            self.push_activity(
-                ActivityKind::System,
-                FeedbackSeverity::Ok,
-                format!("background task cancel #{}", id.0),
-            );
-        } else {
-            self.set_feedback(FeedbackSeverity::Warn, "task already finished");
-        }
-        self.clamp_tasks_selection();
+        let return_view = match self.overlay {
+            Some(Overlay::Tasks { filter, scroll, .. }) => Some((filter, scroll)),
+            _ => None,
+        };
+        self.task_stop_paint = None;
+        self.overlay = Some(Overlay::TaskStop {
+            owner: self.selected_session_id,
+            task: Box::new(task),
+            scroll: 0,
+            stop: false,
+            return_view,
+        });
     }
 
     /// Open the selected background subagent's own session, read-only.
@@ -984,9 +1127,8 @@ impl TuiApp {
     /// injected as queued user prompts (#589); this is the deliberate hand-off.
     /// Appends rather than replaces, so an in-progress draft survives.
     ///
-    /// Indexing follows the strip's draw order (state rank, then id); a row
-    /// that retired on its TTL is gone from the strip and has nothing to
-    /// attach, so `i` clamps the selection to what is still drawn.
+    /// Selection is parent/task identity, so a retained result remains
+    /// insertable from inspection after its dock row expires or is dismissed.
     pub(super) fn attach_selected_task(&mut self) {
         let Some(id) = self.task_selection.task(self.selected_session_id) else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
@@ -1000,11 +1142,19 @@ impl TuiApp {
         let Some(text) = background_task_result_text(&task) else {
             self.set_feedback(
                 FeedbackSeverity::Warn,
-                format!("task #{} hasn't finished yet", task.id.0),
+                if task.status.is_terminal() {
+                    format!("task #{} has no captured result to insert", task.id.0)
+                } else {
+                    format!("task #{} hasn't finished yet", task.id.0)
+                },
             );
             return;
         };
-        self.input.insert_paste(&text);
+        if self.child_view.is_some() {
+            self.close_child_session();
+        }
+        self.input
+            .append_text(&crate::decision::visible_text(&text));
         self.enter_chat_composer();
         self.set_feedback(
             FeedbackSeverity::Ok,
@@ -1508,6 +1658,7 @@ mod responsiveness_tests {
             kind: forge_core::BackgroundTaskKind::Shell {
                 command: "cargo test".into(),
             },
+            shell: None,
             status: BackgroundTaskStatus::Running,
             child_session_id: None,
             latest_message: None,
@@ -1538,8 +1689,25 @@ mod responsiveness_tests {
             Some("broken")
         );
         assert_eq!(terminal_outcome(&task.status), "failed");
+        let retained = shell_execution_text(&task);
+        assert!(retained.contains("Launch cwd: unavailable"));
+        assert!(retained.contains("Exit code: unavailable"));
+        assert!(retained.contains("Retained failure · execution metadata unavailable:\nbroken"));
+        task.shell = Some(forge_session::ShellExecutionSnapshot {
+            cwd: PathBuf::from("/launch/λ/東京"),
+            output: forge_tools::ShellOutputSnapshot::default(),
+        });
+        let unavailable = shell_execution_text(&task);
+        assert!(unavailable.contains("Launch cwd: /launch/λ/東京"));
+        assert!(unavailable.contains("Exit code: not observed"));
+        assert!(unavailable.contains("Output: process did not start"));
+        task.shell = None;
         task.status = BackgroundTaskStatus::Cancelled;
         assert_eq!(terminal_outcome(&task.status), "was cancelled");
+        task.kind = forge_core::BackgroundTaskKind::Shell {
+            command: String::new(),
+        };
+        assert!(shell_execution_text(&task).contains("Command:\nunavailable"));
 
         let summary = forge_transcript::TurnSummaryPresentation {
             secs: 1.0,

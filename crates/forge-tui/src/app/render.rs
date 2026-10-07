@@ -353,6 +353,13 @@ impl TuiApp {
             1 + queued_messages.len().min(queue_cap) as u16
         };
         let background_tasks = self.selected_background_tasks();
+        if let Some(dismissed) = self.dismissed_background.get_mut(&self.selected_session_id) {
+            dismissed.retain(|id| {
+                background_tasks
+                    .iter()
+                    .any(|task| task.id == *id && task.status.is_terminal())
+            });
+        }
         let contextual_hint = self.contextual_hint();
         // The event-loop tick refreshes this cache; drawing only reads it.
         let connected = self.provider_connected_cached();
@@ -374,7 +381,7 @@ impl TuiApp {
         // has to clamp it against the transcript's floor, and it is built after
         // the split because only then is the height that actually fit known.
         let strip_now = chrono::Utc::now();
-        let ordered = tasks_strip::ordered_live(&background_tasks, strip_now);
+        let ordered = self.ordered_dock_tasks(&background_tasks, strip_now);
         let selected = self.task_selection.task(self.selected_session_id);
         if !matches!(self.overlay, Some(Overlay::Tasks { .. }))
             && !ordered.iter().any(|(_, id, _)| Some(*id) == selected)
@@ -396,6 +403,7 @@ impl TuiApp {
             },
             if compact_dock { 2 } else { 5 },
             self.task_selection.task(self.selected_session_id),
+            self.dismissed_background.get(&self.selected_session_id),
         );
         let background_h = if strip_live.is_empty() {
             0
@@ -1260,6 +1268,7 @@ impl TuiApp {
                 },
                 regions.background.height,
                 self.task_selection.task(self.selected_session_id),
+                self.dismissed_background.get(&self.selected_session_id),
             );
             self.background_area = Some(regions.background);
             frame.render_widget(
@@ -2079,6 +2088,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
                 Overlay::Tasks { .. } => self.render_tasks_view(area, frame.buffer_mut()),
+                Overlay::TaskStop { .. } => self.render_task_stop(area, frame.buffer_mut()),
                 // Theme dock already replaced the composer band above.
                 Overlay::Theme { .. } => {}
                 _ => frame.render_widget(
