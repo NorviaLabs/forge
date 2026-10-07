@@ -10,3 +10,4 @@ forge-core = { workspace = true }
 forge-tools = { workspace = true }
 forge-types = { workspace = true }
 serde_json = { workspace = true }
+unicode-width = "0.2"

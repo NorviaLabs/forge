@@ -75,6 +75,7 @@ async fn theme_persists_per_repository() {
     let restored = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -99,6 +100,7 @@ async fn old_or_malformed_ui_state_migrates_safely_to_default() {
     let app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),

@@ -41,7 +41,7 @@ select{font:inherit;padding:8px;background:#1d2229;color:inherit;border:1px soli
 label{display:inline-block;margin:8px 12px 16px 0}canvas{display:block;max-width:100%;height:auto;border:1px solid #394350}
 .pair{display:flex;gap:24px;flex-wrap:wrap;width:max-content;max-width:100%}h2{font-size:14px;font-weight:500}
 </style><h1>Forge — compiled UI captures</h1>
-<p>Real Ratatui draw output with disposable mock session fixtures. Appearance and keyboard-to-buffer timing evidence; these captures do not prove live provider or task execution. Font: representative system monospace.</p>
+<p>Real Ratatui draw output. Job and child fixtures execute disposable commands; provider responses and narrated plans are mocked. Dirty child edits are test setup. Rendering evidence, not measured usability or model quality. Font: representative system monospace.</p>
 <label>State <select id="state"></select></label><label>Size <select id="size"></select></label><label>Theme <select id="theme"></select></label>
 <div class="pair"><section id="before"><h2>Previous build</h2><canvas></canvas></section><section id="after"><h2>Refresh</h2><canvas></canvas></section></div>
 <script>const frames=${JSON.stringify(data).replaceAll('<', '\\u003c')};
@@ -53,7 +53,7 @@ function color(value,fallback){const rgb=/Rgb\\((\\d+), (\\d+), (\\d+)\\)/.exec(
 function render(which,key){const pane=document.getElementById(which),frame=frames[which][key];pane.hidden=!frame;if(!frame)return;const cells=frame.runs.flatMap(([text,style,count])=>Array.from({length:count},()=>[text,style]));const canvas=pane.querySelector('canvas'),ctx=canvas.getContext('2d'),cw=9,ch=18,dpr=2;canvas.width=frame.width*cw*dpr;canvas.height=frame.height*ch*dpr;canvas.style.width=frame.width*cw+'px';ctx.scale(dpr,dpr);const resetBg=key.includes('-light-')?'#fff':'#14171b',resetFg=key.includes('-light-')?'#202936':'#edf0f5';
 cells.forEach((cell,i)=>{const [fg,bg,bold,inverse]=frame.styles[cell[1]];ctx.fillStyle=color(inverse?fg:bg,inverse?resetFg:resetBg);ctx.fillRect(i%frame.width*cw,Math.floor(i/frame.width)*ch,cw,ch);});
 cells.forEach((cell,i)=>{const [fg,bg,bold,inverse]=frame.styles[cell[1]];ctx.fillStyle=color(inverse?bg:fg,inverse?resetBg:resetFg);ctx.font=(bold?'bold ':'')+'14px ui-monospace, SFMono-Regular, Menlo, monospace';ctx.fillText(cell[0],i%frame.width*cw,Math.floor(i/frame.width)*ch+14);});}
-function draw(){const key=state.value+'-'+theme.value+'-'+size.value;render('before',key);render('after',key);document.title='Forge '+key;}
+function draw(){for(const option of state.options)option.disabled=!frames.after[option.value+'-'+theme.value+'-'+size.value];if(state.selectedOptions[0].disabled)state.value=[...state.options].find(option=>!option.disabled).value;const key=state.value+'-'+theme.value+'-'+size.value;render('before',key);render('after',key);document.title='Forge '+key;}
 for(const select of [state,size,theme])select.onchange=draw;draw();
 </script></html>`;
 await writeFile(resolve(output), html);

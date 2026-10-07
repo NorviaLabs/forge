@@ -1,5 +1,5 @@
 ---
-version: 2.7
+version: 2.8
 status: behavioral-contract-with-changeable-defaults
 name: Forge TUI Design System
 product: Forge
@@ -373,7 +373,12 @@ Git status is single letters from the same module: `M` `A` `D` `?` `!` `U` (modi
 **Running has a consistent meaning across surfaces.** The current live turn
 line, navigator session rows, and collapsed navigator chip share the braille
 spinner `⣾⣽⣻⢿⡿⣟⣯⣷` (`widgets/turn_line.rs::SPINNER_FRAMES`). Each frame
-occupies one cell, so animation never shifts a label. The footer instead names
+occupies one cell and advances every 125 ms on a monotonic clock, so animation
+never shifts a label or speeds up when keys arrive. `NO_COLOR` uses one-cell
+ASCII frames. `[tui] reduced_motion = true` uses a static `*` for working and
+suppresses brightness motion while preserving polling and input delivery.
+The missing preference defaults to false for existing configurations.
+The footer instead names
 the lifecycle beside a fixed-width `●` that pulses in brightness, and its
 background chips use static category/state glyphs (§9.3).
 
@@ -381,6 +386,14 @@ Those treatments are defaults. A replacement must preserve recognizable state,
 stable geometry, and a static or textual fallback when animation or glyph
 coverage is unavailable. Introducing a different symbol must not make running
 look like waiting, completion, or keyboard focus.
+
+Available provider chunks paint promptly; there is no typewriter reveal timer.
+The existing 150 ms entrance debounce prevents a pinned busy line from flashing
+for very short work. Waiting, queued and terminal outcomes stay static; blocked
+background rows say waiting instead of repainting an elapsed counter. Idle
+polling remains independent of decoration so external state can still arrive.
+Human decisions use immediate focus, explicit text and a steady warning. The
+prototype's brief arrival flash is omitted to keep the inspected request steady.
 
 ### 5.4 Limited-colour fallback
 
@@ -1510,6 +1523,9 @@ screen.
   and branch. A writer names its separate worktree; a read-only scheduling mode
   uses the shared repository workspace. Mode is launch metadata, not a new tool
   permission policy. Unretained mode or branch information says unavailable.
+  The reading pane uses four compact metadata/control rows with visibly elided
+  paths and branches. `/tasks` and decisions retain their full literal details.
+  Stop and decision cards avoid repeating the same agent/state metadata.
 - **Return restores the parent.** `←`/`Esc` restores its reading/follow state,
   focus, text selection and retained draft. Parent progress is held separately
   while the child is shown; parent approvals and stream text cannot appear as

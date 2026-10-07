@@ -909,6 +909,42 @@ mod tests {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn available_stream_bursts_paint_immediately_and_reduced_motion_keeps_input() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.runtime.reduced_motion = true;
+        app.session_runtime.messages.push(forge_types::Message::new(
+            forge_types::MessageRole::User,
+            "Read the available provider answer.",
+        ));
+        app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Working;
+        app.busy_state.activate();
+        app.stream.preview = format!(
+            "{}\nAvailable final chunk λ/東京",
+            "Provider evidence.\n".repeat(2000)
+        );
+        app.test_events
+            .push_back(Event::Paste("Retained follow-up λ/東京".into()));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        paint_foreground_frame(&mut app, Some(&mut terminal), false)
+            .await
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("Available final chunk λ/"), "{rendered}");
+        assert_eq!(app.input.text, "Retained follow-up λ/東京");
+        assert!(!app.pending_turn.has_prompt());
+        let step = app.session_row_step;
+        app.tick_render_state();
+        assert_eq!(app.session_row_step, step);
+    }
 }
 
 /// Advance every non-blocking service owned by the TUI application.
@@ -953,10 +989,6 @@ pub(super) async fn paint_foreground_frame<B: ratatui::backend::Backend>(
     if service_application {
         let _ = tick_application(app).await?;
     }
-    // Deltas arrive irregularly and each one paints, so the reveal has to
-    // advance here too — otherwise a burst would sit still until the next
-    // 100ms tick and the smoothing would show as stutter instead.
-    app.stream.advance_reveal(Instant::now());
     if terminal.is_some() {
         drain_events(app, terminal.as_deref_mut()).await?;
         if let Some(term) = terminal {
@@ -1244,9 +1276,13 @@ async fn run_loop(
 
     while !app.exit.is_requested() {
         frame_dirty |= tick_application(app).await?;
-        let is_animating = app.busy_state.is_active()
-            || app.pending_approved_tool.is_some()
-            || app.any_interactive_terminal_running();
+        let is_animating = !app.runtime.reduced_motion
+            && (app.busy_state.is_active()
+                || app.pending_approved_tool.is_some()
+                || app
+                    .session_chrome
+                    .iter()
+                    .any(|task| task.is_working() && !task.is_queued()));
         if frame_dirty || is_animating || last_idle_draw.elapsed() >= IDLE_REDRAW_INTERVAL {
             terminal.draw(|f| app.draw(f))?;
             if let (Some(area), Some(bytes)) =
@@ -1294,6 +1330,8 @@ async fn run_loop(
             Duration::ZERO
         } else if app.any_interactive_terminal_running() {
             Duration::from_millis(20)
+        } else if is_animating {
+            crate::widgets::turn_line::FRAME_INTERVAL
         } else {
             Duration::from_millis(200)
         };

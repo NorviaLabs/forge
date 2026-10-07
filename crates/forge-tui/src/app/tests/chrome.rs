@@ -188,6 +188,7 @@ async fn header_status_follows_session_lifecycle() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -310,6 +311,7 @@ async fn header_status_switches_with_selected_session() {
     let mut app = TuiApp::new(
         completed,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -354,6 +356,7 @@ async fn tui08_report_error_writes_banner_feedback_and_activity() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -392,6 +395,7 @@ async fn tui10_activity_feed_records_model_and_error() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -429,6 +433,7 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -459,6 +464,7 @@ async fn tui10_busy_phase_model_during_turn_clears_after() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -489,6 +495,7 @@ async fn tui08_context_sets_feedback_strip() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),

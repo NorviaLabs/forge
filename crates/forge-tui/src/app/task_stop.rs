@@ -222,9 +222,16 @@ impl TuiApp {
                         .unwrap_or_else(|| "unavailable".into())
                 ),
             ),
-            forge_core::BackgroundTaskKind::Subagent { .. } => {
-                ("agent", super::turn::child_execution_text(&task))
-            }
+            forge_core::BackgroundTaskKind::Subagent { .. } => (
+                "agent",
+                format!(
+                    "Child: {}\n{}",
+                    task.child_session_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "unavailable".into()),
+                    super::turn::child_execution_metadata(&task)
+                ),
+            ),
         };
         let text = format!("Parent: {owner}\n{kind} #{}: {}\nState: {}\n\n{invocation}\n\nStopping interrupts this {kind}. Available output and partial findings are retained.\nOther work and queued prompts are unaffected. No checkout is removed.", task.id.0, task.label, super::turn::background_task_state(status));
         let labels = [

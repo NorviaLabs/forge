@@ -510,6 +510,7 @@ async fn holding_arrows_in_a_large_tree_stays_on_a_frame_budget() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),

@@ -1,0 +1,39 @@
+   FORGE · ⌂ /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpvLLYrc
+ ╭──────────────────────╮    Conversation                                                     Ctrl+P files · / commands
+ │  / Search files...   │
+ │ Ctrl+Shift+F──────── │
+ │                      │
+ │   ▌⌄ .tmpvLLYrc      │
+ │      › j             │
+ │        .forge…y.json │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │ > Terminal ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ │                      │   printf 'Actual clipped shell output λ/東京\n'
+ │                      │   mohitranka@Mohits-Mac-mini .tmpvLLYrc % printf 'Actual clipped shell outpu
+ │                      │   t λ/東京\n'
+ │                      │   Actual clipped shell output λ/東京
+ │                      │
+ │                      │   mohitranka@Mohits-Mac-mini .tmpvLLYrc %
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │
+ │                      │ ─────────────────────────────────────────────────────────────────────────────────────────────
+ │                      │   Describe a task…
+ ╰──────────────────────╯
+   ● OpenAI/gpt-6.1-sol │ Auto                                                                  ready   ·  context 0%

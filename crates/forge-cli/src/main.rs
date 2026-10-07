@@ -417,6 +417,7 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         startup_notices,
         file_icons: cfg.tui.file_icons,
         theme_id: cfg.tui.theme.clone(),
+        reduced_motion: cfg.tui.reduced_motion,
     };
     let launch = TuiLaunch {
         startup_items: None,

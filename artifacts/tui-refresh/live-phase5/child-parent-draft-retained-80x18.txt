@@ -1,0 +1,18 @@
+   FORGE · ⌂ /var/folders/rn/…/T/.tmpl0u8KW  ·  ./No commits yet on main*
+    Conversation                                      Ctrl+P files · / commands
+
+
+
+   You
+   Subagent UI fixture; provider responses are mocked.
+
+   Queue · 6 · +5 more · /tasks inspect
+   > 1. Retained parent follow-up 1
+   Background · 3 ──────────────────────────────────────────────────── +2 more
+ > [-] ◆ Audit retries                                                    120s
+ ──────────────────────────────────────────────────────────────────────────────
+   Retained parent draft λ/東京.rs.
+   Partial findings from Audit retries · cancelled · unverified
+   Mock provider finding from writer: retry handling needs review. This is
+   ● OpenAI/gpt-6.1-sol │ Auto                          ready   ·  context 1%
+   [◆ agents 3 · 2 need · 1 cancelled] [⇥ queue 6]

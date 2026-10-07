@@ -112,6 +112,7 @@ pub(crate) fn init_repo(dir: &Path) {
 /// new field is added once rather than in every test that builds an app.
 pub(crate) fn test_runtime_config() -> TuiRuntimeConfig {
     TuiRuntimeConfig {
+        reduced_motion: false,
         model_label: "mock".into(),
         provider: "mock".into(),
         cwd: PathBuf::from("."),
@@ -186,6 +187,7 @@ pub(crate) async fn focus_test_app_with_theme(theme_id: &str) -> (TempDir, TuiAp
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),

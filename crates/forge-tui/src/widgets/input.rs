@@ -3,8 +3,8 @@
 use crate::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 use std::ops::Range;
 
@@ -27,7 +27,9 @@ pub struct InputModel {
 
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 const MAX_VISIBLE_ROWS: usize = crate::design::MAX_COMPOSER_INPUT_H as usize;
-const CURSOR_GLYPH: &str = theme::CURSOR_GLYPH;
+// A private probe style locates the caret without inserting a character into
+// the draft. The real draw replaces this style before backend output.
+const CURSOR_MARK: Color = Color::Indexed(255);
 
 #[derive(Debug, Clone)]
 struct PendingPaste {
@@ -388,48 +390,98 @@ pub struct InputBar<'a> {
     pub running: bool,
 }
 
-fn composer_text(model: &InputModel, show_cursor: bool) -> String {
-    if model.text.is_empty() {
-        if model.waiting {
-            return String::new();
-        }
-        return if show_cursor {
-            format!("{CURSOR_GLYPH}{}", model.hint)
-        } else {
-            model.hint.clone()
-        };
-    }
-    if !show_cursor {
-        return model.text.clone();
-    }
+fn composer_text(model: &InputModel, show_cursor: bool) -> Text<'_> {
+    composer_text_at(model, show_cursor, model.cursor)
+}
 
-    let cursor = model.cursor.min(model.text.len());
-    let (before, after) = model.text.split_at(cursor);
-    format!("{before}{CURSOR_GLYPH}{after}")
+fn composer_text_at(model: &InputModel, show_cursor: bool, offset: usize) -> Text<'_> {
+    if model.text.is_empty() && model.waiting {
+        return Text::default();
+    }
+    let source = if model.text.is_empty() {
+        &model.hint
+    } else {
+        &model.text
+    };
+    let offset = if model.text.is_empty() {
+        0
+    } else {
+        offset.min(source.len())
+    };
+    let mut text = Text::raw(source.as_str());
+    if !show_cursor {
+        return text;
+    }
+    let prefix = &source[..offset];
+    let row = if offset == source.len() {
+        // Text has already parsed these lines. Recounting every byte makes
+        // normal typing and result insertion scan a long draft twice.
+        text.lines
+            .len()
+            .saturating_sub(usize::from(!source.ends_with('\n')))
+    } else {
+        prefix.matches('\n').count()
+    };
+    while text.lines.len() <= row {
+        text.lines.push(Line::default());
+    }
+    if offset == source.len() {
+        // Keep the parsed source spans and append only the EOF caret.
+        text.lines[row]
+            .spans
+            .push(Span::styled(" ", Style::default().bg(CURSOR_MARK)));
+        return text;
+    }
+    let start = prefix.rfind('\n').map_or(0, |index| index + 1);
+    let line = source[start..].split('\n').next().unwrap_or_default();
+    let column = offset - start;
+    let mut caret_start = line.len();
+    let mut length = 0;
+    let mut bytes = 0;
+    if column < line.len() {
+        for grapheme in Span::raw(line).styled_graphemes(Style::default()) {
+            if column < bytes + grapheme.symbol.len() {
+                caret_start = bytes;
+                length = grapheme.symbol.len();
+                break;
+            }
+            bytes += grapheme.symbol.len();
+        }
+    }
+    let (before, after) = line.split_at(caret_start);
+    let glyph = if length == 0 { " " } else { &after[..length] };
+    text.lines[row] = Line::from(vec![
+        Span::raw(before),
+        Span::styled(glyph, Style::default().bg(CURSOR_MARK)),
+        Span::raw(&after[length..]),
+    ]);
+    text
 }
 
 fn cursor_scroll(model: &InputModel, content_width: u16, visible_rows: u16) -> u16 {
-    let cursor = model.cursor.min(model.text.len());
-    let prefix = format!("{}{}", &model.text[..cursor], CURSOR_GLYPH);
-    Paragraph::new(prefix)
-        .wrap(Wrap { trim: false })
-        .line_count(content_width.max(1))
-        .saturating_sub(visible_rows as usize) as u16
+    // Typing and result handoff usually leave the caret at the end. Counting
+    // those lines avoids materializing a full draft-sized probe buffer.
+    if model.cursor >= model.text.len() {
+        return Paragraph::new(composer_text(model, true))
+            .wrap(Wrap { trim: false })
+            .line_count(content_width.max(1))
+            .saturating_sub(visible_rows as usize) as u16;
+    }
+    let (row, ..) = visual_row_col(model, content_width.max(1), model.cursor);
+    row.saturating_add(1).saturating_sub(visible_rows)
 }
 
 /// `(row, col, total_rows)` of `offset` in `model.text`'s full, unscrolled
 /// wrapped layout at `width` — independent of the current viewport/scroll
 /// (unlike [`cursor_scroll`], which is about keeping a position visible in
 /// a *limited* window). Used to drive [`InputModel::move_cursor_up`]/
-/// [`InputModel::move_cursor_down`]: splices the same cursor sentinel used
+/// [`InputModel::move_cursor_down`]: uses the same caret probe style used
 /// for display at `offset` and renders through the real `Paragraph` +
 /// `Wrap`, so results are pixel-identical to what's on screen rather than
 /// reimplementing word-wrap in string space.
 fn visual_row_col(model: &InputModel, width: u16, offset: usize) -> (u16, u16, u16) {
     let width = width.max(1);
-    let offset = offset.min(model.text.len());
-    let (before, after) = model.text.split_at(offset);
-    let probe_text = format!("{before}{CURSOR_GLYPH}{after}");
+    let probe_text = composer_text_at(model, true, offset);
     let total_rows = Paragraph::new(probe_text.clone())
         .wrap(Wrap { trim: false })
         .line_count(width)
@@ -441,7 +493,7 @@ fn visual_row_col(model: &InputModel, width: u16, offset: usize) -> (u16, u16, u
         .render(scratch_area, &mut scratch);
     for y in 0..total_rows {
         for x in 0..width {
-            if scratch[(x, y)].symbol() == CURSOR_GLYPH {
+            if scratch[(x, y)].bg == CURSOR_MARK {
                 return (y, x, total_rows);
             }
         }
@@ -512,7 +564,7 @@ fn composer_geometry(
 /// Absolute `(x, y)` of the composer's cursor cell within `area`, for driving
 /// the real terminal cursor (`Frame::set_cursor_position`). Renders the same
 /// composer text used for display into a scratch buffer and scans for the
-/// cursor sentinel — mirrors the display render exactly rather than
+/// caret probe style — mirrors the display render exactly rather than
 /// reimplementing wrap math independently.
 pub fn composer_cursor_position(
     model: &InputModel,
@@ -534,7 +586,7 @@ pub fn composer_cursor_position(
 
     for y in text_area.top()..text_area.bottom() {
         for x in text_area.left()..text_area.right() {
-            if scratch[(x, y)].symbol() == CURSOR_GLYPH {
+            if scratch[(x, y)].bg == CURSOR_MARK {
                 return Some((x, y));
             }
         }
@@ -674,9 +726,8 @@ impl Widget for InputBar<'_> {
             // Paint the same solid block caret used by every other input.
             for y in text_area.top()..text_area.bottom() {
                 for x in text_area.left()..text_area.right() {
-                    if buf[(x, y)].symbol() == CURSOR_GLYPH {
-                        theme::paint_caret(buf, x, y);
-                        break;
+                    if buf[(x, y)].bg == CURSOR_MARK {
+                        buf[(x, y)].set_style(theme::caret());
                     }
                 }
             }
@@ -687,6 +738,50 @@ impl Widget for InputBar<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focused_caret_keeps_draft_cells_and_literal_block_characters() {
+        let area = Rect::new(0, 0, 80, 6);
+        for (text, cursor) in [
+            ("Retained parent draft.", 7),
+            ("Retained λ/東京.rs █ marker", "Retained λ/".len()),
+            ("Literal █ stays in the draft", "Literal █ stays ".len()),
+            ("Combining e\u{301} stays intact", "Combining e".len()),
+            ("Last paragraph\n\n", "Last paragraph\n\n".len()),
+        ] {
+            let model = InputModel {
+                text: text.into(),
+                cursor,
+                ..Default::default()
+            };
+            let render = |focused| {
+                let mut buffer = Buffer::empty(area);
+                InputBar {
+                    model: &model,
+                    attachment: None,
+                    dimmed: false,
+                    not_connected: false,
+                    focused,
+                    waiting: false,
+                    running: false,
+                }
+                .render(area, &mut buffer);
+                buffer
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            };
+            assert_eq!(
+                render(true),
+                render(false),
+                "caret changed the displayed draft: {text}"
+            );
+            assert!(composer_cursor_position(&model, area, None).is_some());
+            assert_eq!(model.text, text);
+            assert_eq!(model.cursor, cursor);
+        }
+    }
 
     #[test]
     fn append_handoff_keeps_draft_and_expands_pending_pastes() {

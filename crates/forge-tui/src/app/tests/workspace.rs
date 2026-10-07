@@ -577,6 +577,7 @@ async fn files_visibility_persists_per_repository() {
     let restored = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),

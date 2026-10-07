@@ -147,8 +147,7 @@ impl SessionRowState {
     /// The running marker's frame `step` steps into, from the turn line's own
     /// set — the row and the live turn it is running speak one vocabulary.
     pub fn spinner_frame(step: usize) -> &'static str {
-        let frames = crate::widgets::turn_line::SPINNER_FRAMES;
-        frames[step % frames.len()]
+        crate::widgets::turn_line::running_marker(step, false)
     }
 
     /// The marker's style. Selection overrides this — see `SessionList`.
@@ -470,6 +469,7 @@ pub struct SessionList<'a> {
     /// How far the running rows' spinner has stepped. Advanced by the event
     /// loop, never by the wall clock, so pausing work pauses the motion.
     pub step: usize,
+    pub reduced_motion: bool,
 }
 
 /// Where a row's text begins: the prefix is `bar marker space glyph space`,
@@ -557,7 +557,10 @@ impl Widget for SessionList<'_> {
             // running sessions does not blink as one blanket, and every frame
             // is one cell wide so the labels stay in their column.
             let glyph = match row.state {
-                SessionRowState::Working => SessionRowState::spinner_frame(self.step + index),
+                SessionRowState::Working => crate::widgets::turn_line::running_marker(
+                    self.step + index,
+                    self.reduced_motion,
+                ),
                 state => state.glyph(),
             };
             // One ground per row, covering both of its lines, so a selected

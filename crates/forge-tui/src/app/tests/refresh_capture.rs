@@ -3,6 +3,49 @@
 
 use super::prelude::*;
 
+struct RefreshMotionModel;
+
+#[async_trait::async_trait]
+impl forge_model::ModelClient for RefreshMotionModel {
+    async fn complete(
+        &self,
+        request: forge_model::ModelRequest,
+    ) -> Result<ModelResponse, forge_model::ModelError> {
+        self.complete_with_stream(request, None).await
+    }
+
+    async fn complete_with_stream(
+        &self,
+        _request: forge_model::ModelRequest,
+        tx: Option<forge_model::StreamEventTx>,
+    ) -> Result<ModelResponse, forge_model::ModelError> {
+        let mut text = String::new();
+        // Leave the actual busy indicator visible for the manual recording.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        for index in 1..=60 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let chunk = format!("Mock provider chunk {index}: retained evidence λ/東京.rs.\n\n");
+            if let Some(tx) = tx.as_ref() {
+                let _ = tx.send(forge_types::ModelStreamEvent::TextDelta {
+                    text: chunk.clone(),
+                });
+            }
+            text.push_str(&chunk);
+        }
+        if let Some(tx) = tx {
+            let _ = tx.send(forge_types::ModelStreamEvent::MessageEnd);
+        }
+        Ok(ModelResponse {
+            text,
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        })
+    }
+
+    fn clear_provider_env(&self) {}
+}
+
 async fn seed_refresh_tasks(app: &mut TuiApp) {
     for position in 1..=6 {
         app.session_runtime
@@ -158,6 +201,8 @@ async fn walk_refresh_ui() {
     let (fixture, mut app) = if std::env::var_os("FORGE_NATIVE_AGENTS").is_some() {
         let (fixture, app, _) = refresh_agents_fixture(&theme).await;
         (fixture, app)
+    } else if std::env::var_os("FORGE_NATIVE_MOTION").is_some() {
+        focus_test_app_with_model(Arc::new(RefreshMotionModel)).await
     } else {
         focus_test_app_with_theme(&theme).await
     };
@@ -167,6 +212,14 @@ async fn walk_refresh_ui() {
     app.pane_resize = PaneResizeState::new(forge_config::PaneLayoutStore::new(
         fixture.path().join("pane-layout.toml"),
     ));
+    app.runtime.reduced_motion = std::env::var_os("FORGE_REDUCED_MOTION").is_some();
+    if std::env::var_os("FORGE_NATIVE_MOTION").is_some() {
+        app.pending_turn.queue(
+            "Show the mock provider stream. No tools or file changes.".into(),
+            vec![],
+        );
+        app.input.set_text("Retained follow-up draft λ/東京.rs.");
+    }
     if std::env::var_os("FORGE_NATIVE_TASKS").is_some()
         || std::env::var_os("FORGE_NATIVE_JOBS").is_some()
     {
@@ -205,6 +258,7 @@ fn capture_refresh_frames() {
     fs::create_dir_all(&out).unwrap();
     let disabled = crossterm::style::Colored::ansi_color_disabled_memoized();
     let mut timings = Vec::new();
+    let mut captured = 0;
     for presentation in ["dark", "light", "mono"] {
         crossterm::style::force_color_output(presentation != "mono");
         let theme = if presentation == "light" {
@@ -213,8 +267,10 @@ fn capture_refresh_frames() {
             "forge-dark"
         };
         crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), theme);
-        for (width, height) in [(80, 18), (80, 24), (120, 40), (160, 50)] {
-            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal", "dock", "queue", "jobs", "agents", "jobstop", "joboutput", "jobpartial", "jobinsert", "childlist", "childpeek", "childdecision", "childstop", "childpartial", "childinsert"] {
+        let sizes = std::env::var("FORGE_CAPTURE_SIZES").ok().map(|value| value.split(',').map(|size| { let (width, height) = size.split_once('x').expect("WIDTHxHEIGHT"); (width.parse().unwrap(), height.parse().unwrap()) }).collect::<Vec<_>>()).unwrap_or_else(|| vec![(80,18),(80,24),(120,40),(160,50)]);
+        for (width, height) in sizes {
+            for state in ["start", "draft", "caret", "plan", "working", "stillworking", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal", "dock", "queue", "jobs", "agents", "jobstop", "joboutput", "jobcontrols", "jobpartial", "jobinsert", "childlist", "childpeek", "childdecision", "childstop", "childpartial", "childinsert"] {
+                if std::env::var("FORGE_CAPTURE_STATES").ok().is_some_and(|states| !states.split(',').any(|selected| selected == state)) { continue; }
                 let (fixture, mut app) = if state.starts_with("child") {
                     let (fixture, app, _) = refresh_agents_fixture(theme).await;
                     (fixture, app)
@@ -254,7 +310,7 @@ fn capture_refresh_frames() {
                             }
                         }
                     }
-                    "dock" | "queue" | "jobs" | "agents" | "jobstop" | "joboutput" | "jobpartial" | "jobinsert" => {
+                    "dock" | "queue" | "jobs" | "agents" | "jobstop" | "joboutput" | "jobcontrols" | "jobpartial" | "jobinsert" => {
                         seed_refresh_tasks(&mut app).await;
                         app.input.set_text("Retained parent draft λ/東京.rs.");
                         if ["jobpartial", "jobinsert"].contains(&state) {
@@ -265,14 +321,14 @@ fn capture_refresh_frames() {
                             if state == "jobinsert" {
                                 app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE)).await.unwrap();
                             }
-                        } else if ["jobstop", "joboutput"].contains(&state) {
-                            let command = if state == "jobstop" { "printf 'Captured live output ✓\\n'; sleep 3600" } else { "printf 'Actual long output λ/東京\\n'; i=0; while [ $i -lt 100 ]; do printf 'line %s\\n' $i; i=$((i+1)); done; printf 'End of captured output\\n'; exit 7" };
+                        } else if ["jobstop", "joboutput", "jobcontrols"].contains(&state) {
+                            let command = if state == "jobstop" { "printf 'Captured live output ✓\\n'; sleep 3600" } else if state == "jobcontrols" { "printf 'Actual control evidence λ/東京\\nESC=\\033[2J TAB=\\t CR=\\r BIDI=\\342\\200\\256end\\n'" } else { "printf 'Actual long output λ/東京\\n'; i=0; while [ $i -lt 100 ]; do printf 'line %s\\n' $i; i=$((i+1)); done; printf 'End of captured output\\n'; exit 7" };
                             let id = app.session_runtime.spawn_background_shell(command.into(), "Evidence fixture".into()).await.unwrap();
                             let deadline = Instant::now() + Duration::from_secs(3);
                             loop {
                                 app.poll_background_tasks().await.unwrap();
                                 let task = app.session_runtime.background().get(id).unwrap();
-                                if (state == "jobstop" && !task.shell.as_ref().unwrap().output.snapshot().stdout.is_empty()) || (state == "joboutput" && task.status.is_terminal()) { break; }
+                                if (state == "jobstop" && !task.shell.as_ref().unwrap().output.snapshot().stdout.is_empty()) || (state != "jobstop" && task.status.is_terminal()) { break; }
                                 assert!(Instant::now() < deadline, "job evidence did not arrive");
                                 tokio::time::sleep(Duration::from_millis(5)).await;
                             }
@@ -307,7 +363,14 @@ fn capture_refresh_frames() {
                     "draft" => app.input.set_text(
                         "Preserve the original error and the Unicode path λ/東京.rs.\n".repeat(8),
                     ),
-                    "working" => {
+                    "caret" => {
+                        app.input.set_text("Retained parent draft λ/東京.rs. █ stays literal.");
+                        app.input.cursor = "Retaine".len();
+                    }
+                    "working" | "stillworking" => {
+                        app.runtime.reduced_motion = state == "stillworking";
+                        app.timing.turn_started = Some(Instant::now() - Duration::from_secs(5));
+                        app.timing.started = app.timing.turn_started;
                         app.session_runtime.active_task.lifecycle =
                             forge_types::TaskLifecycle::Working;
                         app.stream_preview_for_tests("Checking the retry path.\n\nThe transient failure can be retried while preserving the original error.");
@@ -462,6 +525,7 @@ fn capture_refresh_frames() {
                 let active: Vec<_> = app.session_runtime.background().list().filter(|task| !task.status.is_terminal()).map(|task| task.id).collect();
                 for id in active { app.session_runtime.cancel_background_task(id); }
                 app.session_runtime.retire_resources().await.unwrap();
+                captured += 1;
             }
         }
     }
@@ -472,7 +536,7 @@ fn capture_refresh_frames() {
     )
     .unwrap();
     eprintln!(
-        "Captured 348 production frames with mock fixtures in {}",
+        "Captured {captured} production frames with mock fixtures in {}",
         out.display()
     );
         });

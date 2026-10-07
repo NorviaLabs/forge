@@ -34,6 +34,7 @@ async fn connect_opencode_go_opens_api_key_overlay() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -58,6 +59,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -94,6 +96,7 @@ async fn connect_picker_marks_saved_credentials_as_connected() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -130,6 +133,7 @@ async fn successful_connect_hands_off_to_model_picker() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -170,6 +174,7 @@ async fn model_selection_switches_to_the_matching_connected_provider() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -208,6 +213,7 @@ async fn model_selection_with_explicit_route_never_crosses_wires_between_openai_
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -270,6 +276,7 @@ async fn model_switch_test_app(cred_dir: &tempfile::TempDir) -> TuiApp {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-5.6".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -422,6 +429,7 @@ async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
     let restarted = TuiApp::new(
         session2,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: String::new(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -481,6 +489,7 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     let mut restarted = TuiApp::new(
         session2,
         TuiRuntimeConfig {
+            reduced_motion: false,
             // What forge-cli actually passes after a previous session: the
             // saved model, not an empty string.
             model_label: "openai/gpt-5.6-luna".into(),
@@ -522,6 +531,7 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "opencode-go/deepseek-v4.1-flash".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -584,6 +594,7 @@ async fn quick_switch_toggles_between_the_two_most_recent_deliberate_selections(
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -631,6 +642,7 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -677,6 +689,7 @@ async fn first_connection_auto_selects_a_default_model_and_lands_in_steady_state
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -723,6 +736,7 @@ async fn second_connection_still_opens_the_model_picker() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -778,6 +792,7 @@ async fn connect_xai_opens_oauth_overlay() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -807,6 +822,7 @@ async fn oauth_cancel_via_escape_stops_the_background_poll() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -854,6 +870,7 @@ async fn connect_alone_opens_profile_picker() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -908,6 +925,7 @@ async fn blocks_chat_when_not_connected() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai/gpt-4.1-mini".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -960,6 +978,7 @@ async fn startup_requires_provider_model_setup_when_credentials_have_no_model() 
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: String::new(),
             provider: String::new(),
             cwd: PathBuf::from("."),
@@ -986,6 +1005,7 @@ async fn bare_model_command_opens_on_models_column() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1009,6 +1029,7 @@ async fn open_connect_picker_opens_immediately_and_starts_background_refresh() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1045,6 +1066,7 @@ async fn poll_catalog_refresh_is_a_noop_when_nothing_in_flight() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1067,6 +1089,7 @@ async fn warm_catalog_once_connected_is_a_noop_for_the_mock_provider() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1090,6 +1113,7 @@ async fn warm_catalog_once_connected_starts_exactly_one_background_refresh() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "anthropic/claude-sonnet-4-6".into(),
             provider: "anthropic".into(),
             cwd: PathBuf::from("."),
@@ -1137,6 +1161,7 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1183,6 +1208,7 @@ async fn f4_opens_compact_model_control() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "anthropic/claude-sonnet-4-6".into(),
             provider: "anthropic".into(),
             cwd: PathBuf::from("."),
@@ -1229,6 +1255,7 @@ async fn compact_control_escape_cancels_without_state_change() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "anthropic/claude-sonnet-4-6".into(),
             provider: "anthropic".into(),
             cwd: PathBuf::from("."),
@@ -1273,6 +1300,7 @@ async fn mock_provider_allows_chat_without_connect() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1296,6 +1324,7 @@ async fn esc_on_api_key_screen_returns_to_provider_list() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -1324,6 +1353,7 @@ async fn esc_on_api_key_screen_during_onboarding_returns_to_provider_list_not_ex
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -1353,6 +1383,7 @@ async fn onboarding_connect_esc_exits_the_process() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),

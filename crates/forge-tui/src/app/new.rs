@@ -90,6 +90,7 @@ impl TuiApp {
             },
             busy_state: BusyState::default(),
             session_row_step: 0,
+            animation_started: Instant::now(),
             status_state: StatusMessageState {
                 message: String::new(),
             },
@@ -120,9 +121,6 @@ impl TuiApp {
             task_selection: TaskSelectionState::default(),
             stream: StreamState {
                 preview: String::new(),
-                revealed: 0,
-                revealed_at: None,
-                reveal_deadline: None,
                 thinking: String::new(),
                 live_lines: None,
                 last_preview_render: None,
@@ -340,6 +338,7 @@ impl TuiApp {
             },
             busy_state: BusyState::default(),
             session_row_step: 0,
+            animation_started: Instant::now(),
             status_state: StatusMessageState {
                 message: String::new(),
             },
@@ -370,9 +369,6 @@ impl TuiApp {
             task_selection: TaskSelectionState::default(),
             stream: StreamState {
                 preview: String::new(),
-                revealed: 0,
-                revealed_at: None,
-                reveal_deadline: None,
                 thinking: String::new(),
                 live_lines: None,
                 last_preview_render: None,

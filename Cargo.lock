@@ -1480,6 +1480,7 @@ dependencies = [
  "forge-tools",
  "forge-types",
  "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

@@ -346,6 +346,7 @@ model = "openai/gpt-4.1-mini"
 theme = "forge-dark"
 file_icons = "unicode"
 notify = "auto"
+reduced_motion = false # Set true for static working indicators.
 
 [journal]
 path = ".forge/sessions"

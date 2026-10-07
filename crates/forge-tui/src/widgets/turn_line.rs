@@ -11,7 +11,7 @@
 //! The line sits where the answer is about to appear: a braille spinner in
 //! the activity token (fixed width, stepped once per event-loop tick), the
 //! evidence-backed phase in bold primary, elapsed time secondary.
-//! Motion comes from the elapsed tick plus the spinner alone — no
+//! Motion comes from elapsed time plus the spinner alone — no
 //! per-letter shimmer, no character counter, no duplicate busy state
 //! in the footer.
 
@@ -31,6 +31,7 @@ pub struct TurnLineModel {
     pub elapsed_secs: f64,
     /// Whether Esc will actually interrupt right now.
     pub interruptible: bool,
+    pub reduced_motion: bool,
 }
 
 /// Name the phase the turn is in.
@@ -67,16 +68,29 @@ fn elapsed(model: &TurnLineModel) -> String {
 /// The running marker's frame set: heavy braille, one cell per frame.
 ///
 /// Shared with the navigator's session rows, so the two surfaces that mean
-/// "work is happening" cannot drift apart. One step per event-loop tick.
+/// "work is happening" cannot drift apart.
 pub(crate) const SPINNER_FRAMES: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+pub(crate) const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(125);
+
+pub(crate) fn running_marker(step: usize, reduced_motion: bool) -> &'static str {
+    if reduced_motion {
+        "*"
+    } else if crossterm::style::Colored::ansi_color_disabled_memoized() {
+        ["|", "/", "-", "\\", "|", "/", "-", "\\"][step % 8]
+    } else {
+        SPINNER_FRAMES[step % SPINNER_FRAMES.len()]
+    }
+}
 
 /// Build the line, right-aligning the interrupt hint to `width`.
 ///
 /// The leading marker is a braille spinner frame (`⣾⣽⣻⢿⡿⣟⣯⣷`),
-/// stepped once per 200ms event-loop tick. Every frame is one cell wide in
+/// stepped every 125ms, with static/reduced-motion and ASCII fallbacks.
+/// Every frame is one cell wide in
 /// the activity token, so the row never shifts width.
 pub fn turn_line(model: &TurnLineModel, width: usize, millis: u128) -> Line<'static> {
-    let frame = SPINNER_FRAMES[(millis / 200 % SPINNER_FRAMES.len() as u128) as usize];
+    let step = (millis / FRAME_INTERVAL.as_millis()) as usize;
+    let frame = running_marker(step, model.reduced_motion);
     let marker_style = theme::activity().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled(frame, marker_style),
@@ -99,4 +113,28 @@ pub fn turn_line(model: &TurnLineModel, width: usize, millis: u128) -> Line<'sta
         }
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_cadence_and_reduced_motion_are_independent_of_draw_count() {
+        let mut model = TurnLineModel {
+            verb: "Working".into(),
+            elapsed_secs: 1.5,
+            interruptible: true,
+            reduced_motion: false,
+        };
+        assert_eq!(turn_line(&model, 80, 0), turn_line(&model, 80, 124));
+        assert_ne!(turn_line(&model, 80, 0), turn_line(&model, 80, 125));
+        assert_eq!(turn_line(&model, 80, 0), turn_line(&model, 80, 1000));
+        for step in 0..8 {
+            assert_eq!(Span::raw(running_marker(step, false)).width(), 1);
+        }
+        model.reduced_motion = true;
+        assert_eq!(turn_line(&model, 80, 0), turn_line(&model, 80, 875));
+        assert!(turn_line(&model, 80, 0).to_string().contains("Working"));
+    }
 }

@@ -13,7 +13,7 @@ impl TuiApp {
         mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<Option<forge_core::CompletedContextCompaction>, TuiError> {
         let mut execution = IsolatedTask::spawn(pending.execute());
-        let mut ui_tick = tokio::time::interval(Duration::from_millis(100));
+        let mut ui_tick = tokio::time::interval(crate::widgets::turn_line::FRAME_INTERVAL);
         ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             if execution.is_finished() {

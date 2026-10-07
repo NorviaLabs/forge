@@ -344,6 +344,7 @@ async fn app_with_messages(messages: Vec<Message>) -> (TempDir, TuiApp) {
     let app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),

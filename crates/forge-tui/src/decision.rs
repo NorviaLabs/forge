@@ -100,12 +100,22 @@ pub(crate) fn visible_text(text: &str) -> String {
 pub(crate) fn bounded_text(text: &str, max_bytes: usize) -> String {
     let text = visible_text(text);
     let mut output = String::new();
-    for grapheme in Span::raw(&text).styled_graphemes(Style::default()) {
-        if output.len() + grapheme.symbol.len() > max_bytes {
-            output.push_str("\n[findings truncated]");
-            break;
+    for source in text.split_inclusive('\n') {
+        let line = source.strip_suffix('\n').unwrap_or(source);
+        for grapheme in Span::raw(line).styled_graphemes(Style::default()) {
+            if output.len() + grapheme.symbol.len() > max_bytes {
+                output.push_str("\n[findings truncated]");
+                return output;
+            }
+            output.push_str(grapheme.symbol);
         }
-        output.push_str(grapheme.symbol);
+        if source.ends_with('\n') {
+            if output.len() == max_bytes {
+                output.push_str("\n[findings truncated]");
+                return output;
+            }
+            output.push('\n');
+        }
     }
     output
 }
@@ -162,6 +172,15 @@ pub(crate) fn preview(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_findings_preserve_paragraphs_controls_and_whole_graphemes() {
+        let text = "First finding.\n\nSecond finding λ/東京 👩‍💻\n\u{1b}[2J";
+        assert_eq!(bounded_text(text, 1000), visible_text(text));
+        let prefix = "First finding.\n\nSecond finding λ/東京 ";
+        let bounded = bounded_text(text, prefix.len() + 1);
+        assert_eq!(bounded, format!("{prefix}\n[findings truncated]"));
+    }
 
     #[test]
     fn literal_wrapping_retains_spaces_long_tokens_and_unicode_graphemes() {

@@ -1463,6 +1463,7 @@ async fn app_with_supervisor_and_model(
     let session = session_for_workspace_with_model(dir.path(), model.clone()).await;
     let session_id = session.session_id;
     let runtime = TuiRuntimeConfig {
+        reduced_motion: false,
         model_label: "mock".into(),
         provider: "mock".into(),
         cwd: dir.path().to_path_buf(),
@@ -2878,19 +2879,29 @@ async fn the_collapsed_chip_keeps_the_working_spinner_moving() {
     app.session_chrome[0].lifecycle = forge_types::TaskLifecycle::Working;
     app.session_chrome[0].secondary = Some("running".to_string());
 
-    app.session_row_step = 0;
+    app.animation_started = std::time::Instant::now();
     let first = render_app_text(&mut app, 100, 40);
-    app.session_row_step = 3;
+    app.animation_started = std::time::Instant::now() - Duration::from_millis(375);
     let second = render_app_text(&mut app, 100, 40);
 
     assert!(first.contains("working"), "chip missing: {first}");
     assert!(
         crate::widgets::turn_line::SPINNER_FRAMES
-            .iter()
+            .into_iter()
+            .chain(["|", "/", "-", "\\"])
             .any(|frame| first.contains(frame)),
         "the chip carries no spinner frame: {first}"
     );
     assert_ne!(first, second, "the chip's spinner did not step");
+    app.runtime.reduced_motion = true;
+    app.session_row_step = 0;
+    let first_static = render_app_text(&mut app, 100, 40);
+    app.session_row_step = 7;
+    let second_static = render_app_text(&mut app, 100, 40);
+    assert_eq!(
+        first_static, second_static,
+        "reduced motion changed the chip"
+    );
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

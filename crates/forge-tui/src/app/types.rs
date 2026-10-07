@@ -975,6 +975,7 @@ pub struct TuiRuntimeConfig {
     pub startup_notices: Vec<String>,
     pub file_icons: FileIconMode,
     pub theme_id: String,
+    pub reduced_motion: bool,
 }
 
 impl Default for TuiRuntimeConfig {
@@ -987,6 +988,7 @@ impl Default for TuiRuntimeConfig {
             startup_notices: Vec::new(),
             file_icons: FileIconMode::default(),
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+            reduced_motion: false,
         }
     }
 }
@@ -1712,17 +1714,6 @@ pub(crate) struct StatusMessageState {
 #[derive(Default)]
 pub(crate) struct StreamState {
     pub(crate) preview: String,
-    /// Byte offset in `preview` that has actually been revealed on screen.
-    ///
-    /// A provider can hand over a whole paragraph in one event, which used to
-    /// go from nothing to four bullets between two adjacent frames — a
-    /// teleport, not a stream. Deltas are drained at a bounded rate instead.
-    pub(crate) revealed: usize,
-    /// When `revealed` last advanced, so the rate is measured in wall time
-    /// rather than in frames (which arrive irregularly).
-    pub(crate) revealed_at: Option<Instant>,
-    /// Fixed catch-up deadline for the current backlog; frames must not reset it.
-    pub(crate) reveal_deadline: Option<Instant>,
     pub(crate) thinking: String,
     pub(crate) live_lines: Option<(u16, usize, usize, Arc<Vec<crate::links::HyperlinkLine>>)>,
     /// When the preview last rebuilt at a *new width*. Tail-only rebuilds are
@@ -1734,85 +1725,9 @@ pub(crate) struct StreamState {
     pub(crate) markdown: crate::conversation::StreamPreviewCache,
 }
 impl StreamState {
-    /// Characters per second the preview is allowed to appear at. Above a
-    /// typical provider's output rate, so ordinary streaming is untouched and
-    /// only bursts are spread out.
-    const REVEAL_CHARS_PER_SEC: f64 = 700.0;
-    /// The reveal may never fall further behind than this, however large the
-    /// burst: a long answer that arrived at once still finishes promptly.
-    const MAX_LAG: Duration = Duration::from_millis(1200);
-
-    /// The part of the preview that is on screen.
-    pub(crate) fn revealed_preview(&self) -> &str {
-        &self.preview[..self.revealed.min(self.preview.len())]
-    }
-
-    /// Let more of the preview through. Called from the event loop — never
-    /// from `draw`, which must not mutate state.
-    pub(crate) fn advance_reveal(&mut self, now: Instant) {
-        if self.revealed > self.preview.len() {
-            // The preview was cleared or replaced at a step boundary.
-            self.revealed = 0;
-            self.reveal_deadline = None;
-        }
-        let pending = self.preview.len() - self.revealed;
-        if pending == 0 {
-            self.revealed_at = Some(now);
-            self.reveal_deadline = None;
-            return;
-        }
-        let deadline = *self.reveal_deadline.get_or_insert(now + Self::MAX_LAG);
-        // No clock yet: this is the first delta of a step. Start the clock and
-        // reveal on the next call — treating "unknown" as a full lag budget
-        // let the first burst through whole, which is the case this exists to
-        // smooth.
-        let Some(started) = self.revealed_at else {
-            self.revealed_at = Some(now);
-            return;
-        };
-        let since = now.saturating_duration_since(started);
-        let by_rate = (since.as_secs_f64() * Self::REVEAL_CHARS_PER_SEC) as usize;
-        // Catch-up floor: whatever the rate says, never hold text longer than
-        // MAX_LAG behind the provider.
-        // Spend the remaining budget, not a fresh MAX_LAG on every frame:
-        // repeatedly draining a fraction of the backlog decays exponentially.
-        let by_backlog = if now >= deadline {
-            pending
-        } else {
-            (pending as f64 * since.as_secs_f64()
-                / deadline.saturating_duration_since(started).as_secs_f64()) as usize
-        };
-        let step = by_rate.max(by_backlog);
-        if step == 0 {
-            return;
-        }
-        let mut target = (self.revealed + step).min(self.preview.len());
-        while target < self.preview.len() && !self.preview.is_char_boundary(target) {
-            target += 1;
-        }
-        self.revealed = target;
-        self.revealed_at = Some(now);
-        if self.revealed == self.preview.len() {
-            self.reveal_deadline = None;
-        }
-    }
-
-    /// Stand in for the event loop where a test drives `draw` directly.
-    #[doc(hidden)]
-    pub fn reveal_everything_for_tests(&mut self) {
-        self.revealed = self.preview.len();
-        self.revealed_at = None;
-        self.reveal_deadline = None;
-    }
-
-    /// Drop the preview at a step or turn boundary. The settled transcript
-    /// carries the finished text, so nothing is lost by resetting the reveal
-    /// along with it.
+    /// Available provider text is shown on the next frame without a reveal timer.
     pub(crate) fn clear_preview(&mut self) {
         self.preview.clear();
-        self.revealed = 0;
-        self.revealed_at = None;
-        self.reveal_deadline = None;
     }
 }
 
@@ -1985,6 +1900,7 @@ pub struct TuiApp {
     /// on [`BusyState`] — that clock only runs while the *visible* session has
     /// a turn in flight.
     pub(crate) session_row_step: usize,
+    pub(crate) animation_started: Instant,
     pub(crate) status_state: StatusMessageState,
     pub(crate) runtime: TuiRuntimeConfig,
     pub(crate) connect: connect::ConnectionModel,
@@ -2242,110 +2158,6 @@ pub(crate) struct CatalogFetchState {
     /// `footer_has_compact_control`) fires at most once per app lifetime —
     /// every later refresh is triggered explicitly by opening a picker.
     pub(crate) warmed: bool,
-}
-
-#[cfg(test)]
-mod stream_reveal_tests {
-    use super::StreamState;
-    use std::time::{Duration, Instant};
-
-    fn state(text: &str) -> StreamState {
-        StreamState {
-            preview: text.to_string(),
-            ..Default::default()
-        }
-    }
-
-    /// A provider can hand over a paragraph in one event. Revealing it whole
-    /// is a teleport, not a stream.
-    #[test]
-    fn a_burst_is_spread_over_several_frames() {
-        let mut stream = state(&"x".repeat(2_000));
-        let start = Instant::now();
-        stream.advance_reveal(start);
-        let first = stream.revealed_preview().len();
-        assert!(first < 2_000, "the whole burst appeared at once");
-
-        stream.advance_reveal(start + Duration::from_millis(100));
-        assert!(
-            stream.revealed_preview().len() > first,
-            "the reveal did not advance"
-        );
-    }
-
-    /// However large the burst, the text may not lag far behind the provider.
-    #[test]
-    fn the_reveal_catches_up_within_its_lag_budget() {
-        let mut stream = state(&"x".repeat(50_000));
-        let start = Instant::now();
-        stream.advance_reveal(start);
-        for frame in 1..=12 {
-            stream.advance_reveal(start + Duration::from_millis(100 * frame));
-        }
-        assert_eq!(
-            stream.revealed_preview().len(),
-            50_000,
-            "a large answer was still being dribbled out after the lag budget"
-        );
-    }
-
-    /// Ordinary streaming is under the rate cap, so it is untouched.
-    #[test]
-    fn a_normal_rate_stream_is_never_held_back() {
-        let mut stream = state("");
-        let start = Instant::now();
-        stream.advance_reveal(start);
-        for step in 1..=10 {
-            stream.preview.push_str("about ten characters ");
-            stream.advance_reveal(start + Duration::from_millis(100 * step));
-        }
-        assert_eq!(stream.revealed_preview(), stream.preview);
-    }
-
-    #[test]
-    fn later_bursts_get_a_fresh_lag_budget() {
-        let mut stream = state(&"x".repeat(50_000));
-        let start = Instant::now();
-        stream.advance_reveal(start);
-        stream.advance_reveal(start + StreamState::MAX_LAG);
-        assert!(stream.reveal_deadline.is_none());
-
-        let next = start + Duration::from_secs(2);
-        stream.advance_reveal(next);
-        stream.preview.push_str(&"é→🙂".repeat(5_000));
-        stream.advance_reveal(next);
-        assert!(stream.revealed < stream.preview.len());
-        for frame in 1..=12 {
-            stream.advance_reveal(next + Duration::from_millis(100 * frame));
-            let _ = stream.revealed_preview();
-        }
-        assert_eq!(stream.revealed_preview(), stream.preview);
-    }
-
-    /// Multi-byte text must never be cut mid-character.
-    #[test]
-    fn the_reveal_lands_on_character_boundaries() {
-        let mut stream = state(&"é→🙂".repeat(400));
-        let start = Instant::now();
-        for step in 0..10 {
-            stream.advance_reveal(start + Duration::from_millis(30 * step));
-            // Slicing panics on a bad boundary; this is the assertion.
-            let _ = stream.revealed_preview();
-        }
-    }
-
-    /// A step boundary drops the preview; the reveal has to reset with it or
-    /// the next step starts out "already revealed".
-    #[test]
-    fn clearing_the_preview_resets_the_reveal() {
-        let mut stream = state("some text");
-        stream.advance_reveal(Instant::now());
-        stream.clear_preview();
-        assert_eq!(stream.revealed_preview(), "");
-        assert!(stream.reveal_deadline.is_none());
-        stream.preview.push_str("next step");
-        assert_eq!(stream.revealed_preview(), "");
-    }
 }
 
 #[cfg(test)]

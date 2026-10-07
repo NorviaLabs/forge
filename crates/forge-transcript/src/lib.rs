@@ -2787,6 +2787,7 @@ fn redact_tool_output(content: &str) -> String {
 }
 
 pub fn wrap(s: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
     if s.is_empty() {
         return vec![String::new()];
     }
@@ -2800,7 +2801,7 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
         for word in para.split_whitespace() {
             if cur.is_empty() {
                 cur = word.to_string();
-            } else if cur.len() + 1 + word.len() <= width {
+            } else if cur.width() + 1 + word.width() <= width {
                 cur.push(' ');
                 cur.push_str(word);
             } else {
@@ -2821,6 +2822,16 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use forge_types::{PlanItem, PlanStepStatus};
+
+    #[test]
+    fn wrapping_counts_terminal_cells_in_unicode_labels_and_paths() {
+        assert_eq!(wrap("Workspace: /…/child", 19), vec!["Workspace: /…/child"]);
+        assert_eq!(wrap("Path 東京", 7), vec!["Path", "東京"]);
+        assert_eq!(
+            wrap("Finding e\u{301} retained", 18),
+            vec!["Finding e\u{301} retained"]
+        );
+    }
 
     fn plan_step(step: &str, status: PlanStepStatus) -> PlanItem {
         PlanItem {
