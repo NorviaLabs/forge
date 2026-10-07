@@ -567,10 +567,12 @@ impl ApprovalOverlayState {
         let approval = Self::for_payload(payload, working_directory);
         let command = match approval.mode {
             ApprovalExecutionMode::Shell => approval.shell_command.unwrap_or_default(),
-            ApprovalExecutionMode::Direct => std::iter::once(approval.executable_or_shell.as_str())
-                .chain(approval.arguments.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join(" "),
+            ApprovalExecutionMode::Direct => format!(
+                "{} {}",
+                approval.executable_or_shell,
+                serde_json::to_string_pretty(&payload.args_redacted)
+                    .unwrap_or_else(|_| payload.args_redacted.to_string())
+            ),
         };
         crate::conversation::ApprovalRequestView {
             tool: payload.tool.clone(),
@@ -2690,15 +2692,17 @@ fn hitl_args(args: &serde_json::Value) -> String {
     value.chars().take(300).collect()
 }
 
-#[cfg(test)]
-fn hitl_risk_summary(tool: &str, args: &serde_json::Value) -> &'static str {
+pub(crate) fn hitl_risk_summary(tool: &str, args: &serde_json::Value) -> &'static str {
     // Deterministic consequence summary based on tool and argument metadata.
     // Keep these concise; the expanded policy details contain the full reason.
     match tool {
         // File-write tools.
-        "write" => "This writes or modifies file contents.",
+        "write" | "write_file" => "This writes or modifies file contents.",
         "edit" | "edit_file" | "publish" => "This edits or patches a file.",
         "append" => "This appends content to a file.",
+        "read_file" | "list_files" | "glob" | "grep" | "view_image" => {
+            "This reads files in the workspace."
+        }
 
         // Shell / command execution.
         "bash" | "sh" | "cmd" | "powershell" | "shell" | "exec" => {
@@ -3746,10 +3750,15 @@ impl Widget for OverlayWidget<'_> {
                 filter,
                 items,
             } => {
-                let r = centered_rect(70, 48, area);
+                let indices = Overlay::resume_picker_indices(items, filter);
+                let r = centered_content_rect(
+                    area,
+                    84,
+                    (indices.len().clamp(1, u16::MAX as usize) as u16).saturating_add(5),
+                    26,
+                );
                 clear_modal(r, buf);
                 let visible = r.height.saturating_sub(3).max(1) as usize;
-                let indices = Overlay::resume_picker_indices(items, filter);
                 let selected_position = indices
                     .iter()
                     .position(|index| index == selected)
@@ -3843,10 +3852,15 @@ impl Widget for OverlayWidget<'_> {
                 items,
                 filter,
             } => {
-                let r = centered_rect(78, 64, area);
-                clear_modal(r, buf);
-                let visible = r.height.saturating_sub(4).max(1) as usize;
                 let indices = Overlay::session_switcher_indices(items, filter);
+                let r = centered_content_rect(
+                    area,
+                    96,
+                    (indices.len().clamp(1, u16::MAX as usize) as u16).saturating_add(5),
+                    30,
+                );
+                clear_modal(r, buf);
+                let visible = r.height.saturating_sub(5).max(1) as usize;
                 let selected_position = indices
                     .iter()
                     .position(|index| index == selected)
@@ -3861,12 +3875,24 @@ impl Widget for OverlayWidget<'_> {
                     .style(theme::panel())
                     .padding(Padding::horizontal(MODAL_PAD_X))
                     .title(theme::modal_title(&format!(
-                        "Sessions · {} · Enter switch · n new · a attach · r rename · x archive · d cleanup",
+                        "Sessions · {}",
                         picker_position(selected_position, indices.len())
                     )));
                 let inner = block.inner(r);
                 block.render(r, buf);
-                let list_area = picker_scrollbar(inner, buf, indices.len(), start, visible);
+                Paragraph::new(if filter.is_empty() {
+                    "Type to search sessions".to_owned()
+                } else {
+                    format!("Search: {}", crate::decision::visible_text(filter))
+                })
+                .style(theme::metadata_style())
+                .render(Rect { height: 1, ..inner }, buf);
+                let list_inner = Rect {
+                    y: inner.y.saturating_add(1),
+                    height: inner.height.saturating_sub(3),
+                    ..inner
+                };
+                let list_area = picker_scrollbar(list_inner, buf, indices.len(), start, visible);
                 // Rows are pre-sorted by group, so the heading only has to
                 // appear when it changes — no separate header rows, which a
                 // filtered list would leave stranded above nothing.
@@ -3925,6 +3951,28 @@ impl Widget for OverlayWidget<'_> {
                     ],
                 )
                 .render(list_area, buf);
+                if indices.is_empty() {
+                    Paragraph::new(if filter.is_empty() {
+                        "No sessions available"
+                    } else {
+                        "No sessions match the search"
+                    })
+                    .style(theme::metadata_style())
+                    .render(list_area, buf);
+                }
+                Paragraph::new(vec![
+                    Line::from("↑↓ select · Enter switch · Esc close"),
+                    Line::from("n new · a attach · r rename · x archive · d cleanup"),
+                ])
+                .style(theme::metadata_style())
+                .render(
+                    Rect {
+                        y: list_inner.bottom(),
+                        height: 2,
+                        ..inner
+                    },
+                    buf,
+                );
             }
             Overlay::SessionRename { label, error, .. } => {
                 let r = centered_rect(64, 30, area);
@@ -4285,7 +4333,12 @@ impl Widget for OverlayWidget<'_> {
                 items,
                 error,
             } => {
-                let r = centered_rect(76, 64, area);
+                let r = centered_content_rect(
+                    area,
+                    84,
+                    (items.len().clamp(1, u16::MAX as usize) as u16).saturating_add(4),
+                    30,
+                );
                 clear_modal(r, buf);
                 let visible = r.height.saturating_sub(4).max(1) as usize;
                 let start = selected

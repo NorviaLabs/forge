@@ -7,6 +7,7 @@ mod clipboard_image;
 mod command_palette;
 mod commands;
 mod conversation;
+mod decision;
 pub mod design;
 mod diff_view;
 mod editor;

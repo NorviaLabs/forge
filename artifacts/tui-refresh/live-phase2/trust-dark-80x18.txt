@@ -1,0 +1,15 @@
+
+
+  ┌ Trust this folder? ──────────────────────────────────────────────────────┐
+  │  Workspace                                                               │
+  │  /private/tmp/forge-ui-phase2-trust.MOX6ad/workspace λ/東京              │
+  │                                                                          │
+  │  Forge may read, edit, and run tools with this folder as the working     │
+  │  directory.                                                              │
+  │  Every current and future subdirectory is trusted without asking again.  │
+  │  Sibling folders and git worktrees next to this path are not trusted.    │
+  │  ▶ Yes, I trust this folder                                              │
+  │    No, exit                                                              │
+  │  ↑↓ move · Enter confirm · Esc quit · PgUp/PgDn details                  │
+  │  No project files written if you leave                                   │
+  └──────────────────────────────────────────────────────────────────────────┘

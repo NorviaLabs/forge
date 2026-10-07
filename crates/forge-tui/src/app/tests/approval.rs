@@ -23,16 +23,21 @@ fn bash_hitl_payload(call_id: &str, command: &str) -> HitlPayload {
 fn set_pending_approval(app: &mut TuiApp, payload: HitlPayload) {
     set_pending_hitl(app, payload);
     app.sync_approval_focus();
+    render_app_text(app, 120, 40);
 }
 
 /// The session-pattern row names the pattern it grants, so tests address it
 /// by its shortcut rather than by a copy string that changes with the rule.
 async fn press_down_to_session_pattern(app: &mut TuiApp) {
+    press_down_to_shortcut(app, "a").await;
+}
+
+async fn press_down_to_shortcut(app: &mut TuiApp, shortcut: &str) {
     let rows = app.approval_menu_rows();
     let target = rows
         .iter()
-        .position(|row| row.key.as_deref() == Some("a"))
-        .unwrap_or_else(|| panic!("no session-pattern row in {rows:?}"));
+        .position(|row| row.key.as_deref() == Some(shortcut))
+        .unwrap_or_else(|| panic!("no {shortcut} row in {rows:?}"));
     press_down_to_index(app, target).await;
 }
 
@@ -121,6 +126,7 @@ async fn menu_allow_once_approves_without_remembering() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("allowed.txt"), "ok").unwrap();
     set_pending_approval(&mut app, direct_hitl_payload("direct-once", "allowed.txt"));
+    press_down_to_shortcut(&mut app, "y").await;
 
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
@@ -397,6 +403,12 @@ async fn menu_enter_on_allow_once_approves() {
     set_pending_approval(&mut app, bash_hitl_payload("m1", "ls"));
     app.sync_approval_menu();
     assert_eq!(app.approval_menu_selected(), 0);
+    let once = app
+        .approval_menu_rows()
+        .iter()
+        .position(|row| row.key.as_deref() == Some("y"))
+        .unwrap();
+    press_down_to_index(&mut app, once).await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -407,19 +419,197 @@ async fn menu_enter_on_allow_once_approves() {
 }
 
 #[tokio::test]
+async fn a_new_request_defaults_to_deny_and_enter_never_executes_it() {
+    let (dir, mut app) = focus_test_app().await;
+    set_pending_approval(
+        &mut app,
+        bash_hitl_payload("safe-default", "touch should-not-exist"),
+    );
+    assert_eq!(
+        app.approval_menu_rows()[app.approval_menu_selected()]
+            .key
+            .as_deref(),
+        Some("n")
+    );
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    flush_queued_hitl(&mut app).await;
+    assert!(!dir.path().join("should-not-exist").exists());
+    assert!(app.session_runtime.pending_hitl().is_none());
+    assert_eq!(app.remembered_approval_count(), 0);
+}
+
+#[tokio::test]
+async fn queued_confirmation_cannot_resolve_a_replacement_request() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(&mut app, bash_hitl_payload("displayed", "ls"));
+    app.handle_key(press(KeyCode::Char('y'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    set_pending_hitl(&mut app, bash_hitl_payload("replacement", "pwd"));
+    app.drain_pending_hitl(None).await.unwrap();
+    assert_eq!(
+        app.session_runtime.pending_hitl().unwrap().call_id,
+        "replacement"
+    );
+    assert!(app.feedback.text.contains("request changed"));
+    assert_eq!(app.remembered_approval_count(), 0);
+}
+
+#[tokio::test]
+async fn an_old_frame_cannot_confirm_a_replacement_before_it_is_presented() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(&mut app, bash_hitl_payload("painted", "ls"));
+    render_app_text(&mut app, 80, 18);
+    set_pending_hitl(&mut app, bash_hitl_payload("replacement", "pwd"));
+    app.handle_key(press(KeyCode::Char('y'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.pending_interaction.has_hitl_decision());
+    assert_eq!(
+        app.session_runtime.pending_hitl().unwrap().call_id,
+        "replacement"
+    );
+    assert!(app
+        .feedback
+        .text
+        .contains("review the current approval request"));
+
+    render_app_text(&mut app, 80, 18);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.pending_interaction.has_hitl_decision());
+    flush_queued_hitl(&mut app).await;
+    assert!(app.session_runtime.pending_hitl().is_none());
+}
+
+#[tokio::test]
+async fn the_first_request_cannot_be_approved_before_a_frame_presents_it() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("not-yet-painted", "pwd"));
+    app.sync_approval_focus();
+    app.handle_key(press(KeyCode::Char('y'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.pending_interaction.has_hitl_decision());
+    assert!(app.session_runtime.pending_hitl().is_some());
+    render_app_text(&mut app, 80, 18);
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.pending_interaction.has_hitl_decision());
+}
+
+#[tokio::test]
+async fn the_decision_surface_covers_previous_characters_inside_its_viewport() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("coverage", "pwd"));
+    let frame = ratatui::layout::Rect::new(0, 0, 80, 18);
+    let owned = ratatui::layout::Rect::new(0, 2, 80, 12);
+    let mut buffer = ratatui::buffer::Buffer::empty(frame);
+    for cell in &mut buffer.content {
+        cell.set_symbol("♞");
+    }
+    app.render_approval_surface(owned, &mut buffer);
+    for y in owned.y..owned.bottom() {
+        for x in owned.x..owned.right() {
+            assert_ne!(
+                buffer[(x, y)].symbol(),
+                "♞",
+                "background content must not bleed into a decision"
+            );
+        }
+    }
+    assert_eq!(
+        buffer[(0, 0)].symbol(),
+        "♞",
+        "the decision owns only its viewport"
+    );
+}
+
+#[tokio::test]
+async fn an_open_picker_owns_keys_and_clicks_above_a_pending_approval() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("Retained draft 東京.");
+    set_pending_approval(&mut app, bash_hitl_payload("behind-help", "pwd"));
+    render_app_text(&mut app, 80, 18);
+    let (_, option) = app
+        .option_rects
+        .iter()
+        .find(|(index, _)| *index == 1)
+        .copied()
+        .unwrap();
+    app.overlay = Some(Overlay::Help);
+    app.handle_key(press(KeyCode::Char('y'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        app.handle_mouse(left_click(option.x, option.y))
+            .await
+            .unwrap();
+    }
+    assert!(matches!(app.overlay, Some(Overlay::Help)));
+    assert!(!app.pending_interaction.has_hitl_decision());
+    assert!(app.session_runtime.pending_hitl().is_some());
+    assert_eq!(app.input.text, "Retained draft 東京.");
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert!(
+        app.session_runtime.pending_hitl().is_some(),
+        "closing help must not decline the hidden request"
+    );
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+}
+
+#[tokio::test]
+async fn decision_details_scroll_independently_and_restore_parent_reading_and_draft() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.scroll = 17;
+    app.conversation_view.follow = false;
+    app.input.set_text("Retained draft λ/東京.rs.");
+    let mut payload = bash_hitl_payload(
+        "long-command",
+        &format!("printf  '{}'", "longtoken".repeat(80)),
+    );
+    payload.failure = Some("Retained failure evidence at the end".into());
+    set_pending_approval(&mut app, payload);
+    let first = render_app_text(&mut app, 80, 18);
+    assert!(first.contains("Don't run"), "{first}");
+    assert!(first.contains("Enter decide"), "{first}");
+    let mut saw_tail = false;
+    for _ in 0..40 {
+        app.handle_key(press(KeyCode::PageDown, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        let text = render_app_text(&mut app, 80, 18);
+        saw_tail |= text.contains("Retained failure evidence");
+        assert!(
+            text.contains("Don't run") && text.contains("Enter decide"),
+            "{text}"
+        );
+    }
+    assert!(saw_tail, "the full request must be reachable by scrolling");
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    flush_queued_hitl(&mut app).await;
+    app.sync_approval_focus();
+    assert_eq!(app.conversation_view.scroll, 17);
+    assert!(!app.conversation_view.follow);
+    assert_eq!(app.input.text, "Retained draft λ/東京.rs.");
+}
+
+#[tokio::test]
 async fn menu_down_to_allow_pattern_and_enter() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("m2", "cargo test --all"));
     app.sync_approval_menu();
-    // Run once (0) → Trust all (1) → Remember similar (2)
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.approval_menu_selected(), 1);
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.approval_menu_selected(), 2);
+    press_down_to_session_pattern(&mut app).await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -507,6 +697,7 @@ async fn tab_away_from_approval_keeps_it_pending() {
 async fn approving_a_slow_command_returns_before_the_command_finishes() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("slow", "sleep 5"));
+    press_down_to_shortcut(&mut app, "y").await;
 
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
@@ -549,6 +740,7 @@ async fn approving_a_slow_command_returns_before_the_command_finishes() {
 async fn interrupting_an_approved_command_clears_the_card_and_recovers() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("slow-cancel", "sleep 5"));
+    press_down_to_shortcut(&mut app, "y").await;
 
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
@@ -722,7 +914,7 @@ async fn sandbox_filesystem_approval_explains_the_unconfined_retry() {
     payload.sandbox_escalation = true;
     set_pending_approval(&mut app, payload);
 
-    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "t", "n", "N"]);
+    assert_eq!(app.approval_menu_shortcuts(), vec!["n", "y", "t", "N"]);
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(rendered.contains("Approve command"), "{rendered}");
     assert!(
@@ -859,7 +1051,7 @@ async fn sandbox_retry_cannot_be_auto_approved_by_a_command_grant() {
     app.drain_auto_hitl().await.unwrap();
     assert!(app.session_runtime.pending_hitl().is_some());
     assert!(!app.pending_interaction.has_hitl_decision());
-    assert_eq!(app.approval_menu_shortcuts(), vec!["y", "t", "n", "N"]);
+    assert_eq!(app.approval_menu_shortcuts(), vec!["n", "y", "t", "N"]);
 }
 
 /// A leading env assignment is stripped when matching, so the suggested rule

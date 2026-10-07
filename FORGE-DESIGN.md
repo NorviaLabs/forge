@@ -598,8 +598,8 @@ The conversation has two densities (`markdown.rs::Density`):
   before a section heading, one after the heading rule, and one on each side of a
   fenced code block, sharing adjacent blocks' separators rather than adding
   another row. It adds one between distinct tool/activity groups (rows inside a
-  group stay tight), and one after each `You` / `Answer` speaker label so the
-  label reads as a heading rather than a prefix of its text.
+  group stay tight). `You` / `Answer` labels sit directly above their content;
+  the separator belongs between messages rather than between label and body.
 - **Compact** is the historical spacing and the fallback for short terminals.
   The app switches to it when the conversation pane is shorter than
   `design::AIRY_MIN_ROWS` (24 rows), so the enforced 80×18 minimum keeps its
@@ -1134,6 +1134,26 @@ the newest checklist renders: a superseded revision is removed, never recorded
 as a second `Plan updated · N of M done` line beside it, so the checklist is
 the single plan surface.
 
+Focused tool approvals use the conversation area as an independent decision
+surface. Its two-column origin aligns owner, invocation, working directory and
+consequence. Literal wrapping preserves command whitespace and long tokens;
+control and direction-changing characters are visible escapes. `PgUp` /
+`PgDn` scroll details above pinned choices and hints. Compact surfaces show a
+window of choices with its actual range; `↑` / `↓` reaches every grant scope.
+The initial choice is **Don't run**. `Enter` chooses the highlighted action;
+`Esc` declines; `Tab` leaves the decision and preserves the parent's reading
+position and draft. The underlying inline request remains available in context.
+
+A decision captures the presented request and selected session. An unpainted or
+replaced request cannot consume a confirmation, and the session actor checks
+the expected call ID before applying it. Explicit session-wide approve-all
+retains its existing policy. Opening help or a picker gives that surface sole
+keyboard and pointer ownership above any pending decision.
+
+File, model and session pickers measure their results within capped terminal
+budgets. Help has an independent viewport and a pinned close hint; its scroll
+does not move the transcript, selection or draft beneath it.
+
 ### 9.5 Composer
 
 - Spans the work surface under conversation and inspection, including temporary
@@ -1257,7 +1277,10 @@ Conventional semantics with textual fallbacks:
 Rules:
 
 - Preserve old and new line numbers.
-- One blank row separates the pane title from the patch (same rule as the source viewer).
+- The neutral frame carries the pane title at the shared two-column origin.
+  Comfortable bodies retain one separator before the patch; compact bodies
+  use it for evidence. Metadata, old/new line numbers and diff signs share
+  one gutter without an extra indent.
 - Prefer foreground/gutter markers over large background fills per changed line.
 - The header names the selected file as the pane title (`> …`), with ASCII `+N -M` counts and the `N of M` position; the marker column comes off the elision budget so counts never clip.
 - Reviewed files carry the `✓` tick; counts stay ASCII even in narrow panes.

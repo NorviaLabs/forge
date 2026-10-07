@@ -287,6 +287,9 @@ pub enum SupervisorCommand {
     },
     ResolveApproval {
         session_id: SessionId,
+        /// A displayed request must still be pending when the actor acts.
+        /// `None` retains the explicit session-wide command's current-call semantics.
+        expected_call_id: Option<String>,
         decision: HitlDecision,
         actor: String,
         feedback: Option<String>,
@@ -2360,6 +2363,7 @@ async fn execute_command(
         }
         SupervisorCommand::ResolveApproval {
             session_id,
+            expected_call_id,
             decision,
             actor: decision_actor,
             feedback,
@@ -2375,6 +2379,16 @@ async fn execute_command(
                 None
             };
             let mut session = try_session(&task_actor)?;
+            if expected_call_id.as_deref().is_some_and(|call_id| {
+                session
+                    .pending_hitl()
+                    .is_none_or(|payload| payload.call_id != call_id)
+            }) {
+                return Err(LoopError::Other(
+                    "approval request changed; review the current request".into(),
+                )
+                .into());
+            }
             if matches!(decision, HitlDecision::Approve) {
                 let pending = session.prepare_approved_hitl(&decision_actor).await?;
                 state
@@ -4254,6 +4268,7 @@ mod tests {
         let mut completion = handle
             .submit(SupervisorCommand::ResolveApproval {
                 session_id,
+                expected_call_id: None,
                 decision: HitlDecision::Approve,
                 actor: "test".into(),
                 feedback: None,
@@ -4775,9 +4790,37 @@ mod tests {
             })
             .await;
             assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+            for decision in [HitlDecision::Deny, HitlDecision::Approve] {
+                let stale = handle
+                    .command(SupervisorCommand::ResolveApproval {
+                        session_id,
+                        expected_call_id: Some("a-replaced-request".into()),
+                        decision,
+                        actor: "test".into(),
+                        feedback: None,
+                    })
+                    .await;
+                assert!(
+                    stale.is_err(),
+                    "a stale displayed request cannot be resolved"
+                );
+            }
+            let still_waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+                snapshot.session.pending_hitl.is_some()
+            })
+            .await;
+            assert_eq!(
+                still_waiting.session.pending_hitl.as_ref().unwrap().call_id,
+                waiting.session.pending_hitl.as_ref().unwrap().call_id
+            );
             handle
                 .command(SupervisorCommand::ResolveApproval {
                     session_id,
+                    expected_call_id: waiting
+                        .session
+                        .pending_hitl
+                        .as_ref()
+                        .map(|payload| payload.call_id.clone()),
                     decision: HitlDecision::Deny,
                     actor: "test".into(),
                     feedback: Some("use a safer approach".into()),
@@ -4959,6 +5002,7 @@ mod tests {
         handle
             .command(SupervisorCommand::ResolveApproval {
                 session_id,
+                expected_call_id: None,
                 decision: HitlDecision::Approve,
                 actor: "test".into(),
                 feedback: None,
@@ -5294,6 +5338,7 @@ mod tests {
         assert!(handle
             .command(SupervisorCommand::ResolveApproval {
                 session_id: id_a,
+                expected_call_id: None,
                 decision: HitlDecision::Deny,
                 actor: "test".into(),
                 feedback: None,
@@ -7451,6 +7496,7 @@ mod tests {
             SupervisorCommand::CloseAllSessions,
             SupervisorCommand::ResolveApproval {
                 session_id: id,
+                expected_call_id: None,
                 decision: HitlDecision::Approve,
                 actor: "test".into(),
                 feedback: None,
@@ -7469,6 +7515,7 @@ mod tests {
         assert_eq!(
             command_session_id(&SupervisorCommand::ResolveApproval {
                 session_id: id,
+                expected_call_id: None,
                 decision: HitlDecision::Approve,
                 actor: "test".into(),
                 feedback: None,
@@ -7526,6 +7573,7 @@ mod tests {
             SupervisorCommand::StopTurn { session_id: id },
             SupervisorCommand::ResolveApproval {
                 session_id: id,
+                expected_call_id: None,
                 decision: HitlDecision::Deny,
                 actor: "test".into(),
                 feedback: None,

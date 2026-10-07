@@ -1264,6 +1264,7 @@ pub(crate) enum ApprovalGrant {
 pub(crate) struct PendingInteractionState {
     hitl_decision: Option<HitlDecision>,
     hitl_remember: ApprovalGrant,
+    hitl_request: Option<(uuid::Uuid, String)>,
     question_submit: Option<questions::QuestionSubmit>,
     context_reset: bool,
 }
@@ -1273,15 +1274,28 @@ impl PendingInteractionState {
         self.hitl_decision.is_some()
     }
 
-    pub(crate) fn request_hitl_decision(&mut self, decision: HitlDecision, grant: ApprovalGrant) {
+    pub(crate) fn request_hitl_decision(
+        &mut self,
+        decision: HitlDecision,
+        grant: ApprovalGrant,
+        session_id: uuid::Uuid,
+        call_id: String,
+    ) {
         self.hitl_decision = Some(decision);
         self.hitl_remember = grant;
+        self.hitl_request = Some((session_id, call_id));
     }
 
-    pub(crate) fn take_hitl_decision(&mut self) -> Option<(HitlDecision, ApprovalGrant)> {
+    pub(crate) fn take_hitl_decision(
+        &mut self,
+    ) -> Option<(HitlDecision, ApprovalGrant, uuid::Uuid, String)> {
         self.hitl_decision.take().map(|decision| {
             let grant = std::mem::take(&mut self.hitl_remember);
-            (decision, grant)
+            let (session_id, call_id) = self
+                .hitl_request
+                .take()
+                .expect("queued decision has a request");
+            (decision, grant, session_id, call_id)
         })
     }
 
@@ -1312,6 +1326,7 @@ impl PendingInteractionState {
 
     pub(crate) fn clear(&mut self) {
         self.hitl_decision = None;
+        self.hitl_request = None;
         self.hitl_remember = ApprovalGrant::default();
         self.question_submit = None;
         self.context_reset = false;
@@ -1925,6 +1940,8 @@ pub struct TuiApp {
     pub(crate) transcript_view: TranscriptSnapshot,
     pub(crate) input: InputModel,
     pub(crate) overlay: Option<Overlay>,
+    /// Help has an independent viewport; scrolling never moves the workspace.
+    pub(crate) help_scroll: usize,
     /// First-run connect mode: Esc exits from the provider picker; child
     /// connect screens return to it first.
     pub(crate) onboarding_connect: bool,

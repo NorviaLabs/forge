@@ -704,6 +704,10 @@ impl TuiApp {
     /// The option index of the pending approval/question card under the
     /// pointer, if any. Uses the rects captured during the conversation paint.
     fn option_at(&self, col: u16, row: u16) -> Option<usize> {
+        if self.overlay.is_some() || self.explorer_dialog.is_open() || self.inline_search.is_some()
+        {
+            return None;
+        }
         if !(self.session_view.is_awaiting_approval() || self.session_view.is_awaiting_question()) {
             return None;
         }

@@ -1406,6 +1406,12 @@ impl TuiApp {
                 conversation_area,
             );
             self.option_rects = option_sink.into_inner();
+            if self.focus.block() == FocusBlock::Approval
+                && self.selected_pending_hitl().is_some()
+                && !modal_open
+            {
+                self.render_approval_surface(conversation_area, frame.buffer_mut());
+            }
             let total = cached_lines.len()
                 + live_lines.len()
                 + status_lines.len()

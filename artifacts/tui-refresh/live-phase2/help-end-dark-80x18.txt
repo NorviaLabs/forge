@@ -1,0 +1,17 @@
+   FORGE · ⌂ /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpyr4fv2
+
+  ┌> Help ───────────────────────────────────────────────────────────────────┐
+  │  • F4  Open model picker                                                 │
+  │  • F1  Help                                                              │
+  │  • Esc  Leave one interaction level                                      │
+ ─│                                                                          │─
+  │  Active block                                                            │
+  │  • Enter  Send                                                           │
+  │  • !command  Run in the embedded terminal                                │
+  │  • ⇧Enter  Newline                                                       │
+  │  • Ctrl+R  Fuzzy-search input history                                    │
+  │  • Tab  Next block (Footer, then Sessions)                               │
+  │  • Esc  Return to previous block                                         │
+  │  ↑↓ / PgUp/PgDn scroll · Esc close                                       │
+  └──────────────────────────────────────────────────────────────────────────┘
+   ● model/mock │ N/A                                   ready   ·  context 0%

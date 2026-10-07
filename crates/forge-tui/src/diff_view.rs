@@ -853,12 +853,18 @@ pub struct DiffViewWidget<'a> {
 
 impl Widget for DiffViewWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let header = self
+            .view
+            .header_for_width(area.width.saturating_sub(7) as usize);
+        let mut title = theme::pane_title(self.focused, &header);
+        title.spans.insert(0, Span::raw(" "));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .padding(Padding::horizontal(crate::design::PANE_PAD_X))
             .border_style(theme::panel_border())
-            .style(theme::panel());
+            .style(theme::panel())
+            .title(title);
         let inner = block.inner(area);
         block.render(area, buf);
         theme::fill(inner, buf, theme::panel());
@@ -866,20 +872,10 @@ impl Widget for DiffViewWidget<'_> {
             return;
         }
 
-        // DESIGN-017: the header names the selected file, so it renders as
-        // the pane title — `>` marker plus focus colour when the pane owns
-        // input, neutral indent otherwise. The 2-cell marker column comes
-        // off the elision budget so the counts and position never clip.
-        let header = self
-            .view
-            .header_for_width(inner.width.saturating_sub(2) as usize);
-        let header_area = Rect { height: 1, ..inner };
-        Paragraph::new(theme::pane_title(self.focused, &header)).render(header_area, buf);
-
         // The keymap is not obvious and `?` is not discoverable on its own, so
         // the pane carries its own hint row. `hint_spans` drops verbs before
         // pairs, so a narrow pane still shows every key.
-        let hint_row = inner.height >= 3;
+        let hint_row = inner.height >= 2;
         if hint_row {
             let hints = Rect {
                 y: inner.y.saturating_add(inner.height.saturating_sub(1)),
@@ -953,14 +949,14 @@ impl Widget for DiffViewWidget<'_> {
             }
         }
 
-        // Air pass: one blank row between the pane title and the patch, so the
-        // header reads as chrome rather than the first hunk line.
-        let spacer = u16::from(inner.height.saturating_sub(if hint_row { 2 } else { 1 }) > 4);
+        // The frame carries the file title, matching source inspection.
+        // Comfortable views get one separator; compact views keep evidence.
+        let spacer = u16::from(inner.height >= 16);
         let body = Rect {
-            y: inner.y.saturating_add(1 + spacer),
+            y: inner.y.saturating_add(spacer),
             height: inner
                 .height
-                .saturating_sub(if hint_row { 2 } else { 1 })
+                .saturating_sub(u16::from(hint_row))
                 .saturating_sub(spacer),
             ..inner
         };
@@ -1246,10 +1242,10 @@ fn split_cell(
         line_style
     };
     let num = num.map(|num| num.to_string()).unwrap_or_default();
-    let mut spans = vec![Span::styled(
-        format!("{num:>number_width$} {marker} "),
-        style,
-    )];
+    let mut spans = vec![
+        Span::styled(format!("{num:>number_width$} "), theme::metadata_style()),
+        Span::styled(format!("{marker} "), style),
+    ];
     if let Some(parts) = parts {
         for (text, rgb, bold, italic) in parts {
             let mut style =
