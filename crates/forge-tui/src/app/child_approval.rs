@@ -225,7 +225,7 @@ impl TuiApp {
         let text = format!("Parent: {owner}\nAgent #{}: {}\nRequest: {} · Child: {}\n\nExact invocation ({}):\n{}\nCwd: {}\nEnvironment: {}\n\n{}\nReason: {}\n{}\n\n{consequence}\nDon't run refuses this invocation; the child can continue with that refusal. Other work and queued prompts are unaffected.",
             task.id.0, task.label, request.payload.call_id, request.child_session_id, view.tool, view.command, view.cwd,
             view.env_delta,
-            super::turn::child_execution_text(&task), view.reason.as_deref().unwrap_or("unavailable"),
+            super::turn::child_execution_metadata(&task), view.reason.as_deref().unwrap_or("unavailable"),
             view.failure.map(|failure| format!("Reported failure: {failure}")).unwrap_or_default());
         let Some(choices) = crate::decision::choice_surface(
             area,

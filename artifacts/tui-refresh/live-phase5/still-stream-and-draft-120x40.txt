@@ -1,0 +1,39 @@
+   FORGE · ⌂ /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpxJNFwB
+ ╭──────────────────────╮    Conversation                                                     Ctrl+P files · / commands
+ │  / Search files...   │   Mock provider chunk 46: retained evidence λ/東京.rs.
+ │ Ctrl+Shift+F──────── │
+ │                      │   Mock provider chunk 47: retained evidence λ/東京.rs.
+ │   ▌⌄ .tmpxJNFwB      │
+ │      › j             │   Mock provider chunk 48: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 49: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 50: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 51: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 52: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 53: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 54: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 55: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 56: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 57: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 58: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 59: retained evidence λ/東京.rs.
+ │                      │
+ │                      │   Mock provider chunk 60: retained evidence λ/東京.rs.
+ │                      │
+ │                      │       Response finished · 33s   ·  3.1k chars
+ │                      │
+ │                      │
+ │                      │ ─────────────────────────────────────────────────────────────────────────────────────────────
+ │                      │   Retained follow-up draft λ/東京.rs. Typed with reduced motion λ/東京
+ ╰──────────────────────╯
+   ● OpenAI/gpt-6.1-sol │ Auto                                                                  ready   ·  context 1%

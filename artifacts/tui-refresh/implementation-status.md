@@ -2,11 +2,13 @@
 
 The complete scope is the [updated mockup proposal](https://github.com/NorviaLabs/forge/pull/839) and its five implementation phases. Production work started from main `cf61193ff9f009c2a61ce55672fd24557a8337ee` in an isolated worktree.
 
-1. **Layout and start — implemented in [PR #840](https://github.com/NorviaLabs/forge/pull/840); required CI passes.** Centered task entry, shared gutters, bounded composer, retained navigation and drafts, quieter chrome, updated built-in palettes.
-2. **Conversation and inspection — implemented in [PR #842](https://github.com/NorviaLabs/forge/pull/842); required CI passes.** Tighter transcript and inspector origins, approvals with safe defaults and scrollable details, compact pickers, retained shell input and explicit failure recovery. [Review the compiled captures](phase2-captures.html).
-3. **Queue and dock — implemented in [PR #843](https://github.com/NorviaLabs/forge/pull/843); all three CI checks pass.** Stable task and prompt identities, cancellation/edit race guards, bounded overflow and a live filtered task view. [Review the compiled captures](phase3-captures.html).
-4. **Jobs — implemented in [PR #844](https://github.com/NorviaLabs/forge/pull/844); all three CI checks pass. Subagents — implemented and locally validated on `feat/tui-refresh-subagents`; publication follows.** Children expose actual execution metadata, full named decisions, retained reading state and explicit partial-result handoff. [Review the child captures](phase4-subagents-captures.html).
-5. **Motion and complete workflows — pending.** Reduced motion, state-driven effects, performance comparison, real walkthroughs and required CI.
+1. **Layout and start — merged in [PR #840](https://github.com/NorviaLabs/forge/pull/840); required CI passes.** Centered task entry, shared gutters, bounded composer, retained navigation and drafts, quieter chrome, updated built-in palettes.
+2. **Conversation and inspection — merged in [PR #842](https://github.com/NorviaLabs/forge/pull/842); required CI passes.** Tighter transcript and inspector origins, approvals with safe defaults and scrollable details, compact pickers, retained shell input and explicit failure recovery. [Review the compiled captures](phase2-captures.html).
+3. **Queue and dock — merged in [PR #843](https://github.com/NorviaLabs/forge/pull/843); all three CI checks pass.** Stable task and prompt identities, cancellation/edit race guards, bounded overflow and a live filtered task view. [Review the compiled captures](phase3-captures.html).
+4. **Jobs — merged in [PR #844](https://github.com/NorviaLabs/forge/pull/844); Subagents — merged in [PR #845](https://github.com/NorviaLabs/forge/pull/845). All three CI checks pass on both.** Children expose actual execution metadata, full named decisions, retained reading state and explicit partial-result handoff. [Review the child captures](phase4-subagents-captures.html).
+5. **Motion and complete workflows — implemented and validated on `feat/tui-refresh-motion`.** Clocked indicators, reduced motion, immediate available chunks, correct Unicode caret/wrapping and preserved handoff paragraphs. [Review the final captures](phase5-captures.html), [native motion replay](phase5-motion.html), and [required CI checks](https://github.com/NorviaLabs/forge/actions?query=branch%3Afeat%2Ftui-refresh-motion).
+
+Phases 1–4 were subsequently merged into main `c800a445`. That tree exactly matches the previously validated Subagents head `d74061ba`; the final phase targets main directly. The phase-by-phase evidence below records the original handoffs.
 
 ## Phase 1 comparison
 
@@ -106,3 +108,41 @@ Named stop checks that execution at dispatch. Failed or cancelled children can e
 All 329 distinct affected checks pass across core, session and TUI. The final 26 task checks also cover corrected environment disclosure, same-length journal changes, producer identity guards, hidden parent decisions, final evidence, reading/selection restoration and sibling/queue/dirty-checkout retention. Workspace Clippy, formatting and the debug CLI build pass. All 348 browser render checks pass after correcting a fixture that initially reset the light child theme to dark.
 
 [Native captures](live-phase4-subagents/) record the actual production UI loop at 80×18 and 120×40: full request paging, Don't run and Keep waiting defaults, named stop, partial insertion, retained parent draft, an explicitly approved disposable command and a separately refused sibling command. All six queued prompts and the dirty checkout survive the interruption. The walkthrough exits successfully. A second short fixture captures corrected decision metadata. These are disposable mock-provider sessions, not live-provider or usability measurements.
+
+## Phase 5 — Motion and complete workflows
+
+Working indicators use the existing event loop and a monotonic 125 ms clock. Braille frames retain one cell, `NO_COLOR` uses ASCII, and `[tui] reduced_motion = true` keeps a static `*`. Missing preferences default to false. Waiting, queued and terminal outcomes stay static; background approvals say waiting instead of changing an elapsed counter. Input and external-state polling continue independently of decoration. Available stream chunks paint on the next frame, with the artificial reveal timer removed; resize/cache behavior remains bounded. The existing 150 ms busy-line entrance debounce is retained. The proposed arrival flash was evaluated and omitted in favor of immediate focus, exact request text and a steady warning.
+
+The composer paints its caret on the retained grapheme without adding a character to the draft; literal block characters and combining text survive. End-of-draft painting reuses parsed lines and source spans. Explicit result handoff preserves paragraph breaks. Child reading metadata uses four source rows with visible path/branch elision, while decisions and `/tasks` keep full details. Shared word wrapping now measures terminal cells rather than UTF-8 bytes, fixing extra rows around ellipses and wide text. This reuses the already locked `unicode-width 0.2.2` package; no package version changes. Explicit Zsh commands keep their status wrapper hidden through clipping, scrolling and resizing. The legacy foreground path now initializes its turn timer so the debounced waiting indicator can appear.
+
+[The final gallery](phase5-captures.html) contains **564 production frames**: 32 states at 80×18, 80×24, 120×40 and 160×50 in dark/light/monochrome, plus ten critical states at 115×27, 116×28, 120×29, 131×40, 132×40 and 133×40. The control-output state executes an actual disposable command containing ESC, tab, carriage return and bidi bytes and shows them escaped. Overflowing literal commands, Unicode paths, partial output, retained dirty children and result insertion are included. All frames render without browser errors. The browser font remains representative; these are rendering checks rather than measured usability.
+
+[Native evidence](live-phase5/) covers immediate mock-provider streaming with retained typing, moving versus reduced-motion indicators, explicit Zsh output before/after resizing, a middle caret with a literal block character, child request/stop defaults, partial insertion, and the corrected four-row child banner at 80×18. Native fixtures exit successfully. The [motion replay](phase5-motion.html) and [WebM](phase5-motion.webm) replay actual timed native text captures; terminal colors and fonts are not reproduced. Provider responses are mocked, while shell execution, cancellation, journals and child workspaces use the real disposable runtime.
+
+**512 distinct targeted checks pass** across TUI, configuration, transcript and the eight allocation/cache guards. The final caret/foreground cohort passes all 47 checks after optimization. Workspace Clippy, formatting and the release CLI build pass; the binary reports `forge 0.1.0-beta.11`. Required remote checks are linked above and must pass on the final published head.
+
+### Input measurement
+
+[Raw paired rounds](phase5-latency.json) compare Phase 1 `80a64a74` with the final code using identical debug/test flags, 120×40 TestBackend drawing and actual key dispatch. Five pairs per workload alternate process order; each measures 100 keys after five warm draws. Setup is outside the sample. Many-jobs setup runs 40 real disposable commands, history contains 150 turns, and the long draft starts at 8,000 characters. Stream samples measure dispatch/draw with available chunks, not provider transport or a real terminal paint.
+
+| Workload | Phase 1 median / median round p95 | Final median / median round p95 |
+| --- | --- | --- |
+| Typing | 2.429 / 2.540 ms | 2.436 / 2.536 ms |
+| Available stream chunks | 3.442 / 3.618 ms | 3.432 / 3.620 ms |
+| 40 jobs | 2.526 / 2.624 ms | 2.523 / 2.631 ms |
+| 150 turns | 2.965 / 3.069 ms | 3.002 / 3.112 ms |
+| 8,000-character draft | 16.391 / 16.525 ms | 16.542 / 16.789 ms |
+
+Tightly interleaved samples still show a small history increase of 0.037 ms and a long-draft increase of 0.151 ms. Final medians fit the baseline ranges observed across earlier identical-flags repeats, retained in the report. Machine-load runs varied much more; do not infer a speed or usability improvement. Long drafts still require about 16.5 ms of synchronous work, and terminal paint time remains unmeasured.
+
+### Complete-workflow evidence
+
+| Acceptance flow | Concrete evidence |
+| --- | --- |
+| Delegate and steer | [Native queue selection/cancellation](live-phase3/); prompt identity, promotion races, late edit acknowledgment and parent-local draft checks in `app::tests::commands` and `multi_task`. |
+| Inspect and decide | [Native help/review/shell states](live-phase2/) and Phase 2 captures; safe default, exact painted request, picker ownership and unsaved-reader checks. |
+| Handle a job | [Native output, named stop and explicit handoff](live-phase4-jobs/); real output/exit status, cancellation retention, no-child explanation, observer-only completion and append-without-submit checks. |
+| Handle a child | [Native exact decisions and interruption](live-phase4-subagents/) plus final spacing captures; producer request/run guards, parent reading/selection restoration, sibling/queue retention and dirty checkout checks. |
+| Recover and resize | Phase 2 recovery/retained shell evidence, final breakpoint gallery and [native reduced-motion/Unicode editing](live-phase5/); affected cache, input, foreground event and performance checks. |
+
+The source tree of merged main `c800a445` matches the original Subagents baseline exactly. Phase 5 is delivered as a separate feature PR against that main; the user's mockup checkout and untracked implementation plan are preserved.

@@ -144,6 +144,7 @@ async fn external_editor_keybind_sets_flag() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -196,6 +197,7 @@ async fn edtui_editor_keeps_plain_e_and_uses_alt_e_for_external_editor() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -609,6 +611,7 @@ async fn external_editor_preconditions_no_file() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -630,6 +633,7 @@ async fn external_editor_preconditions_binary_file() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -653,6 +657,7 @@ async fn external_editor_rejects_during_tool_execution() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),

@@ -212,7 +212,6 @@ impl TuiApp {
         self.busy_state
             .start(crate::widgets::status::BusyPhase::Model);
         self.stream.preview.push_str(text);
-        self.stream.reveal_everything_for_tests();
         // The renderer rate-limits itself; tests measure the rebuild, so clear
         // the throttle rather than sleep 150ms per sample.
         self.stream.last_preview_render = None;
@@ -561,7 +560,10 @@ impl TuiApp {
             // The collapsed column is one row wide, so the one thing worth
             // keeping there is whether work is in flight — the same spinner
             // frame the session rows step, on the same clock (`§482`).
-            let frame = crate::widgets::SessionRowState::spinner_frame(self.session_row_step);
+            let frame = crate::widgets::turn_line::running_marker(
+                self.session_row_step,
+                self.runtime.reduced_motion,
+            );
             match (need, working) {
                 (0, 0) => None,
                 (n, 0) => Some(format!("⌄ {n} need")),
@@ -772,6 +774,7 @@ impl TuiApp {
                             peek: peek_panel.as_ref(),
                             hover: self.hover_session,
                             step: self.session_row_step,
+                            reduced_motion: self.runtime.reduced_motion,
                         },
                         list_area,
                     );
@@ -1011,6 +1014,8 @@ impl TuiApp {
                 .then_some(self.timing.thought_secs)
                 .flatten(),
             pulse_dim: self.child_view.is_none()
+                && !self.runtime.reduced_motion
+                && conversation_busy
                 && crate::conversation::plan_pulse_dim(self.busy_state.throbber()),
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
@@ -1236,7 +1241,10 @@ impl TuiApp {
             let mut conv = projection.model;
             if let Some(task) = child_task {
                 conv = conv.with_extra_banners([ChatItem::Banner {
-                    text: format!("Read-only inspection · Parent: {}\n{}\n← parent · a/d decision · i insert result · x stop", self.selected_session_id, super::turn::child_execution_text(task)),
+                    text: super::turn::child_reading_banner(
+                        task,
+                        conversation_text_width(sidebar_width),
+                    ),
                     kind: BannerKind::Info,
                 }]);
             } else if self.child_view.is_none() {
@@ -1368,9 +1376,8 @@ impl TuiApp {
             let key = (
                 width as u16,
                 self.stream.thinking.len(),
-                // Keyed on what is *shown*, not what has arrived: the reveal
-                // advances between deltas, and the lines have to follow it.
-                self.stream.revealed_preview().len(),
+                // Every available delta is visible on this frame.
+                self.stream.preview.len(),
             );
             let key_matches = self
                 .stream
@@ -1395,10 +1402,9 @@ impl TuiApp {
                     .map(|(.., lines)| Arc::clone(lines))
                     .unwrap_or_else(|| Arc::new(Vec::new()))
             } else {
-                let revealed = self.stream.revealed.min(self.stream.preview.len());
                 let mut lines = crate::conversation::render_streaming_preview(
                     &self.stream.thinking,
-                    &self.stream.preview[..revealed],
+                    &self.stream.preview,
                     opts.stream_thought_secs,
                     width,
                     window_keep_from_end,
@@ -1458,11 +1464,9 @@ impl TuiApp {
                 // turn that is already blocked waiting for the operator.
                 interruptible: !self.session_view.is_awaiting_approval()
                     && !self.session_view.is_awaiting_question(),
+                reduced_motion: self.runtime.reduced_motion,
             };
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|since| since.as_millis())
-                .unwrap_or(0);
+            let millis = self.animation_started.elapsed().as_millis();
             // The pane paints inside a bordered block with one column of
             // padding each side, so the line has 2 fewer columns than the
             // prose width — without this the interrupt hint was clipped to

@@ -350,6 +350,9 @@ fn activity_for(task: &BackgroundTaskSnapshot) -> Option<String> {
 /// Counts up while the task runs, then freezes: a finished row's age is its
 /// duration, not how long ago it finished.
 fn elapsed_for(task: &BackgroundTaskSnapshot, now: DateTime<Utc>) -> String {
+    if matches!(task.status, BackgroundTaskStatus::WaitingForApproval { .. }) {
+        return "waiting".into();
+    }
     let end = task.finished_at.unwrap_or(now);
     let secs = (end - task.started_at).num_milliseconds() as f64 / 1000.0;
     format_elapsed_tenths(secs.max(0.0))

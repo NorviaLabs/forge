@@ -145,10 +145,7 @@ impl InteractiveTerminal {
             changed = true;
         }
         if changed {
-            self.display = self.screen.screen().contents();
-            if let Some(marker) = self.hidden_status_marker.as_deref() {
-                self.display = strip_status_wrapper_display(&self.display, &self.shell, marker);
-            }
+            self.refresh_display();
         }
         let child_running = match self.child.try_wait() {
             Ok(Some(_)) | Err(_) => false,
@@ -268,11 +265,15 @@ impl InteractiveTerminal {
             .map_err(other)?;
         self.screen.screen_mut().set_size(rows, cols);
         self.size = (cols, rows);
+        self.refresh_display();
+        Ok(())
+    }
+
+    fn refresh_display(&mut self) {
         self.display = self.screen.screen().contents();
         if let Some(marker) = self.hidden_status_marker.as_deref() {
             self.display = strip_status_wrapper_display(&self.display, &self.shell, marker);
         }
-        Ok(())
     }
 
     pub(crate) fn display_output(&self) -> &str {
@@ -345,13 +346,13 @@ impl InteractiveTerminal {
             .scrollback()
             .saturating_add_signed(delta);
         self.screen.screen_mut().set_scrollback(offset);
-        self.display = self.screen.screen().contents();
+        self.refresh_display();
     }
 
     fn scroll_to_live(&mut self) {
         if self.screen.screen().scrollback() > 0 {
             self.screen.screen_mut().set_scrollback(0);
-            self.display = self.screen.screen().contents();
+            self.refresh_display();
         }
     }
 
@@ -518,6 +519,35 @@ fn strip_status_wrapper_display(display: &str, shell: &str, marker: &str) -> Str
                 Some((start, cursor))
             }) {
                 display.replace_range(start..end, "");
+            }
+            // Zsh's line editor can replace a horizontally clipped prefix
+            // with '<'. Hide only a suffix of our complete generated wrapper,
+            // including this command's unique marker; ordinary output stays.
+            if part.contains(marker) {
+                for (offset, _) in part.char_indices().skip(1) {
+                    let suffix = &part[offset..];
+                    if !suffix.contains(marker) {
+                        break;
+                    }
+                    while let Some((start, end)) = display.char_indices().find_map(|(start, c)| {
+                        if c != '<' {
+                            return None;
+                        }
+                        let mut cursor = start + 1;
+                        for byte in suffix.bytes() {
+                            while display.as_bytes().get(cursor) == Some(&b'\n') {
+                                cursor += 1;
+                            }
+                            if display.as_bytes().get(cursor) != Some(&byte) {
+                                return None;
+                            }
+                            cursor += 1;
+                        }
+                        Some((start, cursor))
+                    }) {
+                        display.replace_range(start..end, "");
+                    }
+                }
             }
             display
         })
@@ -1004,6 +1034,24 @@ mod tests {
         assert_eq!(
             super::strip_status_wrapper_display(&display, "zsh", marker),
             "prompt echo hi\nhi\nprompt"
+        );
+    }
+
+    #[test]
+    fn clipped_zsh_wrapper_preserves_real_output_and_foreign_markers() {
+        let marker = "__FORGE_STATUS_1__";
+        let suffix = super::command_suffix("zsh", marker);
+        let clipped = format!("<{}", &suffix[6..]);
+        let split = clipped.find(marker).unwrap() + 4;
+        let foreign = "<e_status=$?; printf '\\n__FORGE_STATUS_OTHER__%s\\n' \"$__forge_status\"";
+        let display = format!(
+            "prompt\n{}\n{}\nactual-output λ/東京\n{foreign}\nprompt",
+            &clipped[..split],
+            &clipped[split..]
+        );
+        assert_eq!(
+            super::strip_status_wrapper_display(&display, "zsh", marker),
+            format!("prompt\n\nactual-output λ/東京\n{foreign}\nprompt")
         );
     }
 }

@@ -55,6 +55,26 @@ pub(super) fn background_task_state(status: &forge_core::BackgroundTaskStatus) -
 }
 
 pub(super) fn child_execution_text(task: &forge_session::BackgroundTaskSnapshot) -> String {
+    format!(
+        "Agent #{}: {}\nState: {}\nChild: {}\n{}",
+        task.id.0,
+        task.label,
+        background_task_state(&task.status),
+        task.child_session_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        child_execution_metadata(task)
+    )
+}
+
+pub(super) fn child_execution_metadata(task: &forge_session::BackgroundTaskSnapshot) -> String {
+    let (mode, workspace, branch) = child_execution_info(task);
+    format!("Mode: {mode}\nWorkspace: {workspace}\nBranch: {branch}")
+}
+
+fn child_execution_info(
+    task: &forge_session::BackgroundTaskSnapshot,
+) -> (&'static str, String, &str) {
     let mode = task
         .child
         .as_ref()
@@ -79,7 +99,17 @@ pub(super) fn child_execution_text(task: &forge_session::BackgroundTaskSnapshot)
         .as_ref()
         .and_then(|child| child.branch.as_deref())
         .unwrap_or("unavailable");
-    format!("Agent #{}: {}\nState: {}\nChild: {}\nMode: {mode}\nWorkspace: {workspace}\nBranch: {branch}", task.id.0, task.label, background_task_state(&task.status), task.child_session_id.map(|id| id.to_string()).unwrap_or_else(|| "unavailable".into()))
+    (mode, workspace, branch)
+}
+
+pub(super) fn child_reading_banner(
+    task: &forge_session::BackgroundTaskSnapshot,
+    width: usize,
+) -> String {
+    let (mode, workspace, branch) = child_execution_info(task);
+    format!("Read-only inspection · Mode: {mode}\nWorkspace: {}\nBranch: {}\n← parent · a/d decision · /tasks full details",
+        crate::path_display::elide_path(&crate::decision::visible_text(&workspace), width.saturating_sub(11)),
+        crate::path_display::elide_middle(&crate::decision::visible_text(branch), width.saturating_sub(8)))
 }
 
 pub(super) fn shell_execution_text(task: &forge_session::BackgroundTaskSnapshot) -> String {
@@ -271,7 +301,7 @@ impl TuiApp {
         mut terminal: Option<&mut Terminal<B>>,
     ) -> Result<ModelResponseApplication, LoopError> {
         let execution = IsolatedTask::spawn(pending.execute());
-        let mut ui_tick = tokio::time::interval(Duration::from_millis(100));
+        let mut ui_tick = tokio::time::interval(crate::widgets::turn_line::FRAME_INTERVAL);
         ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             if execution.is_finished() {
@@ -516,7 +546,7 @@ impl TuiApp {
             ),
         );
         let until = Instant::now() + wait;
-        let mut ui_tick = tokio::time::interval(Duration::from_millis(100));
+        let mut ui_tick = tokio::time::interval(crate::widgets::turn_line::FRAME_INTERVAL);
         ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while Instant::now() < until {
             if self.cancellation.take_requested() || self.exit.is_requested() {
@@ -1381,6 +1411,7 @@ impl TuiApp {
         self.stream.thinking.clear();
         self.stream.live_lines = None;
         self.timing.started.get_or_insert_with(Instant::now);
+        self.timing.turn_started.get_or_insert_with(Instant::now);
         self.timing.thinking_started = None;
         self.timing.thought_secs = None;
 
@@ -1468,7 +1499,7 @@ impl TuiApp {
             });
             let mut handle =
                 IsolatedTask::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
-            let mut ui_tick = tokio::time::interval(Duration::from_millis(100));
+            let mut ui_tick = tokio::time::interval(crate::widgets::turn_line::FRAME_INTERVAL);
             ui_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             let mut step_acc = ModelStepAccumulator::default();
@@ -1821,6 +1852,44 @@ mod responsiveness_tests {
 
     struct BlockingTool;
     struct BlockingModel;
+    struct WaitingModel;
+
+    #[async_trait]
+    impl ModelClient for WaitingModel {
+        async fn complete(&self, _req: ModelRequest) -> Result<ModelResponse, ModelError> {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Ok(ModelResponse {
+                text: "Available answer".into(),
+                tool_calls: Vec::new(),
+                usage: None,
+                thinking: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn foreground_model_turn_initializes_the_debounced_indicator() {
+        let (_directory, mut app) =
+            crate::app::tests::helpers::focus_test_app_with_model(Arc::new(WaitingModel)).await;
+        app.pending_turn.queue("Wait for the answer".into(), vec![]);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        app.drain_pending_prompt_with_terminal(Some(&mut terminal))
+            .await
+            .unwrap();
+        let painted: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(painted.contains("Writing the answer"), "{painted}");
+        assert!(app.timing.turn_started.is_none());
+        assert!(app.session_runtime.messages.iter().any(|message| {
+            message.role == forge_types::MessageRole::Assistant
+                && message.content == "Available answer"
+        }));
+    }
 
     #[test]
     fn background_task_labels_outcomes_and_summary_upserts_are_stable() {

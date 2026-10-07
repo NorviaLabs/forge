@@ -22,6 +22,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -84,6 +85,7 @@ async fn failed_turn_ends_in_failed_lifecycle() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -162,6 +164,7 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -312,6 +315,7 @@ async fn a_transient_provider_failure_is_retried() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -356,6 +360,7 @@ async fn a_failure_after_partial_output_is_never_retried() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),

@@ -1,0 +1,18 @@
+   FORGE · ⌂ /var/folders/rn/…/T/.tmpE0xuqG  ·  ./No commits yet on main*
+  > Conversation ‹ Audit retries                      Ctrl+P files · / commands
+
+   The child journal is read-only in this view.
+ Waiting · approval
+ Read-only inspection · Mode: Writer
+ Workspace: /…/subagent-98f96258-f93e-47e4-9546-19ba9a7dfa42-1-Audit-retries
+ Branch: forge/subagent/subagent-98f96258-…-9546-19ba9a7dfa42-1-Audit-retries
+ ← parent · a/d decision · /tasks full details
+
+   Queue · 6 · +5 more · /tasks inspect
+   > 1. Retained parent follow-up 1
+   Background · 3 ──────────────────────────────────────────────────── +2 more
+ > [|] ◆ Audit retries                                                 waiting
+ ──────────────────────────────────────────────────────────────────────────────
+   Retained parent draft λ/東京.rs.
+                         ↑↓ select · i insert · a/d inspect decision · x stop
+   [◆ agents 3 · 3 need] [⇥ queue 6]

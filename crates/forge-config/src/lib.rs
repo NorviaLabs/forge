@@ -342,6 +342,9 @@ pub struct TuiConfig {
     /// staged stages every change and commits, instead of offering the choice.
     #[serde(default)]
     pub smart_commit: bool,
+    /// Use static working indicators without animated emphasis.
+    #[serde(default)]
+    pub reduced_motion: bool,
 }
 
 impl Default for TuiConfig {
@@ -352,6 +355,7 @@ impl Default for TuiConfig {
             theme_committed: false,
             notify: NotifyMode::default(),
             smart_commit: false,
+            reduced_motion: false,
         }
     }
 }
@@ -370,6 +374,7 @@ struct TuiConfigFile {
     theme_committed: Option<bool>,
     notify: Option<String>,
     smart_commit: Option<bool>,
+    reduced_motion: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -854,6 +859,9 @@ impl ConfigFile {
             }
             if let Some(smart_commit) = tui.smart_commit {
                 cfg.tui.smart_commit = smart_commit;
+            }
+            if let Some(reduced_motion) = tui.reduced_motion {
+                cfg.tui.reduced_motion = reduced_motion;
             }
         }
         if let Some(validation) = self.validation {
@@ -1745,6 +1753,7 @@ max_query_chars = 0
                 theme_committed: Some(true),
                 notify: Some("both".into()),
                 smart_commit: Some(true),
+                reduced_motion: Some(true),
             }),
             ..Default::default()
         };
@@ -1754,6 +1763,14 @@ max_query_chars = 0
         assert!(cfg.tui.theme_committed);
         assert_eq!(cfg.tui.notify, NotifyMode::Both);
         assert!(cfg.tui.smart_commit);
+        assert!(cfg.tui.reduced_motion);
+    }
+
+    #[test]
+    fn older_tui_preferences_load_without_a_motion_key() {
+        let tui: TuiConfig = toml::from_str("theme = 'forge-dark'").unwrap();
+        assert!(!tui.reduced_motion);
+        assert!(!TuiConfig::default().reduced_motion);
     }
 
     /// An invalid `file_icons` / `theme` string in the file is silently
@@ -1768,6 +1785,7 @@ max_query_chars = 0
                 theme_committed: None,
                 notify: Some("bogus".into()),
                 smart_commit: None,
+                reduced_motion: None,
             }),
             ..Default::default()
         };

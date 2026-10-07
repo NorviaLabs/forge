@@ -1,0 +1,17 @@
+   FORGE · ⌂ /var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpvLLYrc
+
+
+   What would you like to work on?
+   Describe a task, or choose a starting point.
+
+ ──────────────────────────────────────────────────────────────────────────────
+   Retained parent draft λ/東京 █ marker
+
+   Starting points
+   › Explain the architecture of this project
+
+   / commands · Ctrl+P files · Tab navigate
+
+
+
+   ● OpenAI/gpt-6.1-sol │ Auto                          ready   ·  context 0%

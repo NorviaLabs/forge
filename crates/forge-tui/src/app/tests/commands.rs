@@ -590,6 +590,7 @@ async fn codex_edit_binding_restores_most_recent_queued_message() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -678,6 +679,7 @@ async fn resume_command_replaces_active_conversation_in_app() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -744,6 +746,7 @@ async fn resume_restores_input_history_for_up_down_recall() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -800,6 +803,7 @@ async fn resume_restores_local_only_slash_commands_too() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -961,6 +965,7 @@ async fn enter_while_busy_enqueues_user_message() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1004,6 +1009,7 @@ async fn typing_while_busy_updates_input_buffer() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1030,6 +1036,7 @@ async fn ctrl_p_toggles_bottom_panel_without_touching_input() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1060,6 +1067,7 @@ async fn open_bottom_panel_sets_active_tab() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1081,6 +1089,7 @@ async fn focused_bottom_panel_alt_arrows_do_not_type_into_chat() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -1115,6 +1124,7 @@ async fn unbound_typing_at_the_footer_starts_a_draft() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -1220,6 +1230,7 @@ async fn editor_uppercase_g_does_not_reach_chat_input() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -1246,6 +1257,7 @@ async fn f1_opens_help_overlay() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1273,6 +1285,7 @@ async fn question_mark_types_into_an_empty_composer() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1315,6 +1328,7 @@ async fn slash_command_info_uses_toast() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1337,6 +1351,7 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1378,6 +1393,7 @@ async fn ctrl_backspace_cancels_selected_queue_message() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1412,6 +1428,7 @@ async fn effort_selection_persists_across_tui_instances() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1437,6 +1454,7 @@ async fn effort_selection_persists_across_tui_instances() {
     let mut restarted = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1461,6 +1479,7 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1498,6 +1517,7 @@ async fn drain_pending_prompt_sends_selected_effort_on_outbound_request() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "anthropic/claude-sonnet-4-6".into(),
             provider: "anthropic".into(),
             cwd: dir.path().to_path_buf(),
@@ -1539,6 +1559,7 @@ async fn drain_pending_prompt_omits_effort_for_model_that_does_not_support_it() 
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -1577,6 +1598,7 @@ async fn drain_pending_prompt_sends_separate_thinking_flag() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "anthropic/claude-sonnet-4-6".into(),
             provider: "anthropic".into(),
             cwd: dir.path().to_path_buf(),
@@ -1620,6 +1642,7 @@ async fn model_command_applies_provider_id_to_session() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1651,6 +1674,7 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "openai-codex/gpt-5.6-sol".into(),
             provider: "native".into(),
             cwd: PathBuf::from("."),
@@ -1692,6 +1716,7 @@ async fn app_dispatch_user_message() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("/tmp"),
@@ -1723,6 +1748,7 @@ async fn app_status_command() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1743,6 +1769,7 @@ async fn clear_hides_existing_chat_without_deleting_context() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1776,6 +1803,7 @@ async fn app_quit_command() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "p".into(),
             cwd: PathBuf::from("."),
@@ -1852,6 +1880,7 @@ async fn history_records_submitted_lines_and_up_recalls() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1890,6 +1919,7 @@ async fn history_up_via_key_when_no_overlay() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1929,6 +1959,7 @@ async fn up_down_navigate_multiline_draft_before_touching_history() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -1974,6 +2005,7 @@ async fn browsing_history_ignores_cursor_row_and_always_cycles() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2008,6 +2040,7 @@ async fn slash_stays_in_textbox_does_not_open_palette() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2039,6 +2072,7 @@ async fn enter_runs_slash_from_main_textbox() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2069,6 +2103,7 @@ async fn status_slash_command_opens_overlay_on_enter() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2092,6 +2127,7 @@ async fn slash_connect_opens_picker() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2127,6 +2163,7 @@ async fn slash_tab_autocompletes_command() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2158,6 +2195,7 @@ async fn startup_notices_seed_notice_panel() {
     let app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2180,6 +2218,7 @@ async fn effort_command_opens_effort_picker() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2207,6 +2246,7 @@ async fn thinking_command_toggles_without_changing_effort() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2238,6 +2278,7 @@ async fn enter_on_highlighted_suggestion_runs_command() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2295,6 +2336,7 @@ async fn bare_slash_lists_all_palette_commands() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
@@ -2345,6 +2387,7 @@ async fn enter_on_status_suggestion_runs_immediately() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "m".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),

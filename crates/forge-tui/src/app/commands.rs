@@ -1653,6 +1653,7 @@ mod tests {
         let app = TuiApp::new(
             session,
             TuiRuntimeConfig {
+                reduced_motion: false,
                 model_label: "mock".into(),
                 provider: "mock".into(),
                 cwd: PathBuf::from("/tmp"),
@@ -2196,6 +2197,7 @@ mod tests {
         let mut app = TuiApp::new(
             session,
             TuiRuntimeConfig {
+                reduced_motion: false,
                 model_label: "forge-test/hitl-resume".into(),
                 provider: "mock".into(),
                 cwd: dir.path().to_path_buf(),

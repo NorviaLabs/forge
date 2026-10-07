@@ -918,19 +918,23 @@ impl TuiApp {
         self.poll_repo_header();
         self.connected_cached();
         self.refresh_progress_state();
-        self.stream.advance_reveal(Instant::now());
-        // Spinner frames advance with the event loop, not the wall clock:
-        // pausing work pauses motion, and tests can step frames exactly.
-        self.busy_state.tick();
+        // Polling remains active with reduced motion. Only genuine running
+        // state advances decorative emphasis; waiting and outcomes are static.
+        let step = (self.animation_started.elapsed().as_millis()
+            / crate::widgets::turn_line::FRAME_INTERVAL.as_millis()) as usize;
         // The session rows keep their own step. A background session's turn can
         // be running while the workspace-visible one is idle, and a row that
         // says "running" must move whether or not it owns the workspace.
-        if self
-            .session_chrome
-            .iter()
-            .any(SessionChromeItem::is_working)
+        if !self.runtime.reduced_motion
+            && step != self.session_row_step
+            && (self.busy_state.is_active()
+                || self
+                    .session_chrome
+                    .iter()
+                    .any(|task| task.is_working() && !task.is_queued()))
         {
-            self.session_row_step = self.session_row_step.wrapping_add(1);
+            self.busy_state.tick();
+            self.session_row_step = step;
         }
     }
 

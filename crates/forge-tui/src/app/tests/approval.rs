@@ -249,6 +249,7 @@ async fn remembered_approval_expires_with_session() {
     let next_app = TuiApp::new(
         next_session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),

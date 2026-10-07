@@ -1,0 +1,642 @@
+{
+  "method": "120x40 TestBackend; actual key dispatch plus draw; five paired 100-key rounds per workload after five warm draws. Alternate process order each round. Fixture setup excluded. Times are microseconds; exclude real terminal paint and provider transport. Summary reports median of round medians and median of round p95 values.",
+  "baseline_source": "80a64a74491537dcd24d8a3c2fa59c058e4abc2e",
+  "refresh_source": "Phase 5 code in the containing commit, based on tree-equivalent main c800a44550eaec4942f88ac33ce2dfe99700874a",
+  "build_flags": [
+    "profile.dev.debug=0",
+    "profile.test.debug=0",
+    "build.incremental=false"
+  ],
+  "summary": [
+    {
+      "workload": "typing",
+      "baseline": {
+        "median_us": 2429,
+        "median_p95_us": 2540,
+        "round_median_range": [
+          2428,
+          2458
+        ]
+      },
+      "refresh": {
+        "median_us": 2436,
+        "median_p95_us": 2536,
+        "round_median_range": [
+          2424,
+          2500
+        ]
+      }
+    },
+    {
+      "workload": "stream",
+      "baseline": {
+        "median_us": 3442,
+        "median_p95_us": 3618,
+        "round_median_range": [
+          3428,
+          3450
+        ]
+      },
+      "refresh": {
+        "median_us": 3432,
+        "median_p95_us": 3620,
+        "round_median_range": [
+          3413,
+          3472
+        ]
+      }
+    },
+    {
+      "workload": "jobs",
+      "baseline": {
+        "median_us": 2526,
+        "median_p95_us": 2624,
+        "round_median_range": [
+          2511,
+          2528
+        ]
+      },
+      "refresh": {
+        "median_us": 2523,
+        "median_p95_us": 2631,
+        "round_median_range": [
+          2516,
+          2531
+        ]
+      }
+    },
+    {
+      "workload": "history",
+      "baseline": {
+        "median_us": 2965,
+        "median_p95_us": 3069,
+        "round_median_range": [
+          2957,
+          2972
+        ]
+      },
+      "refresh": {
+        "median_us": 3002,
+        "median_p95_us": 3112,
+        "round_median_range": [
+          2995,
+          3006
+        ]
+      }
+    },
+    {
+      "workload": "draft",
+      "baseline": {
+        "median_us": 16391,
+        "median_p95_us": 16525,
+        "round_median_range": [
+          16351,
+          16408
+        ]
+      },
+      "refresh": {
+        "median_us": 16542,
+        "median_p95_us": 16789,
+        "round_median_range": [
+          16511,
+          16557
+        ]
+      }
+    }
+  ],
+  "paired_rounds": [
+    {
+      "workload": "typing",
+      "round": 1,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2428,
+        "p95_us": 2532
+      },
+      "refresh": {
+        "median_us": 2434,
+        "p95_us": 2529
+      }
+    },
+    {
+      "workload": "typing",
+      "round": 2,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 2436,
+        "p95_us": 2536
+      },
+      "baseline": {
+        "median_us": 2428,
+        "p95_us": 2538
+      }
+    },
+    {
+      "workload": "typing",
+      "round": 3,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2458,
+        "p95_us": 2540
+      },
+      "refresh": {
+        "median_us": 2424,
+        "p95_us": 2545
+      }
+    },
+    {
+      "workload": "typing",
+      "round": 4,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 2439,
+        "p95_us": 2532
+      },
+      "baseline": {
+        "median_us": 2431,
+        "p95_us": 2544
+      }
+    },
+    {
+      "workload": "typing",
+      "round": 5,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2429,
+        "p95_us": 2540
+      },
+      "refresh": {
+        "median_us": 2500,
+        "p95_us": 2784
+      }
+    },
+    {
+      "workload": "stream",
+      "round": 1,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 3435,
+        "p95_us": 3618
+      },
+      "refresh": {
+        "median_us": 3413,
+        "p95_us": 3617
+      }
+    },
+    {
+      "workload": "stream",
+      "round": 2,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 3472,
+        "p95_us": 3785
+      },
+      "baseline": {
+        "median_us": 3442,
+        "p95_us": 3807
+      }
+    },
+    {
+      "workload": "stream",
+      "round": 3,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 3450,
+        "p95_us": 3608
+      },
+      "refresh": {
+        "median_us": 3432,
+        "p95_us": 3602
+      }
+    },
+    {
+      "workload": "stream",
+      "round": 4,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 3428,
+        "p95_us": 3647
+      },
+      "baseline": {
+        "median_us": 3444,
+        "p95_us": 3600
+      }
+    },
+    {
+      "workload": "stream",
+      "round": 5,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 3428,
+        "p95_us": 3621
+      },
+      "refresh": {
+        "median_us": 3433,
+        "p95_us": 3620
+      }
+    },
+    {
+      "workload": "jobs",
+      "round": 1,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2511,
+        "p95_us": 2614
+      },
+      "refresh": {
+        "median_us": 2531,
+        "p95_us": 2642
+      }
+    },
+    {
+      "workload": "jobs",
+      "round": 2,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 2518,
+        "p95_us": 2623
+      },
+      "baseline": {
+        "median_us": 2528,
+        "p95_us": 2637
+      }
+    },
+    {
+      "workload": "jobs",
+      "round": 3,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2524,
+        "p95_us": 2634
+      },
+      "refresh": {
+        "median_us": 2516,
+        "p95_us": 2631
+      }
+    },
+    {
+      "workload": "jobs",
+      "round": 4,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 2523,
+        "p95_us": 2632
+      },
+      "baseline": {
+        "median_us": 2527,
+        "p95_us": 2624
+      }
+    },
+    {
+      "workload": "jobs",
+      "round": 5,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2526,
+        "p95_us": 2605
+      },
+      "refresh": {
+        "median_us": 2527,
+        "p95_us": 2622
+      }
+    },
+    {
+      "workload": "history",
+      "round": 1,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2972,
+        "p95_us": 3079
+      },
+      "refresh": {
+        "median_us": 3005,
+        "p95_us": 3129
+      }
+    },
+    {
+      "workload": "history",
+      "round": 2,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 2995,
+        "p95_us": 3112
+      },
+      "baseline": {
+        "median_us": 2965,
+        "p95_us": 3052
+      }
+    },
+    {
+      "workload": "history",
+      "round": 3,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2961,
+        "p95_us": 3079
+      },
+      "refresh": {
+        "median_us": 3002,
+        "p95_us": 3102
+      }
+    },
+    {
+      "workload": "history",
+      "round": 4,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 2998,
+        "p95_us": 3102
+      },
+      "baseline": {
+        "median_us": 2968,
+        "p95_us": 3064
+      }
+    },
+    {
+      "workload": "history",
+      "round": 5,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 2957,
+        "p95_us": 3069
+      },
+      "refresh": {
+        "median_us": 3006,
+        "p95_us": 3112
+      }
+    },
+    {
+      "workload": "draft",
+      "round": 1,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 16351,
+        "p95_us": 16479
+      },
+      "refresh": {
+        "median_us": 16540,
+        "p95_us": 17257
+      }
+    },
+    {
+      "workload": "draft",
+      "round": 2,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 16511,
+        "p95_us": 16646
+      },
+      "baseline": {
+        "median_us": 16408,
+        "p95_us": 16525
+      }
+    },
+    {
+      "workload": "draft",
+      "round": 3,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 16391,
+        "p95_us": 17362
+      },
+      "refresh": {
+        "median_us": 16542,
+        "p95_us": 16789
+      }
+    },
+    {
+      "workload": "draft",
+      "round": 4,
+      "order": [
+        "refresh",
+        "baseline"
+      ],
+      "refresh": {
+        "median_us": 16552,
+        "p95_us": 16885
+      },
+      "baseline": {
+        "median_us": 16399,
+        "p95_us": 17080
+      }
+    },
+    {
+      "workload": "draft",
+      "round": 5,
+      "order": [
+        "baseline",
+        "refresh"
+      ],
+      "baseline": {
+        "median_us": 16376,
+        "p95_us": 16513
+      },
+      "refresh": {
+        "median_us": 16557,
+        "p95_us": 16742
+      }
+    }
+  ],
+  "previous_identical_flags_baseline_rounds": [
+    {
+      "keys_per_round": 100,
+      "rounds": [
+        {
+          "median_us": 2438,
+          "p95_us": 2625
+        },
+        {
+          "median_us": 2454,
+          "p95_us": 2578
+        },
+        {
+          "median_us": 2441,
+          "p95_us": 2593
+        },
+        {
+          "median_us": 2496,
+          "p95_us": 3065
+        },
+        {
+          "median_us": 2509,
+          "p95_us": 2883
+        }
+      ],
+      "workload": "typing"
+    },
+    {
+      "keys_per_round": 100,
+      "rounds": [
+        {
+          "median_us": 3465,
+          "p95_us": 3672
+        },
+        {
+          "median_us": 3461,
+          "p95_us": 3644
+        },
+        {
+          "median_us": 3437,
+          "p95_us": 3668
+        },
+        {
+          "median_us": 3435,
+          "p95_us": 3656
+        },
+        {
+          "median_us": 3663,
+          "p95_us": 5327
+        }
+      ],
+      "workload": "stream"
+    },
+    {
+      "keys_per_round": 100,
+      "rounds": [
+        {
+          "median_us": 2532,
+          "p95_us": 2655
+        },
+        {
+          "median_us": 2542,
+          "p95_us": 2658
+        },
+        {
+          "median_us": 2597,
+          "p95_us": 2844
+        },
+        {
+          "median_us": 2545,
+          "p95_us": 3160
+        },
+        {
+          "median_us": 2550,
+          "p95_us": 2660
+        }
+      ],
+      "workload": "jobs"
+    },
+    {
+      "keys_per_round": 100,
+      "rounds": [
+        {
+          "median_us": 2974,
+          "p95_us": 3097
+        },
+        {
+          "median_us": 2978,
+          "p95_us": 3122
+        },
+        {
+          "median_us": 2981,
+          "p95_us": 3136
+        },
+        {
+          "median_us": 3110,
+          "p95_us": 7427
+        },
+        {
+          "median_us": 3422,
+          "p95_us": 7262
+        }
+      ],
+      "workload": "history"
+    },
+    {
+      "keys_per_round": 100,
+      "rounds": [
+        {
+          "median_us": 18443,
+          "p95_us": 28620
+        },
+        {
+          "median_us": 16704,
+          "p95_us": 18566
+        },
+        {
+          "median_us": 16569,
+          "p95_us": 17444
+        },
+        {
+          "median_us": 16532,
+          "p95_us": 16837
+        },
+        {
+          "median_us": 16523,
+          "p95_us": 16722
+        }
+      ],
+      "workload": "draft"
+    }
+  ],
+  "limits": "Small positive shifts remain visible in tightly interleaved history and long-draft samples; all final medians fit the ranges observed across earlier baseline repeats. Do not infer a speed or usability improvement. An 8000-character draft still costs about 16.5 ms to draw."
+}

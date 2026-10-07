@@ -135,6 +135,7 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
@@ -216,6 +217,7 @@ async fn app_with_a_blocking_subagent(
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
+            reduced_motion: false,
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: dir.path().to_path_buf(),
