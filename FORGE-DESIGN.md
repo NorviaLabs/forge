@@ -1,5 +1,5 @@
 ---
-version: 2.6
+version: 2.7
 status: behavioral-contract-with-changeable-defaults
 name: Forge TUI Design System
 product: Forge
@@ -1500,14 +1500,39 @@ screen.
   would be a lie. The composer hint carries the same notice
   (`read-only · viewing explore · ← to return`), and the composer refuses input
   while the view is open.
-- **The view refreshes while the child is live.** The poll tick re-reads the
-  child's journal while its task is non-terminal; a finished child keeps its
-  final snapshot. The refresh is silent, swaps only when the messages actually
-  changed (else every tick would invalidate the render cache for nothing), and
-  never touches scroll or follow — the operator may be reading an older page.
-- **The header still describes the parent session** (workspace, branch): the
-  child runs in its own worktree, so those do not match while the view is
-  open. The workspace tab names the child that *is* on screen.
+- **The view refreshes from actual child evidence.** The poll tick re-reads
+  the live child's journal and reads its final journal once after completion,
+  including when the parent is supervised. Equal-length changes still count
+  as changes. An unchanged replay keeps its revision and render cache. A reader
+  who has scrolled back keeps the same logical reading row when evidence arrives.
+- **The parent remains identifiable.** The header still describes the parent.
+  Child inspection and the Agents filter identify the actual mode, workspace
+  and branch. A writer names its separate worktree; a read-only scheduling mode
+  uses the shared repository workspace. Mode is launch metadata, not a new tool
+  permission policy. Unretained mode or branch information says unavailable.
+- **Return restores the parent.** `←`/`Esc` restores its reading/follow state,
+  focus, text selection and retained draft. Parent progress is held separately
+  while the child is shown; parent approvals and stream text cannot appear as
+  the child's conversation. Return reports the child's actual current outcome.
+  Switching parent sessions closes the child reader before saving view state.
+  Ordinary transcript scrolling retains its existing cache buckets. Restoring
+  a changed parent can materialize its full settled history once to locate the
+  previously visible rows.
+- **Child decisions require inspection.** `a` and `d` open the same full named
+  request with **Don't run** selected. Literal invocation, owner, child, mode,
+  cwd/workspace, branch and consequences scroll above pinned controls. Opening
+  or returning makes no decision. Confirmation requires a painted request and
+  binds parent, task, child execution and a unique pending-request identity.
+  The producer rejects stale or repeated decisions even when a provider reuses
+  a call ID. Explicit confirmation returns to that child's read-only view;
+  parent drafts, queue and sibling work retain their own ownership.
+- **Interruption retains work.** `x` confirms that named execution, defaulting
+  to Keep waiting or Keep running; stop does not remove a checkout. `i` explicitly
+  appends a terminal result to the owning parent's draft without sending it.
+  Failed or cancelled children can hand off retained visible assistant findings,
+  labelled partial and unverified. Hidden reasoning and tool messages are
+  excluded. Missing findings are reported rather than manufactured. Result
+  insertion does not integrate a branch or establish validation.
 - **A replayed child carries no live activity rows.** `TurnEvent`s are not
   replayed, so the view shows the conversation without the streaming
   second-lines the owning session carries — the right trade for a view that

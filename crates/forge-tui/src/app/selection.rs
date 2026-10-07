@@ -83,6 +83,14 @@ impl TuiApp {
     }
 
     pub(crate) fn selected_pending_hitl(&self) -> Option<&forge_types::HitlPayload> {
+        if self.child_view.is_some() {
+            return None;
+        }
+        self.parent_pending_hitl()
+    }
+
+    /// Runtime grants still apply while a read-only child owns presentation.
+    pub(super) fn parent_pending_hitl(&self) -> Option<&forge_types::HitlPayload> {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
                 .session_runtime
@@ -93,6 +101,9 @@ impl TuiApp {
     }
 
     pub(crate) fn selected_pending_question(&self) -> Option<&forge_types::QuestionPayload> {
+        if self.child_view.is_some() {
+            return None;
+        }
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
                 .session_runtime

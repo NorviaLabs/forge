@@ -376,7 +376,7 @@ impl TuiApp {
                     }
                     if let Some(snapshot) = selected_snapshot {
                         self.session_view = snapshot.session.clone();
-                        self.transcript_view = snapshot.transcript.clone();
+                        self.set_parent_transcript(snapshot.transcript.clone());
                         self.sync_supervised_presentation(&snapshot);
                     }
                 }
@@ -400,7 +400,7 @@ impl TuiApp {
                     }
                     if snapshot.task.session_id == self.selected_session_id {
                         self.session_view = snapshot.session.clone();
-                        self.transcript_view = snapshot.transcript.clone();
+                        self.set_parent_transcript(snapshot.transcript.clone());
                         self.sync_supervised_presentation(&snapshot);
                     } else if let Some(saved) =
                         self.session_view_states.get_mut(&snapshot.task.session_id)
@@ -531,7 +531,7 @@ impl TuiApp {
                             self.selected_session_id = session_id;
                         }
                         self.session_view = snapshot.session.clone();
-                        self.transcript_view = snapshot.transcript.clone();
+                        self.set_parent_transcript(snapshot.transcript.clone());
                         self.sync_supervised_presentation(&snapshot);
                         self.sync_selected_workspace();
                     }
@@ -1110,6 +1110,9 @@ impl TuiApp {
     /// and a later session opened on a different string entirely. Belongs to
     /// the event-loop tick, not `draw`: rendering must not mutate state.
     pub(super) fn sync_composer_placeholder(&mut self) {
+        if self.child_view.is_some() {
+            return;
+        }
         // Only the started case is claimed here. Before the first turn the
         // placeholder is whatever the launch chose — the opener when there is
         // a workspace to ask about, the generic prompt otherwise — and

@@ -9,10 +9,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
-use forge_types::{BackgroundTaskId, HitlDecision, SessionId};
+use forge_types::{BackgroundTaskId, SessionId};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::background::{BackgroundControl, BackgroundTaskOutcome, BackgroundTaskRegistry};
+use crate::background::{
+    BackgroundApprovalReply, BackgroundApprovalRequest, BackgroundChildExecution,
+    BackgroundControl, BackgroundTaskOutcome, BackgroundTaskRegistry,
+};
 use crate::TaskQueue;
 
 pub(crate) struct TaskRuntime {
@@ -27,12 +30,16 @@ pub(crate) struct RetainedSubagent {
     pub(crate) label: String,
     pub(crate) workspace: PathBuf,
     pub(crate) runtime: Arc<SubagentRuntime>,
-    pub(crate) hitl_sender: UnboundedSender<HitlDecision>,
+    pub(crate) hitl_sender: UnboundedSender<BackgroundApprovalReply>,
+    pub(crate) child: BackgroundChildExecution,
+    pub(crate) worktree: Option<crate::DescendantWorktree>,
 }
 
 pub(crate) struct SubagentRuntime {
     pub(crate) result_sink: Arc<Mutex<Option<std::sync::mpsc::Sender<BackgroundTaskOutcome>>>>,
     pub(crate) latest_message: Arc<Mutex<Option<String>>>,
+    pub(crate) run_id: Mutex<uuid::Uuid>,
+    pub(crate) pending_approval: Arc<Mutex<Option<BackgroundApprovalRequest>>>,
 }
 
 impl TaskRuntime {

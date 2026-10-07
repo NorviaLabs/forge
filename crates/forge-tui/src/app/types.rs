@@ -15,15 +15,27 @@ pub(crate) const UI_STATE_VERSION: u32 = 2;
 /// revision intact.
 pub(crate) struct ChildSessionView {
     pub(crate) label: String,
-    /// The task being viewed, so the poll tick refreshes only while it is
-    /// non-terminal — read from the live handle, never trusted from the view.
+    pub(crate) owner: uuid::Uuid,
     pub(crate) task_id: forge_types::BackgroundTaskId,
+    pub(crate) run_id: forge_core::BackgroundRunId,
     /// The child session being viewed, so the poll tick can re-read it.
     pub(crate) session_id: forge_types::SessionId,
     /// The transcript to put back when the operator leaves.
     pub(crate) parent_transcript: forge_session::TranscriptSnapshot,
     /// The composer hint the child view replaced with its read-only notice.
     pub(crate) parent_hint: String,
+    pub(crate) parent_view: ConversationViewState,
+    pub(crate) parent_focus: FocusState,
+    pub(crate) parent_approval: super::approvals::ApprovalSessionState,
+    pub(crate) parent_question: super::questions::QuestionSessionState,
+    pub(crate) parent_cache: RenderCacheState,
+    pub(crate) parent_selection: crate::selection::MouseSelection,
+    pub(crate) parent_text: crate::selection::RenderedText,
+    pub(crate) parent_rows: Vec<String>,
+    pub(crate) parent_all_rows: Vec<String>,
+    pub(crate) parent_top: usize,
+    /// Read the final journal once after a terminal transition, too.
+    pub(crate) final_read: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +159,8 @@ impl Default for SessionViewState {
                 follow: true,
                 context_reset_snapshot: None,
                 splash_dismissed: false,
+                restore_top: None,
+                restore_lines: None,
             },
             focus: FocusState::default(),
             overlay: None,
@@ -797,8 +811,7 @@ pub(crate) enum SemanticCommand {
     MoveStarterSelection(i32),
     UseSelectedStarter,
     CancelSelectedBackgroundTask,
-    ApproveSelectedBackgroundTask,
-    DenySelectedBackgroundTask,
+    OpenSelectedChildDecision,
     /// Show the selected subagent's own session, read-only. `←` returns.
     OpenSelectedChildSession,
     /// Move a finished background task's result into the composer for the
@@ -913,6 +926,7 @@ pub(crate) struct FocusAvailability {
     pub(crate) sidebar: bool,
     pub(crate) bottom_panel: bool,
     pub(crate) approval: bool,
+    pub(crate) composer: bool,
 }
 
 impl FocusAvailability {
@@ -923,7 +937,7 @@ impl FocusAvailability {
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => self.workspace,
             FocusBlock::Sidebar => self.sidebar,
-            FocusBlock::Composer => true,
+            FocusBlock::Composer => self.composer,
             FocusBlock::Footer => true,
             FocusBlock::BottomPanel => self.bottom_panel,
             FocusBlock::Approval => self.approval,
@@ -1058,6 +1072,10 @@ pub(crate) struct ConversationViewState {
     pub(crate) follow: bool,
     pub(crate) context_reset_snapshot: Option<(f64, f64)>,
     pub(crate) splash_dismissed: bool,
+    /// A complete transcript's logical top row, retained across new evidence.
+    pub(crate) restore_top: Option<usize>,
+    /// Visible logical rows from a parent's previous partial render window.
+    pub(crate) restore_lines: Option<Vec<String>>,
 }
 
 pub(crate) struct WorkspaceFilesState {
@@ -1106,7 +1124,14 @@ pub(crate) struct TaskViewPaintState {
 pub(crate) struct TaskStopPaint {
     pub(crate) owner: uuid::Uuid,
     pub(crate) id: forge_types::BackgroundTaskId,
-    pub(crate) started_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) run_id: forge_core::BackgroundRunId,
+    pub(crate) choices: [ratatui::layout::Rect; 2],
+}
+
+pub(crate) struct ChildApprovalPaint {
+    pub(crate) owner: uuid::Uuid,
+    pub(crate) task_id: forge_types::BackgroundTaskId,
+    pub(crate) request: forge_core::BackgroundApprovalRequest,
     pub(crate) choices: [ratatui::layout::Rect; 2],
 }
 
@@ -2124,6 +2149,7 @@ pub struct TuiApp {
     pub(crate) dock_paint: DockPaintState,
     pub(crate) task_view_paint: TaskViewPaintState,
     pub(crate) task_stop_paint: Option<TaskStopPaint>,
+    pub(crate) child_approval_paint: Option<ChildApprovalPaint>,
     pub(crate) dismissed_background: std::collections::HashMap<
         uuid::Uuid,
         std::collections::HashSet<forge_types::BackgroundTaskId>,

@@ -5,7 +5,7 @@ The complete scope is the [updated mockup proposal](https://github.com/NorviaLab
 1. **Layout and start — implemented in [PR #840](https://github.com/NorviaLabs/forge/pull/840); required CI passes.** Centered task entry, shared gutters, bounded composer, retained navigation and drafts, quieter chrome, updated built-in palettes.
 2. **Conversation and inspection — implemented in [PR #842](https://github.com/NorviaLabs/forge/pull/842); required CI passes.** Tighter transcript and inspector origins, approvals with safe defaults and scrollable details, compact pickers, retained shell input and explicit failure recovery. [Review the compiled captures](phase2-captures.html).
 3. **Queue and dock — implemented in [PR #843](https://github.com/NorviaLabs/forge/pull/843); all three CI checks pass.** Stable task and prompt identities, cancellation/edit race guards, bounded overflow and a live filtered task view. [Review the compiled captures](phase3-captures.html).
-4. **Jobs — implemented on `feat/tui-refresh-jobs`; local and native checks pass; subagents remain pending.** Typed execution evidence, retained partial shell output, explicit editable result handoff and named stop confirmation. Required CI is pending publication. Child metadata, exact decisions and reading-state restoration are the next separate PR.
+4. **Jobs — implemented in [PR #844](https://github.com/NorviaLabs/forge/pull/844); all three CI checks pass. Subagents — implemented and locally validated on `feat/tui-refresh-subagents`; publication follows.** Children expose actual execution metadata, full named decisions, retained reading state and explicit partial-result handoff. [Review the child captures](phase4-subagents-captures.html).
 5. **Motion and complete workflows — pending.** Reduced motion, state-driven effects, performance comparison, real walkthroughs and required CI.
 
 ## Phase 1 comparison
@@ -89,4 +89,20 @@ All 323 distinct targeted checks pass across the tools, core, session and TUI, i
 
 [Six native captures](live-phase4-jobs/) show actual running output at 80×18, the default stop choice, the same job still running after Enter, its retained partial output after explicit stop, insertion without submission, and the parent draft above that result. The native fixture exits successfully. All six queued prompts survive the walkthrough. Its responses are mocked; this is native interaction and execution evidence, not a live-provider or usability benchmark.
 
-Child mode/workspace metadata, exact child-request decisions, parent reading-state restoration and partial assistant findings remain the next Phase 4 PR. Motion, final release verification and fair performance measurements remain Phase 5 work.
+Child mode/workspace metadata, exact child-request decisions, parent reading-state restoration and partial assistant findings are implemented in the next Phase 4 slice. Motion, final release verification and fair performance measurements remain Phase 5 work.
+
+All three Jobs CI checks pass on head `f3d2a7e5`; PR #844 remains open. The Subagents branch starts from that head.
+
+## Phase 4 — Subagents
+
+[The child gallery](phase4-subagents-captures.html) contains 348 production draw frames: twenty-nine states at four sizes and three presentations. The new states cover the Agents list, read-only journal inspection, exact requests, safe named stop, interrupted evidence and explicit insertion. Provider responses are mocked. The dirty child file is test setup; cancellation and shell execution use the actual runtime. These captures establish presentation, not measured usability.
+
+Child inspection refreshes the actual journal while active and reads the final journal once after completion. Its owner, child session, execution, mode, workspace and branch remain separate from the parent's live stream and pending decisions. Returning restores the parent's draft, caret, focus, follow/reading state, cache and text selection. If the parent advanced, a one-time full settled render locates its previous visible rows; ordinary scrolling still reuses the existing bounded cache buckets. Unchanged child journals preserve their revision and render cache.
+
+Both `a` and `d` inspect the same full child request, defaulting to Don't run. Confirmation binds the painted owner, task, unique execution, child and unique request; the producer rechecks the full payload and rejects stale or repeated replies, including reused provider call IDs. Initial and resumed child activity now comes from the existing stream probe. Retained child actors support explicit follow-up without changing writer scheduling or permission policy. Read-only scheduling mode is metadata, not a new filesystem access policy.
+
+Named stop checks that execution at dispatch. Failed or cancelled children can explicitly append retained assistant findings, bounded and labelled partial/unverified, without sending or queueing them. Reasoning and tool messages are excluded. Stopping retains dirty worktrees; a read-only child's shared workspace is never treated as a disposable child checkout.
+
+All 329 distinct affected checks pass across core, session and TUI. The final 26 task checks also cover corrected environment disclosure, same-length journal changes, producer identity guards, hidden parent decisions, final evidence, reading/selection restoration and sibling/queue/dirty-checkout retention. Workspace Clippy, formatting and the debug CLI build pass. All 348 browser render checks pass after correcting a fixture that initially reset the light child theme to dark.
+
+[Native captures](live-phase4-subagents/) record the actual production UI loop at 80×18 and 120×40: full request paging, Don't run and Keep waiting defaults, named stop, partial insertion, retained parent draft, an explicitly approved disposable command and a separately refused sibling command. All six queued prompts and the dirty checkout survive the interruption. The walkthrough exits successfully. A second short fixture captures corrected decision metadata. These are disposable mock-provider sessions, not live-provider or usability measurements.

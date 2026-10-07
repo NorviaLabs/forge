@@ -186,9 +186,12 @@ pub struct ShellExecutionSnapshot {
 #[derive(Debug, Clone)]
 pub struct BackgroundTaskSnapshot {
     pub id: forge_types::BackgroundTaskId,
+    pub run_id: forge_core::BackgroundRunId,
     pub label: String,
     pub kind: forge_core::BackgroundTaskKind,
     pub shell: Option<ShellExecutionSnapshot>,
+    pub child: Option<forge_core::BackgroundChildExecution>,
+    pub pending_approval: Option<forge_core::BackgroundApprovalRequest>,
     pub status: forge_core::BackgroundTaskStatus,
     pub child_session_id: Option<SessionId>,
     pub latest_message: Option<String>,
@@ -206,12 +209,23 @@ impl BackgroundTaskSnapshot {
     pub fn capture(task: &BackgroundTaskHandle) -> Self {
         Self {
             id: task.id,
+            run_id: task.run_id,
             label: task.label.clone(),
             kind: task.kind.clone(),
             shell: task.shell.as_ref().map(|shell| ShellExecutionSnapshot {
                 cwd: shell.cwd.clone(),
                 output: shell.output.snapshot(),
             }),
+            child: task.child.clone(),
+            pending_approval: task
+                .pending_approval
+                .lock()
+                .ok()
+                .and_then(|request| request.clone())
+                .filter(|request| {
+                    request.run_id == task.run_id
+                        && Some(request.child_session_id) == task.child_session_id
+                }),
             status: task.status.clone(),
             child_session_id: task.child_session_id,
             latest_message: task
@@ -431,12 +445,15 @@ mod tests {
         let finished_at = started_at + chrono::Duration::seconds(31);
         let handle = BackgroundTaskHandle {
             id: forge_types::BackgroundTaskId(7),
+            run_id: forge_core::BackgroundRunId::new_v4(),
             parent_task_id: TaskId(3),
             kind: forge_core::BackgroundTaskKind::Shell {
                 command: "cargo clippy --all-targets".into(),
             },
             label: "cargo clippy --all-targets".into(),
             shell: None,
+            child: None,
+            pending_approval: Arc::new(std::sync::Mutex::new(None)),
             status: forge_core::BackgroundTaskStatus::Succeeded {
                 summary: "clean".into(),
             },
@@ -462,6 +479,7 @@ mod tests {
     fn capture_leaves_finished_at_open_while_a_task_runs() {
         let handle = BackgroundTaskHandle {
             id: forge_types::BackgroundTaskId(1),
+            run_id: forge_core::BackgroundRunId::new_v4(),
             parent_task_id: TaskId(1),
             kind: forge_core::BackgroundTaskKind::Subagent {
                 role: "explore".into(),
@@ -469,6 +487,8 @@ mod tests {
             },
             label: "explore".into(),
             shell: None,
+            child: None,
+            pending_approval: Arc::new(std::sync::Mutex::new(None)),
             status: forge_core::BackgroundTaskStatus::Running,
             started_at: Utc::now(),
             finished_at: None,

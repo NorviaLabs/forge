@@ -1,12 +1,10 @@
 //! Named background interruption, with retained evidence and a safe default.
 
 use super::*;
-use crate::decision::literal_lines;
 use crate::selection::cell_inside;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::widgets::{Clear, Padding};
 
 impl TuiApp {
     fn return_from_task_stop(
@@ -42,7 +40,7 @@ impl TuiApp {
         }
         if owner != self.selected_session_id
             || !self.task_stop_paint.as_ref().is_some_and(|paint| {
-                paint.owner == owner && paint.id == task.id && paint.started_at == task.started_at
+                paint.owner == owner && paint.id == task.id && paint.run_id == task.run_id
             })
         {
             self.set_feedback(
@@ -56,8 +54,7 @@ impl TuiApp {
             .into_iter()
             .find(|current| current.id == task.id);
         let Some(current) = current.filter(|current| {
-            current.started_at == task.started_at
-                && current.child_session_id == task.child_session_id
+            current.run_id == task.run_id && current.child_session_id == task.child_session_id
         }) else {
             self.return_from_task_stop(owner, return_view);
             self.set_feedback(
@@ -80,11 +77,16 @@ impl TuiApp {
         }
         self.return_from_task_stop(owner, return_view);
         if self.selected_is_supervised() {
-            self.submit_session_command(forge_session::SupervisorCommand::CancelBackgroundTask {
+            self.submit_session_command(forge_session::SupervisorCommand::CancelBackgroundRun {
                 session_id: owner,
                 task_id: task.id,
+                run_id: task.run_id,
             });
-        } else if !self.session_runtime.cancel_background_task(task.id) {
+        } else if !self
+            .session_runtime
+            .background_control()
+            .cancel_run(task.id, task.run_id)
+        {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "task already finished · nothing stopped",
@@ -220,105 +222,41 @@ impl TuiApp {
                         .unwrap_or_else(|| "unavailable".into())
                 ),
             ),
-            forge_core::BackgroundTaskKind::Subagent { role, .. } => (
-                "agent",
-                format!(
-                    "Agent: {role}\nChild: {}\nWorkspace: {}",
-                    task.child_session_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "unavailable".into()),
-                    task.worktree_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "unavailable".into())
-                ),
-            ),
+            forge_core::BackgroundTaskKind::Subagent { .. } => {
+                ("agent", super::turn::child_execution_text(&task))
+            }
         };
         let text = format!("Parent: {owner}\n{kind} #{}: {}\nState: {}\n\n{invocation}\n\nStopping interrupts this {kind}. Available output and partial findings are retained.\nOther work and queued prompts are unaffected. No checkout is removed.", task.id.0, task.label, super::turn::background_task_state(status));
-        let width = crate::overlays::centered_content_rect(area, 84, 7, 24)
-            .width
-            .saturating_sub(2 + 2 * crate::design::MODAL_PAD_X);
-        let lines = literal_lines(&text, width, theme::text());
-        let r =
-            crate::overlays::centered_content_rect(area, 84, lines.len().min(19) as u16 + 5, 24);
-        Clear.render(r, buf);
-        theme::fill(r, buf, theme::panel());
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::border())
-            .style(theme::panel())
-            .padding(Padding::horizontal(crate::design::MODAL_PAD_X))
-            .title(theme::modal_title(&format!("Stop {kind}")));
-        let inner = block.inner(r);
-        block.render(r, buf);
-        if inner.height < 4 {
+        let labels = [
+            if terminal {
+                "Return"
+            } else if waiting {
+                "Keep waiting"
+            } else {
+                "Keep running"
+            }
+            .to_string(),
+            format!("Stop {kind}"),
+        ];
+        let mut scroll = scroll;
+        let Some(choices) = crate::decision::choice_surface(
+            area,
+            buf,
+            &format!("Stop {kind}"),
+            &text,
+            &mut scroll,
+            [&labels[0], &labels[1]],
+            usize::from(stop),
+        ) else {
             return;
-        }
-        let body = Rect::new(inner.x, inner.y, inner.width, inner.height - 3);
-        let scroll = scroll.min(lines.len().saturating_sub(body.height as usize));
-        Paragraph::new(
-            lines
-                .into_iter()
-                .skip(scroll)
-                .take(body.height as usize)
-                .collect::<Vec<_>>(),
-        )
-        .render(body, buf);
+        };
         if let Some(Overlay::TaskStop { scroll: stored, .. }) = self.overlay.as_mut() {
             *stored = scroll;
         }
-        let choices = [
-            Rect::new(inner.x, inner.bottom() - 3, inner.width, 1),
-            Rect::new(inner.x, inner.bottom() - 2, inner.width, 1),
-        ];
-        for (index, (label, choice)) in [
-            if terminal {
-                "Return".to_string()
-            } else if waiting {
-                "Keep waiting".to_string()
-            } else {
-                "Keep running".to_string()
-            },
-            format!("Stop {kind}"),
-        ]
-        .into_iter()
-        .zip(choices)
-        .enumerate()
-        {
-            let selected = stop == (index == 1);
-            let style = if selected {
-                theme::focused_selection_style()
-            } else if index == 1 {
-                theme::warn()
-            } else {
-                theme::metadata_style()
-            };
-            if selected {
-                theme::fill(choice, buf, style);
-            }
-            buf.set_line(
-                choice.x,
-                choice.y,
-                &Line::styled(
-                    format!("{} {label}", if selected { ">" } else { " " }),
-                    style,
-                ),
-                choice.width,
-            );
-        }
-        buf.set_line(
-            inner.x,
-            inner.bottom() - 1,
-            &Line::styled(
-                "←→ choose · Enter decide · PgUp/PgDn details · Esc return",
-                theme::metadata_style(),
-            ),
-            inner.width,
-        );
         self.task_stop_paint = Some(TaskStopPaint {
             owner,
             id: task.id,
-            started_at: task.started_at,
+            run_id: task.run_id,
             choices,
         });
     }

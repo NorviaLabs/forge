@@ -233,14 +233,18 @@ impl TuiApp {
         // the primary-session refresh that happens on every draw.
         if let Some(session) = self.session_runtime.as_ref() {
             self.session_view = SessionSnapshot::capture(session);
-            self.transcript_view.refresh(session);
+            if let Some(view) = self.child_view.as_mut() {
+                view.parent_transcript.refresh(session);
+            } else {
+                self.transcript_view.refresh(session);
+            }
         } else if let Some(snapshot) = self
             .supervisor
             .as_ref()
             .and_then(|supervisor| supervisor.snapshots.get(&self.selected_session_id))
         {
             self.session_view = snapshot.session.clone();
-            self.transcript_view = snapshot.transcript.clone();
+            self.set_parent_transcript(snapshot.transcript.clone());
         }
         let area = frame.area();
         self.last_frame_width = area.width;
@@ -278,8 +282,9 @@ impl TuiApp {
             Some(WorkspaceView::File(_) | WorkspaceView::Diff | WorkspaceView::GithubIssues)
         );
         let task_mode = self.supervisor.is_some();
-        let decision_pending =
-            self.session_view.is_awaiting_approval() || self.session_view.is_awaiting_question();
+        let decision_pending = self.child_view.is_none()
+            && (self.session_view.is_awaiting_approval()
+                || self.session_view.is_awaiting_question());
         let navigator_active = !decision_pending
             && matches!(
                 self.focus.block(),
@@ -511,6 +516,7 @@ impl TuiApp {
             sidebar: regions.sidebar.is_some() || start_group.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
             approval: decision_pending && regions.sidebar.is_some(),
+            composer: self.child_view.is_none(),
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
@@ -925,8 +931,43 @@ impl TuiApp {
             .timing
             .turn_started
             .is_some_and(|t| t.elapsed() >= BUSY_STATUS_DEBOUNCE);
+        let child_task = self.child_view.as_ref().and_then(|view| {
+            background_tasks
+                .iter()
+                .find(|task| task.id == view.task_id && task.run_id == view.run_id)
+        });
+        let conversation_session_id = self
+            .child_view
+            .as_ref()
+            .map(|view| view.session_id)
+            .unwrap_or(self.session_view.session_id);
+        let conversation_lifecycle = child_task
+            .map(|task| match task.status {
+                forge_core::BackgroundTaskStatus::Queued => forge_types::TaskLifecycle::Ready,
+                forge_core::BackgroundTaskStatus::Running => forge_types::TaskLifecycle::Working,
+                forge_core::BackgroundTaskStatus::WaitingForApproval { .. } => {
+                    forge_types::TaskLifecycle::Waiting
+                }
+                forge_core::BackgroundTaskStatus::Succeeded { .. } => {
+                    forge_types::TaskLifecycle::Completed
+                }
+                forge_core::BackgroundTaskStatus::Failed { .. } => {
+                    forge_types::TaskLifecycle::Failed
+                }
+                forge_core::BackgroundTaskStatus::Cancelled => {
+                    forge_types::TaskLifecycle::Cancelled
+                }
+            })
+            .unwrap_or_else(|| {
+                if self.child_view.is_some() {
+                    forge_types::TaskLifecycle::Ready
+                } else {
+                    self.session_view.lifecycle
+                }
+            });
+        let conversation_busy = self.child_view.is_none() && self.busy_state.is_active();
         let stream_wait =
-            if self.busy_state.is_active() && !self.pending_turn.has_prompt() && busy_long_enough {
+            if conversation_busy && !self.pending_turn.has_prompt() && busy_long_enough {
                 let elapsed = if !self.stream.thinking.is_empty() {
                     // Thinking timer runs from first thinking token
                     self.timing
@@ -959,13 +1000,18 @@ impl TuiApp {
             .unwrap_or(regions.chat.height);
         let compact_conversation = conversation_rows < crate::design::AIRY_MIN_ROWS;
         let opts = ConversationViewOpts {
-            busy: self.busy_state.is_active(),
+            busy: conversation_busy,
             // Don't force-expand finished thinking just because busy (answer may be streaming)
             tool_expanded: self.tool_detail.is_expanded(),
             compact: compact_conversation,
             stream_wait,
-            stream_thought_secs: self.timing.thought_secs,
-            pulse_dim: crate::conversation::plan_pulse_dim(self.busy_state.throbber()),
+            stream_thought_secs: self
+                .child_view
+                .is_none()
+                .then_some(self.timing.thought_secs)
+                .flatten(),
+            pulse_dim: self.child_view.is_none()
+                && crate::conversation::plan_pulse_dim(self.busy_state.throbber()),
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
         let all_messages = self.transcript_view.messages();
@@ -1031,8 +1077,16 @@ impl TuiApp {
         let anchor_bottom = visible_messages
             .iter()
             .any(|message| message.role == forge_types::MessageRole::User);
-        let activity_summary = self.activity_summary();
-        let activity_summary_key = self.activity_summary_cache_key();
+        let activity_summary = self
+            .child_view
+            .is_none()
+            .then(|| self.activity_summary())
+            .flatten();
+        let activity_summary_key = self
+            .child_view
+            .is_none()
+            .then(|| self.activity_summary_cache_key())
+            .flatten();
         // Hiding a retained pane must not rebuild its history at zero width or
         // clamp its reading position against an invisible viewport.
         let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or_else(|| {
@@ -1062,7 +1116,7 @@ impl TuiApp {
             * TRANSCRIPT_SCROLL_BUCKET;
         let (question_selected, question_custom) = self.question_selection_key();
         let mut key = ConversationRenderKey {
-            session_id: self.session_view.session_id,
+            session_id: conversation_session_id,
             transcript_revision: self.transcript_view.revision(),
             width: sidebar_width,
             compact: compact_conversation,
@@ -1076,14 +1130,25 @@ impl TuiApp {
                 .map_or(0, String::len),
             events: visible_events.len(),
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
-            banners: self.banner_state.items.len(),
+            banners: if self.child_view.is_none() {
+                self.banner_state.items.len()
+            } else {
+                1
+            },
             // DESIGN-005: per-turn summaries digest. Counting records is not
             // enough: a re-recorded turn leaves the count unchanged, so the
             // previous duration would stay on screen through the next one.
             turn_summaries: turn_summary_digest,
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
-            keep_from_end: window_keep_from_end,
+            keep_from_end: if (!self.conversation_view.follow && self.child_view.is_some())
+                || self.conversation_view.restore_lines.is_some()
+                || self.conversation_view.restore_top.is_some()
+            {
+                usize::MAX
+            } else {
+                window_keep_from_end
+            },
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.is_expanded(),
             splash_dismissed: self.conversation_view.splash_dismissed,
@@ -1096,19 +1161,15 @@ impl TuiApp {
                 )
             }),
             slash_mode,
-            status: self.session_view.lifecycle,
+            status: conversation_lifecycle,
             theme_id: crate::theme::active(),
             pending_hitl: self
-                .session_view
-                .pending_hitl
-                .as_ref()
+                .selected_pending_hitl()
                 .map(|payload| payload.call_id.clone()),
             approval_menu_selected: self.approval_menu_selected(),
             approval_focused: self.focus.block() == FocusBlock::Approval,
             pending_question: self
-                .session_view
-                .pending_question
-                .as_ref()
+                .selected_pending_question()
                 .map(|payload| payload.call_id.clone()),
             question_idx: self.question_menu_indexes().0,
             question_option_idx: self.question_menu_indexes().1,
@@ -1143,11 +1204,11 @@ impl TuiApp {
             != Some(&key)
         {
             let projection_key = (
-                self.session_view.session_id,
+                conversation_session_id,
                 self.transcript_view.revision(),
                 message_start,
                 visible_messages.len(),
-                self.session_view.lifecycle,
+                conversation_lifecycle,
             );
             let projection_opts = ConversationViewOpts {
                 busy: false,
@@ -1166,16 +1227,28 @@ impl TuiApp {
                     model: ConversationModel::from_messages(
                         visible_messages,
                         visible_events,
-                        self.session_view.lifecycle,
+                        conversation_lifecycle,
                         projection_opts.clone(),
                     ),
                 });
             projection.model.opts = projection_opts;
             let projected_len = projection.model.items.len();
-            let mut conv = projection
-                .model
-                .with_turn_summaries(turn_summaries, window_user_base)
-                .with_extra_banners(self.banner_state.items.iter().cloned());
+            let mut conv = projection.model;
+            if let Some(task) = child_task {
+                conv = conv.with_extra_banners([ChatItem::Banner {
+                    text: format!("Read-only inspection · Parent: {}\n{}\n← parent · a/d decision · i insert result · x stop", self.selected_session_id, super::turn::child_execution_text(task)),
+                    kind: BannerKind::Info,
+                }]);
+            } else if self.child_view.is_none() {
+                conv = conv
+                    .with_turn_summaries(turn_summaries, window_user_base)
+                    .with_extra_banners(self.banner_state.items.iter().cloned());
+            } else if let Some(view) = self.child_view.as_ref() {
+                conv = conv.with_extra_banners([ChatItem::Banner {
+                    text: format!("Read-only child inspection · {}\nParent: {}\nViewed execution unavailable or replaced · ← return to inspect the current task", view.label, view.owner),
+                    kind: BannerKind::Warn,
+                }]);
+            }
             let decorated_len = conv.items.len();
             if !slash_mode && !self.conversation_view.splash_dismissed {
                 conv = conv.with_home(
@@ -1288,7 +1361,10 @@ impl TuiApp {
         // on the frame that received them. Only width changes re-render the
         // settled prefix, so only resize churn is rate-limited.
         const STREAM_PREVIEW_RENDER_INTERVAL: Duration = Duration::from_millis(150);
-        let live_lines = if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
+        let live_lines = if self.child_view.is_none()
+            && self.busy_state.is_active()
+            && !self.pending_turn.has_prompt()
+        {
             let key = (
                 width as u16,
                 self.stream.thinking.len(),
@@ -1351,51 +1427,54 @@ impl TuiApp {
         // moves it, so the caches above (both keyed by content length)
         // would freeze it — and cheap enough to be: one line, no markdown,
         // no wrapping.
-        let status_lines: Vec<crate::links::HyperlinkLine> =
-            if self.busy_state.is_active() && !self.pending_turn.has_prompt() && busy_long_enough {
-                // The whole turn's age, not the current step's: `started` is reset
-                // at every continuation, so a turn that ran three tools kept
-                // restarting its clock.
-                let elapsed = self
-                    .timing
-                    .turn_started
-                    .or(self.timing.started)
-                    .map(|at| at.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                // The live buffers are cleared at every tool call, so they say
-                // what is arriving *now*. The turn's running total comes from the
-                // counter that survives a step boundary — otherwise the volume
-                // fell back to zero at each tool and the phase read "Waiting for
-                // the model" for work that had already streamed.
-                let heard_from_model = !self.stream.thinking.is_empty() || self.timing.chars > 0;
-                let model = crate::widgets::TurnLineModel {
-                    verb: crate::widgets::phase_verb(
-                        &self.busy_state.phase(),
-                        heard_from_model,
-                        !self.stream.preview.is_empty(),
-                    ),
-                    elapsed_secs: elapsed,
-                    // Esc interrupts a running turn; it does not interrupt a
-                    // turn that is already blocked waiting for the operator.
-                    interruptible: !self.session_view.is_awaiting_approval()
-                        && !self.session_view.is_awaiting_question(),
-                };
-                let millis = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|since| since.as_millis())
-                    .unwrap_or(0);
-                // The pane paints inside a bordered block with one column of
-                // padding each side, so the line has 2 fewer columns than the
-                // prose width — without this the interrupt hint was clipped to
-                // "esc to interru".
-                let line_width = width.saturating_sub(2);
-                vec![
-                    Line::from("").into(),
-                    crate::widgets::turn_line(&model, line_width, millis).into(),
-                ]
-            } else {
-                Vec::new()
+        let status_lines: Vec<crate::links::HyperlinkLine> = if self.child_view.is_none()
+            && self.busy_state.is_active()
+            && !self.pending_turn.has_prompt()
+            && busy_long_enough
+        {
+            // The whole turn's age, not the current step's: `started` is reset
+            // at every continuation, so a turn that ran three tools kept
+            // restarting its clock.
+            let elapsed = self
+                .timing
+                .turn_started
+                .or(self.timing.started)
+                .map(|at| at.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            // The live buffers are cleared at every tool call, so they say
+            // what is arriving *now*. The turn's running total comes from the
+            // counter that survives a step boundary — otherwise the volume
+            // fell back to zero at each tool and the phase read "Waiting for
+            // the model" for work that had already streamed.
+            let heard_from_model = !self.stream.thinking.is_empty() || self.timing.chars > 0;
+            let model = crate::widgets::TurnLineModel {
+                verb: crate::widgets::phase_verb(
+                    &self.busy_state.phase(),
+                    heard_from_model,
+                    !self.stream.preview.is_empty(),
+                ),
+                elapsed_secs: elapsed,
+                // Esc interrupts a running turn; it does not interrupt a
+                // turn that is already blocked waiting for the operator.
+                interruptible: !self.session_view.is_awaiting_approval()
+                    && !self.session_view.is_awaiting_question(),
             };
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_millis())
+                .unwrap_or(0);
+            // The pane paints inside a bordered block with one column of
+            // padding each side, so the line has 2 fewer columns than the
+            // prose width — without this the interrupt hint was clipped to
+            // "esc to interru".
+            let line_width = width.saturating_sub(2);
+            vec![
+                Line::from("").into(),
+                crate::widgets::turn_line(&model, line_width, millis).into(),
+            ]
+        } else {
+            Vec::new()
+        };
         let cached = self
             .render_cache
             .conversation
@@ -1415,6 +1494,8 @@ impl TuiApp {
             let sidebar_block = Block::default().style(theme::canvas());
             let conversation_area = sidebar_block.inner(sidebar);
             self.conversation_area = Some(conversation_area);
+            let restoring_reader = self.conversation_view.restore_lines.is_some()
+                || self.conversation_view.restore_top.is_some();
             let bottom_padding = if self.session_view.is_awaiting_approval() {
                 0
             } else if theme_picking {
@@ -1425,6 +1506,57 @@ impl TuiApp {
                 // heights (≤18) or during decisions, no trailing dead zone.
                 1
             };
+            if let Some(anchor) = self
+                .conversation_view
+                .restore_lines
+                .take()
+                .filter(|rows| !rows.is_empty())
+            {
+                let rows: Vec<_> = cached_lines
+                    .iter()
+                    .chain(live_lines.iter())
+                    .chain(status_lines.iter())
+                    .map(|line| {
+                        line.spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>()
+                    })
+                    .collect();
+                let mut best = None;
+                for (top, _) in rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.trim_end() == anchor[0].trim_end())
+                {
+                    let matched = rows[top..]
+                        .iter()
+                        .zip(&anchor)
+                        .take_while(|(row, old)| row.trim_end() == old.trim_end())
+                        .count();
+                    if best.is_none_or(|(count, _)| matched > count) {
+                        best = Some((matched, top));
+                    }
+                }
+                if let Some((_, top)) = best {
+                    self.conversation_view.restore_top = Some(top);
+                }
+            }
+            if let Some(top) = self
+                .conversation_view
+                .restore_top
+                .take()
+                .filter(|_| cached_complete)
+            {
+                let total = cached_lines.len()
+                    + live_lines.len()
+                    + status_lines.len()
+                    + bottom_padding as usize;
+                self.conversation_view.scroll = total
+                    .saturating_sub(conversation_area.height as usize)
+                    .saturating_sub(top)
+                    .min(u16::MAX as usize) as u16;
+            }
             if cached_complete && live_lines.is_empty() && status_lines.is_empty() {
                 let total = cached_lines.len().saturating_add(bottom_padding as usize);
                 let max_scroll = total
@@ -1477,6 +1609,7 @@ impl TuiApp {
                 + status_lines.len()
                 + bottom_padding as usize;
             let max_scroll = total.saturating_sub(conversation_area.height as usize);
+            let previous_top = self.conversation_copy_top;
             self.conversation_copy_top = if self.conversation_view.follow {
                 max_scroll
             } else {
@@ -1533,6 +1666,15 @@ impl TuiApp {
             let mut text =
                 crate::selection::RenderedText::capture(frame.buffer_mut(), conversation_area);
             text.revision = revision;
+            if restoring_reader && text.same_cells(&self.conversation_text) {
+                self.conversation_text.revision = revision;
+                if self.selection.pane == Some(crate::selection::CopyPane::Conversation) {
+                    let delta = (self.conversation_copy_top as i64 - previous_top as i64)
+                        .clamp(i32::MIN as i64, i32::MAX as i64)
+                        as i32;
+                    self.selection.shift_rows(delta);
+                }
+            }
             let history_expanded = all_rows.len() >= self.conversation_all_rows.len()
                 && !self.conversation_all_rows.is_empty()
                 && all_rows[all_rows.len() - self.conversation_all_rows.len()..]
@@ -1984,7 +2126,8 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         } else {
             self.composer_area = Some(regions.input);
             let composer_focused = crate::widgets::background_focused(
-                self.focus.mode() == FocusMode::Navigation
+                self.child_view.is_none()
+                    && self.focus.mode() == FocusMode::Navigation
                     && self.focus.block() == FocusBlock::Composer,
                 modal_open,
             );
@@ -1996,10 +2139,11 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                         || self.session_view.is_awaiting_approval(),
                     not_connected: !connected,
                     focused: composer_focused,
-                    waiting: self.session_view.is_awaiting_approval(),
+                    waiting: self.child_view.is_none() && self.session_view.is_awaiting_approval(),
                     // Same debounce as the pinned busy line: the in-box
                     // interrupt hint must not flash on near-instant turns.
-                    running: self.busy_state.is_active()
+                    running: self.child_view.is_none()
+                        && self.busy_state.is_active()
                         && self
                             .timing
                             .turn_started
@@ -2089,6 +2233,9 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
                 Overlay::Tasks { .. } => self.render_tasks_view(area, frame.buffer_mut()),
                 Overlay::TaskStop { .. } => self.render_task_stop(area, frame.buffer_mut()),
+                Overlay::ChildApproval { .. } => {
+                    self.render_child_approval(area, frame.buffer_mut())
+                }
                 // Theme dock already replaced the composer band above.
                 Overlay::Theme { .. } => {}
                 _ => frame.render_widget(

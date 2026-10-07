@@ -26,8 +26,9 @@ pub use agent_coordinator::{
     AgentStatus, AgentWaitResult,
 };
 pub use background::{
-    BackgroundControl, BackgroundShellExecution, BackgroundTaskHandle, BackgroundTaskKind,
-    BackgroundTaskRegistry, BackgroundTaskStatus, DescendantWorktree,
+    BackgroundApprovalRequest, BackgroundChildExecution, BackgroundControl, BackgroundRunId,
+    BackgroundShellExecution, BackgroundTaskHandle, BackgroundTaskKind, BackgroundTaskRegistry,
+    BackgroundTaskStatus, DescendantWorktree,
 };
 pub use completion::{
     CompletionDecision, CompletionEvaluator, CompletionReason, DefaultCompletionEvaluator,

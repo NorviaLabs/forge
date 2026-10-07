@@ -69,11 +69,98 @@ async fn seed_refresh_tasks(app: &mut TuiApp) {
     app.toast.clear();
 }
 
+async fn refresh_agents_fixture(
+    theme: &str,
+) -> (TempDir, TuiApp, Vec<forge_types::BackgroundTaskId>) {
+    let request = |label: &str| {
+        ModelResponse {
+        text: format!("Mock provider finding from {label}: retry handling needs review. This is partial and unverified.\n\nThe child journal is read-only in this view."),
+        tool_calls: vec![forge_types::ToolCall { id: "fixture-request".into(), name: "bash".into(), arguments: json!({"command": format!("printf 'Actual disposable child command: {label} λ/東京\\n'")}) }],
+        usage: None, thinking: Some("Hidden fixture reasoning; exclude from result handoff.".into()),
+    }
+    };
+    let model = Arc::new(MockModelClient::script(vec![request("writer"), request("reader"), request("sibling"), ModelResponse {
+        text: "Mock provider conclusion after the actual disposable command. Not a validation result.".into(), tool_calls: vec![], usage: None, thinking: None,
+    }]));
+    let (fixture, mut app) = focus_test_app_with_model(model).await;
+    init_repo(fixture.path());
+    app.runtime.theme_id = theme.into();
+    app.connect.preferences =
+        forge_connect::PreferenceStore::new(fixture.path().join("preferences.json"));
+    app.pane_resize = PaneResizeState::new(forge_config::PaneLayoutStore::new(
+        fixture.path().join("pane-layout.toml"),
+    ));
+    app.session_runtime
+        .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::User,
+        "Subagent UI fixture; provider responses are mocked.",
+    ));
+    let mut ids = Vec::new();
+    for (label, mode) in [
+        ("Audit retries", forge_tools::AgentMode::Writer),
+        ("Read-only reviewer", forge_tools::AgentMode::ReadOnly),
+        ("Independent sibling", forge_tools::AgentMode::ReadOnly),
+    ] {
+        let id = app
+            .session_runtime
+            .spawn_subagent(forge_core::SubagentSpec {
+                role: label.into(),
+                prompt: "Inspect retry handling in λ/東京.rs. Fixture only; no validation claim."
+                    .into(),
+                mode,
+                tool_allowlist: None,
+            })
+            .await
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            app.poll_background_tasks().await.unwrap();
+            if matches!(
+                app.session_runtime.background().get(id).unwrap().status,
+                forge_core::BackgroundTaskStatus::WaitingForApproval { .. }
+            ) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "child fixture did not block");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        ids.push(id);
+    }
+    let checkout = app
+        .session_runtime
+        .background()
+        .get(ids[0])
+        .unwrap()
+        .worktree_path
+        .clone()
+        .unwrap();
+    // A real retained dirty checkout; this write is test setup, not model evidence.
+    fs::write(checkout.join("a.txt"), "Retained dirty child edit λ/東京\n").unwrap();
+    for position in 1..=6 {
+        app.session_runtime
+            .enqueue_task(&format!("Retained parent follow-up {position}"))
+            .await
+            .unwrap();
+    }
+    app.input.set_text("Retained parent draft λ/東京.rs.");
+    app.task_selection
+        .select_task(app.selected_session_id, ids[0]);
+    app.toast.clear();
+    crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), theme);
+    (fixture, app, ids)
+}
+
 #[tokio::test]
 #[ignore = "manual native terminal walkthrough; use --nocapture --test-threads=1"]
 async fn walk_refresh_ui() {
     let theme = std::env::var("FORGE_NATIVE_THEME").unwrap_or_else(|_| "forge-dark".into());
-    let (fixture, mut app) = focus_test_app_with_theme(&theme).await;
+    let (fixture, mut app) = if std::env::var_os("FORGE_NATIVE_AGENTS").is_some() {
+        let (fixture, app, _) = refresh_agents_fixture(&theme).await;
+        (fixture, app)
+    } else {
+        focus_test_app_with_theme(&theme).await
+    };
     crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), &theme);
     app.connect.preferences =
         forge_connect::PreferenceStore::new(fixture.path().join("preferences.json"));
@@ -127,9 +214,15 @@ fn capture_refresh_frames() {
         };
         crate::theme::install(crate::theme_registry::ThemeRegistry::builtin(), theme);
         for (width, height) in [(80, 18), (80, 24), (120, 40), (160, 50)] {
-            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal", "dock", "queue", "jobs", "agents", "jobstop", "joboutput", "jobpartial", "jobinsert"] {
-                let (fixture, mut app) = focus_test_app_with_theme(theme).await;
-                init_repo(fixture.path());
+            for state in ["start", "draft", "plan", "working", "review", "source", "approval", "details", "recovery", "help", "commands", "files", "sessions", "models", "terminal", "dock", "queue", "jobs", "agents", "jobstop", "joboutput", "jobpartial", "jobinsert", "childlist", "childpeek", "childdecision", "childstop", "childpartial", "childinsert"] {
+                let (fixture, mut app) = if state.starts_with("child") {
+                    let (fixture, app, _) = refresh_agents_fixture(theme).await;
+                    (fixture, app)
+                } else {
+                    let (fixture, app) = focus_test_app_with_theme(theme).await;
+                    init_repo(fixture.path());
+                    (fixture, app)
+                };
                 app.focus_block(FocusBlock::Composer);
                 if state != "start" && state != "draft" {
                     app.session_runtime.messages.push(Message::new(
@@ -138,6 +231,29 @@ fn capture_refresh_frames() {
                     ));
                 }
                 match state {
+                    "childlist" | "childpeek" | "childdecision" | "childstop" | "childpartial" | "childinsert" => {
+                        app.focus_block(FocusBlock::Sidebar);
+                        if state == "childlist" { app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Agents)); }
+                        else { app.open_selected_child_session().await; }
+                        if state == "childdecision" { app.open_selected_child_decision(); }
+                        if ["childstop", "childpartial", "childinsert"].contains(&state) {
+                            app.cancel_selected_task().await;
+                            if state != "childstop" {
+                                render_app_text(&mut app, width, height);
+                                app.handle_key(press(KeyCode::Right, KeyModifiers::NONE)).await.unwrap();
+                                app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE)).await.unwrap();
+                                let id = app.child_view.as_ref().unwrap().task_id;
+                                let deadline = Instant::now() + Duration::from_secs(3);
+                                loop {
+                                    app.poll_background_tasks().await.unwrap();
+                                    if app.session_runtime.background().get(id).unwrap().status.is_terminal() { break; }
+                                    assert!(Instant::now() < deadline, "child fixture did not stop");
+                                    tokio::time::sleep(Duration::from_millis(5)).await;
+                                }
+                                if state == "childinsert" { app.attach_selected_task().await; }
+                            }
+                        }
+                    }
                     "dock" | "queue" | "jobs" | "agents" | "jobstop" | "joboutput" | "jobpartial" | "jobinsert" => {
                         seed_refresh_tasks(&mut app).await;
                         app.input.set_text("Retained parent draft λ/東京.rs.");
@@ -356,7 +472,7 @@ fn capture_refresh_frames() {
     )
     .unwrap();
     eprintln!(
-        "Captured 276 production frames with mock fixtures in {}",
+        "Captured 348 production frames with mock fixtures in {}",
         out.display()
     );
         });

@@ -54,6 +54,34 @@ pub(super) fn background_task_state(status: &forge_core::BackgroundTaskStatus) -
     }
 }
 
+pub(super) fn child_execution_text(task: &forge_session::BackgroundTaskSnapshot) -> String {
+    let mode = task
+        .child
+        .as_ref()
+        .and_then(|child| child.mode)
+        .map(|mode| match mode {
+            forge_tools::AgentMode::ReadOnly => "Read-only",
+            forge_tools::AgentMode::Writer => "Writer",
+        })
+        .unwrap_or("unavailable (not retained)");
+    let workspace = task
+        .child
+        .as_ref()
+        .map(|child| child.workspace.display().to_string())
+        .or_else(|| {
+            task.worktree_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+        })
+        .unwrap_or_else(|| "unavailable".into());
+    let branch = task
+        .child
+        .as_ref()
+        .and_then(|child| child.branch.as_deref())
+        .unwrap_or("unavailable");
+    format!("Agent #{}: {}\nState: {}\nChild: {}\nMode: {mode}\nWorkspace: {workspace}\nBranch: {branch}", task.id.0, task.label, background_task_state(&task.status), task.child_session_id.map(|id| id.to_string()).unwrap_or_else(|| "unavailable".into()))
+}
+
 pub(super) fn shell_execution_text(task: &forge_session::BackgroundTaskSnapshot) -> String {
     let command = match &task.kind {
         forge_core::BackgroundTaskKind::Shell { command }
@@ -785,6 +813,7 @@ impl TuiApp {
     /// each task that newly reached a terminal state this tick.
     pub(super) async fn poll_background_tasks(&mut self) -> Result<(), TuiError> {
         if self.session_runtime.as_ref().is_none() {
+            self.poll_child_view().await;
             return Ok(());
         }
         let running_before: std::collections::HashSet<_> = self
@@ -843,20 +872,63 @@ impl TuiApp {
                 }
             }
         }
-        // The read-only child view is a snapshot, so a live subagent's
-        // transcript only advances when re-read. Guarded on the live handle:
-        // non-terminal tasks only, so a finished child keeps its final
-        // snapshot instead of re-reading an unchanged journal on every tick.
-        let viewed_running = self.child_view.as_ref().is_some_and(|view| {
-            self.session_runtime
-                .background()
-                .get(view.task_id)
-                .is_some_and(|task| !task.status.is_terminal())
-        });
-        if viewed_running {
-            self.refresh_child_view().await;
-        }
+        self.poll_child_view().await;
         Ok(())
+    }
+
+    async fn poll_child_view(&mut self) {
+        let Some(view) = self.child_view.as_ref() else {
+            return;
+        };
+        if view.owner != self.selected_session_id || view.final_read {
+            return;
+        }
+        let terminal = self
+            .selected_background_tasks()
+            .iter()
+            .find(|task| task.id == view.task_id && task.run_id == view.run_id)
+            .is_none_or(|task| task.status.is_terminal());
+        if self.refresh_child_view().await && terminal {
+            if let Some(view) = self.child_view.as_mut() {
+                view.final_read = true;
+            }
+        }
+    }
+
+    /// Supervisor updates belong to the parent even while its child is shown.
+    pub(super) fn set_parent_transcript(&mut self, transcript: TranscriptSnapshot) {
+        if let Some(view) = self
+            .child_view
+            .as_mut()
+            .filter(|view| view.owner == self.selected_session_id)
+        {
+            view.parent_transcript = transcript;
+        } else {
+            self.transcript_view = transcript;
+        }
+    }
+
+    pub(super) fn inspected_task_id(&self) -> Option<forge_types::BackgroundTaskId> {
+        if matches!(self.overlay, Some(Overlay::Tasks { .. })) {
+            return self.task_selection.task(self.selected_session_id);
+        }
+        self.child_view
+            .as_ref()
+            .filter(|view| view.owner == self.selected_session_id)
+            .map(|view| view.task_id)
+            .or_else(|| self.task_selection.task(self.selected_session_id))
+    }
+
+    fn inspected_task(&self) -> Option<forge_session::BackgroundTaskSnapshot> {
+        let id = self.inspected_task_id()?;
+        self.selected_background_tasks().into_iter().find(|task| {
+            task.id == id
+                && (matches!(self.overlay, Some(Overlay::Tasks { .. }))
+                    || self
+                        .child_view
+                        .as_ref()
+                        .is_none_or(|view| view.run_id == task.run_id))
+        })
     }
 
     fn clamp_tasks_selection(&mut self) {
@@ -910,13 +982,16 @@ impl TuiApp {
     /// Active work requires a named decision; terminal evidence is only
     /// hidden from the dock and remains in the registry and live task view.
     pub(super) async fn cancel_selected_task(&mut self) {
-        let Some(id) = self.task_selection.task(self.selected_session_id) else {
+        let Some(id) = self.inspected_task_id() else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let tasks = self.selected_background_tasks();
-        let Some(task) = tasks.iter().find(|task| task.id == id).cloned() else {
+        let Some(task) = self.inspected_task() else {
             self.clamp_tasks_selection();
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "viewed execution changed · return to inspect the current task",
+            );
             return;
         };
         if task.status.is_terminal() {
@@ -954,11 +1029,12 @@ impl TuiApp {
     /// `forge_session::replayed_transcript`.
     pub(super) async fn open_selected_child_session(&mut self) {
         if self.child_view.is_some() {
-            self.set_feedback(
-                FeedbackSeverity::Info,
-                "already viewing a subagent · ← to return",
-            );
-            return;
+            if self.child_view.as_ref().is_some_and(|view| {
+                Some(view.task_id) == self.task_selection.task(self.selected_session_id)
+            }) {
+                return;
+            }
+            self.close_child_session();
         }
         let Some(id) = self.task_selection.task(self.selected_session_id) else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
@@ -1001,12 +1077,27 @@ impl TuiApp {
         );
         self.child_view = Some(ChildSessionView {
             label: name,
+            owner: self.selected_session_id,
             task_id: id,
+            run_id: task.run_id,
             session_id,
             parent_transcript,
             parent_hint,
+            parent_view: self.conversation_view.clone(),
+            parent_focus: self.focus,
+            parent_approval: std::mem::take(&mut self.approval_session),
+            parent_question: std::mem::take(&mut self.question_session),
+            parent_cache: std::mem::take(&mut self.render_cache),
+            parent_selection: std::mem::take(&mut self.selection),
+            parent_text: std::mem::take(&mut self.conversation_text),
+            parent_rows: std::mem::take(&mut self.conversation_rows),
+            parent_all_rows: std::mem::take(&mut self.conversation_all_rows),
+            parent_top: self.conversation_copy_top,
+            final_read: false,
         });
         self.reset_conversation_window();
+        self.conversation_view.splash_dismissed = true;
+        self.focus.set_navigation(FocusBlock::Sidebar);
     }
 
     /// Re-read the viewed child's journal on the poll tick while its task is
@@ -1022,31 +1113,32 @@ impl TuiApp {
     /// otherwise every tick would invalidate the render cache for nothing. And
     /// it never touches the conversation window: the operator may be reading
     /// an older page, and a refresh must not steal their place.
-    pub(super) async fn refresh_child_view(&mut self) {
+    pub(super) async fn refresh_child_view(&mut self) -> bool {
         let Some(session_id) = self.child_view.as_ref().map(|view| view.session_id) else {
-            return;
+            return false;
         };
         let Some(messages) =
             forge_core::session_messages(&self.selected_journal_dir(), session_id).await
         else {
-            return;
+            return false;
         };
         let current = self.transcript_view.messages();
-        if current.len() == messages.len()
-            && current
-                .last()
-                .map(|message| message.content.len())
-                .unwrap_or(0)
-                == messages
-                    .last()
-                    .map(|message| message.content.len())
-                    .unwrap_or(0)
+        if current == messages.as_slice() {
+            return true;
+        }
+        if !self.conversation_view.follow
+            && self
+                .render_cache
+                .conversation
+                .as_ref()
+                .is_some_and(|cache| cache.complete)
         {
-            return;
+            self.conversation_view.restore_top = Some(self.conversation_copy_top);
         }
         let revision = self.transcript_view.revision().wrapping_add(1);
         self.transcript_view = forge_session::TranscriptSnapshot::from_messages(messages, revision);
         self.render_cache.conversation = None;
+        true
     }
 
     /// Leave the read-only child view, restoring the owning session's transcript.
@@ -1054,12 +1146,56 @@ impl TuiApp {
         let Some(view) = self.child_view.take() else {
             return;
         };
+        if view.owner != self.selected_session_id {
+            return;
+        }
+        let outcome = self
+            .selected_background_tasks()
+            .iter()
+            .find(|task| task.id == view.task_id && task.run_id == view.run_id)
+            .map(|task| background_task_state(&task.status).to_lowercase())
+            .unwrap_or_else(|| "unavailable".into());
         self.transcript_view = view.parent_transcript;
         self.input.hint = view.parent_hint;
-        self.reset_conversation_window();
+        self.conversation_view = view.parent_view;
+        if !self.conversation_view.follow
+            && view
+                .parent_cache
+                .conversation
+                .as_ref()
+                .is_some_and(|cache| cache.complete)
+        {
+            self.conversation_view.restore_top = Some(view.parent_top);
+        } else if !self.conversation_view.follow
+            && view
+                .parent_cache
+                .conversation
+                .as_ref()
+                .is_some_and(|cache| {
+                    cache.key.transcript_revision != self.transcript_view.revision()
+                })
+        {
+            self.conversation_view.restore_lines = Some(
+                view.parent_all_rows
+                    .iter()
+                    .skip(view.parent_top)
+                    .take(view.parent_text.area.height as usize)
+                    .cloned()
+                    .collect(),
+            );
+        }
+        self.focus = view.parent_focus;
+        self.approval_session = view.parent_approval;
+        self.question_session = view.parent_question;
+        self.render_cache = view.parent_cache;
+        self.selection = view.parent_selection;
+        self.conversation_text = view.parent_text;
+        self.conversation_rows = view.parent_rows;
+        self.conversation_all_rows = view.parent_all_rows;
+        self.conversation_copy_top = view.parent_top;
         self.set_feedback(
             FeedbackSeverity::Info,
-            format!("back to your session · {} is still running", view.label),
+            format!("back to your session · {} is {outcome}", view.label),
         );
     }
 
@@ -1070,56 +1206,51 @@ impl TuiApp {
         self.conversation_view.event_start = 0;
         self.conversation_view.scroll = 0;
         self.conversation_view.follow = true;
+        self.conversation_view.restore_top = None;
+        self.conversation_view.restore_lines = None;
         self.render_cache.conversation = None;
     }
 
-    /// Approve/deny whatever the currently selected background task is
-    /// waiting on. A no-op (with feedback) if nothing is selected or the
-    /// selected task isn't actually waiting — e.g. it finished between the
-    /// last redraw and this keypress, a race the selection index alone
-    /// can't detect, which is exactly why `resolve_subagent_hitl` reports
-    /// success/failure rather than being fire-and-forget.
-    pub(super) fn resolve_selected_task_hitl(&mut self, decision: HitlDecision) {
-        let Some(id) = self.task_selection.task(self.selected_session_id) else {
+    /// Both child decision shortcuts open inspection with a safe default.
+    pub(super) fn open_selected_child_decision(&mut self) {
+        if self.inspected_task_id().is_none() {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
-        };
-        let tasks = self.selected_background_tasks();
-        let Some(task) = tasks.iter().find(|task| task.id == id).cloned() else {
-            return;
-        };
-        let id = task.id;
-        // Name the task, not its id: the operator is answering *this* agent,
-        // and with several in flight "#4" is not enough to be sure which.
-        let name = background_task_name(&task.label, id);
-        let verb = match decision {
-            HitlDecision::Approve => "approve",
-            HitlDecision::Deny => "deny",
-            _ => "deny",
-        };
-        if self.selected_is_supervised() {
-            self.try_session_command(
-                forge_session::SupervisorCommand::ResolveBackgroundApproval {
-                    session_id: self.selected_session_id,
-                    task_id: id,
-                    decision,
-                },
-            );
-            return;
         }
-        if self.session_runtime.resolve_subagent_hitl(id, decision) {
-            self.set_feedback(FeedbackSeverity::Ok, format!("{verb} sent to {name}"));
-            self.push_activity(
-                ActivityKind::System,
-                FeedbackSeverity::Ok,
-                format!("{name} {verb}d"),
-            );
-        } else {
+        let Some(task) = self.inspected_task() else {
             self.set_feedback(
                 FeedbackSeverity::Warn,
-                format!("{name} isn't waiting for approval"),
+                "viewed execution changed · return to inspect the current task",
             );
-        }
+            return;
+        };
+        let Some(request) = task.pending_approval.clone().filter(|request| {
+            request.run_id == task.run_id
+                && Some(request.child_session_id) == task.child_session_id
+                && matches!(
+                    task.status,
+                    forge_core::BackgroundTaskStatus::WaitingForApproval { .. }
+                )
+        }) else {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("{} has no current approval request", task.label),
+            );
+            return;
+        };
+        let return_view = match self.overlay {
+            Some(Overlay::Tasks { filter, scroll, .. }) => Some((filter, scroll)),
+            _ => None,
+        };
+        self.child_approval_paint = None;
+        self.overlay = Some(Overlay::ChildApproval {
+            owner: self.selected_session_id,
+            task: Box::new(task),
+            request,
+            scroll: 0,
+            allow: false,
+            return_view,
+        });
     }
 
     /// Move the selected background task's result into the composer so the
@@ -1129,21 +1260,65 @@ impl TuiApp {
     ///
     /// Selection is parent/task identity, so a retained result remains
     /// insertable from inspection after its dock row expires or is dismissed.
-    pub(super) fn attach_selected_task(&mut self) {
-        let Some(id) = self.task_selection.task(self.selected_session_id) else {
+    pub(super) async fn attach_selected_task(&mut self) {
+        if self.inspected_task_id().is_none() {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
-        };
-        let tasks = self.selected_background_tasks();
-        let Some(task) = tasks.iter().find(|task| task.id == id).cloned() else {
+        }
+        let Some(task) = self.inspected_task() else {
             self.clamp_tasks_selection();
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "viewed execution changed · return to inspect the current task",
+            );
             return;
         };
-        let Some(text) = background_task_result_text(&task) else {
+        let partial = task.child_session_id.is_some()
+            && matches!(
+                task.status,
+                forge_core::BackgroundTaskStatus::Failed { .. }
+                    | forge_core::BackgroundTaskStatus::Cancelled
+            );
+        let text = if partial {
+            let messages = forge_core::session_messages(
+                &self.selected_journal_dir(),
+                task.child_session_id.unwrap(),
+            )
+            .await;
+            messages.and_then(|messages| {
+                let findings = messages
+                    .iter()
+                    .filter(|message| {
+                        message.role == MessageRole::Assistant && !message.content.trim().is_empty()
+                    })
+                    .map(|message| message.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                (!findings.trim().is_empty()).then(|| {
+                    format!(
+                        "Partial findings from {} · {} · unverified\n{}",
+                        task.label,
+                        background_task_state(&task.status).to_lowercase(),
+                        crate::decision::bounded_text(&findings, 32 * 1024)
+                    )
+                })
+            })
+        } else {
+            background_task_result_text(&task)
+        };
+        let Some(text) = text else {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 if task.status.is_terminal() {
-                    format!("task #{} has no captured result to insert", task.id.0)
+                    format!(
+                        "task #{} has no captured {} to insert",
+                        task.id.0,
+                        if partial {
+                            "assistant findings"
+                        } else {
+                            "result"
+                        }
+                    )
                 } else {
                     format!("task #{} hasn't finished yet", task.id.0)
                 },
@@ -1659,6 +1834,9 @@ mod responsiveness_tests {
                 command: "cargo test".into(),
             },
             shell: None,
+            run_id: uuid::Uuid::new_v4(),
+            child: None,
+            pending_approval: None,
             status: BackgroundTaskStatus::Running,
             child_session_id: None,
             latest_message: None,

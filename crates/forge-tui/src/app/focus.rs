@@ -19,6 +19,7 @@ impl TuiApp {
             bottom_panel: self.bottom_panel.open,
             approval: self.selected_pending_hitl().is_some()
                 || self.selected_pending_question().is_some(),
+            composer: self.child_view.is_none(),
         }
     }
 
@@ -32,7 +33,14 @@ impl TuiApp {
         }
         let available = self.focus_availability();
         if !available.contains(self.focus.block()) {
-            self.focus.set_navigation(FocusBlock::Composer);
+            self.focus.set_navigation(if self.child_view.is_some() {
+                FocusBlock::Sidebar
+            } else {
+                FocusBlock::Composer
+            });
+            if self.child_view.is_some() {
+                self.workspace_navigation.select_conversation();
+            }
         }
         if self.source_viewer.search.open {
             self.focus.set_transient(TransientOwner::SourceSearch);
@@ -371,7 +379,7 @@ impl TuiApp {
         if self.focus.block() == FocusBlock::Sidebar
             && self.task_selection.task(self.selected_session_id).is_some()
         {
-            return Some("↑↓ select · i attach · a approve · d deny · x stop".into());
+            return Some("↑↓ select · i insert · a/d inspect decision · x stop".into());
         }
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {

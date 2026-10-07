@@ -53,6 +53,26 @@ async fn confirm_named_stop(app: &mut TuiApp) {
         .unwrap();
 }
 
+async fn confirm_child_decision(app: &mut TuiApp, allow: bool) {
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ChildApproval { allow: false, .. })
+    ));
+    let text = render_app_text(app, 80, 18);
+    assert!(
+        text.contains("Don't run") && text.contains("Allow once"),
+        "{text}"
+    );
+    if allow {
+        app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn task_selection_remains_on_the_named_job_when_a_sibling_finishes() {
     let (_dir, mut app) = focus_test_app().await;
@@ -155,6 +175,17 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     app.handle_key(press(KeyCode::Char('a'), KeyModifiers::NONE))
         .await
         .unwrap();
+
+    assert!(is_waiting(
+        &app.session_runtime.background().get(id).unwrap().status
+    ));
+    let request_text = render_app_text(&mut app, 160, 50);
+    assert!(
+        request_text.contains("Environment: inherited"),
+        "{request_text}"
+    );
+    assert!(request_text.contains("Mode: Writer"), "{request_text}");
+    confirm_child_decision(&mut app, true).await;
 
     // The confirmation names the agent rather than its row id.
     assert!(
@@ -441,11 +472,13 @@ async fn a_running_child_view_advances_across_a_poll() {
 
     // Denying ends the child, and the view still stands: it keeps its final
     // snapshot rather than re-reading or closing out from under the operator.
-    app.resolve_selected_task_hitl(HitlDecision::Deny);
-    app.poll_background_tasks().await.unwrap();
+    app.open_selected_child_decision();
+    confirm_child_decision(&mut app, false).await;
+    wait_for_task_status(&mut app, id, |status| status.is_terminal()).await;
     app.poll_background_tasks().await.unwrap();
 
     assert!(app.child_view.is_some(), "{}", app.feedback.text);
+    assert!(app.child_view.as_ref().unwrap().final_read);
     assert!(
         app.transcript_view.messages().len() >= messages_open,
         "the view should never lose messages: {}",
@@ -455,6 +488,419 @@ async fn a_running_child_view_advances_across_a_poll() {
         app.conversation_view.scroll == 0,
         "a refresh must not steal the operator's place"
     );
+}
+
+#[tokio::test]
+async fn child_draw_and_return_preserve_parent_reader_draft_and_selection() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "parent conversation"));
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::Assistant,
+        (0..80)
+            .map(|i| format!("Parent evidence {i}\n\n"))
+            .collect::<String>(),
+    ));
+    app.input.set_text("retained parent draft 東京");
+    app.input.cursor = 4;
+    app.focus_block(FocusBlock::Sidebar);
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.scroll_conversation_up(12);
+    render_app_text(&mut app, 120, 40);
+    let before = app.conversation_view.clone();
+    let rows = app.conversation_rows.clone();
+    let area = app.conversation_area.unwrap();
+    app.selection.start_in(
+        crate::selection::CopyPane::Conversation,
+        crate::selection::Cell {
+            row: area.y + 2,
+            col: area.x + 2,
+        },
+    );
+    app.selection.finish("retained selection".into());
+    let cache = app
+        .render_cache
+        .conversation
+        .as_ref()
+        .unwrap()
+        .lines
+        .clone();
+    app.open_selected_child_session().await;
+    let text = render_app_text(&mut app, 120, 40);
+    assert!(
+        app.child_view.is_some() && !text.contains("Parent evidence"),
+        "{text}"
+    );
+    assert!(app
+        .transcript_view
+        .messages()
+        .iter()
+        .any(|message| message.content == "run the risky command"));
+    app.focus_block(FocusBlock::Composer);
+    app.handle_key(press(KeyCode::Backspace, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_paste("must not replace the parent");
+    app.submit_composer_message().await.unwrap();
+    assert_eq!(app.input.text, "retained parent draft 東京");
+    assert_eq!(app.input.cursor, 4);
+    app.close_child_session();
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(
+        (app.conversation_view.scroll, app.conversation_view.follow),
+        (before.scroll, before.follow)
+    );
+    assert_eq!(app.selection.text, "retained selection");
+    assert!(Arc::ptr_eq(
+        &cache,
+        &app.render_cache.conversation.as_ref().unwrap().lines
+    ));
+    render_app_text(&mut app, 120, 40);
+    assert_eq!(app.conversation_rows, rows);
+    assert!(app.selection.active);
+    assert!(app.feedback.text.contains("waiting for approval"));
+    app.session_runtime.retire_resources().await.unwrap();
+}
+
+#[tokio::test]
+async fn parent_progress_during_child_inspection_preserves_the_reading_row() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "parent"));
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::Assistant,
+        (0..100)
+            .map(|i| format!("Retained row {i}\n\n"))
+            .collect::<String>(),
+    ));
+    app.focus_block(FocusBlock::Sidebar);
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.scroll_conversation_up(20);
+    render_app_text(&mut app, 120, 40);
+    let rows = app.conversation_rows.clone();
+    let area = app.conversation_area.unwrap();
+    for (kind, offset) in [
+        (MouseEventKind::Down(MouseButton::Left), 2),
+        (MouseEventKind::Drag(MouseButton::Left), 16),
+        (MouseEventKind::Up(MouseButton::Left), 16),
+    ] {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + offset,
+            row: area.y + 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .await
+        .unwrap();
+    }
+    let selected = app.selection.text.clone();
+    assert!(!selected.is_empty());
+    app.open_selected_child_session().await;
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::Assistant,
+        "New parent progress must not appear in the child.",
+    ));
+    let child_text = render_app_text(&mut app, 120, 40);
+    assert!(!child_text.contains("New parent progress"), "{child_text}");
+    app.close_child_session();
+    render_app_text(&mut app, 120, 40);
+    assert_eq!(app.conversation_rows, rows);
+    assert!(app.selection.active);
+    assert_eq!(app.selection.text, selected);
+    assert!(!app.conversation_view.follow);
+    assert!(app
+        .transcript_view
+        .messages()
+        .last()
+        .unwrap()
+        .content
+        .contains("New parent progress"));
+    app.session_runtime.retire_resources().await.unwrap();
+}
+
+#[tokio::test]
+async fn child_refresh_detects_equal_length_content_and_keeps_an_older_reading_row() {
+    let dir = TempDir::new().unwrap();
+    let mut response = risky_bash_call();
+    response.text = (0..80).map(|i| format!("Child finding {i}\n\n")).collect();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![response]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.open_selected_child_session().await;
+    let original = app.transcript_view.messages().to_vec();
+    let mut same_length = original.clone();
+    same_length[0].content = "x".repeat(same_length[0].content.len());
+    let revision = app.transcript_view.revision();
+    app.transcript_view = TranscriptSnapshot::from_messages(same_length, revision);
+    assert!(app.refresh_child_view().await);
+    assert_eq!(app.transcript_view.messages(), original.as_slice());
+    assert_ne!(app.transcript_view.revision(), revision);
+    app.scroll_conversation_up(16);
+    render_app_text(&mut app, 80, 18);
+    assert!(!app.conversation_view.follow);
+    let row = app.conversation_rows[0].clone();
+    let top = app.conversation_copy_top;
+    app.open_selected_child_decision();
+    confirm_child_decision(&mut app, false).await;
+    wait_for_task_status(&mut app, id, |status| status.is_terminal()).await;
+    render_app_text(&mut app, 80, 18);
+    assert_eq!(app.conversation_copy_top, top);
+    assert_eq!(app.conversation_rows[0], row);
+    assert!(!app.conversation_view.follow);
+    app.close_child_session();
+    assert!(
+        app.feedback.text.contains("failed"),
+        "{}",
+        app.feedback.text
+    );
+    app.session_runtime.retire_resources().await.unwrap();
+}
+
+#[tokio::test]
+async fn child_inspection_cannot_display_or_resolve_the_parents_pending_decision() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) =
+        app_with_a_blocking_subagent(&dir, vec![risky_bash_call(), risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    app.session_runtime
+        .run_user_message("parent pending command")
+        .await
+        .unwrap();
+    assert!(app.parent_pending_hitl().is_some());
+    render_app_text(&mut app, 120, 40);
+    app.sync_approval_focus();
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.input.set_text("retained parent note");
+    app.open_selected_child_session().await;
+    render_app_text(&mut app, 120, 40);
+    app.sync_approval_focus();
+    assert!(app.selected_pending_hitl().is_none());
+    assert!(app.parent_pending_hitl().is_some());
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.pending_interaction.has_hitl_decision());
+    app.close_child_session();
+    assert!(app.selected_pending_hitl().is_some());
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    assert_eq!(app.input.text, "retained parent note");
+    app.session_runtime.retire_resources().await.unwrap();
+}
+
+#[tokio::test]
+async fn child_decision_mouse_keeps_the_painted_target_and_rejects_another_parent() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) =
+        app_with_a_blocking_subagent(&dir, vec![risky_bash_call(), risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    let sibling = app
+        .session_runtime
+        .spawn_subagent(forge_core::SubagentSpec {
+            role: "sibling".into(),
+            prompt: "inspect".into(),
+            mode: forge_tools::AgentMode::ReadOnly,
+            tool_allowlist: None,
+        })
+        .await
+        .unwrap();
+    wait_for_task_status(&mut app, sibling, is_waiting).await;
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.open_selected_child_decision();
+    render_app_text(&mut app, 80, 18);
+    let choices = app.child_approval_paint.as_ref().unwrap().choices;
+    app.task_selection
+        .select_task(app.selected_session_id, sibling);
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: choices[1].x,
+        row: choices[1].y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    wait_for_task_status(&mut app, id, |status| status.is_terminal()).await;
+    assert!(is_waiting(
+        &app.session_runtime
+            .background()
+            .get(sibling)
+            .unwrap()
+            .status
+    ));
+    assert_eq!(app.child_view.as_ref().unwrap().task_id, id);
+    app.close_child_session();
+    app.task_selection
+        .select_task(app.selected_session_id, sibling);
+    app.open_selected_child_decision();
+    render_app_text(&mut app, 80, 18);
+    let owner = app.selected_session_id;
+    app.selected_session_id = uuid::Uuid::new_v4();
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.feedback.text.contains("parent changed"));
+    app.selected_session_id = owner;
+    assert!(is_waiting(
+        &app.session_runtime
+            .background()
+            .get(sibling)
+            .unwrap()
+            .status
+    ));
+    app.session_runtime.retire_resources().await.unwrap();
+}
+
+#[tokio::test]
+async fn child_decision_requires_paint_and_rejects_a_changed_request_with_the_same_call_id() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.input.set_text("parent draft");
+    let queued = app
+        .session_runtime
+        .enqueue_task("parent next")
+        .await
+        .unwrap();
+    app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Agents));
+    app.handle_key(press(KeyCode::Char('a'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ChildApproval { allow: false, .. })
+    ));
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.feedback.text.contains("inspect"));
+    assert!(is_waiting(
+        &app.session_runtime.background().get(id).unwrap().status
+    ));
+    let text = render_app_text(&mut app, 80, 18);
+    assert!(text.contains("Don't run"), "{text}");
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    render_app_text(&mut app, 80, 18);
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let cell = app
+        .session_runtime
+        .background()
+        .get(id)
+        .unwrap()
+        .pending_approval
+        .clone();
+    let mut replacement = cell.lock().unwrap().clone().unwrap();
+    replacement.id = uuid::Uuid::new_v4();
+    replacement.payload.args_redacted = serde_json::json!({"command": "different invocation"});
+    *cell.lock().unwrap() = Some(replacement.clone());
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.feedback.text.contains("changed"));
+    assert!(matches!(app.overlay, Some(Overlay::Tasks { .. })));
+    assert!(cell.lock().unwrap().as_ref().unwrap().matches(&replacement));
+    assert_eq!(app.input.text, "parent draft");
+    assert_eq!(
+        app.selected_queue_items()[0].id,
+        forge_session::QueuedPromptId::Session(queued.id)
+    );
+    assert!(is_waiting(
+        &app.session_runtime.background().get(id).unwrap().status
+    ));
+    app.session_runtime.retire_resources().await.unwrap();
+}
+
+#[tokio::test]
+async fn stopping_the_viewed_child_retains_partial_findings_dirty_checkout_and_sibling() {
+    let dir = TempDir::new().unwrap();
+    let mut partial = risky_bash_call();
+    partial.text = "Visible partial finding ✓\u{1b}control".into();
+    partial.thinking = Some("hidden reasoning must not be attached".into());
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![partial, risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+    let sibling = app
+        .session_runtime
+        .spawn_subagent(forge_core::SubagentSpec {
+            role: "read-only sibling".into(),
+            prompt: "inspect independently".into(),
+            mode: forge_tools::AgentMode::ReadOnly,
+            tool_allowlist: None,
+        })
+        .await
+        .unwrap();
+    wait_for_task_status(&mut app, sibling, is_waiting).await;
+    let checkout = app
+        .session_runtime
+        .background()
+        .get(id)
+        .unwrap()
+        .worktree_path
+        .clone()
+        .unwrap();
+    std::fs::write(checkout.join("a.txt"), "dirty child edit\n").unwrap();
+    app.input.set_text("retained parent draft");
+    let queued = app
+        .session_runtime
+        .enqueue_task("parent next")
+        .await
+        .unwrap();
+    app.task_selection.select_task(app.selected_session_id, id);
+    app.open_selected_child_session().await;
+    // Reordering or a sibling selection cannot redirect actions in this reader.
+    app.task_selection
+        .select_task(app.selected_session_id, sibling);
+    app.cancel_selected_task().await;
+    assert!(matches!(app.overlay, Some(Overlay::TaskStop { ref task, .. }) if task.id == id));
+    confirm_named_stop(&mut app).await;
+    wait_for_task_status(&mut app, id, |status| {
+        matches!(status, forge_core::BackgroundTaskStatus::Cancelled)
+    })
+    .await;
+    app.attach_selected_task().await;
+    assert!(app.child_view.is_none());
+    assert!(app.input.text.starts_with("retained parent draft"));
+    assert!(
+        app.input.text.contains("Partial findings")
+            && app.input.text.contains("unverified")
+            && app.input.text.contains("Visible partial finding ✓")
+    );
+    assert!(!app.input.text.contains("hidden reasoning"));
+    assert!(!app.input.text.contains('\u{1b}'));
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    assert!(!app.pending_turn.has_prompt());
+    assert_eq!(
+        app.selected_queue_items()[0].id,
+        forge_session::QueuedPromptId::Session(queued.id)
+    );
+    assert!(is_waiting(
+        &app.session_runtime
+            .background()
+            .get(sibling)
+            .unwrap()
+            .status
+    ));
+    assert_eq!(
+        std::fs::read_to_string(checkout.join("a.txt")).unwrap(),
+        "dirty child edit\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "one\n"
+    );
+    app.session_runtime.retire_resources().await.unwrap();
 }
 
 /// `session_messages` returns `None` for an unreadable journal rather than an
@@ -603,7 +1049,7 @@ async fn attach_moves_a_finished_background_result_into_the_composer() {
 
     app.focus_block(FocusBlock::Sidebar);
     app.move_tasks_selection(1);
-    app.attach_selected_task();
+    app.attach_selected_task().await;
 
     assert!(
         app.input.text.contains("attached-output"),
@@ -627,7 +1073,7 @@ async fn attach_is_a_no_op_for_a_running_task() {
 
     app.focus_block(FocusBlock::Sidebar);
     app.move_tasks_selection(1);
-    app.attach_selected_task();
+    app.attach_selected_task().await;
 
     assert!(app.input.text.is_empty(), "{:?}", app.input.text);
     assert!(
@@ -723,7 +1169,7 @@ async fn jobs_stop_defaults_to_keep_and_confirms_the_original_named_task() {
     app.task_selection
         .select_task(app.selected_session_id, first);
     app.dismiss_overlay();
-    app.attach_selected_task();
+    app.attach_selected_task().await;
     assert!(app.input.text.starts_with("parent draft λ\nJob #"));
     assert!(app
         .input

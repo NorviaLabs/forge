@@ -1222,7 +1222,7 @@ impl TuiApp {
         if self.pending_interaction.has_hitl_decision() {
             return Ok(());
         }
-        let Some(payload) = self.selected_pending_hitl().cloned() else {
+        let Some(payload) = self.parent_pending_hitl().cloned() else {
             return Ok(());
         };
         if payload.sandbox_escalation {

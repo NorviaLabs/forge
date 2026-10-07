@@ -1,0 +1,18 @@
+   FORGE · ⌂ /var/folders/rn/…/T/.tmpSdOLgw  ·  ./No commits yet on main*
+  > Conversation ‹ Audit retries                      Ctrl+P files · / commands
+ Child: 7450e31d-4e2e-479a-8e28-419ddf3e1d70
+ Mode: Writer
+ Workspace:
+ /private/var/folders/rn/rqb_sn_d7x717z09r0kyh9ww0000gn/T/.tmpSdOLgw/.forge/loc
+ Branch:
+ forge/subagent/subagent-c887b041-597c-4db1-b317-8d16590bef5c-1-Audit-retries
+ ← parent · a/d decision · i insert result · x stop
+
+   Queue · 6 · +5 more · /tasks inspect
+   > 1. Retained parent follow-up 1
+   Background · 3 ──────────────────────────────────────────────────── +2 more
+ > [|] ◆ Audit retries                                                    155s
+ ──────────────────────────────────────────────────────────────────────────────
+   Retained parent draft λ/東京.rs.
+                         ↑↓ select · i insert · a/d inspect decision · x stop
+   [◆ agents 3 · 3 need] [⇥ queue 6]
