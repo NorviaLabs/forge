@@ -1,5 +1,5 @@
 ---
-version: 2.4
+version: 2.5
 status: behavioral-contract-with-changeable-defaults
 name: Forge TUI Design System
 product: Forge
@@ -551,7 +551,9 @@ temporary navigation; width alone never makes those actions unreachable.
 
 ### 7.4 Height behaviour
 
-- StatusBar consumes one identity row at every height. Footer uses up to two rows (`FOOTER_H`); its background-activity row stays blank when idle.
+- StatusBar consumes one identity row at every height. Footer uses one row
+  when no queue or retained background work exists, and adds a count-chip row
+  when either collection is nonempty.
 - Composer input is capped at four visual rows, or three below 28 frame rows,
   plus one top rule. Empty input uses one row at compact heights and two at
   comfortable heights. Longer drafts scroll without discarding stored text.
@@ -931,7 +933,7 @@ of colour.
 
 Mouse is a second input for the same grammar, never a separate mode. Clicking moves block focus and acts on the hit target; hover previews without moving focus.
 
-- **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel), handing its bindings to the keyboard. Clicking a navigator list row clears tab-row keyboard subfocus. A second click at the same cell within 400 ms acts: a navigator session row attaches, a Git-change row opens its patch, and a background-task row attaches its session; a file-tree row opens on the first click. Queued-message rows only select: double-click never cancels a message or edits an unrelated last message.
+- **Click** focuses the block under the pointer (navigator, task strip, composer, footer, conversation, workspace, panel), handing its bindings to the keyboard. Clicking a navigator list row clears tab-row keyboard subfocus. A second click at the same cell within 400 ms acts: a navigator session row attaches, a Git-change row opens its patch, and a background-task row opens its live Jobs or Agents view; a file-tree row opens on the first click. Queued-message rows only select: double-click never cancels a message or edits an unrelated last message. Dock clicks use the identities from the painted frame, so reordering cannot redirect a click to a different item.
 - **Overlay lists** (model picker providers/models/effort, resume picker, session switcher, theme dock, GitHub issues and issue actions, commit-suggest, branch picker, read-only file explorer) record painted row geometry. A single click moves the highlight (and the picker's focused column); a double-click confirms through the same `Enter` path the keyboard uses. Clipped paragraph rows are not pointer targets. Clicking an issue preserves the action menu's selection.
 - **Composer popups** (slash suggestions and `Ctrl+r` search) use painted row geometry: click selects while the composer keeps the keyboard; double-click accepts. These popups currently do not show hover.
 - **Editor** clicks place the caret using the text body's gutter and scroll geometry; read-only source clicks move the current line. Source-search and jump-to-line prompts retain keyboard ownership and block click, hover and drag behind them, as they already block the wheel.
@@ -1000,7 +1002,8 @@ Avoid duplicating file counts, task details or provider telemetry already shown 
 
 ### 9.3 Footer
 
-Two rows (`widgets/footer.rs`); the second row is the background activity line.
+One or two rows (`widgets/footer.rs`); the second row appears for retained
+background work or queued prompts.
 
 - **Row 0 — configuration and turn state.** Configuration chips on the left, live activity on the right.
   - **Chips:** model (`provider/model`, prefix-stripped for display) and reasoning effort, with an optional notes chip for a nonempty or unsaved scratchpad. Reserve its width before fitting the model so the chip and lifecycle do not collide. They share the `Footer` focus block: `←`/`→` selects a configuration chip, `Enter` opens its picker. `Enter` still sends from the composer.
@@ -1010,7 +1013,7 @@ Two rows (`widgets/footer.rs`); the second row is the background activity line.
   - **Hints:** the §6 hint grammar. Blocking dialogs take over the whole row; the footer's own per-chip hint and the task strip's session hint share the row with the chips. Focusing any other block — files, search, the panes — leaves the activity line alone.
   - **Working meter:** the lifecycle is a state *word* (`running`, `waiting`, `failed`) with one fixed-width `●` beside it, whose brightness pulses bright/dim while a turn runs (`throbber-widgets-tui` state, forge styling). The pulse changes brightness without moving a column; the state word remains meaningful without animation (§5.3).
   - When an approval pends, the row dims — it must not look interactive.
-- **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — terminal/background jobs, agents/subagents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `◆` agent, `⇥` queued); the bracket is shared chrome so the chips read as a segmented strip. The row is blank when nothing is in flight, so an idle footer is unchanged. Per-item detail (command, elapsed, live subagent activity) lives in the background strip (§9.12), not the footer.
+- **Row 1 — background activity (design A3, segmented count chips).** One `[glyph label]` chip per group — jobs, agents, queued prompts — each counts-only (`[⟳ jobs 2 · 1 need]`). Glyph and colour carry state (`⟳` running, `●` needs you, `✕` failed, `✓` done, `■` cancelled, `◆` agent, `⇥` queued); brackets are shared chrome. Counts include retained terminal tasks, matching the live filter rather than only the dock's expiring rows. Cancelled work is never counted as success. Clicking a category opens that parent's Jobs, Agents or Queue filter, including while a parent approval waits; dismissing returns to that decision. Per-item detail lives in the background strip and task view (§9.12).
   - **A completion is an observation, not a queued prompt.** Finishing a background task does not inject a user-role prompt. The result stays in the background strip and the operator attaches it to the composer explicitly (`i` on the selected task). Only approve-all — no human in the loop — auto-continues by enqueuing the result at the next turn boundary.
 
 ### 9.4 Chat transcript (primary work surface)
@@ -1166,7 +1169,13 @@ does not move the transcript, selection or draft beneath it.
 - Multi-line growth uses three input rows at compact heights and four at
   comfortable heights. Complete drafts and pending paste payloads survive
   visual scrolling and resizing.
-- Outbound messages queue above the composer as a strip; `Ctrl+↑`/`Ctrl+↓` move the selection, `Ctrl+Backspace` cancels one.
+- Outbound messages queue above the composer as a strip; `Ctrl+↑`/`Ctrl+↓`
+  select a prompt, and `Ctrl+Backspace` cancels its exact identity. If it was
+  promoted or removed, cancellation refuses rather than affecting its
+  successor. The Queue filter shows full text, owner and FIFO position. Plain
+  `↑` returns the last queued message to an empty draft only. New typing during
+  an asynchronous edit survives, and returned text is appended to its owning
+  parent's draft without submitting or taking focus from a later inspection.
 
 ### 9.6 File tree
 
@@ -1397,16 +1406,15 @@ the work surface (`layout.rs::regions.background`, built by
 
 Every rule here exists to protect something the operator is relying on.
 
-- **Height is derived, never requested.** The renderer asks for the lines the
-  strip actually needs — header, one per row, plus one more for each row with a
-  second line — and `layout.rs` clamps that against the transcript's `Min`
-  floor. A job that is merely running can never take a row from the
-  conversation, which is why this is the only fixed-height strip the caller
-  specifies rather than the layout deriving. Rows are one *or* two lines, so a
-  count of rows is not a height: a budget that assumed one line each drew the
-  next row straight over the line underneath.
+- **Height comes from the available lines.** Comfortable docks show up to
+  three queued prompts and three background tasks; below 28 frame rows each
+  shows its header and one selected row. Only the selected task may add a
+  detail row when its actual budget permits. Layout retains a conversation
+  floor, and widgets clip within their allocated rectangles. Empty collections
+  reserve no rows. Full request or prompt text stays available through
+  inspection instead of expanding the dock over the composer.
 - **The header tells the truth about truncation:** ` Background · 8 ` with
-  `+N more` right-aligned when the row cap (8) or the available space hides
+  `+N more` right-aligned when the row cap or available space hides
   some. The count is what survived expiry, not what was spawned.
 - **Ordering is blocked → failed → active → queued → done**, stable by task id
   inside a band so a running row never jumps when a sibling finishes. `failed`
@@ -1433,12 +1441,23 @@ Every rule here exists to protect something the operator is relying on.
   is measured against.
 - **Elapsed freezes at `finished_at`**, so a finished row shows how long it took
   rather than creeping upward while it is read.
-- **Selection** is the `>` pointer plus the neutral `selection` ground, muted to
+- **Selection** belongs to `(parent session, task ID)`, independent of current
+  attention order; its viewport follows that identity when siblings change
+  status. It uses the `>` pointer plus neutral `selection` ground, muted to
   secondary text when the Sidebar block does not own the keyboard (§8.5). The
   keys (`↑↓ x a d i`) predate this surface; before it the operator selected and
   acted on rows that nothing drew.
 - **An empty registry draws nothing at all** — no header, no reserved gap — so
   an idle sidebar is unchanged, the same contract Row 1 of the footer keeps.
+
+`/tasks` and footer count chips open a live, parent-scoped Jobs / Agents /
+Queue view. `Tab` / `Shift+Tab` change the filter, existing selection keys move
+within it, and `PgUp` / `PgDn` or the wheel inspect full details above pinned
+controls. Empty collections use a short empty-state card. Jobs explain that
+they have no child session. Successful tasks expire from the dock after
+60 seconds but remain inspectable while retained in the registry. Returning
+preserves the parent's draft, caret and reading state. Opening a filter or
+clicking a count never inserts a result or resolves a request.
 
 ### 9.13 Child session view
 

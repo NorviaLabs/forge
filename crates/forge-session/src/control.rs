@@ -1102,6 +1102,26 @@ impl RepositoryControl {
         Ok((updated.rows_affected() == 1).then_some((queue_id, text)))
     }
 
+    /// Atomically remove the displayed prompt only while it remains queued
+    /// for this owner. Claiming it cannot transfer cancellation to a sibling.
+    pub async fn cancel_queued_prompt_by_id(
+        &self,
+        session_id: SessionId,
+        queue_id: u64,
+    ) -> Result<Option<(u64, String)>, RepositorySessionError> {
+        let row = sqlx::query(
+            "UPDATE prompt_queue SET status = 'cancelled', updated_at = ? \
+             WHERE session_id = ? AND queue_id = ? AND status = 'queued' \
+             RETURNING queue_id, text",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .bind(queue_id as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| (row.get::<i64, _>("queue_id") as u64, row.get("text"))))
+    }
+
     pub async fn claim_next_prompt(
         &self,
         session_id: SessionId,
@@ -2055,6 +2075,56 @@ mod tests {
             .await
             .unwrap();
         control.archive(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn queue_cancellation_keeps_its_owner_and_identity_after_claiming() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let a = new_session(&dir.path().join("a"), "a", None);
+        let b = new_session(&dir.path().join("b"), "b", None);
+        let owner_a = a.session_id;
+        let owner_b = b.session_id;
+        control.register_session(a, None).await.unwrap();
+        control.register_session(b, None).await.unwrap();
+        let first = control.enqueue_prompt(owner_a, "first").await.unwrap();
+        let next = control.enqueue_prompt(owner_a, "next").await.unwrap();
+        let sibling = control.enqueue_prompt(owner_b, "sibling").await.unwrap();
+        assert_eq!(
+            control.claim_next_prompt(owner_a).await.unwrap().unwrap().0,
+            first
+        );
+
+        assert!(control
+            .cancel_queued_prompt_by_id(owner_a, first)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(control
+            .cancel_queued_prompt_by_id(owner_a, sibling)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            control.queued_prompts(owner_a).await.unwrap(),
+            vec![(next, "next".into())]
+        );
+        assert_eq!(
+            control.queued_prompts(owner_b).await.unwrap(),
+            vec![(sibling, "sibling".into())]
+        );
+        assert_eq!(
+            control
+                .cancel_queued_prompt_by_id(owner_a, next)
+                .await
+                .unwrap(),
+            Some((next, "next".into()))
+        );
+        assert!(control
+            .cancel_queued_prompt_by_id(owner_a, next)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

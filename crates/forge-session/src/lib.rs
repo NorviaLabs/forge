@@ -29,8 +29,8 @@ pub use snapshot::{
     TranscriptSnapshot,
 };
 pub use supervisor::{
-    RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError, SessionRuntimeSnapshot,
-    SupervisorCommand, SupervisorEvent, SupervisorHandle,
+    QueuedPromptId, RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError,
+    SessionRuntimeSnapshot, SupervisorCommand, SupervisorEvent, SupervisorHandle,
 };
 
 use std::sync::Arc;

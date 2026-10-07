@@ -40,6 +40,41 @@ async fn wait_for_task_status(
 }
 
 #[tokio::test]
+async fn task_selection_remains_on_the_named_job_when_a_sibling_finishes() {
+    let (_dir, mut app) = focus_test_app().await;
+    let first = app
+        .session_runtime
+        .spawn_background_shell("printf 'finished first\\n'".into(), "first".into())
+        .await
+        .unwrap();
+    let selected = app
+        .session_runtime
+        .spawn_background_shell("sleep 5".into(), "selected".into())
+        .await
+        .unwrap();
+    app.move_tasks_selection(1);
+    assert_eq!(
+        app.task_selection.task(app.selected_session_id),
+        Some(selected)
+    );
+    wait_for_task_status(&mut app, first, |status| status.is_terminal()).await;
+    // The first job is now below the running job in attention order.
+    assert_eq!(
+        app.task_selection.task(app.selected_session_id),
+        Some(selected)
+    );
+    app.cancel_selected_task().await;
+    wait_for_task_status(&mut app, selected, |status| {
+        matches!(status, forge_core::BackgroundTaskStatus::Cancelled)
+    })
+    .await;
+    assert!(matches!(
+        app.session_runtime.background().get(first).unwrap().status,
+        forge_core::BackgroundTaskStatus::Succeeded { .. }
+    ));
+}
+
+#[tokio::test]
 async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     let dir = TempDir::new().unwrap();
     init_repo(dir.path()).await;

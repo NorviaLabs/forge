@@ -19,7 +19,33 @@ pub const DONE_ROW_TTL_SECS: i64 = 60;
 
 /// The most task rows the strip will show; the layout clamps lower when the
 /// sidebar is short, and the surplus becomes the header's `+N more`.
-pub const STRIP_ROW_CAP: usize = 7;
+pub const STRIP_ROW_CAP: usize = 3;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TaskFilter {
+    #[default]
+    Jobs,
+    Agents,
+    Queue,
+}
+
+impl TaskFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Jobs => "Jobs",
+            Self::Agents => "Agents",
+            Self::Queue => "Queue",
+        }
+    }
+
+    pub fn next(self, backwards: bool) -> Self {
+        match (self, backwards) {
+            (Self::Jobs, false) | (Self::Queue, true) => Self::Agents,
+            (Self::Agents, false) | (Self::Jobs, true) => Self::Queue,
+            _ => Self::Jobs,
+        }
+    }
+}
 
 /// Longest argument summary drawn on a blocked row's detail line.
 const DETAIL_CHARS: usize = 28;
@@ -90,6 +116,7 @@ impl StripState {
 /// One drawn row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StripRow {
+    pub id: BackgroundTaskId,
     pub state: StripState,
     /// Sub-agent (`◆`) versus shell job (`⟳`) — the same glyph split the
     /// footer's counts-only chip uses, so the two surfaces agree.
@@ -123,6 +150,8 @@ pub struct BackgroundStrip {
     pub hidden: usize,
     /// Tasks that survived expiry, before the row cap.
     pub total: usize,
+    /// Global ordered-row index of the first painted task.
+    pub start: usize,
 }
 
 impl BackgroundStrip {
@@ -140,6 +169,9 @@ impl BackgroundStrip {
     /// line is drawn where the next row's first line goes, so the budget has to
     /// agree with the widget's own row advance.
     pub fn height(&self) -> u16 {
+        if self.is_empty() {
+            return 0;
+        }
         let rows: u16 = self
             .rows
             .iter()
@@ -153,6 +185,7 @@ impl BackgroundStrip {
     /// `visible_rows` is what the layout says actually fits after the
     /// transcript's floor — the model never decides that itself, so there is
     /// one place that owns the budget.
+    #[cfg(test)]
     pub fn build(
         tasks: &[BackgroundTaskSnapshot],
         now: DateTime<Utc>,
@@ -180,6 +213,50 @@ impl BackgroundStrip {
             hidden: total - rows.len(),
             total,
             rows,
+            start: 0,
+        }
+    }
+
+    /// Fit the selected task and honest overflow into an actual line budget.
+    /// The request/activity detail gets a row only when one remains after
+    /// the task rows; the full request belongs to inspection.
+    pub fn window(
+        tasks: &[BackgroundTaskSnapshot],
+        now: DateTime<Utc>,
+        row_cap: usize,
+        line_budget: u16,
+        selected: Option<BackgroundTaskId>,
+    ) -> Self {
+        let live = ordered_live(tasks, now);
+        let total = live.len();
+        let visible = total
+            .min(row_cap)
+            .min(line_budget.saturating_sub(1) as usize);
+        let index = live
+            .iter()
+            .position(|(_, id, _)| Some(*id) == selected)
+            .unwrap_or(0);
+        let start = index
+            .saturating_sub(visible.saturating_sub(1))
+            .min(total.saturating_sub(visible));
+        let detail_room = line_budget as usize > 1 + visible;
+        let rows = live
+            .into_iter()
+            .skip(start)
+            .take(visible)
+            .map(|(state, id, task)| {
+                let mut row = row_for(task, now, state);
+                if !detail_room || Some(id) != selected {
+                    row.detail = None;
+                }
+                row
+            })
+            .collect();
+        Self {
+            rows,
+            hidden: total - visible,
+            total,
+            start,
         }
     }
 }
@@ -191,9 +268,18 @@ pub fn ordered_live(
     tasks: &[BackgroundTaskSnapshot],
     now: DateTime<Utc>,
 ) -> Vec<(StripState, BackgroundTaskId, &BackgroundTaskSnapshot)> {
+    ordered_tasks(tasks)
+        .into_iter()
+        .filter(|(_, _, task)| !expired(task, now))
+        .collect()
+}
+
+/// Inspection retains terminal evidence after a success leaves the dock.
+pub fn ordered_tasks(
+    tasks: &[BackgroundTaskSnapshot],
+) -> Vec<(StripState, BackgroundTaskId, &BackgroundTaskSnapshot)> {
     let mut live: Vec<(StripState, BackgroundTaskId, &BackgroundTaskSnapshot)> = tasks
         .iter()
-        .filter(|task| !expired(task, now))
         .map(|task| {
             let state = StripState::of(&task.status);
             (state, task.id, task)
@@ -221,8 +307,13 @@ fn expired(task: &BackgroundTaskSnapshot, now: DateTime<Utc>) -> bool {
     }
 }
 
-fn row_for(task: &BackgroundTaskSnapshot, now: DateTime<Utc>, state: StripState) -> StripRow {
+pub(crate) fn row_for(
+    task: &BackgroundTaskSnapshot,
+    now: DateTime<Utc>,
+    state: StripState,
+) -> StripRow {
     StripRow {
+        id: task.id,
         state,
         subagent: matches!(task.kind, BackgroundTaskKind::Subagent { .. }),
         label: task.label.clone(),
@@ -361,7 +452,7 @@ mod tests {
             task(6, "queued", BackgroundTaskStatus::Queued, started, None),
         ];
 
-        let strip = BackgroundStrip::build(&tasks, now, STRIP_ROW_CAP);
+        let strip = BackgroundStrip::build(&tasks, now, usize::MAX);
         let order: Vec<&str> = strip.rows.iter().map(|r| r.label.as_str()).collect();
 
         assert_eq!(
@@ -470,7 +561,7 @@ mod tests {
             task(5, "running", BackgroundTaskStatus::Running, started, None),
         ];
 
-        let strip = BackgroundStrip::build(&tasks, now, STRIP_ROW_CAP);
+        let strip = BackgroundStrip::build(&tasks, now, usize::MAX);
         let labels: Vec<&str> = strip.rows.iter().map(|r| r.label.as_str()).collect();
 
         assert!(
@@ -581,6 +672,32 @@ mod tests {
         assert_eq!(row.marker(), "[|]");
         assert_eq!(row.glyph(), "◆");
         assert_eq!(row.detail.as_deref(), Some("bash · rm -rf target/debug"));
+    }
+
+    #[test]
+    fn dock_window_follows_identity_and_never_spends_an_unavailable_detail_row() {
+        let now = Utc::now();
+        let tasks: Vec<_> = (1..=8)
+            .map(|id| task(id, "waiting", blocked("bash", "printf '東京'"), now, None))
+            .collect();
+        let selected = BackgroundTaskId(8);
+        let compact = BackgroundStrip::window(&tasks, now, 3, 2, Some(selected));
+        assert_eq!(compact.rows.len(), 1);
+        assert_eq!(compact.rows[0].id, selected);
+        assert_eq!(compact.hidden, 7);
+        assert!(compact.rows[0].detail.is_none());
+        assert!(compact.height() <= 2);
+        let comfortable = BackgroundStrip::window(&tasks, now, 3, 5, Some(selected));
+        assert_eq!(comfortable.rows.last().unwrap().id, selected);
+        assert_eq!(
+            comfortable
+                .rows
+                .iter()
+                .filter(|row| row.detail.is_some())
+                .count(),
+            1
+        );
+        assert!(comfortable.height() <= 5);
     }
 
     #[test]

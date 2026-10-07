@@ -39,6 +39,34 @@ pub(crate) fn literal_lines(text: &str, width: u16, style: Style) -> Vec<Line<'s
     lines
 }
 
+/// A single-line preview retains whole graphemes and puts the elision in the
+/// available cell budget. Full details continue to use literal wrapping.
+pub(crate) fn preview(text: &str, width: usize) -> String {
+    let text = visible_text(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let span = Span::raw(text.as_str());
+    if span.width() <= width {
+        return text;
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut output = String::new();
+    let mut used = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let cells = Span::raw(grapheme.symbol).width();
+        if used + cells > width - 1 {
+            break;
+        }
+        output.push_str(grapheme.symbol);
+        used += cells;
+    }
+    output.push('…');
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +82,18 @@ mod tests {
         assert_eq!(restored, command);
         assert!(lines.iter().all(|line| line.width() <= 12));
         assert!(lines.iter().any(|line| line.to_string().contains("👩‍💻")));
+    }
+
+    #[test]
+    fn previews_keep_whole_graphemes_and_visible_elision() {
+        let text = "東京 👩‍💻 e\u{301} long tail";
+        for width in 0..20 {
+            let clipped = preview(text, width);
+            assert!(Span::raw(&clipped).width() <= width);
+            assert!(!clipped.contains('👩') || clipped.contains("👩‍💻"));
+            assert!(width == 0 || clipped == text || clipped.ends_with('…'));
+        }
+        assert_eq!(preview("run\u{1b} command", 40), "run\\u{1b} command");
     }
 
     #[test]

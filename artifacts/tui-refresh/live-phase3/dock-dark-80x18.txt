@@ -1,0 +1,18 @@
+   FORGE · ⌂ /var/folders/rn/…/T/.tmp8DD8JZ  ·  ./No commits yet on main*
+    Conversation                                      Ctrl+P files · / commands
+
+
+
+
+
+   You
+   Native task inspection fixture; model responses are mocked.
+
+   Queue · 6 · +5 more · /tasks inspect
+   > 1. Follow-up 1: inspect retry handling in λ/東京.rs before changing the…
+   Background · 2 ──────────────────────────────────────────────────── +1 more
+ > [!] ⟳ Nonzero fixture                                                  0.0s
+ ──────────────────────────────────────────────────────────────────────────────
+   Retained parent draft λ/東京.rs.
+   ● model/mock │ N/A                                   ready   ·  context 0%
+   [✕ jobs 3 · 1 failed] [⇥ queue 6]

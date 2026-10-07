@@ -798,10 +798,34 @@ impl TuiApp {
                 self.exit.request();
                 self.status_state.message = "quitting…".into();
             }
-            CommandFollowUp::EditQueuedMessage { text } => {
+            CommandFollowUp::EditQueuedMessage { session_id, text } => {
                 if succeeded {
-                    self.input.set_text(text.clone());
-                    self.focus.transition_to(FocusBlock::Composer);
+                    if *session_id == self.selected_session_id {
+                        if self.input.text.is_empty() {
+                            self.input.set_text(text.clone());
+                        } else {
+                            let cursor = self.input.cursor;
+                            self.input.append_paste(text);
+                            self.input.cursor = cursor;
+                            self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                "queued text appended; your newer draft was kept",
+                            );
+                        }
+                    } else {
+                        let parent = self.session_view_states.entry(*session_id).or_default();
+                        if parent.input.text.is_empty() {
+                            parent.input.set_text(text.clone());
+                        } else {
+                            let cursor = parent.input.cursor;
+                            parent.input.append_paste(text);
+                            parent.input.cursor = cursor;
+                        }
+                        self.set_feedback(
+                            FeedbackSeverity::Info,
+                            "queued text restored to its owning session",
+                        );
+                    }
                 }
                 self.clamp_queue_selection();
             }
@@ -2322,6 +2346,10 @@ impl TuiApp {
         }
 
         if self.selected_pending_hitl().is_some() && self.handle_approval_menu_key(key).await? {
+            return Ok(());
+        }
+
+        if self.handle_tasks_view_key(key).await? {
             return Ok(());
         }
 

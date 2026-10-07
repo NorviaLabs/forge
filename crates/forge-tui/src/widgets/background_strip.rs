@@ -24,10 +24,10 @@ const MARKER: usize = 3;
 
 pub struct BackgroundStripWidget<'a> {
     pub strip: &'a BackgroundStrip,
-    /// Index of the row the operator has selected with `↑↓`. This is the whole
+    /// Identity of the task the operator has selected with `↑↓`. This is the whole
     /// reason the strip exists: the keys already worked, but with nothing drawn
     /// the selection was invisible.
-    pub selected: Option<usize>,
+    pub selected: Option<forge_types::BackgroundTaskId>,
     /// Row under the pointer (pointer motion only; never moves the
     /// selection). Painted as `›` in the row's own reserved gutter cell, so
     /// hover can never shift text.
@@ -81,13 +81,18 @@ impl Widget for BackgroundStripWidget<'_> {
             if y >= area.y + area.height {
                 break;
             }
-            let selected = self.selected == Some(index);
+            let selected = self.selected == Some(row.id);
             let hovered = self.hover == Some(index);
             self.render_row(
                 row,
                 selected,
                 hovered,
-                Rect::new(area.x, y, width as u16, 1),
+                Rect::new(
+                    area.x,
+                    y,
+                    width as u16,
+                    row_height(row).min(area.bottom() - y),
+                ),
                 buf,
             );
             // A row with a second line is two lines tall; advancing by one
@@ -105,8 +110,8 @@ impl BackgroundStripWidget<'_> {
     fn render_header(&self, area: Rect, buf: &mut Buffer, width: usize) {
         let total = self.strip.total.to_string();
         let mut spans = vec![
-            Span::styled("  Background", theme::border_muted()),
-            Span::styled(" · ", theme::border_muted()),
+            Span::styled("  Background", theme::metadata_style()),
+            Span::styled(" · ", theme::metadata_style()),
             Span::styled(total, theme::text_secondary()),
             Span::styled(" ", theme::border_muted()),
         ];
@@ -200,7 +205,10 @@ impl BackgroundStripWidget<'_> {
         let label_budget = width
             .saturating_sub(used)
             .saturating_sub(elapsed_width.saturating_sub(1));
-        spans.push(Span::styled(truncate(&row.label, label_budget), row_style));
+        spans.push(Span::styled(
+            crate::decision::preview(&row.label, label_budget),
+            row_style,
+        ));
 
         let used: usize = spans.iter().map(Span::width).sum();
         if used + elapsed_width <= width {
@@ -221,7 +229,7 @@ impl BackgroundStripWidget<'_> {
         // activity is not a problem and stays secondary, so the two never look
         // alike.
         if let Some(detail) = row.detail.as_deref() {
-            if y + 1 < buf.area.height {
+            if area.height > 1 {
                 let indent = GUTTER + MARKER + 1;
                 let text = format!("{}{}", " ".repeat(indent), detail);
                 let style = if row.state == StripState::Blocked {
@@ -229,7 +237,10 @@ impl BackgroundStripWidget<'_> {
                 } else {
                     theme::text_secondary()
                 };
-                let line = ratatui::text::Line::from(Span::styled(truncate(&text, width), style));
+                let line = ratatui::text::Line::from(Span::styled(
+                    crate::decision::preview(&text, width),
+                    style,
+                ));
                 buf.set_line(x, y + 1, &line, width as u16);
             }
         }
@@ -249,23 +260,13 @@ fn state_style(state: StripState) -> Style {
     }
 }
 
-fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    if width <= 1 {
-        return "…".chars().take(width).collect();
-    }
-    let kept: String = text.chars().take(width - 1).collect();
-    format!("{kept}…")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn row(state: StripState, label: &str, elapsed: &str) -> StripRow {
         StripRow {
+            id: forge_types::BackgroundTaskId(1),
             state,
             subagent: true,
             label: label.into(),
@@ -279,6 +280,7 @@ mod tests {
             total: rows.len() + hidden,
             rows,
             hidden,
+            start: 0,
         }
     }
 

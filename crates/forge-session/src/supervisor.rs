@@ -186,6 +186,14 @@ pub enum SupervisorEvent {
     },
 }
 
+/// Distinguish repository prompt IDs from a restored session's queue IDs.
+/// These sequences are independent and must never address each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedPromptId {
+    Durable(u64),
+    Session(forge_types::QueueItemId),
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum SupervisorCommand {
@@ -327,6 +335,9 @@ pub enum SupervisorCommand {
     CancelQueuedPrompt {
         session_id: SessionId,
         one_based: usize,
+        /// Frontends bind a displayed row to its durable identity. `None`
+        /// keeps the explicit position-based command available to callers.
+        expected_queue_id: Option<QueuedPromptId>,
     },
     PollSession {
         session_id: SessionId,
@@ -2529,13 +2540,38 @@ async fn execute_command(
         SupervisorCommand::CancelQueuedPrompt {
             session_id,
             one_based,
-        } => {
-            state
-                .control
-                .cancel_queued_prompt_at(session_id, one_based)
-                .await?;
-            publish_actor(&state, session_id).await?;
-        }
+            expected_queue_id,
+        } => match expected_queue_id {
+            Some(QueuedPromptId::Session(id)) => {
+                let task_actor = actor(&state, session_id).await?;
+                let mut session = try_session(&task_actor)?;
+                if session.cancel_queued_item(id).await?.is_none() {
+                    return Err(RepositorySupervisorError::Command(
+                        "queued instruction was promoted or removed; nothing cancelled".into(),
+                    ));
+                }
+                refresh_actor(&state, &task_actor, &session).await?;
+            }
+            id => {
+                let removed = if let Some(QueuedPromptId::Durable(id)) = id {
+                    state
+                        .control
+                        .cancel_queued_prompt_by_id(session_id, id)
+                        .await?
+                } else {
+                    state
+                        .control
+                        .cancel_queued_prompt_at(session_id, one_based)
+                        .await?
+                };
+                if id.is_some() && removed.is_none() {
+                    return Err(RepositorySupervisorError::Command(
+                        "queued prompt was promoted or removed; nothing cancelled".into(),
+                    ));
+                }
+                publish_actor(&state, session_id).await?;
+            }
+        },
         SupervisorCommand::PollSession { session_id } => {
             let task_actor = actor(&state, session_id).await?;
             // Skipping a busy actor is safe: the 200ms ticker retries it and
@@ -5236,6 +5272,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_cancellation_rejects_promoted_and_other_owner_identities() {
+        let (_temp, supervisor, handle, owner, sibling_owner) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        let control = &supervisor.state.control;
+        let first = control.enqueue_prompt(owner, "first").await.unwrap();
+        let next = control.enqueue_prompt(owner, "next").await.unwrap();
+        let sibling = control
+            .enqueue_prompt(sibling_owner, "sibling")
+            .await
+            .unwrap();
+        assert_eq!(
+            control.claim_next_prompt(owner).await.unwrap().unwrap().0,
+            first
+        );
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        let legacy = task_actor
+            .session
+            .lock()
+            .await
+            .enqueue_task("restored instruction")
+            .await
+            .unwrap();
+
+        for stale in [first, sibling] {
+            let error = handle
+                .command(SupervisorCommand::CancelQueuedPrompt {
+                    session_id: owner,
+                    one_based: 1,
+                    expected_queue_id: Some(QueuedPromptId::Durable(stale)),
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("nothing cancelled"));
+        }
+        assert_eq!(
+            control.queued_prompts(owner).await.unwrap(),
+            vec![(next, "next".into())]
+        );
+        assert_eq!(
+            control.queued_prompts(sibling_owner).await.unwrap(),
+            vec![(sibling, "sibling".into())]
+        );
+        assert_eq!(
+            task_actor
+                .session
+                .lock()
+                .await
+                .queue()
+                .peek_next_queued()
+                .unwrap()
+                .id,
+            legacy.id
+        );
+        handle
+            .command(SupervisorCommand::CancelQueuedPrompt {
+                session_id: owner,
+                one_based: 1,
+                expected_queue_id: Some(QueuedPromptId::Session(legacy.id)),
+            })
+            .await
+            .unwrap();
+        assert!(task_actor.session.lock().await.queue().is_empty());
+        assert_eq!(control.queued_prompts(owner).await.unwrap().len(), 1);
+        handle
+            .command(SupervisorCommand::CancelQueuedPrompt {
+                session_id: owner,
+                one_based: 99,
+                expected_queue_id: Some(QueuedPromptId::Durable(next)),
+            })
+            .await
+            .unwrap();
+        assert!(control.queued_prompts(owner).await.unwrap().is_empty());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn command_surface_updates_idle_sessions_and_rejects_stale_background_requests() {
         let (_temp, supervisor, handle, id_a, id_b) =
             two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
@@ -5297,6 +5409,7 @@ mod tests {
             .command(SupervisorCommand::CancelQueuedPrompt {
                 session_id: id_a,
                 one_based: 1,
+                expected_queue_id: None,
             })
             .await
             .unwrap();
@@ -5423,6 +5536,7 @@ mod tests {
             SupervisorCommand::CancelQueuedPrompt {
                 session_id: unknown,
                 one_based: 1,
+                expected_queue_id: None,
             },
             SupervisorCommand::GrantEgressHost {
                 session_id: unknown,
@@ -7608,6 +7722,7 @@ mod tests {
             SupervisorCommand::CancelQueuedPrompt {
                 session_id: id,
                 one_based: 1,
+                expected_queue_id: None,
             },
             SupervisorCommand::PollSession { session_id: id },
             SupervisorCommand::CancelBackgroundTask {

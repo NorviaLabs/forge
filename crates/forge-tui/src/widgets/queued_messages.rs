@@ -28,12 +28,15 @@ fn inner_area(area: Rect) -> Rect {
 }
 
 /// First message index in the visible window (window follows the selection).
-fn window_start(len: usize, selected: Option<usize>) -> usize {
-    let visible = len.min(MAX_DISPLAYED_MESSAGES);
-    selected
+pub(crate) fn visible_window(len: usize, selected: Option<usize>, height: u16) -> (usize, usize) {
+    let visible = len
+        .min(MAX_DISPLAYED_MESSAGES)
+        .min(height.saturating_sub(1) as usize);
+    let start = selected
         .unwrap_or(0)
         .saturating_sub(visible.saturating_sub(1))
-        .min(len.saturating_sub(visible))
+        .min(len.saturating_sub(visible));
+    (start, visible)
 }
 
 /// Index of the queued-message row under a pointer cell, if any. Shared by
@@ -53,8 +56,7 @@ pub fn message_index_at(
     if col < inner.x || col >= inner.right() || row <= area.y || row >= area.bottom() {
         return None;
     }
-    let start = window_start(len, selected);
-    let visible = len.min(MAX_DISPLAYED_MESSAGES);
+    let (start, visible) = visible_window(len, selected, area.height);
     let index = start + (row - area.y - 1) as usize;
     (index < start + visible).then_some(index)
 }
@@ -69,11 +71,20 @@ impl Widget for QueuedMessages<'_> {
         if inner.width == 0 {
             return;
         }
-        let visible = self.messages.len().min(MAX_DISPLAYED_MESSAGES);
-        let start = window_start(self.messages.len(), self.selected);
+        let (start, visible) = visible_window(self.messages.len(), self.selected, area.height);
+        let hidden = self.messages.len() - visible;
+        let overflow = if hidden > 0 {
+            format!(" · +{hidden} more")
+        } else {
+            String::new()
+        };
         let title = Line::from(vec![
-            Span::styled("Queued", theme::metadata_style()),
-            Span::styled(" · ↑ edit last", theme::dim()),
+            Span::styled(
+                format!("Queue · {}", self.messages.len()),
+                theme::metadata_style(),
+            ),
+            Span::styled(overflow, theme::dim()),
+            Span::styled(" · /tasks inspect", theme::dim()),
         ]);
         buf.set_line(inner.x, area.y, &title, inner.width);
 
@@ -88,10 +99,17 @@ impl Widget for QueuedMessages<'_> {
                     theme::accent_style().add_modifier(Modifier::BOLD),
                 )
             } else {
-                (format!("  {}. ", index + 1), theme::dim())
+                (
+                    format!("{} {}. ", if selected { ">" } else { " " }, index + 1),
+                    if selected {
+                        theme::focused_selection_style()
+                    } else {
+                        theme::dim()
+                    },
+                )
             };
             let available = inner.width.saturating_sub(prefix.chars().count() as u16) as usize;
-            let preview = truncate(&normalized, available);
+            let preview = crate::decision::preview(&normalized, available);
             let style = if selected {
                 theme::focused_selection_style()
             } else if hovered {
@@ -119,39 +137,22 @@ impl Widget for QueuedMessages<'_> {
                 buf.set_line(inner.x, row, &line, inner.width);
             }
         }
-
-        if self.messages.len() > MAX_DISPLAYED_MESSAGES {
-            let row = area.y.saturating_add(1 + visible as u16);
-            if row < area.bottom() {
-                let overflow = format!(
-                    "  … ({}–{} of {} · {} hidden)",
-                    start + 1,
-                    start + visible,
-                    self.messages.len(),
-                    self.messages.len() - visible
-                );
-                buf.set_line(
-                    inner.x,
-                    row,
-                    &Line::from(Span::styled(overflow, theme::dim())),
-                    inner.width,
-                );
-            }
-        }
     }
 }
 
-fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_window_and_pointer_address_the_selected_prompt() {
+        let area = Rect::new(0, 10, 80, 2);
+        assert_eq!(visible_window(8, Some(7), area.height), (7, 1));
+        assert_eq!(message_index_at(8, Some(7), area, 3, 11), Some(7));
+        assert_eq!(message_index_at(8, Some(7), area, 3, 12), None);
+        assert_eq!(
+            message_index_at(8, Some(7), Rect { height: 1, ..area }, 3, 10),
+            None
+        );
     }
-    if width <= 1 {
-        return "…".chars().take(width).collect();
-    }
-    text.chars()
-        .take(width - 1)
-        .collect::<String>()
-        .trim_end()
-        .to_string()
-        + "…"
 }

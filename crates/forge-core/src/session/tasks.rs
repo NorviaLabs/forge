@@ -137,7 +137,22 @@ impl AgentSession {
         &mut self,
         one_based: usize,
     ) -> Result<Option<QueuedTask>, LoopError> {
-        let Some(item) = self.tasks.queue.remove_at_visible_position(one_based) else {
+        let Some(id) = one_based
+            .checked_sub(1)
+            .and_then(|index| self.tasks.queue.visible().nth(index).map(|item| item.id))
+        else {
+            return Ok(None);
+        };
+        self.cancel_queued_item(id).await
+    }
+
+    /// Cancel the named queued instruction. Promotion or removal never
+    /// redirects a stale frontend action to the next visible item.
+    pub async fn cancel_queued_item(
+        &mut self,
+        id: forge_types::QueueItemId,
+    ) -> Result<Option<QueuedTask>, LoopError> {
+        let Some(item) = self.tasks.queue.remove(id) else {
             return Ok(None);
         };
         self.journal

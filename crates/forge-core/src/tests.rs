@@ -2196,6 +2196,25 @@ async fn cancel_queued_at_removes_by_visible_position() {
 }
 
 #[tokio::test]
+async fn cancel_queued_item_does_not_cancel_the_successor_after_promotion() {
+    let dir = tempdir().unwrap();
+    let mut session = idle_session(dir.path()).await;
+    let first = session.enqueue_task("first").await.unwrap();
+    let next = session.enqueue_task("next").await.unwrap();
+    assert!(session.promote_next_queued().await.unwrap().is_some());
+
+    assert!(session
+        .cancel_queued_item(first.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(session.queue().peek_next_queued().unwrap().id, next.id);
+    let removed = session.cancel_queued_item(next.id).await.unwrap().unwrap();
+    assert_eq!(removed.text, "next");
+    assert!(session.queue().is_empty());
+}
+
+#[tokio::test]
 async fn queue_items_survive_resume_without_duplication() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![]));
