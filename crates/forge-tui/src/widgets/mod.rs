@@ -7,6 +7,7 @@ pub mod input;
 pub mod navigator;
 pub mod panel;
 pub mod queued_messages;
+pub(crate) mod start;
 pub mod status;
 pub mod task_strip;
 pub mod toasts;

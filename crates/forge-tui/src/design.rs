@@ -67,10 +67,14 @@ pub const PLAN_ITEM_GAP_H: u16 = 0;
 pub const PLAN_META_INDENT: u16 = 4;
 /// Composer horizontal padding; same text origin as chat.
 pub const COMPOSER_PAD_X: u16 = 2;
-/// Composer border rows, above and below the input.
-pub const COMPOSER_BORDER_H: u16 = 2;
-/// Max composer input rows.
-pub const MAX_COMPOSER_INPUT_H: u16 = 10;
+/// A single top rule separates the composer from the working surface.
+pub const COMPOSER_BORDER_H: u16 = 1;
+/// Maximum visible draft rows; longer drafts retain their text and scroll.
+pub const MAX_COMPOSER_INPUT_H: u16 = 4;
+pub const COMPACT_COMPOSER_INPUT_H: u16 = 3;
+pub const COMPACT_FRAME_H: u16 = 28;
+pub const HOME_MAX_WIDTH: u16 = 84;
+pub const NAVIGATOR_MIN_WIDTH: u16 = 24;
 /// Footer height; no separate separator row.
 pub const FOOTER_H: u16 = 2;
 /// Modal inner horizontal padding (inside 1-col border).

@@ -794,6 +794,8 @@ pub(crate) enum SemanticCommand {
     MoveQueueSelection(i32),
     CancelSelectedQueueMessage,
     MoveTasksSelection(i32),
+    MoveStarterSelection(i32),
+    UseSelectedStarter,
     CancelSelectedBackgroundTask,
     ApproveSelectedBackgroundTask,
     DenySelectedBackgroundTask,
@@ -1778,7 +1780,7 @@ impl StreamState {
 }
 
 /// Composer placeholder on an empty workspace.
-pub(crate) const COMPOSER_OPENER: &str = "What does this project do?";
+pub(crate) const COMPOSER_OPENER: &str = "Describe a task…";
 
 /// Composer placeholder once a turn has run.
 pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";
@@ -2074,6 +2076,9 @@ pub struct TuiApp {
     /// handling (which runs before the next render) to compute wrap width
     /// for cursor line navigation.
     pub(crate) composer_area: Option<ratatui::layout::Rect>,
+    pub(crate) start_prompt_rows: Vec<(usize, ratatui::layout::Rect)>,
+    pub(crate) start_prompt_selected: usize,
+    pub(crate) hover_start_prompt: Option<usize>,
     /// Active mouse text selection (v1: Editor pane).
     pub(crate) selection: crate::selection::MouseSelection,
     /// Open right-click context menu, if any.

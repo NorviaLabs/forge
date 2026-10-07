@@ -1037,7 +1037,7 @@ fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
 
 /// Drive the async git-status cache to completion, the way the event loop
 /// tick does, so a test can assert on a settled file list.
-fn settle_git(app: &mut TuiApp) {
+pub(super) fn settle_git(app: &mut TuiApp) {
     let root = app.session_view.workspace_root().to_path_buf();
     // `TuiApp::new` may already have a refresh in flight from before the test
     // wrote its files, and `start_refresh` coalesces onto it — so one `poll`
@@ -1059,7 +1059,7 @@ fn settle_git(app: &mut TuiApp) {
 }
 
 /// Pump `pump_diff_view` until the selected file's patch lands.
-fn settle_patch(app: &mut TuiApp) {
+pub(super) fn settle_patch(app: &mut TuiApp) {
     for _ in 0..400 {
         app.workspace_files.explorer.git_status.poll_diff();
         app.pump_diff_view();

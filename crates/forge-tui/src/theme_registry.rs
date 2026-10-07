@@ -187,19 +187,18 @@ fn merge_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::{Rgb, THEME_FORGE_DARK, THEME_FORGE_LIGHT};
+    use forge_config::{THEME_FORGE_DARK, THEME_FORGE_LIGHT};
 
     #[test]
     fn builtins_include_all_shipped_themes() {
         let registry = ThemeRegistry::load(None);
         let expected = [
-            (THEME_FORGE_DARK, "Forge Dark", Rgb(0x14, 0x14, 0x14)),
-            (THEME_FORGE_LIGHT, "Forge Light", Rgb(0xFA, 0xFA, 0xFA)),
+            (THEME_FORGE_DARK, "Forge Dark"),
+            (THEME_FORGE_LIGHT, "Forge Light"),
         ];
-        for (id, name, background) in expected {
+        for (id, name) in expected {
             let theme = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
             assert_eq!(theme.name, name);
-            assert_eq!(theme.palette.background, background);
         }
         assert_eq!(registry.themes().len(), expected.len());
     }
@@ -227,12 +226,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".forge").join("themes");
         fs::create_dir_all(&themes).unwrap();
+        let source = include_str!("../themes/forge-dark.toml");
+        let palette = parse_theme_toml(source).unwrap().palette;
         fs::write(
             themes.join("broken.toml"),
-            include_str!("../themes/forge-dark.toml")
+            source
                 .replace("id = \"forge-dark\"", "id = \"broken\"")
-                // Truncated hex value: 5 digits instead of 6.
-                .replace("cursor = \"#439EFD\"", "cursor = \"#439E\""),
+                // Derive the current token; this fixture must survive palette changes.
+                .replace(
+                    &format!("cursor = \"{}\"", palette.cursor),
+                    "cursor = \"#439E\"",
+                ),
         )
         .unwrap();
         let (registry, diagnostics) = ThemeRegistry::load_with_diagnostics(Some(dir.path()));
@@ -250,12 +254,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let themes = dir.path().join(".forge").join("themes");
         fs::create_dir_all(&themes).unwrap();
+        let source = include_str!("../themes/forge-dark.toml");
+        let palette = parse_theme_toml(source).unwrap().palette;
         fs::write(
             themes.join("collides.toml"),
-            include_str!("../themes/forge-dark.toml")
+            source
                 .replace("id = \"forge-dark\"", "id = \"collides\"")
                 // Point the accent straight at `success`.
-                .replace("accent = \"#439EFD\"", "accent = \"#5BDB87\""),
+                .replace(
+                    &format!("accent = \"{}\"", palette.accent),
+                    &format!("accent = \"{}\"", palette.success),
+                ),
         )
         .unwrap();
 

@@ -536,6 +536,14 @@ impl TuiApp {
         &self,
         key: event::KeyEvent,
     ) -> Option<SemanticCommand> {
+        if !self.start_prompt_rows.is_empty() && key.modifiers.is_empty() {
+            return match key.code {
+                KeyCode::Up => Some(SemanticCommand::MoveStarterSelection(-1)),
+                KeyCode::Down => Some(SemanticCommand::MoveStarterSelection(1)),
+                KeyCode::Enter => Some(SemanticCommand::UseSelectedStarter),
+                _ => None,
+            };
+        }
         match key.code {
             KeyCode::Up if key.modifiers.is_empty() => {
                 Some(SemanticCommand::MoveTasksSelection(-1))
@@ -861,6 +869,16 @@ impl TuiApp {
             // Session is selected; supervised mutations are actor commands.
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
             SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
+            SemanticCommand::MoveStarterSelection(delta) => {
+                let len = self.start_prompt_rows.len();
+                if len > 0 {
+                    self.start_prompt_selected =
+                        (self.start_prompt_selected as i32 + delta).rem_euclid(len as i32) as usize;
+                }
+            }
+            SemanticCommand::UseSelectedStarter => {
+                self.use_start_prompt(self.start_prompt_selected)
+            }
             SemanticCommand::CancelSelectedBackgroundTask => self.cancel_selected_task().await,
             SemanticCommand::OpenSelectedChildSession => self.open_selected_child_session().await,
             SemanticCommand::ApproveSelectedBackgroundTask => {

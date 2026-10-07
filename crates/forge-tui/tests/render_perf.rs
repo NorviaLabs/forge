@@ -176,9 +176,8 @@ async fn app_with_turns(turns: usize) -> (TempDir, TuiApp) {
             .messages
             .push(Message::new(MessageRole::Assistant, assistant_body(turn)));
     }
-    // The splash banner is left as-is: it is only reachable from inside the
-    // crate, and it contributes a constant to every frame, so it cancels out of
-    // the growth comparisons these guards make.
+    // Zero turns renders the first-task surface. Growth comparisons use one
+    // settled turn so both samples exercise the same conversation viewport.
     let app = TuiApp::new(
         session,
         TuiRuntimeConfig {
@@ -260,12 +259,12 @@ fn frame_allocations_do_not_scale_with_transcript_length() {
         .build()
         .expect("runtime");
 
-    let (_empty_dir, mut empty) = runtime.block_on(app_with_turns(0));
+    let (_short_dir, mut short) = runtime.block_on(app_with_turns(1));
     let (_long_dir, mut long) = runtime.block_on(app_with_turns(150));
 
-    let empty_cost = steady_frame_cost(&mut empty, 20);
+    let short_cost = steady_frame_cost(&mut short, 20);
     let long_cost = steady_frame_cost(&mut long, 20);
-    let growth = long_cost.allocs.saturating_sub(empty_cost.allocs);
+    let growth = long_cost.allocs.saturating_sub(short_cost.allocs);
 
     // Reference after the skills-count and windowed-tail work: growth stays
     // well under a thousand. Before the original share-not-copy fix this was
@@ -274,9 +273,9 @@ fn frame_allocations_do_not_scale_with_transcript_length() {
     assert!(
         growth < MAX_GROWTH,
         "frame allocations must not scale with transcript length: \
-         {} allocs empty vs {} allocs at 150 turns (growth {growth}, limit {MAX_GROWTH}). \
+         {} allocs at one turn vs {} allocs at 150 turns (growth {growth}, limit {MAX_GROWTH}). \
          A frame should cost the viewport, not the history.",
-        empty_cost.allocs,
+        short_cost.allocs,
         long_cost.allocs
     );
 }
@@ -293,12 +292,12 @@ fn frame_allocated_bytes_do_not_scale_with_transcript_length() {
         .build()
         .expect("runtime");
 
-    let (_empty_dir, mut empty) = runtime.block_on(app_with_turns(0));
+    let (_short_dir, mut short) = runtime.block_on(app_with_turns(1));
     let (_long_dir, mut long) = runtime.block_on(app_with_turns(150));
 
-    let empty_cost = steady_frame_cost(&mut empty, 20);
+    let short_cost = steady_frame_cost(&mut short, 20);
     let long_cost = steady_frame_cost(&mut long, 20);
-    let growth_kib = long_cost.bytes.saturating_sub(empty_cost.bytes) / 1024;
+    let growth_kib = long_cost.bytes.saturating_sub(short_cost.bytes) / 1024;
 
     // Reference: ~35KiB empty, ~40KiB at 150 turns => growth ~5KiB.
     // Before the fix: ~183KiB -> ~940KiB => growth ~757KiB.
@@ -306,8 +305,8 @@ fn frame_allocated_bytes_do_not_scale_with_transcript_length() {
     assert!(
         growth_kib < MAX_GROWTH_KIB,
         "frame allocation volume must not scale with transcript length: \
-         {}KiB empty vs {}KiB at 150 turns (growth {growth_kib}KiB, limit {MAX_GROWTH_KIB}KiB).",
-        empty_cost.bytes / 1024,
+         {}KiB at one turn vs {}KiB at 150 turns (growth {growth_kib}KiB, limit {MAX_GROWTH_KIB}KiB).",
+        short_cost.bytes / 1024,
         long_cost.bytes / 1024
     );
 }

@@ -12,8 +12,8 @@ use crate::design::{
 };
 use forge_config::PaneLayoutPreferences;
 /// Composer text rows (visual lines), capped for normal chat. The band adds
-/// top and bottom border rows on top of this.
-pub const MAX_COMPOSER_INPUT_H: u16 = 10;
+/// one top rule on top of this.
+pub const MAX_COMPOSER_INPUT_H: u16 = crate::design::MAX_COMPOSER_INPUT_H;
 /// Bottom theme picker dock: fits built-in themes without scrolling; scrolls for more.
 pub const THEME_DOCK_H: u16 = 12;
 
@@ -89,14 +89,18 @@ fn workspace_columns(
     } else {
         CONVERSATION_MIN_WIDTH
     };
+    let navigator_min = crate::design::NAVIGATOR_MIN_WIDTH;
     let persistent =
-        show_files && files_fit(frame_width) && area.width >= 28 + PANE_GAP_X + work_min;
+        show_files && files_fit(frame_width) && area.width >= navigator_min + PANE_GAP_X + work_min;
     if persistent {
         let file_width = preferences
             .files_width_ratio
             .map(|ratio| (f64::from(area.width) * ratio).round() as u16)
-            .unwrap_or((area.width / 5).clamp(28, 32))
-            .clamp(28, area.width.saturating_sub(work_min + PANE_GAP_X));
+            .unwrap_or(navigator_min)
+            .clamp(
+                navigator_min,
+                area.width.saturating_sub(work_min + PANE_GAP_X),
+            );
         let columns = Layout::horizontal([
             Constraint::Length(file_width),
             Constraint::Length(PANE_GAP_X),
@@ -264,7 +268,7 @@ pub fn split_areas_with_preferences(
         height: area.height,
     };
     let fb = 0;
-    let input_h = input_h.clamp(3, THEME_DOCK_H);
+    let input_h = input_h.clamp(2, THEME_DOCK_H);
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
     let footer_h = footer_h.min(2);
@@ -331,7 +335,7 @@ pub fn split_areas_with_preferences(
             .saturating_sub(
                 tabs_h + qh + panel_h + u16::from(panel_h > 0) * PANE_GAP_Y + TRANSCRIPT_MIN_ROWS,
             )
-            .max(3),
+            .max(2),
     );
     let bg_h = bg_h.min(
         work.height

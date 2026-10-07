@@ -59,7 +59,7 @@ async fn typed_notes_land_in_the_buffer_and_the_chip_counts_them() {
     );
     let text = render_app_text(&mut app, 120, 40);
     assert!(
-        text.contains("notes 2 lines"),
+        text.contains("notes 2"),
         "the chip counts the edited buffer: {text}"
     );
 }
@@ -279,11 +279,12 @@ async fn notes_survive_reopening_the_same_session() {
 #[tokio::test]
 async fn the_notes_chip_is_clickable_and_toggles_the_surface() {
     let (_dir, mut app) = focus_test_app().await;
+    fs::write(app.scratchpad_path(), "retained notes\n").unwrap();
     render_app_text(&mut app, 140, 40);
     let ranges = app.footer_chip_rects.expect("chips captured during paint");
     let y = app.footer_area.expect("footer drawn").y;
 
-    // The third chip has a real, non-empty range: a click target that was never
+    // A retained notes document has a real, non-empty range: a click target that was never
     // painted is the classic way a footer affordance silently dies.
     assert!(
         ranges[2].0 < ranges[2].1,

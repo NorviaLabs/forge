@@ -2,45 +2,42 @@
 id = "forge-dark"
 name = "Forge Dark"
 
-background = "#141414"
-background_deep = "#080808"
-surface = "#1E1E1E"
-surface_raised = "#1E1E1E"
+background = "#14171B"
+background_deep = "#101318"
+surface = "#1D2229"
+surface_raised = "#252C35"
 # Ground hierarchy: surface < hover < selection, so a hovered row never reads
 # as a selected one. Selection stays at the darkest step that keeps the muted
 # `tag`/secondary grey at WCAG AA (4.5:1) on the selected ground.
-surface_hover = "#303030"
-border = "#343434"
-border_muted = "#292929"
-text_primary = "#EBEBEB"
-text_secondary = "#A0A0A0"
-text_muted = "#757575"
-accent = "#439EFD"
-accent_soft = "#182B3D"
-activity = "#FFA31D"
-agent = "#A0A0A0"
-success = "#5BDB87"
-warning = "#E6C66A"
-error = "#F26D78"
-info = "#1DB0BB"
+surface_hover = "#2A333E"
+border = "#394350"
+border_muted = "#2A333E"
+text_primary = "#EDF0F5"
+text_secondary = "#B5BECB"
+text_muted = "#9BA8BA"
+accent = "#86B5FF"
+accent_soft = "#26364D"
+activity = "#E5BB80"
+agent = "#B5BECB"
+success = "#9BD1AD"
+warning = "#F3C575"
+error = "#EE94A0"
+info = "#9FC9E2"
 diff_add = "#183A28"
 diff_remove = "#4A2026"
-selection = "#373737"
-cursor = "#439EFD"
-tag = "#A0A0A0"
-search_match = "#E6C66A"
-waiting_border = "#E6C66A"
-structure = "#A0A0A0"
-scan_band = "#141414"
-zebra_row = "#1A1A1A"
+selection = "#344154"
+cursor = "#86B5FF"
+tag = "#B5BECB"
+search_match = "#F3C575"
+waiting_border = "#F3C575"
+structure = "#B5BECB"
+scan_band = "#14171B"
+zebra_row = "#1D2229"
 # Editorial emphasis inside model prose (never chrome/status/code).
-# md_strong shares the active-work orange family (36°); md_emph is a
-# greenish yellow at 70°, between warning (45°) and success (141°).
+# Warm emphasis remains distinct from the neutral activity and status chrome.
 md_strong = "#FFA31D"
 md_emph = "#C7D96B"
-# Links are neutral information (the `info` family, 185–190°), a step lighter
-# than the state teal so a URL reads at prose weight on this ground without
-# competing with the focused chrome, which owns the blue accent (212°).
+# Links stay distinct from the blue focus accent at ordinary prose weight.
 link = "#4FC9DF"
 
 [syntax]
