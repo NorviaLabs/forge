@@ -301,7 +301,10 @@ impl TuiApp {
             && self.selected_queue_messages().is_empty()
             && self.selected_background_tasks().is_empty();
         let show_files = (self.workspace_files.visible || task_mode)
-            && (!show_start || navigator_active || self.navigator_tab_explicit);
+            && (!show_start
+                || navigator_active
+                || self.navigator_tab_explicit
+                || self.session_chrome.len() > 1);
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else {
@@ -1713,6 +1716,17 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             }
         }
 
+        if let Some(group) = start_group.as_ref() {
+            self.start_prompt_selected = self.start_prompt_selected.min(group.starters - 1);
+            self.start_prompt_rows = group.render(
+                frame.buffer_mut(),
+                connected,
+                self.start_prompt_selected,
+                !modal_open && self.focus.block() == FocusBlock::Sidebar,
+                self.hover_start_prompt,
+            );
+        }
+
         // Inline slash autocomplete above the input bar — full list with scroll window
         if self.overlay.is_none() && self.inline_search.is_none() {
             let suggestions = self.slash_suggestions();
@@ -1839,12 +1853,6 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             }
         }
 
-        // Inline `Ctrl+r` commands+history fuzzy search, same anchored area
-        // the slash suggestions use above the composer.
-        if self.overlay.is_none() && self.inline_search.is_some() {
-            self.render_inline_search(frame, regions.input);
-        }
-
         let attachment_label = {
             let file = self.attachment.file().map(|a| a.label());
             let images = self.pending_image_label();
@@ -1875,16 +1883,6 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         // Only three focusable footer controls now (which-LLM, effort, mode).
         if let Some(idx) = self.composer_chip_focus {
             self.composer_chip_focus = Some(idx.min(1));
-        }
-        if let Some(group) = start_group.as_ref() {
-            self.start_prompt_selected = self.start_prompt_selected.min(group.starters - 1);
-            self.start_prompt_rows = group.render(
-                frame.buffer_mut(),
-                connected,
-                self.start_prompt_selected,
-                !modal_open && self.focus.block() == FocusBlock::Sidebar,
-                self.hover_start_prompt,
-            );
         }
         if theme_picking {
             self.composer_area = None;
@@ -1952,6 +1950,11 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     frame.set_cursor_position((x, y));
                 }
             }
+        }
+        // Floating search owns its cells after the task group and composer
+        // have painted; otherwise the start screen covers the selected row.
+        if self.overlay.is_none() && self.inline_search.is_some() {
+            self.render_inline_search(frame, regions.input);
         }
 
         // Read before the immutable borrows that build the footer model. The

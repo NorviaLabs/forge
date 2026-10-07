@@ -746,6 +746,10 @@ async fn a_finished_turn_is_closed_by_a_summary() {
 #[tokio::test]
 async fn paging_the_conversation_moves_a_page_not_five_rows() {
     let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::User,
+        "A transcript worth paging".repeat(40),
+    ));
     draw_app(&mut app, 120, 40);
     let area = app.conversation_area.expect("conversation was drawn");
     assert!(area.height > 8, "fixture pane is worth paging: {area:?}");
@@ -764,6 +768,10 @@ async fn paging_the_conversation_moves_a_page_not_five_rows() {
 #[tokio::test]
 async fn paging_moves_the_conversation_with_the_transcript_focused() {
     let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::User,
+        "A transcript worth paging".repeat(40),
+    ));
     draw_app(&mut app, 120, 40);
     let area = app.conversation_area.expect("conversation was drawn");
     app.focus_block(FocusBlock::Sidebar);

@@ -2,8 +2,8 @@
 
 The complete scope is the [updated mockup proposal](https://github.com/NorviaLabs/forge/pull/839) and its five implementation phases. Production work started from main `cf61193ff9f009c2a61ce55672fd24557a8337ee` in an isolated worktree.
 
-1. **Layout and start — implemented, local checks pass; PR/CI pending.** Centered task entry, shared gutters, bounded composer, retained navigation and drafts, quieter chrome, updated built-in palettes.
-2. **Conversation and inspection — pending.** Transcript rhythm, approvals with safe defaults and reachable long commands, pickers, shell ownership and recovery.
+1. **Layout and start — implemented in [PR #840](https://github.com/NorviaLabs/forge/pull/840); CI corrections verified locally.** Centered task entry, shared gutters, bounded composer, retained navigation and drafts, quieter chrome, updated built-in palettes.
+2. **Conversation and inspection — underway on the next branch.** Transcript rhythm, approvals with safe defaults and reachable long commands, pickers, shell ownership and recovery.
 3. **Queue and dock — pending.** Stable task and prompt identities, cancellation/edit races, compact overflow and a live task view.
 4. **Jobs and subagents — pending.** Execution evidence, explicit result handoff, read-only child inspection, exact decisions, named stop and retained partial findings.
 5. **Motion and complete workflows — pending.** Reduced motion, state-driven effects, performance comparison, real walkthroughs and required CI.
@@ -27,6 +27,10 @@ node artifacts/tui-refresh/check-captures.mjs /tmp/forge-ui-refresh.html /tmp/fo
 For a comparison, run the same capture harness on the baseline source and pass that capture directory as the renderer's third argument. The browser requires the installed Playwright module; `FORGE_PLAYWRIGHT_MODULE` can supply its location. Screens use representative system monospace typography, not a particular user's terminal font. Raw captures and fixture journals stay outside Git.
 
 ## Verification
+
+The first CI run exposed start-screen integration issues: the task group painted over floating search, and a second prompt-less session's meaningful navigator was hidden. Search now paints above task entry, and multiple sessions retain navigation. Paging checks now create a transcript; notes checks use a nonempty document and the current count label. The allocation growth guard compares one settled turn against 150 turns, keeping both samples in the same conversation viewport rather than comparing task entry with history; its original 100 KiB limit is unchanged. All 195 focused checks across chrome, commands, scratchpad, multiple sessions and render performance pass after these corrections, along with workspace Clippy and formatting.
+
+The dependency audit separately rejects `yoke-derive 0.8.3`, which is unchanged from main. A lockfile-only maintenance branch advances that transitive macro to `0.8.4`; it is kept separate from the UI changes. Required CI remains a delivery gate.
 
 169 distinct targeted tests pass across input, status, workspace, focus, mouse, conversation cache, theme registry, active-theme memoization, navigator lifecycle and supervised tab-row controls. Workspace Clippy, formatting and the debug CLI build pass. Behavior coverage includes first-task keyboard/mouse entry without submitting, paste payload retention, Unicode draft/caret resizing, navigation next to task entry, hidden-pane focus, session-local pane preferences, unsaved editor protection and settled-transcript caching. Appearance is captured for review, without unit tests freezing geometry or colors.
 
