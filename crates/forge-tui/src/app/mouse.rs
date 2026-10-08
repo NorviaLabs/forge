@@ -519,9 +519,13 @@ impl TuiApp {
         self.hover_background = None;
         self.hover_option = self.option_at(col, row);
         self.hover_overlay = self.overlay_row_at(col, row);
+        self.hover_resize = None;
         if self.pointer_blocked() {
             return;
         }
+        // The seam itself is the target, so the grip lights up for the whole
+        // ±1-cell grab zone the click-to-drag path already accepts.
+        self.hover_resize = self.resize_boundary_at(col, row);
         self.hover_start_prompt = self
             .start_prompt_rows
             .iter()

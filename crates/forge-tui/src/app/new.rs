@@ -237,6 +237,7 @@ impl TuiApp {
             hover_overlay: None,
             option_rects: Vec::new(),
             hover_option: None,
+            hover_resize: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
@@ -482,6 +483,7 @@ impl TuiApp {
             hover_overlay: None,
             option_rects: Vec::new(),
             hover_option: None,
+            hover_resize: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,

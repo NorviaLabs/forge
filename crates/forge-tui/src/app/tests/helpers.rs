@@ -248,13 +248,21 @@ pub(crate) async fn focus_test_app_with_model(model: Arc<dyn ModelClient>) -> (T
     (dir, app)
 }
 
-pub(crate) fn render_app_text(app: &mut TuiApp, width: u16, height: u16) -> String {
+pub(crate) fn render_app_buffer(
+    app: &mut TuiApp,
+    width: u16,
+    height: u16,
+) -> ratatui::buffer::Buffer {
     use ratatui::backend::TestBackend;
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     app.tick_render_state();
     terminal.draw(|frame| app.draw(frame)).unwrap();
-    let buffer = terminal.backend().buffer();
+    terminal.backend().buffer().clone()
+}
+
+pub(crate) fn render_app_text(app: &mut TuiApp, width: u16, height: u16) -> String {
+    let buffer = render_app_buffer(app, width, height);
     let area = buffer.area();
     let mut text = String::new();
     for y in 0..area.height {
