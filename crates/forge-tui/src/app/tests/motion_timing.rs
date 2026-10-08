@@ -61,6 +61,27 @@ async fn busy_status_line_hides_instantly_when_busy_ends_regardless_of_debounce_
 }
 
 #[tokio::test]
+async fn interrupt_hint_renders_once_in_the_conversation_pane() {
+    let (_dir, mut app) = focus_test_app().await;
+    start_busy_turn(
+        &mut app,
+        Instant::now()
+            .checked_sub(Duration::from_millis(200))
+            .expect("clock underflow"),
+    );
+
+    let text = render_app_text(&mut app, 100, 30);
+    // The hint lives on the pinned turn line alone; the composer must not
+    // repeat it, so exactly one copy is on screen.
+    assert_eq!(
+        text.matches(crate::widgets::turn_line::INTERRUPT_HINT)
+            .count(),
+        1,
+        "the interrupt hint must appear once, in the conversation pane:\n{text}"
+    );
+}
+
+#[tokio::test]
 async fn tool_call_transitions_do_not_re_trigger_the_debounce() {
     let (_dir, mut app) = focus_test_app().await;
     start_busy_turn(
