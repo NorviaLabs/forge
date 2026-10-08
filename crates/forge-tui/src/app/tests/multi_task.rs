@@ -1985,6 +1985,42 @@ async fn the_navigator_tabs_do_not_repeat_the_selected_pane_title() {
         .unwrap();
 }
 
+/// The top session strip names every session in every navigator tab, including
+/// the start screen — it is not tied to the Git review being open.
+#[tokio::test]
+async fn the_top_session_strip_names_sessions_in_every_navigator_tab() {
+    use crate::widgets::NavigatorTab;
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let created = create_promptless_session(&mut app).await;
+    assert!(created.label.is_empty());
+
+    for (key, tab) in [
+        ('1', NavigatorTab::Sessions),
+        ('2', NavigatorTab::Files),
+        ('3', NavigatorTab::Git),
+    ] {
+        app.handle_key(press(KeyCode::Char(key), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert_eq!(app.effective_navigator_tab(), tab);
+        for (width, height) in [(140, 40), (80, 18)] {
+            let rendered = render_app_text(&mut app, width, height);
+            assert!(
+                rendered.contains("[ main]"),
+                "{tab:?} at {width}x{height} keeps the session strip: {rendered}"
+            );
+            assert!(
+                rendered.contains("[ session 1]"),
+                "{tab:?} at {width}x{height} names the new session: {rendered}"
+            );
+        }
+    }
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
 /// Ctrl+1 / Ctrl+2 flip the navigator tab and stick.
 #[tokio::test]
 async fn ctrl_tab_switches_the_navigator() {

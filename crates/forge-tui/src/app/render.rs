@@ -422,7 +422,7 @@ impl TuiApp {
             background_h,
             approve_all_warning_h,
             expand_conversation,
-            task_mode && !show_start,
+            task_mode,
             self.workspace_navigation.resource_selected() && !decision_pending,
             navigator_active,
             self.pane_resize.preferences,
