@@ -472,8 +472,6 @@ impl Widget for StatusBar<'_> {
         };
         let inset = crate::design::COMPOSER_PAD_X.min(area.width / 2);
         let area = Rect::new(area.x + inset, area.y, area.width - inset * 2, area.height);
-        // Brand and workspace share the text origin; changing work does not
-        // move the identity across the header.
         let width = area.width as usize;
         let chip = self.sessions_chip.unwrap_or("");
         let reserved = if chip.is_empty() {
@@ -499,7 +497,12 @@ impl Widget for StatusBar<'_> {
             Span::styled(content, theme::text_secondary()),
         ]);
         let text_y = area.y + area.height.saturating_sub(1) / 2;
-        buf.set_line(area.x, text_y, &line, area.width);
+        // The brand and workspace identity are centered on the bar. A collapsed
+        // navigator's session chip keeps its own right-aligned column, so its
+        // width comes off the centering budget rather than being overlapped.
+        let usable = width.saturating_sub(reserved);
+        let x = area.x + (usable.saturating_sub(line.width()) / 2) as u16;
+        buf.set_line(x, text_y, &line, area.width - (x - area.x));
         if !chip.is_empty() {
             let x = area.x + (width - chip.chars().count() - 1) as u16;
             buf.set_string(x, text_y, chip, theme::warn());

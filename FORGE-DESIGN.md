@@ -1013,7 +1013,7 @@ output safety, and existing work remain mandatory under §4.
 
 ### 9.1 StatusBar
 
-Purpose: left-aligned brand and repository/branch identity (`widgets/status.rs`) in one quiet
+Purpose: centered brand and repository/branch identity (`widgets/status.rs`) in one quiet
 row. The workspace panes receive the rows previously spent framing this identity.
 
 Includes repository/branch (polled, TTL-cached) and the collapsed navigator's
