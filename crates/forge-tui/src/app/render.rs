@@ -79,7 +79,7 @@ fn composer_input_height(
     // Use the same width and border budget as the rendered composer.
     let compact = area.height < crate::design::COMPACT_FRAME_H;
     input.visual_lines_for_width(content_width).clamp(
-        if compact { 1 } else { 2 },
+        if compact { 1 } else { 3 },
         if compact {
             crate::design::COMPACT_COMPOSER_INPUT_H
         } else {
@@ -303,11 +303,7 @@ impl TuiApp {
             && !self.pending_turn.continue_requested()
             && self.selected_queue_messages().is_empty()
             && self.selected_background_tasks().is_empty();
-        let show_files = (self.workspace_files.visible || task_mode)
-            && (!show_start
-                || navigator_active
-                || self.navigator_tab_explicit
-                || self.session_chrome.len() > 1);
+        let show_files = self.workspace_files.visible || task_mode;
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else {
@@ -497,13 +493,12 @@ impl TuiApp {
         // Questions reuse `FocusBlock::Approval` (same inline transcript
         // prompt as HITL); omitting them here kicks focus off the menu on the
         // first frame, so ↑↓ never move the selection.
-        let navigator_tab = if task_mode && regions.files.is_some() {
+        let navigator_tab = if regions.files.is_some() {
             self.effective_navigator_tab()
         } else {
             crate::widgets::NavigatorTab::Files
         };
-        let navigator_sessions =
-            task_mode && navigator_tab == crate::widgets::NavigatorTab::Sessions;
+        let navigator_sessions = navigator_tab == crate::widgets::NavigatorTab::Sessions;
         let available = FocusAvailability {
             task_strip: regions.task_strip.height > 0
                 || (navigator_sessions && regions.files.is_some()),
@@ -538,7 +533,7 @@ impl TuiApp {
         // The tab row holds the keyboard only while the navigator column is on
         // screen: a collapsed column (or a mode without tabs) must not leave it
         // owning keys nothing is drawing.
-        if !(task_mode && regions.files.is_some()) {
+        if regions.files.is_none() {
             self.navigator_tab_row_focused = false;
         }
         self.normalize_focus();
@@ -636,7 +631,7 @@ impl TuiApp {
             let navigator_focused = self.focus.block() == FocusBlock::TaskStrip
                 && !modal_open
                 && !self.navigator_tab_row_focused;
-            if task_mode {
+            {
                 // The left column is the navigator: a tab bar over either the
                 // session list or the file explorer (FORGE-DESIGN §7.7).
                 let rows = ratatui::layout::Layout::default()
@@ -648,27 +643,15 @@ impl TuiApp {
                     .split(files);
                 let tabs_area = ratatui::layout::Rect::new(
                     rows[0].x,
-                    rows[0].y,
+                    rows[0].y + rows[0].height.saturating_sub(1),
                     rows[0].width,
-                    rows[0].height + 1,
+                    rows[0].height.min(1),
                 );
-                self.navigator_tabs_area = Some(rows[0]);
+                self.navigator_tabs_area = Some(tabs_area);
                 self.navigator_new_session_area =
                     crate::widgets::navigator::new_session_cell(tabs_area);
                 self.navigator_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
-                frame.render_widget(
-                    crate::widgets::NavigatorTabs {
-                        tab: navigator_tab,
-                        needs_you,
-                        git: self.navigator_git_available(),
-                        focused: self.navigator_tab_row_focused,
-                        hover: self.hover_navigator_tab,
-                        row_stop: self.navigator_row_stop,
-                        hover_new_session: self.hover_navigator_new_session,
-                    },
-                    tabs_area,
-                );
                 if navigator_sessions {
                     let block = Block::default()
                         .borders(ratatui::widgets::Borders::ALL)
@@ -882,43 +865,19 @@ impl TuiApp {
                         rows[1],
                     );
                 }
-                // Tabs and list share one divider rather than stacking boxes.
-                let divider_y = rows[1].y;
-                if files.width > crate::widgets::navigator::SESSIONS_TAB_WIDTH && rows[1].height > 0
-                {
-                    let buf = frame.buffer_mut();
-                    buf[(files.x, divider_y)].set_symbol("├");
-                    buf[(files.right() - 1, divider_y)].set_symbol("┤");
-                    // The list repaints the bottom tab border; restore all
-                    // joints from the same geometry used to paint the tabs.
-                    if let Some(cell) = self.navigator_new_session_area {
-                        buf[(cell.x, divider_y)].set_symbol("┴");
-                    }
-                    for (_, rect) in crate::widgets::navigator::navigator_tab_rects(
-                        tabs_area,
-                        self.navigator_git_available(),
-                    )
-                    .into_iter()
-                    .skip(1)
-                    {
-                        buf[(rect.x, divider_y)].set_symbol("┴");
-                    }
-                }
-            } else {
-                self.navigator_list_area = Some(files);
+                // Paint tabs last so the list cannot erase the active ground
+                // on their shared divider.
                 frame.render_widget(
-                    FileExplorerWidget {
-                        explorer: &mut self.workspace_files.explorer,
-                        active_file: active_file.as_deref(),
-                        show_search: true,
-                        focused: crate::widgets::background_focused(
-                            matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
-                            modal_open,
-                        ),
-                        search_active: self.focus.block() == FocusBlock::Search && !modal_open,
-                        hover: self.hover_file,
+                    crate::widgets::NavigatorTabs {
+                        tab: navigator_tab,
+                        needs_you,
+                        git: self.navigator_git_available(),
+                        focused: self.navigator_tab_row_focused,
+                        hover: self.hover_navigator_tab,
+                        row_stop: self.navigator_row_stop,
+                        hover_new_session: self.hover_navigator_new_session,
                     },
-                    files,
+                    tabs_area,
                 );
             }
         }
@@ -2141,9 +2100,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     attachment: attachment_label.as_deref(),
                     dimmed: (self.busy_state.is_active() && self.input.text.is_empty())
                         || self.session_view.is_awaiting_approval(),
-                    not_connected: !connected,
                     focused: composer_focused,
-                    waiting: self.child_view.is_none() && self.session_view.is_awaiting_approval(),
                     // Same debounce as the pinned busy line: the in-box
                     // interrupt hint must not flash on near-instant turns.
                     running: self.child_view.is_none()

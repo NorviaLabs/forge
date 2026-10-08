@@ -22,9 +22,8 @@
 //!
 //! - **L1 — pane frame.** `theme::panel_border()`. Bordered panes, focused or not.
 //!   Carries the layout's structure and never changes hue with focus.
-//! - **L2 — inset field.** `theme::composer_border_idle()` for the composer and
-//!   the explorer's search field: the same neutral step as L1, so a nested
-//!   field never reads as a second, louder box.
+//! - **L2 — inset field.** `theme::composer_surface()` for the borderless composer
+//!   and explorer search field, so a nested field never reads as a louder box.
 //! - **L3 — local accent.** `theme::active_panel_border()`. The active tab's
 //!   underline, a focused search field's border, the composer's top edge, a
 //!   pane's `>` title marker, a keyboard-bearing modal's title.

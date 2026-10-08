@@ -2344,7 +2344,7 @@ impl TuiApp {
         // Ctrl+1 / Ctrl+2 / Ctrl+3 switch the left navigator's tab
         // (FORGE-DESIGN §7.7). Reserved before overlays/editor so the navigator
         // is always reachable.
-        if self.supervisor.is_some() && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+        if key.modifiers.contains(event::KeyModifiers::CONTROL) {
             let tab = match key.code {
                 KeyCode::Char('1') => Some(crate::widgets::NavigatorTab::Sessions),
                 KeyCode::Char('2') => Some(crate::widgets::NavigatorTab::Files),

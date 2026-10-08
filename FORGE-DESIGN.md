@@ -564,12 +564,20 @@ temporary navigation; width alone never makes those actions unreachable.
 
 ### 7.4 Height behaviour
 
-- StatusBar consumes one identity row at every height. Footer uses one row
+- StatusBar uses one identity row at all frame heights.
+  Navigator tabs are borderless single-row tiles with no margin or padding,
+  a solid selected background and neutral inactive backgrounds. Navigator
+  content follows immediately, without a blank separator row.
+  One blank row separates the strip from status chrome. Neutral blank boundary
+  cells distinguish tab segments; the active label is bold without underline.
+  The `+` action reserves five columns for separation from the Sessions label.
+  Footer uses one row
   when no queue or retained background work exists, and adds a count-chip row
   when either collection is nonempty.
 - Composer input is capped at four visual rows, or three below 28 frame rows,
-  plus one top rule. Empty input uses one row at compact heights and two at
-  comfortable heights. Longer drafts scroll without discarding stored text.
+  plus one canvas separator row. Empty input uses one row at compact heights
+  and three at comfortable heights, centering the placeholder and short drafts
+  between blank surface rows. Longer drafts scroll without discarding stored text.
 - Theme picker dock is 12 rows (`THEME_DOCK_H`), sized to show built-ins without scrolling.
 - Below 24 frame rows, an open terminal appears while `Panel` owns the keyboard
   and yields its rows to other focused surfaces. `Tab`, `Ctrl+Backtick` or
@@ -652,6 +660,9 @@ they do not establish that the active task remains usable on their own.
 The current left column is a **navigator** with `Sessions` and `Files`, plus
 `Git` in repositories. It is the main multi-session surface. The earlier top
 task strip is recorded as a historical decision in §11.
+The tab row and `+` action remain visible whenever the file browser is visible,
+independent of supervisor availability. Without a supervisor, session creation
+reports that sessions are unavailable rather than hiding the navigation.
 
 - Tabs: `Ctrl+1` / `Ctrl+2` / `Ctrl+3` select `Sessions` / `Files` / `Git`
   in repository mode; `Ctrl+E` cycles available tabs (`input.rs`, `workspace.rs`).
@@ -731,7 +742,18 @@ task strip is recorded as a historical decision in §11.
   drawn only when the whole block fits: a short pane falls back to the unframed
   layout rather than painting half a box.
 - **Files tab** uses the explorer. Filename navigation (`Ctrl+P`) and Find in
-  Files (`Ctrl+Shift+F`) are separate modes of the search field. Content results
+  Files (`Ctrl+Shift+F`) are separate modes of the search field. The field uses
+  the composer's borderless surface and two-column text inset, with placeholder
+  and query centered between blank surface rows. No shortcut hint is displayed
+  below the surface; the caret indicates input ownership.
+  The tree selection gutter shares the search text's inset directly inside the
+  browser border, without an additional pane-padding layer. Directory labels
+  are bold with quiet disclosure arrows. Focused selection and hover grounds
+  fill the row; unfocused selection keeps bold text without a ground.
+  Selection has no rail or cursor glyph; its gutter stays reserved so labels
+  never shift. Directory disclosure and the open-file dot remain distinct.
+  Git status markers align in the rightmost tree column.
+  Content results
   use collapsible file groups with line-numbered, highlighted snippets below
   each path; selecting a snippet opens that source location, not a rendered
   preview. Match origin is conveyed by structure, never a badge or colour alone.
@@ -1035,7 +1057,10 @@ Before the first turn, a centered task group joins the heading, editable
 prompt, complete starter prompts, and local hints. The group is capped at 84
 columns; terminals below 24 rows show one starter, larger terminals show three.
 Model/connection and lifecycle information remains in the footer and workspace
-identity in the header. The start hides empty navigation until requested.
+identity in the header. The start retains the navigator when enabled and space
+permits; narrow terminals reveal it through the normal navigation shortcuts.
+File browsing, editing and the terminal do not require a provider connection;
+the start names these entry points alongside AI task composition.
 Typing retains the task composition until submission. Sidebar owns starter
 selection (`↑↓`, `Enter`); selecting or clicking a starter appends to the draft
 and returns focus to Composer without submitting it.
@@ -1174,11 +1199,10 @@ does not move the transcript, selection or draft beneath it.
 
 - Spans the work surface under conversation and inspection, including temporary
   navigator views. It remains visible while an editor occupies the narrow body.
-- `surface` background and one top rule, without an enclosing outline. The
-  top edge takes `accent` when focused and `waiting_border` while
-  an approval pends ("paused" look). Only attention states thicken the top
-  rule — focus alone is a hue change, with the block caret as the monochrome
-  signal. Waiting outranks focus colour.
+- `surface` background without an outline or top border. A blank canvas row
+  separates it from the conversation, preserving input geometry. The block
+  caret signals keyboard focus; approval and connection state remain explicit
+  in their controls and footer.
 - Multi-line growth uses three input rows at compact heights and four at
   comfortable heights. Complete drafts and pending paste payloads survive
   visual scrolling and resizing.

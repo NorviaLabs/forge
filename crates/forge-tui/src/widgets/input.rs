@@ -382,10 +382,7 @@ pub struct InputBar<'a> {
     /// Optional file-attachment label shown above the prompt line.
     pub attachment: Option<&'a str>,
     pub dimmed: bool,
-    pub not_connected: bool,
     pub focused: bool,
-    /// Approval pending — show the distinct waiting border (see `InputModel.waiting`).
-    pub waiting: bool,
     /// Turn in flight — renders `esc to interrupt` right-inside the box.
     pub running: bool,
 }
@@ -630,38 +627,17 @@ impl Widget for InputBar<'_> {
             theme::composer_text()
         };
         let text_focused = self.focused;
-        // The border is the composer's stateful chrome: L3 while it owns the
-        // keyboard, `waiting_border` while an approval pends, warn when there
-        // is no provider to send to. Focus alone is a hue change on the top —
-        // the block caret is the monochrome signal. Attention states
-        // additionally thicken the top rule, because they change what the
-        // input *does*, not merely where the keyboard is.
-        let rule_style = if self.waiting {
-            theme::waiting_border()
-        } else if text_focused {
-            theme::active_panel_border()
-        } else if self.not_connected {
-            theme::warn()
-        } else {
-            theme::composer_border_idle()
-        };
-        let rule_glyph = if self.waiting || self.not_connected {
-            "━"
-        } else {
-            "─"
-        };
         let surface = if self.dimmed {
             theme::surface_hover()
         } else {
             theme::composer_surface()
         };
         Block::default().style(surface).render(area, buf);
-        // Focus lives on one local rule rather than an enclosing rectangle.
-        buf.set_string(
-            area.x,
-            area.y,
-            rule_glyph.repeat(area.width as usize),
-            rule_style,
+        // Keep a blank canvas row above the surface without changing input geometry.
+        theme::fill(
+            Rect::new(area.x, area.y, area.width, COMPOSER_RULE_H),
+            buf,
+            theme::canvas(),
         );
         let text_zone = Rect::new(
             area.x,
@@ -740,6 +716,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn placeholder_and_short_draft_have_balanced_vertical_padding() {
+        for text in ["", "A short task"] {
+            let model = InputModel {
+                text: text.into(),
+                hint: "Describe a task…".into(),
+                ..Default::default()
+            };
+            let buf = draw_input_bar(&model, 40, 4, true, None);
+            assert_eq!(
+                composer_cursor_position(&model, *buf.area(), None),
+                Some((TEXT_INSET, 2))
+            );
+            for y in [1, 3] {
+                for x in 0..40 {
+                    assert_eq!(buf[(x, y)].symbol(), " ");
+                    assert_eq!(Some(buf[(x, y)].bg), theme::composer_surface().bg);
+                }
+            }
+            assert_eq!(
+                buf[(TEXT_INSET, 2)].symbol(),
+                if text.is_empty() { "D" } else { "A" }
+            );
+        }
+    }
+
+    #[test]
+    fn composer_has_no_top_border_in_any_state() {
+        for (focused, waiting, not_connected, dimmed) in [
+            (false, false, false, false),
+            (true, false, false, false),
+            (true, true, false, true),
+            (false, false, true, false),
+        ] {
+            let model = InputModel {
+                waiting,
+                dimmed,
+                not_connected,
+                ..Default::default()
+            };
+            let buf = draw_input_bar(&model, 40, 3, focused, None);
+            let surface = if dimmed {
+                theme::surface_hover()
+            } else {
+                theme::composer_surface()
+            };
+            for x in 0..40 {
+                assert_eq!(buf[(x, 0)].symbol(), " ");
+                assert_eq!(Some(buf[(x, 0)].bg), theme::canvas().bg);
+                assert_eq!(Some(buf[(x, 2)].bg), surface.bg);
+            }
+        }
+    }
+
+    #[test]
     fn focused_caret_keeps_draft_cells_and_literal_block_characters() {
         let area = Rect::new(0, 0, 80, 6);
         for (text, cursor) in [
@@ -760,9 +790,7 @@ mod tests {
                     model: &model,
                     attachment: None,
                     dimmed: false,
-                    not_connected: false,
                     focused,
-                    waiting: false,
                     running: false,
                 }
                 .render(area, &mut buffer);
@@ -834,18 +862,9 @@ mod tests {
         width: u16,
         height: u16,
         focused: bool,
-        not_connected: bool,
         attachment: Option<&str>,
     ) -> ratatui::buffer::Buffer {
-        draw_input_bar_running(
-            model,
-            width,
-            height,
-            focused,
-            not_connected,
-            attachment,
-            false,
-        )
+        draw_input_bar_running(model, width, height, focused, attachment, false)
     }
 
     fn draw_input_bar_running(
@@ -853,7 +872,6 @@ mod tests {
         width: u16,
         height: u16,
         focused: bool,
-        not_connected: bool,
         attachment: Option<&str>,
         running: bool,
     ) -> ratatui::buffer::Buffer {
@@ -865,9 +883,7 @@ mod tests {
                     model,
                     attachment,
                     dimmed: model.dimmed,
-                    not_connected,
                     focused,
-                    waiting: model.waiting,
                     running,
                 },
                 f.area(),
@@ -878,7 +894,7 @@ mod tests {
     }
 
     fn render_lines(model: &InputModel, width: u16, height: u16, focused: bool) -> Vec<String> {
-        let buf = draw_input_bar(model, width, height, focused, model.not_connected, None);
+        let buf = draw_input_bar(model, width, height, focused, None);
         // Text zone excludes both borders and the shared horizontal inset.
         let inner = Rect::new(
             TEXT_INSET,

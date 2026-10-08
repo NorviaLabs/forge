@@ -13,7 +13,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, Widget};
+use ratatui::widgets::Widget;
 
 use crate::theme;
 
@@ -189,9 +189,8 @@ pub struct SessionRow {
 /// Width shared by tab painting and pointer routing.
 pub(crate) const SESSIONS_TAB_WIDTH: u16 = 10;
 
-/// Width of the navigator row's `+` cell: one border column either side of the
-/// single glyph cell.
-pub(crate) const NEW_SESSION_CELL_WIDTH: u16 = 3;
+/// Width of the navigator row's `+` action, with breathing room around its glyph.
+pub(crate) const NEW_SESSION_CELL_WIDTH: u16 = 5;
 
 /// Keep creation reachable at the navigator's normal minimum width.
 pub(crate) const MIN_NEW_SESSION_ROW_WIDTH: u16 = crate::design::NAVIGATOR_MIN_WIDTH;
@@ -308,40 +307,53 @@ impl Widget for NavigatorTabs {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        theme::fill(area, buf, theme::panel());
         let inactive = theme::metadata_style();
         // The `+` cell sits directly beside the `Sessions` tab, sharing its
         // edge with it, so the create verb reads as acting on sessions.
         // One source of truth for painting, keyboard stops and pointer routing.
         let new_session = new_session_cell(area);
-        for (index, (tab, tab_area)) in navigator_tab_rects(area, self.git).into_iter().enumerate()
-        {
+        let rects = navigator_tab_rects(area, self.git);
+        // Grounds first, edge to edge across each tab; the labels and the `+`
+        // glyph repaint their own cells on top of them.
+        for (tab, rect) in &rects {
+            if *tab == self.tab {
+                fill_tab_background(buf, *rect, Some(theme::accent_soft_bg()));
+            } else if self.hover == Some(*tab) {
+                fill_tab_background(buf, *rect, theme::surface_hover().bg);
+            }
+        }
+        if let Some(cell) = new_session {
+            if self.hover_new_session {
+                let inner = Rect::new(
+                    cell.x,
+                    cell.y + cell.height.saturating_sub(1) / 2,
+                    cell.width,
+                    1,
+                );
+                fill_tab_background(buf, inner, theme::surface_hover().bg);
+            }
+        }
+        // Neutral boundary cells separate tabs without doubled border strokes.
+        // Painted before the labels so a narrow tab whose label reaches a shared
+        // edge still renders its full text.
+        let label_y = area.y + area.height.saturating_sub(1) / 2;
+        for (_, rect) in rects.iter().skip(1) {
+            buf.set_string(rect.x, label_y, " ", theme::panel());
+        }
+        if let Some(cell) = new_session {
+            buf.set_string(cell.x, label_y, " ", theme::panel());
+        }
+        for (index, (tab, tab_area)) in rects.into_iter().enumerate() {
             let is_active = tab == self.tab;
             let hovered = !is_active && self.hover == Some(tab);
-            // The tab strip is the navigator panel's own top edge, not a small
-            // box inside it: one frame for the active and inactive tabs alike,
-            // neutral until the row itself holds the keyboard. The active tab
-            // fills its inner row edge to edge —
-            // an unmistakable full-width signal that still stays inside the
-            // frame, never flowing over or under the text — and the label
-            // keeps a weight step and the accent hue for terminals that
-            // render no colour (FORGE-DESIGN §5 rule 7).
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if self.focused {
-                    theme::accent_style()
-                } else {
-                    theme::panel_border()
-                })
-                .style(theme::panel());
-            let inner = if area.height >= 3 {
-                block.inner(tab_area)
-            } else {
-                tab_area
-            };
-            if area.height >= 3 {
-                block.render(tab_area, buf);
-            }
+            // Keep labels centered in equal-height, borderless tiles.
+            let inner = Rect::new(
+                tab_area.x,
+                tab_area.y + tab_area.height.saturating_sub(1) / 2,
+                tab_area.width,
+                1,
+            );
             let label_style = if is_active {
                 theme::accent_style()
                     .add_modifier(Modifier::BOLD)
@@ -356,13 +368,6 @@ impl Widget for NavigatorTabs {
             };
             if inner.width == 0 || inner.height == 0 {
                 continue;
-            }
-            // Ground first, edge to edge across the inner row; the label and
-            // badge repaint their own cells on top of it.
-            if is_active {
-                fill_inner_row(buf, inner, Some(theme::accent_soft_bg()));
-            } else if hovered {
-                fill_inner_row(buf, inner, theme::surface_hover().bg);
             }
             let label = truncate(tab.label(), inner.width as usize);
             let label_width = label.chars().count() as u16;
@@ -392,32 +397,13 @@ impl Widget for NavigatorTabs {
             }
         }
         if let Some(cell) = new_session {
-            // A segment of the row's frame beside the `Sessions` tab, sharing
-            // its edge with it. It is not a tab: it never takes the
-            // `accent_soft` ground, so it cannot be mistaken for one. It takes
-            // the row's focus step with the outlines (`§9.6`) and adds the
-            // accent to the glyph only while the row's cursor rests here.
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(if self.focused {
-                    theme::accent_style()
-                } else {
-                    theme::panel_border()
-                })
-                .style(theme::panel());
-            let inner = if area.height >= 3 {
-                block.inner(cell)
-            } else {
-                cell
-            };
-            if area.height >= 3 {
-                block.render(cell, buf);
-            }
+            let inner = Rect::new(
+                cell.x,
+                cell.y + cell.height.saturating_sub(1) / 2,
+                cell.width,
+                1,
+            );
             if inner.width > 0 && inner.height > 0 {
-                if self.hover_new_session {
-                    fill_inner_row(buf, inner, theme::surface_hover().bg);
-                }
                 let selected = self.focused && self.row_stop == NavigatorRowStop::NewSession;
                 let glyph_style = if selected {
                     theme::accent_style().add_modifier(Modifier::BOLD)
@@ -430,18 +416,6 @@ impl Widget for NavigatorTabs {
                 };
                 let glyph_x = inner.x + inner.width.saturating_sub(1) / 2;
                 buf.set_string(glyph_x, inner.y, "+", glyph_style);
-            }
-        }
-        if area.height >= 3 {
-            // Join every shared edge, including Files/Git in repositories.
-            for (_, rect) in navigator_tab_rects(area, self.git).into_iter().skip(1) {
-                buf[(rect.x, area.y)].set_symbol("┬");
-                buf[(rect.x, area.bottom() - 1)].set_symbol("┴");
-            }
-            if let Some(cell) = new_session {
-                // The create cell's left edge is not a tab's left edge.
-                buf[(cell.x, area.y)].set_symbol("┬");
-                buf[(cell.x, area.y + area.height - 1)].set_symbol("┴");
             }
         }
     }
@@ -760,14 +734,15 @@ fn fill_row_ground(buf: &mut Buffer, area: Rect, y: u16, height: u16, bg: ratatu
     }
 }
 
-/// Paint the tab's inner row edge to edge. The frame rows above and below
-/// keep the panel ground; only this row carries the tab's signal.
-fn fill_inner_row(buf: &mut Buffer, inner: Rect, bg: Option<ratatui::style::Color>) {
+/// Paint the supplied tab interior without changing its glyphs.
+fn fill_tab_background(buf: &mut Buffer, area: Rect, bg: Option<ratatui::style::Color>) {
     let Some(bg) = bg else {
         return;
     };
-    for col in inner.x..inner.right() {
-        buf[(col, inner.y)].set_bg(bg);
+    for row in area.y..area.bottom() {
+        for col in area.x..area.right() {
+            buf[(col, row)].set_bg(bg);
+        }
     }
 }
 
@@ -784,6 +759,53 @@ fn truncate(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_tab_background_stays_inside_frame() {
+        for height in [1, 2, 3] {
+            let area = Rect::new(0, 0, 40, height);
+            let mut buf = Buffer::empty(area);
+            NavigatorTabs {
+                tab: NavigatorTab::Files,
+                needs_you: 0,
+                git: true,
+                focused: false,
+                hover: None,
+                row_stop: NavigatorRowStop::Files,
+                hover_new_session: false,
+            }
+            .render(area, &mut buf);
+            let row = |y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            };
+            let label_row = if height == 3 { 1 } else { 0 };
+            for label in ["Sessions", "+", "Files", "Git"] {
+                assert!(row(label_row).contains(label), "{}", row(label_row));
+            }
+            let tabs = navigator_tab_rects(area, true);
+            for (tab, rect) in tabs {
+                for y in rect.y..rect.bottom() {
+                    for x in rect.x..rect.right() {
+                        if tab == NavigatorTab::Files
+                            && !(y == label_row && (x == rect.x || x + 1 == rect.right()))
+                        {
+                            assert_eq!(buf[(x, y)].bg, theme::accent_soft_bg());
+                        } else if x > rect.x && x + 1 < rect.right() {
+                            assert_ne!(buf[(x, y)].bg, theme::accent_soft_bg());
+                        }
+                    }
+                }
+            }
+            assert!(!row(label_row).contains('│'));
+            if height == 3 {
+                for y in [0, 2] {
+                    assert!(row(y).trim().is_empty());
+                }
+            }
+        }
+    }
 
     /// Every state the list can render, in the order the enum declares them.
     /// [`SessionRowState::glyph`] and [`SessionRowState::style`] match on the

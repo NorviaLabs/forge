@@ -93,19 +93,18 @@ impl TuiApp {
         self.normalize_focus();
     }
 
-    /// Whether the navigator renders a tab bar to focus: repository mode only —
-    /// a single session keeps today's plain `Files` explorer with no tabs.
+    /// Whether the navigator renders a tab bar to focus.
     pub(crate) fn navigator_tab_row_available(&self) -> bool {
-        self.supervisor.is_some() && self.workspace_files.visible
+        self.workspace_files.visible
     }
 
-    /// Whether the navigator's `Git` tab exists. Repository mode plus a Git
+    /// Whether the navigator's `Git` tab exists. A Git
     /// worktree at the session's workspace root — `.git` is a directory in a
     /// plain checkout and a file in a linked worktree, and both are a
     /// repository. A bare `stat` on the session's own root, never a subprocess,
     /// so this is safe to ask on the render path.
     pub(crate) fn navigator_git_available(&self) -> bool {
-        self.supervisor.is_some() && self.workspace_is_git_repository()
+        self.workspace_is_git_repository()
     }
 
     /// Move the keyboard onto the navigator's tab row (`↑` at the top of an

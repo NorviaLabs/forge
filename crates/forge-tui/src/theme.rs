@@ -820,19 +820,7 @@ pub fn status_bar() -> Style {
     panel_alt()
 }
 
-/// Composer container border: neutral at every focus state.
-///
-/// The composer's *state* lives on its top edge (see `widgets/input.rs`):
-/// accent while it owns the keyboard, `waiting_border` while an approval
-/// pends. Sides and bottom stay at the same level as every other pane frame,
-/// so the composer reads as one more box in the layout rather than the
-/// brightest rectangle on screen.
-pub fn composer_border_idle() -> Style {
-    border()
-}
-
-/// Composer typed-text emphasis, applied regardless of focus state for the
-/// same reason as [`composer_border_idle`].
+/// Composer typed-text emphasis, applied regardless of focus state.
 pub fn composer_text() -> Style {
     text().add_modifier(Modifier::BOLD)
 }

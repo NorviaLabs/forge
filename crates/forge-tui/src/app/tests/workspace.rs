@@ -5,6 +5,149 @@
 use super::prelude::*;
 
 #[tokio::test]
+async fn file_browser_keeps_navigation_tabs_without_supervisor() {
+    let (_dir, mut app) = focus_test_app().await;
+    assert!(app.supervisor.is_none());
+    app.focus_block(FocusBlock::Files);
+    for (width, height) in [(120, 40), (80, 18)] {
+        let rendered = render_app_text(&mut app, width, height);
+        assert!(rendered.contains("Sessions"), "{rendered}");
+        assert!(rendered.contains("Files"), "{rendered}");
+        assert!(app.navigator_tabs_area.is_some());
+        assert!(app.navigator_new_session_area.is_some());
+        assert!(app.navigator_tab_row_available());
+    }
+}
+
+#[tokio::test]
+async fn selected_navigator_tab_background_stays_inside_shared_frame() {
+    use crate::widgets::NavigatorTab;
+    use ratatui::backend::TestBackend;
+
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.focus_block(FocusBlock::Files);
+    for tab in [NavigatorTab::Sessions, NavigatorTab::Files] {
+        app.navigator_tab = tab;
+        app.navigator_tab_explicit = true;
+        app.focus_block(if tab == NavigatorTab::Sessions {
+            FocusBlock::TaskStrip
+        } else {
+            FocusBlock::Files
+        });
+        for (width, height) in [(120, 40), (80, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let area = app.navigator_tabs_area.expect("visible navigator tabs");
+            assert_eq!(area.height, 1);
+            let rect =
+                crate::widgets::navigator::navigator_tab_rects(area, app.navigator_git_available())
+                    .into_iter()
+                    .find_map(|(candidate, rect)| (candidate == tab).then_some(rect))
+                    .unwrap();
+            let buffer = terminal.backend().buffer();
+            for x in area.x..area.right() {
+                assert_eq!(buffer[(x, area.y - 1)].symbol(), " ");
+            }
+            for x in area.x..area.right() {
+                assert_ne!(buffer[(x, area.bottom())].bg, theme::accent_soft_bg());
+            }
+            for y in rect.y..rect.bottom() {
+                for x in rect.x..rect.right() {
+                    if x + 1 < rect.right() && (x > rect.x || tab == NavigatorTab::Sessions) {
+                        assert_eq!(buffer[(x, y)].bg, theme::accent_soft_bg());
+                    }
+                }
+            }
+            // The active ground never spills past the tab's own frame: every
+            // column outside it keeps the panel ground. A narrow tab may place
+            // its label on a shared edge, but the ground still stops at the
+            // frame, and the label stays intact.
+            for x in area.x..area.right() {
+                if x < rect.x || x >= rect.right() {
+                    assert_ne!(buffer[(x, area.y)].bg, theme::accent_soft_bg());
+                }
+            }
+            let label_row: String = (area.x..area.right())
+                .map(|x| buffer[(x, area.y)].symbol())
+                .collect();
+            assert!(label_row.contains(tab.label()), "{tab:?}: {label_row}");
+            if tab == NavigatorTab::Files {
+                assert_eq!(app.navigator_list_area.unwrap().y, area.bottom());
+            }
+        }
+    }
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn top_bar_keeps_one_row_at_all_frame_heights() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    for height in [40, 28, 18] {
+        let rendered = render_app_text(&mut app, 120, height);
+        let lines: Vec<_> = rendered.lines().collect();
+        assert!(lines[0].contains("FORGE"), "{rendered}");
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("FORGE")).count(),
+            1
+        );
+        assert!(!lines[0].contains('╭'), "{rendered}");
+    }
+}
+
+#[tokio::test]
+async fn composer_centers_placeholder_and_short_draft_at_comfortable_heights() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    for started in [false, true] {
+        if started {
+            app.session_runtime
+                .messages
+                .push(Message::new(MessageRole::User, "Inspect this project."));
+        }
+        for text in ["", "A short task"] {
+            app.input.set_text(text);
+            for (width, height) in [(120, 40), (80, 28), (80, 18)] {
+                draw_app(&mut app, width, height);
+                let area = app.composer_area.expect("visible composer");
+                let cursor =
+                    crate::widgets::input::composer_cursor_position(&app.input, area, None)
+                        .expect("visible caret");
+                let compact = height < crate::design::COMPACT_FRAME_H;
+                assert_eq!(area.height, if compact { 2 } else { 4 });
+                assert_eq!(cursor.1, area.y + if compact { 1 } else { 2 });
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn start_keeps_enabled_file_navigation_visible_without_a_turn() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    draw_app(&mut app, 120, 40);
+    assert!(app.navigator_list_area.is_some());
+    assert!(!app.start_prompt_rows.is_empty());
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    assert!(!app.pending_turn.has_prompt());
+
+    app.workspace_files.visible = false;
+    draw_app(&mut app, 120, 40);
+    assert!(app.navigator_list_area.is_none());
+    assert!(!app.start_prompt_rows.is_empty());
+
+    app.workspace_files.visible = true;
+    draw_app(&mut app, 80, 18);
+    assert!(app.navigator_list_area.is_none());
+    app.focus_block(FocusBlock::Files);
+    draw_app(&mut app, 80, 18);
+    assert!(app.navigator_list_area.is_some());
+}
+
+#[tokio::test]
 async fn first_task_remains_reachable_beside_requested_navigation() {
     let (_dir, mut app) = focus_test_app().await;
     app.input.set_text("Retain the first requirement.");

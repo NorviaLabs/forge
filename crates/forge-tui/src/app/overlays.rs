@@ -85,8 +85,6 @@ impl TuiApp {
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Cycle navigator tabs (Sessions / Files / Git in a repository)\n");
-        text.push_str("• Ctrl+P  Find a file by name\n");
-        text.push_str("• Ctrl+Shift+F  Find text in files\n");
         if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git {
             text.push_str("• ↑/↓  Select change  ·  Enter  Focus patch  ·  s/u  Stage/unstage\n");
         }
