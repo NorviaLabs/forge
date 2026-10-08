@@ -2101,14 +2101,6 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     dimmed: (self.busy_state.is_active() && self.input.text.is_empty())
                         || self.session_view.is_awaiting_approval(),
                     focused: composer_focused,
-                    // Same debounce as the pinned busy line: the in-box
-                    // interrupt hint must not flash on near-instant turns.
-                    running: self.child_view.is_none()
-                        && self.busy_state.is_active()
-                        && self
-                            .timing
-                            .turn_started
-                            .is_some_and(|t| t.elapsed() >= BUSY_STATUS_DEBOUNCE),
                 },
                 regions.input,
             );

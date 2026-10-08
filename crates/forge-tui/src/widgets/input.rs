@@ -383,8 +383,6 @@ pub struct InputBar<'a> {
     pub attachment: Option<&'a str>,
     pub dimmed: bool,
     pub focused: bool,
-    /// Turn in flight — renders `esc to interrupt` right-inside the box.
-    pub running: bool,
 }
 
 fn composer_text(model: &InputModel, show_cursor: bool) -> Text<'_> {
@@ -683,21 +681,6 @@ impl Widget for InputBar<'_> {
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
             .render(text_area, buf);
-        if self.running {
-            // While a turn runs, Esc interrupts it — said inside the box,
-            // bottom-right, where the eye already is. Drops (rather than
-            // wraps or overwrites text) when the last row has no room.
-            let hint = crate::widgets::turn_line::INTERRUPT_HINT;
-            let hint_w = hint.chars().count() as u16;
-            if text_area.width > hint_w + 2 && text_area.height > 0 {
-                let y = text_area.bottom().saturating_sub(1);
-                let x = text_area.right().saturating_sub(hint_w);
-                let clear = (0..hint_w).all(|dx| buf[(x + dx, y)].symbol() == " ");
-                if clear {
-                    buf.set_string(x, y, hint, theme::dim());
-                }
-            }
-        }
         if text_focused {
             // Paint the same solid block caret used by every other input.
             for y in text_area.top()..text_area.bottom() {
@@ -791,7 +774,6 @@ mod tests {
                     attachment: None,
                     dimmed: false,
                     focused,
-                    running: false,
                 }
                 .render(area, &mut buffer);
                 buffer
@@ -864,17 +846,6 @@ mod tests {
         focused: bool,
         attachment: Option<&str>,
     ) -> ratatui::buffer::Buffer {
-        draw_input_bar_running(model, width, height, focused, attachment, false)
-    }
-
-    fn draw_input_bar_running(
-        model: &InputModel,
-        width: u16,
-        height: u16,
-        focused: bool,
-        attachment: Option<&str>,
-        running: bool,
-    ) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
@@ -884,7 +855,6 @@ mod tests {
                     attachment,
                     dimmed: model.dimmed,
                     focused,
-                    running,
                 },
                 f.area(),
             );
