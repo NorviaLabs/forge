@@ -55,12 +55,22 @@ async fn selected_navigator_tab_background_stays_inside_shared_frame() {
                 for x in rect.x..rect.right() {
                     if x + 1 < rect.right() && (x > rect.x || tab == NavigatorTab::Sessions) {
                         assert_eq!(buffer[(x, y)].bg, theme::accent_soft_bg());
-                    } else {
-                        assert_eq!(buffer[(x, y)].bg, theme::panel().bg.unwrap());
                     }
                 }
             }
-            assert_eq!(buffer[(rect.x, area.y)].symbol(), " ");
+            // The active ground never spills past the tab's own frame: every
+            // column outside it keeps the panel ground. A narrow tab may place
+            // its label on a shared edge, but the ground still stops at the
+            // frame, and the label stays intact.
+            for x in area.x..area.right() {
+                if x < rect.x || x >= rect.right() {
+                    assert_ne!(buffer[(x, area.y)].bg, theme::accent_soft_bg());
+                }
+            }
+            let label_row: String = (area.x..area.right())
+                .map(|x| buffer[(x, area.y)].symbol())
+                .collect();
+            assert!(label_row.contains(tab.label()), "{tab:?}: {label_row}");
             if tab == NavigatorTab::Files {
                 assert_eq!(app.navigator_list_area.unwrap().y, area.bottom());
             }

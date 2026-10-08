@@ -313,8 +313,38 @@ impl Widget for NavigatorTabs {
         // edge with it, so the create verb reads as acting on sessions.
         // One source of truth for painting, keyboard stops and pointer routing.
         let new_session = new_session_cell(area);
-        for (index, (tab, tab_area)) in navigator_tab_rects(area, self.git).into_iter().enumerate()
-        {
+        let rects = navigator_tab_rects(area, self.git);
+        // Grounds first, edge to edge across each tab; the labels and the `+`
+        // glyph repaint their own cells on top of them.
+        for (tab, rect) in &rects {
+            if *tab == self.tab {
+                fill_tab_background(buf, *rect, Some(theme::accent_soft_bg()));
+            } else if self.hover == Some(*tab) {
+                fill_tab_background(buf, *rect, theme::surface_hover().bg);
+            }
+        }
+        if let Some(cell) = new_session {
+            if self.hover_new_session {
+                let inner = Rect::new(
+                    cell.x,
+                    cell.y + cell.height.saturating_sub(1) / 2,
+                    cell.width,
+                    1,
+                );
+                fill_tab_background(buf, inner, theme::surface_hover().bg);
+            }
+        }
+        // Neutral boundary cells separate tabs without doubled border strokes.
+        // Painted before the labels so a narrow tab whose label reaches a shared
+        // edge still renders its full text.
+        let label_y = area.y + area.height.saturating_sub(1) / 2;
+        for (_, rect) in rects.iter().skip(1) {
+            buf.set_string(rect.x, label_y, " ", theme::panel());
+        }
+        if let Some(cell) = new_session {
+            buf.set_string(cell.x, label_y, " ", theme::panel());
+        }
+        for (index, (tab, tab_area)) in rects.into_iter().enumerate() {
             let is_active = tab == self.tab;
             let hovered = !is_active && self.hover == Some(tab);
             // Keep labels centered in equal-height, borderless tiles.
@@ -338,11 +368,6 @@ impl Widget for NavigatorTabs {
             };
             if inner.width == 0 || inner.height == 0 {
                 continue;
-            }
-            // Ground first, edge to edge across the tab; the label and
-            // badge repaint their own cells on top of it.
-            if hovered {
-                fill_tab_background(buf, inner, theme::surface_hover().bg);
             }
             let label = truncate(tab.label(), inner.width as usize);
             let label_width = label.chars().count() as u16;
@@ -379,9 +404,6 @@ impl Widget for NavigatorTabs {
                 1,
             );
             if inner.width > 0 && inner.height > 0 {
-                if self.hover_new_session {
-                    fill_tab_background(buf, inner, theme::surface_hover().bg);
-                }
                 let selected = self.focused && self.row_stop == NavigatorRowStop::NewSession;
                 let glyph_style = if selected {
                     theme::accent_style().add_modifier(Modifier::BOLD)
@@ -395,19 +417,6 @@ impl Widget for NavigatorTabs {
                 let glyph_x = inner.x + inner.width.saturating_sub(1) / 2;
                 buf.set_string(glyph_x, inner.y, "+", glyph_style);
             }
-        }
-        for (tab, rect) in navigator_tab_rects(area, self.git) {
-            if tab == self.tab {
-                fill_tab_background(buf, rect, Some(theme::accent_soft_bg()));
-            }
-        }
-        // Neutral boundary cells separate tabs without doubled border strokes.
-        let label_y = area.y + area.height.saturating_sub(1) / 2;
-        for (_, rect) in navigator_tab_rects(area, self.git).into_iter().skip(1) {
-            buf.set_string(rect.x, label_y, " ", theme::panel());
-        }
-        if let Some(cell) = new_session {
-            buf.set_string(cell.x, label_y, " ", theme::panel());
         }
     }
 }

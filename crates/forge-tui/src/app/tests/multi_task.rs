@@ -2316,7 +2316,7 @@ async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
         .map(|task| task.session_id)
         .collect();
 
-    app.handle_mouse(left_click(cell.x + 1, cell.y + 1))
+    app.handle_mouse(left_click(cell.x + 1, cell.y))
         .await
         .unwrap();
 
@@ -2436,13 +2436,17 @@ async fn leaving_the_navigator_clears_the_tab_row() {
         .unwrap();
 }
 
-/// A single session has no tab bar, so there is no row to reach.
+/// A single session still has a tab bar, so the row is reachable without a
+/// repository (`FORGE-DESIGN §7.7`).
 #[tokio::test]
-async fn a_single_session_has_no_tab_row_to_reach() {
+async fn a_single_session_still_reaches_the_tab_row() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Files);
     app.focus_navigator_tab_row();
-    assert!(!app.navigator_tab_row_focused, "no repository, no tab bar");
+    assert!(
+        app.navigator_tab_row_focused,
+        "the file browser keeps a tab bar"
+    );
 }
 
 /// `Space` opens the inline peek; typing fills the reply; `Esc` collapses.
