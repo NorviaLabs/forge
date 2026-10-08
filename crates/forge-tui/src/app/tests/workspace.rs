@@ -99,6 +99,25 @@ async fn top_bar_keeps_one_row_at_all_frame_heights() {
 }
 
 #[tokio::test]
+async fn top_bar_centers_brand_and_workspace_identity() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    for (width, height) in [(120, 40), (100, 28), (80, 18)] {
+        let rendered = render_app_text(&mut app, width, height);
+        let row = rendered.lines().next().expect("status row");
+        assert!(row.contains("FORGE"), "{width}x{height}: {row:?}");
+        let leading = row.chars().take_while(|c| *c == ' ').count();
+        let trailing = row.chars().rev().take_while(|c| *c == ' ').count();
+        // Centered: the identity leaves an even gutter on both sides. The
+        // one-column tolerance comes from an odd leftover split.
+        assert!(
+            leading.abs_diff(trailing) <= 1,
+            "{width}x{height}: leading {leading} vs trailing {trailing} in {row:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn composer_centers_placeholder_and_short_draft_at_comfortable_heights() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Composer);
