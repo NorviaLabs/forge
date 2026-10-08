@@ -498,10 +498,11 @@ impl Widget for StatusBar<'_> {
             Span::styled(" · ", theme::muted()),
             Span::styled(content, theme::text_secondary()),
         ]);
-        buf.set_line(area.x, area.y, &line, area.width);
+        let text_y = area.y + area.height.saturating_sub(1) / 2;
+        buf.set_line(area.x, text_y, &line, area.width);
         if !chip.is_empty() {
             let x = area.x + (width - chip.chars().count() - 1) as u16;
-            buf.set_string(x, area.y, chip, theme::warn());
+            buf.set_string(x, text_y, chip, theme::warn());
         }
     }
 }
