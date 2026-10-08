@@ -2108,6 +2108,8 @@ pub struct TuiApp {
     pub(crate) option_rects: Vec<(usize, ratatui::layout::Rect)>,
     /// Hovered option index in the pending card (pointer motion only).
     pub(crate) hover_option: Option<usize>,
+    /// Hovered resize boundary (pointer motion only; never begins a drag).
+    pub(crate) hover_resize: Option<ResizeBoundary>,
     pub(crate) catalog_fetch: CatalogFetchState,
     /// Frame width from the most recent draw. Key handling runs before the
     /// next render, so commands that depend on whether a pane can physically

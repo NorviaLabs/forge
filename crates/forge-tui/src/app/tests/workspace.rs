@@ -856,3 +856,150 @@ async fn typing_after_ctrl_e_filters_files_and_never_edits_the_buffer() {
         "focus must not drift into the editor mid-typing"
     );
 }
+
+/// A frame wide enough to hold all three resizable boundaries at once: the
+/// files column, the conversation/resource seam, and the terminal band.
+async fn resizable_pane_fixture() -> (TempDir, TuiApp) {
+    let (dir, mut app) = focus_test_app().await;
+    // A message dismisses the start splash, so the real workspace layout (and
+    // not the onboarding group) is what gets measured.
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "layout fixture"));
+    app.workspace_files.visible = true;
+    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
+    app.bottom_panel.open = true;
+    app.focus_block(FocusBlock::Composer);
+    (dir, app)
+}
+
+/// Positions along `boundary`'s seam, from the seam's own origin, that carry a
+/// resize grip. A vertical seam answers in rows, a horizontal one in columns.
+fn grip_offsets(
+    app: &TuiApp,
+    buffer: &ratatui::buffer::Buffer,
+    boundary: ResizeBoundary,
+    glyph: &str,
+) -> Vec<u16> {
+    let seam = app.resize_seam(boundary).expect("pane is resizable");
+    let vertical = seam.width == 1;
+    let cell = |offset: u16| {
+        if vertical {
+            (seam.x, seam.y + offset)
+        } else {
+            (seam.x + offset, seam.y)
+        }
+    };
+    (0..if vertical { seam.height } else { seam.width })
+        .filter(|offset| {
+            let (x, y) = cell(*offset);
+            buffer[(x, y)].symbol() == glyph
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn resizable_seams_show_a_centred_grip_marker() {
+    let (_dir, mut app) = resizable_pane_fixture().await;
+    let buffer = render_app_buffer(&mut app, 160, 40);
+
+    for (boundary, glyph) in [
+        (ResizeBoundary::Files, "\u{250a}"),
+        (ResizeBoundary::Conversation, "\u{250a}"),
+        (ResizeBoundary::BottomPanel, "\u{2508}"),
+    ] {
+        let seam = app.resize_seam(boundary).unwrap();
+        let extent = seam.width.max(seam.height);
+        let grip = grip_offsets(&app, &buffer, boundary, glyph);
+        assert_eq!(grip.len(), 5, "{boundary:?} grip length");
+        // Margins on both sides: the grip names the seam without turning into
+        // the full-length rule that would double the pane's own border.
+        assert!(grip[0] >= 1, "{boundary:?} grip starts inside the seam");
+        assert!(
+            grip[4] <= extent - 2,
+            "{boundary:?} grip ends inside the seam"
+        );
+        // Centred, within the odd/even rounding of the seam's extent.
+        let centre = (grip[0] + grip[4]) / 2;
+        assert!(
+            centre.abs_diff((extent - 1) / 2) <= 1,
+            "{boundary:?} grip is centred (at {centre} of {extent})"
+        );
+    }
+
+    // At rest the grip carries the pane frames' own border weight, so the
+    // marker is never the faintest thing in the seam.
+    let files_seam = app.resize_seam(ResizeBoundary::Files).unwrap();
+    let cell = &buffer[(files_seam.x, files_seam.y + files_seam.height / 2)];
+    assert_eq!(cell.symbol(), "\u{250a}");
+    assert_eq!(cell.style().fg, crate::theme::border().fg);
+}
+
+#[tokio::test]
+async fn resizing_a_boundary_emphasises_its_grip() {
+    let (_dir, mut app) = resizable_pane_fixture().await;
+    // The seams are measured during a draw, and key routing reads them.
+    render_app_text(&mut app, 160, 40);
+    app.begin_resize_mode();
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.pane_resize.interaction.unwrap().boundary,
+        Some(ResizeBoundary::Files)
+    );
+
+    let buffer = render_app_buffer(&mut app, 160, 40);
+    let seam = app.resize_seam(ResizeBoundary::Files).unwrap();
+    let cell = &buffer[(seam.x, seam.y + seam.height / 2)];
+    assert_eq!(cell.style().fg, Some(crate::theme::accent_color()));
+    assert!(cell
+        .style()
+        .add_modifier
+        .contains(ratatui::style::Modifier::BOLD));
+}
+
+/// Hover is the pointer's own preview of the drag, so pointing at a seam
+/// brightens its grip without entering resize mode or moving focus.
+#[tokio::test]
+async fn hovering_a_seam_emphasises_its_grip() {
+    let (_dir, mut app) = resizable_pane_fixture().await;
+    render_app_text(&mut app, 160, 40);
+    let seam = app.resize_seam(ResizeBoundary::Conversation).unwrap();
+
+    app.handle_mouse(event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column: seam.x,
+        row: seam.y + seam.height / 2,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.hover_resize, Some(ResizeBoundary::Conversation));
+    assert!(app.pane_resize.interaction.is_none(), "hover never drags");
+    assert_eq!(
+        app.focus.block(),
+        FocusBlock::Composer,
+        "hover never moves focus"
+    );
+
+    let buffer = render_app_buffer(&mut app, 160, 40);
+    let cell = &buffer[(seam.x, seam.y + seam.height / 2)];
+    assert_eq!(cell.style().fg, Some(crate::theme::accent_color()));
+
+    // Moving off the seam restores the resting marker.
+    app.handle_mouse(event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column: seam.x.saturating_sub(20),
+        row: seam.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.hover_resize, None);
+    let buffer = render_app_buffer(&mut app, 160, 40);
+    assert_eq!(
+        buffer[(seam.x, seam.y + seam.height / 2)].style().fg,
+        crate::theme::border().fg
+    );
+}

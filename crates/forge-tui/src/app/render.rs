@@ -2185,6 +2185,11 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         );
         self.footer_chip_rects = footer_chip_sink.into_inner();
 
+        // Resize grips paint after every pane, so the marker lands on the seam
+        // the panes left blank; dialogs, overlays, menus and the toast below
+        // paint over them.
+        self.render_resize_handles(frame);
+
         if let Some(dialog) = self.explorer_dialog.current() {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
         } else if self.scratchpad.is_some() {
@@ -2220,6 +2225,38 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         // focusable, never blocking. Positioned bottom-right by the engine.
         self.toast.render_overlay(area, frame.buffer_mut());
         theme::strip_colors_if_disabled(frame.buffer_mut());
+    }
+
+    /// Mark every boundary the operator can drag with a short dashed grip.
+    ///
+    /// The panes draw their own frames and each seam sits directly against
+    /// one, so a full-length rule here would read as a second border
+    /// (FORGE-DESIGN §9.2). A centred grip names the seam without drawing
+    /// one. It brightens under the pointer and while that boundary is being
+    /// dragged, so the affordance survives terminals that report no motion.
+    fn render_resize_handles(&self, frame: &mut ratatui::Frame) {
+        for (boundary, vertical) in [
+            (ResizeBoundary::Files, true),
+            (ResizeBoundary::Conversation, true),
+            (ResizeBoundary::BottomPanel, false),
+        ] {
+            let Some(seam) = self.resize_seam(boundary) else {
+                continue;
+            };
+            let targeted = self.pane_resize.interaction.and_then(|i| i.boundary) == Some(boundary)
+                || self.hover_resize == Some(boundary);
+            paint_resize_grip(frame.buffer_mut(), seam, vertical, targeted);
+        }
+    }
+
+    /// The blank 1-cell gap that separates a resizable pane from its
+    /// neighbour, from the last layout pass.
+    pub(super) fn resize_seam(&self, boundary: ResizeBoundary) -> Option<ratatui::layout::Rect> {
+        match boundary {
+            ResizeBoundary::Files => self.pane_resize.files_separator,
+            ResizeBoundary::Conversation => self.pane_resize.conversation_separator,
+            ResizeBoundary::BottomPanel => self.pane_resize.bottom_separator,
+        }
     }
 
     /// Inline commands+history fuzzy search, drawn in the same anchored band
@@ -2518,6 +2555,55 @@ fn paint_rows_selection(
     }
 }
 
+/// Dashed glyph marking a vertical resize seam.
+const RESIZE_GRIP_VERTICAL: &str = "┊";
+/// Dashed glyph marking a horizontal resize seam.
+const RESIZE_GRIP_HORIZONTAL: &str = "┈";
+/// Grip length in cells. Odd, so it centres on the seam without a bias.
+const RESIZE_GRIP_LEN: u16 = 5;
+
+/// Paint a centred dashed grip into a 1-cell-wide resize seam.
+///
+/// At rest the grip takes the same `border` weight as the pane frames it sits
+/// between: `border_muted` is reserved for low-priority internal separators,
+/// and a marker whose whole job is to name the seam must not be the faintest
+/// thing in it. The boundary being dragged (or pointed at) takes the accent
+/// and a weight step, so the state is legible without colour (§5.3). A seam
+/// with no room for a margin on both sides stays blank rather than filling end
+/// to end, which would read as the rule §9.2 forbids.
+fn paint_resize_grip(
+    buf: &mut ratatui::buffer::Buffer,
+    seam: ratatui::layout::Rect,
+    vertical: bool,
+    targeted: bool,
+) {
+    use ratatui::style::Modifier;
+
+    let style = if targeted {
+        theme::accent_style().add_modifier(Modifier::BOLD)
+    } else {
+        theme::border()
+    };
+    let glyph = if vertical {
+        RESIZE_GRIP_VERTICAL
+    } else {
+        RESIZE_GRIP_HORIZONTAL
+    };
+    let extent = if vertical { seam.height } else { seam.width };
+    if extent < RESIZE_GRIP_LEN + 2 {
+        return;
+    }
+    let start = (extent - RESIZE_GRIP_LEN) / 2;
+    for step in 0..RESIZE_GRIP_LEN {
+        let (x, y) = if vertical {
+            (seam.x, seam.y + start + step)
+        } else {
+            (seam.x + start + step, seam.y)
+        };
+        buf.set_string(x, y, glyph, style);
+    }
+}
+
 /// Draw the right-click context menu as a small popover list.
 fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selection::ContextMenu) {
     let rect = menu.rect();
@@ -2708,5 +2794,59 @@ mod tests {
             super::terminal_copy_rows("one\ntwo\nthree", 3, false, None),
             vec!["one".to_string(), "two".to_string(), "three".to_string()]
         );
+    }
+
+    #[test]
+    fn resize_grip_centres_a_dashed_run_and_leaves_a_margin() {
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 3, 11));
+        super::paint_resize_grip(
+            &mut buf,
+            ratatui::layout::Rect::new(1, 0, 1, 11),
+            true,
+            false,
+        );
+        let column: String = (0..11).map(|y| buf[(1, y)].symbol()).collect();
+        assert_eq!(column, "   ┊┊┊┊┊   ");
+        let style = buf[(1, 5)].style();
+        assert_eq!(style.fg, crate::theme::border().fg);
+        assert!(style.add_modifier.is_empty());
+    }
+
+    #[test]
+    fn resize_grip_takes_the_accent_and_weight_while_targeted() {
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 3, 11));
+        super::paint_resize_grip(
+            &mut buf,
+            ratatui::layout::Rect::new(1, 0, 1, 11),
+            true,
+            true,
+        );
+        let style = buf[(1, 5)].style();
+        assert_eq!(style.fg, Some(crate::theme::accent_color()));
+        assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+    }
+
+    #[test]
+    fn resize_grip_marks_a_row_and_skips_a_seam_with_no_margin() {
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 11, 2));
+        super::paint_resize_grip(
+            &mut buf,
+            ratatui::layout::Rect::new(0, 0, 11, 1),
+            false,
+            false,
+        );
+        let row: String = (0..11).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(row, "   ┈┈┈┈┈   ");
+
+        // Six cells cannot hold the grip and a margin on each side, and a grip
+        // that filled them end to end would read as the rule §9.2 forbids.
+        super::paint_resize_grip(
+            &mut buf,
+            ratatui::layout::Rect::new(0, 1, 6, 1),
+            false,
+            false,
+        );
+        let short: String = (0..6).map(|x| buf[(x, 1)].symbol()).collect();
+        assert_eq!(short, "      ");
     }
 }

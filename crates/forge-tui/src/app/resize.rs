@@ -193,19 +193,13 @@ impl TuiApp {
 
     pub(super) fn resize_boundary_at(&self, column: u16, row: u16) -> Option<ResizeBoundary> {
         [
-            (ResizeBoundary::Files, self.pane_resize.files_separator),
-            (
-                ResizeBoundary::Conversation,
-                self.pane_resize.conversation_separator,
-            ),
-            (
-                ResizeBoundary::BottomPanel,
-                self.pane_resize.bottom_separator,
-            ),
+            ResizeBoundary::Files,
+            ResizeBoundary::Conversation,
+            ResizeBoundary::BottomPanel,
         ]
         .into_iter()
-        .find_map(|(boundary, area)| {
-            let area = area?;
+        .find_map(|boundary| {
+            let area = self.resize_seam(boundary)?;
             let hit = match boundary {
                 ResizeBoundary::Files | ResizeBoundary::Conversation => ratatui::layout::Rect::new(
                     area.x.saturating_sub(1),
